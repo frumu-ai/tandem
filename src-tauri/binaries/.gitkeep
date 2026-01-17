@@ -1,0 +1,3 @@
+# This directory contains sidecar binaries
+# Binaries are downloaded at build time and should NOT be committed to git
+# See scripts/download-sidecar.js for the download script

@@ -1,0 +1,56 @@
+﻿# Dependencies
+node_modules/
+target/
+
+# Build outputs
+dist/
+src-tauri/target/
+*.app
+*.dmg
+*.exe
+*.msi
+*.deb
+*.AppImage
+
+# Sidecar binaries (downloaded at build time, not committed)
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+
+# Environment and secrets - NEVER COMMIT
+.env
+.env.*
+!.env.example
+*.local
+secrets/
+*.pem
+*.key
+
+# Stronghold vault files (user data)
+*.stronghold
+*.vault
+
+# IDE
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+
+# Tauri
+src-tauri/gen/
+
+# TypeScript
+*.tsbuildinfo
+
+logs.txt
