@@ -36,14 +36,72 @@ export type ApiKeyType = "openrouter" | "anthropic" | "openai" | "ollama" | stri
 
 export type SidecarState = "stopped" | "starting" | "running" | "stopping" | "failed";
 
+export interface SessionTime {
+  created: number;
+  updated: number;
+}
+
+export interface SessionSummary {
+  additions: number;
+  deletions: number;
+  files: number;
+}
+
 export interface Session {
   id: string;
+  slug?: string;
+  version?: string;
+  projectID?: string;
+  directory?: string;
   title?: string;
+  time?: SessionTime;
+  summary?: SessionSummary;
+  // Legacy fields
   model?: string;
   provider?: string;
   messages: Message[];
-  created_at?: string;
-  updated_at?: string;
+}
+
+export interface Project {
+  id: string;
+  worktree: string;
+  vcs?: string;
+  sandboxes: unknown[];
+  time: {
+    created: number;
+    updated: number;
+  };
+}
+
+export interface MessageInfo {
+  id: string;
+  sessionID: string;
+  role: string;
+  time: {
+    created: number;
+    completed?: number;
+  };
+  summary?: {
+    title?: string;
+    diffs: unknown[];
+  };
+  agent?: string;
+  model?: unknown;
+}
+
+export interface SessionMessage {
+  info: MessageInfo;
+  parts: unknown[];
+}
+
+export interface FileAttachment {
+  id: string;
+  type: "image" | "file";
+  name: string;
+  mime: string;
+  url: string;
+  size: number;
+  preview?: string;
 }
 
 export interface Message {
@@ -76,14 +134,16 @@ export interface ProviderInfo {
   configured: boolean;
 }
 
-// Stream event types from OpenCode
+// Stream event types from OpenCode (matches Rust StreamEvent enum)
 export type StreamEvent =
-  | { type: "content"; content: string }
-  | { type: "tool_start"; id: string; tool: string; args: Record<string, unknown> }
-  | { type: "tool_end"; id: string; result: unknown; error?: string }
-  | { type: "done"; message_id?: string }
-  | { type: "error"; message: string }
-  | { type: "thinking"; content: string };
+  | { type: "content"; session_id: string; message_id: string; content: string; delta?: string }
+  | { type: "tool_start"; session_id: string; message_id: string; part_id: string; tool: string; args: Record<string, unknown> }
+  | { type: "tool_end"; session_id: string; message_id: string; part_id: string; result?: unknown; error?: string }
+  | { type: "session_status"; session_id: string; status: string }
+  | { type: "session_idle"; session_id: string }
+  | { type: "session_error"; session_id: string; error: string }
+  | { type: "permission_asked"; session_id: string; request_id: string; tool?: string; args?: Record<string, unknown> }
+  | { type: "raw"; event_type: string; data: unknown };
 
 // ============================================================================
 // Basic Commands
@@ -182,23 +242,41 @@ export async function setCurrentSessionId(sessionId: string | null): Promise<voi
 }
 
 // ============================================================================
+// Project & History
+// ============================================================================
+
+export async function listProjects(): Promise<Project[]> {
+  return invoke("list_projects");
+}
+
+export async function getSessionMessages(sessionId: string): Promise<SessionMessage[]> {
+  return invoke("get_session_messages", { sessionId });
+}
+
+// ============================================================================
 // Message Handling
 // ============================================================================
+
+export interface FileAttachmentInput {
+  mime: string;
+  filename?: string;
+  url: string;
+}
 
 export async function sendMessage(
   sessionId: string,
   content: string,
-  model?: string
-): Promise<Message> {
-  return invoke("send_message", { sessionId, content, model });
+  attachments?: FileAttachmentInput[]
+): Promise<void> {
+  return invoke("send_message", { sessionId, content, attachments });
 }
 
 export async function sendMessageStreaming(
   sessionId: string,
   content: string,
-  model?: string
+  attachments?: FileAttachmentInput[]
 ): Promise<void> {
-  return invoke("send_message_streaming", { sessionId, content, model });
+  return invoke("send_message_streaming", { sessionId, content, attachments });
 }
 
 export async function cancelGeneration(sessionId: string): Promise<void> {

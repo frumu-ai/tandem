@@ -36,7 +36,7 @@ fn default_openrouter() -> ProviderConfig {
         enabled: true,
         default: true,
         endpoint: "https://openrouter.ai/api/v1".to_string(),
-        model: Some("anthropic/claude-sonnet-4".to_string()),
+        model: Some("xiaomi/mimo-v2-flash:free".to_string()),
     }
 }
 

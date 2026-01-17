@@ -24,17 +24,18 @@ const OPENCODE_REPO = "anomalyco/opencode";
 const GITHUB_API = "https://api.github.com";
 
 // Platform mappings - maps Node.js platform/arch to OpenCode binary names
+// Updated to match new naming convention: opencode-{os}-{arch}.{ext}
 const PLATFORM_MAP = {
   darwin: {
-    x64: { target: "x86_64-apple-darwin", asset: "opencode_Darwin_x86_64.tar.gz" },
-    arm64: { target: "aarch64-apple-darwin", asset: "opencode_Darwin_arm64.tar.gz" },
+    x64: { target: "x86_64-apple-darwin", asset: "opencode-darwin-x64.zip" },
+    arm64: { target: "aarch64-apple-darwin", asset: "opencode-darwin-arm64.zip" },
   },
   linux: {
-    x64: { target: "x86_64-unknown-linux-gnu", asset: "opencode_Linux_x86_64.tar.gz" },
-    arm64: { target: "aarch64-unknown-linux-gnu", asset: "opencode_Linux_arm64.tar.gz" },
+    x64: { target: "x86_64-unknown-linux-gnu", asset: "opencode-linux-x64.tar.gz" },
+    arm64: { target: "aarch64-unknown-linux-gnu", asset: "opencode-linux-arm64.tar.gz" },
   },
   win32: {
-    x64: { target: "x86_64-pc-windows-msvc", asset: "opencode_Windows_x86_64.zip" },
+    x64: { target: "x86_64-pc-windows-msvc", asset: "opencode-windows-x64.zip" },
   },
 };
 

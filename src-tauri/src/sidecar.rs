@@ -130,22 +130,37 @@ pub struct CreateSessionRequest {
     pub provider: Option<String>,
 }
 
+/// Session time information from OpenCode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionTime {
+    pub created: u64,
+    pub updated: u64,
+}
+
 /// Session response from OpenCode
+/// Matches the actual API response format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(rename = "projectID", skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<SessionTime>,
+    // Legacy fields for compatibility
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default)]
     pub messages: Vec<Message>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<String>,
 }
 
 /// Message in a session
@@ -172,42 +187,277 @@ pub struct ToolCall {
     pub status: Option<String>, // "pending", "running", "completed", "failed"
 }
 
-/// Send message request
-#[derive(Debug, Serialize)]
-pub struct SendMessageRequest {
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+/// Text part for message input
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextPartInput {
+    #[serde(rename = "type")]
+    pub part_type: String, // Always "text"
+    pub text: String,
 }
 
-/// Streaming event from OpenCode
+/// File part for message input (images, documents)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePartInput {
+    #[serde(rename = "type")]
+    pub part_type: String, // Always "file"
+    pub mime: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    pub url: String, // data URL or file path
+}
+
+/// Message part enum for sending
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum MessagePartInput {
+    Text(TextPartInput),
+    File(FilePartInput),
+}
+
+/// Model specification for prompt
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelSpec {
+    #[serde(rename = "providerID")]
+    pub provider_id: String,
+    #[serde(rename = "modelID")]
+    pub model_id: String,
+}
+
+/// Send message request (prompt_async format)
+#[derive(Debug, Serialize)]
+pub struct SendMessageRequest {
+    pub parts: Vec<MessagePartInput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelSpec>,
+}
+
+impl SendMessageRequest {
+    /// Create a simple text message request
+    pub fn text(content: String) -> Self {
+        Self {
+            parts: vec![MessagePartInput::Text(TextPartInput {
+                part_type: "text".to_string(),
+                text: content,
+            })],
+            model: None,
+        }
+    }
+
+    /// Create a text message request with a specific model
+    pub fn text_with_model(content: String, provider_id: String, model_id: String) -> Self {
+        Self {
+            parts: vec![MessagePartInput::Text(TextPartInput {
+                part_type: "text".to_string(),
+                text: content,
+            })],
+            model: Some(ModelSpec {
+                provider_id,
+                model_id,
+            }),
+        }
+    }
+
+    /// Create a message with text and file attachments
+    pub fn with_attachments(content: String, attachments: Vec<FilePartInput>) -> Self {
+        let mut parts: Vec<MessagePartInput> = attachments
+            .into_iter()
+            .map(MessagePartInput::File)
+            .collect();
+        
+        if !content.is_empty() {
+            parts.push(MessagePartInput::Text(TextPartInput {
+                part_type: "text".to_string(),
+                text: content,
+            }));
+        }
+
+        Self { parts, model: None }
+    }
+}
+
+/// Project from OpenCode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub worktree: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vcs: Option<String>,
+    #[serde(default)]
+    pub sandboxes: Vec<serde_json::Value>,
+    pub time: ProjectTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectTime {
+    pub created: u64,
+    pub updated: u64,
+}
+
+/// Full message with parts from OpenCode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMessage {
+    pub info: MessageInfo,
+    pub parts: Vec<serde_json::Value>, // Parts can have various types
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageInfo {
+    pub id: String,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    pub role: String,
+    pub time: MessageTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<MessageSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageTime {
+    pub created: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub diffs: Vec<serde_json::Value>,
+}
+
+/// OpenCode event properties wrapper
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventProperties<T> {
+    #[serde(flatten)]
+    pub properties: T,
+}
+
+/// Message part from OpenCode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessagePart {
+    pub id: Option<String>,
+    #[serde(rename = "sessionID")]
+    pub session_id: Option<String>,
+    #[serde(rename = "messageID")]
+    pub message_id: Option<String>,
+    #[serde(rename = "type")]
+    pub part_type: Option<String>,
+    pub text: Option<String>,
+    // Tool-related fields
+    pub tool: Option<String>,
+    pub args: Option<serde_json::Value>,
+    pub state: Option<String>,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+/// Message part updated event properties
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessagePartUpdatedProps {
+    pub part: MessagePart,
+    pub delta: Option<String>,
+}
+
+/// Session status event properties
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionStatusProps {
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    pub status: String,
+}
+
+/// Session idle event properties
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionIdleProps {
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+}
+
+/// Session error event properties
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionErrorProps {
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    pub error: String,
+}
+
+/// Permission asked event properties
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionAskedProps {
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    #[serde(rename = "requestID")]
+    pub request_id: String,
+    pub tool: Option<String>,
+    pub args: Option<serde_json::Value>,
+}
+
+/// Raw OpenCode event from SSE stream
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenCodeEvent {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub properties: serde_json::Value,
+}
+
+/// Simplified streaming event for frontend consumption
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
-    /// Text content chunk
-    Content { content: String },
-    /// Tool call started
+    /// Text content chunk (delta or full)
+    Content {
+        session_id: String,
+        message_id: String,
+        content: String,
+        delta: Option<String>,
+    },
+    /// Tool call started or updated
     ToolStart {
-        id: String,
+        session_id: String,
+        message_id: String,
+        part_id: String,
         tool: String,
         args: serde_json::Value,
     },
     /// Tool call completed
     ToolEnd {
-        id: String,
-        result: serde_json::Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: String,
+        message_id: String,
+        part_id: String,
+        result: Option<serde_json::Value>,
         error: Option<String>,
     },
-    /// Message completed
-    Done {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        message_id: Option<String>,
+    /// Session status changed
+    SessionStatus {
+        session_id: String,
+        status: String,
     },
-    /// Error occurred
-    Error { message: String },
-    /// Thinking/reasoning content
-    Thinking { content: String },
+    /// Session is idle (generation complete)
+    SessionIdle {
+        session_id: String,
+    },
+    /// Session error
+    SessionError {
+        session_id: String,
+        error: String,
+    },
+    /// Permission requested
+    PermissionAsked {
+        session_id: String,
+        request_id: String,
+        tool: Option<String>,
+        args: Option<serde_json::Value>,
+    },
+    /// Raw event (for debugging or unhandled types)
+    Raw {
+        event_type: String,
+        data: serde_json::Value,
+    },
 }
 
 /// Model info from OpenCode
@@ -282,6 +532,12 @@ impl SidecarManager {
         env_vars.insert(key.to_string(), value.to_string());
     }
 
+    /// Remove an environment variable for OpenCode
+    pub async fn remove_env(&self, key: &str) {
+        let mut env_vars = self.env_vars.write().await;
+        env_vars.remove(key);
+    }
+
     /// Set the workspace path
     pub async fn set_workspace(&self, path: PathBuf) {
         let mut config = self.config.write().await;
@@ -324,10 +580,11 @@ impl SidecarManager {
         // Build the command
         let mut cmd = Command::new(sidecar_path);
 
-        // OpenCode uses 'serve' subcommand for server mode
+        // OpenCode 'serve' subcommand starts a headless server
+        // Use --hostname and --port flags
         cmd.args([
             "serve",
-            "--host",
+            "--hostname",
             "127.0.0.1",
             "--port",
             &port.to_string(),
@@ -450,42 +707,60 @@ impl SidecarManager {
     /// Wait for the sidecar to be ready
     async fn wait_for_ready(&self, port: u16) -> Result<()> {
         let start = Instant::now();
-        let timeout = Duration::from_secs(30);
+        let timeout = Duration::from_secs(60); // Increased timeout for slower systems
 
         tracing::debug!("Waiting for sidecar to be ready on port {}", port);
 
+        let mut last_error = String::new();
         while start.elapsed() < timeout {
             match self.health_check(port).await {
                 Ok(_) => {
-                    tracing::debug!("Sidecar is ready");
+                    tracing::info!("Sidecar is ready after {:?}", start.elapsed());
                     return Ok(());
                 }
                 Err(e) => {
+                    last_error = e.to_string();
                     tracing::trace!("Health check failed: {}, retrying...", e);
                 }
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
-        Err(TandemError::Sidecar(
-            "Sidecar failed to start within timeout".to_string(),
-        ))
+        tracing::error!("Sidecar failed to start. Last error: {}", last_error);
+        Err(TandemError::Sidecar(format!(
+            "Sidecar failed to start within 60s timeout. Last error: {}",
+            last_error
+        )))
     }
 
     /// Health check for the sidecar
+    /// OpenCode exposes /global/health endpoint that returns JSON
     async fn health_check(&self, port: u16) -> Result<()> {
-        let url = format!("http://127.0.0.1:{}/health", port);
+        let url = format!("http://127.0.0.1:{}/global/health", port);
 
         let response = self
             .http_client
             .get(&url)
-            .timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(30)) // Longer timeout for first request (plugin installation)
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Health check request failed: {}", e)))?;
 
         if response.status().is_success() {
-            Ok(())
+            // Verify it returns valid JSON with healthy: true
+            let body: serde_json::Value = response.json().await.map_err(|e| {
+                TandemError::Sidecar(format!("Health check returned invalid JSON: {}", e))
+            })?;
+            
+            if body.get("healthy").and_then(|v| v.as_bool()) == Some(true) {
+                tracing::debug!("OpenCode health check passed: {:?}", body);
+                Ok(())
+            } else {
+                Err(TandemError::Sidecar(format!(
+                    "Health check returned unhealthy: {:?}",
+                    body
+                )))
+            }
         } else {
             Err(TandemError::Sidecar(format!(
                 "Health check returned status: {}",
@@ -499,10 +774,12 @@ impl SidecarManager {
     // ========================================================================
 
     /// Create a new chat session
+    /// OpenCode API: POST /session
     pub async fn create_session(&self, request: CreateSessionRequest) -> Result<Session> {
         self.check_circuit_breaker().await?;
 
-        let url = format!("{}/sessions", self.base_url().await?);
+        let url = format!("{}/session", self.base_url().await?);
+        tracing::debug!("Creating session at: {}", url);
 
         let response = self
             .http_client
@@ -516,10 +793,11 @@ impl SidecarManager {
     }
 
     /// Get a session by ID
+    /// OpenCode API: GET /session/{id}
     pub async fn get_session(&self, session_id: &str) -> Result<Session> {
         self.check_circuit_breaker().await?;
 
-        let url = format!("{}/sessions/{}", self.base_url().await?, session_id);
+        let url = format!("{}/session/{}", self.base_url().await?, session_id);
 
         let response = self
             .http_client
@@ -532,10 +810,11 @@ impl SidecarManager {
     }
 
     /// List all sessions
+    /// OpenCode API: GET /session
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
         self.check_circuit_breaker().await?;
 
-        let url = format!("{}/sessions", self.base_url().await?);
+        let url = format!("{}/session", self.base_url().await?);
 
         let response = self
             .http_client
@@ -548,10 +827,11 @@ impl SidecarManager {
     }
 
     /// Delete a session
+    /// OpenCode API: DELETE /session/{id}
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         self.check_circuit_breaker().await?;
 
-        let url = format!("{}/sessions/{}", self.base_url().await?, session_id);
+        let url = format!("{}/session/{}", self.base_url().await?, session_id);
 
         let response = self
             .http_client
@@ -572,63 +852,106 @@ impl SidecarManager {
         }
     }
 
-    // ========================================================================
-    // Message Handling
-    // ========================================================================
-
-    /// Send a message to a session (non-streaming)
-    pub async fn send_message(
-        &self,
-        session_id: &str,
-        request: SendMessageRequest,
-    ) -> Result<Message> {
+    /// List all projects
+    /// OpenCode API: GET /project
+    pub async fn list_projects(&self) -> Result<Vec<Project>> {
         self.check_circuit_breaker().await?;
 
-        let url = format!(
-            "{}/sessions/{}/messages",
-            self.base_url().await?,
-            session_id
-        );
+        let url = format!("{}/project", self.base_url().await?);
 
         let response = self
             .http_client
-            .post(&url)
-            .json(&request)
+            .get(&url)
             .send()
             .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list projects: {}", e)))?;
 
         self.handle_response(response).await
     }
 
-    /// Send a message and get streaming response
-    /// Returns a stream of events that should be forwarded to the frontend
-    pub async fn send_message_streaming(
+    /// Get messages for a session
+    /// OpenCode API: GET /session/{id}/message
+    pub async fn get_session_messages(&self, session_id: &str) -> Result<Vec<SessionMessage>> {
+        self.check_circuit_breaker().await?;
+
+        let url = format!("{}/session/{}/message", self.base_url().await?, session_id);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to get session messages: {}", e)))?;
+
+        self.handle_response(response).await
+    }
+
+    // ========================================================================
+    // Message Handling
+    // ========================================================================
+
+    /// Send a message to a session (async, non-blocking)
+    /// OpenCode API: POST /session/{id}/prompt_async
+    /// Returns 204 No Content - actual response comes via /event SSE stream
+    pub async fn send_message(
         &self,
         session_id: &str,
         request: SendMessageRequest,
-    ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
+    ) -> Result<()> {
         self.check_circuit_breaker().await?;
 
         let url = format!(
-            "{}/sessions/{}/messages/stream",
+            "{}/session/{}/prompt_async",
             self.base_url().await?,
             session_id
         );
+        tracing::debug!("Sending prompt to: {} with {:?}", url, request);
 
         let response = self
             .http_client
             .post(&url)
             .json(&request)
-            .header("Accept", "text/event-stream")
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
 
+        // prompt_async returns 204 No Content on success
+        if response.status().as_u16() == 204 || response.status().is_success() {
+            self.record_success().await;
+            Ok(())
+        } else {
+            self.record_failure().await;
+            let body = response.text().await.unwrap_or_default();
+            Err(TandemError::Sidecar(format!(
+                "Failed to send message: {}",
+                body
+            )))
+        }
+    }
+
+    /// Subscribe to the event stream
+    /// OpenCode API: GET /event (SSE)
+    /// Returns a stream of events for all sessions
+    pub async fn subscribe_events(
+        &self,
+    ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
+        self.check_circuit_breaker().await?;
+
+        let url = format!("{}/event", self.base_url().await?);
+        tracing::debug!("Subscribing to events at: {}", url);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to subscribe to events: {}", e)))?;
+
         if !response.status().is_success() {
             self.record_failure().await;
             return Err(TandemError::Sidecar(format!(
-                "Streaming request failed: {}",
+                "Event subscription failed: {}",
                 response.status()
             )));
         }
@@ -647,6 +970,10 @@ impl SidecarManager {
                 match chunk_result {
                     Ok(chunk) => {
                         let text = String::from_utf8_lossy(&chunk);
+                        // Log raw SSE data for debugging
+                        if !text.is_empty() && text.trim() != "" {
+                            tracing::debug!("SSE raw chunk: {}", text.replace('\n', "\\n").chars().take(500).collect::<String>());
+                        }
                         buffer.push_str(&text);
 
                         // Parse SSE events from buffer
@@ -655,11 +982,13 @@ impl SidecarManager {
                         }
                     }
                     Err(e) => {
+                        tracing::error!("SSE stream error: {}", e);
                         yield Err(TandemError::Sidecar(format!("Stream error: {}", e)));
                         break;
                     }
                 }
             }
+            tracing::debug!("SSE stream ended");
         })
     }
 
@@ -814,16 +1143,29 @@ impl SidecarManager {
         &self,
         response: reqwest::Response,
     ) -> Result<T> {
-        if response.status().is_success() {
+        let status = response.status();
+        let url = response.url().to_string();
+        
+        if status.is_success() {
             self.record_success().await;
-            response
-                .json()
-                .await
-                .map_err(|e| TandemError::Sidecar(format!("Failed to parse response: {}", e)))
+            
+            // Get the response body as text first for debugging
+            let body = response.text().await.map_err(|e| {
+                TandemError::Sidecar(format!("Failed to read response body: {}", e))
+            })?;
+            
+            tracing::debug!("Response from {}: {}", url, &body[..body.len().min(500)]);
+            
+            // Parse the JSON
+            serde_json::from_str(&body).map_err(|e| {
+                tracing::error!("Failed to parse response from {}: {}", url, e);
+                tracing::error!("Response body: {}", &body[..body.len().min(1000)]);
+                TandemError::Sidecar(format!("Failed to parse response: {}. Body: {}", e, &body[..body.len().min(200)]))
+            })
         } else {
             self.record_failure().await;
-            let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            tracing::error!("Request to {} failed ({}): {}", url, status, body);
             Err(TandemError::Sidecar(format!(
                 "Request failed ({}): {}",
                 status, body
@@ -851,7 +1193,7 @@ impl Drop for SidecarManager {
 
 /// Parse a single SSE event from the buffer
 fn parse_sse_event(buffer: &mut String) -> Option<StreamEvent> {
-    // SSE format: "data: {json}\n\n"
+    // SSE format: "data: {json}\n\n" or "event: type\ndata: {json}\n\n"
     if let Some(end_idx) = buffer.find("\n\n") {
         let event_str = buffer[..end_idx].to_string();
         *buffer = buffer[end_idx + 2..].to_string();
@@ -860,20 +1202,25 @@ fn parse_sse_event(buffer: &mut String) -> Option<StreamEvent> {
         for line in event_str.lines() {
             if let Some(data) = line.strip_prefix("data: ") {
                 if data == "[DONE]" {
-                    return Some(StreamEvent::Done { message_id: None });
+                    // Generic done signal
+                    return Some(StreamEvent::SessionIdle {
+                        session_id: "unknown".to_string(),
+                    });
                 }
 
-                match serde_json::from_str::<StreamEvent>(data) {
-                    Ok(event) => return Some(event),
+                // Try to parse as OpenCode event format
+                match serde_json::from_str::<OpenCodeEvent>(data) {
+                    Ok(event) => {
+                        return convert_opencode_event(event);
+                    }
                     Err(e) => {
-                        tracing::warn!("Failed to parse SSE event: {} - data: {}", e, data);
-                        // Try to parse as raw content
+                        tracing::debug!("Failed to parse as OpenCodeEvent: {} - data: {}", e, data);
+                        // Return as raw event for debugging
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
-                            if let Some(content) = value.get("content").and_then(|c| c.as_str()) {
-                                return Some(StreamEvent::Content {
-                                    content: content.to_string(),
-                                });
-                            }
+                            return Some(StreamEvent::Raw {
+                                event_type: "unknown".to_string(),
+                                data: value,
+                            });
                         }
                     }
                 }
@@ -882,6 +1229,198 @@ fn parse_sse_event(buffer: &mut String) -> Option<StreamEvent> {
     }
 
     None
+}
+
+/// Convert OpenCode event to our StreamEvent format
+fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
+    let props = &event.properties;
+
+    match event.event_type.as_str() {
+        "message.part.updated" => {
+            // Extract part info
+            let part = props.get("part")?;
+            
+            // Debug log the full event
+            tracing::debug!("message.part.updated event: {:?}", props);
+            
+            // IMPORTANT: Only process events with a delta - this indicates streaming content
+            // from the assistant. Events without delta are typically user message confirmations.
+            let delta = props.get("delta").and_then(|d| d.as_str()).map(|s| s.to_string());
+            
+            let session_id = part.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let message_id = part.get("messageID").and_then(|s| s.as_str())?.to_string();
+            let part_id = part.get("id").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let part_type = part.get("type").and_then(|s| s.as_str()).unwrap_or("text");
+
+            match part_type {
+                "text" => {
+                    // Only emit content events if there's a delta (streaming from assistant)
+                    // This prevents echoing user messages which come without delta
+                    if delta.is_none() {
+                        tracing::debug!("Skipping text part without delta (likely user message)");
+                        return None;
+                    }
+                    
+                    let text = part.get("text").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                    Some(StreamEvent::Content {
+                        session_id,
+                        message_id,
+                        content: text,
+                        delta,
+                    })
+                }
+                "tool-invocation" => {
+                    let tool = part.get("tool").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
+                    let args = part.get("args").cloned().unwrap_or(serde_json::Value::Null);
+                    let state = part.get("state").and_then(|s| s.as_str()).unwrap_or("pending");
+                    
+                    match state {
+                        "pending" | "running" => {
+                            Some(StreamEvent::ToolStart {
+                                session_id,
+                                message_id,
+                                part_id,
+                                tool,
+                                args,
+                            })
+                        }
+                        "completed" | "failed" => {
+                            let result = part.get("result").cloned();
+                            let error = part.get("error").and_then(|e| e.as_str()).map(|s| s.to_string());
+                            Some(StreamEvent::ToolEnd {
+                                session_id,
+                                message_id,
+                                part_id,
+                                result,
+                                error,
+                            })
+                        }
+                        _ => None,
+                    }
+                }
+                _ => {
+                    // For other part types, try to extract text
+                    let text = part.get("text").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                    if !text.is_empty() || delta.is_some() {
+                        Some(StreamEvent::Content {
+                            session_id,
+                            message_id,
+                            content: text,
+                            delta,
+                        })
+                    } else {
+                        None
+                    }
+                }
+            }
+        }
+        "message.updated" => {
+            // Full message update - use role to avoid echoing user input
+            let message = props.get("message").unwrap_or(props);
+            let info = message
+                .get("info")
+                .or_else(|| message.get("message"))
+                .unwrap_or(message);
+
+            let role = info.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            tracing::debug!("message.updated event - role: {}, info: {:?}", role, info);
+            
+            if role != "assistant" {
+                tracing::debug!("Skipping message.updated for non-assistant role: {}", role);
+                return None;
+            }
+
+            let session_id = info
+                .get("sessionID")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            let message_id = info
+                .get("id")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let parts = message
+                .get("parts")
+                .or_else(|| props.get("parts"))
+                .and_then(|p| p.as_array());
+
+            if let Some(parts) = parts {
+                let mut content = String::new();
+                for part in parts {
+                    if part.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            content.push_str(text);
+                        }
+                    }
+                }
+                if !content.is_empty() {
+                    return Some(StreamEvent::Content {
+                        session_id,
+                        message_id,
+                        content,
+                        delta: None,
+                    });
+                }
+            }
+
+            None
+        }
+        "session.updated" => {
+            let session = props.get("session").unwrap_or(props);
+            let status = session
+                .get("status")
+                .or_else(|| props.get("status"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            let session_id = session
+                .get("id")
+                .or_else(|| session.get("sessionID"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if matches!(status, "idle" | "complete" | "completed") {
+                return Some(StreamEvent::SessionIdle { session_id });
+            }
+            None
+        }
+        "session.status" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let status = props.get("status").and_then(|s| s.as_str())?.to_string();
+            Some(StreamEvent::SessionStatus { session_id, status })
+        }
+        "session.idle" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            Some(StreamEvent::SessionIdle { session_id })
+        }
+        "session.error" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let error = props.get("error").and_then(|s| s.as_str())?.to_string();
+            Some(StreamEvent::SessionError { session_id, error })
+        }
+        "permission.asked" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let request_id = props.get("requestID").and_then(|s| s.as_str())?.to_string();
+            let tool = props.get("tool").and_then(|s| s.as_str()).map(|s| s.to_string());
+            let args = props.get("args").cloned();
+            Some(StreamEvent::PermissionAsked {
+                session_id,
+                request_id,
+                tool,
+                args,
+            })
+        }
+        _ => {
+            // Return as raw event for other types
+            tracing::debug!("Unhandled event type: {}", event.event_type);
+            Some(StreamEvent::Raw {
+                event_type: event.event_type,
+                data: event.properties,
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -911,9 +1450,12 @@ mod tests {
 
     #[test]
     fn test_parse_sse_event() {
-        let mut buffer = String::from("data: {\"type\":\"content\",\"content\":\"Hello\"}\n\n");
+        // Test OpenCode format event
+        let mut buffer = String::from(
+            "data: {\"type\":\"message.part.updated\",\"properties\":{\"part\":{\"sessionID\":\"ses_123\",\"messageID\":\"msg_456\",\"type\":\"text\",\"text\":\"Hello\"},\"delta\":\"Hello\"}}\n\n"
+        );
         let event = parse_sse_event(&mut buffer);
-        assert!(matches!(event, Some(StreamEvent::Content { content }) if content == "Hello"));
+        assert!(matches!(event, Some(StreamEvent::Content { session_id, content, .. }) if session_id == "ses_123" && content == "Hello"));
         assert!(buffer.is_empty());
     }
 
@@ -921,6 +1463,15 @@ mod tests {
     fn test_parse_sse_done() {
         let mut buffer = String::from("data: [DONE]\n\n");
         let event = parse_sse_event(&mut buffer);
-        assert!(matches!(event, Some(StreamEvent::Done { .. })));
+        assert!(matches!(event, Some(StreamEvent::SessionIdle { .. })));
+    }
+
+    #[test]
+    fn test_parse_sse_session_idle() {
+        let mut buffer = String::from(
+            "data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_123\"}}\n\n"
+        );
+        let event = parse_sse_event(&mut buffer);
+        assert!(matches!(event, Some(StreamEvent::SessionIdle { session_id }) if session_id == "ses_123"));
     }
 }

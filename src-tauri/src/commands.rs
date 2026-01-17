@@ -3,15 +3,90 @@
 
 use crate::error::{Result, TandemError};
 use crate::sidecar::{
-    CreateSessionRequest, Message, ModelInfo, ProviderInfo, SendMessageRequest, Session,
-    SidecarState, StreamEvent,
+    CreateSessionRequest, FilePartInput, Message, ModelInfo, ModelSpec, Project, ProviderInfo,
+    SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent,
 };
+use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
-use crate::stronghold::{validate_api_key, validate_key_type};
+use crate::stronghold::{validate_api_key, validate_key_type, ApiKeyType};
 use futures::StreamExt;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_store::StoreExt;
 use tauri_plugin_stronghold::stronghold::Stronghold;
+
+fn resolve_default_model_spec(config: &ProvidersConfig) -> Option<ModelSpec> {
+    let candidates: Vec<(&str, &crate::state::ProviderConfig)> = vec![
+        ("openrouter", &config.openrouter),
+        ("anthropic", &config.anthropic),
+        ("openai", &config.openai),
+        ("ollama", &config.ollama),
+    ];
+
+    // Prefer explicit default provider
+    if let Some((provider_id, provider)) = candidates
+        .iter()
+        .find(|(_, p)| p.enabled && p.default)
+        .map(|(id, p)| (*id, *p))
+    {
+        if let Some(model_id) = provider.model.clone() {
+            return Some(ModelSpec {
+                provider_id: provider_id.to_string(),
+                model_id,
+            });
+        }
+    }
+
+    // Fallback to first enabled provider with a model
+    for (provider_id, provider) in candidates {
+        if provider.enabled {
+            if let Some(model_id) = provider.model.clone() {
+                return Some(ModelSpec {
+                    provider_id: provider_id.to_string(),
+                    model_id,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+fn resolve_default_provider_and_model(
+    config: &ProvidersConfig,
+) -> (Option<String>, Option<String>) {
+    let candidates: Vec<(&str, &crate::state::ProviderConfig)> = vec![
+        ("openrouter", &config.openrouter),
+        ("anthropic", &config.anthropic),
+        ("openai", &config.openai),
+        ("ollama", &config.ollama),
+    ];
+
+    if let Some((provider_id, provider)) = candidates
+        .iter()
+        .find(|(_, p)| p.enabled && p.default)
+        .map(|(id, p)| (*id, *p))
+    {
+        return (Some(provider_id.to_string()), provider.model.clone());
+    }
+
+    for (provider_id, provider) in candidates {
+        if provider.enabled {
+            return (Some(provider_id.to_string()), provider.model.clone());
+        }
+    }
+
+    (None, None)
+}
+
+fn env_var_for_key(key_type: &ApiKeyType) -> Option<&'static str> {
+    match key_type {
+        ApiKeyType::OpenRouter => Some("OPENROUTER_API_KEY"),
+        ApiKeyType::Anthropic => Some("ANTHROPIC_API_KEY"),
+        ApiKeyType::OpenAI => Some("OPENAI_API_KEY"),
+        ApiKeyType::Custom(_) => None,
+    }
+}
 
 // ============================================================================
 // Basic Commands
@@ -31,7 +106,7 @@ pub fn get_app_state(state: State<'_, AppState>) -> AppStateInfo {
 
 /// Set the workspace path
 #[tauri::command]
-pub fn set_workspace_path(path: String, state: State<'_, AppState>) -> Result<()> {
+pub fn set_workspace_path(app: AppHandle, path: String, state: State<'_, AppState>) -> Result<()> {
     let path_buf = PathBuf::from(&path);
 
     // Verify the path exists and is a directory
@@ -52,6 +127,12 @@ pub fn set_workspace_path(path: String, state: State<'_, AppState>) -> Result<()
     state.set_workspace(path_buf);
     tracing::info!("Workspace set to: {}", path);
 
+    // Save to store for persistence
+    if let Ok(store) = app.store("settings.json") {
+        let _ = store.set("workspace_path", serde_json::json!(path));
+        let _ = store.save();
+    }
+
     Ok(())
 }
 
@@ -70,6 +151,7 @@ pub fn get_workspace_path(state: State<'_, AppState>) -> Option<String> {
 #[tauri::command]
 pub async fn store_api_key(
     app: tauri::AppHandle,
+    state: State<'_, AppState>,
     key_type: String,
     api_key: String,
 ) -> Result<()> {
@@ -78,31 +160,60 @@ pub async fn store_api_key(
     validate_api_key(&api_key)?;
 
     let key_name = key_type_enum.to_key_name();
+    let api_key_value = api_key.clone();
+    let key_type_for_log = key_type.clone();
 
-    let stronghold = app
-        .try_state::<Stronghold>()
-        .ok_or_else(|| TandemError::Stronghold("Stronghold not initialized".to_string()))?;
+    // Clone app handle so we can move it into spawn_blocking
+    let app_clone = app.clone();
+    
+    // Run stronghold operations in a blocking task to avoid blocking the async runtime
+    tokio::task::spawn_blocking(move || -> std::result::Result<(), TandemError> {
+        let stronghold = app_clone
+            .try_state::<Stronghold>()
+            .ok_or_else(|| TandemError::Stronghold("Stronghold not initialized".to_string()))?;
 
-    let client_path = b"tandem";
-    let client = stronghold
-        .get_client(client_path)
-        .or_else(|_| stronghold.create_client(client_path))
-        .map_err(|e| TandemError::Stronghold(format!("Failed to load client: {}", e)))?;
+        let client_path = b"tandem";
+        let client = stronghold
+            .get_client(client_path)
+            .or_else(|_| stronghold.create_client(client_path))
+            .map_err(|e| TandemError::Stronghold(format!("Failed to load client: {}", e)))?;
 
-    client
-        .store()
-        .insert(
-            key_name.as_bytes().to_vec(),
-            api_key.as_bytes().to_vec(),
-            None,
-        )
-        .map_err(|e| TandemError::Stronghold(format!("Failed to save key: {}", e)))?;
+        client
+            .store()
+            .insert(
+                key_name.as_bytes().to_vec(),
+                api_key_value.as_bytes().to_vec(),
+                None,
+            )
+            .map_err(|e| TandemError::Stronghold(format!("Failed to save key: {}", e)))?;
 
-    stronghold
-        .save()
-        .map_err(|e| TandemError::Stronghold(format!("Failed to persist vault: {}", e)))?;
+        stronghold
+            .save()
+            .map_err(|e| TandemError::Stronghold(format!("Failed to persist vault: {}", e)))?;
 
-    tracing::info!("API key stored for provider: {}", key_type);
+        tracing::info!("API key stored for provider: {}", key_type_for_log);
+        Ok(())
+    })
+    .await
+    .map_err(|e| TandemError::Stronghold(format!("Task join error: {}", e)))??;
+
+    if let Some(env_key) = env_var_for_key(&key_type_enum) {
+        let masked = if api_key.len() > 8 {
+            format!("{}...{}", &api_key[..4], &api_key[api_key.len() - 4..])
+        } else {
+            "***".to_string()
+        };
+        tracing::info!("Setting {} for provider {} ({})", env_key, key_type, masked);
+        state.sidecar.set_env(env_key, &api_key).await;
+        if matches!(state.sidecar.state().await, SidecarState::Running) {
+            let sidecar_path = get_sidecar_path(&app)?;
+            state
+                .sidecar
+                .restart(sidecar_path.to_string_lossy().as_ref())
+                .await?;
+        }
+    }
+
     Ok(())
 }
 
@@ -135,7 +246,11 @@ pub async fn has_api_key(app: tauri::AppHandle, key_type: String) -> Result<bool
 
 /// Delete an API key from the vault
 #[tauri::command]
-pub async fn delete_api_key(app: tauri::AppHandle, key_type: String) -> Result<()> {
+pub async fn delete_api_key(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    key_type: String,
+) -> Result<()> {
     let key_type_enum = validate_key_type(&key_type)?;
     let key_name = key_type_enum.to_key_name();
 
@@ -157,6 +272,17 @@ pub async fn delete_api_key(app: tauri::AppHandle, key_type: String) -> Result<(
     stronghold
         .save()
         .map_err(|e| TandemError::Stronghold(format!("Failed to persist vault: {}", e)))?;
+
+    if let Some(env_key) = env_var_for_key(&key_type_enum) {
+        state.sidecar.remove_env(env_key).await;
+        if matches!(state.sidecar.state().await, SidecarState::Running) {
+            let sidecar_path = get_sidecar_path(&app)?;
+            state
+                .sidecar
+                .restart(sidecar_path.to_string_lossy().as_ref())
+                .await?;
+        }
+    }
 
     tracing::info!("API key deleted for provider: {}", key_type);
     Ok(())
@@ -206,11 +332,17 @@ pub fn get_providers_config(state: State<'_, AppState>) -> ProvidersConfig {
 
 /// Set the providers configuration
 #[tauri::command]
-pub fn set_providers_config(config: ProvidersConfig, state: State<'_, AppState>) -> Result<()> {
+pub fn set_providers_config(app: AppHandle, config: ProvidersConfig, state: State<'_, AppState>) -> Result<()> {
     let mut providers = state.providers_config.write().unwrap();
-    *providers = config;
+    *providers = config.clone();
 
     tracing::info!("Providers configuration updated");
+
+    // Save to store for persistence
+    if let Ok(store) = app.store("settings.json") {
+        let _ = store.set("providers_config", serde_json::to_value(&config).unwrap_or_default());
+        let _ = store.save();
+    }
 
     Ok(())
 }
@@ -331,10 +463,15 @@ pub async fn create_session(
     model: Option<String>,
     provider: Option<String>,
 ) -> Result<Session> {
+    let (default_provider, default_model) = {
+        let config = state.providers_config.read().unwrap();
+        resolve_default_provider_and_model(&config)
+    };
+
     let request = CreateSessionRequest {
         title,
-        model,
-        provider,
+        model: model.or(default_model),
+        provider: provider.or(default_provider),
     };
 
     let session = state.sidecar.create_session(request).await?;
@@ -366,6 +503,21 @@ pub async fn delete_session(state: State<'_, AppState>, session_id: String) -> R
     state.sidecar.delete_session(&session_id).await
 }
 
+/// List all projects
+#[tauri::command]
+pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>> {
+    state.sidecar.list_projects().await
+}
+
+/// Get messages for a session
+#[tauri::command]
+pub async fn get_session_messages(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<SessionMessage>> {
+    state.sidecar.get_session_messages(&session_id).await
+}
+
 /// Get the current session ID
 #[tauri::command]
 pub fn get_current_session_id(state: State<'_, AppState>) -> Option<String> {
@@ -384,19 +536,48 @@ pub fn set_current_session_id(state: State<'_, AppState>, session_id: Option<Str
 // Message Handling
 // ============================================================================
 
-/// Send a message to a session (non-streaming)
+/// File attachment from frontend
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct FileAttachmentInput {
+    pub mime: String,
+    pub filename: Option<String>,
+    pub url: String,
+}
+
+/// Send a message to a session (async, starts generation)
+/// The actual response comes via the event stream
 #[tauri::command]
 pub async fn send_message(
     state: State<'_, AppState>,
     session_id: String,
     content: String,
-    model: Option<String>,
-) -> Result<Message> {
-    let request = SendMessageRequest { content, model };
+    attachments: Option<Vec<FileAttachmentInput>>,
+) -> Result<()> {
+    let mut request = if let Some(files) = attachments {
+        let file_parts: Vec<FilePartInput> = files
+            .into_iter()
+            .map(|f| FilePartInput {
+                part_type: "file".to_string(),
+                mime: f.mime,
+                filename: f.filename,
+                url: f.url,
+            })
+            .collect();
+        SendMessageRequest::with_attachments(content, file_parts)
+    } else {
+        SendMessageRequest::text(content)
+    };
+
+    let model_spec = {
+        let config = state.providers_config.read().unwrap();
+        resolve_default_model_spec(&config)
+    };
+    request.model = model_spec;
+
     state.sidecar.send_message(&session_id, request).await
 }
 
-/// Send a message and stream the response
+/// Send a message and subscribe to events for the response
 /// This emits events to the frontend as chunks arrive
 #[tauri::command]
 pub async fn send_message_streaming(
@@ -404,14 +585,37 @@ pub async fn send_message_streaming(
     state: State<'_, AppState>,
     session_id: String,
     content: String,
-    model: Option<String>,
+    attachments: Option<Vec<FileAttachmentInput>>,
 ) -> Result<()> {
-    let request = SendMessageRequest { content, model };
+    // IMPORTANT: Subscribe to events BEFORE sending the message
+    // This ensures we don't miss any events that OpenCode sends
+    let stream = state.sidecar.subscribe_events().await?;
+    
+    // Now send the prompt
+    let mut request = if let Some(files) = attachments {
+        let file_parts: Vec<FilePartInput> = files
+            .into_iter()
+            .map(|f| FilePartInput {
+                part_type: "file".to_string(),
+                mime: f.mime,
+                filename: f.filename,
+                url: f.url,
+            })
+            .collect();
+        SendMessageRequest::with_attachments(content, file_parts)
+    } else {
+        SendMessageRequest::text(content)
+    };
 
-    let stream = state
-        .sidecar
-        .send_message_streaming(&session_id, request)
-        .await?;
+    let model_spec = {
+        let config = state.providers_config.read().unwrap();
+        resolve_default_model_spec(&config)
+    };
+    request.model = model_spec;
+
+    state.sidecar.send_message(&session_id, request).await?;
+
+    let target_session_id = session_id.clone();
 
     // Process the stream and emit events to frontend
     tokio::spawn(async move {
@@ -420,23 +624,38 @@ pub async fn send_message_streaming(
         while let Some(result) = stream.next().await {
             match result {
                 Ok(event) => {
-                    // Emit the event to the frontend
-                    if let Err(e) = app.emit("sidecar_event", &event) {
-                        tracing::error!("Failed to emit sidecar event: {}", e);
-                        break;
-                    }
+                    // Filter events for our session
+                    let is_our_session = match &event {
+                        StreamEvent::Content { session_id, .. } => session_id == &target_session_id,
+                        StreamEvent::ToolStart { session_id, .. } => session_id == &target_session_id,
+                        StreamEvent::ToolEnd { session_id, .. } => session_id == &target_session_id,
+                        StreamEvent::SessionStatus { session_id, .. } => session_id == &target_session_id,
+                        StreamEvent::SessionIdle { session_id } => session_id == &target_session_id,
+                        StreamEvent::SessionError { session_id, .. } => session_id == &target_session_id,
+                        StreamEvent::PermissionAsked { session_id, .. } => session_id == &target_session_id,
+                        StreamEvent::Raw { .. } => true, // Include raw events for debugging
+                    };
 
-                    // Check if this is the done event
-                    if matches!(event, StreamEvent::Done { .. }) {
-                        break;
+                    if is_our_session {
+                        // Emit the event to the frontend
+                        if let Err(e) = app.emit("sidecar_event", &event) {
+                            tracing::error!("Failed to emit sidecar event: {}", e);
+                            break;
+                        }
+
+                        // Check if this is the done event
+                        if matches!(event, StreamEvent::SessionIdle { .. }) {
+                            break;
+                        }
                     }
                 }
                 Err(e) => {
                     // Emit error event
                     let _ = app.emit(
                         "sidecar_event",
-                        StreamEvent::Error {
-                            message: e.to_string(),
+                        StreamEvent::SessionError {
+                            session_id: target_session_id.clone(),
+                            error: e.to_string(),
                         },
                     );
                     break;
@@ -492,4 +711,20 @@ pub async fn deny_tool(
     tool_call_id: String,
 ) -> Result<()> {
     state.sidecar.deny_tool(&session_id, &tool_call_id).await
+}
+
+// ============================================================================
+// Sidecar Binary Management
+// ============================================================================
+
+/// Check the sidecar binary status (installed, version, updates available)
+#[tauri::command]
+pub async fn check_sidecar_status(app: AppHandle) -> Result<SidecarStatus> {
+    sidecar_manager::check_sidecar_status(&app).await
+}
+
+/// Download/update the sidecar binary
+#[tauri::command]
+pub async fn download_sidecar(app: AppHandle) -> Result<()> {
+    sidecar_manager::download_sidecar(app).await
 }

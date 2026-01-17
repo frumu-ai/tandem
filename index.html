@@ -4,11 +4,307 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <title>Tandem</title>
+    <style>
+      /* Immediate loading screen - shows before React loads */
+      /* Scoped to splash screen only to avoid conflicts with app styles */
+      #splash-screen {
+        --matrix-green: #00ff88;
+        --matrix-dark: #001a0d;
+      }
+      
+      #splash-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #000;
+        transition: opacity 0.5s ease-out;
+        font-family: 'Courier New', monospace;
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      
+      #splash-screen * {
+        box-sizing: border-box;
+      }
+      
+      #splash-screen.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      
+      /* Matrix rain canvas */
+      #matrix-canvas {
+        position: absolute;
+        inset: 0;
+        opacity: 0.7;
+      }
+      
+      /* Center content */
+      .splash-content {
+        position: relative;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2rem;
+      }
+      
+      .splash-title {
+        font-size: 3.5rem;
+        font-weight: bold;
+        letter-spacing: 0.2em;
+        color: var(--matrix-green);
+        text-shadow: 
+          0 0 20px rgba(0, 255, 136, 0.5),
+          0 0 40px rgba(0, 255, 136, 0.3),
+          0 0 60px rgba(0, 255, 136, 0.1);
+        animation: glow 2s ease-in-out infinite alternate;
+      }
+      
+      @keyframes glow {
+        from {
+          text-shadow: 
+            0 0 20px rgba(0, 255, 136, 0.5),
+            0 0 40px rgba(0, 255, 136, 0.3);
+        }
+        to {
+          text-shadow: 
+            0 0 30px rgba(0, 255, 136, 0.8),
+            0 0 60px rgba(0, 255, 136, 0.5),
+            0 0 80px rgba(0, 255, 136, 0.3);
+        }
+      }
+      
+      .splash-subtitle {
+        font-size: 0.75rem;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: rgba(0, 255, 136, 0.5);
+      }
+      
+      /* Spinner */
+      .spinner-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+      }
+      
+      .spinner {
+        position: relative;
+        width: 60px;
+        height: 60px;
+      }
+      
+      .spinner-ring {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        border: 2px solid transparent;
+      }
+      
+      .spinner-ring-1 {
+        border-top-color: var(--matrix-green);
+        animation: spin 1s linear infinite;
+      }
+      
+      .spinner-ring-2 {
+        inset: 6px;
+        border-bottom-color: rgba(0, 255, 136, 0.6);
+        animation: spin 1.5s linear infinite reverse;
+      }
+      
+      .spinner-ring-3 {
+        inset: 12px;
+        border-left-color: rgba(0, 255, 136, 0.3);
+        animation: spin 2s linear infinite;
+      }
+      
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      
+      .loading-text {
+        font-size: 0.875rem;
+        color: var(--matrix-green);
+        opacity: 0.8;
+      }
+      
+      .loading-dots::after {
+        content: '';
+        animation: dots 1.5s steps(4, end) infinite;
+      }
+      
+      @keyframes dots {
+        0%, 20% { content: ''; }
+        40% { content: '.'; }
+        60% { content: '..'; }
+        80%, 100% { content: '...'; }
+      }
+      
+      /* Progress bars */
+      .progress-bars {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 1rem;
+      }
+      
+      .progress-bar {
+        width: 2rem;
+        height: 4px;
+        background: rgba(0, 255, 136, 0.2);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      
+      .progress-bar::after {
+        content: '';
+        display: block;
+        height: 100%;
+        background: var(--matrix-green);
+        animation: progress 1.5s ease-in-out infinite;
+      }
+      
+      .progress-bar:nth-child(1)::after { animation-delay: 0s; }
+      .progress-bar:nth-child(2)::after { animation-delay: 0.2s; }
+      .progress-bar:nth-child(3)::after { animation-delay: 0.4s; }
+      .progress-bar:nth-child(4)::after { animation-delay: 0.6s; }
+      .progress-bar:nth-child(5)::after { animation-delay: 0.8s; }
+      
+      @keyframes progress {
+        0%, 100% { 
+          width: 30%;
+          opacity: 0.3;
+        }
+        50% { 
+          width: 100%;
+          opacity: 1;
+        }
+      }
+      
+      /* Corner decorations */
+      .corner-text {
+        position: absolute;
+        font-size: 0.65rem;
+        color: rgba(0, 255, 136, 0.4);
+        z-index: 10;
+      }
+      
+      .corner-tl { top: 1rem; left: 1rem; }
+      .corner-tr { top: 1rem; right: 1rem; text-align: right; }
+      .corner-bl { bottom: 1rem; left: 1rem; }
+      .corner-br { bottom: 1rem; right: 1rem; }
+      
+      .blink {
+        animation: blink 2s ease-in-out infinite;
+      }
+      
+      @keyframes blink {
+        0%, 100% { opacity: 0.4; }
+        50% { opacity: 1; }
+      }
+    </style>
   </head>
 
-  <body>
+  <body style="margin: 0; padding: 0; background: #000; overflow: hidden;">
+    <!-- Splash screen that shows immediately -->
+    <div id="splash-screen" style="position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: #000;">
+      <canvas id="matrix-canvas" style="position: absolute; inset: 0;"></canvas>
+      
+      <div class="splash-content" style="position: relative; z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 2rem;">
+        <div style="text-align: center;">
+          <h1 class="splash-title" style="font-size: 3.5rem; font-weight: bold; letter-spacing: 0.2em; color: #00ff88; margin: 0; font-family: 'Courier New', monospace;">TANDEM</h1>
+          <p class="splash-subtitle" style="font-size: 0.75rem; letter-spacing: 0.3em; text-transform: uppercase; color: rgba(0, 255, 136, 0.5); margin: 0.5rem 0 0 0; font-family: 'Courier New', monospace;">AI Workspace</p>
+        </div>
+        
+        <div class="spinner-container" style="display: flex; flex-direction: column; align-items: center; gap: 1rem;">
+          <div class="spinner" style="position: relative; width: 60px; height: 60px;">
+            <div class="spinner-ring spinner-ring-1" style="position: absolute; inset: 0; border-radius: 50%; border: 2px solid transparent; border-top-color: #00ff88;"></div>
+            <div class="spinner-ring spinner-ring-2" style="position: absolute; inset: 6px; border-radius: 50%; border: 2px solid transparent; border-bottom-color: rgba(0, 255, 136, 0.6);"></div>
+            <div class="spinner-ring spinner-ring-3" style="position: absolute; inset: 12px; border-radius: 50%; border: 2px solid transparent; border-left-color: rgba(0, 255, 136, 0.3);"></div>
+          </div>
+          <p class="loading-text" style="font-size: 0.875rem; color: #00ff88; opacity: 0.8; margin: 0; font-family: 'Courier New', monospace;">Initializing secure vault<span class="loading-dots"></span></p>
+        </div>
+        
+        <div class="progress-bars">
+          <div class="progress-bar"></div>
+          <div class="progress-bar"></div>
+          <div class="progress-bar"></div>
+          <div class="progress-bar"></div>
+          <div class="progress-bar"></div>
+        </div>
+      </div>
+      
+      <div class="corner-text corner-tl">
+        <div>SYS.INIT</div>
+        <div>v0.1.0</div>
+      </div>
+      <div class="corner-text corner-tr">
+        <div>SECURE</div>
+        <div>MODE</div>
+      </div>
+      <div class="corner-text corner-bl blink">● ZERO-TRUST ACTIVE</div>
+      <div class="corner-text corner-br">LOCAL-FIRST</div>
+    </div>
+    
     <div id="root"></div>
+    
+    <script>
+      // Matrix rain animation - runs immediately
+      (function() {
+        const canvas = document.getElementById('matrix-canvas');
+        const ctx = canvas.getContext('2d');
+        
+        function resize() {
+          canvas.width = window.innerWidth;
+          canvas.height = window.innerHeight;
+        }
+        resize();
+        window.addEventListener('resize', resize);
+        
+        const chars = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        const fontSize = 14;
+        let columns = Math.floor(canvas.width / fontSize);
+        let drops = Array(columns).fill(1);
+        
+        function draw() {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          
+          ctx.fillStyle = '#00ff88';
+          ctx.font = fontSize + 'px monospace';
+          
+          for (let i = 0; i < drops.length; i++) {
+            const char = chars[Math.floor(Math.random() * chars.length)];
+            const x = i * fontSize;
+            const y = drops[i] * fontSize;
+            
+            // Brighter head
+            ctx.fillStyle = drops[i] * fontSize < 50 ? '#fff' : '#00ff88';
+            ctx.globalAlpha = Math.random() * 0.5 + 0.5;
+            ctx.fillText(char, x, y);
+            ctx.globalAlpha = 1;
+            
+            if (y > canvas.height && Math.random() > 0.975) {
+              drops[i] = 0;
+            }
+            drops[i]++;
+          }
+        }
+        
+        const interval = setInterval(draw, 33);
+        
+        // Store interval for cleanup
+        window.__matrixInterval = interval;
+      })();
+    </script>
+    
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

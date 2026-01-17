@@ -152,7 +152,14 @@ export function ProviderCard({
               <CardDescription>{description}</CardDescription>
             </div>
           </div>
-          <Switch checked={enabled} onChange={(e) => onEnabledChange(e.target.checked)} />
+          <div className="flex items-center gap-2">
+            {hasKey && (
+              <span className="rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">
+                Key saved
+              </span>
+            )}
+            <Switch checked={enabled} onChange={(e) => onEnabledChange(e.target.checked)} />
+          </div>
         </div>
       </CardHeader>
 

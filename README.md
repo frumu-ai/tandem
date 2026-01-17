@@ -179,3 +179,7 @@ tandem/
 ---
 
 **Tandem** - Your local-first AI coworker.
+
+---
+
+_Note: This codebase communicates with the OpenCode sidecar binary for AI agent capabilities and routes to various LLM providers (OpenRouter, Anthropic, OpenAI, Ollama, or custom APIs). All communication stays local except for LLM provider API calls._

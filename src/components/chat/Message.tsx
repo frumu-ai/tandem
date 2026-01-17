@@ -1,6 +1,12 @@
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { User, Bot, FileText, Terminal, AlertTriangle } from "lucide-react";
+import { User, Bot, FileText, Terminal, AlertTriangle, Image as ImageIcon } from "lucide-react";
+
+export interface MessageAttachment {
+  name: string;
+  type: "image" | "file";
+  preview?: string;
+}
 
 export interface MessageProps {
   id: string;
@@ -9,6 +15,7 @@ export interface MessageProps {
   timestamp: Date;
   toolCalls?: ToolCall[];
   isStreaming?: boolean;
+  attachments?: MessageAttachment[];
 }
 
 export interface ToolCall {
@@ -19,7 +26,7 @@ export interface ToolCall {
   result?: string;
 }
 
-export function Message({ role, content, timestamp, toolCalls, isStreaming }: MessageProps) {
+export function Message({ role, content, timestamp, toolCalls, isStreaming, attachments }: MessageProps) {
   const isUser = role === "user";
   const isSystem = role === "system";
 
@@ -69,6 +76,33 @@ export function Message({ role, content, timestamp, toolCalls, isStreaming }: Me
             </span>
           )}
         </div>
+
+        {/* Attachments */}
+        {attachments && attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2">
+            {attachments.map((attachment, idx) => (
+              <div
+                key={idx}
+                className="flex items-center gap-2 rounded-lg border border-border bg-surface p-2"
+              >
+                {attachment.type === "image" && attachment.preview ? (
+                  <img
+                    src={attachment.preview}
+                    alt={attachment.name}
+                    className="h-12 w-12 rounded object-cover"
+                  />
+                ) : attachment.type === "image" ? (
+                  <ImageIcon className="h-6 w-6 text-text-muted" />
+                ) : (
+                  <FileText className="h-6 w-6 text-text-muted" />
+                )}
+                <span className="text-xs text-text-muted max-w-[100px] truncate">
+                  {attachment.name}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Message content */}
         <div className="prose prose-invert max-w-none">

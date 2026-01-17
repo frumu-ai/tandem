@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Message, type MessageProps } from "./Message";
-import { ChatInput } from "./ChatInput";
+import { ChatInput, type FileAttachment } from "./ChatInput";
+import { ActivityDrawer, type ActivityItem } from "./ActivityDrawer";
 import {
   PermissionToastContainer,
   type PermissionRequest,
@@ -16,63 +17,230 @@ import {
   onSidecarEvent,
   approveTool,
   denyTool,
+  getSessionMessages,
   type StreamEvent,
   type SidecarState,
+  type FileAttachmentInput,
 } from "@/lib/tauri";
 
 interface ChatProps {
   workspacePath: string | null;
+  sessionId?: string | null;
+  onSessionCreated?: (sessionId: string) => void;
+  onSidecarConnected?: () => void;
 }
 
-export function Chat({ workspacePath }: ChatProps) {
+export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated, onSidecarConnected }: ChatProps) {
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(propSessionId || null);
   const [sidecarStatus, setSidecarStatus] = useState<SidecarState>("stopped");
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
+  const [activities, setActivities] = useState<ActivityItem[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const currentAssistantMessageRef = useRef<string>("");
+  const generationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastEventAtRef = useRef<number | null>(null);
 
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Check sidecar status on mount
+  // Store callback in ref to avoid dependency issues
+  const onSidecarConnectedRef = useRef(onSidecarConnected);
   useEffect(() => {
-    const checkStatus = async () => {
+    onSidecarConnectedRef.current = onSidecarConnected;
+  }, [onSidecarConnected]);
+
+  // Auto-connect sidecar on mount
+  useEffect(() => {
+    const autoConnect = async () => {
       try {
         const status = await getSidecarStatus();
         setSidecarStatus(status);
+        
+        // Auto-start if not already running
+        if (status !== "running") {
+          setIsConnecting(true);
+          try {
+            await startSidecar();
+            setSidecarStatus("running");
+            // Notify parent that sidecar is connected
+            onSidecarConnectedRef.current?.();
+          } catch (e) {
+            console.error("Failed to auto-start sidecar:", e);
+            // Don't set error - user can still manually connect
+          } finally {
+            setIsConnecting(false);
+          }
+        } else {
+          // Already running, notify parent
+          onSidecarConnectedRef.current?.();
+        }
       } catch (e) {
         console.error("Failed to get sidecar status:", e);
       }
     };
-    checkStatus();
-  }, []);
+    autoConnect();
+  }, []); // Only run on mount
+
+  // Sync internal session ID with prop
+  useEffect(() => {
+    setCurrentSessionId(propSessionId || null);
+  }, [propSessionId]);
+  
+  // Load session history when sessionId changes from props
+  useEffect(() => {
+    if (propSessionId) {
+      console.log("[Chat] Loading session history for:", propSessionId);
+      setMessages([]);
+      setActivities([]);
+      currentAssistantMessageRef.current = "";
+      loadSessionHistory(propSessionId);
+    } else {
+      // Clear messages when no session selected
+      setMessages([]);
+      setActivities([]);
+      currentAssistantMessageRef.current = "";
+    }
+  }, [propSessionId]);
+
+  const loadSessionHistory = async (sessionId: string) => {
+    setIsLoadingHistory(true);
+    try {
+      const sessionMessages = await getSessionMessages(sessionId);
+      
+      // Convert session messages to our format
+      const convertedMessages: MessageProps[] = [];
+      
+      for (const msg of sessionMessages) {
+        const role = msg.info.role as "user" | "assistant" | "system";
+        
+        // Extract text content from parts
+        let content = "";
+        const toolCalls: MessageProps["toolCalls"] = [];
+        
+        for (const part of msg.parts) {
+          const partObj = part as Record<string, unknown>;
+          if (partObj.type === "text" && partObj.text) {
+            content += partObj.text as string;
+          } else if (partObj.type === "tool" || partObj.type === "tool-invocation") {
+            const state = partObj.state as Record<string, unknown> | undefined;
+            toolCalls.push({
+              id: (partObj.id || partObj.callID || "") as string,
+              tool: (partObj.tool || "unknown") as string,
+              args: (state?.input || partObj.args || {}) as Record<string, unknown>,
+              result: state?.output ? String(state.output) : undefined,
+              status: state?.status === "completed" ? "completed" : 
+                     state?.status === "failed" ? "failed" : "pending",
+            });
+          }
+        }
+        
+        if (content || toolCalls.length > 0 || role === "user") {
+          convertedMessages.push({
+            id: msg.info.id,
+            role,
+            content,
+            timestamp: new Date(msg.info.time.created),
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          });
+        }
+      }
+      
+      setMessages(convertedMessages);
+    } catch (e) {
+      console.error("Failed to load session history:", e);
+      setError("Failed to load chat history");
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
+  // Helper to determine activity type from tool name
+  const getActivityType = (tool: string): ActivityItem["type"] => {
+    const toolLower = tool.toLowerCase();
+    if (toolLower.includes("read") || toolLower.includes("view")) return "file_read";
+    if (toolLower.includes("write") || toolLower.includes("edit") || toolLower.includes("create")) return "file_write";
+    if (toolLower.includes("search") || toolLower.includes("grep") || toolLower.includes("find")) return "search";
+    if (toolLower.includes("bash") || toolLower.includes("shell") || toolLower.includes("command") || toolLower.includes("exec")) return "command";
+    if (toolLower.includes("browse") || toolLower.includes("web") || toolLower.includes("fetch")) return "browse";
+    return "tool";
+  };
+
+  // Helper to get a friendly title for a tool
+  const getActivityTitle = (tool: string, args: Record<string, unknown>): string => {
+    const toolLower = tool.toLowerCase();
+    
+    // Try to extract a meaningful path or query
+    const path = args.path || args.file || args.filename;
+    const query = args.query || args.pattern || args.search;
+    const command = args.command || args.cmd;
+    
+    if (path && typeof path === "string") {
+      // Shorten long paths
+      const shortPath = path.length > 40 ? "..." + path.slice(-37) : path;
+      if (toolLower.includes("read")) return `Reading ${shortPath}`;
+      if (toolLower.includes("write") || toolLower.includes("edit")) return `Editing ${shortPath}`;
+      if (toolLower.includes("create")) return `Creating ${shortPath}`;
+      if (toolLower.includes("delete")) return `Deleting ${shortPath}`;
+      if (toolLower.includes("list")) return `Listing ${shortPath}`;
+      return `${tool} → ${shortPath}`;
+    }
+    
+    if (query && typeof query === "string") {
+      const shortQuery = query.length > 30 ? query.slice(0, 27) + "..." : query;
+      return `Searching: "${shortQuery}"`;
+    }
+    
+    if (command && typeof command === "string") {
+      const shortCmd = command.length > 30 ? command.slice(0, 27) + "..." : command;
+      return `Running: ${shortCmd}`;
+    }
+    
+    // Fallback to tool name
+    return tool.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
+  };
 
   const handleStreamEvent = useCallback((event: StreamEvent) => {
-    switch (event.type) {
-      case "content":
-        // Append content to the current assistant message
-        currentAssistantMessageRef.current += event.content;
-        setMessages((prev) => {
-          const lastMessage = prev[prev.length - 1];
-          if (lastMessage && lastMessage.role === "assistant") {
-            return [
-              ...prev.slice(0, -1),
-              { ...lastMessage, content: currentAssistantMessageRef.current },
-            ];
-          }
-          return prev;
-        });
-        break;
+    // Debug: Log all events
+    console.log("[StreamEvent]", event.type, "session:", (event as { session_id?: string }).session_id, "current:", currentSessionId, event);
+    
+    // Filter events for the current session
+    const eventSessionId = (event as { session_id?: string }).session_id;
+    if (eventSessionId && currentSessionId && eventSessionId !== currentSessionId) {
+      console.log("[StreamEvent] Ignoring event for different session:", eventSessionId, "!==", currentSessionId);
+      return;
+    }
+    
+    lastEventAtRef.current = Date.now();
+    if (generationTimeoutRef.current) {
+      clearTimeout(generationTimeoutRef.current);
+    }
+    generationTimeoutRef.current = setTimeout(() => {
+      if (isGenerating) {
+        setError("Response timed out. Try again or stop and restart the chat.");
+        setIsGenerating(false);
+        currentAssistantMessageRef.current = "";
+      }
+    }, 60000);
 
-      case "thinking":
-        // Show thinking content (could be displayed differently)
-        currentAssistantMessageRef.current += `\n\n*Thinking: ${event.content}*\n\n`;
+    switch (event.type) {
+      case "content": {
+        // Use delta if available, otherwise use full content
+        const newContent = event.delta || event.content;
+        console.log("[StreamEvent] Content update:", newContent?.slice(0, 100));
+        if (event.delta) {
+          // Append delta to current message
+          currentAssistantMessageRef.current += newContent;
+        } else {
+          // Replace with full content
+          currentAssistantMessageRef.current = newContent;
+        }
         setMessages((prev) => {
           const lastMessage = prev[prev.length - 1];
           if (lastMessage && lastMessage.role === "assistant") {
@@ -84,61 +252,123 @@ export function Chat({ workspacePath }: ChatProps) {
           return prev;
         });
         break;
+      }
 
       case "tool_start": {
+        const args = event.args as Record<string, unknown>;
+        
+        // Add to activity panel
+        const activityType = getActivityType(event.tool);
+        const activityTitle = getActivityTitle(event.tool, args);
+        
+        setActivities((prev) => {
+          // Check if activity already exists (update) or is new (add)
+          const existingIdx = prev.findIndex((a) => a.id === event.part_id);
+          if (existingIdx >= 0) {
+            const updated = [...prev];
+            updated[existingIdx] = {
+              ...updated[existingIdx],
+              status: "running",
+            };
+            return updated;
+          }
+          return [
+            ...prev,
+            {
+              id: event.part_id,
+              type: activityType,
+              tool: event.tool,
+              title: activityTitle,
+              detail: args.path as string || args.query as string || undefined,
+              status: "running",
+              timestamp: new Date(),
+              args,
+            },
+          ];
+        });
+        
         // Add tool call to the message
         setMessages((prev) => {
           const lastMessage = prev[prev.length - 1];
           if (lastMessage && lastMessage.role === "assistant") {
             const toolCalls = lastMessage.toolCalls || [];
-            return [
-              ...prev.slice(0, -1),
-              {
-                ...lastMessage,
-                toolCalls: [
-                  ...toolCalls,
-                  {
-                    id: event.id,
-                    tool: event.tool,
-                    args: event.args,
-                    status: "pending" as const,
-                  },
-                ],
-              },
-            ];
+            // Check if tool already exists (update) or is new (add)
+            const existingIdx = toolCalls.findIndex((tc) => tc.id === event.part_id);
+            if (existingIdx >= 0) {
+              // Update existing
+              const newToolCalls = [...toolCalls];
+              newToolCalls[existingIdx] = {
+                ...newToolCalls[existingIdx],
+                tool: event.tool,
+                args: event.args as Record<string, unknown>,
+                status: "pending" as const,
+              };
+              return [...prev.slice(0, -1), { ...lastMessage, toolCalls: newToolCalls }];
+            } else {
+              // Add new
+              return [
+                ...prev.slice(0, -1),
+                {
+                  ...lastMessage,
+                  toolCalls: [
+                    ...toolCalls,
+                    {
+                      id: event.part_id,
+                      tool: event.tool,
+                      args: event.args as Record<string, unknown>,
+                      status: "pending" as const,
+                    },
+                  ],
+                },
+              ];
+            }
           }
           return prev;
         });
 
         // Create permission request for destructive operations
-        const needsApproval = ["write_file", "create_file", "delete_file", "run_command"].includes(
+        const needsApproval = ["write_file", "create_file", "delete_file", "run_command", "bash", "shell"].includes(
           event.tool
         );
         if (needsApproval) {
           const permissionRequest: PermissionRequest = {
-            id: event.id,
+            id: event.part_id,
             type: event.tool as PermissionRequest["type"],
-            path: event.args.path as string | undefined,
-            command: event.args.command as string | undefined,
-            reasoning: (event.args.reasoning as string) || "AI wants to perform this action",
+            path: args.path as string | undefined,
+            command: (args.command || args.cmd) as string | undefined,
+            reasoning: (args.reasoning as string) || "AI wants to perform this action",
             riskLevel:
-              event.tool === "delete_file" || event.tool === "run_command" ? "high" : "medium",
+              event.tool === "delete_file" || event.tool === "run_command" || event.tool === "bash" ? "high" : "medium",
           };
           setPendingPermissions((prev) => [...prev, permissionRequest]);
         }
         break;
       }
 
-      case "tool_end":
+      case "tool_end": {
+        // Update activity status
+        const resultStr = event.error || (event.result ? JSON.stringify(event.result).slice(0, 500) : "");
+        setActivities((prev) =>
+          prev.map((a) =>
+            a.id === event.part_id
+              ? {
+                  ...a,
+                  status: event.error ? "failed" : "completed",
+                  result: resultStr,
+                }
+              : a
+          )
+        );
+        
         // Update tool call with result
         setMessages((prev) => {
           const lastMessage = prev[prev.length - 1];
           if (lastMessage && lastMessage.role === "assistant" && lastMessage.toolCalls) {
             const toolCalls = lastMessage.toolCalls.map((tc) =>
-              tc.id === event.id
+              tc.id === event.part_id
                 ? {
                     ...tc,
-                    result: event.error || String(event.result),
+                    result: event.error || String(event.result || ""),
                     status: (event.error ? "failed" : "completed") as "failed" | "completed",
                   }
                 : tc
@@ -148,19 +378,68 @@ export function Chat({ workspacePath }: ChatProps) {
           return prev;
         });
         break;
+      }
 
-      case "done":
-        setIsGenerating(false);
-        currentAssistantMessageRef.current = "";
+      case "session_status":
+        // Could update UI to show session status
+        console.log("Session status:", event.status);
         break;
 
-      case "error":
-        setError(event.message);
+      case "session_idle":
+        // Generation complete - mark any remaining running activities as completed
+        setActivities((prev) =>
+          prev.map((a) => (a.status === "running" ? { ...a, status: "completed" } : a))
+        );
         setIsGenerating(false);
         currentAssistantMessageRef.current = "";
+        if (generationTimeoutRef.current) {
+          clearTimeout(generationTimeoutRef.current);
+          generationTimeoutRef.current = null;
+        }
         break;
+
+      case "session_error":
+        setError(event.error);
+        setIsGenerating(false);
+        currentAssistantMessageRef.current = "";
+        if (generationTimeoutRef.current) {
+          clearTimeout(generationTimeoutRef.current);
+          generationTimeoutRef.current = null;
+        }
+        break;
+
+      case "permission_asked": {
+        // Handle permission requests from OpenCode
+        const permissionRequest: PermissionRequest = {
+          id: event.request_id,
+          type: (event.tool || "unknown") as PermissionRequest["type"],
+          path: event.args?.path as string | undefined,
+          command: event.args?.command as string | undefined,
+          reasoning: "AI requests permission to perform this action",
+          riskLevel: event.tool === "delete_file" || event.tool === "bash" ? "high" : "medium",
+        };
+        setPendingPermissions((prev) => [...prev, permissionRequest]);
+        break;
+      }
+
+      case "raw": {
+        // Try to extract useful activity info from raw events
+        const data = event.data as Record<string, unknown>;
+        
+        // Handle message.updated events - these often contain tool info
+        if (event.event_type === "message.updated") {
+          const info = data.info as Record<string, unknown> | undefined;
+          if (info) {
+            console.log("Message updated:", info);
+          }
+        }
+        
+        // Log other raw events for debugging
+        console.log("Raw event:", event.event_type, data);
+        break;
+      }
     }
-  }, []);
+  }, [isGenerating]);
 
   // Listen for sidecar events
   useEffect(() => {
@@ -188,10 +467,9 @@ export function Chat({ workspacePath }: ChatProps) {
     try {
       await startSidecar();
       setSidecarStatus("running");
-
-      // Create a new session
-      const session = await createSession();
-      setSessionId(session.id);
+      // Don't create a session here - it will be created when user sends first message
+      // Notify parent that sidecar is connected
+      onSidecarConnected?.();
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       setError(`Failed to start AI: ${errorMessage}`);
@@ -201,7 +479,7 @@ export function Chat({ workspacePath }: ChatProps) {
     }
   };
 
-  const handleSend = async (content: string) => {
+  const handleSend = async (content: string, attachments?: FileAttachment[]) => {
     setError(null);
 
     // If sidecar isn't running, try to start it
@@ -220,12 +498,13 @@ export function Chat({ workspacePath }: ChatProps) {
     }
 
     // Create session if needed
-    let currentSessionId = sessionId;
-    if (!currentSessionId) {
+    let sessionId = currentSessionId;
+    if (!sessionId) {
       try {
         const session = await createSession();
-        currentSessionId = session.id;
-        setSessionId(session.id);
+        sessionId = session.id;
+        setCurrentSessionId(session.id);
+        onSessionCreated?.(session.id);
       } catch (e) {
         setError(`Failed to create session: ${e}`);
         return;
@@ -238,6 +517,12 @@ export function Chat({ workspacePath }: ChatProps) {
       role: "user",
       content,
       timestamp: new Date(),
+      // Show attachments in message if any
+      attachments: attachments?.map((a) => ({
+        name: a.name,
+        type: a.type,
+        preview: a.preview,
+      })),
     };
     setMessages((prev) => [...prev, userMessage]);
 
@@ -251,10 +536,28 @@ export function Chat({ workspacePath }: ChatProps) {
     setMessages((prev) => [...prev, assistantMessage]);
     setIsGenerating(true);
     currentAssistantMessageRef.current = "";
+    lastEventAtRef.current = Date.now();
+    if (generationTimeoutRef.current) {
+      clearTimeout(generationTimeoutRef.current);
+    }
+    generationTimeoutRef.current = setTimeout(() => {
+      if (lastEventAtRef.current && Date.now() - lastEventAtRef.current >= 60000) {
+        setError("Response timed out. Try again or stop and restart the chat.");
+        setIsGenerating(false);
+        currentAssistantMessageRef.current = "";
+      }
+    }, 60000);
 
     try {
+      // Convert attachments to API format
+      const attachmentInputs: FileAttachmentInput[] | undefined = attachments?.map((a) => ({
+        mime: a.mime,
+        filename: a.name,
+        url: a.url,
+      }));
+
       // Send message and stream response
-      await sendMessageStreaming(currentSessionId, content);
+      await sendMessageStreaming(sessionId, content, attachmentInputs);
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       setError(`Failed to send message: ${errorMessage}`);
@@ -278,21 +581,25 @@ export function Chat({ workspacePath }: ChatProps) {
   };
 
   const handleStop = async () => {
-    if (sessionId) {
+    if (currentSessionId) {
       try {
-        await cancelGeneration(sessionId);
+        await cancelGeneration(currentSessionId);
       } catch (e) {
         console.error("Failed to cancel generation:", e);
       }
     }
     setIsGenerating(false);
+    if (generationTimeoutRef.current) {
+      clearTimeout(generationTimeoutRef.current);
+      generationTimeoutRef.current = null;
+    }
   };
 
   const handleApprovePermission = async (id: string, _remember?: "once" | "session" | "always") => {
-    if (!sessionId) return;
+    if (!currentSessionId) return;
 
     try {
-      await approveTool(sessionId, id);
+      await approveTool(currentSessionId, id);
 
       // Update tool call status
       setMessages((prev) => {
@@ -318,10 +625,10 @@ export function Chat({ workspacePath }: ChatProps) {
   };
 
   const handleDenyPermission = async (id: string, _remember?: boolean) => {
-    if (!sessionId) return;
+    if (!currentSessionId) return;
 
     try {
-      await denyTool(sessionId, id);
+      await denyTool(currentSessionId, id);
 
       // Update tool call status
       setMessages((prev) => {
@@ -400,9 +707,20 @@ export function Chat({ workspacePath }: ChatProps) {
       )}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto pb-48">
         <AnimatePresence>
-          {messages.length === 0 ? (
+          {isLoadingHistory ? (
+            <motion.div
+              className="flex h-full items-center justify-center"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+            >
+              <div className="flex flex-col items-center gap-3">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                <p className="text-sm text-text-muted">Loading chat history...</p>
+              </div>
+            </motion.div>
+          ) : messages.length === 0 ? (
             <EmptyState
               needsConnection={needsConnection}
               isConnecting={isConnecting}
@@ -443,7 +761,7 @@ export function Chat({ workspacePath }: ChatProps) {
         onSend={handleSend}
         onStop={handleStop}
         isGenerating={isGenerating}
-        disabled={!workspacePath}
+        disabled={!workspacePath || isGenerating}
         placeholder={
           workspacePath
             ? needsConnection
@@ -458,6 +776,12 @@ export function Chat({ workspacePath }: ChatProps) {
         requests={pendingPermissions}
         onApprove={handleApprovePermission}
         onDeny={handleDenyPermission}
+      />
+
+      {/* Activity drawer */}
+      <ActivityDrawer
+        activities={activities}
+        isGenerating={isGenerating}
       />
     </div>
   );
