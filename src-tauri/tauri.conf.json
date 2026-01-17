@@ -24,11 +24,12 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* https://openrouter.ai https://api.anthropic.com https://api.openai.com; img-src 'self' data: blob:; font-src 'self'; frame-src 'none'; object-src 'none'"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' http://127.0.0.1:* https://openrouter.ai https://api.anthropic.com https://api.openai.com; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com; frame-src 'none'; object-src 'none'"
     }
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -37,8 +38,19 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": [
-      "binaries/opencode"
-    ]
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBCQzEyN0ZFM0NERjlFOEMKUldTTW50ODgvaWZCQzRxK3A4Q0txa3ljbW5JWG9EWVFpSGZWTWphMmY0MDMvUi9uRFY1em8rWjEK",
+      "endpoints": ["https://github.com/frumu-ai/tandem/releases/latest/download/latest.json"],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

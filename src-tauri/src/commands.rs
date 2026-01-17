@@ -2,6 +2,7 @@
 // These are the IPC commands exposed to the frontend
 
 use crate::error::{Result, TandemError};
+use crate::keystore::SecureKeyStore;
 use crate::sidecar::{
     CreateSessionRequest, FilePartInput, Message, ModelInfo, ModelSpec, Project, ProviderInfo,
     SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent,
@@ -9,11 +10,115 @@ use crate::sidecar::{
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
 use crate::stronghold::{validate_api_key, validate_key_type, ApiKeyType};
+use crate::vault::{self, EncryptedVaultKey, VaultStatus};
+use crate::VaultState;
 use futures::StreamExt;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_store::StoreExt;
-use tauri_plugin_stronghold::stronghold::Stronghold;
+
+// ============================================================================
+// Vault Commands (PIN-based encryption)
+// ============================================================================
+
+/// Get the current vault status
+#[tauri::command]
+pub fn get_vault_status(vault_state: State<'_, VaultState>) -> VaultStatus {
+    vault_state.get_status()
+}
+
+/// Create a new vault with a PIN
+#[tauri::command]
+pub async fn create_vault(
+    app: AppHandle,
+    vault_state: State<'_, VaultState>,
+    pin: String,
+) -> Result<()> {
+    // Validate PIN
+    vault::validate_pin(&pin)?;
+
+    // Check if vault already exists
+    if vault::vault_exists(&vault_state.app_data_dir) {
+        return Err(TandemError::Vault("Vault already exists".to_string()));
+    }
+
+    // Delete any existing Stronghold snapshot (from previous installations)
+    let stronghold_path = vault_state.app_data_dir.join("tandem.stronghold");
+    if stronghold_path.exists() {
+        tracing::warn!("Deleting old Stronghold snapshot: {:?}", stronghold_path);
+        std::fs::remove_file(&stronghold_path).ok();
+    }
+
+    // Create encrypted vault key
+    let (encrypted_key, master_key) = EncryptedVaultKey::create(&pin)?;
+
+    // Save to file
+    let vault_key_path = vault::get_vault_key_path(&vault_state.app_data_dir);
+    encrypted_key.save(&vault_key_path)?;
+
+    tracing::info!("Created new vault at {:?}", vault_key_path);
+
+    // Store master key and mark as unlocked
+    vault_state.set_master_key(master_key.clone());
+
+    // Initialize Stronghold in background thread (it's CPU-intensive)
+    let app_clone = app.clone();
+    let master_key_clone = master_key.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::init_stronghold_and_keys(&app_clone, &master_key_clone);
+        tracing::info!("Stronghold initialization complete");
+    });
+
+    Ok(())
+}
+
+/// Unlock an existing vault with a PIN
+#[tauri::command]
+pub async fn unlock_vault(
+    app: AppHandle,
+    vault_state: State<'_, VaultState>,
+    pin: String,
+) -> Result<()> {
+    // Check if vault exists
+    if !vault::vault_exists(&vault_state.app_data_dir) {
+        return Err(TandemError::Vault("No vault exists. Create one first.".to_string()));
+    }
+
+    // Check if already unlocked
+    if vault_state.is_unlocked() {
+        return Ok(());
+    }
+
+    // Load encrypted key
+    let vault_key_path = vault::get_vault_key_path(&vault_state.app_data_dir);
+    let encrypted_key = EncryptedVaultKey::load(&vault_key_path)?;
+
+    // Decrypt master key (this validates the PIN)
+    let master_key = encrypted_key.decrypt(&pin)?;
+
+    tracing::info!("Vault unlocked successfully");
+
+    // Store master key and mark as unlocked
+    vault_state.set_master_key(master_key.clone());
+
+    // Initialize Stronghold in background thread (it's CPU-intensive)
+    let app_clone = app.clone();
+    let master_key_clone = master_key.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::init_stronghold_and_keys(&app_clone, &master_key_clone);
+        tracing::info!("Stronghold initialization complete");
+    });
+
+    Ok(())
+}
+
+/// Lock the vault (clears master key from memory)
+#[tauri::command]
+pub fn lock_vault(vault_state: State<'_, VaultState>) -> Result<()> {
+    vault_state.lock();
+    tracing::info!("Vault locked");
+    Ok(())
+}
 
 fn resolve_default_model_spec(config: &ProvidersConfig) -> Option<ModelSpec> {
     let candidates: Vec<(&str, &crate::state::ProviderConfig)> = vec![
@@ -166,52 +271,33 @@ pub async fn store_api_key(
     // Clone app handle so we can move it into spawn_blocking
     let app_clone = app.clone();
     
-    // Run stronghold operations in a blocking task to avoid blocking the async runtime
-    tokio::task::spawn_blocking(move || -> std::result::Result<(), TandemError> {
-        let stronghold = app_clone
-            .try_state::<Stronghold>()
-            .ok_or_else(|| TandemError::Stronghold("Stronghold not initialized".to_string()))?;
+    // Insert the key in memory first (fast)
+    let keystore = app_clone
+        .try_state::<SecureKeyStore>()
+        .ok_or_else(|| TandemError::Stronghold("Keystore not initialized".to_string()))?;
 
-        let client_path = b"tandem";
-        let client = stronghold
-            .get_client(client_path)
-            .or_else(|_| stronghold.create_client(client_path))
-            .map_err(|e| TandemError::Stronghold(format!("Failed to load client: {}", e)))?;
+    keystore.set(&key_name, &api_key_value)?;
 
-        client
-            .store()
-            .insert(
-                key_name.as_bytes().to_vec(),
-                api_key_value.as_bytes().to_vec(),
-                None,
-            )
-            .map_err(|e| TandemError::Stronghold(format!("Failed to save key: {}", e)))?;
-
-        stronghold
-            .save()
-            .map_err(|e| TandemError::Stronghold(format!("Failed to persist vault: {}", e)))?;
-
-        tracing::info!("API key stored for provider: {}", key_type_for_log);
-        Ok(())
-    })
-    .await
-    .map_err(|e| TandemError::Stronghold(format!("Task join error: {}", e)))??;
-
+    // Update environment variable immediately
     if let Some(env_key) = env_var_for_key(&key_type_enum) {
         let masked = if api_key.len() > 8 {
             format!("{}...{}", &api_key[..4], &api_key[api_key.len() - 4..])
         } else {
-            "***".to_string()
+            "[REDACTED]".to_string()
         };
-        tracing::info!("Setting {} for provider {} ({})", env_key, key_type, masked);
+        tracing::info!("Setting environment variable {} = {}", env_key, masked);
         state.sidecar.set_env(env_key, &api_key).await;
-        if matches!(state.sidecar.state().await, SidecarState::Running) {
-            let sidecar_path = get_sidecar_path(&app)?;
-            state
-                .sidecar
-                .restart(sidecar_path.to_string_lossy().as_ref())
-                .await?;
-        }
+    }
+
+    tracing::info!("API key saved");
+    
+    // Restart sidecar if it's running to reload env vars
+    if matches!(state.sidecar.state().await, SidecarState::Running) {
+        let sidecar_path = get_sidecar_path(&app)?;
+        state
+            .sidecar
+            .restart(sidecar_path.to_string_lossy().as_ref())
+            .await?;
     }
 
     Ok(())
@@ -223,25 +309,12 @@ pub async fn has_api_key(app: tauri::AppHandle, key_type: String) -> Result<bool
     let key_type_enum = validate_key_type(&key_type)?;
     let key_name = key_type_enum.to_key_name();
 
-    let stronghold = match app.try_state::<Stronghold>() {
-        Some(stronghold) => stronghold,
+    let keystore = match app.try_state::<SecureKeyStore>() {
+        Some(ks) => ks,
         None => return Ok(false),
     };
 
-    let client_path = b"tandem";
-    let client = stronghold
-        .get_client(client_path)
-        .or_else(|_| stronghold.create_client(client_path))
-        .map_err(|e| TandemError::Stronghold(format!("Failed to load client: {}", e)))?;
-
-    match client.store().get(key_name.as_ref()) {
-        Ok(Some(_)) => Ok(true),
-        Ok(None) => Ok(false),
-        Err(e) => Err(TandemError::Stronghold(format!(
-            "Failed to check key: {}",
-            e
-        ))),
-    }
+    Ok(keystore.has(&key_name))
 }
 
 /// Delete an API key from the vault
@@ -254,24 +327,11 @@ pub async fn delete_api_key(
     let key_type_enum = validate_key_type(&key_type)?;
     let key_name = key_type_enum.to_key_name();
 
-    let stronghold = app
-        .try_state::<Stronghold>()
-        .ok_or_else(|| TandemError::Stronghold("Stronghold not initialized".to_string()))?;
+    let keystore = app
+        .try_state::<SecureKeyStore>()
+        .ok_or_else(|| TandemError::Stronghold("Keystore not initialized".to_string()))?;
 
-    let client_path = b"tandem";
-    let client = stronghold
-        .get_client(client_path)
-        .or_else(|_| stronghold.create_client(client_path))
-        .map_err(|e| TandemError::Stronghold(format!("Failed to load client: {}", e)))?;
-
-    client
-        .store()
-        .delete(key_name.as_ref())
-        .map_err(|e| TandemError::Stronghold(format!("Failed to delete key: {}", e)))?;
-
-    stronghold
-        .save()
-        .map_err(|e| TandemError::Stronghold(format!("Failed to persist vault: {}", e)))?;
+    keystore.delete(&key_name)?;
 
     if let Some(env_key) = env_var_for_key(&key_type_enum) {
         state.sidecar.remove_env(env_key).await;
@@ -293,30 +353,12 @@ async fn get_api_key(app: &AppHandle, key_type: &str) -> Result<Option<String>> 
     let key_type_enum = validate_key_type(key_type)?;
     let key_name = key_type_enum.to_key_name();
 
-    let stronghold = match app.try_state::<Stronghold>() {
-        Some(stronghold) => stronghold,
+    let keystore = match app.try_state::<SecureKeyStore>() {
+        Some(ks) => ks,
         None => return Ok(None),
     };
 
-    let client_path = b"tandem";
-    let client = stronghold
-        .get_client(client_path)
-        .or_else(|_| stronghold.create_client(client_path))
-        .map_err(|e| TandemError::Stronghold(format!("Failed to load client: {}", e)))?;
-
-    match client.store().get(key_name.as_ref()) {
-        Ok(Some(data)) => {
-            let key = String::from_utf8(data).map_err(|e| {
-                TandemError::Stronghold(format!("Failed to decode key: {}", e))
-            })?;
-            Ok(Some(key))
-        }
-        Ok(None) => Ok(None),
-        Err(e) => Err(TandemError::Stronghold(format!(
-            "Failed to get key: {}",
-            e
-        ))),
-    }
+    keystore.get(&key_name)
 }
 
 // ============================================================================
@@ -725,6 +767,13 @@ pub async fn check_sidecar_status(app: AppHandle) -> Result<SidecarStatus> {
 
 /// Download/update the sidecar binary
 #[tauri::command]
-pub async fn download_sidecar(app: AppHandle) -> Result<()> {
+pub async fn download_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
+    // Stop the sidecar first to release the binary file lock
+    tracing::info!("Stopping sidecar before download");
+    let _ = state.sidecar.stop().await;
+    
+    // Give the process extra time to fully terminate and release file handles
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    
     sidecar_manager::download_sidecar(app).await
 }

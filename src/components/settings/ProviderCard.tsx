@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 import { Key, Check, X, Eye, EyeOff, ExternalLink, ChevronDown } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { storeApiKey, deleteApiKey, hasApiKey, type ApiKeyType } from "@/lib/tauri";
 
 // Popular/suggested models for providers with limited options
@@ -85,6 +86,7 @@ export function ProviderCard({
   const suggestions = SUGGESTED_MODELS[id] || [];
   const selectedModel = model || availableModels[0]?.id || "";
   const selectedModelInfo = availableModels.find((m) => m.id === selectedModel);
+  const requiresApiKey = id !== "ollama";
 
   // Filter suggestions based on input
   const filteredSuggestions = suggestions.filter((s) =>
@@ -93,8 +95,12 @@ export function ProviderCard({
 
   // Check if key exists on mount
   useEffect(() => {
+    if (!requiresApiKey) {
+      setHasKey(false);
+      return;
+    }
     hasApiKey(id).then(setHasKey).catch(console.error);
-  }, [id]);
+  }, [id, requiresApiKey]);
 
   // Sync modelInput with model prop
   useEffect(() => {
@@ -133,6 +139,14 @@ export function ProviderCard({
     }
   };
 
+  const handleOpenExternal = async (url: string) => {
+    try {
+      await openUrl(url);
+    } catch (err) {
+      console.error("Failed to open link:", err);
+    }
+  };
+
   return (
     <Card className="relative overflow-hidden">
       {isDefault && (
@@ -153,7 +167,7 @@ export function ProviderCard({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {hasKey && (
+            {requiresApiKey && hasKey && (
               <span className="rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">
                 Key saved
               </span>
@@ -244,14 +258,13 @@ export function ProviderCard({
                             </button>
                           ))}
                           {id === "openrouter" && (
-                            <a
-                              href="https://openrouter.ai/models"
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex items-center gap-1 px-3 py-2 text-xs text-primary hover:bg-surface-elevated border-t border-border"
+                            <button
+                              type="button"
+                              onClick={() => handleOpenExternal("https://openrouter.ai/models")}
+                              className="flex w-full items-center gap-1 px-3 py-2 text-xs text-primary hover:bg-surface-elevated border-t border-border"
                             >
                               Browse all models <ExternalLink className="h-3 w-3" />
-                            </a>
+                            </button>
                           )}
                         </motion.div>
                       )}
@@ -332,7 +345,28 @@ export function ProviderCard({
                 <p className="font-mono text-sm text-text-muted">{endpoint}</p>
               </div>
 
-              {hasKey ? (
+              {!requiresApiKey ? (
+                <div className="rounded-lg border border-success/30 bg-success/10 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Check className="h-4 w-4 text-success" />
+                      <span className="text-sm text-success">
+                        No API key required for local models
+                      </span>
+                    </div>
+                    {docsUrl && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenExternal(docsUrl)}
+                        className="inline-flex items-center gap-1 text-xs text-success hover:underline"
+                      >
+                        Open website
+                        <ExternalLink className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : hasKey ? (
                 <div className="flex items-center justify-between rounded-lg border border-success/30 bg-success/10 p-3">
                   <div className="flex items-center gap-2">
                     <Check className="h-4 w-4 text-success" />
@@ -361,7 +395,7 @@ export function ProviderCard({
                     <button
                       type="button"
                       onClick={() => setShowKey(!showKey)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-text-subtle hover:text-text"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center justify-center text-text-subtle hover:text-text"
                     >
                       {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
@@ -369,15 +403,14 @@ export function ProviderCard({
 
                   <div className="flex items-center justify-between">
                     {docsUrl && (
-                      <a
-                        href={docsUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => handleOpenExternal(docsUrl)}
                         className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
                       >
                         Get API key
                         <ExternalLink className="h-3 w-3" />
-                      </a>
+                      </button>
                     )}
                     <Button
                       onClick={handleSaveKey}

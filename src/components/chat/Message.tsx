@@ -1,4 +1,8 @@
 import { motion } from "framer-motion";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { cn } from "@/lib/utils";
 import { User, Bot, FileText, Terminal, AlertTriangle, Image as ImageIcon } from "lucide-react";
 
@@ -26,39 +30,46 @@ export interface ToolCall {
   result?: string;
 }
 
-export function Message({ role, content, timestamp, toolCalls, isStreaming, attachments }: MessageProps) {
+export function Message({
+  role,
+  content,
+  timestamp,
+  toolCalls,
+  isStreaming,
+  attachments,
+}: MessageProps) {
   const isUser = role === "user";
   const isSystem = role === "system";
 
   return (
     <motion.div
       className={cn(
-        "flex gap-4 px-4 py-6",
-        isUser ? "bg-transparent" : "bg-surface/50"
+        "flex gap-4 px-4 py-8",
+        isUser
+          ? "bg-transparent border-l-2 border-primary/70"
+          : "glass border-glass shadow-lg shadow-black/20 ring-1 ring-white/5"
       )}
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2 }}
+      initial={{ opacity: 0, y: 10, filter: "blur(6px)" }}
+      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+      transition={{ duration: 0.25 }}
     >
       {/* Avatar */}
-      <div
-        className={cn(
-          "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg",
-          isUser
-            ? "bg-primary/20 text-primary"
-            : isSystem
-            ? "bg-warning/20 text-warning"
-            : "bg-secondary/20 text-secondary"
-        )}
-      >
-        {isUser ? (
+      {isUser ? (
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-primary/20 text-primary">
           <User className="h-4 w-4" />
-        ) : isSystem ? (
+        </div>
+      ) : isSystem ? (
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-warning/20 text-warning">
           <AlertTriangle className="h-4 w-4" />
-        ) : (
-          <Bot className="h-4 w-4" />
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="relative flex-shrink-0">
+          <div className="absolute inset-0 rounded-xl bg-primary/15 blur-[2px]" />
+          <div className="relative h-8 w-8 overflow-hidden rounded-xl ring-1 ring-white/10">
+            <img src="/tandem-logo.png" alt="Tandem" className="h-full w-full object-cover" />
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 space-y-3">
@@ -70,9 +81,9 @@ export function Message({ role, content, timestamp, toolCalls, isStreaming, atta
             {timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </span>
           {isStreaming && (
-            <span className="flex items-center gap-1 text-xs text-primary">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-              Thinking...
+            <span className="flex items-center gap-2 text-xs text-primary font-mono">
+              <span className="inline-block h-3 w-1.5 bg-primary animate-pulse" />
+              Processing
             </span>
           )}
         </div>
@@ -83,7 +94,7 @@ export function Message({ role, content, timestamp, toolCalls, isStreaming, atta
             {attachments.map((attachment, idx) => (
               <div
                 key={idx}
-                className="flex items-center gap-2 rounded-lg border border-border bg-surface p-2"
+                className="flex items-center gap-2 rounded-lg border-glass bg-surface p-2"
               >
                 {attachment.type === "image" && attachment.preview ? (
                   <img
@@ -105,8 +116,44 @@ export function Message({ role, content, timestamp, toolCalls, isStreaming, atta
         )}
 
         {/* Message content */}
-        <div className="prose prose-invert max-w-none">
-          <p className="whitespace-pre-wrap text-text-muted">{content}</p>
+        <div className="prose-custom">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              code({ className, children, ...props }) {
+                const match = /language-(\w+)/.exec(className || "");
+                if (match) {
+                  return (
+                    <div className="overflow-hidden rounded-lg border border-white/10 bg-surface/60">
+                      <div className="flex items-center gap-2 border-b border-white/10 bg-surface-elevated/70 px-3 py-2">
+                        <span className="h-2 w-2 rounded-full bg-error/80" />
+                        <span className="h-2 w-2 rounded-full bg-warning/80" />
+                        <span className="h-2 w-2 rounded-full bg-success/80" />
+                        <span className="ml-2 text-[0.65rem] uppercase tracking-widest text-text-subtle terminal-text">
+                          code
+                        </span>
+                      </div>
+                      <SyntaxHighlighter
+                        style={oneDark}
+                        language={match[1]}
+                        PreTag="div"
+                        customStyle={{ margin: 0, background: "transparent", padding: "1rem" }}
+                      >
+                        {String(children).replace(/\n$/, "")}
+                      </SyntaxHighlighter>
+                    </div>
+                  );
+                }
+                return (
+                  <code className={className} {...props}>
+                    {children}
+                  </code>
+                );
+              },
+            }}
+          >
+            {content}
+          </ReactMarkdown>
         </div>
 
         {/* Tool calls */}
@@ -138,7 +185,7 @@ function ToolCallCard({ tool, args, status, result }: ToolCall) {
   const getStatusColor = () => {
     switch (status) {
       case "pending":
-        return "border-border bg-surface";
+        return "border-glass bg-surface";
       case "running":
         return "border-primary/50 bg-primary/10";
       case "completed":
@@ -150,10 +197,7 @@ function ToolCallCard({ tool, args, status, result }: ToolCall) {
 
   return (
     <motion.div
-      className={cn(
-        "rounded-lg border p-3 transition-colors",
-        getStatusColor()
-      )}
+      className={cn("rounded-lg border p-3 transition-colors", getStatusColor())}
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
     >
@@ -164,12 +208,10 @@ function ToolCallCard({ tool, args, status, result }: ToolCall) {
           <div className="ml-auto h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         )}
       </div>
-      
+
       {args && Object.keys(args).length > 0 && (
         <div className="mt-2 rounded bg-surface p-2">
-          <pre className="font-mono text-xs text-text-subtle">
-            {JSON.stringify(args, null, 2)}
-          </pre>
+          <pre className="font-mono text-xs text-text-subtle">{JSON.stringify(args, null, 2)}</pre>
         </div>
       )}
 

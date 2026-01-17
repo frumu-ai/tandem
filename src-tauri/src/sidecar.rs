@@ -658,9 +658,44 @@ impl SidecarManager {
         // Kill the process
         let mut process_guard = self.process.lock().await;
         if let Some(mut child) = process_guard.take() {
-            let _ = child.kill();
+            #[cfg(windows)]
+            {
+                // On Windows, try graceful termination first, then force kill
+                use std::process::Command as StdCommand;
+                let pid = child.id();
+                tracing::info!("Killing OpenCode process with PID {}", pid);
+                
+                // Try taskkill /T to terminate child processes too
+                let result = StdCommand::new("taskkill")
+                    .args(["/F", "/T", "/PID", &pid.to_string()])
+                    .output();
+                
+                match result {
+                    Ok(output) => {
+                        tracing::info!("taskkill result: {}", String::from_utf8_lossy(&output.stdout));
+                        if !output.status.success() {
+                            tracing::warn!("taskkill stderr: {}", String::from_utf8_lossy(&output.stderr));
+                        }
+                    }
+                    Err(e) => tracing::error!("Failed to run taskkill: {}", e),
+                }
+                
+                // Wait a moment for the process to fully terminate
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            
+            #[cfg(not(windows))]
+            {
+                let _ = child.kill();
+            }
+            
+            // Wait for the process to exit
             let _ = child.wait();
         }
+        
+        // Give extra time for Windows to release file handles
+        #[cfg(windows)]
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Clear the port
         {
@@ -1260,7 +1295,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                         tracing::debug!("Skipping text part without delta (likely user message)");
                         return None;
                     }
-                    
+
                     let text = part.get("text").and_then(|s| s.as_str()).unwrap_or("").to_string();
                     Some(StreamEvent::Content {
                         session_id,
@@ -1269,6 +1304,8 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                         delta,
                     })
                 }
+                // Ignore reasoning parts to avoid showing "[REDACTED]" in chat
+                "reasoning" => None,
                 "tool-invocation" => {
                     let tool = part.get("tool").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
                     let args = part.get("args").cloned().unwrap_or(serde_json::Value::Null);
@@ -1298,20 +1335,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                         _ => None,
                     }
                 }
-                _ => {
-                    // For other part types, try to extract text
-                    let text = part.get("text").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                    if !text.is_empty() || delta.is_some() {
-                        Some(StreamEvent::Content {
-                            session_id,
-                            message_id,
-                            content: text,
-                            delta,
-                        })
-                    } else {
-                        None
-                    }
-                }
+                _ => None,
             }
         }
         "message.updated" => {

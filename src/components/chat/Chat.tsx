@@ -30,7 +30,12 @@ interface ChatProps {
   onSidecarConnected?: () => void;
 }
 
-export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated, onSidecarConnected }: ChatProps) {
+export function Chat({
+  workspacePath,
+  sessionId: propSessionId,
+  onSessionCreated,
+  onSidecarConnected,
+}: ChatProps) {
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(propSessionId || null);
@@ -62,7 +67,7 @@ export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated
       try {
         const status = await getSidecarStatus();
         setSidecarStatus(status);
-        
+
         // Auto-start if not already running
         if (status !== "running") {
           setIsConnecting(true);
@@ -92,7 +97,7 @@ export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated
   useEffect(() => {
     setCurrentSessionId(propSessionId || null);
   }, [propSessionId]);
-  
+
   // Load session history when sessionId changes from props
   useEffect(() => {
     if (propSessionId) {
@@ -113,17 +118,17 @@ export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated
     setIsLoadingHistory(true);
     try {
       const sessionMessages = await getSessionMessages(sessionId);
-      
+
       // Convert session messages to our format
       const convertedMessages: MessageProps[] = [];
-      
+
       for (const msg of sessionMessages) {
         const role = msg.info.role as "user" | "assistant" | "system";
-        
+
         // Extract text content from parts
         let content = "";
         const toolCalls: MessageProps["toolCalls"] = [];
-        
+
         for (const part of msg.parts) {
           const partObj = part as Record<string, unknown>;
           if (partObj.type === "text" && partObj.text) {
@@ -135,12 +140,16 @@ export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated
               tool: (partObj.tool || "unknown") as string,
               args: (state?.input || partObj.args || {}) as Record<string, unknown>,
               result: state?.output ? String(state.output) : undefined,
-              status: state?.status === "completed" ? "completed" : 
-                     state?.status === "failed" ? "failed" : "pending",
+              status:
+                state?.status === "completed"
+                  ? "completed"
+                  : state?.status === "failed"
+                    ? "failed"
+                    : "pending",
             });
           }
         }
-        
+
         if (content || toolCalls.length > 0 || role === "user") {
           convertedMessages.push({
             id: msg.info.id,
@@ -151,7 +160,7 @@ export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated
           });
         }
       }
-      
+
       setMessages(convertedMessages);
     } catch (e) {
       console.error("Failed to load session history:", e);
@@ -165,22 +174,31 @@ export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated
   const getActivityType = (tool: string): ActivityItem["type"] => {
     const toolLower = tool.toLowerCase();
     if (toolLower.includes("read") || toolLower.includes("view")) return "file_read";
-    if (toolLower.includes("write") || toolLower.includes("edit") || toolLower.includes("create")) return "file_write";
-    if (toolLower.includes("search") || toolLower.includes("grep") || toolLower.includes("find")) return "search";
-    if (toolLower.includes("bash") || toolLower.includes("shell") || toolLower.includes("command") || toolLower.includes("exec")) return "command";
-    if (toolLower.includes("browse") || toolLower.includes("web") || toolLower.includes("fetch")) return "browse";
+    if (toolLower.includes("write") || toolLower.includes("edit") || toolLower.includes("create"))
+      return "file_write";
+    if (toolLower.includes("search") || toolLower.includes("grep") || toolLower.includes("find"))
+      return "search";
+    if (
+      toolLower.includes("bash") ||
+      toolLower.includes("shell") ||
+      toolLower.includes("command") ||
+      toolLower.includes("exec")
+    )
+      return "command";
+    if (toolLower.includes("browse") || toolLower.includes("web") || toolLower.includes("fetch"))
+      return "browse";
     return "tool";
   };
 
   // Helper to get a friendly title for a tool
   const getActivityTitle = (tool: string, args: Record<string, unknown>): string => {
     const toolLower = tool.toLowerCase();
-    
+
     // Try to extract a meaningful path or query
     const path = args.path || args.file || args.filename;
     const query = args.query || args.pattern || args.search;
     const command = args.command || args.cmd;
-    
+
     if (path && typeof path === "string") {
       // Shorten long paths
       const shortPath = path.length > 40 ? "..." + path.slice(-37) : path;
@@ -191,255 +209,302 @@ export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated
       if (toolLower.includes("list")) return `Listing ${shortPath}`;
       return `${tool} → ${shortPath}`;
     }
-    
+
     if (query && typeof query === "string") {
       const shortQuery = query.length > 30 ? query.slice(0, 27) + "..." : query;
       return `Searching: "${shortQuery}"`;
     }
-    
+
     if (command && typeof command === "string") {
       const shortCmd = command.length > 30 ? command.slice(0, 27) + "..." : command;
       return `Running: ${shortCmd}`;
     }
-    
+
     // Fallback to tool name
-    return tool.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
+    return tool.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
   };
 
-  const handleStreamEvent = useCallback((event: StreamEvent) => {
-    // Debug: Log all events
-    console.log("[StreamEvent]", event.type, "session:", (event as { session_id?: string }).session_id, "current:", currentSessionId, event);
-    
-    // Filter events for the current session
-    const eventSessionId = (event as { session_id?: string }).session_id;
-    if (eventSessionId && currentSessionId && eventSessionId !== currentSessionId) {
-      console.log("[StreamEvent] Ignoring event for different session:", eventSessionId, "!==", currentSessionId);
-      return;
-    }
-    
-    lastEventAtRef.current = Date.now();
-    if (generationTimeoutRef.current) {
-      clearTimeout(generationTimeoutRef.current);
-    }
-    generationTimeoutRef.current = setTimeout(() => {
-      if (isGenerating) {
-        setError("Response timed out. Try again or stop and restart the chat.");
-        setIsGenerating(false);
-        currentAssistantMessageRef.current = "";
-      }
-    }, 60000);
+  const handleStreamEvent = useCallback(
+    (event: StreamEvent) => {
+      // Debug: Log all events
+      console.log(
+        "[StreamEvent]",
+        event.type,
+        "session:",
+        (event as { session_id?: string }).session_id,
+        "current:",
+        currentSessionId,
+        event
+      );
 
-    switch (event.type) {
-      case "content": {
-        // Use delta if available, otherwise use full content
-        const newContent = event.delta || event.content;
-        console.log("[StreamEvent] Content update:", newContent?.slice(0, 100));
-        if (event.delta) {
-          // Append delta to current message
-          currentAssistantMessageRef.current += newContent;
-        } else {
-          // Replace with full content
-          currentAssistantMessageRef.current = newContent;
+      // Filter events for the current session
+      const eventSessionId = (event as { session_id?: string }).session_id;
+      if (eventSessionId && currentSessionId && eventSessionId !== currentSessionId) {
+        console.log(
+          "[StreamEvent] Ignoring event for different session:",
+          eventSessionId,
+          "!==",
+          currentSessionId
+        );
+        return;
+      }
+
+      lastEventAtRef.current = Date.now();
+      if (generationTimeoutRef.current) {
+        clearTimeout(generationTimeoutRef.current);
+      }
+      generationTimeoutRef.current = setTimeout(() => {
+        if (isGenerating) {
+          setError("Response timed out. Try again or stop and restart the chat.");
+          setIsGenerating(false);
+          currentAssistantMessageRef.current = "";
         }
-        setMessages((prev) => {
-          const lastMessage = prev[prev.length - 1];
-          if (lastMessage && lastMessage.role === "assistant") {
-            return [
-              ...prev.slice(0, -1),
-              { ...lastMessage, content: currentAssistantMessageRef.current },
-            ];
-          }
-          return prev;
-        });
-        break;
-      }
+      }, 60000);
 
-      case "tool_start": {
-        const args = event.args as Record<string, unknown>;
-        
-        // Add to activity panel
-        const activityType = getActivityType(event.tool);
-        const activityTitle = getActivityTitle(event.tool, args);
-        
-        setActivities((prev) => {
-          // Check if activity already exists (update) or is new (add)
-          const existingIdx = prev.findIndex((a) => a.id === event.part_id);
-          if (existingIdx >= 0) {
-            const updated = [...prev];
-            updated[existingIdx] = {
-              ...updated[existingIdx],
-              status: "running",
-            };
-            return updated;
+      switch (event.type) {
+        case "content": {
+          // Prefer full content when available to avoid duplicate appends
+          const newContent = event.delta || event.content;
+          console.log("[StreamEvent] Content update:", newContent?.slice(0, 100));
+          if (event.delta && event.content) {
+            // OpenCode often sends full content alongside delta
+            // Use full content to prevent repeated text loops
+            currentAssistantMessageRef.current = event.content;
+          } else if (event.delta) {
+            // Append delta to current message
+            currentAssistantMessageRef.current += newContent;
+          } else {
+            // Replace with full content
+            currentAssistantMessageRef.current = newContent;
           }
-          return [
-            ...prev,
-            {
-              id: event.part_id,
-              type: activityType,
-              tool: event.tool,
-              title: activityTitle,
-              detail: args.path as string || args.query as string || undefined,
-              status: "running",
-              timestamp: new Date(),
-              args,
-            },
-          ];
-        });
-        
-        // Add tool call to the message
-        setMessages((prev) => {
-          const lastMessage = prev[prev.length - 1];
-          if (lastMessage && lastMessage.role === "assistant") {
-            const toolCalls = lastMessage.toolCalls || [];
-            // Check if tool already exists (update) or is new (add)
-            const existingIdx = toolCalls.findIndex((tc) => tc.id === event.part_id);
-            if (existingIdx >= 0) {
-              // Update existing
-              const newToolCalls = [...toolCalls];
-              newToolCalls[existingIdx] = {
-                ...newToolCalls[existingIdx],
-                tool: event.tool,
-                args: event.args as Record<string, unknown>,
-                status: "pending" as const,
-              };
-              return [...prev.slice(0, -1), { ...lastMessage, toolCalls: newToolCalls }];
-            } else {
-              // Add new
+          setMessages((prev) => {
+            const lastMessage = prev[prev.length - 1];
+            if (lastMessage && lastMessage.role === "assistant") {
               return [
                 ...prev.slice(0, -1),
-                {
-                  ...lastMessage,
-                  toolCalls: [
-                    ...toolCalls,
-                    {
-                      id: event.part_id,
-                      tool: event.tool,
-                      args: event.args as Record<string, unknown>,
-                      status: "pending" as const,
-                    },
-                  ],
-                },
+                { ...lastMessage, content: currentAssistantMessageRef.current },
               ];
             }
-          }
-          return prev;
-        });
+            return prev;
+          });
+          break;
+        }
 
-        // Create permission request for destructive operations
-        const needsApproval = ["write_file", "create_file", "delete_file", "run_command", "bash", "shell"].includes(
-          event.tool
-        );
-        if (needsApproval) {
+        case "tool_start": {
+          const args = event.args as Record<string, unknown>;
+
+          // Add to activity panel
+          const activityType = getActivityType(event.tool);
+          const activityTitle = getActivityTitle(event.tool, args);
+
+          setActivities((prev) => {
+            // Check if activity already exists (update) or is new (add)
+            const existingIdx = prev.findIndex((a) => a.id === event.part_id);
+            if (existingIdx >= 0) {
+              const updated = [...prev];
+              updated[existingIdx] = {
+                ...updated[existingIdx],
+                status: "running",
+              };
+              return updated;
+            }
+            return [
+              ...prev,
+              {
+                id: event.part_id,
+                type: activityType,
+                tool: event.tool,
+                title: activityTitle,
+                detail: (args.path as string) || (args.query as string) || undefined,
+                status: "running",
+                timestamp: new Date(),
+                args,
+              },
+            ];
+          });
+
+          // Add tool call to the message
+          setMessages((prev) => {
+            const lastMessage = prev[prev.length - 1];
+            if (lastMessage && lastMessage.role === "assistant") {
+              const toolCalls = lastMessage.toolCalls || [];
+              // Check if tool already exists (update) or is new (add)
+              const existingIdx = toolCalls.findIndex((tc) => tc.id === event.part_id);
+              if (existingIdx >= 0) {
+                // Update existing
+                const newToolCalls = [...toolCalls];
+                newToolCalls[existingIdx] = {
+                  ...newToolCalls[existingIdx],
+                  tool: event.tool,
+                  args: event.args as Record<string, unknown>,
+                  status: "pending" as const,
+                };
+                return [...prev.slice(0, -1), { ...lastMessage, toolCalls: newToolCalls }];
+              } else {
+                // Add new
+                return [
+                  ...prev.slice(0, -1),
+                  {
+                    ...lastMessage,
+                    toolCalls: [
+                      ...toolCalls,
+                      {
+                        id: event.part_id,
+                        tool: event.tool,
+                        args: event.args as Record<string, unknown>,
+                        status: "pending" as const,
+                      },
+                    ],
+                  },
+                ];
+              }
+            }
+            return prev;
+          });
+
+          // Create permission request for destructive operations
+          const needsApproval = [
+            "write_file",
+            "create_file",
+            "delete_file",
+            "run_command",
+            "bash",
+            "shell",
+          ].includes(event.tool);
+          if (needsApproval) {
+            const permissionRequest: PermissionRequest = {
+              id: event.part_id,
+              type: event.tool as PermissionRequest["type"],
+              path: args.path as string | undefined,
+              command: (args.command || args.cmd) as string | undefined,
+              reasoning: (args.reasoning as string) || "AI wants to perform this action",
+              riskLevel:
+                event.tool === "delete_file" ||
+                event.tool === "run_command" ||
+                event.tool === "bash"
+                  ? "high"
+                  : "medium",
+            };
+            setPendingPermissions((prev) => [...prev, permissionRequest]);
+          }
+          break;
+        }
+
+        case "tool_end": {
+          // Update activity status
+          const resultStr =
+            event.error || (event.result ? JSON.stringify(event.result).slice(0, 500) : "");
+          setActivities((prev) =>
+            prev.map((a) =>
+              a.id === event.part_id
+                ? {
+                    ...a,
+                    status: event.error ? "failed" : "completed",
+                    result: resultStr,
+                  }
+                : a
+            )
+          );
+
+          // Update tool call with result
+          setMessages((prev) => {
+            const lastMessage = prev[prev.length - 1];
+            if (lastMessage && lastMessage.role === "assistant" && lastMessage.toolCalls) {
+              const toolCalls = lastMessage.toolCalls.map((tc) =>
+                tc.id === event.part_id
+                  ? {
+                      ...tc,
+                      result: event.error || String(event.result || ""),
+                      status: (event.error ? "failed" : "completed") as "failed" | "completed",
+                    }
+                  : tc
+              );
+              return [...prev.slice(0, -1), { ...lastMessage, toolCalls }];
+            }
+            return prev;
+          });
+          break;
+        }
+
+        case "session_status":
+          // Could update UI to show session status
+          console.log("Session status:", event.status);
+          break;
+
+        case "session_idle":
+          // Generation complete - ensure final message content is saved before clearing
+          setMessages((prev) => {
+            const lastMessage = prev[prev.length - 1];
+            if (
+              lastMessage &&
+              lastMessage.role === "assistant" &&
+              currentAssistantMessageRef.current
+            ) {
+              // Ensure the final content is applied
+              return [
+                ...prev.slice(0, -1),
+                { ...lastMessage, content: currentAssistantMessageRef.current },
+              ];
+            }
+            return prev;
+          });
+
+          // Mark any remaining running activities as completed
+          setActivities((prev) =>
+            prev.map((a) => (a.status === "running" ? { ...a, status: "completed" } : a))
+          );
+          setIsGenerating(false);
+          currentAssistantMessageRef.current = "";
+          if (generationTimeoutRef.current) {
+            clearTimeout(generationTimeoutRef.current);
+            generationTimeoutRef.current = null;
+          }
+          break;
+
+        case "session_error":
+          setError(event.error);
+          setIsGenerating(false);
+          currentAssistantMessageRef.current = "";
+          if (generationTimeoutRef.current) {
+            clearTimeout(generationTimeoutRef.current);
+            generationTimeoutRef.current = null;
+          }
+          break;
+
+        case "permission_asked": {
+          // Handle permission requests from OpenCode
           const permissionRequest: PermissionRequest = {
-            id: event.part_id,
-            type: event.tool as PermissionRequest["type"],
-            path: args.path as string | undefined,
-            command: (args.command || args.cmd) as string | undefined,
-            reasoning: (args.reasoning as string) || "AI wants to perform this action",
-            riskLevel:
-              event.tool === "delete_file" || event.tool === "run_command" || event.tool === "bash" ? "high" : "medium",
+            id: event.request_id,
+            type: (event.tool || "unknown") as PermissionRequest["type"],
+            path: event.args?.path as string | undefined,
+            command: event.args?.command as string | undefined,
+            reasoning: "AI requests permission to perform this action",
+            riskLevel: event.tool === "delete_file" || event.tool === "bash" ? "high" : "medium",
           };
           setPendingPermissions((prev) => [...prev, permissionRequest]);
+          break;
         }
-        break;
-      }
 
-      case "tool_end": {
-        // Update activity status
-        const resultStr = event.error || (event.result ? JSON.stringify(event.result).slice(0, 500) : "");
-        setActivities((prev) =>
-          prev.map((a) =>
-            a.id === event.part_id
-              ? {
-                  ...a,
-                  status: event.error ? "failed" : "completed",
-                  result: resultStr,
-                }
-              : a
-          )
-        );
-        
-        // Update tool call with result
-        setMessages((prev) => {
-          const lastMessage = prev[prev.length - 1];
-          if (lastMessage && lastMessage.role === "assistant" && lastMessage.toolCalls) {
-            const toolCalls = lastMessage.toolCalls.map((tc) =>
-              tc.id === event.part_id
-                ? {
-                    ...tc,
-                    result: event.error || String(event.result || ""),
-                    status: (event.error ? "failed" : "completed") as "failed" | "completed",
-                  }
-                : tc
-            );
-            return [...prev.slice(0, -1), { ...lastMessage, toolCalls }];
+        case "raw": {
+          // Try to extract useful activity info from raw events
+          const data = event.data as Record<string, unknown>;
+
+          // Handle message.updated events - these often contain tool info
+          if (event.event_type === "message.updated") {
+            const info = data.info as Record<string, unknown> | undefined;
+            if (info) {
+              console.log("Message updated:", info);
+            }
           }
-          return prev;
-        });
-        break;
-      }
 
-      case "session_status":
-        // Could update UI to show session status
-        console.log("Session status:", event.status);
-        break;
-
-      case "session_idle":
-        // Generation complete - mark any remaining running activities as completed
-        setActivities((prev) =>
-          prev.map((a) => (a.status === "running" ? { ...a, status: "completed" } : a))
-        );
-        setIsGenerating(false);
-        currentAssistantMessageRef.current = "";
-        if (generationTimeoutRef.current) {
-          clearTimeout(generationTimeoutRef.current);
-          generationTimeoutRef.current = null;
+          // Log other raw events for debugging
+          console.log("Raw event:", event.event_type, data);
+          break;
         }
-        break;
-
-      case "session_error":
-        setError(event.error);
-        setIsGenerating(false);
-        currentAssistantMessageRef.current = "";
-        if (generationTimeoutRef.current) {
-          clearTimeout(generationTimeoutRef.current);
-          generationTimeoutRef.current = null;
-        }
-        break;
-
-      case "permission_asked": {
-        // Handle permission requests from OpenCode
-        const permissionRequest: PermissionRequest = {
-          id: event.request_id,
-          type: (event.tool || "unknown") as PermissionRequest["type"],
-          path: event.args?.path as string | undefined,
-          command: event.args?.command as string | undefined,
-          reasoning: "AI requests permission to perform this action",
-          riskLevel: event.tool === "delete_file" || event.tool === "bash" ? "high" : "medium",
-        };
-        setPendingPermissions((prev) => [...prev, permissionRequest]);
-        break;
       }
-
-      case "raw": {
-        // Try to extract useful activity info from raw events
-        const data = event.data as Record<string, unknown>;
-        
-        // Handle message.updated events - these often contain tool info
-        if (event.event_type === "message.updated") {
-          const info = data.info as Record<string, unknown> | undefined;
-          if (info) {
-            console.log("Message updated:", info);
-          }
-        }
-        
-        // Log other raw events for debugging
-        console.log("Raw event:", event.event_type, data);
-        break;
-      }
-    }
-  }, [isGenerating]);
+    },
+    [isGenerating]
+  );
 
   // Listen for sidecar events
   useEffect(() => {
@@ -660,8 +725,8 @@ export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated
       {/* Header */}
       <header className="flex items-center justify-between border-b border-border px-6 py-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-secondary">
-            <Sparkles className="h-5 w-5 text-white" />
+          <div className="h-10 w-10 overflow-hidden rounded-xl ring-1 ring-white/10">
+            <img src="/tandem-logo.png" alt="Tandem logo" className="h-full w-full object-cover" />
           </div>
           <div>
             <h1 className="font-semibold text-text">Tandem</h1>
@@ -735,20 +800,22 @@ export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated
         {/* Streaming indicator */}
         {isGenerating && (
           <motion.div
-            className="flex gap-4 bg-surface/50 px-4 py-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
+            className="glass border-glass rounded-2xl shadow-lg shadow-black/20 ring-1 ring-white/5 px-4 py-6 flex gap-4"
+            initial={{ opacity: 0, filter: "blur(6px)" }}
+            animate={{ opacity: 1, filter: "blur(0px)" }}
+            transition={{ duration: 0.2 }}
           >
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-secondary/20">
-              <Sparkles className="h-4 w-4 animate-pulse text-secondary" />
+            <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-secondary to-primary text-white shadow-[0_0_12px_rgba(59,130,246,0.45)]">
+              <Sparkles className="h-4 w-4 animate-pulse" />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
+              <span className="inline-block h-3 w-1.5 bg-primary animate-pulse" />
+              <span className="terminal-text text-text-muted">Processing</span>
               <div className="flex gap-1">
-                <span className="h-2 w-2 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.3s]" />
-                <span className="h-2 w-2 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.15s]" />
-                <span className="h-2 w-2 animate-bounce rounded-full bg-text-subtle" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.3s]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.15s]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle" />
               </div>
-              <span className="text-sm text-text-muted">Tandem is thinking...</span>
             </div>
           </motion.div>
         )}
@@ -779,10 +846,7 @@ export function Chat({ workspacePath, sessionId: propSessionId, onSessionCreated
       />
 
       {/* Activity drawer */}
-      <ActivityDrawer
-        activities={activities}
-        isGenerating={isGenerating}
-      />
+      <ActivityDrawer activities={activities} isGenerating={isGenerating} />
     </div>
   );
 }

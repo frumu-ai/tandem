@@ -3,17 +3,70 @@
 
 mod commands;
 mod error;
+mod keystore;
 mod llm_router;
 mod sidecar;
 mod sidecar_manager;
 mod state;
 mod stronghold;
 mod tool_proxy;
+mod vault;
 
+use std::sync::RwLock;
 use tauri::Manager;
 use tauri_plugin_store::StoreExt;
 use tauri_plugin_stronghold::stronghold::Stronghold;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+use crate::stronghold::ApiKeyType;
+
+/// Vault state - tracks whether the vault is unlocked and stores the master key
+pub struct VaultState {
+    /// Whether the vault is unlocked
+    pub unlocked: RwLock<bool>,
+    /// The decrypted master key (only set when unlocked)
+    pub master_key: RwLock<Option<Vec<u8>>>,
+    /// Path to app data directory
+    pub app_data_dir: std::path::PathBuf,
+}
+
+impl VaultState {
+    pub fn new(app_data_dir: std::path::PathBuf) -> Self {
+        Self {
+            unlocked: RwLock::new(false),
+            master_key: RwLock::new(None),
+            app_data_dir,
+        }
+    }
+
+    pub fn is_unlocked(&self) -> bool {
+        *self.unlocked.read().unwrap()
+    }
+
+    pub fn get_master_key(&self) -> Option<Vec<u8>> {
+        self.master_key.read().unwrap().clone()
+    }
+
+    pub fn set_master_key(&self, key: Vec<u8>) {
+        *self.master_key.write().unwrap() = Some(key);
+        *self.unlocked.write().unwrap() = true;
+    }
+
+    pub fn lock(&self) {
+        *self.master_key.write().unwrap() = None;
+        *self.unlocked.write().unwrap() = false;
+    }
+
+    pub fn get_status(&self) -> VaultStatus {
+        if !vault::vault_exists(&self.app_data_dir) {
+            VaultStatus::NotCreated
+        } else if self.is_unlocked() {
+            VaultStatus::Unlocked
+        } else {
+            VaultStatus::Locked
+        }
+    }
+}
 
 /// Initialize tracing for logging
 fn init_tracing() {
@@ -24,6 +77,65 @@ fn init_tracing() {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+}
+
+/// Initialize keystore with the given master key and load API keys
+fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .expect("Failed to get app data directory");
+    let keystore_path = app_data_dir.join("tandem.keystore");
+
+    // Create keystore (fast - no Argon2!)
+    let keystore = match keystore::SecureKeyStore::new(&keystore_path, master_key.to_vec()) {
+        Ok(ks) => ks,
+        Err(e) => {
+            tracing::error!("Failed to create keystore: {}", e);
+            return;
+        }
+    };
+
+    tracing::info!("Keystore initialized");
+
+    // Load API keys and set them in sidecar environment
+    let app_state = app.state::<state::AppState>();
+    let sidecar = app_state.sidecar.clone();
+
+    let mappings: Vec<(stronghold::ApiKeyType, &str)> = vec![
+        (stronghold::ApiKeyType::OpenRouter, "OPENROUTER_API_KEY"),
+        (stronghold::ApiKeyType::Anthropic, "ANTHROPIC_API_KEY"),
+        (stronghold::ApiKeyType::OpenAI, "OPENAI_API_KEY"),
+    ];
+
+    for (key_type, env_var) in mappings {
+        let key_name = key_type.to_key_name();
+        tracing::debug!("Checking for key: {}", key_name);
+        
+        match keystore.get(&key_name) {
+            Ok(Some(key)) => {
+                let masked = if key.len() > 8 {
+                    format!("{}...{}", &key[..4], &key[key.len() - 4..])
+                } else {
+                    "***".to_string()
+                };
+                tracing::info!("Loaded {} from vault ({})", env_var, masked);
+                let sidecar_clone = sidecar.clone();
+                tauri::async_runtime::spawn(async move {
+                    sidecar_clone.set_env(env_var, &key).await;
+                });
+            }
+            Ok(None) => {
+                tracing::debug!("No key found for {}", key_name);
+            }
+            Err(e) => {
+                tracing::warn!("Error reading key {}: {}", key_name, e);
+            }
+        }
+    }
+
+    // Manage the keystore
+    app.manage(keystore);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -41,47 +153,35 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(
             tauri_plugin_stronghold::Builder::new(|password| {
-                // Derive key from password using simple hash
-                // In production, use a proper KDF like Argon2
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                password.hash(&mut hasher);
-                let hash = hasher.finish();
-                // Expand to 32 bytes for AES-256
-                let mut key = Vec::with_capacity(32);
-                key.extend_from_slice(&hash.to_le_bytes());
-                key.extend_from_slice(&hash.to_be_bytes());
-                key.extend_from_slice(&hash.to_le_bytes());
-                key.extend_from_slice(&hash.to_be_bytes());
-                key
+                // This callback is used when the plugin needs to derive a key
+                // We pass through the master key directly since we already derived it
+                password.as_bytes().to_vec()
             })
             .build(),
         )
         .setup(|app| {
-            // Initialize Stronghold with a snapshot path in app data directory
+            // Get app data directory
             let app_data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("Failed to get app data directory");
             std::fs::create_dir_all(&app_data_dir).ok();
-            let snapshot_path = app_data_dir.join("tandem.stronghold");
 
-            // Create stronghold instance with a 32-byte key
-            let password = b"tandem-secure-vault-key-32bytes!".to_vec();
-            let stronghold = Stronghold::new(snapshot_path, password)
-                .expect("Failed to create Stronghold");
-            app.manage(stronghold);
+            // Initialize vault state (manages PIN-based encryption)
+            let vault_state = VaultState::new(app_data_dir.clone());
+            app.manage(vault_state);
 
-            // Initialize application state
+            // Initialize application state (providers, workspace, sidecar)
             let app_state = state::AppState::new();
 
             // Load saved settings from store
             let store = app.store("settings.json").expect("Failed to create store");
-            
+
             // Load providers config
             if let Some(config) = store.get("providers_config") {
-                if let Ok(providers) = serde_json::from_value::<state::ProvidersConfig>(config.clone()) {
+                if let Ok(providers) =
+                    serde_json::from_value::<state::ProvidersConfig>(config.clone())
+                {
                     tracing::info!("Loaded saved providers config");
                     *app_state.providers_config.write().unwrap() = providers;
                 }
@@ -98,65 +198,20 @@ pub fn run() {
                 }
             }
 
-            // Load API keys from Stronghold and set them in sidecar environment
-            let stronghold = app.state::<Stronghold>();
-            let client_path = b"tandem";
-            if let Ok(client) = stronghold.get_client(client_path) {
-                let store = client.store();
-                
-                // Load OpenRouter API key
-                if let Ok(key_bytes) = store.get(b"openrouter_api_key") {
-                    if let Some(bytes) = key_bytes {
-                        if let Ok(key) = String::from_utf8(bytes) {
-                            tracing::info!("Loaded OpenRouter API key from vault");
-                            let sidecar = &app_state.sidecar;
-                            // Use tokio runtime to set env var
-                            let rt = tokio::runtime::Handle::current();
-                            let sidecar_clone = sidecar.clone();
-                            rt.spawn(async move {
-                                sidecar_clone.set_env("OPENROUTER_API_KEY", &key).await;
-                            });
-                        }
-                    }
-                }
-                
-                // Load Anthropic API key
-                if let Ok(key_bytes) = store.get(b"anthropic_api_key") {
-                    if let Some(bytes) = key_bytes {
-                        if let Ok(key) = String::from_utf8(bytes) {
-                            tracing::info!("Loaded Anthropic API key from vault");
-                            let sidecar = &app_state.sidecar;
-                            let rt = tokio::runtime::Handle::current();
-                            let sidecar_clone = sidecar.clone();
-                            rt.spawn(async move {
-                                sidecar_clone.set_env("ANTHROPIC_API_KEY", &key).await;
-                            });
-                        }
-                    }
-                }
-                
-                // Load OpenAI API key
-                if let Ok(key_bytes) = store.get(b"openai_api_key") {
-                    if let Some(bytes) = key_bytes {
-                        if let Ok(key) = String::from_utf8(bytes) {
-                            tracing::info!("Loaded OpenAI API key from vault");
-                            let sidecar = &app_state.sidecar;
-                            let rt = tokio::runtime::Handle::current();
-                            let sidecar_clone = sidecar.clone();
-                            rt.spawn(async move {
-                                sidecar_clone.set_env("OPENAI_API_KEY", &key).await;
-                            });
-                        }
-                    }
-                }
-            }
-
             app.manage(app_state);
 
-            tracing::info!("Tandem setup complete");
+            // Note: Stronghold is NOT initialized here - it will be initialized
+            // when the vault is unlocked via the unlock_vault command
+
+            tracing::info!("Tandem setup complete (vault locked, awaiting PIN)");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // Vault commands (must be called before other commands that need Stronghold)
+            commands::get_vault_status,
+            commands::create_vault,
+            commands::unlock_vault,
+            commands::lock_vault,
             // Basic commands
             commands::greet,
             commands::get_app_state,
@@ -198,16 +253,25 @@ pub fn run() {
             commands::download_sidecar,
         ]);
 
-    // Add single instance plugin on desktop platforms
+    // Add desktop-only plugins
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
-            // Handle when another instance tries to launch
-            tracing::info!("Another instance tried to launch");
-        }));
+        builder = builder
+            .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
+                // Handle when another instance tries to launch
+                tracing::info!("Another instance tried to launch");
+            }))
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_process::init());
     }
 
     builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// Re-export for commands module
+pub use crate::vault::VaultStatus;
+pub fn init_stronghold_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
+    initialize_keystore_and_keys(app, master_key);
 }

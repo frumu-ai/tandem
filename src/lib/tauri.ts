@@ -137,13 +137,55 @@ export interface ProviderInfo {
 // Stream event types from OpenCode (matches Rust StreamEvent enum)
 export type StreamEvent =
   | { type: "content"; session_id: string; message_id: string; content: string; delta?: string }
-  | { type: "tool_start"; session_id: string; message_id: string; part_id: string; tool: string; args: Record<string, unknown> }
-  | { type: "tool_end"; session_id: string; message_id: string; part_id: string; result?: unknown; error?: string }
+  | {
+      type: "tool_start";
+      session_id: string;
+      message_id: string;
+      part_id: string;
+      tool: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      type: "tool_end";
+      session_id: string;
+      message_id: string;
+      part_id: string;
+      result?: unknown;
+      error?: string;
+    }
   | { type: "session_status"; session_id: string; status: string }
   | { type: "session_idle"; session_id: string }
   | { type: "session_error"; session_id: string; error: string }
-  | { type: "permission_asked"; session_id: string; request_id: string; tool?: string; args?: Record<string, unknown> }
+  | {
+      type: "permission_asked";
+      session_id: string;
+      request_id: string;
+      tool?: string;
+      args?: Record<string, unknown>;
+    }
   | { type: "raw"; event_type: string; data: unknown };
+
+// ============================================================================
+// Vault (PIN) Commands
+// ============================================================================
+
+export type VaultStatus = "not_created" | "locked" | "unlocked";
+
+export async function getVaultStatus(): Promise<VaultStatus> {
+  return invoke("get_vault_status");
+}
+
+export async function createVault(pin: string): Promise<void> {
+  return invoke("create_vault", { pin });
+}
+
+export async function unlockVault(pin: string): Promise<void> {
+  return invoke("unlock_vault", { pin });
+}
+
+export async function lockVault(): Promise<void> {
+  return invoke("lock_vault");
+}
 
 // ============================================================================
 // Basic Commands

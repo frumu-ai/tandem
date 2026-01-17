@@ -29,6 +29,9 @@ pub enum TandemError {
 
     #[error("Not found: {0}")]
     NotFound(String),
+
+    #[error("Vault error: {0}")]
+    Vault(String),
 }
 
 // Implement serialization for Tauri commands

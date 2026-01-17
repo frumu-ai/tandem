@@ -83,6 +83,23 @@ body {
   border: 1px solid var(--color-glass-border);
 }
 
+/* Unified border system */
+.border-glass {
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.border-glass-strong {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Terminal-style text utility */
+.terminal-text {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 /* Focus styles */
 *:focus-visible {
   outline: 2px solid var(--color-primary);
@@ -101,6 +118,91 @@ select,
 label[for],
 .cursor-pointer {
   cursor: pointer;
+}
+
+/* Markdown/Prose styles */
+.prose-custom {
+  color: var(--color-text-muted);
+  line-height: 1.8;
+}
+
+.prose-custom h1,
+.prose-custom h2,
+.prose-custom h3 {
+  color: var(--color-text);
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+.prose-custom h1 {
+  font-size: 1.5rem;
+}
+
+.prose-custom h2 {
+  font-size: 1.25rem;
+}
+
+.prose-custom h3 {
+  font-size: 1.125rem;
+}
+
+.prose-custom p {
+  margin-bottom: 1em;
+}
+
+.prose-custom strong {
+  color: var(--color-text);
+}
+
+.prose-custom code {
+  background: var(--color-surface-elevated);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+.prose-custom pre {
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  overflow-x: auto;
+  margin: 1em 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.prose-custom pre code {
+  background: none;
+  padding: 0;
+}
+
+.prose-custom ul,
+.prose-custom ol {
+  padding-left: 1.5em;
+  margin-bottom: 1em;
+}
+
+.prose-custom li {
+  margin-bottom: 0.25em;
+}
+
+.prose-custom hr {
+  border-color: var(--color-border);
+  margin: 1.5em 0;
+}
+
+.prose-custom a {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+.prose-custom blockquote {
+  border-left: 3px solid var(--color-primary);
+  padding-left: 1em;
+  color: var(--color-text-subtle);
+  font-style: italic;
 }
 
 /* Selection */

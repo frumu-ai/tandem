@@ -20,27 +20,42 @@ interface SidecarStatus {
   binaryPath: string | null;
 }
 
-type DownloadState = "idle" | "checking" | "downloading" | "extracting" | "complete" | "error";
+type DownloadState =
+  | "idle"
+  | "checking"
+  | "downloading"
+  | "extracting"
+  | "installing"
+  | "complete"
+  | "error";
 
 interface SidecarDownloaderProps {
   onComplete: () => void;
   showUpdateButton?: boolean;
 }
 
-export function SidecarDownloader({ onComplete, showUpdateButton = false }: SidecarDownloaderProps) {
+export function SidecarDownloader({
+  onComplete,
+  showUpdateButton = false,
+}: SidecarDownloaderProps) {
   const [state, setState] = useState<DownloadState>("checking");
-  const [progress, setProgress] = useState<DownloadProgress>({ downloaded: 0, total: 0, percent: 0, speed: "" });
+  const [progress, setProgress] = useState<DownloadProgress>({
+    downloaded: 0,
+    total: 0,
+    percent: 0,
+    speed: "",
+  });
   const [status, setStatus] = useState<SidecarStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const checkSidecar = useCallback(async () => {
     setState("checking");
     setError(null);
-    
+
     try {
       const sidecarStatus = await invoke<SidecarStatus>("check_sidecar_status");
       setStatus(sidecarStatus);
-      
+
       if (sidecarStatus.installed && !sidecarStatus.updateAvailable) {
         setState("complete");
         setTimeout(onComplete, 500);
@@ -61,6 +76,7 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
   }, [onComplete]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     checkSidecar();
   }, [checkSidecar]);
 
@@ -70,16 +86,19 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
       setProgress(event.payload);
     });
 
-    const unlistenState = listen<{ state: string; error?: string }>("sidecar-download-state", (event) => {
-      const { state: newState, error: newError } = event.payload;
-      setState(newState as DownloadState);
-      if (newError) {
-        setError(newError);
+    const unlistenState = listen<{ state: string; error?: string }>(
+      "sidecar-download-state",
+      (event) => {
+        const { state: newState, error: newError } = event.payload;
+        setState(newState as DownloadState);
+        if (newError) {
+          setError(newError);
+        }
+        if (newState === "complete") {
+          checkSidecar();
+        }
       }
-      if (newState === "complete") {
-        checkSidecar();
-      }
-    });
+    );
 
     return () => {
       unlistenProgress.then((fn) => fn());
@@ -91,7 +110,7 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
     setState("downloading");
     setError(null);
     setProgress({ downloaded: 0, total: 0, percent: 0, speed: "" });
-    
+
     try {
       await invoke("download_sidecar");
     } catch (err) {
@@ -119,9 +138,7 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
             className="flex flex-col items-center gap-4"
           >
             <div className="relative h-12 w-12">
-              <motion.div
-                className="absolute inset-0 rounded-full border-2 border-emerald-500/30"
-              />
+              <motion.div className="absolute inset-0 rounded-full border-2 border-emerald-500/30" />
               <motion.div
                 className="absolute inset-0 rounded-full border-2 border-transparent border-t-emerald-400"
                 animate={{ rotate: 360 }}
@@ -142,11 +159,11 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/10">
               <Download className="h-8 w-8 text-emerald-400" />
             </div>
-            
+
             <div className="text-center">
               <h3 className="text-lg font-semibold text-white mb-2">
-                {status?.updateAvailable && status?.version 
-                  ? "OpenCode Update Available" 
+                {status?.updateAvailable && status?.version
+                  ? "OpenCode Update Available"
                   : "OpenCode AI Engine Required"}
               </h3>
               <p className="text-sm text-gray-400 max-w-xs">
@@ -155,9 +172,7 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
                   : "Tandem requires the OpenCode AI engine. This is a one-time download (~50MB)."}
               </p>
               {status?.latestVersion && !status?.version && (
-                <p className="text-xs text-emerald-500/60 mt-2">
-                  OpenCode {status.latestVersion}
-                </p>
+                <p className="text-xs text-emerald-500/60 mt-2">OpenCode {status.latestVersion}</p>
               )}
             </div>
 
@@ -222,7 +237,11 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
                   key={i}
                   className="h-1.5 w-6 rounded-full bg-emerald-500/30"
                   animate={{
-                    backgroundColor: ["rgba(16, 185, 129, 0.3)", "rgba(16, 185, 129, 1)", "rgba(16, 185, 129, 0.3)"],
+                    backgroundColor: [
+                      "rgba(16, 185, 129, 0.3)",
+                      "rgba(16, 185, 129, 1)",
+                      "rgba(16, 185, 129, 0.3)",
+                    ],
                   }}
                   transition={{
                     duration: 1.5,
@@ -253,8 +272,53 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
               </div>
             </div>
             <div className="text-center">
+              <h3 className="text-lg font-semibold text-white mb-1">Extracting</h3>
+              <p className="text-sm text-gray-400">Unpacking files...</p>
+            </div>
+            {/* Animated progress bars */}
+            <div className="flex gap-1">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <motion.div
+                  key={i}
+                  className="h-1.5 w-6 rounded-full bg-emerald-500/30"
+                  animate={{
+                    backgroundColor: [
+                      "rgba(16, 185, 129, 0.3)",
+                      "rgba(16, 185, 129, 1)",
+                      "rgba(16, 185, 129, 0.3)",
+                    ],
+                  }}
+                  transition={{
+                    duration: 1.5,
+                    repeat: Infinity,
+                    delay: i * 0.2,
+                  }}
+                />
+              ))}
+            </div>
+          </motion.div>
+        );
+
+      case "installing":
+        return (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex flex-col items-center gap-4"
+          >
+            <div className="relative h-16 w-16">
+              <motion.div
+                className="absolute inset-0 rounded-2xl bg-emerald-500/10"
+                animate={{ rotate: [0, 90, 180, 270, 360] }}
+                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+              />
+              <div className="absolute inset-0 flex items-center justify-center">
+                <Sparkles className="h-8 w-8 text-emerald-400" />
+              </div>
+            </div>
+            <div className="text-center">
               <h3 className="text-lg font-semibold text-white mb-1">Installing</h3>
-              <p className="text-sm text-gray-400">Extracting and setting up...</p>
+              <p className="text-sm text-gray-400">Setting up AI engine...</p>
             </div>
           </motion.div>
         );
@@ -296,7 +360,9 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
             </div>
             <div className="text-center">
               <h3 className="text-lg font-semibold text-white mb-1">Download Failed</h3>
-              <p className="text-sm text-red-400 max-w-xs">{error || "An unexpected error occurred"}</p>
+              <p className="text-sm text-red-400 max-w-xs">
+                {error || "An unexpected error occurred"}
+              </p>
             </div>
             <Button onClick={startDownload} variant="ghost" className="gap-2">
               <RefreshCw className="h-4 w-4" />
@@ -313,9 +379,7 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
       <div className="flex items-center justify-between p-4 rounded-lg bg-surface border border-border">
         <div>
           <p className="text-sm font-medium text-text">OpenCode AI Engine</p>
-          <p className="text-xs text-text-muted">
-            Version {status.version} • Up to date
-          </p>
+          <p className="text-xs text-text-muted">Version {status.version} • Up to date</p>
         </div>
         <Button variant="ghost" size="sm" onClick={checkSidecar} className="gap-2">
           <RefreshCw className="h-3 w-3" />
@@ -327,10 +391,7 @@ export function SidecarDownloader({ onComplete, showUpdateButton = false }: Side
 
   return (
     <AnimatePresence mode="wait">
-      <motion.div
-        key={state}
-        className="flex flex-col items-center justify-center p-8"
-      >
+      <motion.div key={state} className="flex flex-col items-center justify-center p-8">
         {renderContent()}
       </motion.div>
     </AnimatePresence>

@@ -92,6 +92,7 @@ export function SessionSidebar({
     if (currentSessionId) {
       const session = sessions.find((s) => s.id === currentSessionId);
       if (session) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setExpandedProjects((prev) => new Set([...prev, session.projectID]));
       }
     }
@@ -171,27 +172,27 @@ export function SessionSidebar({
             animate={{ width: 280, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="flex h-full flex-col border-r border-border bg-surface overflow-hidden"
+            className="glass flex h-full flex-col border-r border-white/10 overflow-hidden"
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
               <div className="flex items-center gap-2">
                 <MessageSquare className="h-4 w-4 text-primary" />
                 <span className="font-medium text-sm">Chat History</span>
               </div>
               <button
                 onClick={onToggle}
-                className="p-1 hover:bg-surface-elevated rounded transition-colors"
+                className="p-1 hover:bg-surface-elevated/70 rounded transition-colors"
               >
                 <ChevronLeft className="h-4 w-4 text-text-muted" />
               </button>
             </div>
 
             {/* New Chat Button */}
-            <div className="p-3 border-b border-border">
+            <div className="p-3 border-b border-white/10">
               <button
                 onClick={onNewChat}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors"
+                className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-white transition-all bg-gradient-to-r from-primary to-secondary hover:shadow-[0_0_12px_rgba(59,130,246,0.45)]"
               >
                 <Plus className="h-4 w-4" />
                 <span className="text-sm font-medium">New Chat</span>
@@ -217,7 +218,7 @@ export function SessionSidebar({
                       {/* Project Header */}
                       <button
                         onClick={() => toggleProject(projectId)}
-                        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface-elevated transition-colors"
+                        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface-elevated/70 transition-colors"
                       >
                         <ChevronDown
                           className={cn(
@@ -261,8 +262,10 @@ export function SessionSidebar({
                                 tabIndex={0}
                                 onKeyDown={(e) => e.key === "Enter" && onSelectSession(session.id)}
                                 className={cn(
-                                  "w-full flex items-start gap-2 px-3 py-2 pl-8 hover:bg-surface-elevated transition-colors group cursor-pointer",
-                                  currentSessionId === session.id && "bg-primary/10"
+                                  "relative w-full flex items-start gap-2 px-3 py-2 pl-10 hover:bg-surface-elevated/70 transition-colors group cursor-pointer",
+                                  "before:absolute before:left-4 before:top-1/2 before:-translate-y-1/2 before:h-5 before:w-1 before:rounded-full before:bg-primary/40",
+                                  currentSessionId === session.id &&
+                                    "bg-primary/10 before:bg-primary before:shadow-[0_0_8px_rgba(59,130,246,0.6)]"
                                 )}
                               >
                                 <MessageSquare
@@ -335,7 +338,7 @@ export function SessionSidebar({
       {!isOpen && (
         <button
           onClick={onToggle}
-          className="absolute left-16 top-1/2 -translate-y-1/2 z-10 p-1 bg-surface-elevated border border-border rounded-r-lg hover:bg-surface transition-colors"
+          className="absolute left-16 top-1/2 -translate-y-1/2 z-10 p-1 bg-surface-elevated border-glass rounded-r-lg hover:bg-surface transition-colors"
           title="Show chat history"
         >
           <ChevronRight className="h-4 w-4 text-text-muted" />

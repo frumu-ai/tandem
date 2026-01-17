@@ -326,11 +326,14 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
 
     // Extract the archive
     emit_state("extracting", None);
+    emit_progress(downloaded, total_size, "Extracting...");
 
     let binaries_dir = binary_path.parent().unwrap();
     extract_archive(&archive_path, binaries_dir, asset_name)?;
 
     // Rename extracted binary to expected name
+    emit_state("installing", None);
+    
     let extracted_name = if cfg!(windows) {
         "opencode.exe"
     } else {
@@ -339,13 +342,102 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     let extracted_path = binaries_dir.join(extracted_name);
 
     if extracted_path.exists() && extracted_path != binary_path {
-        if binary_path.exists() {
-            fs::remove_file(&binary_path).ok();
+        // Stop the sidecar before attempting to replace the binary
+        if let Some(state) = app.try_state::<crate::state::AppState>() {
+            tracing::info!("Stopping sidecar before binary update");
+            let _ = state.sidecar.stop().await;
+            
+            // On Windows, aggressively kill any remaining processes
+            #[cfg(windows)]
+            {
+                use std::process::Command as StdCommand;
+                
+                tracing::info!("Running taskkill to ensure all OpenCode processes are terminated");
+                
+                // Kill any opencode.exe processes by name
+                let result = StdCommand::new("taskkill")
+                    .args(["/F", "/IM", "opencode.exe"])
+                    .output();
+                
+                match result {
+                    Ok(output) => {
+                        tracing::info!("taskkill /IM result: {}", String::from_utf8_lossy(&output.stdout));
+                    }
+                    Err(e) => tracing::warn!("Failed to run taskkill /IM: {}", e),
+                }
+                
+                // Also try killing any process with the executable name in its path
+                let result2 = StdCommand::new("taskkill")
+                    .args(["/F", "/FI", "IMAGENAME eq opencode*"])
+                    .output();
+                
+                match result2 {
+                    Ok(output) => {
+                        tracing::info!("taskkill /FI result: {}", String::from_utf8_lossy(&output.stdout));
+                    }
+                    Err(e) => tracing::warn!("Failed to run taskkill /FI: {}", e),
+                }
+            }
+            
+            // Give extra time for Windows to release file locks
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         }
-        fs::rename(&extracted_path, &binary_path).map_err(|e| {
+
+        if binary_path.exists() {
+            // Try to remove the old binary, retry a few times on Windows
+            let mut retries = 5;
+            let mut last_error = None;
+            
+            while retries > 0 {
+                match fs::remove_file(&binary_path) {
+                    Ok(_) => {
+                        last_error = None;
+                        break;
+                    }
+                    Err(e) => {
+                        last_error = Some(e);
+                        retries -= 1;
+                        if retries > 0 {
+                            tracing::debug!("Retry removing old binary, {} attempts left", retries);
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                        }
+                    }
+                }
+            }
+            
+            if let Some(e) = last_error {
+                tracing::warn!("Failed to remove old binary: {}. Attempting rename anyway.", e);
+            }
+        }
+        
+        // Try rename with retry logic
+        let mut retries = 5;
+        let mut last_error = None;
+        
+        while retries > 0 {
+            match fs::rename(&extracted_path, &binary_path) {
+                Ok(_) => {
+                    last_error = None;
+                    break;
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    retries -= 1;
+                    if retries > 0 {
+                        tracing::debug!("Retry renaming binary, {} attempts left", retries);
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    }
+                }
+            }
+        }
+        
+        if let Some(e) = last_error {
             emit_state("error", Some(&e.to_string()));
-            TandemError::Sidecar(format!("Failed to rename binary: {}", e))
-        })?;
+            return Err(TandemError::Sidecar(format!(
+                "Failed to rename binary after 5 attempts. The process may still be running. Please close Tandem completely and try again: {}", 
+                e
+            )));
+        }
     }
 
     // Set executable permissions on Unix
