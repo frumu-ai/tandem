@@ -81,7 +81,9 @@ pub async fn unlock_vault(
 ) -> Result<()> {
     // Check if vault exists
     if !vault::vault_exists(&vault_state.app_data_dir) {
-        return Err(TandemError::Vault("No vault exists. Create one first.".to_string()));
+        return Err(TandemError::Vault(
+            "No vault exists. Create one first.".to_string(),
+        ));
     }
 
     // Check if already unlocked
@@ -270,7 +272,7 @@ pub async fn store_api_key(
 
     // Clone app handle so we can move it into spawn_blocking
     let app_clone = app.clone();
-    
+
     // Insert the key in memory first (fast)
     let keystore = app_clone
         .try_state::<SecureKeyStore>()
@@ -290,7 +292,7 @@ pub async fn store_api_key(
     }
 
     tracing::info!("API key saved");
-    
+
     // Restart sidecar if it's running to reload env vars
     if matches!(state.sidecar.state().await, SidecarState::Running) {
         let sidecar_path = get_sidecar_path(&app)?;
@@ -374,7 +376,11 @@ pub fn get_providers_config(state: State<'_, AppState>) -> ProvidersConfig {
 
 /// Set the providers configuration
 #[tauri::command]
-pub fn set_providers_config(app: AppHandle, config: ProvidersConfig, state: State<'_, AppState>) -> Result<()> {
+pub fn set_providers_config(
+    app: AppHandle,
+    config: ProvidersConfig,
+    state: State<'_, AppState>,
+) -> Result<()> {
     let mut providers = state.providers_config.write().unwrap();
     *providers = config.clone();
 
@@ -382,7 +388,10 @@ pub fn set_providers_config(app: AppHandle, config: ProvidersConfig, state: Stat
 
     // Save to store for persistence
     if let Ok(store) = app.store("settings.json") {
-        let _ = store.set("providers_config", serde_json::to_value(&config).unwrap_or_default());
+        let _ = store.set(
+            "providers_config",
+            serde_json::to_value(&config).unwrap_or_default(),
+        );
         let _ = store.save();
     }
 
@@ -632,7 +641,7 @@ pub async fn send_message_streaming(
     // IMPORTANT: Subscribe to events BEFORE sending the message
     // This ensures we don't miss any events that OpenCode sends
     let stream = state.sidecar.subscribe_events().await?;
-    
+
     // Now send the prompt
     let mut request = if let Some(files) = attachments {
         let file_parts: Vec<FilePartInput> = files
@@ -669,12 +678,20 @@ pub async fn send_message_streaming(
                     // Filter events for our session
                     let is_our_session = match &event {
                         StreamEvent::Content { session_id, .. } => session_id == &target_session_id,
-                        StreamEvent::ToolStart { session_id, .. } => session_id == &target_session_id,
+                        StreamEvent::ToolStart { session_id, .. } => {
+                            session_id == &target_session_id
+                        }
                         StreamEvent::ToolEnd { session_id, .. } => session_id == &target_session_id,
-                        StreamEvent::SessionStatus { session_id, .. } => session_id == &target_session_id,
+                        StreamEvent::SessionStatus { session_id, .. } => {
+                            session_id == &target_session_id
+                        }
                         StreamEvent::SessionIdle { session_id } => session_id == &target_session_id,
-                        StreamEvent::SessionError { session_id, .. } => session_id == &target_session_id,
-                        StreamEvent::PermissionAsked { session_id, .. } => session_id == &target_session_id,
+                        StreamEvent::SessionError { session_id, .. } => {
+                            session_id == &target_session_id
+                        }
+                        StreamEvent::PermissionAsked { session_id, .. } => {
+                            session_id == &target_session_id
+                        }
                         StreamEvent::Raw { .. } => true, // Include raw events for debugging
                     };
 
@@ -771,9 +788,9 @@ pub async fn download_sidecar(app: AppHandle, state: State<'_, AppState>) -> Res
     // Stop the sidecar first to release the binary file lock
     tracing::info!("Stopping sidecar before download");
     let _ = state.sidecar.stop().await;
-    
+
     // Give the process extra time to fully terminate and release file handles
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    
+
     sidecar_manager::download_sidecar(app).await
 }

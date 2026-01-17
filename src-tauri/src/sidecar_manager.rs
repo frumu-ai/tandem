@@ -264,11 +264,7 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     let download_url = asset.browser_download_url.clone();
     let total_size = asset.size;
 
-    tracing::info!(
-        "Downloading OpenCode {} from {}",
-        version,
-        download_url
-    );
+    tracing::info!("Downloading OpenCode {} from {}", version, download_url);
 
     // Create binaries directory
     let binary_path = get_sidecar_binary_path(&app)?;
@@ -333,7 +329,7 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
 
     // Rename extracted binary to expected name
     emit_state("installing", None);
-    
+
     let extracted_name = if cfg!(windows) {
         "opencode.exe"
     } else {
@@ -346,39 +342,45 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
         if let Some(state) = app.try_state::<crate::state::AppState>() {
             tracing::info!("Stopping sidecar before binary update");
             let _ = state.sidecar.stop().await;
-            
+
             // On Windows, aggressively kill any remaining processes
             #[cfg(windows)]
             {
                 use std::process::Command as StdCommand;
-                
+
                 tracing::info!("Running taskkill to ensure all OpenCode processes are terminated");
-                
+
                 // Kill any opencode.exe processes by name
                 let result = StdCommand::new("taskkill")
                     .args(["/F", "/IM", "opencode.exe"])
                     .output();
-                
+
                 match result {
                     Ok(output) => {
-                        tracing::info!("taskkill /IM result: {}", String::from_utf8_lossy(&output.stdout));
+                        tracing::info!(
+                            "taskkill /IM result: {}",
+                            String::from_utf8_lossy(&output.stdout)
+                        );
                     }
                     Err(e) => tracing::warn!("Failed to run taskkill /IM: {}", e),
                 }
-                
+
                 // Also try killing any process with the executable name in its path
                 let result2 = StdCommand::new("taskkill")
                     .args(["/F", "/FI", "IMAGENAME eq opencode*"])
                     .output();
-                
+
                 match result2 {
                     Ok(output) => {
-                        tracing::info!("taskkill /FI result: {}", String::from_utf8_lossy(&output.stdout));
+                        tracing::info!(
+                            "taskkill /FI result: {}",
+                            String::from_utf8_lossy(&output.stdout)
+                        );
                     }
                     Err(e) => tracing::warn!("Failed to run taskkill /FI: {}", e),
                 }
             }
-            
+
             // Give extra time for Windows to release file locks
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         }
@@ -387,7 +389,7 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
             // Try to remove the old binary, retry a few times on Windows
             let mut retries = 5;
             let mut last_error = None;
-            
+
             while retries > 0 {
                 match fs::remove_file(&binary_path) {
                     Ok(_) => {
@@ -404,16 +406,19 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
                     }
                 }
             }
-            
+
             if let Some(e) = last_error {
-                tracing::warn!("Failed to remove old binary: {}. Attempting rename anyway.", e);
+                tracing::warn!(
+                    "Failed to remove old binary: {}. Attempting rename anyway.",
+                    e
+                );
             }
         }
-        
+
         // Try rename with retry logic
         let mut retries = 5;
         let mut last_error = None;
-        
+
         while retries > 0 {
             match fs::rename(&extracted_path, &binary_path) {
                 Ok(_) => {
@@ -430,7 +435,7 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
                 }
             }
         }
-        
+
         if let Some(e) = last_error {
             emit_state("error", Some(&e.to_string()));
             return Err(TandemError::Sidecar(format!(
@@ -465,7 +470,11 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     Ok(())
 }
 
-fn extract_archive(archive_path: &PathBuf, dest_dir: &std::path::Path, asset_name: &str) -> Result<()> {
+fn extract_archive(
+    archive_path: &PathBuf,
+    dest_dir: &std::path::Path,
+    asset_name: &str,
+) -> Result<()> {
     if asset_name.ends_with(".zip") {
         // Extract zip
         let file = fs::File::open(archive_path)
@@ -474,9 +483,10 @@ fn extract_archive(archive_path: &PathBuf, dest_dir: &std::path::Path, asset_nam
             .map_err(|e| TandemError::Sidecar(format!("Failed to read zip: {}", e)))?;
 
         for i in 0..archive.len() {
-            let mut file = archive.by_index(i)
+            let mut file = archive
+                .by_index(i)
                 .map_err(|e| TandemError::Sidecar(format!("Failed to read zip entry: {}", e)))?;
-            
+
             let outpath = dest_dir.join(file.mangled_name());
 
             if file.is_dir() {
@@ -497,7 +507,8 @@ fn extract_archive(archive_path: &PathBuf, dest_dir: &std::path::Path, asset_nam
             .map_err(|e| TandemError::Sidecar(format!("Failed to open archive: {}", e)))?;
         let gz = flate2::read::GzDecoder::new(file);
         let mut archive = tar::Archive::new(gz);
-        archive.unpack(dest_dir)
+        archive
+            .unpack(dest_dir)
             .map_err(|e| TandemError::Sidecar(format!("Failed to extract tar.gz: {}", e)))?;
     }
 

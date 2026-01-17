@@ -263,7 +263,7 @@ impl SendMessageRequest {
             .into_iter()
             .map(MessagePartInput::File)
             .collect();
-        
+
         if !content.is_empty() {
             parts.push(MessagePartInput::Text(TextPartInput {
                 part_type: "text".to_string(),
@@ -433,19 +433,11 @@ pub enum StreamEvent {
         error: Option<String>,
     },
     /// Session status changed
-    SessionStatus {
-        session_id: String,
-        status: String,
-    },
+    SessionStatus { session_id: String, status: String },
     /// Session is idle (generation complete)
-    SessionIdle {
-        session_id: String,
-    },
+    SessionIdle { session_id: String },
     /// Session error
-    SessionError {
-        session_id: String,
-        error: String,
-    },
+    SessionError { session_id: String, error: String },
     /// Permission requested
     PermissionAsked {
         session_id: String,
@@ -664,35 +656,41 @@ impl SidecarManager {
                 use std::process::Command as StdCommand;
                 let pid = child.id();
                 tracing::info!("Killing OpenCode process with PID {}", pid);
-                
+
                 // Try taskkill /T to terminate child processes too
                 let result = StdCommand::new("taskkill")
                     .args(["/F", "/T", "/PID", &pid.to_string()])
                     .output();
-                
+
                 match result {
                     Ok(output) => {
-                        tracing::info!("taskkill result: {}", String::from_utf8_lossy(&output.stdout));
+                        tracing::info!(
+                            "taskkill result: {}",
+                            String::from_utf8_lossy(&output.stdout)
+                        );
                         if !output.status.success() {
-                            tracing::warn!("taskkill stderr: {}", String::from_utf8_lossy(&output.stderr));
+                            tracing::warn!(
+                                "taskkill stderr: {}",
+                                String::from_utf8_lossy(&output.stderr)
+                            );
                         }
                     }
                     Err(e) => tracing::error!("Failed to run taskkill: {}", e),
                 }
-                
+
                 // Wait a moment for the process to fully terminate
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            
+
             #[cfg(not(windows))]
             {
                 let _ = child.kill();
             }
-            
+
             // Wait for the process to exit
             let _ = child.wait();
         }
-        
+
         // Give extra time for Windows to release file handles
         #[cfg(windows)]
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -786,7 +784,7 @@ impl SidecarManager {
             let body: serde_json::Value = response.json().await.map_err(|e| {
                 TandemError::Sidecar(format!("Health check returned invalid JSON: {}", e))
             })?;
-            
+
             if body.get("healthy").and_then(|v| v.as_bool()) == Some(true) {
                 tracing::debug!("OpenCode health check passed: {:?}", body);
                 Ok(())
@@ -911,12 +909,10 @@ impl SidecarManager {
 
         let url = format!("{}/session/{}/message", self.base_url().await?, session_id);
 
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to get session messages: {}", e)))?;
+        let response =
+            self.http_client.get(&url).send().await.map_err(|e| {
+                TandemError::Sidecar(format!("Failed to get session messages: {}", e))
+            })?;
 
         self.handle_response(response).await
     }
@@ -928,11 +924,7 @@ impl SidecarManager {
     /// Send a message to a session (async, non-blocking)
     /// OpenCode API: POST /session/{id}/prompt_async
     /// Returns 204 No Content - actual response comes via /event SSE stream
-    pub async fn send_message(
-        &self,
-        session_id: &str,
-        request: SendMessageRequest,
-    ) -> Result<()> {
+    pub async fn send_message(&self, session_id: &str, request: SendMessageRequest) -> Result<()> {
         self.check_circuit_breaker().await?;
 
         let url = format!(
@@ -1180,22 +1172,26 @@ impl SidecarManager {
     ) -> Result<T> {
         let status = response.status();
         let url = response.url().to_string();
-        
+
         if status.is_success() {
             self.record_success().await;
-            
+
             // Get the response body as text first for debugging
             let body = response.text().await.map_err(|e| {
                 TandemError::Sidecar(format!("Failed to read response body: {}", e))
             })?;
-            
+
             tracing::debug!("Response from {}: {}", url, &body[..body.len().min(500)]);
-            
+
             // Parse the JSON
             serde_json::from_str(&body).map_err(|e| {
                 tracing::error!("Failed to parse response from {}: {}", url, e);
                 tracing::error!("Response body: {}", &body[..body.len().min(1000)]);
-                TandemError::Sidecar(format!("Failed to parse response: {}. Body: {}", e, &body[..body.len().min(200)]))
+                TandemError::Sidecar(format!(
+                    "Failed to parse response: {}. Body: {}",
+                    e,
+                    &body[..body.len().min(200)]
+                ))
             })
         } else {
             self.record_failure().await;
@@ -1274,17 +1270,24 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
         "message.part.updated" => {
             // Extract part info
             let part = props.get("part")?;
-            
+
             // Debug log the full event
             tracing::debug!("message.part.updated event: {:?}", props);
-            
+
             // IMPORTANT: Only process events with a delta - this indicates streaming content
             // from the assistant. Events without delta are typically user message confirmations.
-            let delta = props.get("delta").and_then(|d| d.as_str()).map(|s| s.to_string());
-            
+            let delta = props
+                .get("delta")
+                .and_then(|d| d.as_str())
+                .map(|s| s.to_string());
+
             let session_id = part.get("sessionID").and_then(|s| s.as_str())?.to_string();
             let message_id = part.get("messageID").and_then(|s| s.as_str())?.to_string();
-            let part_id = part.get("id").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let part_id = part
+                .get("id")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
             let part_type = part.get("type").and_then(|s| s.as_str()).unwrap_or("text");
 
             match part_type {
@@ -1296,7 +1299,11 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                         return None;
                     }
 
-                    let text = part.get("text").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                    let text = part
+                        .get("text")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     Some(StreamEvent::Content {
                         session_id,
                         message_id,
@@ -1307,23 +1314,31 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                 // Ignore reasoning parts to avoid showing "[REDACTED]" in chat
                 "reasoning" => None,
                 "tool-invocation" => {
-                    let tool = part.get("tool").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
+                    let tool = part
+                        .get("tool")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
                     let args = part.get("args").cloned().unwrap_or(serde_json::Value::Null);
-                    let state = part.get("state").and_then(|s| s.as_str()).unwrap_or("pending");
-                    
+                    let state = part
+                        .get("state")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("pending");
+
                     match state {
-                        "pending" | "running" => {
-                            Some(StreamEvent::ToolStart {
-                                session_id,
-                                message_id,
-                                part_id,
-                                tool,
-                                args,
-                            })
-                        }
+                        "pending" | "running" => Some(StreamEvent::ToolStart {
+                            session_id,
+                            message_id,
+                            part_id,
+                            tool,
+                            args,
+                        }),
                         "completed" | "failed" => {
                             let result = part.get("result").cloned();
-                            let error = part.get("error").and_then(|e| e.as_str()).map(|s| s.to_string());
+                            let error = part
+                                .get("error")
+                                .and_then(|e| e.as_str())
+                                .map(|s| s.to_string());
                             Some(StreamEvent::ToolEnd {
                                 session_id,
                                 message_id,
@@ -1348,7 +1363,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
 
             let role = info.get("role").and_then(|r| r.as_str()).unwrap_or("");
             tracing::debug!("message.updated event - role: {}, info: {:?}", role, info);
-            
+
             if role != "assistant" {
                 tracing::debug!("Skipping message.updated for non-assistant role: {}", role);
                 return None;
@@ -1427,7 +1442,10 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
         "permission.asked" => {
             let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
             let request_id = props.get("requestID").and_then(|s| s.as_str())?.to_string();
-            let tool = props.get("tool").and_then(|s| s.as_str()).map(|s| s.to_string());
+            let tool = props
+                .get("tool")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
             let args = props.get("args").cloned();
             Some(StreamEvent::PermissionAsked {
                 session_id,
@@ -1479,7 +1497,9 @@ mod tests {
             "data: {\"type\":\"message.part.updated\",\"properties\":{\"part\":{\"sessionID\":\"ses_123\",\"messageID\":\"msg_456\",\"type\":\"text\",\"text\":\"Hello\"},\"delta\":\"Hello\"}}\n\n"
         );
         let event = parse_sse_event(&mut buffer);
-        assert!(matches!(event, Some(StreamEvent::Content { session_id, content, .. }) if session_id == "ses_123" && content == "Hello"));
+        assert!(
+            matches!(event, Some(StreamEvent::Content { session_id, content, .. }) if session_id == "ses_123" && content == "Hello")
+        );
         assert!(buffer.is_empty());
     }
 
@@ -1493,9 +1513,11 @@ mod tests {
     #[test]
     fn test_parse_sse_session_idle() {
         let mut buffer = String::from(
-            "data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_123\"}}\n\n"
+            "data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_123\"}}\n\n",
         );
         let event = parse_sse_event(&mut buffer);
-        assert!(matches!(event, Some(StreamEvent::SessionIdle { session_id }) if session_id == "ses_123"));
+        assert!(
+            matches!(event, Some(StreamEvent::SessionIdle { session_id }) if session_id == "ses_123")
+        );
     }
 }

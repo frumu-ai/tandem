@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { cn } from "@/lib/utils";
-import { User, Bot, FileText, Terminal, AlertTriangle, Image as ImageIcon } from "lucide-react";
+import { User, FileText, Terminal, AlertTriangle, Image as ImageIcon } from "lucide-react";
 
 export interface MessageAttachment {
   name: string;

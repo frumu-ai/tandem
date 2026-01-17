@@ -111,7 +111,7 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
     for (key_type, env_var) in mappings {
         let key_name = key_type.to_key_name();
         tracing::debug!("Checking for key: {}", key_name);
-        
+
         match keystore.get(&key_name) {
             Ok(Some(key)) => {
                 let masked = if key.len() > 8 {

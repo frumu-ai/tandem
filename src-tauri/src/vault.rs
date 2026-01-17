@@ -177,7 +177,9 @@ pub fn validate_pin(pin: &str) -> Result<()> {
         )));
     }
     if !pin.chars().all(|c| c.is_ascii_digit()) {
-        return Err(TandemError::Vault("PIN must contain only digits".to_string()));
+        return Err(TandemError::Vault(
+            "PIN must contain only digits".to_string(),
+        ));
     }
     Ok(())
 }
