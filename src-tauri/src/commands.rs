@@ -1641,3 +1641,137 @@ pub async fn download_sidecar(app: AppHandle, state: State<'_, AppState>) -> Res
 
     sidecar_manager::download_sidecar(app).await
 }
+
+// ============================================================================
+// File Browser Commands
+// ============================================================================
+
+/// File entry information for directory listings
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FileEntry {
+    pub name: String,
+    pub path: String,
+    pub is_directory: bool,
+    pub size: Option<u64>,
+    pub extension: Option<String>,
+}
+
+/// Read directory contents with gitignore support
+#[tauri::command]
+pub async fn read_directory(path: String) -> Result<Vec<FileEntry>> {
+    use ignore::WalkBuilder;
+    
+    let dir_path = PathBuf::from(&path);
+    
+    if !dir_path.exists() {
+        return Err(TandemError::NotFound(format!("Path does not exist: {}", path)));
+    }
+    
+    if !dir_path.is_dir() {
+        return Err(TandemError::InvalidConfig(format!("Path is not a directory: {}", path)));
+    }
+
+    let mut entries = Vec::new();
+    
+    // Use ignore crate to respect .gitignore
+    let walker = WalkBuilder::new(&dir_path)
+        .max_depth(Some(1))  // Only immediate children
+        .hidden(false)        // Show hidden files
+        .git_ignore(true)     // Respect .gitignore
+        .git_global(true)     // Respect global gitignore
+        .git_exclude(true)    // Respect .git/info/exclude
+        .build();
+    
+    for result in walker {
+        match result {
+            Ok(entry) => {
+                let entry_path = entry.path();
+                
+                // Skip the directory itself
+                if entry_path == dir_path {
+                    continue;
+                }
+                
+                let metadata = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!("Failed to read metadata for {:?}: {}", entry_path, e);
+                        continue;
+                    }
+                };
+                
+                let name = entry_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                
+                let path_str = entry_path.to_string_lossy().to_string();
+                let is_directory = metadata.is_dir();
+                let size = if is_directory { None } else { Some(metadata.len()) };
+                let extension = if is_directory {
+                    None
+                } else {
+                    entry_path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_string())
+                };
+                
+                entries.push(FileEntry {
+                    name,
+                    path: path_str,
+                    is_directory,
+                    size,
+                    extension,
+                });
+            }
+            Err(e) => {
+                tracing::warn!("Error walking directory: {}", e);
+            }
+        }
+    }
+    
+    // Sort: directories first, then files, alphabetically
+    entries.sort_by(|a, b| {
+        match (a.is_directory, b.is_directory) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        }
+    });
+    
+    Ok(entries)
+}
+
+/// Read file content with size limit
+#[tauri::command]
+pub async fn read_file_content(path: String, max_size: Option<u64>) -> Result<String> {
+    let file_path = PathBuf::from(&path);
+    
+    if !file_path.exists() {
+        return Err(TandemError::NotFound(format!("File does not exist: {}", path)));
+    }
+    
+    if !file_path.is_file() {
+        return Err(TandemError::InvalidConfig(format!("Path is not a file: {}", path)));
+    }
+    
+    let metadata = fs::metadata(&file_path)
+        .map_err(|e| TandemError::Io(e))?;
+    
+    let file_size = metadata.len();
+    let size_limit = max_size.unwrap_or(1024 * 1024); // Default 1MB
+    
+    if file_size > size_limit {
+        return Err(TandemError::InvalidConfig(format!(
+            "File too large: {} bytes (limit: {} bytes)",
+            file_size, size_limit
+        )));
+    }
+    
+    let content = fs::read_to_string(&file_path)
+        .map_err(|e| TandemError::Io(e))?;
+    
+    Ok(content)
+}

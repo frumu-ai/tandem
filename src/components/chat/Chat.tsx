@@ -39,6 +39,10 @@ interface ChatProps {
   executePendingTasksTrigger?: number;
   onGeneratingChange?: (isGenerating: boolean) => void;
   pendingTasks?: TodoItem[];
+  fileToAttach?: FileAttachment | null;
+  onFileAttached?: () => void;
+  selectedAgent?: string;
+  onAgentChange?: (agent: string | undefined) => void;
 }
 
 export function Chat({
@@ -52,6 +56,10 @@ export function Chat({
   executePendingTasksTrigger,
   onGeneratingChange,
   pendingTasks,
+  fileToAttach,
+  onFileAttached,
+  selectedAgent: propSelectedAgent,
+  onAgentChange: propOnAgentChange,
 }: ChatProps) {
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -68,8 +76,16 @@ export function Chat({
   // const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isGitRepository, setIsGitRepository] = useState(false);
-  const usePlanMode = propUsePlanMode;
-  const setUsePlanMode = onPlanModeChange || (() => {});
+  
+  // Support both new agent prop and legacy usePlanMode
+  const selectedAgent = propSelectedAgent !== undefined ? propSelectedAgent : (propUsePlanMode ? "plan" : undefined);
+  const onAgentChange = propOnAgentChange || ((agent: string | undefined) => {
+    onPlanModeChange?.(agent === "plan");
+  });
+  const usePlanMode = selectedAgent === "plan";
+  const setUsePlanMode = (enabled: boolean) => {
+    onAgentChange(enabled ? "plan" : undefined);
+  };
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const currentAssistantMessageRef = useRef<string>("");
   const currentAssistantMessageIdRef = useRef<string | null>(null);
@@ -155,6 +171,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
   useEffect(() => {
     console.log("[Chat] Session ID changed from", currentSessionId, "to", propSessionId || null);
     setCurrentSessionId(propSessionId || null);
+    currentSessionIdRef.current = propSessionId || null; // Update ref synchronously
 
     // Clear any ongoing generation state when session changes
     setIsGenerating(false);
@@ -170,19 +187,21 @@ Start with task #1 and continue through each one. Let me know when each task is 
 
   // Load session history when sessionId changes from props
   useEffect(() => {
-    if (propSessionId) {
+    // Only load history if switching to a different session than we currently have
+    if (propSessionId && propSessionId !== currentSessionId) {
       console.log("[Chat] Loading session history for:", propSessionId);
       setMessages([]);
       // setActivities([]);
       currentAssistantMessageRef.current = "";
       loadSessionHistory(propSessionId);
-    } else {
-      // Clear messages when no session selected
+    } else if (!propSessionId && currentSessionId) {
+      // Clear messages when switching to no session (New Chat)
+      console.log("[Chat] Clearing messages for new chat");
       setMessages([]);
       // setActivities([]);
       currentAssistantMessageRef.current = "";
     }
-  }, [propSessionId]);
+  }, [propSessionId, currentSessionId]);
 
   // Check if workspace is a Git repository
   useEffect(() => {
@@ -259,11 +278,18 @@ Start with task #1 and continue through each one. Let me know when each task is 
           // Extract text content from parts
           let content = "";
           const toolCalls: MessageProps["toolCalls"] = [];
+          const attachments: { name: string; type: string }[] = [];
 
           for (const part of msg.parts) {
             const partObj = part as Record<string, unknown>;
             if (partObj.type === "text" && partObj.text) {
               content += partObj.text as string;
+            } else if (partObj.type === "file") {
+              // Handle file attachments - add a placeholder in content
+              const filename = (partObj.filename as string) || "file";
+              const mime = (partObj.mime as string) || "application/octet-stream";
+              attachments.push({ name: filename, type: mime });
+              content += `\n[📎 Attached file: ${filename}]\n`;
             } else if (partObj.type === "tool" || partObj.type === "tool-invocation") {
               const state = partObj.state as Record<string, unknown> | undefined;
               toolCalls.push({
@@ -281,7 +307,9 @@ Start with task #1 and continue through each one. Let me know when each task is 
             }
           }
 
-          if (content || toolCalls.length > 0 || role === "user") {
+          // Only add messages that have actual text content or are user messages
+          // Skip assistant messages that only have tool calls (internal OpenCode operations)
+          if (content || role === "user") {
             convertedMessages.push({
               id: msg.info.id,
               role,
@@ -358,6 +386,14 @@ Start with task #1 and continue through each one. Let me know when each task is 
   //   return tool.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
   // };
 
+  // Use a ref to track the current session without causing re-renders
+  const currentSessionIdRef = useRef<string | null>(null);
+  
+  // Update ref when session changes (but this doesn't cause handleStreamEvent to recreate)
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
+
   const handleStreamEvent = useCallback(
     (event: StreamEvent) => {
       // Debug: Log all events
@@ -367,20 +403,19 @@ Start with task #1 and continue through each one. Let me know when each task is 
         "session:",
         (event as { session_id?: string }).session_id,
         "current:",
-        currentSessionId,
+        currentSessionIdRef.current,
         event
       );
 
       // Filter events for the current session
-      // IMPORTANT: Use currentSessionId directly since propSessionId might be stale
-      // when a new session is created but parent hasn't updated yet
+      // IMPORTANT: Use ref value to avoid recreating this callback
       const eventSessionId = (event as { session_id?: string }).session_id;
-      if (eventSessionId && currentSessionId && eventSessionId !== currentSessionId) {
+      if (eventSessionId && currentSessionIdRef.current && eventSessionId !== currentSessionIdRef.current) {
         console.log(
           "[StreamEvent] Ignoring event for different session:",
           eventSessionId,
           "!==",
-          currentSessionId
+          currentSessionIdRef.current
         );
         return;
       }
@@ -617,13 +652,34 @@ Start with task #1 and continue through each one. Let me know when each task is 
           break;
 
         case "session_error":
-          setError(event.error);
+          console.error("[StreamEvent] Session error:", event.error);
+          
+          // Display the error to the user
+          setError(`Session error: ${event.error}`);
+          
+          // Stop generation and clean up
           setIsGenerating(false);
           currentAssistantMessageRef.current = "";
+          
+          // Clear generation timeout
           if (generationTimeoutRef.current) {
             clearTimeout(generationTimeoutRef.current);
             generationTimeoutRef.current = null;
           }
+          
+          // Update the last assistant message with the error if it exists
+          setMessages((prev) => {
+            const lastMessage = prev[prev.length - 1];
+            if (lastMessage && lastMessage.role === "assistant" && !lastMessage.content) {
+              const updated = [...prev];
+              updated[updated.length - 1] = {
+                ...lastMessage,
+                content: `Error: ${event.error}`,
+              };
+              return updated;
+            }
+            return prev;
+          });
           break;
 
         case "permission_asked": {
@@ -710,7 +766,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
         }
       }
     },
-    [isGenerating, currentSessionId] // Removed propSessionId from dependencies
+    [isGenerating] // Using ref for currentSessionId, so no need to include it
   );
 
   // Listen for sidecar events
@@ -777,6 +833,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
           const session = await createSession();
           sessionId = session.id;
           setCurrentSessionId(session.id);
+          currentSessionIdRef.current = session.id; // Update ref synchronously before events arrive
           onSessionCreated?.(session.id);
         } catch (e) {
           setError(`Failed to create session: ${e}`);
@@ -784,8 +841,8 @@ Start with task #1 and continue through each one. Let me know when each task is 
         }
       }
 
-      // Select agent based on plan mode
-      const selectedAgent = usePlanMode ? "plan" : undefined;
+      // Select agent
+      const agentToUse = selectedAgent;
       
       // In Plan Mode, guide the AI to use todowrite for task tracking
       let finalContent = content;
@@ -835,15 +892,28 @@ Start with task #1 and continue through each one. Let me know when each task is 
       }, 60000);
 
       try {
-        // Convert attachments to API format
-        const attachmentInputs: FileAttachmentInput[] | undefined = attachments?.map((a) => ({
-          mime: a.mime,
-          filename: a.name,
-          url: a.url,
-        }));
+        // For data URLs, embed content directly in the message instead of using file attachments
+        // to avoid OpenCode's buggy file download behavior
+        let messageContent = finalContent;
+        if (attachments && attachments.length > 0) {
+          for (const attachment of attachments) {
+            if (attachment.url.startsWith("data:")) {
+              // Decode the data URL and embed it in the message
+              const base64Data = attachment.url.split(",")[1];
+              const decodedContent = decodeURIComponent(
+                // eslint-disable-next-line no-undef
+                escape(atob(base64Data))
+              );
+              
+              // Use a generic format that won't trigger OpenCode to look for files
+              messageContent += `\n\nHere is the attached content:\n\`\`\`\n${decodedContent}\n\`\`\`\n`;
+            }
+          }
+        }
 
-        // Send message and stream response, using Plan agent if in plan mode
-        await sendMessageStreaming(sessionId, finalContent, attachmentInputs, selectedAgent);
+        // Don't send file attachments for data URLs - content is now embedded
+        // Send message and stream response, with selected agent
+        await sendMessageStreaming(sessionId, messageContent, undefined, agentToUse);
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
         setError(`Failed to send message: ${errorMessage}`);
@@ -1254,8 +1324,10 @@ Start with task #1 and continue through each one. Let me know when each task is 
               : "Ask Tandem anything..."
             : "Select a workspace to start chatting"
         }
-        selectedAgent={usePlanMode ? "plan" : undefined}
-        onAgentChange={(agent) => setUsePlanMode(agent === "plan")}
+        selectedAgent={selectedAgent}
+        onAgentChange={onAgentChange}
+        externalAttachment={fileToAttach}
+        onExternalAttachmentProcessed={onFileAttached}
       />
 
       {/* Permission requests - only show in immediate mode */}

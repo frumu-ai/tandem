@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, Zap, ListChecks, Code } from "lucide-react";
+import { ChevronDown, Zap, ListChecks, Code, MessageCircleQuestion, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 
@@ -14,6 +14,8 @@ const AGENTS: Agent[] = [
   { id: undefined, label: "Immediate", icon: Zap, description: "Execute changes directly" },
   { id: "plan", label: "Plan", icon: ListChecks, description: "Propose changes for review" },
   { id: "coder", label: "Coder", icon: Code, description: "Focus on code generation" },
+  { id: "general", label: "Ask", icon: MessageCircleQuestion, description: "Q&A without making changes" },
+  { id: "explore", label: "Explore", icon: Search, description: "Analyze and explore code" },
 ];
 
 interface AgentSelectorProps {
@@ -31,7 +33,9 @@ export function AgentSelector({ selectedAgent, onAgentChange, disabled }: AgentS
 
   // Close dropdown when clicking outside
   useEffect(() => {
+    // eslint-disable-next-line no-undef
     const handleClickOutside = (event: Event) => {
+      // eslint-disable-next-line no-undef
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsOpen(false);
       }

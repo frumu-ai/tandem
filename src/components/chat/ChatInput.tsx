@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Paperclip, Mic, StopCircle, X, FileText } from "lucide-react";
+import { Send, Paperclip, StopCircle, X, FileText } from "lucide-react";
 import { Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { AgentSelector } from "./AgentSelector";
@@ -23,6 +23,8 @@ interface ChatInputProps {
   placeholder?: string;
   selectedAgent?: string;
   onAgentChange?: (agent: string | undefined) => void;
+  externalAttachment?: FileAttachment | null;
+  onExternalAttachmentProcessed?: () => void;
 }
 
 export function ChatInput({
@@ -33,12 +35,22 @@ export function ChatInput({
   placeholder = "Ask Tandem anything...",
   selectedAgent,
   onAgentChange,
+  externalAttachment,
+  onExternalAttachmentProcessed,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Handle external attachment from file browser
+  useEffect(() => {
+    if (externalAttachment) {
+      setAttachments((prev) => [...prev, externalAttachment]);
+      onExternalAttachmentProcessed?.();
+    }
+  }, [externalAttachment, onExternalAttachmentProcessed]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -301,15 +313,15 @@ export function ChatInput({
             />
           </div>
 
-          {/* Voice input button */}
-          <button
+          {/* Voice input button - Disabled (not implemented yet) */}
+          {/* <button
             type="button"
             className="flex h-9 w-9 items-center justify-center rounded-lg text-text-subtle transition-colors hover:bg-surface hover:text-text"
             disabled={disabled}
             title="Voice input"
           >
             <Mic className="h-5 w-5" />
-          </button>
+          </button> */}
 
           {/* Send/Stop button */}
           {isGenerating ? (
