@@ -16,6 +16,7 @@ Inspired by [Claude Cowork](https://claude.com/blog/cowork-research-preview), bu
 - **Cross-platform** - Windows, macOS, and Linux from day one
 - **Visual permissions** - Approve every file access and action
 - **Full undo** - Rollback any AI operation with operation journaling
+- **Execution Planning** - Review and batch-approve multi-step AI operations before execution
 
 ## Quick Start
 
@@ -115,6 +116,38 @@ Tandem treats the AI as an "untrusted contractor":
 - Write operations require **user approval**
 - Full **operation journal** with undo capability
 - **Circuit breaker** for resilience
+- **Execution Planning** - Review all changes as a batch before applying
+
+#### Plan Mode vs Immediate Mode
+
+Tandem offers two modes for handling AI operations:
+
+**Immediate Mode** (default):
+- Approve each file change individually via toast notifications
+- Good for quick, small changes
+- Traditional AI assistant experience
+
+**Plan Mode** (recommended for complex tasks):
+- Toggle with the **"Plan Mode"** button in the chat header
+- Uses OpenCode's native Plan agent
+- AI proposes file operations that are staged for review
+- All changes appear in the **Execution Plan panel** (bottom-right)
+- Review diffs side-by-side before applying
+- Remove unwanted operations
+- Execute all approved changes with one click
+
+**How to use Plan Mode:**
+1. Click "Immediate" → "Plan Mode" toggle in header
+2. Ask AI to make changes (e.g., "Refactor the auth system")
+3. AI proposes operations → they appear in Execution Plan panel
+4. Review diffs and operations
+5. Click **"Execute Plan"** button in panel
+6. All changes applied together + AI continues
+
+The Execution Plan panel appears automatically when the AI proposes file changes in Plan Mode.
+  - Full undo support for the entire batch
+
+Toggle between modes using the button in the chat header.
 
 ## Security
 
@@ -168,6 +201,10 @@ tandem/
 - [ ] Browser integration
 - [ ] Connectors & Skills
 - [ ] Multi-workspace support
+
+## Why Tandem?
+
+For a deeper dive into why we built Tandem and how it compares to other tools, see our [Marketing Guide](docs/marketing.md).
 
 ## License
 

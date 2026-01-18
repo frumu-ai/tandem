@@ -28,6 +28,7 @@ pub struct JournalEntry {
 #[serde(rename_all = "snake_case")]
 pub enum OperationStatus {
     PendingApproval,
+    Staged,
     Approved,
     Denied,
     Completed,
@@ -172,6 +173,77 @@ impl OperationJournal {
 
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.read().unwrap().is_empty()
+    }
+}
+
+/// Staged operation waiting for batch execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StagedOperation {
+    pub id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub tool: String,
+    pub args: serde_json::Value,
+    pub before_snapshot: Option<FileSnapshot>,
+    pub proposed_content: Option<String>,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub description: String,
+    pub message_id: Option<String>,
+}
+
+/// Store for staged operations
+pub struct StagingStore {
+    operations: RwLock<Vec<StagedOperation>>,
+}
+
+impl StagingStore {
+    pub fn new() -> Self {
+        Self {
+            operations: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Stage a new operation
+    pub fn stage(&self, operation: StagedOperation) {
+        let mut ops = self.operations.write().unwrap();
+        ops.push(operation);
+        tracing::info!("Staged operation: {} (total: {})", ops.last().unwrap().id, ops.len());
+    }
+
+    /// Get all staged operations
+    pub fn get_all(&self) -> Vec<StagedOperation> {
+        let ops = self.operations.read().unwrap();
+        ops.clone()
+    }
+
+    /// Remove a specific staged operation by ID
+    pub fn remove(&self, id: &str) -> Option<StagedOperation> {
+        let mut ops = self.operations.write().unwrap();
+        if let Some(pos) = ops.iter().position(|op| op.id == id) {
+            Some(ops.remove(pos))
+        } else {
+            None
+        }
+    }
+
+    /// Clear all staged operations
+    pub fn clear(&self) -> Vec<StagedOperation> {
+        let mut ops = self.operations.write().unwrap();
+        let cleared = ops.clone();
+        ops.clear();
+        tracing::info!("Cleared {} staged operations", cleared.len());
+        cleared
+    }
+
+    /// Get count of staged operations
+    pub fn count(&self) -> usize {
+        let ops = self.operations.read().unwrap();
+        ops.len()
+    }
+
+    /// Check if any operations are staged
+    pub fn has_staged(&self) -> bool {
+        !self.operations.read().unwrap().is_empty()
     }
 }
 

@@ -1,6 +1,6 @@
 // Tandem Application State
 use crate::sidecar::{SidecarConfig, SidecarManager};
-use crate::tool_proxy::OperationJournal;
+use crate::tool_proxy::{OperationJournal, StagingStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -22,6 +22,8 @@ pub struct ProviderConfig {
 pub struct ProvidersConfig {
     #[serde(default = "default_openrouter")]
     pub openrouter: ProviderConfig,
+    #[serde(default = "default_opencode_zen")]
+    pub opencode_zen: ProviderConfig,
     #[serde(default = "default_anthropic")]
     pub anthropic: ProviderConfig,
     #[serde(default = "default_openai")]
@@ -38,6 +40,15 @@ fn default_openrouter() -> ProviderConfig {
         default: true,
         endpoint: "https://openrouter.ai/api/v1".to_string(),
         model: Some("xiaomi/mimo-v2-flash:free".to_string()),
+    }
+}
+
+fn default_opencode_zen() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://opencode.ai/zen/v1".to_string(),
+        model: Some("gpt-5-nano".to_string()),
     }
 }
 
@@ -72,6 +83,7 @@ impl Default for ProvidersConfig {
     fn default() -> Self {
         Self {
             openrouter: default_openrouter(),
+            opencode_zen: default_opencode_zen(),
             anthropic: default_anthropic(),
             openai: default_openai(),
             ollama: default_ollama(),
@@ -182,6 +194,8 @@ pub struct AppState {
     pub current_session_id: RwLock<Option<String>>,
     /// Operation journal for file undo
     pub operation_journal: Arc<OperationJournal>,
+    /// Staging store for execution planning
+    pub staging_store: Arc<StagingStore>,
 }
 
 impl AppState {
@@ -209,6 +223,7 @@ impl AppState {
             sidecar: Arc::new(SidecarManager::new(SidecarConfig::default())),
             current_session_id: RwLock::new(None),
             operation_journal: Arc::new(OperationJournal::new(100)),
+            staging_store: Arc::new(StagingStore::new()),
         }
     }
 

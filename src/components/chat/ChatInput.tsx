@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Send, Paperclip, Mic, StopCircle, X, FileText } from "lucide-react";
 import { Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { AgentSelector } from "./AgentSelector";
 
 export interface FileAttachment {
   id: string;
@@ -20,6 +21,8 @@ interface ChatInputProps {
   disabled?: boolean;
   isGenerating?: boolean;
   placeholder?: string;
+  selectedAgent?: string;
+  onAgentChange?: (agent: string | undefined) => void;
 }
 
 export function ChatInput({
@@ -28,6 +31,8 @@ export function ChatInput({
   disabled,
   isGenerating,
   placeholder = "Ask Tandem anything...",
+  selectedAgent,
+  onAgentChange,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
@@ -251,6 +256,15 @@ export function ChatInput({
                 : "border-border hover:border-border-subtle focus-within:border-primary"
           )}
         >
+          {/* Agent selector */}
+          {onAgentChange && (
+            <AgentSelector
+              selectedAgent={selectedAgent}
+              onAgentChange={onAgentChange}
+              disabled={disabled}
+            />
+          )}
+
           {/* Attachment button */}
           <button
             type="button"

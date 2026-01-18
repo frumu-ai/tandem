@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { ProviderCard } from "./ProviderCard";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Switch } from "@/components/ui/Switch";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import {
   getProvidersConfig,
@@ -20,6 +22,7 @@ import {
   addProject,
   removeProject,
   setActiveProject,
+  storeApiKey,
   type ProvidersConfig,
   type UserProject,
 } from "@/lib/tauri";
@@ -36,6 +39,12 @@ export function Settings({ onClose }: SettingsProps) {
   const [loading, setLoading] = useState(true);
   const [projectLoading, setProjectLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  
+  // Custom provider state
+  const [customEndpoint, setCustomEndpoint] = useState("");
+  const [customModel, setCustomModel] = useState("");
+  const [customApiKey, setCustomApiKey] = useState("");
+  const [customEnabled, setCustomEnabled] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -50,6 +59,14 @@ export function Settings({ onClose }: SettingsProps) {
       ]);
       setProviders(config);
       setProjects(userProjects);
+
+      // Load custom provider if exists
+      if (config.custom && config.custom.length > 0) {
+        const custom = config.custom[0];
+        setCustomEndpoint(custom.endpoint);
+        setCustomModel(custom.model || "");
+        setCustomEnabled(custom.enabled);
+      }
 
       // Set active project from backend
       if (activeProj) {
@@ -68,10 +85,19 @@ export function Settings({ onClose }: SettingsProps) {
   ) => {
     if (!providers) return;
 
-    const updated = {
+    // When enabling a provider, disable all others
+    const updated = enabled ? {
+      openrouter: { ...providers.openrouter, enabled: provider === "openrouter", default: provider === "openrouter" },
+      opencode_zen: { ...providers.opencode_zen, enabled: provider === "opencode_zen", default: provider === "opencode_zen" },
+      anthropic: { ...providers.anthropic, enabled: provider === "anthropic", default: provider === "anthropic" },
+      openai: { ...providers.openai, enabled: provider === "openai", default: provider === "openai" },
+      ollama: { ...providers.ollama, enabled: provider === "ollama", default: provider === "ollama" },
+      custom: providers.custom,
+    } : {
       ...providers,
-      [provider]: { ...providers[provider], enabled },
+      [provider]: { ...providers[provider], enabled: false, default: false },
     };
+    
     setProviders(updated);
     await setProvidersConfig(updated);
   };
@@ -82,6 +108,7 @@ export function Settings({ onClose }: SettingsProps) {
     // Reset all defaults and set the new one
     const updated: ProvidersConfig = {
       openrouter: { ...providers.openrouter, default: provider === "openrouter" },
+      opencode_zen: { ...providers.opencode_zen, default: provider === "opencode_zen" },
       anthropic: { ...providers.anthropic, default: provider === "anthropic" },
       openai: { ...providers.openai, default: provider === "openai" },
       ollama: { ...providers.ollama, default: provider === "ollama" },
@@ -154,6 +181,70 @@ export function Settings({ onClose }: SettingsProps) {
       console.error("Failed to remove project:", err);
     } finally {
       setProjectLoading(false);
+    }
+  };
+
+  const handleCustomProviderSave = async () => {
+    if (!providers || !customEndpoint.trim()) return;
+
+    // When enabling custom provider, disable all others
+    const updated: ProvidersConfig = {
+      openrouter: { ...providers.openrouter, enabled: false, default: false },
+      opencode_zen: { ...providers.opencode_zen, enabled: false, default: false },
+      anthropic: { ...providers.anthropic, enabled: false, default: false },
+      openai: { ...providers.openai, enabled: false, default: false },
+      ollama: { ...providers.ollama, enabled: false, default: false },
+      custom: [{
+        enabled: customEnabled,
+        default: customEnabled,
+        endpoint: customEndpoint,
+        model: customModel || undefined,
+      }],
+    };
+    
+    setProviders(updated);
+    await setProvidersConfig(updated);
+    
+    // Store custom API key if provided
+    if (customApiKey.trim() && customEnabled) {
+      try {
+        await storeApiKey("custom_provider", customApiKey);
+      } catch (err) {
+        console.error("Failed to store custom API key:", err);
+      }
+    }
+  };
+
+  const handleCustomProviderToggle = async (enabled: boolean) => {
+    setCustomEnabled(enabled);
+    
+    if (enabled && providers) {
+      // When enabling custom provider, disable all others
+      const updated: ProvidersConfig = {
+        openrouter: { ...providers.openrouter, enabled: false, default: false },
+        opencode_zen: { ...providers.opencode_zen, enabled: false, default: false },
+        anthropic: { ...providers.anthropic, enabled: false, default: false },
+        openai: { ...providers.openai, enabled: false, default: false },
+        ollama: { ...providers.ollama, enabled: false, default: false },
+        custom: [{
+          enabled: true,
+          default: true,
+          endpoint: customEndpoint || "https://api.example.com/v1",
+          model: customModel || undefined,
+        }],
+      };
+      
+      setProviders(updated);
+      await setProvidersConfig(updated);
+    } else if (!enabled && providers) {
+      // Disable custom provider
+      const updated: ProvidersConfig = {
+        ...providers,
+        custom: [],
+      };
+      
+      setProviders(updated);
+      await setProvidersConfig(updated);
     }
   };
 
@@ -333,6 +424,20 @@ export function Settings({ onClose }: SettingsProps) {
               />
 
               <ProviderCard
+                id="opencode_zen"
+                name="OpenCode Zen"
+                description="Access to free and premium models - includes free options"
+                endpoint="https://opencode.ai/zen/v1"
+                model={providers.opencode_zen.model}
+                isDefault={providers.opencode_zen.default}
+                enabled={providers.opencode_zen.enabled}
+                onEnabledChange={(enabled) => handleProviderChange("opencode_zen", enabled)}
+                onModelChange={(model) => handleModelChange("opencode_zen", model)}
+                onSetDefault={() => handleSetDefault("opencode_zen")}
+                docsUrl="https://opencode.ai/auth"
+              />
+
+              <ProviderCard
                 id="anthropic"
                 name="Anthropic"
                 description="Direct access to Claude models"
@@ -373,6 +478,69 @@ export function Settings({ onClose }: SettingsProps) {
                 onSetDefault={() => handleSetDefault("ollama")}
                 docsUrl="https://ollama.ai"
               />
+
+              {/* Custom Provider Section */}
+              <Card className="border-2 border-dashed">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle>Custom Provider</CardTitle>
+                      <CardDescription>
+                        Configure your own LLM provider with a custom endpoint
+                      </CardDescription>
+                    </div>
+                    <Switch 
+                      checked={customEnabled}
+                      onChange={(e) => handleCustomProviderToggle(e.target.checked)}
+                    />
+                  </div>
+                </CardHeader>
+                <AnimatePresence>
+                  {customEnabled && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: "auto", opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <CardContent className="space-y-4">
+                        <div>
+                          <label className="text-xs font-medium text-text-subtle">Endpoint URL</label>
+                          <Input 
+                            placeholder="https://api.example.com/v1"
+                            value={customEndpoint}
+                            onChange={(e) => setCustomEndpoint(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-text-subtle">Model</label>
+                          <Input 
+                            placeholder="model-name"
+                            value={customModel}
+                            onChange={(e) => setCustomModel(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-text-subtle">API Key (optional)</label>
+                          <Input 
+                            type="password"
+                            placeholder="sk-..."
+                            value={customApiKey}
+                            onChange={(e) => setCustomApiKey(e.target.value)}
+                          />
+                        </div>
+                        <Button 
+                          onClick={handleCustomProviderSave}
+                          disabled={!customEndpoint.trim()}
+                          className="w-full"
+                        >
+                          Save Custom Provider
+                        </Button>
+                      </CardContent>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </Card>
             </div>
           )}
         </div>

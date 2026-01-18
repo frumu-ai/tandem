@@ -308,6 +308,7 @@ pub fn run() {
             // Project & history
             commands::list_projects,
             commands::get_session_messages,
+            commands::get_session_todos,
             // Message handling
             commands::send_message,
             commands::send_message_streaming,
@@ -331,6 +332,13 @@ pub fn run() {
             // Tool approval
             commands::approve_tool,
             commands::deny_tool,
+            // Execution planning / staging area
+            commands::stage_tool_operation,
+            commands::get_staged_operations,
+            commands::execute_staged_plan,
+            commands::remove_staged_operation,
+            commands::clear_staging_area,
+            commands::get_staged_count,
             // Sidecar binary management
             commands::check_sidecar_status,
             commands::download_sidecar,

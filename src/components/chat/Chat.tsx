@@ -2,11 +2,13 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Message, type MessageProps } from "./Message";
 import { ChatInput, type FileAttachment } from "./ChatInput";
-import { ActivityDrawer, type ActivityItem } from "./ActivityDrawer";
 import {
   PermissionToastContainer,
   type PermissionRequest,
 } from "@/components/permissions/PermissionToast";
+import { ExecutionPlanPanel } from "@/components/plan/ExecutionPlanPanel";
+import { PlanActionButtons } from "./PlanActionButtons";
+import { useStagingArea } from "@/hooks/useStagingArea";
 import { FolderOpen, Sparkles, AlertCircle, Loader2 } from "lucide-react";
 import {
   startSidecar,
@@ -23,6 +25,7 @@ import {
   type StreamEvent,
   type SidecarState,
   type FileAttachmentInput,
+  type TodoItem,
 } from "@/lib/tauri";
 
 interface ChatProps {
@@ -30,6 +33,12 @@ interface ChatProps {
   sessionId?: string | null;
   onSessionCreated?: (sessionId: string) => void;
   onSidecarConnected?: () => void;
+  usePlanMode?: boolean;
+  onPlanModeChange?: (enabled: boolean) => void;
+  onToggleTaskSidebar?: () => void;
+  executePendingTasksTrigger?: number;
+  onGeneratingChange?: (isGenerating: boolean) => void;
+  pendingTasks?: TodoItem[];
 }
 
 export function Chat({
@@ -37,22 +46,67 @@ export function Chat({
   sessionId: propSessionId,
   onSessionCreated,
   onSidecarConnected,
+  usePlanMode: propUsePlanMode = false,
+  onPlanModeChange,
+  onToggleTaskSidebar,
+  executePendingTasksTrigger,
+  onGeneratingChange,
+  pendingTasks,
 }: ChatProps) {
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(propSessionId || null);
+  
+  // Notify parent when generating state changes
+  useEffect(() => {
+    onGeneratingChange?.(isGenerating);
+  }, [isGenerating, onGeneratingChange]);
   const [sidecarStatus, setSidecarStatus] = useState<SidecarState>("stopped");
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
-  const [activities, setActivities] = useState<ActivityItem[]>([]);
+  // const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isGitRepository, setIsGitRepository] = useState(false);
+  const usePlanMode = propUsePlanMode;
+  const setUsePlanMode = onPlanModeChange || (() => {});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const currentAssistantMessageRef = useRef<string>("");
   const currentAssistantMessageIdRef = useRef<string | null>(null);
   const generationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastEventAtRef = useRef<number | null>(null);
+
+  // Staging area hook
+  const {
+    stagedOperations,
+    isExecuting: isExecutingPlan,
+    stageOperation,
+    removeOperation,
+    executePlan,
+    clearStaging,
+  } = useStagingArea();
+
+  // Handle execute pending tasks from sidebar
+  useEffect(() => {
+    if (executePendingTasksTrigger && executePendingTasksTrigger > 0 && currentSessionId && !isGenerating && pendingTasks && pendingTasks.length > 0) {
+      // Build a message with actual task content - use action-oriented prompts
+      const taskList = pendingTasks
+        .map((t, i) => `${i + 1}. ${t.content}`)
+        .join('\n');
+      
+      const message = `Please implement the following tasks from our plan:
+
+${taskList}
+
+Start with task #1 and continue through each one. Let me know when each task is complete.`;
+      
+      // Small delay to ensure state is ready
+      setTimeout(() => {
+        handleSend(message);
+      }, 100);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [executePendingTasksTrigger]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -119,13 +173,13 @@ export function Chat({
     if (propSessionId) {
       console.log("[Chat] Loading session history for:", propSessionId);
       setMessages([]);
-      setActivities([]);
+      // setActivities([]);
       currentAssistantMessageRef.current = "";
       loadSessionHistory(propSessionId);
     } else {
       // Clear messages when no session selected
       setMessages([]);
-      setActivities([]);
+      // setActivities([]);
       currentAssistantMessageRef.current = "";
     }
   }, [propSessionId]);
@@ -250,59 +304,59 @@ export function Chat({
     [getSidecarStatus, getSessionMessages, setError, setIsLoadingHistory, setMessages]
   );
 
-  // Helper to determine activity type from tool name
-  const getActivityType = (tool: string): ActivityItem["type"] => {
-    const toolLower = tool.toLowerCase();
-    if (toolLower.includes("read") || toolLower.includes("view")) return "file_read";
-    if (toolLower.includes("write") || toolLower.includes("edit") || toolLower.includes("create"))
-      return "file_write";
-    if (toolLower.includes("search") || toolLower.includes("grep") || toolLower.includes("find"))
-      return "search";
-    if (
-      toolLower.includes("bash") ||
-      toolLower.includes("shell") ||
-      toolLower.includes("command") ||
-      toolLower.includes("exec")
-    )
-      return "command";
-    if (toolLower.includes("browse") || toolLower.includes("web") || toolLower.includes("fetch"))
-      return "browse";
-    return "tool";
-  };
+  // Helper to determine activity type from tool name - DISABLED
+  // const getActivityType = (tool: string): ActivityItem["type"] => {
+  //   const toolLower = tool.toLowerCase();
+  //   if (toolLower.includes("read") || toolLower.includes("view")) return "file_read";
+  //   if (toolLower.includes("write") || toolLower.includes("edit") || toolLower.includes("create"))
+  //     return "file_write";
+  //   if (toolLower.includes("search") || toolLower.includes("grep") || toolLower.includes("find"))
+  //     return "search";
+  //   if (
+  //     toolLower.includes("bash") ||
+  //     toolLower.includes("shell") ||
+  //     toolLower.includes("command") ||
+  //     toolLower.includes("exec")
+  //   )
+  //     return "command";
+  //   if (toolLower.includes("browse") || toolLower.includes("web") || toolLower.includes("fetch"))
+  //     return "browse";
+  //   return "tool";
+  // };
 
-  // Helper to get a friendly title for a tool
-  const getActivityTitle = (tool: string, args: Record<string, unknown>): string => {
-    const toolLower = tool.toLowerCase();
+  // Helper to get a friendly title for a tool - DISABLED
+  // const getActivityTitle = (tool: string, args: Record<string, unknown>): string => {
+  //   const toolLower = tool.toLowerCase();
 
-    // Try to extract a meaningful path or query
-    const path = args.path || args.file || args.filename;
-    const query = args.query || args.pattern || args.search;
-    const command = args.command || args.cmd;
+  //   // Try to extract a meaningful path or query
+  //   const path = args.path || args.file || args.filename;
+  //   const query = args.query || args.pattern || args.search;
+  //   const command = args.command || args.cmd;
 
-    if (path && typeof path === "string") {
-      // Shorten long paths
-      const shortPath = path.length > 40 ? "..." + path.slice(-37) : path;
-      if (toolLower.includes("read")) return `Reading ${shortPath}`;
-      if (toolLower.includes("write") || toolLower.includes("edit")) return `Editing ${shortPath}`;
-      if (toolLower.includes("create")) return `Creating ${shortPath}`;
-      if (toolLower.includes("delete")) return `Deleting ${shortPath}`;
-      if (toolLower.includes("list")) return `Listing ${shortPath}`;
-      return `${tool} → ${shortPath}`;
-    }
+  //   if (path && typeof path === "string") {
+  //     // Shorten long paths
+  //     const shortPath = path.length > 40 ? "..." + path.slice(-37) : path;
+  //     if (toolLower.includes("read")) return `Reading ${shortPath}`;
+  //     if (toolLower.includes("write") || toolLower.includes("edit")) return `Editing ${shortPath}`;
+  //     if (toolLower.includes("create")) return `Creating ${shortPath}`;
+  //     if (toolLower.includes("delete")) return `Deleting ${shortPath}`;
+  //     if (toolLower.includes("list")) return `Listing ${shortPath}`;
+  //     return `${tool} → ${shortPath}`;
+  //   }
 
-    if (query && typeof query === "string") {
-      const shortQuery = query.length > 30 ? query.slice(0, 27) + "..." : query;
-      return `Searching: "${shortQuery}"`;
-    }
+  //   if (query && typeof query === "string") {
+  //     const shortQuery = query.length > 30 ? query.slice(0, 27) + "..." : query;
+  //     return `Searching: "${shortQuery}"`;
+  //   }
 
-    if (command && typeof command === "string") {
-      const shortCmd = command.length > 30 ? command.slice(0, 27) + "..." : command;
-      return `Running: ${shortCmd}`;
-    }
+  //   if (command && typeof command === "string") {
+  //     const shortCmd = command.length > 30 ? command.slice(0, 27) + "..." : command;
+  //     return `Running: ${shortCmd}`;
+  //   }
 
-    // Fallback to tool name
-    return tool.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
-  };
+  //   // Fallback to tool name
+  //   return tool.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
+  // };
 
   const handleStreamEvent = useCallback(
     (event: StreamEvent) => {
@@ -318,15 +372,15 @@ export function Chat({
       );
 
       // Filter events for the current session
-      // Use propSessionId or currentSessionId, whichever is truthy
-      const activeSessionId = propSessionId || currentSessionId;
+      // IMPORTANT: Use currentSessionId directly since propSessionId might be stale
+      // when a new session is created but parent hasn't updated yet
       const eventSessionId = (event as { session_id?: string }).session_id;
-      if (eventSessionId && activeSessionId && eventSessionId !== activeSessionId) {
+      if (eventSessionId && currentSessionId && eventSessionId !== currentSessionId) {
         console.log(
           "[StreamEvent] Ignoring event for different session:",
           eventSessionId,
           "!==",
-          activeSessionId
+          currentSessionId
         );
         return;
       }
@@ -386,35 +440,35 @@ export function Chat({
         case "tool_start": {
           const args = event.args as Record<string, unknown>;
 
-          // Add to activity panel
-          const activityType = getActivityType(event.tool);
-          const activityTitle = getActivityTitle(event.tool, args);
+          // Add to activity panel - DISABLED
+          // const activityType = getActivityType(event.tool);
+          // const activityTitle = getActivityTitle(event.tool, args);
 
-          setActivities((prev) => {
-            // Check if activity already exists (update) or is new (add)
-            const existingIdx = prev.findIndex((a) => a.id === event.part_id);
-            if (existingIdx >= 0) {
-              const updated = [...prev];
-              updated[existingIdx] = {
-                ...updated[existingIdx],
-                status: "running",
-              };
-              return updated;
-            }
-            return [
-              ...prev,
-              {
-                id: event.part_id,
-                type: activityType,
-                tool: event.tool,
-                title: activityTitle,
-                detail: (args.path as string) || (args.query as string) || undefined,
-                status: "running",
-                timestamp: new Date(),
-                args,
-              },
-            ];
-          });
+          // setActivities((prev) => {
+          //   // Check if activity already exists (update) or is new (add)
+          //   const existingIdx = prev.findIndex((a) => a.id === event.part_id);
+          //   if (existingIdx >= 0) {
+          //     const updated = [...prev];
+          //     updated[existingIdx] = {
+          //       ...updated[existingIdx],
+          //       status: "running",
+          //     };
+          //     return updated;
+          //   }
+          //   return [
+          //     ...prev,
+          //     {
+          //       id: event.part_id,
+          //       type: activityType,
+          //       tool: event.tool,
+          //       title: activityTitle,
+          //       detail: (args.path as string) || (args.query as string) || undefined,
+          //       status: "running",
+          //       timestamp: new Date(),
+          //       args,
+          //     },
+          //   ];
+          // });
 
           // Add tool call to the message
           setMessages((prev) => {
@@ -487,20 +541,20 @@ export function Chat({
         }
 
         case "tool_end": {
-          // Update activity status
-          const resultStr =
-            event.error || (event.result ? JSON.stringify(event.result).slice(0, 500) : "");
-          setActivities((prev) =>
-            prev.map((a) =>
-              a.id === event.part_id
-                ? {
-                    ...a,
-                    status: event.error ? "failed" : "completed",
-                    result: resultStr,
-                  }
-                : a
-            )
-          );
+          // Update activity status - DISABLED
+          // const resultStr =
+          //   event.error || (event.result ? JSON.stringify(event.result).slice(0, 500) : "");
+          // setActivities((prev) =>
+          //   prev.map((a) =>
+          //     a.id === event.part_id
+          //       ? {
+          //           ...a,
+          //           status: event.error ? "failed" : "completed",
+          //           result: resultStr,
+          //         }
+          //       : a
+          //   )
+          // );
 
           // Update tool call with result
           setMessages((prev) => {
@@ -549,10 +603,10 @@ export function Chat({
             return prev;
           });
 
-          // Mark any remaining running activities as completed
-          setActivities((prev) =>
-            prev.map((a) => (a.status === "running" ? { ...a, status: "completed" } : a))
-          );
+          // Mark any remaining running activities as completed - DISABLED
+          // setActivities((prev) =>
+          //   prev.map((a) => (a.status === "running" ? { ...a, status: "completed" } : a))
+          // );
           setIsGenerating(false);
           currentAssistantMessageRef.current = "";
           currentAssistantMessageIdRef.current = null; // Reset the ID ref
@@ -585,18 +639,46 @@ export function Chat({
             event.args
           );
 
-          const permissionRequest: PermissionRequest = {
-            id: event.request_id,
-            type: (event.tool || "unknown") as PermissionRequest["type"],
-            path: event.args?.path as string | undefined,
-            command: event.args?.command as string | undefined,
-            reasoning: "AI requests permission to perform this action",
-            riskLevel: event.tool === "delete_file" || event.tool === "bash" ? "high" : "medium",
-            tool: event.tool || undefined,
-            args: (event.args as Record<string, unknown>) || undefined,
-            messageId: currentMsgId || undefined, // Associate with current message for undo
-          };
-          setPendingPermissions((prev) => [...prev, permissionRequest]);
+          // Check if this is a destructive operation
+          const isDestructive = [
+            "write",
+            "write_file",
+            "create_file",
+            "delete",
+            "delete_file",
+            "bash",
+            "shell",
+            "run_command",
+          ].includes(event.tool || "");
+
+          // Route to staging if plan mode is enabled and operation is destructive
+          if (usePlanMode && isDestructive && currentSessionId) {
+            console.log("[Permission] Routing to staging area");
+            stageOperation(
+              event.request_id,
+              currentSessionId,
+              event.tool || "unknown",
+              (event.args as Record<string, unknown>) || {},
+              currentMsgId || undefined
+            ).catch((err) => {
+              console.error("[Permission] Failed to stage operation:", err);
+              setError(`Failed to stage operation: ${err}`);
+            });
+          } else {
+            // Immediate mode: show permission toast as before
+            const permissionRequest: PermissionRequest = {
+              id: event.request_id,
+              type: (event.tool || "unknown") as PermissionRequest["type"],
+              path: event.args?.path as string | undefined,
+              command: event.args?.command as string | undefined,
+              reasoning: "AI requests permission to perform this action",
+              riskLevel: event.tool === "delete_file" || event.tool === "bash" ? "high" : "medium",
+              tool: event.tool || undefined,
+              args: (event.args as Record<string, unknown>) || undefined,
+              messageId: currentMsgId || undefined, // Associate with current message for undo
+            };
+            setPendingPermissions((prev) => [...prev, permissionRequest]);
+          }
           break;
         }
 
@@ -617,13 +699,18 @@ export function Chat({
             }
           }
 
+          // Log todo events for debugging
+          if (event.event_type === "todo.updated") {
+            console.log("[Todo] Received todo.updated event:", data);
+          }
+
           // Log other raw events for debugging
           console.log("Raw event:", event.event_type, data);
           break;
         }
       }
     },
-    [isGenerating, currentSessionId, propSessionId]
+    [isGenerating, currentSessionId] // Removed propSessionId from dependencies
   );
 
   // Listen for sidecar events
@@ -697,6 +784,18 @@ export function Chat({
         }
       }
 
+      // Select agent based on plan mode
+      const selectedAgent = usePlanMode ? "plan" : undefined;
+      
+      // In Plan Mode, guide the AI to use todowrite for task tracking
+      let finalContent = content;
+      if (usePlanMode) {
+        finalContent = `${content}
+
+(Please use the todowrite tool to create a structured task list for tracking this work, then explain your plan.)`;
+        console.log("[PlanMode] Using OpenCode's Plan agent with todowrite guidance");
+      }
+
       // Add user message
       const userMessage: MessageProps = {
         id: crypto.randomUUID(),
@@ -743,8 +842,8 @@ export function Chat({
           url: a.url,
         }));
 
-        // Send message and stream response
-        await sendMessageStreaming(sessionId, content, attachmentInputs);
+        // Send message and stream response, using Plan agent if in plan mode
+        await sendMessageStreaming(sessionId, finalContent, attachmentInputs, selectedAgent);
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
         setError(`Failed to send message: ${errorMessage}`);
@@ -777,6 +876,8 @@ export function Chat({
       setError,
       setIsGenerating,
       setMessages,
+      usePlanMode,
+      stagedOperations.length,
     ]
   );
 
@@ -976,25 +1077,68 @@ export function Chat({
         </div>
 
         {/* Connection status */}
-        <div className="flex items-center gap-2">
-          <div
-            className={`h-2 w-2 rounded-full ${
-              sidecarStatus === "running"
-                ? "bg-success"
+        <div className="flex items-center gap-4">
+          {/* Staged operations counter */}
+          {usePlanMode && stagedOperations.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20"
+            >
+              <div className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+              <span className="text-xs font-medium text-amber-500">
+                {stagedOperations.length} change{stagedOperations.length !== 1 ? 's' : ''} pending
+              </span>
+            </motion.div>
+          )}
+
+          <div className="flex items-center gap-2">
+            <div
+              className={`h-2 w-2 rounded-full ${
+                sidecarStatus === "running"
+                  ? "bg-success"
+                  : sidecarStatus === "starting"
+                    ? "bg-warning animate-pulse"
+                    : "bg-text-subtle"
+              }`}
+            />
+            <span className="text-xs text-text-muted">
+              {sidecarStatus === "running"
+                ? "Connected"
                 : sidecarStatus === "starting"
-                  ? "bg-warning animate-pulse"
-                  : "bg-text-subtle"
-            }`}
-          />
-          <span className="text-xs text-text-muted">
-            {sidecarStatus === "running"
-              ? "Connected"
-              : sidecarStatus === "starting"
-                ? "Connecting..."
-                : "Disconnected"}
-          </span>
+                  ? "Connecting..."
+                  : "Disconnected"}
+            </span>
+          </div>
         </div>
       </header>
+
+      {/* Plan Mode info banner */}
+      {usePlanMode && (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: "auto" }}
+          exit={{ opacity: 0, height: 0 }}
+          className="bg-primary/5 border-b border-primary/10 px-4 py-3"
+        >
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-full bg-primary/10 p-1">
+              <AlertCircle className="h-4 w-4 text-primary" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-text">
+                Plan Mode Active
+              </p>
+              <p className="mt-1 text-xs text-text-muted">
+                {stagedOperations.length > 0 
+                  ? `${stagedOperations.length} change${stagedOperations.length !== 1 ? 's' : ''} staged. Review them in the Execution Plan panel (bottom-right) and click "Execute Plan" when ready.`
+                  : "The AI will propose file changes for your review. When changes are proposed, they'll appear in the Execution Plan panel for batch approval."
+                }
+              </p>
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Error banner */}
       {error && (
@@ -1030,17 +1174,44 @@ export function Chat({
               onSendMessage={handleSend}
             />
           ) : (
-            messages.map((message) => (
-              <Message
-                key={message.id}
-                {...message}
-                onEdit={handleEdit}
-                onRewind={handleRewind}
-                onRegenerate={handleRegenerate}
-                onCopy={handleCopy}
-                onUndo={isGitRepository ? handleUndo : undefined}
-              />
-            ))
+            messages.map((message, index) => {
+              const isLastMessage = index === messages.length - 1;
+              const isAssistant = message.role === "assistant";
+              const showActionButtons = usePlanMode && isLastMessage && isAssistant && !isGenerating;
+
+              return (
+                <div key={message.id}>
+                  <Message
+                    {...message}
+                    onEdit={handleEdit}
+                    onRewind={handleRewind}
+                    onRegenerate={handleRegenerate}
+                    onCopy={handleCopy}
+                    onUndo={isGitRepository ? handleUndo : undefined}
+                  />
+                  {showActionButtons && (
+                    <div className="ml-14 mb-4">
+                      <PlanActionButtons
+                        onImplement={() => {
+                          // Switch to immediate mode for execution
+                          setUsePlanMode(false);
+                          handleSend("Please implement this plan now.");
+                        }}
+                        onRework={(feedback) => {
+                          handleSend(`Please rework the plan: ${feedback}`);
+                        }}
+                        onCancel={() => {
+                          clearStaging();
+                          handleSend("Let's try a different approach. Cancel the current plan.");
+                        }}
+                        onViewTasks={onToggleTaskSidebar}
+                        disabled={isGenerating}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })
           )}
         </AnimatePresence>
 
@@ -1083,17 +1254,69 @@ export function Chat({
               : "Ask Tandem anything..."
             : "Select a workspace to start chatting"
         }
+        selectedAgent={usePlanMode ? "plan" : undefined}
+        onAgentChange={(agent) => setUsePlanMode(agent === "plan")}
       />
 
-      {/* Permission requests */}
-      <PermissionToastContainer
-        requests={pendingPermissions}
-        onApprove={handleApprovePermission}
-        onDeny={handleDenyPermission}
-      />
+      {/* Permission requests - only show in immediate mode */}
+      {!usePlanMode && (
+        <PermissionToastContainer
+          requests={pendingPermissions}
+          onApprove={handleApprovePermission}
+          onDeny={handleDenyPermission}
+        />
+      )}
 
-      {/* Activity drawer */}
-      <ActivityDrawer activities={activities} isGenerating={isGenerating} />
+      {/* Execution plan panel - only show in plan mode */}
+      {usePlanMode && (
+        <ExecutionPlanPanel
+          operations={stagedOperations}
+          onExecute={async () => {
+            try {
+              await executePlan();
+              console.log("[ExecutionPlan] Plan executed successfully");
+              
+              // Send confirmation message to AI that plan was executed
+              if (currentSessionId && stagedOperations.length > 0) {
+                const confirmMessage = `The execution plan with ${stagedOperations.length} change(s) has been applied successfully. You can continue with the next steps.`;
+                
+                // Send as a user message so the AI knows to continue
+                setTimeout(async () => {
+                  try {
+                    // Use the same agent (plan agent if in plan mode)
+                    await sendMessageStreaming(currentSessionId, confirmMessage, undefined, usePlanMode ? "plan" : undefined);
+                  } catch (err) {
+                    console.error("[ExecutionPlan] Failed to send confirmation:", err);
+                  }
+                }, 500); // Small delay to ensure UI updates first
+              }
+            } catch (err) {
+              console.error("[ExecutionPlan] Failed to execute plan:", err);
+              setError(`Failed to execute plan: ${err}`);
+            }
+          }}
+          onRemove={async (id) => {
+            try {
+              await removeOperation(id);
+            } catch (err) {
+              console.error("[ExecutionPlan] Failed to remove operation:", err);
+              setError(`Failed to remove operation: ${err}`);
+            }
+          }}
+          onClear={async () => {
+            try {
+              await clearStaging();
+            } catch (err) {
+              console.error("[ExecutionPlan] Failed to clear staging:", err);
+              setError(`Failed to clear staging: ${err}`);
+            }
+          }}
+          isExecuting={isExecutingPlan}
+        />
+      )}
+
+      {/* Activity drawer - Hidden for now as it's always empty */}
+      {/* <ActivityDrawer activities={activities} isGenerating={isGenerating} /> */}
     </div>
   );
 }

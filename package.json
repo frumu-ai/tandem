@@ -28,6 +28,7 @@
     "framer-motion": "^12.26.2",
     "lucide-react": "^0.562.0",
     "react": "^19.1.0",
+    "react-diff-viewer-continued": "^3.4.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.0",

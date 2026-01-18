@@ -10,6 +10,7 @@ pub const STORE_NAME: &str = "api_keys";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ApiKeyType {
     OpenRouter,
+    OpenCodeZen,
     Anthropic,
     OpenAI,
     Custom(String),
@@ -19,6 +20,7 @@ impl ApiKeyType {
     pub fn to_key_name(&self) -> String {
         match self {
             ApiKeyType::OpenRouter => "openrouter_key".to_string(),
+            ApiKeyType::OpenCodeZen => "opencode_zen_api_key".to_string(),
             ApiKeyType::Anthropic => "anthropic_key".to_string(),
             ApiKeyType::OpenAI => "openai_key".to_string(),
             ApiKeyType::Custom(name) => format!("custom_{}", name),
@@ -28,6 +30,7 @@ impl ApiKeyType {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "openrouter" => ApiKeyType::OpenRouter,
+            "opencode_zen" | "opencodezen" => ApiKeyType::OpenCodeZen,
             "anthropic" => ApiKeyType::Anthropic,
             "openai" => ApiKeyType::OpenAI,
             other => ApiKeyType::Custom(other.to_string()),
@@ -79,6 +82,14 @@ mod tests {
         assert!(matches!(
             ApiKeyType::from_str("openrouter"),
             ApiKeyType::OpenRouter
+        ));
+        assert!(matches!(
+            ApiKeyType::from_str("opencode_zen"),
+            ApiKeyType::OpenCodeZen
+        ));
+        assert!(matches!(
+            ApiKeyType::from_str("opencodezen"),
+            ApiKeyType::OpenCodeZen
         ));
         assert!(matches!(
             ApiKeyType::from_str("anthropic"),

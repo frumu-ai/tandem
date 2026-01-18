@@ -27,6 +27,15 @@ const PROVIDER_MODELS: Record<string, { id: string; name: string; description?: 
     { id: "o1", name: "o1", description: "Reasoning model" },
     { id: "o1-mini", name: "o1 Mini", description: "Fast reasoning" },
   ],
+  opencode_zen: [
+    { id: "gpt-5-nano", name: "GPT 5 Nano", description: "Free" },
+    { id: "grok-code", name: "Grok Code Fast 1", description: "Free (limited time)" },
+    { id: "glm-4.7-free", name: "GLM 4.7", description: "Free (limited time)" },
+    { id: "big-pickle", name: "Big Pickle", description: "Free (limited time)" },
+    { id: "gpt-5.2-codex", name: "GPT 5.2 Codex", description: "Premium coding" },
+    { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", description: "Premium" },
+    { id: "qwen3-coder", name: "Qwen3 Coder 480B", description: "Premium coding" },
+  ],
 };
 
 // Suggested models for text input (shown as placeholder examples)
@@ -39,10 +48,20 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
     "deepseek/deepseek-chat",
   ],
   ollama: ["llama3.2", "codellama", "mistral", "deepseek-coder-v2", "qwen2.5-coder"],
+  opencode_zen: [
+    "gpt-5-nano",
+    "grok-code",
+    "glm-4.7-free",
+    "big-pickle",
+    "gpt-5.2-codex",
+    "claude-sonnet-4-5",
+    "qwen3-coder",
+    "kimi-k2",
+  ],
 };
 
 // Providers that use free-form text input (have too many models for a dropdown)
-const TEXT_INPUT_PROVIDERS = ["openrouter", "ollama"];
+const TEXT_INPUT_PROVIDERS = ["openrouter", "ollama", "opencode_zen"];
 
 interface ProviderCardProps {
   id: ApiKeyType;

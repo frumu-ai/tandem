@@ -228,6 +228,8 @@ pub struct SendMessageRequest {
     pub parts: Vec<MessagePartInput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelSpec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 impl SendMessageRequest {
@@ -239,6 +241,7 @@ impl SendMessageRequest {
                 text: content,
             })],
             model: None,
+            agent: None,
         }
     }
 
@@ -253,6 +256,7 @@ impl SendMessageRequest {
                 provider_id,
                 model_id,
             }),
+            agent: None,
         }
     }
 
@@ -270,7 +274,13 @@ impl SendMessageRequest {
             }));
         }
 
-        Self { parts, model: None }
+        Self { parts, model: None, agent: None }
+    }
+    
+    /// Set the agent for this request
+    pub fn with_agent(mut self, agent: String) -> Self {
+        self.agent = Some(agent);
+        self
     }
 }
 
@@ -458,6 +468,11 @@ pub enum StreamEvent {
         event_type: String,
         data: serde_json::Value,
     },
+    /// Todo list updated
+    TodoUpdated {
+        session_id: String,
+        todos: Vec<TodoItem>,
+    },
 }
 
 /// Model info from OpenCode
@@ -480,6 +495,14 @@ pub struct ProviderInfo {
     pub models: Vec<String>,
     #[serde(default)]
     pub configured: bool,
+}
+
+/// Todo item from OpenCode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoItem {
+    pub id: String,
+    pub content: String,
+    pub status: String, // "pending" | "in_progress" | "completed" | "cancelled"
 }
 
 // ============================================================================
@@ -923,6 +946,29 @@ impl SidecarManager {
             })?;
 
         self.handle_response(response).await
+    }
+
+    /// Get todos for a session
+    /// OpenCode API: GET /session/{id}/todo
+    pub async fn get_session_todos(&self, session_id: &str) -> Result<Vec<TodoItem>> {
+        self.check_circuit_breaker().await?;
+
+        let url = format!("{}/session/{}/todo", self.base_url().await?, session_id);
+        tracing::info!("Fetching todos from: {}", url);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to get session todos: {}", e)))?;
+
+        tracing::info!("Todos API response status: {}", response.status());
+        
+        let todos: Vec<TodoItem> = self.handle_response(response).await?;
+        tracing::info!("Fetched {} todos for session {}", todos.len(), session_id);
+        
+        Ok(todos)
     }
 
     // ========================================================================
@@ -1533,6 +1579,31 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                 tool,
                 args,
             })
+        }
+        "todo.updated" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            
+            // Try to parse todos array, but don't fail if it's malformed
+            let todos = if let Some(todos_array) = props.get("todos").and_then(|t| t.as_array()) {
+                let parsed_todos: Vec<TodoItem> = todos_array
+                    .iter()
+                    .filter_map(|todo| {
+                        Some(TodoItem {
+                            id: todo.get("id")?.as_str()?.to_string(),
+                            content: todo.get("content")?.as_str()?.to_string(),
+                            status: todo.get("status")?.as_str()?.to_string(),
+                        })
+                    })
+                    .collect();
+                
+                tracing::info!("Parsed {} todos from todo.updated event for session {}", parsed_todos.len(), session_id);
+                parsed_todos
+            } else {
+                tracing::warn!("todo.updated event missing or malformed todos array for session {}", session_id);
+                Vec::new()
+            };
+            
+            Some(StreamEvent::TodoUpdated { session_id, todos })
         }
         _ => {
             // Return as raw event for other types

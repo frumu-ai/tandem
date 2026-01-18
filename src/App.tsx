@@ -5,8 +5,10 @@ import { About } from "@/components/about";
 import { Chat } from "@/components/chat";
 import { SidecarDownloader } from "@/components/sidecar";
 import { SessionSidebar, type SessionInfo, type Project } from "@/components/sidebar";
+import { TaskSidebar } from "@/components/tasks/TaskSidebar";
 import { Button } from "@/components/ui";
 import { useAppState } from "@/hooks/useAppState";
+import { useTodos } from "@/hooks/useTodos";
 import logo from "@/assets/logo.png";
 import {
   listSessions,
@@ -31,6 +33,7 @@ import {
   PanelLeftClose,
   PanelLeft,
   Info,
+  ListTodo,
 } from "lucide-react";
 
 type View = "chat" | "settings" | "about" | "onboarding" | "sidecar-setup";
@@ -62,16 +65,23 @@ function App() {
   const { state, loading, refresh: refreshAppState } = useAppState();
   const [sidecarReady, setSidecarReady] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [taskSidebarOpen, setTaskSidebarOpen] = useState(false);
+  const [usePlanMode, setUsePlanMode] = useState(false);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
+  const [executePendingTrigger, setExecutePendingTrigger] = useState(0);
+  const [isExecutingTasks, setIsExecutingTasks] = useState(false);
 
   // Project management state
   const [userProjects, setUserProjects] = useState<UserProject[]>([]);
   const [activeProject, setActiveProjectState] = useState<UserProject | null>(null);
   const [projectSwitcherLoading, setProjectSwitcherLoading] = useState(false);
+
+  // Todos for task sidebar
+  const todosData = useTodos(currentSessionId);
 
   // Start with sidecar setup, then onboarding if no workspace, otherwise chat
   const [view, setView] = useState<View>(() => "sidecar-setup");
@@ -306,6 +316,12 @@ function App() {
     loadHistory();
   };
 
+  const handleExecutePendingTasks = () => {
+    // Switch to immediate mode and trigger execution in Chat
+    setUsePlanMode(false);
+    setExecutePendingTrigger((prev) => prev + 1);
+  };
+
   return (
     <div className="flex h-screen bg-background">
       {/* Icon Sidebar */}
@@ -368,6 +384,24 @@ function App() {
           >
             <Info className="h-5 w-5" />
           </button>
+
+          {/* Task sidebar toggle - visible in Plan Mode or when tasks exist */}
+          {(usePlanMode || todosData.todos.length > 0) && (
+            <button
+              onClick={() => setTaskSidebarOpen(!taskSidebarOpen)}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                taskSidebarOpen
+                  ? "bg-primary/20 text-primary"
+                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
+              }`}
+              title="Tasks"
+            >
+              <ListTodo className="h-5 w-5" />
+              {todosData.todos.length > 0 && (
+                <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-primary" />
+              )}
+            </button>
+          )}
         </nav>
 
         {/* Security indicator */}
@@ -433,6 +467,12 @@ function App() {
               sessionId={currentSessionId}
               onSessionCreated={handleSessionCreated}
               onSidecarConnected={loadHistory}
+              usePlanMode={usePlanMode}
+              onPlanModeChange={setUsePlanMode}
+              onToggleTaskSidebar={() => setTaskSidebarOpen((prev) => !prev)}
+              executePendingTasksTrigger={executePendingTrigger}
+              onGeneratingChange={setIsExecutingTasks}
+              pendingTasks={todosData.pending}
             />
             <AnimatePresence>
               {effectiveView === "settings" && (
@@ -458,6 +498,19 @@ function App() {
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* Task Sidebar */}
+            <TaskSidebar
+              isOpen={taskSidebarOpen}
+              onClose={() => setTaskSidebarOpen(false)}
+              todos={todosData.todos}
+              pending={todosData.pending}
+              inProgress={todosData.inProgress}
+              completed={todosData.completed}
+              isLoading={todosData.isLoading}
+              onExecutePending={handleExecutePendingTasks}
+              isExecuting={isExecutingTasks}
+            />
           </>
         )}
       </main>

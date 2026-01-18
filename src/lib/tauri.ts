@@ -15,6 +15,7 @@ export interface ProviderConfig {
 
 export interface ProvidersConfig {
   openrouter: ProviderConfig;
+  opencode_zen: ProviderConfig;
   anthropic: ProviderConfig;
   openai: ProviderConfig;
   ollama: ProviderConfig;
@@ -38,7 +39,7 @@ export interface UserProject {
 }
 
 // API Key types
-export type ApiKeyType = "openrouter" | "anthropic" | "openai" | "ollama" | string;
+export type ApiKeyType = "openrouter" | "opencode_zen" | "anthropic" | "openai" | "ollama" | string;
 
 // ============================================================================
 // Sidecar Types
@@ -130,6 +131,12 @@ export interface ToolCall {
   args: Record<string, unknown>;
   result?: unknown;
   status?: "pending" | "running" | "completed" | "failed";
+}
+
+export interface TodoItem {
+  id: string;
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
 }
 
 export interface ModelInfo {
@@ -335,6 +342,10 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
   return invoke("get_session_messages", { sessionId });
 }
 
+export async function getSessionTodos(sessionId: string): Promise<TodoItem[]> {
+  return invoke("get_session_todos", { sessionId });
+}
+
 // ============================================================================
 // Message Handling
 // ============================================================================
@@ -356,9 +367,10 @@ export async function sendMessage(
 export async function sendMessageStreaming(
   sessionId: string,
   content: string,
-  attachments?: FileAttachmentInput[]
+  attachments?: FileAttachmentInput[],
+  agent?: string
 ): Promise<void> {
-  return invoke("send_message_streaming", { sessionId, content, attachments });
+  return invoke("send_message_streaming", { sessionId, content, attachments, agent });
 }
 
 export async function cancelGeneration(sessionId: string): Promise<void> {
@@ -502,6 +514,59 @@ export async function denyTool(
     args: meta?.args,
     messageId: meta?.messageId,
   });
+}
+
+// ============================================================================
+// Execution Planning / Staging Area
+// ============================================================================
+
+export interface StagedOperation {
+  id: string;
+  request_id: string;
+  session_id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  before_snapshot?: FileSnapshot;
+  proposed_content?: string;
+  timestamp: string;
+  description: string;
+  message_id?: string;
+}
+
+export async function stageToolOperation(
+  requestId: string,
+  sessionId: string,
+  tool: string,
+  args: Record<string, unknown>,
+  messageId?: string
+): Promise<void> {
+  return invoke("stage_tool_operation", {
+    requestId,
+    sessionId,
+    tool,
+    args,
+    messageId,
+  });
+}
+
+export async function getStagedOperations(): Promise<StagedOperation[]> {
+  return invoke("get_staged_operations");
+}
+
+export async function executeStagedPlan(): Promise<string[]> {
+  return invoke("execute_staged_plan");
+}
+
+export async function removeStagedOperation(operationId: string): Promise<boolean> {
+  return invoke("remove_staged_operation", { operationId });
+}
+
+export async function clearStagingArea(): Promise<number> {
+  return invoke("clear_staging_area");
+}
+
+export async function getStagedCount(): Promise<number> {
+  return invoke("get_staged_count");
 }
 
 // ============================================================================

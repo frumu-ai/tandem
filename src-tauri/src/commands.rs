@@ -5,7 +5,7 @@ use crate::error::{Result, TandemError};
 use crate::keystore::SecureKeyStore;
 use crate::sidecar::{
     CreateSessionRequest, FilePartInput, ModelInfo, ModelSpec, Project, ProviderInfo,
-    SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent,
+    SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent, TodoItem,
 };
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
@@ -128,6 +128,7 @@ pub fn lock_vault(vault_state: State<'_, VaultState>) -> Result<()> {
 fn resolve_default_model_spec(config: &ProvidersConfig) -> Option<ModelSpec> {
     let candidates: Vec<(&str, &crate::state::ProviderConfig)> = vec![
         ("openrouter", &config.openrouter),
+        ("opencode", &config.opencode_zen), // OpenCode expects "opencode" not "opencode_zen"
         ("anthropic", &config.anthropic),
         ("openai", &config.openai),
         ("ollama", &config.ollama),
@@ -167,6 +168,7 @@ fn resolve_default_provider_and_model(
 ) -> (Option<String>, Option<String>) {
     let candidates: Vec<(&str, &crate::state::ProviderConfig)> = vec![
         ("openrouter", &config.openrouter),
+        ("opencode", &config.opencode_zen), // OpenCode expects "opencode" not "opencode_zen"
         ("anthropic", &config.anthropic),
         ("openai", &config.openai),
         ("ollama", &config.ollama),
@@ -192,6 +194,7 @@ fn resolve_default_provider_and_model(
 fn env_var_for_key(key_type: &ApiKeyType) -> Option<&'static str> {
     match key_type {
         ApiKeyType::OpenRouter => Some("OPENROUTER_API_KEY"),
+        ApiKeyType::OpenCodeZen => Some("OPENCODE_ZEN_API_KEY"),
         ApiKeyType::Anthropic => Some("ANTHROPIC_API_KEY"),
         ApiKeyType::OpenAI => Some("OPENAI_API_KEY"),
         ApiKeyType::Custom(_) => None,
@@ -433,6 +436,11 @@ pub async fn set_active_project(
         if providers.openrouter.enabled {
             if let Ok(Some(key)) = get_api_key(&app, "openrouter").await {
                 state.sidecar.set_env("OPENROUTER_API_KEY", &key).await;
+            }
+        }
+        if providers.opencode_zen.enabled {
+            if let Ok(Some(key)) = get_api_key(&app, "opencode_zen").await {
+                state.sidecar.set_env("OPENCODE_ZEN_API_KEY", &key).await;
             }
         }
         if providers.anthropic.enabled {
@@ -687,6 +695,11 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
             state.sidecar.set_env("OPENROUTER_API_KEY", &key).await;
         }
     }
+    if providers.opencode_zen.enabled {
+        if let Ok(Some(key)) = get_api_key(&app, "opencode_zen").await {
+            state.sidecar.set_env("OPENCODE_ZEN_API_KEY", &key).await;
+        }
+    }
     if providers.anthropic.enabled {
         if let Ok(Some(key)) = get_api_key(&app, "anthropic").await {
             state.sidecar.set_env("ANTHROPIC_API_KEY", &key).await;
@@ -791,6 +804,15 @@ pub async fn get_session_messages(
     state.sidecar.get_session_messages(&session_id).await
 }
 
+/// Get todos for a session
+#[tauri::command]
+pub async fn get_session_todos(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<TodoItem>> {
+    state.sidecar.get_session_todos(&session_id).await
+}
+
 /// Get the current session ID
 #[tauri::command]
 pub fn get_current_session_id(state: State<'_, AppState>) -> Option<String> {
@@ -859,6 +881,7 @@ pub async fn send_message_streaming(
     session_id: String,
     content: String,
     attachments: Option<Vec<FileAttachmentInput>>,
+    agent: Option<String>,
 ) -> Result<()> {
     // IMPORTANT: Subscribe to events BEFORE sending the message
     // This ensures we don't miss any events that OpenCode sends
@@ -885,6 +908,11 @@ pub async fn send_message_streaming(
         resolve_default_model_spec(&config)
     };
     request.model = model_spec;
+    
+    // Set agent if specified
+    if let Some(agent_name) = agent {
+        request.agent = Some(agent_name);
+    }
 
     state.sidecar.send_message(&session_id, request).await?;
 
@@ -915,6 +943,9 @@ pub async fn send_message_streaming(
                             session_id == &target_session_id
                         }
                         StreamEvent::FileEdited { session_id, .. } => {
+                            session_id == &target_session_id
+                        }
+                        StreamEvent::TodoUpdated { session_id, .. } => {
                             session_id == &target_session_id
                         }
                         StreamEvent::Raw { .. } => true, // Include raw events for debugging
@@ -1382,6 +1413,210 @@ pub async fn deny_tool(
     }
 
     state.sidecar.deny_tool(&session_id, &tool_call_id).await
+}
+
+// ============================================================================
+// Execution Planning / Staging Area
+// ============================================================================
+
+/// Stage a tool operation for batch execution
+#[tauri::command]
+pub async fn stage_tool_operation(
+    state: State<'_, AppState>,
+    request_id: String,
+    session_id: String,
+    tool: String,
+    args: serde_json::Value,
+    message_id: Option<String>,
+) -> Result<()> {
+    use crate::tool_proxy::StagedOperation;
+    
+    // Extract file path if it's a file operation
+    let path_str = args
+        .get("filePath")
+        .and_then(|v| v.as_str())
+        .or_else(|| args.get("absolute_path").and_then(|v| v.as_str()))
+        .or_else(|| args.get("path").and_then(|v| v.as_str()))
+        .or_else(|| args.get("file").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+
+    // Create snapshot for file operations
+    let (before_snapshot, proposed_content) = if let Some(path) = path_str.as_ref() {
+        let path_buf = PathBuf::from(path);
+        
+        if state.is_path_allowed(&path_buf) {
+            let (exists, is_directory) = match fs::metadata(&path_buf) {
+                Ok(meta) => (true, meta.is_dir()),
+                Err(_) => (false, false),
+            };
+
+            let content = if exists && !is_directory {
+                fs::read_to_string(&path_buf).ok()
+            } else {
+                None
+            };
+
+            let snapshot = crate::tool_proxy::FileSnapshot {
+                path: path.clone(),
+                content,
+                exists,
+                is_directory,
+            };
+
+            // Extract proposed content for write operations
+            let proposed = if tool == "write" {
+                args.get("content")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
+
+            (Some(snapshot), proposed)
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
+    // Generate description
+    let description = if let Some(path) = path_str.as_ref() {
+        let short_path = if path.len() > 50 {
+            format!("...{}", &path[path.len() - 47..])
+        } else {
+            path.clone()
+        };
+        
+        match tool.as_str() {
+            "write" => format!("Write to {}", short_path),
+            "delete" => format!("Delete {}", short_path),
+            "bash" | "shell" => {
+                if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                    let short_cmd = if cmd.len() > 50 {
+                        format!("{}...", &cmd[..47])
+                    } else {
+                        cmd.to_string()
+                    };
+                    format!("Run: {}", short_cmd)
+                } else {
+                    "Run command".to_string()
+                }
+            }
+            _ => format!("{} {}", tool, short_path),
+        }
+    } else if tool == "bash" || tool == "shell" {
+        if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+            let short_cmd = if cmd.len() > 50 {
+                format!("{}...", &cmd[..47])
+            } else {
+                cmd.to_string()
+            };
+            format!("Run: {}", short_cmd)
+        } else {
+            "Run command".to_string()
+        }
+    } else {
+        format!("Execute {}", tool)
+    };
+
+    let operation = StagedOperation {
+        id: uuid::Uuid::new_v4().to_string(),
+        request_id,
+        session_id,
+        tool,
+        args,
+        before_snapshot,
+        proposed_content,
+        timestamp: chrono::Utc::now(),
+        description,
+        message_id,
+    };
+
+    state.staging_store.stage(operation);
+    tracing::info!("Staged operation for batch execution");
+
+    Ok(())
+}
+
+/// Get all staged operations
+#[tauri::command]
+pub fn get_staged_operations(state: State<'_, AppState>) -> Vec<crate::tool_proxy::StagedOperation> {
+    state.staging_store.get_all()
+}
+
+/// Execute all staged operations in sequence
+#[tauri::command]
+pub async fn execute_staged_plan(state: State<'_, AppState>) -> Result<Vec<String>> {
+    let operations = state.staging_store.get_all();
+    let mut executed_ids = Vec::new();
+
+    tracing::info!("Executing staged plan with {} operations", operations.len());
+
+    for op in operations {
+        tracing::info!("Executing staged operation: {} ({})", op.id, op.tool);
+        
+        // Approve the tool with OpenCode sidecar
+        if let Err(e) = state.sidecar.approve_tool(&op.session_id, &op.request_id).await {
+            tracing::error!("Failed to execute staged operation {}: {}", op.id, e);
+            // Continue with other operations even if one fails
+            continue;
+        }
+
+        // Record in journal for undo
+        if op.before_snapshot.is_some() {
+            use crate::tool_proxy::{JournalEntry, OperationStatus, UndoAction};
+            
+            let entry = JournalEntry {
+                id: uuid::Uuid::new_v4().to_string(),
+                timestamp: op.timestamp,
+                tool_name: op.tool.clone(),
+                args: op.args.clone(),
+                status: OperationStatus::Completed,
+                before_state: op.before_snapshot.clone(),
+                after_state: None,
+                user_approved: true,
+            };
+
+            if let Some(snapshot) = op.before_snapshot {
+                let undo_action = UndoAction {
+                    journal_entry_id: entry.id.clone(),
+                    snapshot,
+                    message_id: op.message_id.clone(),
+                };
+                state.operation_journal.record(entry, Some(undo_action));
+            } else {
+                state.operation_journal.record(entry, None);
+            }
+        }
+
+        executed_ids.push(op.id);
+    }
+
+    // Clear staging area after execution
+    state.staging_store.clear();
+
+    tracing::info!("Executed {} staged operations", executed_ids.len());
+    Ok(executed_ids)
+}
+
+/// Remove a single staged operation
+#[tauri::command]
+pub fn remove_staged_operation(state: State<'_, AppState>, operation_id: String) -> Result<bool> {
+    Ok(state.staging_store.remove(&operation_id).is_some())
+}
+
+/// Clear all staged operations
+#[tauri::command]
+pub fn clear_staging_area(state: State<'_, AppState>) -> Result<usize> {
+    let cleared = state.staging_store.clear();
+    Ok(cleared.len())
+}
+
+/// Get count of staged operations
+#[tauri::command]
+pub fn get_staged_count(state: State<'_, AppState>) -> usize {
+    state.staging_store.count()
 }
 
 // ============================================================================
