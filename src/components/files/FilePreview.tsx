@@ -122,10 +122,10 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
   const [error, setError] = useState<string | null>(null);
   const previewType = getPreviewType(file);
 
-  // Normalize Windows paths to forward slashes for asset protocol
-  const normalizePathForAsset = (path: string): string => {
-    // Convert backslashes to forward slashes for Tauri asset protocol
-    return path.replace(/\\/g, "/");
+  // For images and PDFs, use convertFileSrc with the original path
+  // Tauri v2 should handle this correctly
+  const getAssetUrl = (path: string): string => {
+    return convertFileSrc(path);
   };
 
   useEffect(() => {
@@ -176,23 +176,16 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
         return (
           <div className="flex h-full items-center justify-center p-4 bg-surface">
             <img
-              src={convertFileSrc(normalizePathForAsset(file.path))}
+              src={getAssetUrl(file.path)}
               alt={file.name}
               className="max-h-full max-w-full object-contain rounded"
               onError={() => {
-                const normalizedPath = normalizePathForAsset(file.path);
-                const convertedSrc = convertFileSrc(normalizedPath);
-                console.error("Image failed to load:", file.path);
-                console.error("Normalized path:", normalizedPath);
-                console.error("Converted src:", convertedSrc);
+                const assetUrl = getAssetUrl(file.path);
                 logFrontendError(
                   `Image failed to load: ${file.name}`,
-                  `Path: ${file.path}, Normalized: ${normalizedPath}, Converted: ${convertedSrc}`
+                  `Path: ${file.path}, Asset URL: ${assetUrl}`
                 );
                 setError(`Failed to load image: ${file.name}`);
-              }}
-              onLoad={() => {
-                console.log("Image loaded successfully:", file.path);
               }}
             />
           </div>
@@ -202,18 +195,14 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
         return (
           <div className="h-full w-full bg-surface">
             <embed
-              src={convertFileSrc(normalizePathForAsset(file.path))}
+              src={getAssetUrl(file.path)}
               type="application/pdf"
               className="h-full w-full"
               onError={() => {
-                const normalizedPath = normalizePathForAsset(file.path);
-                const convertedSrc = convertFileSrc(normalizedPath);
-                console.error("PDF failed to load:", file.path);
-                console.error("Normalized path:", normalizedPath);
-                console.error("Converted src:", convertedSrc);
+                const assetUrl = getAssetUrl(file.path);
                 logFrontendError(
                   `PDF failed to load: ${file.name}`,
-                  `Path: ${file.path}, Normalized: ${normalizedPath}, Converted: ${convertedSrc}`
+                  `Path: ${file.path}, Asset URL: ${assetUrl}`
                 );
                 setError(`Failed to load PDF: ${file.name}`);
               }}
