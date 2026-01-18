@@ -269,10 +269,18 @@ pub fn is_git_repo(path: String) -> bool {
 /// Check if Git is installed on the system
 #[tauri::command]
 pub fn is_git_installed() -> bool {
-    std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .is_ok()
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("--version");
+
+    // Hide console window on Windows
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    cmd.output().is_ok()
 }
 
 /// Initialize a Git repository in the specified directory
@@ -294,9 +302,18 @@ pub fn initialize_git_repo(path: String) -> Result<()> {
     }
 
     // Run git init
-    let output = std::process::Command::new("git")
-        .arg("init")
-        .current_dir(&path_buf)
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("init").current_dir(&path_buf);
+
+    // Hide console window on Windows
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = cmd
         .output()
         .map_err(|e| TandemError::Sidecar(format!("Failed to run git init: {}", e)))?;
 
