@@ -56,7 +56,18 @@ const CODE_EXTENSIONS = new Set([
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"]);
 
-const TEXT_EXTENSIONS = new Set(["txt", "log", "csv", "json", "yaml", "yml", "toml", "ini", "cfg", "conf"]);
+const TEXT_EXTENSIONS = new Set([
+  "txt",
+  "log",
+  "csv",
+  "json",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "cfg",
+  "conf",
+]);
 
 function getPreviewType(file: FileEntry): PreviewType {
   const ext = file.extension?.toLowerCase();
@@ -168,22 +179,35 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
       case "markdown":
         return (
           <div className="h-full overflow-y-auto p-6">
-            <div className="prose prose-invert max-w-none">
+            <div className="prose-custom">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  code({ inline, className, children, ...props }: any) {
+                  code({ className, children, ...props }) {
                     const match = /language-(\w+)/.exec(className || "");
-                    return !inline && match ? (
-                      <SyntaxHighlighter
-                        style={oneDark}
-                        language={match[1]}
-                        PreTag="div"
-                        {...props}
-                      >
-                        {String(children).replace(/\n$/, "")}
-                      </SyntaxHighlighter>
-                    ) : (
+                    if (match) {
+                      return (
+                        <div className="overflow-hidden rounded-lg border border-white/10 bg-surface/60">
+                          <div className="flex items-center gap-2 border-b border-white/10 bg-surface-elevated/70 px-3 py-2">
+                            <span className="h-2 w-2 rounded-full bg-error/80" />
+                            <span className="h-2 w-2 rounded-full bg-warning/80" />
+                            <span className="h-2 w-2 rounded-full bg-success/80" />
+                            <span className="ml-2 text-[0.65rem] uppercase tracking-widest text-text-subtle">
+                              {match[1]}
+                            </span>
+                          </div>
+                          <SyntaxHighlighter
+                            style={oneDark}
+                            language={match[1]}
+                            PreTag="div"
+                            customStyle={{ margin: 0, background: "transparent", padding: "1rem" }}
+                          >
+                            {String(children).replace(/\n$/, "")}
+                          </SyntaxHighlighter>
+                        </div>
+                      );
+                    }
+                    return (
                       <code className={className} {...props}>
                         {children}
                       </code>
