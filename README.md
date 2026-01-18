@@ -3,6 +3,7 @@
 [![CI](https://github.com/frumu-ai/tandem/actions/workflows/ci.yml/badge.svg)](https://github.com/frumu-ai/tandem/actions/workflows/ci.yml)
 [![Release](https://github.com/frumu-ai/tandem/actions/workflows/release.yml/badge.svg)](https://github.com/frumu-ai/tandem/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/frumu-ai)
 
 A local-first, privacy-focused AI workspace. Your AI coworker that runs entirely on your machine.
 
@@ -123,11 +124,13 @@ Tandem treats the AI as an "untrusted contractor":
 Tandem offers two modes for handling AI operations:
 
 **Immediate Mode** (default):
+
 - Approve each file change individually via toast notifications
 - Good for quick, small changes
 - Traditional AI assistant experience
 
 **Plan Mode** (recommended for complex tasks):
+
 - Toggle with the **"Plan Mode"** button in the chat header
 - Uses OpenCode's native Plan agent
 - AI proposes file operations that are staged for review
@@ -137,6 +140,7 @@ Tandem offers two modes for handling AI operations:
 - Execute all approved changes with one click
 
 **How to use Plan Mode:**
+
 1. Click "Immediate" → "Plan Mode" toggle in header
 2. Ask AI to make changes (e.g., "Refactor the auth system")
 3. AI proposes operations → they appear in Execution Plan panel
@@ -145,7 +149,8 @@ Tandem offers two modes for handling AI operations:
 6. All changes applied together + AI continues
 
 The Execution Plan panel appears automatically when the AI proposes file changes in Plan Mode.
-  - Full undo support for the entire batch
+
+- Full undo support for the entire batch
 
 Toggle between modes using the button in the chat header.
 
@@ -205,6 +210,17 @@ tandem/
 ## Why Tandem?
 
 For a deeper dive into why we built Tandem and how it compares to other tools, see our [Marketing Guide](docs/marketing.md).
+
+## Support This Project
+
+If Tandem saves you time or helps you keep your data private while using AI, consider [sponsoring development](https://github.com/sponsors/frumu-ai). Your support helps with:
+
+- Cross-platform packaging and code signing
+- Security hardening and privacy features
+- Quality-of-life improvements and bug fixes
+- Documentation and examples
+
+[❤️ Become a Sponsor](https://github.com/sponsors/frumu-ai)
 
 ## License
 
