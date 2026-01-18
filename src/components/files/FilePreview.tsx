@@ -122,6 +122,12 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
   const [error, setError] = useState<string | null>(null);
   const previewType = getPreviewType(file);
 
+  // Normalize Windows paths to forward slashes for asset protocol
+  const normalizePathForAsset = (path: string): string => {
+    // Convert backslashes to forward slashes for Tauri asset protocol
+    return path.replace(/\\/g, "/");
+  };
+
   useEffect(() => {
     if (previewType === "image" || previewType === "pdf" || previewType === "binary") {
       setIsLoading(false);
@@ -194,15 +200,18 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
         return (
           <div className="h-full w-full bg-surface">
             <embed
-              src={convertFileSrc(file.path)}
+              src={convertFileSrc(normalizePathForAsset(file.path))}
               type="application/pdf"
               className="h-full w-full"
               onError={() => {
-                const convertedSrc = convertFileSrc(file.path);
+                const normalizedPath = normalizePathForAsset(file.path);
+                const convertedSrc = convertFileSrc(normalizedPath);
                 console.error("PDF failed to load:", file.path);
+                console.error("Normalized path:", normalizedPath);
+                console.error("Converted src:", convertedSrc);
                 logFrontendError(
                   `PDF failed to load: ${file.name}`,
-                  `Path: ${file.path}, Converted: ${convertedSrc}`
+                  `Original: ${file.path}, Normalized: ${normalizedPath}, Converted: ${convertedSrc}`
                 );
                 setError(`Failed to load PDF: ${file.name}`);
               }}
