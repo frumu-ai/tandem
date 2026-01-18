@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ProjectSwitcher } from "./ProjectSwitcher";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { UserProject } from "@/lib/tauri";
 
 export interface Project {
@@ -82,7 +83,7 @@ export function SessionSidebar({
   projectSwitcherLoading = false,
 }: SessionSidebarProps) {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [sessionToDelete, setSessionToDelete] = useState<SessionInfo | null>(null);
 
   // Group sessions by project
   const sessionsByProject = sessions.reduce(
@@ -206,16 +207,20 @@ export function SessionSidebar({
     return session?.directory || "";
   };
 
-  const handleDelete = (sessionId: string, e: React.MouseEvent) => {
+  const handleDelete = (session: SessionInfo, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (deleteConfirm === sessionId) {
-      onDeleteSession(sessionId);
-      setDeleteConfirm(null);
-    } else {
-      setDeleteConfirm(sessionId);
-      // Auto-clear confirmation after 3 seconds
-      setTimeout(() => setDeleteConfirm(null), 3000);
+    setSessionToDelete(session);
+  };
+
+  const confirmDelete = () => {
+    if (sessionToDelete) {
+      onDeleteSession(sessionToDelete.id);
+      setSessionToDelete(null);
     }
+  };
+
+  const cancelDelete = () => {
+    setSessionToDelete(null);
   };
 
   return (
@@ -375,18 +380,9 @@ export function SessionSidebar({
                                 </div>
                                 {/* Delete button */}
                                 <button
-                                  onClick={(e) => handleDelete(session.id, e)}
-                                  className={cn(
-                                    "p-1 rounded transition-colors opacity-0 group-hover:opacity-100",
-                                    deleteConfirm === session.id
-                                      ? "bg-error/20 text-error opacity-100"
-                                      : "hover:bg-surface text-text-muted hover:text-error"
-                                  )}
-                                  title={
-                                    deleteConfirm === session.id
-                                      ? "Click again to confirm"
-                                      : "Delete chat"
-                                  }
+                                  onClick={(e) => handleDelete(session, e)}
+                                  className="p-1 rounded transition-colors opacity-0 group-hover:opacity-100 hover:bg-surface text-text-muted hover:text-error"
+                                  title="Delete chat"
                                 >
                                   <Trash2 className="h-3 w-3" />
                                 </button>
@@ -414,6 +410,18 @@ export function SessionSidebar({
           <ChevronRight className="h-4 w-4 text-text-muted" />
         </button>
       )}
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={sessionToDelete !== null}
+        title="Delete Chat"
+        message={`Are you sure you want to delete "${sessionToDelete?.title || "this chat"}"? This action cannot be undone.`}
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
     </>
   );
 }

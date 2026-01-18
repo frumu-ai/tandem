@@ -6,9 +6,12 @@ import { Chat } from "@/components/chat";
 import { SidecarDownloader } from "@/components/sidecar";
 import { SessionSidebar, type SessionInfo, type Project } from "@/components/sidebar";
 import { TaskSidebar } from "@/components/tasks/TaskSidebar";
+import { FileBrowser } from "@/components/files/FileBrowser";
+import { FilePreview } from "@/components/files/FilePreview";
 import { Button } from "@/components/ui";
 import { useAppState } from "@/hooks/useAppState";
 import { useTodos } from "@/hooks/useTodos";
+import { cn } from "@/lib/utils";
 import logo from "@/assets/logo.png";
 import {
   listSessions,
@@ -20,10 +23,13 @@ import {
   setActiveProject,
   addProject,
   getSidecarStatus,
+  readFileContent,
   type Session,
   type VaultStatus,
   type UserProject,
+  type FileEntry,
 } from "@/lib/tauri";
+import { type FileAttachment } from "@/components/chat/ChatInput";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Settings as SettingsIcon,
@@ -34,6 +40,7 @@ import {
   PanelLeft,
   Info,
   ListTodo,
+  Files,
 } from "lucide-react";
 
 type View = "chat" | "settings" | "about" | "onboarding" | "sidecar-setup";
@@ -67,6 +74,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [taskSidebarOpen, setTaskSidebarOpen] = useState(false);
   const [usePlanMode, setUsePlanMode] = useState(false);
+  const [selectedAgent, setSelectedAgent] = useState<string | undefined>(undefined);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -74,6 +82,11 @@ function App() {
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
   const [executePendingTrigger, setExecutePendingTrigger] = useState(0);
   const [isExecutingTasks, setIsExecutingTasks] = useState(false);
+  
+  // File browser state
+  const [sidebarTab, setSidebarTab] = useState<"sessions" | "files">("sessions");
+  const [selectedFile, setSelectedFile] = useState<FileEntry | null>(null);
+  const [fileToAttach, setFileToAttach] = useState<FileAttachment | null>(null);
 
   // Project management state
   const [userProjects, setUserProjects] = useState<UserProject[]>([]);
@@ -319,7 +332,52 @@ function App() {
   const handleExecutePendingTasks = () => {
     // Switch to immediate mode and trigger execution in Chat
     setUsePlanMode(false);
+    setSelectedAgent(undefined);
     setExecutePendingTrigger((prev) => prev + 1);
+  };
+
+  const handleAddFileToChat = async (file: FileEntry) => {
+    // Read file content and create attachment
+    try {
+      console.log("Add to chat:", file.path);
+      
+      // Read the actual file content
+      const content = await readFileContent(file.path, 1024 * 1024); // 1MB limit
+      
+      // Convert to base64 data URL for OpenCode
+      const base64Content = btoa(unescape(encodeURIComponent(content)));
+      
+      // Use standard MIME types
+      const getMimeType = (ext: string | undefined): string => {
+        switch (ext?.toLowerCase()) {
+          case "ts": case "tsx": return "text/typescript";
+          case "js": case "jsx": return "text/javascript";
+          case "json": return "application/json";
+          case "md": return "text/markdown";
+          case "txt": return "text/plain";
+          case "log": return "text/plain"; // Use text/plain for logs
+          default: return "text/plain";
+        }
+      };
+      
+      const mimeType = getMimeType(file.extension);
+      const dataUrl = `data:${mimeType};base64,${base64Content}`;
+      
+      // Create a FileAttachment with data URL - omit filename to force data URL usage
+      const attachment: FileAttachment = {
+        id: `file_${Date.now()}`,
+        type: "file",
+        name: file.name,
+        mime: mimeType,
+        url: dataUrl, // Use data URL instead of file path
+        size: content.length, // Use actual content length
+      };
+      
+      setFileToAttach(attachment);
+      setSelectedFile(null); // Close preview
+    } catch (err) {
+      console.error("Failed to add file to chat:", err);
+    }
   };
 
   return (
@@ -410,47 +468,94 @@ function App() {
         </div>
       </motion.aside>
 
-      {/* Session Sidebar */}
-      {effectiveView === "chat" && (
-        <SessionSidebar
-          isOpen={sidebarOpen}
-          onToggle={() => setSidebarOpen(!sidebarOpen)}
-          sessions={sessions.filter((session) => {
-            // Only show sessions from the active project
-            if (!activeProject) return true;
-            if (!session.directory) return false;
+      {/* Tabbed Sidebar (Sessions / Files) */}
+      {effectiveView === "chat" && sidebarOpen && (
+        <motion.div
+          className="flex h-full w-80 flex-col border-r border-border bg-surface z-10"
+          initial={{ x: -320 }}
+          animate={{ x: 0 }}
+          exit={{ x: -320 }}
+          transition={{ duration: 0.3 }}
+        >
+          {/* Tab Switcher */}
+          <div className="flex border-b border-border">
+            <button
+              onClick={() => setSidebarTab("sessions")}
+              className={cn(
+                "flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2",
+                sidebarTab === "sessions"
+                  ? "border-b-2 border-primary text-primary"
+                  : "text-text-muted hover:text-text hover:bg-surface-elevated"
+              )}
+            >
+              <MessageSquare className="h-4 w-4" />
+              Sessions
+            </button>
+            <button
+              onClick={() => setSidebarTab("files")}
+              className={cn(
+                "flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2",
+                sidebarTab === "files"
+                  ? "border-b-2 border-primary text-primary"
+                  : "text-text-muted hover:text-text hover:bg-surface-elevated"
+              )}
+            >
+              <Files className="h-4 w-4" />
+              Files
+            </button>
+          </div>
 
-            // Normalize paths for comparison (handle both / and \ separators)
-            const normalizedSessionDir = session.directory.toLowerCase().replace(/\\/g, "/");
-            const normalizedProjectPath = activeProject.path.toLowerCase().replace(/\\/g, "/");
+          {/* Tab Content */}
+          <div className="flex-1 overflow-hidden">
+            {sidebarTab === "sessions" ? (
+              <SessionSidebar
+                isOpen={true}
+                onToggle={() => setSidebarOpen(!sidebarOpen)}
+                sessions={sessions.filter((session) => {
+                  // Only show sessions from the active project
+                  if (!activeProject) return true;
+                  if (!session.directory) return false;
 
-            // Check if session directory starts with or contains the project path
-            return (
-              normalizedSessionDir.includes(normalizedProjectPath) ||
-              normalizedProjectPath.includes(normalizedSessionDir)
-            );
-          })}
-          projects={projects}
-          currentSessionId={currentSessionId}
-          onSelectSession={handleSelectSession}
-          onNewChat={handleNewChat}
-          onDeleteSession={handleDeleteSession}
-          isLoading={historyLoading}
-          userProjects={userProjects}
-          activeProject={activeProject}
-          onSwitchProject={handleSwitchProject}
-          onAddProject={handleAddProject}
-          onManageProjects={handleManageProjects}
-          projectSwitcherLoading={projectSwitcherLoading}
-        />
+                  // Normalize paths for comparison (handle both / and \ separators)
+                  const normalizedSessionDir = session.directory.toLowerCase().replace(/\\/g, "/");
+                  const normalizedProjectPath = activeProject.path.toLowerCase().replace(/\\/g, "/");
+
+                  // Check if session directory starts with or contains the project path
+                  return (
+                    normalizedSessionDir.includes(normalizedProjectPath) ||
+                    normalizedProjectPath.includes(normalizedSessionDir)
+                  );
+                })}
+                projects={projects}
+                currentSessionId={currentSessionId}
+                onSelectSession={handleSelectSession}
+                onNewChat={handleNewChat}
+                onDeleteSession={handleDeleteSession}
+                isLoading={historyLoading}
+                userProjects={userProjects}
+                activeProject={activeProject}
+                onSwitchProject={handleSwitchProject}
+                onAddProject={handleAddProject}
+                onManageProjects={handleManageProjects}
+                projectSwitcherLoading={projectSwitcherLoading}
+              />
+            ) : (
+              <FileBrowser
+                rootPath={activeProject?.path || null}
+                onFileSelect={(file) => setSelectedFile(file)}
+                selectedPath={selectedFile?.path}
+              />
+            )}
+          </div>
+        </motion.div>
       )}
 
       {/* Main Content */}
-      <main className="flex-1 overflow-hidden relative">
+      <main className="flex-1 overflow-hidden relative flex">
         {effectiveView === "sidecar-setup" ? (
           <motion.div
             key="sidecar-setup"
-            className="flex h-full items-center justify-center bg-background"
+            className="flex h-full w-full items-center justify-center bg-background"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -461,40 +566,69 @@ function App() {
           <OnboardingView key="onboarding" onComplete={() => setView("settings")} />
         ) : (
           <>
-            <Chat
-              key={activeProject?.id || "no-project"}
-              workspacePath={activeProject?.path || state?.workspace_path || null}
-              sessionId={currentSessionId}
-              onSessionCreated={handleSessionCreated}
-              onSidecarConnected={loadHistory}
-              usePlanMode={usePlanMode}
-              onPlanModeChange={setUsePlanMode}
-              onToggleTaskSidebar={() => setTaskSidebarOpen((prev) => !prev)}
-              executePendingTasksTrigger={executePendingTrigger}
-              onGeneratingChange={setIsExecutingTasks}
-              pendingTasks={todosData.pending}
-            />
+            {/* Chat Area */}
+            <div className={cn("flex-1 overflow-hidden relative", selectedFile && "w-1/2")}>
+              <Chat
+                key={activeProject?.id || "no-project"}
+                workspacePath={activeProject?.path || state?.workspace_path || null}
+                sessionId={currentSessionId}
+                onSessionCreated={handleSessionCreated}
+                onSidecarConnected={loadHistory}
+                usePlanMode={usePlanMode}
+                onPlanModeChange={setUsePlanMode}
+                selectedAgent={selectedAgent}
+                onAgentChange={(agent) => {
+                  setSelectedAgent(agent);
+                  setUsePlanMode(agent === "plan");
+                }}
+                onToggleTaskSidebar={() => setTaskSidebarOpen((prev) => !prev)}
+                executePendingTasksTrigger={executePendingTrigger}
+                onGeneratingChange={setIsExecutingTasks}
+                pendingTasks={todosData.pending}
+                fileToAttach={fileToAttach}
+                onFileAttached={() => setFileToAttach(null)}
+              />
+              <AnimatePresence>
+                {effectiveView === "settings" && (
+                  <motion.div
+                    key="settings"
+                    className="absolute inset-0 bg-background"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                  >
+                    <Settings onClose={handleSettingsClose} />
+                  </motion.div>
+                )}
+                {effectiveView === "about" && (
+                  <motion.div
+                    key="about"
+                    className="absolute inset-0 bg-background"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                  >
+                    <About />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* File Preview Panel */}
             <AnimatePresence>
-              {effectiveView === "settings" && (
+              {selectedFile && (
                 <motion.div
-                  key="settings"
-                  className="absolute inset-0 bg-background"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
+                  initial={{ width: 0, opacity: 0 }}
+                  animate={{ width: "50%", opacity: 1 }}
+                  exit={{ width: 0, opacity: 0 }}
+                  transition={{ duration: 0.3 }}
+                  className="overflow-hidden"
                 >
-                  <Settings onClose={handleSettingsClose} />
-                </motion.div>
-              )}
-              {effectiveView === "about" && (
-                <motion.div
-                  key="about"
-                  className="absolute inset-0 bg-background"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                >
-                  <About />
+                  <FilePreview
+                    file={selectedFile}
+                    onClose={() => setSelectedFile(null)}
+                    onAddToChat={handleAddFileToChat}
+                  />
                 </motion.div>
               )}
             </AnimatePresence>

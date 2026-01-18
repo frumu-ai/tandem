@@ -139,6 +139,14 @@ export interface TodoItem {
   status: "pending" | "in_progress" | "completed" | "cancelled";
 }
 
+export interface FileEntry {
+  name: string;
+  path: string;
+  is_directory: boolean;
+  size?: number;
+  extension?: string;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;
@@ -567,6 +575,18 @@ export async function clearStagingArea(): Promise<number> {
 
 export async function getStagedCount(): Promise<number> {
   return invoke("get_staged_count");
+}
+
+// ============================================================================
+// File Browser
+// ============================================================================
+
+export async function readDirectory(path: string): Promise<FileEntry[]> {
+  return invoke("read_directory", { path });
+}
+
+export async function readFileContent(path: string, maxSize?: number): Promise<string> {
+  return invoke("read_file_content", { path, maxSize });
 }
 
 // ============================================================================

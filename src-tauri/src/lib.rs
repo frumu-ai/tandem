@@ -342,6 +342,9 @@ pub fn run() {
             // Sidecar binary management
             commands::check_sidecar_status,
             commands::download_sidecar,
+            // File browser
+            commands::read_directory,
+            commands::read_file_content,
         ]);
 
     // Add desktop-only plugins
