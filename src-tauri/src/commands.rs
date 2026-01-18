@@ -1162,7 +1162,8 @@ pub async fn undo_via_command(
     session_id: String,
 ) -> Result<()> {
     tracing::info!("Executing /undo command in session {}", session_id);
-    state.sidecar.execute_command(&session_id, "undo").await
+    // OpenCode expects slash-commands in many builds (e.g. "/undo"), not "undo".
+    state.sidecar.execute_command(&session_id, "/undo").await
 }
 
 // ============================================================================
