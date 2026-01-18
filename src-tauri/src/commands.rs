@@ -1161,9 +1161,12 @@ pub async fn undo_via_command(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<()> {
-    tracing::info!("Executing /undo command in session {}", session_id);
-    // OpenCode expects slash-commands in many builds (e.g. "/undo"), not "undo".
-    state.sidecar.execute_command(&session_id, "/undo").await
+    tracing::info!("Executing /undo via prompt in session {}", session_id);
+    
+    // Send "/undo" as a regular prompt - same as typing it in the TUI
+    // OpenCode intercepts slash commands and handles them specially
+    let request = crate::sidecar::SendMessageRequest::text("/undo".to_string());
+    state.sidecar.send_message(&session_id, request).await
 }
 
 // ============================================================================
