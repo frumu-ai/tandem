@@ -201,13 +201,22 @@ async fn fetch_latest_version() -> Result<String> {
     // Check status code
     let status = response.status();
     if !status.is_success() {
+        // Handle rate limiting with a user-friendly message
+        if status.as_u16() == 403 {
+            return Err(TandemError::Sidecar(
+                "GitHub rate limit reached. Please wait a few minutes and try again.".to_string()
+            ));
+        }
+        
         let error_text = response
             .text()
             .await
             .unwrap_or_else(|_| "Failed to read error response".to_string());
+        
+        tracing::error!("GitHub API error {}: {}", status, error_text);
         return Err(TandemError::Sidecar(format!(
-            "GitHub API returned status {}: {}",
-            status, error_text
+            "Unable to check for updates (error {}). Please try again later.",
+            status.as_u16()
         )));
     }
 
@@ -294,11 +303,23 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     // Check status code
     let status = response.status();
     if !status.is_success() {
+        // Handle rate limiting with a user-friendly message
+        if status.as_u16() == 403 {
+            let error_msg = "GitHub rate limit reached. Please wait a few minutes and try again.".to_string();
+            emit_state("error", Some(&error_msg));
+            return Err(TandemError::Sidecar(error_msg));
+        }
+        
         let error_text = response
             .text()
             .await
             .unwrap_or_else(|_| "Failed to read error response".to_string());
-        let error_msg = format!("GitHub API returned status {}: {}", status, error_text);
+        
+        tracing::error!("GitHub API error {}: {}", status, error_text);
+        let error_msg = format!(
+            "Unable to download (error {}). Please try again later.",
+            status.as_u16()
+        );
         emit_state("error", Some(&error_msg));
         return Err(TandemError::Sidecar(error_msg));
     }
