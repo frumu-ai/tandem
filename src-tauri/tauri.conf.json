@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' http://127.0.0.1:* https://openrouter.ai https://api.anthropic.com https://api.openai.com; img-src 'self' data: blob: asset: https:; font-src 'self' https://fonts.gstatic.com; frame-src 'none'; object-src 'none'",
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' http://127.0.0.1:* https://openrouter.ai https://api.anthropic.com https://api.openai.com; img-src 'self' data: blob: asset: https:; font-src 'self' https://fonts.gstatic.com; frame-src asset:; object-src asset:",
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]

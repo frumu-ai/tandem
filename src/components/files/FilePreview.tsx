@@ -74,6 +74,7 @@ function getPreviewType(file: FileEntry): PreviewType {
   if (!ext) return "binary";
 
   if (ext === "md") return "markdown";
+  if (ext === "pdf") return "pdf";
   if (IMAGE_EXTENSIONS.has(ext)) return "image";
   if (CODE_EXTENSIONS.has(ext)) return "code";
   if (TEXT_EXTENSIONS.has(ext)) return "text";
@@ -179,6 +180,21 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
               }}
               onLoad={() => {
                 console.log("Image loaded successfully:", file.path);
+              }}
+            />
+          </div>
+        );
+
+      case "pdf":
+        return (
+          <div className="h-full w-full bg-surface">
+            <embed
+              src={convertFileSrc(file.path)}
+              type="application/pdf"
+              className="h-full w-full"
+              onError={() => {
+                console.error("PDF failed to load:", file.path);
+                setError(`Failed to load PDF: ${file.name}`);
               }}
             />
           </div>
