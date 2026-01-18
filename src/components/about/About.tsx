@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Building2, Smartphone, ExternalLink } from "lucide-react";
+import { Building2, Smartphone, ExternalLink, Heart } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -203,6 +203,21 @@ export function About() {
                     : updateStatus === "error"
                       ? updateError || "Update check failed."
                       : ""}
+            </p>
+          </div>
+
+          {/* GitHub Sponsors */}
+          <div className="mt-8">
+            <button
+              onClick={() => handleOpenExternal("https://github.com/sponsors/frumu-ai")}
+              className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-pink-500/20 to-rose-500/20 px-6 py-3 text-sm font-medium text-pink-400 transition-all hover:from-pink-500/30 hover:to-rose-500/30 hover:shadow-[0_0_16px_rgba(236,72,153,0.4)]"
+            >
+              <Heart className="h-4 w-4 fill-current" />
+              <span>Sponsor on GitHub</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </button>
+            <p className="mt-3 text-xs text-text-subtle">
+              Support the development of Tandem and other open-source projects
             </p>
           </div>
         </motion.div>

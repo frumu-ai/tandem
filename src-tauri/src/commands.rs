@@ -907,7 +907,7 @@ pub async fn send_message_streaming(
         resolve_default_model_spec(&config)
     };
     request.model = model_spec;
-    
+
     // Set agent if specified
     if let Some(agent_name) = agent {
         request.agent = Some(agent_name);
@@ -1429,7 +1429,7 @@ pub async fn stage_tool_operation(
     message_id: Option<String>,
 ) -> Result<()> {
     use crate::tool_proxy::StagedOperation;
-    
+
     // Extract file path if it's a file operation
     let path_str = args
         .get("filePath")
@@ -1442,7 +1442,7 @@ pub async fn stage_tool_operation(
     // Create snapshot for file operations
     let (before_snapshot, proposed_content) = if let Some(path) = path_str.as_ref() {
         let path_buf = PathBuf::from(path);
-        
+
         if state.is_path_allowed(&path_buf) {
             let (exists, is_directory) = match fs::metadata(&path_buf) {
                 Ok(meta) => (true, meta.is_dir()),
@@ -1486,7 +1486,7 @@ pub async fn stage_tool_operation(
         } else {
             path.clone()
         };
-        
+
         match tool.as_str() {
             "write" => format!("Write to {}", short_path),
             "delete" => format!("Delete {}", short_path),
@@ -1540,7 +1540,9 @@ pub async fn stage_tool_operation(
 
 /// Get all staged operations
 #[tauri::command]
-pub fn get_staged_operations(state: State<'_, AppState>) -> Vec<crate::tool_proxy::StagedOperation> {
+pub fn get_staged_operations(
+    state: State<'_, AppState>,
+) -> Vec<crate::tool_proxy::StagedOperation> {
     state.staging_store.get_all()
 }
 
@@ -1554,9 +1556,13 @@ pub async fn execute_staged_plan(state: State<'_, AppState>) -> Result<Vec<Strin
 
     for op in operations {
         tracing::info!("Executing staged operation: {} ({})", op.id, op.tool);
-        
+
         // Approve the tool with OpenCode sidecar
-        if let Err(e) = state.sidecar.approve_tool(&op.session_id, &op.request_id).await {
+        if let Err(e) = state
+            .sidecar
+            .approve_tool(&op.session_id, &op.request_id)
+            .await
+        {
             tracing::error!("Failed to execute staged operation {}: {}", op.id, e);
             // Continue with other operations even if one fails
             continue;
@@ -1565,7 +1571,7 @@ pub async fn execute_staged_plan(state: State<'_, AppState>) -> Result<Vec<Strin
         // Record in journal for undo
         if op.before_snapshot.is_some() {
             use crate::tool_proxy::{JournalEntry, OperationStatus, UndoAction};
-            
+
             let entry = JournalEntry {
                 id: uuid::Uuid::new_v4().to_string(),
                 timestamp: op.timestamp,
@@ -1659,38 +1665,44 @@ pub struct FileEntry {
 #[tauri::command]
 pub async fn read_directory(path: String) -> Result<Vec<FileEntry>> {
     use ignore::WalkBuilder;
-    
+
     let dir_path = PathBuf::from(&path);
-    
+
     if !dir_path.exists() {
-        return Err(TandemError::NotFound(format!("Path does not exist: {}", path)));
+        return Err(TandemError::NotFound(format!(
+            "Path does not exist: {}",
+            path
+        )));
     }
-    
+
     if !dir_path.is_dir() {
-        return Err(TandemError::InvalidConfig(format!("Path is not a directory: {}", path)));
+        return Err(TandemError::InvalidConfig(format!(
+            "Path is not a directory: {}",
+            path
+        )));
     }
 
     let mut entries = Vec::new();
-    
+
     // Use ignore crate to respect .gitignore
     let walker = WalkBuilder::new(&dir_path)
-        .max_depth(Some(1))  // Only immediate children
-        .hidden(false)        // Show hidden files
-        .git_ignore(true)     // Respect .gitignore
-        .git_global(true)     // Respect global gitignore
-        .git_exclude(true)    // Respect .git/info/exclude
+        .max_depth(Some(1)) // Only immediate children
+        .hidden(false) // Show hidden files
+        .git_ignore(true) // Respect .gitignore
+        .git_global(true) // Respect global gitignore
+        .git_exclude(true) // Respect .git/info/exclude
         .build();
-    
+
     for result in walker {
         match result {
             Ok(entry) => {
                 let entry_path = entry.path();
-                
+
                 // Skip the directory itself
                 if entry_path == dir_path {
                     continue;
                 }
-                
+
                 let metadata = match entry.metadata() {
                     Ok(m) => m,
                     Err(e) => {
@@ -1698,16 +1710,20 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>> {
                         continue;
                     }
                 };
-                
+
                 let name = entry_path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("")
                     .to_string();
-                
+
                 let path_str = entry_path.to_string_lossy().to_string();
                 let is_directory = metadata.is_dir();
-                let size = if is_directory { None } else { Some(metadata.len()) };
+                let size = if is_directory {
+                    None
+                } else {
+                    Some(metadata.len())
+                };
                 let extension = if is_directory {
                     None
                 } else {
@@ -1716,7 +1732,7 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>> {
                         .and_then(|e| e.to_str())
                         .map(|s| s.to_string())
                 };
-                
+
                 entries.push(FileEntry {
                     name,
                     path: path_str,
@@ -1730,16 +1746,14 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>> {
             }
         }
     }
-    
+
     // Sort: directories first, then files, alphabetically
-    entries.sort_by(|a, b| {
-        match (a.is_directory, b.is_directory) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    entries.sort_by(|a, b| match (a.is_directory, b.is_directory) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
-    
+
     Ok(entries)
 }
 
@@ -1747,30 +1761,34 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>> {
 #[tauri::command]
 pub async fn read_file_content(path: String, max_size: Option<u64>) -> Result<String> {
     let file_path = PathBuf::from(&path);
-    
+
     if !file_path.exists() {
-        return Err(TandemError::NotFound(format!("File does not exist: {}", path)));
+        return Err(TandemError::NotFound(format!(
+            "File does not exist: {}",
+            path
+        )));
     }
-    
+
     if !file_path.is_file() {
-        return Err(TandemError::InvalidConfig(format!("Path is not a file: {}", path)));
+        return Err(TandemError::InvalidConfig(format!(
+            "Path is not a file: {}",
+            path
+        )));
     }
-    
-    let metadata = fs::metadata(&file_path)
-        .map_err(|e| TandemError::Io(e))?;
-    
+
+    let metadata = fs::metadata(&file_path).map_err(|e| TandemError::Io(e))?;
+
     let file_size = metadata.len();
     let size_limit = max_size.unwrap_or(1024 * 1024); // Default 1MB
-    
+
     if file_size > size_limit {
         return Err(TandemError::InvalidConfig(format!(
             "File too large: {} bytes (limit: {} bytes)",
             file_size, size_limit
         )));
     }
-    
-    let content = fs::read_to_string(&file_path)
-        .map_err(|e| TandemError::Io(e))?;
-    
+
+    let content = fs::read_to_string(&file_path).map_err(|e| TandemError::Io(e))?;
+
     Ok(content)
 }

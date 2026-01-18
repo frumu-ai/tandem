@@ -207,7 +207,11 @@ impl StagingStore {
     pub fn stage(&self, operation: StagedOperation) {
         let mut ops = self.operations.write().unwrap();
         ops.push(operation);
-        tracing::info!("Staged operation: {} (total: {})", ops.last().unwrap().id, ops.len());
+        tracing::info!(
+            "Staged operation: {} (total: {})",
+            ops.last().unwrap().id,
+            ops.len()
+        );
     }
 
     /// Get all staged operations

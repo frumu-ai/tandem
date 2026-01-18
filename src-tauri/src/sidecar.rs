@@ -274,9 +274,13 @@ impl SendMessageRequest {
             }));
         }
 
-        Self { parts, model: None, agent: None }
+        Self {
+            parts,
+            model: None,
+            agent: None,
+        }
     }
-    
+
     /// Set the agent for this request
     pub fn with_agent(mut self, agent: String) -> Self {
         self.agent = Some(agent);
@@ -964,10 +968,10 @@ impl SidecarManager {
             .map_err(|e| TandemError::Sidecar(format!("Failed to get session todos: {}", e)))?;
 
         tracing::info!("Todos API response status: {}", response.status());
-        
+
         let todos: Vec<TodoItem> = self.handle_response(response).await?;
         tracing::info!("Fetched {} todos for session {}", todos.len(), session_id);
-        
+
         Ok(todos)
     }
 
@@ -1582,7 +1586,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
         }
         "todo.updated" => {
             let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
-            
+
             // Try to parse todos array, but don't fail if it's malformed
             let todos = if let Some(todos_array) = props.get("todos").and_then(|t| t.as_array()) {
                 let parsed_todos: Vec<TodoItem> = todos_array
@@ -1595,14 +1599,21 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                         })
                     })
                     .collect();
-                
-                tracing::info!("Parsed {} todos from todo.updated event for session {}", parsed_todos.len(), session_id);
+
+                tracing::info!(
+                    "Parsed {} todos from todo.updated event for session {}",
+                    parsed_todos.len(),
+                    session_id
+                );
                 parsed_todos
             } else {
-                tracing::warn!("todo.updated event missing or malformed todos array for session {}", session_id);
+                tracing::warn!(
+                    "todo.updated event missing or malformed todos array for session {}",
+                    session_id
+                );
                 Vec::new()
             };
-            
+
             Some(StreamEvent::TodoUpdated { session_id, todos })
         }
         _ => {
