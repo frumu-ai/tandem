@@ -9,6 +9,25 @@
 
 ## Test Scenario: Version 0.1.0 → 0.2.0
 
+### Step 0: Prepare Release Notes (Optional)
+
+Before creating a release, you can update `CHANGELOG.md`:
+
+```markdown
+## [0.2.0] - 2026-01-XX
+
+### Added
+
+- New feature X
+- New feature Y
+
+### Fixed
+
+- Bug Z
+```
+
+Or let GitHub auto-generate notes from commits (current setup).
+
 ### Step 1: Create Initial Release (v0.1.0)
 
 ```powershell

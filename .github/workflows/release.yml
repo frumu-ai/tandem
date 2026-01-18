@@ -32,7 +32,8 @@ jobs:
               name: `Tandem ${context.ref.replace('refs/tags/', '')}`,
               body: 'See the assets below to download the installer for your platform.',
               draft: true,
-              prerelease: false
+              prerelease: false,
+              generate_release_notes: true
             });
             return data.id;
 
