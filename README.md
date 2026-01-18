@@ -121,6 +121,7 @@ Tandem supports multiple LLM providers. Configure them in Settings:
 | Provider          | Description                                      | Get API Key                                                          |
 | ----------------- | ------------------------------------------------ | -------------------------------------------------------------------- |
 | **OpenRouter** ⭐ | Access 100+ models through one API (recommended) | [openrouter.ai/keys](https://openrouter.ai/keys)                     |
+| **OpenCode Zen**  | Fast, cost-effective models optimized for coding | [opencode.ai/zen](https://opencode.ai/zen)                           |
 | **Anthropic**     | Claude models (Sonnet, Opus, Haiku)              | [console.anthropic.com](https://console.anthropic.com/settings/keys) |
 | **OpenAI**        | GPT-4, GPT-3.5 and other OpenAI models           | [platform.openai.com](https://platform.openai.com/api-keys)          |
 | **Ollama**        | Run models locally (no API key needed)           | [ollama.com](https://ollama.com)                                     |
