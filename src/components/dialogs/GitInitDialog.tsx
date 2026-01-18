@@ -7,16 +7,10 @@ interface GitInitDialogProps {
   onClose: () => void;
   onInitialize: () => void;
   gitInstalled: boolean;
-  folderPath: string;
+  folderPath?: string;
 }
 
-export function GitInitDialog({
-  isOpen,
-  onClose,
-  onInitialize,
-  gitInstalled,
-  folderPath,
-}: GitInitDialogProps) {
+export function GitInitDialog({ isOpen, onClose, onInitialize, gitInstalled }: GitInitDialogProps) {
   if (!gitInstalled) {
     return (
       <AnimatePresence>
@@ -40,9 +34,10 @@ export function GitInitDialog({
                     Git Required for Undo Features
                   </h2>
                   <p className="text-sm text-text-muted mb-4">
-                    Tandem uses Git for operation history and undo capabilities. To enable these features, please install Git first.
+                    Tandem uses Git for operation history and undo capabilities. To enable these
+                    features, please install Git first.
                   </p>
-                  
+
                   <div className="space-y-2 mb-4">
                     <a
                       href="https://git-scm.com/download/win"
@@ -90,29 +85,27 @@ export function GitInitDialog({
             <div className="flex items-start gap-3">
               <GitBranch className="h-6 w-6 text-primary flex-shrink-0 mt-0.5" />
               <div className="flex-1">
-                <h2 className="text-lg font-semibold text-text mb-2">
-                  Enable Version History?
-                </h2>
+                <h2 className="text-lg font-semibold text-text mb-2">Enable Version History?</h2>
                 <p className="text-sm text-text-muted mb-4">
                   Initialize Git in this folder to enable:
                 </p>
-                
+
                 <ul className="space-y-2 mb-4">
-                  {[
-                    "Undo AI operations",
-                    "Rewind conversations",
-                    "Review change history"
-                  ].map((feature) => (
-                    <li key={feature} className="flex items-start gap-2 text-sm text-text">
-                      <CheckCircle className="h-4 w-4 text-success flex-shrink-0 mt-0.5" />
-                      <span>{feature}</span>
-                    </li>
-                  ))}
+                  {["Undo AI operations", "Rewind conversations", "Review change history"].map(
+                    (feature) => (
+                      <li key={feature} className="flex items-start gap-2 text-sm text-text">
+                        <CheckCircle className="h-4 w-4 text-success flex-shrink-0 mt-0.5" />
+                        <span>{feature}</span>
+                      </li>
+                    )
+                  )}
                 </ul>
 
                 <div className="rounded-lg bg-surface-elevated border border-border p-3 mb-4">
                   <p className="text-xs text-text-subtle">
-                    <strong className="text-text">What this does:</strong> Creates a hidden <code className="px-1 py-0.5 bg-surface rounded text-xs">.git</code> folder to track file versions. Everything stays local on your machine.
+                    <strong className="text-text">What this does:</strong> Creates a hidden{" "}
+                    <code className="px-1 py-0.5 bg-surface rounded text-xs">.git</code> folder to
+                    track file versions. Everything stays local on your machine.
                   </p>
                 </div>
 
@@ -120,9 +113,7 @@ export function GitInitDialog({
                   <Button variant="ghost" onClick={onClose}>
                     Skip for Now
                   </Button>
-                  <Button onClick={onInitialize}>
-                    Initialize Git
-                  </Button>
+                  <Button onClick={onInitialize}>Initialize Git</Button>
                 </div>
               </div>
             </div>
