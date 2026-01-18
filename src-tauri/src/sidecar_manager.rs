@@ -59,7 +59,7 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
     
     // First, check if there's an updated version in AppData
     if let Ok(app_data_dir) = app.path().app_data_dir() {
-        let updated_binary = app_data_dir.join("binaries").join(binary_name);
+        let updated_binary = app_data_dir.join("binaries").join(&binary_name);
         if updated_binary.exists() {
             tracing::info!("Using updated sidecar from AppData: {:?}", updated_binary);
             return Ok(updated_binary);
@@ -67,14 +67,19 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
     }
     
     // Fall back to bundled version in resources (read-only)
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| TandemError::Sidecar(format!("Failed to get resource dir: {}", e)))?;
-
-    let bundled_binary = resource_dir.join("binaries").join(binary_name);
-    tracing::info!("Using bundled sidecar from resources: {:?}", bundled_binary);
-    Ok(bundled_binary)
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled_binary = resource_dir.join("binaries").join(&binary_name);
+        if bundled_binary.exists() {
+            tracing::info!("Using bundled sidecar from resources: {:?}", bundled_binary);
+            return Ok(bundled_binary);
+        }
+    }
+    
+    // Binary not found in either location
+    Err(TandemError::Sidecar(format!(
+        "Sidecar binary '{}' not found. Please download it first.",
+        binary_name
+    )))
 }
 
 /// Get the binary name for the current platform
