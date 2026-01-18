@@ -1,5 +1,9 @@
 # Tandem
 
+[![CI](https://github.com/frumu-ai/tandem/actions/workflows/ci.yml/badge.svg)](https://github.com/frumu-ai/tandem/actions/workflows/ci.yml)
+[![Release](https://github.com/frumu-ai/tandem/actions/workflows/release.yml/badge.svg)](https://github.com/frumu-ai/tandem/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A local-first, privacy-focused AI workspace. Your AI coworker that runs entirely on your machine.
 
 Inspired by [Claude Cowork](https://claude.com/blog/cowork-research-preview), but open source and provider-agnostic.
