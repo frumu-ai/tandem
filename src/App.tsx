@@ -659,7 +659,7 @@ function App() {
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                   >
-                    <Settings onClose={handleSettingsClose} />
+                    <Settings onClose={handleSettingsClose} onProjectChange={loadUserProjects} />
                   </motion.div>
                 )}
                 {effectiveView === "about" && (

@@ -33,9 +33,10 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 interface SettingsProps {
   onClose?: () => void;
+  onProjectChange?: () => void;
 }
 
-export function Settings({ onClose }: SettingsProps) {
+export function Settings({ onClose, onProjectChange }: SettingsProps) {
   const [providers, setProviders] = useState<ProvidersConfig | null>(null);
   const [projects, setProjects] = useState<UserProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -183,6 +184,8 @@ export function Settings({ onClose }: SettingsProps) {
       // Set as active
       await setActiveProject(project.id);
       setActiveProjectId(project.id);
+      // Notify parent that projects have changed
+      onProjectChange?.();
     } catch (err) {
       console.error("Failed to finalize project:", err);
     } finally {
@@ -223,6 +226,8 @@ export function Settings({ onClose }: SettingsProps) {
       await setActiveProject(projectId);
       setActiveProjectId(projectId);
       await loadSettings();
+      // Notify parent that active project has changed
+      onProjectChange?.();
     } catch (err) {
       console.error("Failed to set active project:", err);
     } finally {
