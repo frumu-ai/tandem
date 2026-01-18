@@ -185,15 +185,38 @@ async fn fetch_latest_version() -> Result<String> {
     let client = reqwest::Client::new();
     let url = format!("{}/repos/{}/releases", GITHUB_API, OPENCODE_REPO);
 
-    let releases: Vec<GitHubRelease> = client
+    let response = client
         .get(&url)
         .header("User-Agent", "Tandem-App")
         .send()
         .await
-        .map_err(|e| TandemError::Sidecar(format!("Failed to fetch releases: {}", e)))?
-        .json()
+        .map_err(|e| TandemError::Sidecar(format!("Failed to fetch releases: {}", e)))?;
+
+    // Check status code
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Failed to read error response".to_string());
+        return Err(TandemError::Sidecar(format!(
+            "GitHub API returned status {}: {}",
+            status, error_text
+        )));
+    }
+
+    // Get response text for debugging
+    let text = response
+        .text()
         .await
-        .map_err(|e| TandemError::Sidecar(format!("Failed to parse releases: {}", e)))?;
+        .map_err(|e| TandemError::Sidecar(format!("Failed to read response: {}", e)))?;
+
+    // Try to parse as JSON
+    let releases: Vec<GitHubRelease> = serde_json::from_str(&text).map_err(|e| {
+        tracing::error!("Failed to parse GitHub releases response: {}", e);
+        tracing::debug!("Response text (first 500 chars): {}", &text[..text.len().min(500)]);
+        TandemError::Sidecar(format!("Failed to parse releases: {}", e))
+    })?;
 
     // Find the latest non-draft, non-prerelease with our asset
     let asset_name = get_asset_name();
@@ -246,7 +269,7 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     let client = reqwest::Client::new();
     let url = format!("{}/repos/{}/releases", GITHUB_API, OPENCODE_REPO);
 
-    let releases: Vec<GitHubRelease> = client
+    let response = client
         .get(&url)
         .header("User-Agent", "Tandem-App")
         .send()
@@ -254,13 +277,35 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
         .map_err(|e| {
             emit_state("error", Some(&e.to_string()));
             TandemError::Sidecar(format!("Failed to fetch releases: {}", e))
-        })?
-        .json()
-        .await
-        .map_err(|e| {
-            emit_state("error", Some(&e.to_string()));
-            TandemError::Sidecar(format!("Failed to parse releases: {}", e))
         })?;
+
+    // Check status code
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Failed to read error response".to_string());
+        let error_msg = format!("GitHub API returned status {}: {}", status, error_text);
+        emit_state("error", Some(&error_msg));
+        return Err(TandemError::Sidecar(error_msg));
+    }
+
+    // Get response text for debugging
+    let text = response.text().await.map_err(|e| {
+        let error_msg = format!("Failed to read response: {}", e);
+        emit_state("error", Some(&error_msg));
+        TandemError::Sidecar(error_msg)
+    })?;
+
+    // Try to parse as JSON
+    let releases: Vec<GitHubRelease> = serde_json::from_str(&text).map_err(|e| {
+        tracing::error!("Failed to parse GitHub releases response: {}", e);
+        tracing::debug!("Response text (first 500 chars): {}", &text[..text.len().min(500)]);
+        let error_msg = format!("Failed to parse releases: {}", e);
+        emit_state("error", Some(&error_msg));
+        TandemError::Sidecar(error_msg)
+    })?;
 
     // Find the release with our asset
     let asset_name = get_asset_name();
