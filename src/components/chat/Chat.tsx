@@ -18,7 +18,6 @@ import {
   approveTool,
   denyTool,
   getSessionMessages,
-  rewindToMessage,
   undoViaCommand,
   isGitRepo,
   type StreamEvent,
@@ -824,49 +823,38 @@ export function Chat({
 
   const handleEdit = useCallback(
     async (messageId: string, newContent: string) => {
-      if (!currentSessionId) return;
+      // Find this user message
+      const msgIndex = messages.findIndex((m) => m.id === messageId);
+      if (msgIndex < 0) return;
 
-      try {
-        // Rewind to this message with edited content
-        const newSession = await rewindToMessage(currentSessionId, messageId, newContent);
+      const userMessage = messages[msgIndex];
+      if (userMessage.role !== "user") return;
 
-        // Switch to the new branched session
-        setCurrentSessionId(newSession.id);
-        onSessionCreated?.(newSession.id);
+      // Remove this message and everything after it
+      setMessages((prev) => prev.slice(0, msgIndex));
 
-        // Clear current messages and reload from new session
-        setMessages([]);
-        setIsLoadingHistory(true);
-
-        // The new message will be streamed via handleStreamEvent
-      } catch (e) {
-        const errorMessage = e instanceof Error ? e.message : String(e);
-        setError(`Failed to edit message: ${errorMessage}`);
-      }
+      // Send the edited message
+      await handleSend(newContent);
     },
-    [currentSessionId, onSessionCreated]
+    [messages, handleSend]
   );
 
   const handleRewind = useCallback(
     async (messageId: string) => {
-      if (!currentSessionId) return;
+      // Find this user message
+      const msgIndex = messages.findIndex((m) => m.id === messageId);
+      if (msgIndex < 0) return;
 
-      try {
-        // Create a branched session at this point
-        const newSession = await rewindToMessage(currentSessionId, messageId);
+      const userMessage = messages[msgIndex];
+      if (userMessage.role !== "user") return;
 
-        // Switch to the new branched session
-        setCurrentSessionId(newSession.id);
-        onSessionCreated?.(newSession.id);
+      // Remove this message and everything after it
+      setMessages((prev) => prev.slice(0, msgIndex));
 
-        // Load the history for the new session
-        await loadSessionHistory(newSession.id);
-      } catch (e) {
-        const errorMessage = e instanceof Error ? e.message : String(e);
-        setError(`Failed to rewind: ${errorMessage}`);
-      }
+      // Re-send the user message
+      await handleSend(userMessage.content);
     },
-    [currentSessionId, onSessionCreated, loadSessionHistory]
+    [messages, handleSend]
   );
 
   const handleRegenerate = useCallback(

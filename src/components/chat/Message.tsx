@@ -161,7 +161,7 @@ export function Message({
                 <button
                   onClick={() => onRewind(id)}
                   className="p-1.5 hover:bg-primary/20 rounded transition-colors text-text-muted hover:text-primary"
-                  title="Rewind to here"
+                  title="Retry from here"
                 >
                   <RotateCcw className="h-4 w-4" />
                 </button>
