@@ -701,9 +701,18 @@ impl SidecarManager {
                 tracing::info!("Killing OpenCode process with PID {}", pid);
 
                 // Try taskkill /T to terminate child processes too
-                let result = StdCommand::new("taskkill")
-                    .args(["/F", "/T", "/PID", &pid.to_string()])
-                    .output();
+                let mut cmd = StdCommand::new("taskkill");
+                cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+
+                // Hide console window on Windows
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x08000000;
+                    cmd.creation_flags(CREATE_NO_WINDOW);
+                }
+
+                let result = cmd.output();
 
                 match result {
                     Ok(output) => {

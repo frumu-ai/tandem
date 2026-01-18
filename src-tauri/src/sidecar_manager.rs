@@ -56,7 +56,7 @@ struct GitHubAsset {
 /// Checks for updated version in AppData first, falls back to bundled version
 pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
     let binary_name = get_binary_name();
-    
+
     // First, check if there's an updated version in AppData
     if let Ok(app_data_dir) = app.path().app_data_dir() {
         let updated_binary = app_data_dir.join("binaries").join(&binary_name);
@@ -65,7 +65,7 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
             return Ok(updated_binary);
         }
     }
-    
+
     // Fall back to bundled version in resources (read-only)
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled_binary = resource_dir.join("binaries").join(&binary_name);
@@ -74,7 +74,7 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
             return Ok(bundled_binary);
         }
     }
-    
+
     // Binary not found in either location
     Err(TandemError::Sidecar(format!(
         "Sidecar binary '{}' not found. Please download it first.",
@@ -186,7 +186,7 @@ async fn fetch_latest_version() -> Result<String> {
     let url = format!("{}/repos/{}/releases", GITHUB_API, OPENCODE_REPO);
 
     let mut request = client.get(&url).header("User-Agent", "Tandem-App");
-    
+
     // Add GitHub token if available (for CI or power users)
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {
         tracing::debug!("Using GITHUB_TOKEN for authenticated API request");
@@ -204,15 +204,15 @@ async fn fetch_latest_version() -> Result<String> {
         // Handle rate limiting with a user-friendly message
         if status.as_u16() == 403 {
             return Err(TandemError::Sidecar(
-                "GitHub rate limit reached. Please wait a few minutes and try again.".to_string()
+                "GitHub rate limit reached. Please wait a few minutes and try again.".to_string(),
             ));
         }
-        
+
         let error_text = response
             .text()
             .await
             .unwrap_or_else(|_| "Failed to read error response".to_string());
-        
+
         tracing::error!("GitHub API error {}: {}", status, error_text);
         return Err(TandemError::Sidecar(format!(
             "Unable to check for updates (error {}). Please try again later.",
@@ -229,7 +229,10 @@ async fn fetch_latest_version() -> Result<String> {
     // Try to parse as JSON
     let releases: Vec<GitHubRelease> = serde_json::from_str(&text).map_err(|e| {
         tracing::error!("Failed to parse GitHub releases response: {}", e);
-        tracing::debug!("Response text (first 500 chars): {}", &text[..text.len().min(500)]);
+        tracing::debug!(
+            "Response text (first 500 chars): {}",
+            &text[..text.len().min(500)]
+        );
         TandemError::Sidecar(format!("Failed to parse releases: {}", e))
     })?;
 
@@ -285,36 +288,34 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     let url = format!("{}/repos/{}/releases", GITHUB_API, OPENCODE_REPO);
 
     let mut request = client.get(&url).header("User-Agent", "Tandem-App");
-    
+
     // Add GitHub token if available (for CI or power users)
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {
         tracing::debug!("Using GITHUB_TOKEN for authenticated API request");
         request = request.header("Authorization", format!("Bearer {}", token));
     }
 
-    let response = request
-        .send()
-        .await
-        .map_err(|e| {
-            emit_state("error", Some(&e.to_string()));
-            TandemError::Sidecar(format!("Failed to fetch releases: {}", e))
-        })?;
+    let response = request.send().await.map_err(|e| {
+        emit_state("error", Some(&e.to_string()));
+        TandemError::Sidecar(format!("Failed to fetch releases: {}", e))
+    })?;
 
     // Check status code
     let status = response.status();
     if !status.is_success() {
         // Handle rate limiting with a user-friendly message
         if status.as_u16() == 403 {
-            let error_msg = "GitHub rate limit reached. Please wait a few minutes and try again.".to_string();
+            let error_msg =
+                "GitHub rate limit reached. Please wait a few minutes and try again.".to_string();
             emit_state("error", Some(&error_msg));
             return Err(TandemError::Sidecar(error_msg));
         }
-        
+
         let error_text = response
             .text()
             .await
             .unwrap_or_else(|_| "Failed to read error response".to_string());
-        
+
         tracing::error!("GitHub API error {}: {}", status, error_text);
         let error_msg = format!(
             "Unable to download (error {}). Please try again later.",
@@ -334,7 +335,10 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     // Try to parse as JSON
     let releases: Vec<GitHubRelease> = serde_json::from_str(&text).map_err(|e| {
         tracing::error!("Failed to parse GitHub releases response: {}", e);
-        tracing::debug!("Response text (first 500 chars): {}", &text[..text.len().min(500)]);
+        tracing::debug!(
+            "Response text (first 500 chars): {}",
+            &text[..text.len().min(500)]
+        );
         let error_msg = format!("Failed to parse releases: {}", e);
         emit_state("error", Some(&error_msg));
         TandemError::Sidecar(error_msg)
@@ -368,13 +372,13 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
         .path()
         .app_data_dir()
         .map_err(|e| TandemError::Sidecar(format!("Failed to get app data dir: {}", e)))?;
-    
+
     let binaries_dir = app_data_dir.join("binaries");
     fs::create_dir_all(&binaries_dir).map_err(|e| {
         emit_state("error", Some(&e.to_string()));
         TandemError::Sidecar(format!("Failed to create binaries dir: {}", e))
     })?;
-    
+
     let binary_name = get_binary_name();
     let binary_path = binaries_dir.join(binary_name);
 
@@ -454,9 +458,18 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
                 tracing::info!("Running taskkill to ensure all OpenCode processes are terminated");
 
                 // Kill any opencode.exe processes by name
-                let result = StdCommand::new("taskkill")
-                    .args(["/F", "/IM", "opencode.exe"])
-                    .output();
+                let mut cmd = StdCommand::new("taskkill");
+                cmd.args(["/F", "/IM", "opencode.exe"]);
+
+                // Hide console window on Windows
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x08000000;
+                    cmd.creation_flags(CREATE_NO_WINDOW);
+                }
+
+                let result = cmd.output();
 
                 match result {
                     Ok(output) => {
@@ -469,9 +482,18 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
                 }
 
                 // Also try killing any process with the executable name in its path
-                let result2 = StdCommand::new("taskkill")
-                    .args(["/F", "/FI", "IMAGENAME eq opencode*"])
-                    .output();
+                let mut cmd2 = StdCommand::new("taskkill");
+                cmd2.args(["/F", "/FI", "IMAGENAME eq opencode*"]);
+
+                // Hide console window on Windows
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x08000000;
+                    cmd2.creation_flags(CREATE_NO_WINDOW);
+                }
+
+                let result2 = cmd2.output();
 
                 match result2 {
                     Ok(output) => {
