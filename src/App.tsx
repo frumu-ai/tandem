@@ -25,6 +25,7 @@ import {
   addProject,
   getSidecarStatus,
   readFileContent,
+  readBinaryFile,
   checkGitStatus,
   initializeGitRepo,
   type Session,
@@ -85,7 +86,7 @@ function App() {
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
   const [executePendingTrigger, setExecutePendingTrigger] = useState(0);
   const [isExecutingTasks, setIsExecutingTasks] = useState(false);
-  
+
   // File browser state
   const [sidebarTab, setSidebarTab] = useState<"sessions" | "files">("sessions");
   const [selectedFile, setSelectedFile] = useState<FileEntry | null>(null);
@@ -99,7 +100,9 @@ function App() {
   // Git initialization dialog state
   const [showGitDialog, setShowGitDialog] = useState(false);
   const [pendingProjectPath, setPendingProjectPath] = useState<string | null>(null);
-  const [gitStatus, setGitStatus] = useState<{ git_installed: boolean; is_repo: boolean } | null>(null);
+  const [gitStatus, setGitStatus] = useState<{ git_installed: boolean; is_repo: boolean } | null>(
+    null
+  );
 
   // Todos for task sidebar
   const todosData = useTodos(currentSessionId);
@@ -268,7 +271,7 @@ function App() {
       if (selected && typeof selected === "string") {
         // Check Git status
         const status = await checkGitStatus(selected);
-        
+
         if (status.can_enable_undo) {
           // Git is installed but folder isn't a repo - prompt user
           setPendingProjectPath(selected);
@@ -282,7 +285,7 @@ function App() {
           setShowGitDialog(true);
           return;
         }
-        
+
         // Git is already set up or user doesn't want it - proceed
         await finalizeAddProject(selected);
       }
@@ -325,14 +328,14 @@ function App() {
   // Handle Git initialization from dialog
   const handleGitInitialize = async () => {
     if (!pendingProjectPath) return;
-    
+
     try {
       await initializeGitRepo(pendingProjectPath);
       console.log("Git initialized successfully");
     } catch (e) {
       console.error("Failed to initialize Git:", e);
     }
-    
+
     setShowGitDialog(false);
     await finalizeAddProject(pendingProjectPath);
     setPendingProjectPath(null);
@@ -342,7 +345,7 @@ function App() {
   // Handle skipping Git initialization
   const handleGitSkip = async () => {
     if (!pendingProjectPath) return;
-    
+
     setShowGitDialog(false);
     await finalizeAddProject(pendingProjectPath);
     setPendingProjectPath(null);
@@ -402,29 +405,70 @@ function App() {
     // Read file content and create attachment
     try {
       console.log("Add to chat:", file.path);
-      
-      // Read the actual file content
-      const content = await readFileContent(file.path, 1024 * 1024); // 1MB limit
-      
-      // Convert to base64 data URL for OpenCode
-      const base64Content = btoa(unescape(encodeURIComponent(content)));
-      
+
+      // Helper to detect image files
+      const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"]);
+      const isImage = file.extension && IMAGE_EXTENSIONS.has(file.extension.toLowerCase());
+
       // Use standard MIME types
       const getMimeType = (ext: string | undefined): string => {
         switch (ext?.toLowerCase()) {
-          case "ts": case "tsx": return "text/typescript";
-          case "js": case "jsx": return "text/javascript";
-          case "json": return "application/json";
-          case "md": return "text/markdown";
-          case "txt": return "text/plain";
-          case "log": return "text/plain"; // Use text/plain for logs
-          default: return "text/plain";
+          // Images
+          case "png":
+            return "image/png";
+          case "jpg":
+          case "jpeg":
+            return "image/jpeg";
+          case "gif":
+            return "image/gif";
+          case "svg":
+            return "image/svg+xml";
+          case "webp":
+            return "image/webp";
+          case "bmp":
+            return "image/bmp";
+          case "ico":
+            return "image/x-icon";
+          // Text files
+          case "ts":
+          case "tsx":
+            return "text/typescript";
+          case "js":
+          case "jsx":
+            return "text/javascript";
+          case "json":
+            return "application/json";
+          case "md":
+            return "text/markdown";
+          case "txt":
+            return "text/plain";
+          case "log":
+            return "text/plain";
+          default:
+            return "text/plain";
         }
       };
-      
+
       const mimeType = getMimeType(file.extension);
+      let base64Content: string;
+      let size: number;
+
+      if (isImage) {
+        // Read binary file directly as base64
+        base64Content = await readBinaryFile(file.path);
+        // Estimate size from base64 (base64 is ~33% larger than original)
+        size = Math.floor((base64Content.length * 3) / 4);
+      } else {
+        // Read text file content
+        const content = await readFileContent(file.path, 1024 * 1024); // 1MB limit
+        // Encode text content to base64 using browser's btoa
+
+        base64Content = window.btoa(unescape(encodeURIComponent(content)));
+        size = content.length;
+      }
+
       const dataUrl = `data:${mimeType};base64,${base64Content}`;
-      
+
       // Create a FileAttachment with data URL - omit filename to force data URL usage
       const attachment: FileAttachment = {
         id: `file_${Date.now()}`,
@@ -432,9 +476,9 @@ function App() {
         name: file.name,
         mime: mimeType,
         url: dataUrl, // Use data URL instead of file path
-        size: content.length, // Use actual content length
+        size: size,
       };
-      
+
       setFileToAttach(attachment);
       setSelectedFile(null); // Close preview
     } catch (err) {
@@ -580,7 +624,9 @@ function App() {
 
                   // Normalize paths for comparison (handle both / and \ separators)
                   const normalizedSessionDir = session.directory.toLowerCase().replace(/\\/g, "/");
-                  const normalizedProjectPath = activeProject.path.toLowerCase().replace(/\\/g, "/");
+                  const normalizedProjectPath = activeProject.path
+                    .toLowerCase()
+                    .replace(/\\/g, "/");
 
                   // Check if session directory starts with or contains the project path
                   return (
