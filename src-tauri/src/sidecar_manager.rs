@@ -185,9 +185,15 @@ async fn fetch_latest_version() -> Result<String> {
     let client = reqwest::Client::new();
     let url = format!("{}/repos/{}/releases", GITHUB_API, OPENCODE_REPO);
 
-    let response = client
-        .get(&url)
-        .header("User-Agent", "Tandem-App")
+    let mut request = client.get(&url).header("User-Agent", "Tandem-App");
+    
+    // Add GitHub token if available (for CI or power users)
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        tracing::debug!("Using GITHUB_TOKEN for authenticated API request");
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|e| TandemError::Sidecar(format!("Failed to fetch releases: {}", e)))?;
@@ -269,9 +275,15 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     let client = reqwest::Client::new();
     let url = format!("{}/repos/{}/releases", GITHUB_API, OPENCODE_REPO);
 
-    let response = client
-        .get(&url)
-        .header("User-Agent", "Tandem-App")
+    let mut request = client.get(&url).header("User-Agent", "Tandem-App");
+    
+    // Add GitHub token if available (for CI or power users)
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        tracing::debug!("Using GITHUB_TOKEN for authenticated API request");
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|e| {
