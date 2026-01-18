@@ -347,7 +347,20 @@ pub fn run() {
                 tracing::info!("Another instance tried to launch");
             }))
             .plugin(tauri_plugin_updater::Builder::new().build())
-            .plugin(tauri_plugin_process::init());
+            .plugin(tauri_plugin_process::init())
+            .on_window_event(|window, event| {
+                if let tauri::WindowEvent::CloseRequested { .. } = event {
+                    let app = window.app_handle();
+                    if let Some(state) = app.try_state::<state::AppState>() {
+                        tracing::info!("Window closing - stopping sidecar");
+                        tauri::async_runtime::block_on(async {
+                            if let Err(e) = state.sidecar.stop().await {
+                                tracing::error!("Failed to stop sidecar on close: {}", e);
+                            }
+                        });
+                    }
+                }
+            });
     }
 
     builder
