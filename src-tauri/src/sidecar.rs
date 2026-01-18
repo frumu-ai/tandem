@@ -1051,9 +1051,15 @@ impl SidecarManager {
         );
         tracing::info!("Executing command '{}' in session {}", command, session_id);
 
+        // OpenCode's /command endpoint expects the same structure as /prompt_async
+        // with a text part containing the slash command
         let body = serde_json::json!({
-            "command": command,
-            "arguments": "",
+            "parts": [
+                {
+                    "type": "text",
+                    "text": command
+                }
+            ],
             "agent": "build"
         });
 
