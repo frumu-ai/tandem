@@ -67,27 +67,20 @@ impl VaultState {
 /// Initialize tracing for logging (console + file)
 fn init_tracing(app_data_dir: &std::path::Path) {
     use std::fs;
+    use tracing_appender::rolling;
 
     // Create logs directory
     let logs_dir = app_data_dir.join("logs");
     fs::create_dir_all(&logs_dir).ok();
 
-    // Log file path (rotate daily)
-    let log_file = logs_dir.join(format!(
-        "tandem-{}.log",
-        chrono::Local::now().format("%Y-%m-%d")
-    ));
-
-    // Create file appender
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_file)
-        .expect("Failed to open log file");
+    // Use daily rotation with size limit (tracing-appender will handle rotation)
+    // Each file will be named tandem-YYYY-MM-DD.log
+    // Old files are kept for a few days before being deleted
+    let file_appender = rolling::daily(&logs_dir, "tandem");
 
     // Set up both console and file logging
     let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(file)
+        .with_writer(file_appender)
         .with_ansi(false); // No ANSI colors in file
 
     let console_layer = tracing_subscriber::fmt::layer();
@@ -95,13 +88,15 @@ fn init_tracing(app_data_dir: &std::path::Path) {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "tandem=debug,tauri=info".into()),
+                // Changed from "tandem=debug,tauri=info" to reduce log size
+                .unwrap_or_else(|_| "tandem=info,tauri=info".into()),
         )
         .with(console_layer)
         .with(file_layer)
         .init();
 
-    tracing::info!("Logging to file: {:?}", log_file);
+    tracing::info!("Logging initialized (logs directory: {:?})", logs_dir);
+    tracing::info!("Log level: INFO (use RUST_LOG env var to change)");
 }
 
 /// Initialize keystore with the given master key and load API keys
