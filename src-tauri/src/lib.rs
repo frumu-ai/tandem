@@ -376,6 +376,7 @@ pub fn run() {
             // File browser
             commands::read_directory,
             commands::read_file_content,
+            commands::read_binary_file,
         ]);
 
     // Add desktop-only plugins

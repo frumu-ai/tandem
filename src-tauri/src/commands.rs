@@ -1847,3 +1847,28 @@ pub async fn read_file_content(path: String, max_size: Option<u64>) -> Result<St
 
     Ok(content)
 }
+
+/// Read a binary file and return it as base64
+#[tauri::command]
+pub fn read_binary_file(path: String) -> Result<String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let file_path = PathBuf::from(&path);
+
+    if !file_path.exists() {
+        return Err(TandemError::NotFound(format!(
+            "File does not exist: {}",
+            path
+        )));
+    }
+
+    if !file_path.is_file() {
+        return Err(TandemError::InvalidConfig(format!(
+            "Path is not a file: {}",
+            path
+        )));
+    }
+
+    let bytes = fs::read(&file_path).map_err(|e| TandemError::Io(e))?;
+    Ok(STANDARD.encode(&bytes))
+}

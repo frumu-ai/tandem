@@ -615,6 +615,10 @@ export async function readFileContent(path: string, maxSize?: number): Promise<s
   return invoke("read_file_content", { path, maxSize });
 }
 
+export async function readBinaryFile(path: string): Promise<string> {
+  return invoke("read_binary_file", { path });
+}
+
 // ============================================================================
 // Event Listeners
 // ============================================================================

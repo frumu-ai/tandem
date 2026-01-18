@@ -15,7 +15,7 @@ import {
   AlertCircle,
   MessageSquarePlus,
 } from "lucide-react";
-import { readFileContent, type FileEntry, logFrontendError } from "@/lib/tauri";
+import { readFileContent, readBinaryFile, type FileEntry, logFrontendError } from "@/lib/tauri";
 // import { cn } from "@/lib/utils"; // Unused
 
 interface FilePreviewProps {
@@ -120,17 +120,56 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
   const [content, setContent] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const previewType = getPreviewType(file);
 
-  // For images and PDFs, use convertFileSrc with the original path
-  // Tauri v2 should handle this correctly
-  const getAssetUrl = (path: string): string => {
-    return convertFileSrc(path);
+  // Helper to get MIME type from extension
+  const getMimeType = (ext: string): string => {
+    const mimeMap: Record<string, string> = {
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      svg: "image/svg+xml",
+      webp: "image/webp",
+      bmp: "image/bmp",
+      ico: "image/x-icon",
+    };
+    return mimeMap[ext.toLowerCase()] || "image/png";
   };
 
+  // Load images as base64 data URLs
   useEffect(() => {
-    if (previewType === "image" || previewType === "pdf" || previewType === "binary") {
+    if (previewType === "image") {
+      const loadImage = async () => {
+        try {
+          setIsLoading(true);
+          setError(null);
+          const base64 = await readBinaryFile(file.path);
+          const ext = file.extension?.toLowerCase() || "png";
+          const mimeType = getMimeType(ext);
+          setImageDataUrl(`data:${mimeType};base64,${base64}`);
+        } catch (err) {
+          console.error("Failed to load image:", err);
+          logFrontendError(`Failed to load image: ${file.name}`, `Error: ${err}`);
+          setError(`Failed to load image: ${file.name}`);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      loadImage();
+      return;
+    }
+  }, [file.path, previewType, file.name, file.extension]);
+
+  useEffect(() => {
+    if (previewType === "pdf" || previewType === "binary") {
       setIsLoading(false);
+      return;
+    }
+
+    if (previewType === "image") {
+      // Images are handled by the separate useEffect above
       return;
     }
 
@@ -175,19 +214,13 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
       case "image":
         return (
           <div className="flex h-full items-center justify-center p-4 bg-surface">
-            <img
-              src={getAssetUrl(file.path)}
-              alt={file.name}
-              className="max-h-full max-w-full object-contain rounded"
-              onError={() => {
-                const assetUrl = getAssetUrl(file.path);
-                logFrontendError(
-                  `Image failed to load: ${file.name}`,
-                  `Path: ${file.path}, Asset URL: ${assetUrl}`
-                );
-                setError(`Failed to load image: ${file.name}`);
-              }}
-            />
+            {imageDataUrl ? (
+              <img
+                src={imageDataUrl}
+                alt={file.name}
+                className="max-h-full max-w-full object-contain rounded"
+              />
+            ) : null}
           </div>
         );
 
@@ -195,15 +228,11 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
         return (
           <div className="h-full w-full bg-surface">
             <embed
-              src={getAssetUrl(file.path)}
+              src={convertFileSrc(file.path)}
               type="application/pdf"
               className="h-full w-full"
               onError={() => {
-                const assetUrl = getAssetUrl(file.path);
-                logFrontendError(
-                  `PDF failed to load: ${file.name}`,
-                  `Path: ${file.path}, Asset URL: ${assetUrl}`
-                );
+                logFrontendError(`PDF failed to load: ${file.name}`, `Path: ${file.path}`);
                 setError(`Failed to load PDF: ${file.name}`);
               }}
             />
