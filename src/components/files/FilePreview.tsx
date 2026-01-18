@@ -172,6 +172,14 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
               src={convertFileSrc(file.path)}
               alt={file.name}
               className="max-h-full max-w-full object-contain rounded"
+              onError={(e) => {
+                console.error("Image failed to load:", file.path);
+                console.error("Converted src:", convertFileSrc(file.path));
+                setError(`Failed to load image: ${file.name}`);
+              }}
+              onLoad={() => {
+                console.log("Image loaded successfully:", file.path);
+              }}
             />
           </div>
         );
