@@ -417,8 +417,8 @@ pub async fn set_active_project(
         // Wait a moment for cleanup
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        // Get the sidecar path
-        let sidecar_path = get_sidecar_path(&app)?;
+        // Get the sidecar path (checks AppData first, then resources)
+        let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
 
         // Restart with new workspace
         state
@@ -524,7 +524,7 @@ pub async fn store_api_key(
 
     // Restart sidecar if it's running to reload env vars
     if matches!(state.sidecar.state().await, SidecarState::Running) {
-        let sidecar_path = get_sidecar_path(&app)?;
+        let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
         state
             .sidecar
             .restart(sidecar_path.to_string_lossy().as_ref())
@@ -567,7 +567,7 @@ pub async fn delete_api_key(
     if let Some(env_key) = env_var_for_key(&key_type_enum) {
         state.sidecar.remove_env(env_key).await;
         if matches!(state.sidecar.state().await, SidecarState::Running) {
-            let sidecar_path = get_sidecar_path(&app)?;
+            let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
             state
                 .sidecar
                 .restart(sidecar_path.to_string_lossy().as_ref())
@@ -631,47 +631,11 @@ pub fn set_providers_config(
 // Sidecar Management
 // ============================================================================
 
-/// Get the sidecar binary path
-fn get_sidecar_path(app: &AppHandle) -> Result<PathBuf> {
-    // Get the resource directory
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| TandemError::Sidecar(format!("Failed to get resource dir: {}", e)))?;
-
-    // Determine binary name based on platform
-    #[cfg(target_os = "windows")]
-    let binary_name = "opencode-x86_64-pc-windows-msvc.exe";
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    let binary_name = "opencode-x86_64-apple-darwin";
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    let binary_name = "opencode-aarch64-apple-darwin";
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    let binary_name = "opencode-x86_64-unknown-linux-gnu";
-
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    let binary_name = "opencode-aarch64-unknown-linux-gnu";
-
-    let binary_path = resource_dir.join("binaries").join(binary_name);
-
-    if !binary_path.exists() {
-        return Err(TandemError::Sidecar(format!(
-            "Sidecar binary not found at: {}",
-            binary_path.display()
-        )));
-    }
-
-    Ok(binary_path)
-}
-
 /// Start the OpenCode sidecar
 #[tauri::command]
 pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<u16> {
-    // Get the sidecar path
-    let sidecar_path = get_sidecar_path(&app)?;
+    // Get the sidecar path (checks AppData first, then resources)
+    let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
 
     // Set workspace path on sidecar - clone before await
     let workspace_path = {
