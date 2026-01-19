@@ -54,7 +54,9 @@ export function ToolCategoryPicker({
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const enabledCount = enabledCategories.size;
+  const enabledCount = Array.from(enabledCategories).filter(
+    (c) => !["files", "search", "terminal"].includes(c)
+  ).length;
 
   const toggleCategory = (id: string) => {
     const next = new Set(enabledCategories);

@@ -232,6 +232,14 @@ label[for],
   font-style: italic;
 }
 
+.prose-custom img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-md);
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
 /* Selection */
 ::selection {
   background: var(--color-primary);

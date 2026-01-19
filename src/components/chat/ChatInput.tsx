@@ -62,6 +62,15 @@ export function ChatInput({
     return exists ? attachments : [...attachments, externalAttachment];
   }, [attachments, externalAttachment]);
 
+  // Auto-focus on mount
+  useEffect(() => {
+    // Small delay to ensure the component is fully mounted
+    const timer = setTimeout(() => {
+      textareaRef.current?.focus();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, []);
+
   // Let parent clear external attachment after we've seen it
   useEffect(() => {
     if (externalAttachment) {
@@ -89,36 +98,192 @@ export function ChatInput({
     });
   };
 
+  const processImage = async (file: File | Blob): Promise<{ dataUrl: string, size: number }> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const MAX_WIDTH = 1024;
+        const MAX_HEIGHT = 1024;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > MAX_WIDTH || height > MAX_HEIGHT) {
+          const ratio = Math.min(MAX_WIDTH / width, MAX_HEIGHT / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Failed to get canvas context"));
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // JPEG format with 0.8 quality is much smaller than PNG for base64 inlining
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+
+        // Approximate size of base64 content
+        const size = Math.round((dataUrl.length - "data:image/jpeg;base64,".length) * 3 / 4);
+
+        resolve({ dataUrl, size });
+      };
+
+      img.onerror = (err) => {
+        URL.revokeObjectURL(url);
+        reject(err);
+      };
+
+      img.src = url;
+    });
+  };
+
   const addFile = useCallback(async (file: globalThis.File) => {
     const isImage = file.type.startsWith("image/");
-    const dataUrl = await fileToDataUrl(file);
+    let dataUrl = "";
+    let size = file.size;
+
+    if (isImage) {
+      try {
+        const processed = await processImage(file);
+        dataUrl = processed.dataUrl;
+        size = processed.size;
+        console.log(`[Image] Original size: ${file.size}, Compressed size: ${size}`);
+      } catch (e) {
+        console.error("Failed to process image, falling back to raw:", e);
+        dataUrl = await fileToDataUrl(file);
+      }
+    } else {
+      dataUrl = await fileToDataUrl(file);
+    }
 
     const attachment: FileAttachment = {
       id: generateId(),
       type: isImage ? "image" : "file",
       name: file.name,
-      mime: file.type || "application/octet-stream",
+      mime: isImage ? "image/jpeg" : (file.type || "application/octet-stream"),
       url: dataUrl,
-      size: file.size,
+      size: size,
       preview: isImage ? dataUrl : undefined,
     };
 
     setAttachments((prev) => [...prev, attachment]);
   }, []);
 
+  // Linux clipboard fallback: Use Tauri native clipboard when paste event doesn't work
+  useEffect(() => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        console.log('[Clipboard] Ctrl+V pressed, trying Tauri native clipboard...');
+        try {
+          // Dynamic import to avoid errors if plugin not available
+          const clipboard = await import('@tauri-apps/plugin-clipboard-manager');
+          console.log('[Clipboard] Plugin loaded, reading image...');
+
+          const imageBytes = await clipboard.readImage();
+          console.log('[Clipboard] Read result:', imageBytes ? 'Got image data' : 'No image data');
+
+          if (imageBytes) {
+            e.preventDefault();
+
+            // Get RGBA bytes and dimensions from the image
+            const rgbaBytes = await imageBytes.rgba();
+            const originalSize = await imageBytes.size();
+            console.log('[Clipboard] Image dimensions:', originalSize.width, 'x', originalSize.height, ', RGBA bytes:', rgbaBytes.length);
+
+            // Convert RGBA bytes to PNG using Canvas
+            const canvas = document.createElement('canvas');
+            canvas.width = originalSize.width;
+            canvas.height = originalSize.height;
+            const ctx = canvas.getContext('2d');
+
+            if (ctx) {
+              // Create ImageData from RGBA bytes
+              const imageData = new ImageData(
+                new Uint8ClampedArray(rgbaBytes),
+                originalSize.width,
+                originalSize.height
+              );
+              ctx.putImageData(imageData, 0, 0);
+
+              // Convert canvas to blob then compress it
+              canvas.toBlob(async (blob) => {
+                if (blob) {
+                  const processed = await processImage(blob);
+
+                  const attachment: FileAttachment = {
+                    id: generateId(),
+                    type: "image",
+                    name: `clipboard-${Date.now()}.jpg`,
+                    mime: "image/jpeg",
+                    url: processed.dataUrl,
+                    size: processed.size,
+                    preview: processed.dataUrl,
+                  };
+
+                  console.log(`[Clipboard] Compressed size: ${processed.size} bytes`);
+                  setAttachments((prev) => [...prev, attachment]);
+                }
+              }, 'image/png');
+            }
+          } else {
+            console.log('[Clipboard] No image in clipboard, falling through to web API');
+          }
+        } catch (err) {
+          console.error('[Clipboard] Error reading from Tauri clipboard:', err);
+          // Fall through to web clipboard handler
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [addFile]);
+
   const handlePaste = useCallback(
     async (e: React.ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
+      const clipboardData = e.clipboardData;
+      if (!clipboardData) return;
 
-      for (const item of items) {
-        if (item.type.startsWith("image/")) {
-          e.preventDefault();
-          const file = item.getAsFile();
-          if (file) {
-            await addFile(file);
+      // Try clipboardData.items (standard way, works on Windows)
+      const items = clipboardData.items;
+      if (items && items.length > 0) {
+        for (const item of items) {
+          if (item.type.startsWith("image/")) {
+            e.preventDefault();
+            const file = item.getAsFile();
+            if (file) {
+              console.log("[Paste] Image from clipboardData.items:", file.type, file.size);
+              await addFile(file);
+              return; // Successfully processed
+            }
           }
         }
+      }
+
+      // Fallback: Try clipboardData.files (Linux WebKit sometimes puts images here)
+      const files = clipboardData.files;
+      if (files && files.length > 0) {
+        for (const file of files) {
+          if (file.type.startsWith("image/")) {
+            e.preventDefault();
+            console.log("[Paste] Image from clipboardData.files:", file.type, file.size);
+            await addFile(file);
+            return; // Successfully processed
+          }
+        }
+      }
+
+      // Also try clipboard.types for debugging
+      if (clipboardData.types && clipboardData.types.length > 0) {
+        console.log("[Paste] Available clipboard types:", clipboardData.types);
       }
     },
     [addFile]
@@ -229,7 +394,7 @@ export function ChatInput({
               exit={{ height: 0, opacity: 0 }}
               className="mb-3 overflow-hidden"
             >
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2 p-1">
                 {mergedAttachments.map((attachment) => (
                   <motion.div
                     key={attachment.id}
@@ -239,19 +404,21 @@ export function ChatInput({
                     className="relative group"
                   >
                     {attachment.type === "image" && attachment.preview ? (
-                      <div className="relative w-16 h-16 rounded-lg overflow-hidden border border-border bg-surface">
-                        <img
-                          src={attachment.preview}
-                          alt={attachment.name}
-                          className="w-full h-full object-cover"
-                        />
+                      <>
+                        <div className="w-16 h-16 rounded-lg overflow-hidden border border-border bg-surface">
+                          <img
+                            src={attachment.preview}
+                            alt={attachment.name}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
                         <button
                           onClick={() => removeAttachment(attachment.id)}
                           className="absolute -top-1 -right-1 p-0.5 bg-error text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
                         >
                           <X className="h-3 w-3" />
                         </button>
-                      </div>
+                      </>
                     ) : (
                       <div className="relative flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-surface">
                         <FileText className="h-4 w-4 text-text-muted" />
@@ -363,7 +530,7 @@ export function ChatInput({
           selectedAgent={selectedAgent}
           onAgentChange={onAgentChange}
           enabledToolCategories={enabledToolCategories || new Set()}
-          onToolCategoriesChange={onToolCategoriesChange || (() => {})}
+          onToolCategoriesChange={onToolCategoriesChange || (() => { })}
           selectedModel={selectedModel}
           onModelChange={onModelChange}
           availableModels={availableModels}

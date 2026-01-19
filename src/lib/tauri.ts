@@ -19,6 +19,7 @@ export interface ProviderConfig {
   default: boolean;
   endpoint: string;
   model?: string;
+  has_key: boolean;
 }
 
 export interface ProvidersConfig {
@@ -186,39 +187,39 @@ export interface ProviderInfo {
 export type StreamEvent =
   | { type: "content"; session_id: string; message_id: string; content: string; delta?: string }
   | {
-      type: "tool_start";
-      session_id: string;
-      message_id: string;
-      part_id: string;
-      tool: string;
-      args: Record<string, unknown>;
-    }
+    type: "tool_start";
+    session_id: string;
+    message_id: string;
+    part_id: string;
+    tool: string;
+    args: Record<string, unknown>;
+  }
   | {
-      type: "tool_end";
-      session_id: string;
-      message_id: string;
-      part_id: string;
-      result?: unknown;
-      error?: string;
-    }
+    type: "tool_end";
+    session_id: string;
+    message_id: string;
+    part_id: string;
+    result?: unknown;
+    error?: string;
+  }
   | { type: "session_status"; session_id: string; status: string }
   | { type: "session_idle"; session_id: string }
   | { type: "session_error"; session_id: string; error: string }
   | {
-      type: "permission_asked";
-      session_id: string;
-      request_id: string;
-      tool?: string;
-      args?: Record<string, unknown>;
-    }
+    type: "permission_asked";
+    session_id: string;
+    request_id: string;
+    tool?: string;
+    args?: Record<string, unknown>;
+  }
   | {
-      type: "question_asked";
-      session_id: string;
-      question_id: string;
-      header?: string;
-      question: string;
-      options: QuestionOption[];
-    }
+    type: "question_asked";
+    session_id: string;
+    question_id: string;
+    header?: string;
+    question: string;
+    options: QuestionOption[];
+  }
   | { type: "raw"; event_type: string; data: unknown };
 
 // ============================================================================

@@ -92,7 +92,7 @@ Tandem supports multiple specialized agent modes powered by OpenCode:
 | -------- | ------------------------------------------------------------------------------ |
 | Windows  | [Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/) |
 | macOS    | Xcode Command Line Tools: `xcode-select --install`                             |
-| Linux    | `webkit2gtk-4.1`, `libappindicator3`, `librsvg2`                               |
+| Linux    | `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `build-essential`, `pkg-config` |
 
 ### Installation
 

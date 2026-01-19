@@ -221,9 +221,15 @@ pub fn log_frontend_error(message: String, details: Option<String>) {
 }
 
 /// Get the current application state
+/// Get the current application state (with key status)
 #[tauri::command]
-pub fn get_app_state(state: State<'_, AppState>) -> AppStateInfo {
-    AppStateInfo::from(state.inner())
+pub async fn get_app_state(app: AppHandle, state: State<'_, AppState>) -> Result<AppStateInfo> {
+    let mut info = AppStateInfo::from(state.inner());
+    
+    // Dynamically populate has_key status
+    populate_provider_keys(&app, &mut info.providers_config);
+    
+    Ok(info)
 }
 
 /// Set the workspace path
@@ -719,10 +725,48 @@ pub fn set_user_theme(app: AppHandle, theme_id: String) -> Result<()> {
 // ============================================================================
 
 /// Get the providers configuration
+/// Get the providers configuration (with key status)
 #[tauri::command]
-pub fn get_providers_config(state: State<'_, AppState>) -> ProvidersConfig {
-    let config = state.providers_config.read().unwrap();
-    config.clone()
+pub async fn get_providers_config(app: AppHandle, state: State<'_, AppState>) -> Result<ProvidersConfig> {
+    let mut config = state.providers_config.read().unwrap().clone();
+    
+    // Dynamically populate has_key status
+    populate_provider_keys(&app, &mut config);
+    
+    Ok(config)
+}
+
+/// Helper to populate has_key status from keystore
+fn populate_provider_keys(app: &AppHandle, config: &mut ProvidersConfig) {
+    use crate::keystore::ApiKeyType;
+
+    if let Some(keystore) = app.try_state::<SecureKeyStore>() {
+        let openrouter_key = ApiKeyType::OpenRouter.to_key_name();
+        let opencode_zen_key = ApiKeyType::OpenCodeZen.to_key_name();
+        let anthropic_key = ApiKeyType::Anthropic.to_key_name();
+        let openai_key = ApiKeyType::OpenAI.to_key_name();
+        
+        tracing::info!("[populate_provider_keys] Checking for keys:");
+        tracing::info!("  OpenRouter key '{}': {}", openrouter_key, keystore.has(&openrouter_key));
+        tracing::info!("  OpenCodeZen key '{}': {}", opencode_zen_key, keystore.has(&opencode_zen_key));
+        tracing::info!("  Anthropic key '{}': {}", anthropic_key, keystore.has(&anthropic_key));
+        tracing::info!("  OpenAI key '{}': {}", openai_key, keystore.has(&openai_key));
+        
+        config.openrouter.has_key = keystore.has(&openrouter_key);
+        config.opencode_zen.has_key = keystore.has(&opencode_zen_key);
+        config.anthropic.has_key = keystore.has(&anthropic_key);
+        config.openai.has_key = keystore.has(&openai_key);
+        // For local models, we might consider them "having a key" or check connection
+        config.ollama.has_key = true; // Local inference is always 'authed'
+    } else {
+        tracing::warn!("[populate_provider_keys] Keystore not available (vault locked?)");
+        // Keystore not initialized (vault locked)
+        config.openrouter.has_key = false;
+        config.opencode_zen.has_key = false;
+        config.anthropic.has_key = false;
+        config.openai.has_key = false;
+        config.ollama.has_key = true; // Local is fine
+    }
 }
 
 /// Set the providers configuration

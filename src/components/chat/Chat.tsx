@@ -10,7 +10,8 @@ import { ExecutionPlanPanel } from "@/components/plan/ExecutionPlanPanel";
 import { PlanActionButtons } from "./PlanActionButtons";
 import { QuestionDialog } from "./QuestionDialog";
 import { useStagingArea } from "@/hooks/useStagingArea";
-import { FolderOpen, Sparkles, AlertCircle, Loader2 } from "lucide-react";
+import { FolderOpen, Sparkles, AlertCircle, Loader2, Settings as SettingsIcon } from "lucide-react";
+import { Button } from "@/components/ui/Button";
 import {
   startSidecar,
   getSidecarStatus,
@@ -29,6 +30,7 @@ import {
   type SidecarState,
   type TodoItem,
   type QuestionEvent,
+  type FileAttachmentInput,
 } from "@/lib/tauri";
 
 interface ChatProps {
@@ -47,6 +49,8 @@ interface ChatProps {
   selectedAgent?: string;
   onAgentChange?: (agent: string | undefined) => void;
   onFileOpen?: (filePath: string) => void;
+  hasConfiguredProvider?: boolean;
+  onOpenSettings?: () => void;
 }
 
 export function Chat({
@@ -65,6 +69,8 @@ export function Chat({
   selectedAgent: propSelectedAgent,
   onAgentChange: propOnAgentChange,
   onFileOpen,
+  hasConfiguredProvider = true,
+  onOpenSettings,
 }: ChatProps) {
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -113,6 +119,11 @@ export function Chat({
     executePlan,
     clearStaging,
   } = useStagingArea();
+
+  // Enable default tool categories on mount
+  useEffect(() => {
+    setEnabledToolCategories(new Set(["files", "search", "terminal"]));
+  }, []);
 
   // Handle execute pending tasks from sidebar
   useEffect(() => {
@@ -347,11 +358,22 @@ Start with task #1 and continue through each one. Let me know when each task is 
             if (partObj.type === "text" && partObj.text) {
               content += partObj.text as string;
             } else if (partObj.type === "file") {
-              // Handle file attachments - add a placeholder in content
+              // Handle file attachments
               const filename = (partObj.filename as string) || "file";
               const mime = (partObj.mime as string) || "application/octet-stream";
-              attachments.push({ name: filename, type: mime });
-              content += `\n[📎 Attached file: ${filename}]\n`;
+              const url = (partObj.url as string) || "";
+              const isImage = mime.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(filename);
+
+              attachments.push({
+                name: filename,
+                type: isImage ? "image" : "file",
+                preview: isImage && url ? url : undefined
+              } as any);
+
+              // Only add a text placeholder if there's no other text or if we want to explicitly record it
+              if (role === "user") {
+                content += `\n[📎 Attached file: ${filename}]\n`;
+              }
             } else if (partObj.type === "tool" || partObj.type === "tool-invocation") {
               const state = partObj.state as Record<string, unknown> | undefined;
               toolCalls.push({
@@ -378,6 +400,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
               content,
               timestamp: new Date(msg.info.time.created),
               toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+              attachments: attachments.length > 0 ? (attachments as any) : undefined,
             });
           }
         }
@@ -655,8 +678,8 @@ Start with task #1 and continue through each one. Let me know when each task is 
               reasoning: (args.reasoning as string) || "AI wants to perform this action",
               riskLevel:
                 event.tool === "delete_file" ||
-                event.tool === "run_command" ||
-                event.tool === "bash"
+                  event.tool === "run_command" ||
+                  event.tool === "bash"
                   ? "high"
                   : "medium",
               tool: event.tool,
@@ -691,10 +714,10 @@ Start with task #1 and continue through each one. Let me know when each task is 
               const toolCalls = lastMessage.toolCalls.map((tc) =>
                 tc.id === event.part_id
                   ? {
-                      ...tc,
-                      result: event.error || String(event.result || ""),
-                      status: (event.error ? "failed" : "completed") as "failed" | "completed",
-                    }
+                    ...tc,
+                    result: event.error || String(event.result || ""),
+                    status: (event.error ? "failed" : "completed") as "failed" | "completed",
+                  }
                   : tc
               );
               return [...prev.slice(0, -1), { ...lastMessage, toolCalls }];
@@ -1052,28 +1075,53 @@ ${g.example}
       }, 60000);
 
       try {
-        // For data URLs, embed content directly in the message instead of using file attachments
-        // to avoid OpenCode's buggy file download behavior
+        // For data URLs, split between images (inline as markdown) and text (embed in message)
         let messageContent = finalContent;
+        const attachmentsToSend: FileAttachmentInput[] = [];
+
         if (attachments && attachments.length > 0) {
           for (const attachment of attachments) {
-            if (attachment.url.startsWith("data:")) {
-              // Decode the data URL and embed it in the message
-              const base64Data = attachment.url.split(",")[1];
-              const decodedContent = decodeURIComponent(
-                // eslint-disable-next-line no-undef
-                escape(atob(base64Data))
-              );
+            const isImage = attachment.type.startsWith("image/") || attachment.mime.startsWith("image/");
 
-              // Use a generic format that won't trigger OpenCode to look for files
-              messageContent += `\n\nHere is the attached content:\n\`\`\`\n${decodedContent}\n\`\`\`\n`;
+            if (attachment.url.startsWith("data:")) {
+              if (isImage) {
+                // Images: Inline as Markdown image with data URL
+                // This bypasses file attachment processing which can be flaky for data URLs
+                messageContent += `\n![${attachment.name}](${attachment.url})\n`;
+              } else {
+                // Text files: Decode and embed in message
+                try {
+                  const base64Data = attachment.url.split(",")[1];
+                  // Safe decoding of base64 text
+                  const decodedContent = decodeURIComponent(
+                    // eslint-disable-next-line no-undef
+                    escape(atob(base64Data))
+                  );
+                  // Use a generic format that won't trigger OpenCode to look for files
+                  messageContent += `\n\nHere is the attached content from ${attachment.name}:\n\`\`\`\n${decodedContent}\n\`\`\`\n`;
+                } catch (e) {
+                  console.warn(`Failed to decode attachment ${attachment.name}, sending as file`, e);
+                  // Fallback: send as attachment if decoding fails
+                  attachmentsToSend.push({
+                    mime: attachment.mime,
+                    filename: attachment.name,
+                    url: attachment.url
+                  });
+                }
+              }
+            } else {
+              // Not a data URL (e.g. file path), send as attachment
+              attachmentsToSend.push({
+                mime: attachment.mime,
+                filename: attachment.name,
+                url: attachment.url
+              });
             }
           }
         }
 
-        // Don't send file attachments for data URLs - content is now embedded
         // Send message and stream response, with selected agent
-        await sendMessageStreaming(sessionId, messageContent, undefined, agentToUse);
+        await sendMessageStreaming(sessionId, messageContent, attachmentsToSend.length > 0 ? attachmentsToSend : undefined, agentToUse);
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
         setError(`Failed to send message: ${errorMessage}`);
@@ -1335,13 +1383,12 @@ ${g.example}
 
           <div className="flex items-center gap-2">
             <div
-              className={`h-2 w-2 rounded-full ${
-                sidecarStatus === "running"
-                  ? "bg-primary"
-                  : sidecarStatus === "starting"
-                    ? "bg-warning animate-pulse"
-                    : "bg-text-subtle"
-              }`}
+              className={`h-2 w-2 rounded-full ${sidecarStatus === "running"
+                ? "bg-primary"
+                : sidecarStatus === "starting"
+                  ? "bg-warning animate-pulse"
+                  : "bg-text-subtle"
+                }`}
             />
             <span className="text-xs text-text-muted">
               {sidecarStatus === "running"
@@ -1410,6 +1457,8 @@ ${g.example}
               onConnect={connectSidecar}
               workspacePath={workspacePath}
               onSendMessage={handleSend}
+              hasConfiguredProvider={hasConfiguredProvider}
+              onOpenSettings={onOpenSettings}
             />
           ) : (
             messages.map((message, index) => {
@@ -1513,26 +1562,46 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
-      <ChatInput
-        onSend={handleSend}
-        onStop={handleStop}
-        isGenerating={isGenerating}
-        disabled={!workspacePath || isGenerating}
-        placeholder={
-          workspacePath
-            ? needsConnection
-              ? "Type to connect and start chatting..."
-              : "Ask Tandem anything..."
-            : "Select a workspace to start chatting"
-        }
-        selectedAgent={selectedAgent}
-        onAgentChange={onAgentChange}
-        externalAttachment={fileToAttach}
-        onExternalAttachmentProcessed={onFileAttached}
-        enabledToolCategories={enabledToolCategories}
-        onToolCategoriesChange={setEnabledToolCategories}
-      />
+      {/* Input or Configuration Prompt */}
+      {!hasConfiguredProvider ? (
+        <div className="border-t border-border bg-surface p-4">
+          <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-yellow-500/50 bg-yellow-500/5 p-6 text-center">
+            <div className="flex items-center gap-2 text-yellow-500">
+              <AlertCircle className="h-5 w-5" />
+              <p className="font-semibold">Setup Required</p>
+            </div>
+            <p className="text-sm text-text-muted">
+              Configure an AI provider (OpenAI, Anthropic, etc.) to start chatting.
+            </p>
+            {onOpenSettings && (
+              <Button onClick={onOpenSettings} variant="primary" className="mt-2 text-white">
+                <SettingsIcon className="mr-2 h-4 w-4" />
+                Open Settings
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <ChatInput
+          onSend={handleSend}
+          onStop={handleStop}
+          isGenerating={isGenerating}
+          disabled={!workspacePath || isGenerating}
+          placeholder={
+            workspacePath
+              ? needsConnection
+                ? "Type to connect and start chatting..."
+                : "Ask Tandem anything..."
+              : "Select a workspace to start chatting"
+          }
+          selectedAgent={selectedAgent}
+          onAgentChange={onAgentChange}
+          externalAttachment={fileToAttach}
+          onExternalAttachmentProcessed={onFileAttached}
+          enabledToolCategories={enabledToolCategories}
+          onToolCategoriesChange={setEnabledToolCategories}
+        />
+      )}
 
       {/* Permission requests - only show in immediate mode */}
       {!usePlanMode && (
@@ -1611,6 +1680,8 @@ interface EmptyStateProps {
   onConnect: () => void;
   workspacePath: string | null;
   onSendMessage: (message: string) => void;
+  hasConfiguredProvider: boolean;
+  onOpenSettings?: () => void;
 }
 
 // Suggestion prompts - mix of developer and general user tasks
@@ -1656,6 +1727,8 @@ function EmptyState({
   onConnect,
   workspacePath,
   onSendMessage,
+  hasConfiguredProvider,
+  onOpenSettings,
 }: EmptyStateProps) {
   // Randomly select 4 suggestions to show variety
   const [suggestions] = useState(() => {
@@ -1675,6 +1748,28 @@ function EmptyState({
         </div>
 
         <h2 className="mb-3 text-2xl font-bold text-text">What can I help you with?</h2>
+
+        {!hasConfiguredProvider && (
+          <div className="mb-6 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-4 text-left">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-yellow-500" />
+              <div>
+                <h3 className="font-semibold text-text">No Model Configured</h3>
+                <p className="mt-1 text-sm text-text-muted">
+                  You need to configure an LLM provider (OpenAI, Anthropic, etc.) to start chatting.
+                </p>
+                {onOpenSettings && (
+                  <button
+                    onClick={onOpenSettings}
+                    className="mt-2 text-sm font-medium text-primary hover:underline"
+                  >
+                    Configure Settings →
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         <p className="mb-8 text-text-muted">
           I can read and write files, search your codebase, run commands, and help you accomplish

@@ -60,10 +60,12 @@ export function SidecarDownloader({
         setState("complete");
         setTimeout(onComplete, 500);
       } else {
+        // Not installed or update available -> Show download UI
         setState("idle");
       }
     } catch (err) {
       console.error("Failed to check sidecar status:", err);
+      // Fallback for actual errors (e.g. backend crash)
       setState("idle");
       setStatus({
         installed: false,
@@ -76,8 +78,11 @@ export function SidecarDownloader({
   }, [onComplete]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    checkSidecar();
+    // Small delay to allow fade-in transition to complete
+    const timer = setTimeout(() => {
+      checkSidecar();
+    }, 500);
+    return () => clearTimeout(timer);
   }, [checkSidecar]);
 
   useEffect(() => {
@@ -260,29 +265,29 @@ export function SidecarDownloader({
           >
             <div className="relative h-16 w-16">
               <motion.div
-                className="absolute inset-0 rounded-2xl bg-emerald-500/10"
+                className="absolute inset-0 rounded-2xl bg-primary/10"
                 animate={{ scale: [1, 1.05, 1] }}
                 transition={{ duration: 1, repeat: Infinity }}
               />
               <div className="absolute inset-0 flex items-center justify-center">
-                <Sparkles className="h-8 w-8 text-emerald-400" />
+                <Sparkles className="h-8 w-8 text-primary" />
               </div>
             </div>
             <div className="text-center">
-              <h3 className="text-lg font-semibold text-white mb-1">Extracting</h3>
-              <p className="text-sm text-gray-400">Unpacking files...</p>
+              <h3 className="text-lg font-semibold text-text mb-1">Extracting</h3>
+              <p className="text-sm text-text-muted">Unpacking files...</p>
             </div>
             {/* Animated progress bars */}
             <div className="flex gap-1">
               {[0, 1, 2, 3, 4].map((i) => (
                 <motion.div
                   key={i}
-                  className="h-1.5 w-6 rounded-full bg-emerald-500/30"
+                  className="h-1.5 w-6 rounded-full bg-primary/30"
                   animate={{
                     backgroundColor: [
-                      "rgba(16, 185, 129, 0.3)",
-                      "rgba(16, 185, 129, 1)",
-                      "rgba(16, 185, 129, 0.3)",
+                      "rgba(var(--color-primary-rgb), 0.3)",
+                      "rgba(var(--color-primary-rgb), 1)",
+                      "rgba(var(--color-primary-rgb), 0.3)",
                     ],
                   }}
                   transition={{
@@ -305,17 +310,17 @@ export function SidecarDownloader({
           >
             <div className="relative h-16 w-16">
               <motion.div
-                className="absolute inset-0 rounded-2xl bg-emerald-500/10"
+                className="absolute inset-0 rounded-2xl bg-primary/10"
                 animate={{ rotate: [0, 90, 180, 270, 360] }}
                 transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
               />
               <div className="absolute inset-0 flex items-center justify-center">
-                <Sparkles className="h-8 w-8 text-emerald-400" />
+                <Sparkles className="h-8 w-8 text-primary" />
               </div>
             </div>
             <div className="text-center">
-              <h3 className="text-lg font-semibold text-white mb-1">Installing</h3>
-              <p className="text-sm text-gray-400">Setting up AI engine...</p>
+              <h3 className="text-lg font-semibold text-text mb-1">Installing</h3>
+              <p className="text-sm text-text-muted">Setting up AI engine...</p>
             </div>
           </motion.div>
         );
@@ -328,16 +333,16 @@ export function SidecarDownloader({
             className="flex flex-col items-center gap-4"
           >
             <motion.div
-              className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/20"
+              className="flex h-16 w-16 items-center justify-center rounded-2xl bg-success/20"
               initial={{ scale: 0 }}
               animate={{ scale: 1 }}
               transition={{ type: "spring", delay: 0.1 }}
             >
-              <CheckCircle className="h-8 w-8 text-emerald-400" />
+              <CheckCircle className="h-8 w-8 text-success" />
             </motion.div>
             <div className="text-center">
-              <h3 className="text-lg font-semibold text-white mb-1">Ready!</h3>
-              <p className="text-sm text-gray-400">
+              <h3 className="text-lg font-semibold text-text mb-1">Ready!</h3>
+              <p className="text-sm text-text-muted">
                 AI engine installed successfully
                 {status?.version && ` (v${status.version})`}
               </p>
