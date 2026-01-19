@@ -68,7 +68,7 @@ export function Chat({
   const [isGenerating, setIsGenerating] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(propSessionId || null);
   const [enabledToolCategories, setEnabledToolCategories] = useState<Set<string>>(new Set());
-  const [, forceUpdate] = useState({});
+  const [, forceUpdate] = useState({}); // Keep for critical display updates
 
   // Notify parent when generating state changes
   useEffect(() => {
@@ -877,7 +877,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
   };
 
   const handleSend = useCallback(
-    async (content: string, attachments?: FileAttachment[]) => {
+    async (content: string, attachments?: FileAttachment[], forceMode?: "plan" | "immediate") => {
       setError(null);
 
       // If sidecar isn't running, try to start it
@@ -911,7 +911,9 @@ Start with task #1 and continue through each one. Let me know when each task is 
       }
 
       // Select agent
-      const agentToUse = selectedAgent;
+      // Override agent if forceMode is specified (ensures OpenCode uses correct mode)
+      const agentToUse =
+        forceMode === "immediate" ? undefined : forceMode === "plan" ? "plan" : selectedAgent;
 
       // Inject tool guidance if tool categories are enabled
       let finalContent = content;
@@ -920,12 +922,15 @@ Start with task #1 and continue through each one. Let me know when each task is 
           const guidance = await getToolGuidance(Array.from(enabledToolCategories));
 
           if (guidance.length > 0) {
+            // Determine effective mode once for all guidance
+            const effectiveMode =
+              forceMode === "immediate" ? false : forceMode === "plan" ? true : usePlanMode;
+
             const guidanceText = guidance
               .map((g) => {
                 let instructions = g.instructions;
 
-                // Adapt guidance based on mode
-                if (!usePlanMode) {
+                if (!effectiveMode) {
                   // In Immediate Mode: Skip the planning phase, just create directly
                   instructions = instructions.replace(
                     /PHASE 1: PLANNING.*?PHASE 2: EXECUTION \(After User Approval\)/s,
@@ -949,7 +954,7 @@ ${g.example}
 
             finalContent = `${guidanceText}\n\n===== USER REQUEST =====\n${content}`;
             console.log(
-              `[ToolGuidance] Injected ${usePlanMode ? "Plan Mode" : "Immediate Mode"} guidance for: ${Array.from(enabledToolCategories).join(", ")}`
+              `[ToolGuidance] Injected ${effectiveMode ? "Plan Mode" : "Immediate Mode"} guidance for: ${Array.from(enabledToolCategories).join(", ")}`
             );
           }
         } catch (e) {
@@ -959,7 +964,11 @@ ${g.example}
       }
 
       // In Plan Mode, guide the AI to use todowrite for task tracking
-      if (usePlanMode) {
+      // Use effective mode (respect forceMode override)
+      const effectivePlanMode =
+        forceMode === "immediate" ? false : forceMode === "plan" ? true : usePlanMode;
+
+      if (effectivePlanMode) {
         finalContent = `${finalContent}
 
 (Please use the todowrite tool to create a structured task list for tracking this work, then explain your plan.)`;
@@ -1374,8 +1383,14 @@ ${g.example}
               const showActionButtons =
                 usePlanMode && isLastMessage && isAssistant && !isGenerating;
 
+              // Use content length in key ONLY for streaming messages to force re-renders
+              const isActivelyStreaming = isGenerating && isLastMessage && isAssistant;
+              const messageKey = isActivelyStreaming
+                ? `${message.id}-${message.content?.length || 0}`
+                : message.id;
+
               return (
-                <div key={message.id}>
+                <div key={messageKey}>
                   <Message
                     {...message}
                     onEdit={handleEdit}
@@ -1421,7 +1436,8 @@ After making the changes, present the updated plan in full (including the comple
 ${taskList}
 
 Start with task #1 and execute each one. Use the 'write' tool to create files immediately.`;
-                            handleSend(message);
+                            // Force immediate mode for this specific message
+                            handleSend(message, undefined, "immediate");
                           }
                         }}
                       />
