@@ -65,6 +65,7 @@
       "prettier --write"
     ],
     "*.rs": [
+      "rustfmt",
       "node scripts/check-secrets.js"
     ]
   }
