@@ -156,8 +156,8 @@ function App() {
       : !sidecarReady
         ? "sidecar-setup"
         : (!state?.has_workspace || !hasConfiguredProvider) &&
-            view !== "settings" &&
-            view !== "about"
+          view !== "settings" &&
+          view !== "about"
           ? "onboarding"
           : view;
 
@@ -196,7 +196,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshAppState]);
 
   // Hide splash screen once vault is unlocked and app state is loaded
   useEffect(() => {
@@ -566,22 +566,20 @@ function App() {
 
             <button
               onClick={() => setView("chat")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                effectiveView === "chat"
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "chat"
                   ? "bg-primary/20 text-primary"
                   : "text-text-muted hover:bg-surface-elevated hover:text-text"
-              }`}
+                }`}
               title="Chat"
             >
               <MessageSquare className="h-5 w-5" />
             </button>
             <button
               onClick={() => setView("settings")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                effectiveView === "settings"
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "settings"
                   ? "bg-primary/20 text-primary"
                   : "text-text-muted hover:bg-surface-elevated hover:text-text"
-              }`}
+                }`}
               title="Settings"
             >
               <SettingsIcon className="h-5 w-5" />
@@ -597,11 +595,10 @@ function App() {
             </button>
             <button
               onClick={() => setView("about")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                effectiveView === "about"
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "about"
                   ? "bg-primary/20 text-primary"
                   : "text-text-muted hover:bg-surface-elevated hover:text-text"
-              }`}
+                }`}
               title="About"
             >
               <Info className="h-5 w-5" />
@@ -611,11 +608,10 @@ function App() {
             {(usePlanMode || todosData.todos.length > 0) && (
               <button
                 onClick={() => setTaskSidebarOpen(!taskSidebarOpen)}
-                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                  taskSidebarOpen
+                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${taskSidebarOpen
                     ? "bg-primary/20 text-primary"
                     : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                }`}
+                  }`}
                 title="Tasks"
               >
                 <ListTodo className="h-5 w-5" />
