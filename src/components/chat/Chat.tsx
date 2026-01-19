@@ -1392,7 +1392,9 @@ ${g.example}
               return (
                 <div key={messageKey}>
                   <Message
+                    key={messageKey}
                     {...message}
+                    isStreaming={isActivelyStreaming}
                     onEdit={handleEdit}
                     onRewind={handleRewind}
                     onRegenerate={handleRegenerate}
