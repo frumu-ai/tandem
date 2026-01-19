@@ -1,0 +1,43 @@
+name: Test Signing Keys
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-signing:
+    name: Verify Signing Keys
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli
+
+      - name: Extract public key from tauri.conf.json
+        id: pubkey
+        run: |
+          PUBKEY=$(jq -r '.plugins.updater.pubkey' src-tauri/tauri.conf.json)
+          echo "pubkey=$PUBKEY" >> $GITHUB_OUTPUT
+          echo "Found public key: ${PUBKEY:0:50}..."
+
+      - name: Test signing and verification
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PUBLIC_KEY: ${{ steps.pubkey.outputs.pubkey }}
+        run: |
+          echo "Step 1: Testing private key decryption..."
+          echo "test content" > test.txt
+
+          echo "Step 2: Signing test file with private key..."
+          tauri signer sign test.txt
+
+          echo "Step 3: Verifying signature with public key..."
+          tauri signer verify test.txt "$PUBLIC_KEY"
+
+          echo "✅ SUCCESS! Private key, password, and public key all match!"
