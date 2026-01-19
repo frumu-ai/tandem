@@ -1009,6 +1009,9 @@ pub async fn send_message_streaming(
                     };
 
                     if is_our_session {
+                        // Log event for debugging
+                        tracing::info!("[StreamEvent] Emitting to frontend: type={:?}", event);
+
                         // Emit the event to the frontend
                         if let Err(e) = app.emit("sidecar_event", &event) {
                             tracing::error!("Failed to emit sidecar event: {}", e);
