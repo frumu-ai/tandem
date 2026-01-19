@@ -1742,8 +1742,9 @@ pub struct ToolGuidance {
 #[tauri::command]
 pub fn get_tool_guidance(categories: Vec<String>) -> Vec<ToolGuidance> {
     let mut guidance = Vec::new();
-    
-    for category in &categories {  // Fix: borrow categories instead of moving
+
+    for category in &categories {
+        // Fix: borrow categories instead of moving
         match category.as_str() {
             "presentations" => {
                 guidance.push(ToolGuidance {
@@ -1852,22 +1853,26 @@ NOTE: When the JSON file is created, Tandem will automatically export it to a `.
                         ]
                     }).to_string(),
                 });
-            },
+            }
             "diagrams" => {
                 // Future: Mermaid diagram guidance
                 tracing::debug!("Diagrams tool category not yet implemented");
-            },
+            }
             "spreadsheets" => {
                 // Future: Table/CSV guidance
                 tracing::debug!("Spreadsheets tool category not yet implemented");
-            },
+            }
             _ => {
                 tracing::warn!("Unknown tool category: {}", category);
             }
         }
     }
-    
-    tracing::info!("Returning {} tool guidance items for categories: {:?}", guidance.len(), categories);
+
+    tracing::info!(
+        "Returning {} tool guidance items for categories: {:?}",
+        guidance.len(),
+        categories
+    );
     guidance
 }
 
@@ -1877,32 +1882,35 @@ NOTE: When the JSON file is created, Tandem will automatically export it to a `.
 
 /// Export a .tandem.ppt.json file to a binary .pptx file using ppt-rs
 #[tauri::command]
-pub async fn export_presentation(
-    json_path: String,
-    output_path: String,
-) -> Result<String> {
-    use crate::presentation::{Presentation, ElementContent, SlideLayout};
+pub async fn export_presentation(json_path: String, output_path: String) -> Result<String> {
+    use crate::presentation::{ElementContent, Presentation, SlideLayout};
     use std::fs::File;
     use std::io::Write;
     use zip::write::{FileOptions, ZipWriter};
-    
-    tracing::info!("Exporting presentation from {} to {}", json_path, output_path);
-    
+
+    tracing::info!(
+        "Exporting presentation from {} to {}",
+        json_path,
+        output_path
+    );
+
     // 1. Read and parse JSON
-    let json_content = std::fs::read_to_string(&json_path)
-        .map_err(TandemError::Io)?;
-    
+    let json_content = std::fs::read_to_string(&json_path).map_err(TandemError::Io)?;
+
     let presentation: Presentation = serde_json::from_str(&json_content)
         .map_err(|e| TandemError::InvalidConfig(format!("Invalid presentation JSON: {}", e)))?;
-    
-    tracing::debug!("Parsed presentation: {} with {} slides", presentation.title, presentation.slides.len());
-    
-    let file = File::create(&output_path)
-        .map_err(TandemError::Io)?;
-    
+
+    tracing::debug!(
+        "Parsed presentation: {} with {} slides",
+        presentation.title,
+        presentation.slides.len()
+    );
+
+    let file = File::create(&output_path).map_err(TandemError::Io)?;
+
     let mut zip = ZipWriter::new(file);
     let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    
+
     // Helper to escape XML
     let escape_xml = |text: &str| -> String {
         text.replace('&', "&amp;")
@@ -1911,28 +1919,31 @@ pub async fn export_presentation(
             .replace('"', "&quot;")
             .replace('\'', "&apos;")
     };
-    
+
     // === [Content_Types].xml ===
-    let mut content_types = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    let mut content_types = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
   <Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>
   <Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>
-"#);
-    
+"#,
+    );
+
     for i in 1..=presentation.slides.len() {
         content_types.push_str(&format!(
             r#"  <Override PartName="/ppt/slides/slide{}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
 "#, i));
     }
     content_types.push_str("</Types>");
-    
+
     zip.start_file("[Content_Types].xml", options)
         .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
-    zip.write_all(content_types.as_bytes()).map_err(TandemError::Io)?;
-    
+    zip.write_all(content_types.as_bytes())
+        .map_err(TandemError::Io)?;
+
     // === _rels/.rels ===
     zip.start_file("_rels/.rels", options)
         .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
@@ -1941,59 +1952,72 @@ pub async fn export_presentation(
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
 </Relationships>"#;
     zip.write_all(rels.as_bytes()).map_err(TandemError::Io)?;
-    
+
     // === ppt/presentation.xml ===
-    let mut pres_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    let mut pres_xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" saveSubsetFonts="1">
   <p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>
   <p:sldIdLst>
-"#);
-    
+"#,
+    );
+
     for (i, _) in presentation.slides.iter().enumerate() {
         pres_xml.push_str(&format!(
             r#"    <p:sldId id="{}" r:id="rId{}"/>
-"#, 256 + i, i + 2));
+"#,
+            256 + i,
+            i + 2
+        ));
     }
-    
-    pres_xml.push_str(r#"  </p:sldIdLst>
+
+    pres_xml.push_str(
+        r#"  </p:sldIdLst>
   <p:sldSz cx="9144000" cy="6858000"/>
   <p:notesSz cx="6858000" cy="9144000"/>
-</p:presentation>"#);
-    
+</p:presentation>"#,
+    );
+
     zip.start_file("ppt/presentation.xml", options)
         .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
-    zip.write_all(pres_xml.as_bytes()).map_err(TandemError::Io)?;
-    
+    zip.write_all(pres_xml.as_bytes())
+        .map_err(TandemError::Io)?;
+
     // === ppt/_rels/presentation.xml.rels ===
-    let mut pres_rels = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    let mut pres_rels = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>
-"#);
-    
+"#,
+    );
+
     for (i, _) in presentation.slides.iter().enumerate() {
         pres_rels.push_str(&format!(
             r#"  <Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{}.xml"/>
 "#, i + 2, i + 1));
     }
     pres_rels.push_str("</Relationships>");
-    
+
     zip.start_file("ppt/_rels/presentation.xml.rels", options)
         .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
-    zip.write_all(pres_rels.as_bytes()).map_err(TandemError::Io)?;
-    
+    zip.write_all(pres_rels.as_bytes())
+        .map_err(TandemError::Io)?;
+
     // === Generate slides ===
     for (i, slide) in presentation.slides.iter().enumerate() {
         let slide_num = i + 1;
-        let mut slide_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        let mut slide_xml = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:cSld>
     <p:spTree>
       <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
       <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
-"#);
-        
+"#,
+        );
+
         let mut shape_id = 2;
-        
+
         // Title shape
         if let Some(title) = &slide.title {
             slide_xml.push_str(&format!(r#"      <p:sp>
@@ -2008,7 +2032,7 @@ pub async fn export_presentation(
 "#, shape_id, shape_id, escape_xml(title)));
             shape_id += 1;
         }
-        
+
         // Subtitle (for title slide layout)
         if matches!(slide.layout, SlideLayout::Title) {
             if let Some(subtitle) = &slide.subtitle {
@@ -2025,7 +2049,7 @@ pub async fn export_presentation(
                 shape_id += 1;
             }
         }
-        
+
         // Content (bullets and text elements)
         if !slide.elements.is_empty() {
             let mut content_text = String::new();
@@ -2037,15 +2061,15 @@ pub async fn export_presentation(
                                 r#"          <a:p><a:pPr lvl="0"><a:buFont typeface="Arial"/><a:buChar char="•"/></a:pPr><a:r><a:rPr lang="en-US" sz="2000"/><a:t>{}</a:t></a:r></a:p>
 "#, escape_xml(bullet)));
                         }
-                    },
+                    }
                     ElementContent::Text(t) => {
                         content_text.push_str(&format!(
                             r#"          <a:p><a:r><a:rPr lang="en-US" sz="2000"/><a:t>{}</a:t></a:r></a:p>
 "#, escape_xml(t)));
-                    },
+                    }
                 }
             }
-            
+
             if !content_text.is_empty() {
                 slide_xml.push_str(&format!(r#"      <p:sp>
         <p:nvSpPr><p:cNvPr id="{}" name="Content {}"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr>
@@ -2058,26 +2082,33 @@ pub async fn export_presentation(
 "#, shape_id, shape_id, content_text));
             }
         }
-        
-        slide_xml.push_str(r#"    </p:spTree>
+
+        slide_xml.push_str(
+            r#"    </p:spTree>
   </p:cSld>
   <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
-</p:sld>"#);
-        
+</p:sld>"#,
+        );
+
         zip.start_file(format!("ppt/slides/slide{}.xml", slide_num), options)
             .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
-        zip.write_all(slide_xml.as_bytes()).map_err(TandemError::Io)?;
-        
+        zip.write_all(slide_xml.as_bytes())
+            .map_err(TandemError::Io)?;
+
         // === Slide relationship file (critical for Google Slides) ===
-        zip.start_file(format!("ppt/slides/_rels/slide{}.xml.rels", slide_num), options)
-            .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
+        zip.start_file(
+            format!("ppt/slides/_rels/slide{}.xml.rels", slide_num),
+            options,
+        )
+        .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
         let slide_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
 </Relationships>"#;
-        zip.write_all(slide_rels.as_bytes()).map_err(TandemError::Io)?;
+        zip.write_all(slide_rels.as_bytes())
+            .map_err(TandemError::Io)?;
     }
-    
+
     // === Minimal slideMaster (required) ===
     let slide_master = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
@@ -2085,40 +2116,44 @@ pub async fn export_presentation(
   <p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>
   <p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst>
 </p:sldMaster>"#;
-    
+
     zip.start_file("ppt/slideMasters/slideMaster1.xml", options)
         .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
-    zip.write_all(slide_master.as_bytes()).map_err(TandemError::Io)?;
-    
+    zip.write_all(slide_master.as_bytes())
+        .map_err(TandemError::Io)?;
+
     zip.start_file("ppt/slideMasters/_rels/slideMaster1.xml.rels", options)
         .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
     let master_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
 </Relationships>"#;
-    zip.write_all(master_rels.as_bytes()).map_err(TandemError::Io)?;
-    
+    zip.write_all(master_rels.as_bytes())
+        .map_err(TandemError::Io)?;
+
     let slide_layout = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1">
   <p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld>
   <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
 </p:sldLayout>"#;
-    
+
     zip.start_file("ppt/slideLayouts/slideLayout1.xml", options)
         .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
-    zip.write_all(slide_layout.as_bytes()).map_err(TandemError::Io)?;
-    
+    zip.write_all(slide_layout.as_bytes())
+        .map_err(TandemError::Io)?;
+
     zip.start_file("ppt/slideLayouts/_rels/slideLayout1.xml.rels", options)
         .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
     let layout_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/>
 </Relationships>"#;
-    zip.write_all(layout_rels.as_bytes()).map_err(TandemError::Io)?;
-    
+    zip.write_all(layout_rels.as_bytes())
+        .map_err(TandemError::Io)?;
+
     zip.finish()
         .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
-    
+
     tracing::info!("Successfully exported presentation to {}", output_path);
     Ok(format!("Exported to {}", output_path))
 }

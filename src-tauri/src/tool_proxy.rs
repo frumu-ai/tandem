@@ -223,7 +223,9 @@ impl StagingStore {
     /// Remove a specific staged operation by ID
     pub fn remove(&self, id: &str) -> Option<StagedOperation> {
         let mut ops = self.operations.write().unwrap();
-        ops.iter().position(|op| op.id == id).map(|pos| ops.remove(pos))
+        ops.iter()
+            .position(|op| op.id == id)
+            .map(|pos| ops.remove(pos))
     }
 
     /// Clear all staged operations
