@@ -251,7 +251,7 @@ pub fn set_workspace_path(app: AppHandle, path: String, state: State<'_, AppStat
 
     // Save to store for persistence
     if let Ok(store) = app.store("settings.json") {
-        let _ = store.set("workspace_path", serde_json::json!(path));
+        store.set("workspace_path", serde_json::json!(path));
         let _ = store.save();
     }
 
@@ -396,7 +396,7 @@ pub fn add_project(
     // Save to store
     if let Ok(store) = app.store("settings.json") {
         let projects = state.user_projects.read().unwrap();
-        let _ = store.set("user_projects", serde_json::to_value(&*projects).unwrap());
+        store.set("user_projects", serde_json::to_value(&*projects).unwrap());
         let _ = store.save();
     }
 
@@ -435,7 +435,7 @@ pub fn remove_project(
     // Save to store
     if let Ok(store) = app.store("settings.json") {
         let projects = state.user_projects.read().unwrap();
-        let _ = store.set("user_projects", serde_json::to_value(&*projects).unwrap());
+        store.set("user_projects", serde_json::to_value(&*projects).unwrap());
 
         let active_id = state.active_project_id.read().unwrap();
         if active_id.is_none() {
@@ -549,9 +549,9 @@ pub async fn set_active_project(
 
     // Save to store
     if let Ok(store) = app.store("settings.json") {
-        let _ = store.set("active_project_id", serde_json::json!(project_id));
+        store.set("active_project_id", serde_json::json!(project_id));
         let projects = state.user_projects.read().unwrap();
-        let _ = store.set("user_projects", serde_json::to_value(&*projects).unwrap());
+        store.set("user_projects", serde_json::to_value(&*projects).unwrap());
         let _ = store.save();
     }
 
@@ -708,7 +708,7 @@ pub fn set_providers_config(
 
     // Save to store for persistence
     if let Ok(store) = app.store("settings.json") {
-        let _ = store.set(
+        store.set(
             "providers_config",
             serde_json::to_value(&config).unwrap_or_default(),
         );
@@ -1881,7 +1881,7 @@ pub async fn export_presentation(
     json_path: String,
     output_path: String,
 ) -> Result<String> {
-    use crate::presentation::{Presentation, ElementType, ElementContent, SlideLayout};
+    use crate::presentation::{Presentation, ElementContent, SlideLayout};
     use std::fs::File;
     use std::io::Write;
     use zip::write::{FileOptions, ZipWriter};
@@ -1890,7 +1890,7 @@ pub async fn export_presentation(
     
     // 1. Read and parse JSON
     let json_content = std::fs::read_to_string(&json_path)
-        .map_err(|e| TandemError::Io(e))?;
+        .map_err(TandemError::Io)?;
     
     let presentation: Presentation = serde_json::from_str(&json_content)
         .map_err(|e| TandemError::InvalidConfig(format!("Invalid presentation JSON: {}", e)))?;
@@ -1898,7 +1898,7 @@ pub async fn export_presentation(
     tracing::debug!("Parsed presentation: {} with {} slides", presentation.title, presentation.slides.len());
     
     let file = File::create(&output_path)
-        .map_err(|e| TandemError::Io(e))?;
+        .map_err(TandemError::Io)?;
     
     let mut zip = ZipWriter::new(file);
     let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -1918,6 +1918,8 @@ pub async fn export_presentation(
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>
+  <Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>
 "#);
     
     for i in 1..=presentation.slides.len() {
@@ -1928,17 +1930,17 @@ pub async fn export_presentation(
     content_types.push_str("</Types>");
     
     zip.start_file("[Content_Types].xml", options)
-        .map_err(|e| TandemError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-    zip.write_all(content_types.as_bytes()).map_err(|e| TandemError::Io(e))?;
+        .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
+    zip.write_all(content_types.as_bytes()).map_err(TandemError::Io)?;
     
     // === _rels/.rels ===
     zip.start_file("_rels/.rels", options)
-        .map_err(|e| TandemError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
     let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
 </Relationships>"#;
-    zip.write_all(rels.as_bytes()).map_err(|e| TandemError::Io(e))?;
+    zip.write_all(rels.as_bytes()).map_err(TandemError::Io)?;
     
     // === ppt/presentation.xml ===
     let mut pres_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1959,8 +1961,8 @@ pub async fn export_presentation(
 </p:presentation>"#);
     
     zip.start_file("ppt/presentation.xml", options)
-        .map_err(|e| TandemError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-    zip.write_all(pres_xml.as_bytes()).map_err(|e| TandemError::Io(e))?;
+        .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
+    zip.write_all(pres_xml.as_bytes()).map_err(TandemError::Io)?;
     
     // === ppt/_rels/presentation.xml.rels ===
     let mut pres_rels = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1976,8 +1978,8 @@ pub async fn export_presentation(
     pres_rels.push_str("</Relationships>");
     
     zip.start_file("ppt/_rels/presentation.xml.rels", options)
-        .map_err(|e| TandemError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-    zip.write_all(pres_rels.as_bytes()).map_err(|e| TandemError::Io(e))?;
+        .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
+    zip.write_all(pres_rels.as_bytes()).map_err(TandemError::Io)?;
     
     // === Generate slides ===
     for (i, slide) in presentation.slides.iter().enumerate() {
@@ -1995,7 +1997,7 @@ pub async fn export_presentation(
         // Title shape
         if let Some(title) = &slide.title {
             slide_xml.push_str(&format!(r#"      <p:sp>
-        <p:nvSpPr><p:cNvPr id="{}" name="Title {}<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+        <p:nvSpPr><p:cNvPr id="{}" name="Title {}"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
         <p:spPr/>
         <p:txBody>
           <a:bodyPr/>
@@ -2033,13 +2035,13 @@ pub async fn export_presentation(
                         for bullet in bullets {
                             content_text.push_str(&format!(
                                 r#"          <a:p><a:pPr lvl="0"><a:buFont typeface="Arial"/><a:buChar char="•"/></a:pPr><a:r><a:rPr lang="en-US" sz="2000"/><a:t>{}</a:t></a:r></a:p>
-"#, escape_xml(&bullet)));
+"#, escape_xml(bullet)));
                         }
                     },
                     ElementContent::Text(t) => {
                         content_text.push_str(&format!(
                             r#"          <a:p><a:r><a:rPr lang="en-US" sz="2000"/><a:t>{}</a:t></a:r></a:p>
-"#, escape_xml(&t)));
+"#, escape_xml(t)));
                     },
                 }
             }
@@ -2062,9 +2064,18 @@ pub async fn export_presentation(
   <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
 </p:sld>"#);
         
-        zip.start_file(&format!("ppt/slides/slide{}.xml", slide_num), options)
-            .map_err(|e| TandemError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        zip.write_all(slide_xml.as_bytes()).map_err(|e| TandemError::Io(e))?;
+        zip.start_file(format!("ppt/slides/slide{}.xml", slide_num), options)
+            .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
+        zip.write_all(slide_xml.as_bytes()).map_err(TandemError::Io)?;
+        
+        // === Slide relationship file (critical for Google Slides) ===
+        zip.start_file(format!("ppt/slides/_rels/slide{}.xml.rels", slide_num), options)
+            .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
+        let slide_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+</Relationships>"#;
+        zip.write_all(slide_rels.as_bytes()).map_err(TandemError::Io)?;
     }
     
     // === Minimal slideMaster (required) ===
@@ -2076,16 +2087,16 @@ pub async fn export_presentation(
 </p:sldMaster>"#;
     
     zip.start_file("ppt/slideMasters/slideMaster1.xml", options)
-        .map_err(|e| TandemError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-    zip.write_all(slide_master.as_bytes()).map_err(|e| TandemError::Io(e))?;
+        .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
+    zip.write_all(slide_master.as_bytes()).map_err(TandemError::Io)?;
     
     zip.start_file("ppt/slideMasters/_rels/slideMaster1.xml.rels", options)
-        .map_err(|e| TandemError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
     let master_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
 </Relationships>"#;
-    zip.write_all(master_rels.as_bytes()).map_err(|e| TandemError::Io(e))?;
+    zip.write_all(master_rels.as_bytes()).map_err(TandemError::Io)?;
     
     let slide_layout = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1">
@@ -2094,19 +2105,19 @@ pub async fn export_presentation(
 </p:sldLayout>"#;
     
     zip.start_file("ppt/slideLayouts/slideLayout1.xml", options)
-        .map_err(|e| TandemError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-    zip.write_all(slide_layout.as_bytes()).map_err(|e| TandemError::Io(e))?;
+        .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
+    zip.write_all(slide_layout.as_bytes()).map_err(TandemError::Io)?;
     
     zip.start_file("ppt/slideLayouts/_rels/slideLayout1.xml.rels", options)
-        .map_err(|e| TandemError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
     let layout_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/>
 </Relationships>"#;
-    zip.write_all(layout_rels.as_bytes()).map_err(|e| TandemError::Io(e))?;
+    zip.write_all(layout_rels.as_bytes()).map_err(TandemError::Io)?;
     
     zip.finish()
-        .map_err(|e| TandemError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| TandemError::Io(std::io::Error::other(e)))?;
     
     tracing::info!("Successfully exported presentation to {}", output_path);
     Ok(format!("Exported to {}", output_path))
@@ -2241,7 +2252,7 @@ pub async fn read_file_content(path: String, max_size: Option<u64>) -> Result<St
         )));
     }
 
-    let metadata = fs::metadata(&file_path).map_err(|e| TandemError::Io(e))?;
+    let metadata = fs::metadata(&file_path).map_err(TandemError::Io)?;
 
     let file_size = metadata.len();
     let size_limit = max_size.unwrap_or(1024 * 1024); // Default 1MB
@@ -2253,7 +2264,7 @@ pub async fn read_file_content(path: String, max_size: Option<u64>) -> Result<St
         )));
     }
 
-    let content = fs::read_to_string(&file_path).map_err(|e| TandemError::Io(e))?;
+    let content = fs::read_to_string(&file_path).map_err(TandemError::Io)?;
 
     Ok(content)
 }
@@ -2279,6 +2290,6 @@ pub fn read_binary_file(path: String) -> Result<String> {
         )));
     }
 
-    let bytes = fs::read(&file_path).map_err(|e| TandemError::Io(e))?;
+    let bytes = fs::read(&file_path).map_err(TandemError::Io)?;
     Ok(STANDARD.encode(&bytes))
 }

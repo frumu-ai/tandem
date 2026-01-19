@@ -15,7 +15,7 @@ use aes_gcm::{
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TandemError};
 
@@ -90,7 +90,7 @@ impl EncryptedVaultKey {
         let vault_key = EncryptedVaultKey {
             version: 1,
             salt: salt.to_string(),
-            nonce: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &nonce_bytes),
+            nonce: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, nonce_bytes),
             encrypted_key: base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
                 &encrypted,
@@ -185,12 +185,12 @@ pub fn validate_pin(pin: &str) -> Result<()> {
 }
 
 /// Get the vault key file path
-pub fn get_vault_key_path(app_data_dir: &PathBuf) -> PathBuf {
+pub fn get_vault_key_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("vault.key")
 }
 
 /// Check if vault exists
-pub fn vault_exists(app_data_dir: &PathBuf) -> bool {
+pub fn vault_exists(app_data_dir: &Path) -> bool {
     get_vault_key_path(app_data_dir).exists()
 }
 

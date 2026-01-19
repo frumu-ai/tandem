@@ -3,7 +3,7 @@ use crate::sidecar::{SidecarConfig, SidecarManager};
 use crate::tool_proxy::{OperationJournal, StagingStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 /// Provider configuration for LLM routing
@@ -120,7 +120,7 @@ impl UserProject {
                                 None
                             }
                         })
-                        .last()
+                        .next_back()
                 })
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "Unnamed Project".to_string())
@@ -182,9 +182,11 @@ pub struct AppState {
     pub allowed_paths: RwLock<HashSet<PathBuf>>,
     /// Paths/patterns that are always denied
     pub denied_patterns: RwLock<Vec<String>>,
-    /// Session-level permission approvals
+    /// Session-level permission approvals (reserved for future use)
+    #[allow(dead_code)]
     pub session_approvals: RwLock<HashSet<String>>,
-    /// Persistent permission rules
+    /// Persistent permission rules (reserved for future use)
+    #[allow(dead_code)]
     pub permission_rules: RwLock<Vec<PermissionRule>>,
     /// Provider configuration
     pub providers_config: RwLock<ProvidersConfig>,
@@ -200,16 +202,16 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let mut denied_patterns = Vec::new();
-        // Default denied patterns for security
-        denied_patterns.push("**/.env".to_string());
-        denied_patterns.push("**/.env.*".to_string());
-        denied_patterns.push("**/*.pem".to_string());
-        denied_patterns.push("**/*.key".to_string());
-        denied_patterns.push("**/.ssh/*".to_string());
-        denied_patterns.push("**/.gnupg/*".to_string());
-        denied_patterns.push("**/secrets/*".to_string());
-        denied_patterns.push("**/*.stronghold".to_string());
+        let denied_patterns = vec![
+            "**/.env".to_string(),
+            "**/.env.*".to_string(),
+            "**/*.pem".to_string(),
+            "**/*.key".to_string(),
+            "**/.ssh/*".to_string(),
+            "**/.gnupg/*".to_string(),
+            "**/secrets/*".to_string(),
+            "**/*.stronghold".to_string(),
+        ];
 
         Self {
             workspace_path: RwLock::new(None),
@@ -240,7 +242,7 @@ impl AppState {
     }
 
     /// Check if a path is within the allowed workspace
-    pub fn is_path_allowed(&self, path: &PathBuf) -> bool {
+    pub fn is_path_allowed(&self, path: &Path) -> bool {
         let allowed = self.allowed_paths.read().unwrap();
 
         // Check if the path is within any allowed path

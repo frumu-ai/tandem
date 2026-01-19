@@ -278,11 +278,11 @@ pub fn run() {
                     }
 
                     // Save migration
-                    let _ = store.set(
+                    store.set(
                         "user_projects",
-                        serde_json::to_value(&vec![project]).unwrap(),
+                        serde_json::to_value(vec![project]).unwrap(),
                     );
-                    let _ = store.set("active_project_id", serde_json::json!(project_id));
+                    store.set("active_project_id", serde_json::json!(project_id));
                     let _ = store.save();
 
                     tracing::info!("Migration complete: created project '{}'", project_name);

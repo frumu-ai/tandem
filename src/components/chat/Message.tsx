@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -17,8 +18,9 @@ import {
   Undo2,
   Check,
   X,
+  ExternalLink,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, ReactNode } from "react";
 
 export interface MessageAttachment {
   name: string;
@@ -40,6 +42,7 @@ export interface MessageProps {
   onRegenerate?: (messageId: string) => void;
   onCopy?: (content: string) => void;
   onUndo?: (messageId: string) => void;
+  onFileOpen?: (filePath: string) => void;
 }
 
 export interface ToolCall {
@@ -48,6 +51,63 @@ export interface ToolCall {
   args: Record<string, unknown>;
   status: "pending" | "running" | "completed" | "failed";
   result?: string;
+}
+
+/**
+ * FilePathParser - Detects file paths in text and renders them as clickable links
+ * Matches common file path patterns:
+ * - Windows: C:\path\to\file.ext or c:/path/to/file.ext
+ * - Unix: /path/to/file.ext or ./relative/path.ext or ../relative/path.ext
+ * - Relative: path/to/file.ext or file.ext
+ * - Extensions: .json, .ts, .tsx, .js, .jsx, .md, .txt, .pptx, etc.
+ */
+function FilePathParser({
+  text,
+  onFileOpen,
+}: {
+  text: string;
+  onFileOpen?: (filePath: string) => void;
+}) {
+  // Regex to match file paths with common extensions
+  // Captures Windows (C:\...), Unix (/...), and relative (./..., ../...) paths
+  const filePathRegex =
+    /(?:(?:[A-Za-z]:[\\/])|(?:\.\.?[\\/])|(?:^|[\s`'"(]))([^\s`'"()<>]+\.(json|ts|tsx|js|jsx|md|txt|py|rs|go|java|cpp|c|h|css|scss|html|xml|yaml|yml|toml|pptx|ppt|docx|doc|xlsx|xls|pdf|png|jpg|jpeg|gif|svg|webp))\b/g;
+
+  const parts: (string | ReactNode)[] = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = filePathRegex.exec(text)) !== null) {
+    const filePath = match[1]; // Captured file path
+    const matchStart = match.index + (match[0].length - filePath.length); // Adjust for leading chars
+
+    // Add text before the match
+    if (matchStart > lastIndex) {
+      parts.push(text.substring(lastIndex, matchStart));
+    }
+
+    // Add clickable file link
+    parts.push(
+      <button
+        key={`file-${matchStart}`}
+        onClick={() => onFileOpen?.(filePath)}
+        className="inline-flex items-center gap-1 text-primary hover:text-primary/80 hover:underline transition-colors font-mono text-sm"
+        title={`Open ${filePath}`}
+      >
+        <ExternalLink className="h-3 w-3" />
+        {filePath}
+      </button>
+    );
+
+    lastIndex = matchStart + filePath.length;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push(text.substring(lastIndex));
+  }
+
+  return <>{parts.length > 0 ? parts : text}</>;
 }
 
 export function Message({
@@ -63,6 +123,7 @@ export function Message({
   onRegenerate,
   onCopy,
   onUndo,
+  onFileOpen,
 }: MessageProps) {
   const isUser = role === "user";
   const isSystem = role === "system";
@@ -258,38 +319,65 @@ export function Message({
           <div className="prose-custom">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
-              components={{
-                code({ className, children, ...props }) {
-                  const match = /language-(\w+)/.exec(className || "");
-                  if (match) {
-                    return (
-                      <div className="overflow-hidden rounded-lg border border-white/10 bg-surface/60">
-                        <div className="flex items-center gap-2 border-b border-white/10 bg-surface-elevated/70 px-3 py-2">
-                          <span className="h-2 w-2 rounded-full bg-error/80" />
-                          <span className="h-2 w-2 rounded-full bg-warning/80" />
-                          <span className="h-2 w-2 rounded-full bg-success/80" />
-                          <span className="ml-2 text-[0.65rem] uppercase tracking-widest text-text-subtle terminal-text">
-                            code
-                          </span>
+              components={
+                {
+                  code({ className, children, ...props }) {
+                    const match = /language-(\w+)/.exec(className || "");
+                    if (match) {
+                      return (
+                        <div className="overflow-hidden rounded-lg border border-white/10 bg-surface/60">
+                          <div className="flex items-center gap-2 border-b border-white/10 bg-surface-elevated/70 px-3 py-2">
+                            <span className="h-2 w-2 rounded-full bg-error/80" />
+                            <span className="h-2 w-2 rounded-full bg-warning/80" />
+                            <span className="h-2 w-2 rounded-full bg-success/80" />
+                            <span className="ml-2 text-[0.65rem] uppercase tracking-widest text-text-subtle terminal-text">
+                              code
+                            </span>
+                          </div>
+                          <SyntaxHighlighter
+                            style={oneDark}
+                            language={match[1]}
+                            PreTag="div"
+                            customStyle={{ margin: 0, background: "transparent", padding: "1rem" }}
+                          >
+                            {String(children).replace(/\n$/, "")}
+                          </SyntaxHighlighter>
                         </div>
-                        <SyntaxHighlighter
-                          style={oneDark}
-                          language={match[1]}
-                          PreTag="div"
-                          customStyle={{ margin: 0, background: "transparent", padding: "1rem" }}
-                        >
-                          {String(children).replace(/\n$/, "")}
-                        </SyntaxHighlighter>
-                      </div>
+                      );
+                    }
+                    return (
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
                     );
-                  }
-                  return (
-                    <code className={className} {...props}>
-                      {children}
-                    </code>
-                  );
-                },
-              }}
+                  },
+                  // Custom paragraph renderer to parse file paths in text
+                  p({ children }) {
+                    if (typeof children === "string") {
+                      return (
+                        <p>
+                          <FilePathParser text={children} onFileOpen={onFileOpen} />
+                        </p>
+                      );
+                    }
+                    // Handle arrays of children (mixed content)
+                    if (Array.isArray(children)) {
+                      return (
+                        <p>
+                          {children.map((child, index) =>
+                            typeof child === "string" ? (
+                              <FilePathParser key={index} text={child} onFileOpen={onFileOpen} />
+                            ) : (
+                              child
+                            )
+                          )}
+                        </p>
+                      );
+                    }
+                    return <p>{children}</p>;
+                  },
+                } as Components
+              }
             >
               {content}
             </ReactMarkdown>

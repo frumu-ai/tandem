@@ -223,11 +223,7 @@ impl StagingStore {
     /// Remove a specific staged operation by ID
     pub fn remove(&self, id: &str) -> Option<StagedOperation> {
         let mut ops = self.operations.write().unwrap();
-        if let Some(pos) = ops.iter().position(|op| op.id == id) {
-            Some(ops.remove(pos))
-        } else {
-            None
-        }
+        ops.iter().position(|op| op.id == id).map(|pos| ops.remove(pos))
     }
 
     /// Clear all staged operations
@@ -245,19 +241,22 @@ impl StagingStore {
         ops.len()
     }
 
-    /// Check if any operations are staged
+    /// Check if any operations are staged (reserved for future use)
+    #[allow(dead_code)]
     pub fn has_staged(&self) -> bool {
         !self.operations.read().unwrap().is_empty()
     }
 }
 
-/// Tool proxy for validating and journaling operations
+/// Tool proxy for validating and journaling operations (reserved for future use)
+#[allow(dead_code)]
 pub struct ToolProxy {
     _app_state: Arc<AppState>,
     journal: Arc<OperationJournal>,
 }
 
 impl ToolProxy {
+    #[allow(dead_code)]
     pub fn new(app_state: Arc<AppState>) -> Self {
         Self {
             _app_state: app_state,
@@ -266,6 +265,7 @@ impl ToolProxy {
     }
 
     /// Get the operation journal
+    #[allow(dead_code)]
     pub fn journal(&self) -> &Arc<OperationJournal> {
         &self.journal
     }

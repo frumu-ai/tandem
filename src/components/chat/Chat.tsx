@@ -46,6 +46,7 @@ interface ChatProps {
   onFileAttached?: () => void;
   selectedAgent?: string;
   onAgentChange?: (agent: string | undefined) => void;
+  onFileOpen?: (filePath: string) => void;
 }
 
 export function Chat({
@@ -63,6 +64,7 @@ export function Chat({
   onFileAttached,
   selectedAgent: propSelectedAgent,
   onAgentChange: propOnAgentChange,
+  onFileOpen,
 }: ChatProps) {
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -219,6 +221,13 @@ Start with task #1 and continue through each one. Let me know when each task is 
   // Sync internal session ID with prop
   useEffect(() => {
     console.log("[Chat] Session ID changed from", currentSessionId, "to", propSessionId || null);
+
+    // Don't change session if we're actively generating (prevents message loss)
+    if (isGenerating && currentSessionId && propSessionId !== currentSessionId) {
+      console.log("[Chat] Ignoring session change during active generation");
+      return;
+    }
+
     setCurrentSessionId(propSessionId || null);
     currentSessionIdRef.current = propSessionId || null; // Update ref synchronously
 
@@ -232,7 +241,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
       clearTimeout(generationTimeoutRef.current);
       generationTimeoutRef.current = null;
     }
-  }, [propSessionId]);
+  }, [propSessionId, isGenerating, currentSessionId]);
 
   // Load session history when sessionId changes from props
   useEffect(() => {
@@ -1400,6 +1409,7 @@ ${g.example}
                     onRegenerate={handleRegenerate}
                     onCopy={handleCopy}
                     onUndo={isGitRepository ? handleUndo : undefined}
+                    onFileOpen={onFileOpen}
                   />
                   {showActionButtons && (
                     <div className="ml-14 mb-4">

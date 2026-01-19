@@ -8,19 +8,14 @@ pub struct Presentation {
     pub slides: Vec<Slide>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PresentationTheme {
+    #[default]
     Light,
     Dark,
     Corporate,
     Minimal,
-}
-
-impl Default for PresentationTheme {
-    fn default() -> Self {
-        PresentationTheme::Light
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

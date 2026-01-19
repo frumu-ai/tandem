@@ -10,9 +10,11 @@ pub enum TandemError {
     Serialization(#[from] serde_json::Error),
 
     #[error("Path not allowed: {0}")]
+    #[allow(dead_code)]
     PathNotAllowed(String),
 
     #[error("Permission denied: {0}")]
+    #[allow(dead_code)]
     PermissionDenied(String),
 
     #[error("Invalid configuration: {0}")]
@@ -22,6 +24,7 @@ pub enum TandemError {
     Sidecar(String),
 
     #[error("Provider error: {0}")]
+    #[allow(dead_code)]
     Provider(String),
 
     #[error("Not found: {0}")]

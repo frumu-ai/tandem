@@ -42,6 +42,8 @@ pub struct SidecarConfig {
     /// Timeout for sidecar operations
     pub operation_timeout: Duration,
     /// Heartbeat interval
+    /// Health check interval (currently unused, reserved for future)
+    #[allow(dead_code)]
     pub heartbeat_interval: Duration,
     /// Workspace path for OpenCode
     pub workspace_path: Option<PathBuf>,
@@ -245,7 +247,8 @@ impl SendMessageRequest {
         }
     }
 
-    /// Create a text message request with a specific model
+    /// Create a text message request with a specific model (reserved for future use)
+    #[allow(dead_code)]
     pub fn text_with_model(content: String, provider_id: String, model_id: String) -> Self {
         Self {
             parts: vec![MessagePartInput::Text(TextPartInput {
@@ -281,7 +284,8 @@ impl SendMessageRequest {
         }
     }
 
-    /// Set the agent for this request
+    /// Set the agent for this request (reserved for future use)
+    #[allow(dead_code)]
     pub fn with_agent(mut self, agent: String) -> Self {
         self.agent = Some(agent);
         self
@@ -347,14 +351,16 @@ pub struct MessageSummary {
     pub diffs: Vec<serde_json::Value>,
 }
 
-/// OpenCode event properties wrapper
+/// OpenCode event properties wrapper (reserved for future use)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventProperties<T> {
     #[serde(flatten)]
     pub properties: T,
 }
 
-/// Message part from OpenCode
+/// Message part from OpenCode (reserved for future use)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagePart {
     pub id: Option<String>,
@@ -373,14 +379,16 @@ pub struct MessagePart {
     pub error: Option<String>,
 }
 
-/// Message part updated event properties
+/// Message part updated event properties (reserved for future use)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagePartUpdatedProps {
     pub part: MessagePart,
     pub delta: Option<String>,
 }
 
-/// Session status event properties
+/// Session status event properties (reserved for future use)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStatusProps {
     #[serde(rename = "sessionID")]
@@ -388,14 +396,16 @@ pub struct SessionStatusProps {
     pub status: String,
 }
 
-/// Session idle event properties
+/// Session idle event properties (reserved for future use)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionIdleProps {
     #[serde(rename = "sessionID")]
     pub session_id: String,
 }
 
-/// Session error event properties
+/// Session error event properties (reserved for future use)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionErrorProps {
     #[serde(rename = "sessionID")]
@@ -403,7 +413,8 @@ pub struct SessionErrorProps {
     pub error: String,
 }
 
-/// Permission asked event properties
+/// Permission asked event properties (reserved for future use)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionAskedProps {
     #[serde(rename = "sessionID")]

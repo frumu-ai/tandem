@@ -719,6 +719,27 @@ function App() {
                 pendingTasks={todosData.pending}
                 fileToAttach={fileToAttach}
                 onFileAttached={() => setFileToAttach(null)}
+                onFileOpen={(filePath) => {
+                  // Resolve relative paths to absolute using workspace path
+                  const workspacePath = activeProject?.path || state?.workspace_path;
+                  let absolutePath = filePath;
+
+                  // If path is not absolute, resolve it relative to workspace
+                  if (workspacePath && !filePath.match(/^([a-zA-Z]:[\\/]|\/)/)) {
+                    absolutePath = `${workspacePath}/${filePath}`.replace(/\\/g, "/");
+                  }
+
+                  // Create FileEntry from path and open in preview
+                  const fileName = absolutePath.split(/[\\/]/).pop() || absolutePath;
+                  const fileEntry: FileEntry = {
+                    path: absolutePath,
+                    name: fileName,
+                    is_directory: false,
+                    extension: fileName.includes(".") ? fileName.split(".").pop() : undefined,
+                  };
+                  setSelectedFile(fileEntry);
+                  setSidebarTab("files"); // Switch to files tab for context
+                }}
               />
               <AnimatePresence>
                 {effectiveView === "settings" && (

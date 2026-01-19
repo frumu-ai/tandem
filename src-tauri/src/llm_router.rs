@@ -1,5 +1,8 @@
 // Tandem LLM Router
 // Provider-agnostic routing to different LLM backends
+// NOTE: This module is currently unused but reserved for future direct LLM integration
+
+#![allow(dead_code)]
 
 use crate::error::Result;
 use crate::state::ProvidersConfig;
