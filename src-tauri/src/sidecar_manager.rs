@@ -57,7 +57,7 @@ struct GitHubAsset {
 pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
     let binary_name = get_binary_name();
 
-    // First, check if there's an updated version in AppData
+    // 1. Check AppData (user downloads/updates)
     if let Ok(app_data_dir) = app.path().app_data_dir() {
         let updated_binary = app_data_dir.join("binaries").join(binary_name);
         if updated_binary.exists() {
@@ -66,7 +66,7 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
         }
     }
 
-    // Fall back to bundled version in resources (read-only)
+    // 2. Check bundled resources (installed app)
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled_binary = resource_dir.join("binaries").join(binary_name);
         if bundled_binary.exists() {
@@ -75,7 +75,29 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
         }
     }
 
-    // Binary not found in either location
+    // 3. DEVELOPMENT MODE ONLY: Check source directory
+    // In 'tauri dev', resource_dir() might not point where we expect, so we look relative to the crate
+    #[cfg(debug_assertions)]
+    {
+        // Try to find the source root by looking up from the current executable or CWD
+        if let Ok(current_dir) = std::env::current_dir() {
+             // We assume we are running from 'src-tauri' or project root
+             let dev_binary = current_dir.join("binaries").join(binary_name);
+             if dev_binary.exists() {
+                 tracing::info!("Using dev sidecar from CWD/binaries: {:?}", dev_binary);
+                 return Ok(dev_binary);
+             }
+             
+             // Try src-tauri/binaries if we are in the project root
+             let dev_binary_nested = current_dir.join("src-tauri").join("binaries").join(binary_name);
+             if dev_binary_nested.exists() {
+                 tracing::info!("Using dev sidecar from src-tauri/binaries: {:?}", dev_binary_nested);
+                 return Ok(dev_binary_nested);
+             }
+        }
+    }
+
+    // Binary not found
     Err(TandemError::Sidecar(format!(
         "Sidecar binary '{}' not found. Please download it first.",
         binary_name
@@ -140,12 +162,17 @@ fn save_installed_version(app: &AppHandle, version: &str) -> Result<()> {
 
 /// Check the sidecar status (installed, version, updates)
 pub async fn check_sidecar_status(app: &AppHandle) -> Result<SidecarStatus> {
-    let binary_path = get_sidecar_binary_path(app)?;
-    let installed = binary_path.exists()
-        && binary_path
+    // Check if binary exists
+    let binary_path_result = get_sidecar_binary_path(app);
+    let installed = binary_path_result.is_ok()
+        && binary_path_result
+            .as_ref()
+            .unwrap()
             .metadata()
             .map(|m| m.len() >= MIN_BINARY_SIZE)
             .unwrap_or(false);
+            
+    let binary_path = binary_path_result.ok();
 
     let version = if installed {
         get_installed_version(app)
@@ -172,11 +199,7 @@ pub async fn check_sidecar_status(app: &AppHandle) -> Result<SidecarStatus> {
         version,
         latest_version,
         update_available,
-        binary_path: if installed {
-            Some(binary_path.to_string_lossy().to_string())
-        } else {
-            None
-        },
+        binary_path: binary_path.map(|p| p.to_string_lossy().to_string()),
     })
 }
 

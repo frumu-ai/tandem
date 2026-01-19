@@ -15,6 +15,10 @@ pub struct ProviderConfig {
     pub endpoint: String,
     #[serde(default)]
     pub model: Option<String>,
+    // Not saved to config, but populated at runtime
+    #[serde(skip_deserializing)]
+    #[serde(default)]
+    pub has_key: bool,
 }
 
 /// All provider configurations
@@ -36,10 +40,11 @@ pub struct ProvidersConfig {
 
 fn default_openrouter() -> ProviderConfig {
     ProviderConfig {
-        enabled: true,
+        enabled: false,
         default: true,
         endpoint: "https://openrouter.ai/api/v1".to_string(),
         model: Some("xiaomi/mimo-v2-flash:free".to_string()),
+        has_key: false,
     }
 }
 
@@ -49,6 +54,7 @@ fn default_opencode_zen() -> ProviderConfig {
         default: false,
         endpoint: "https://opencode.ai/zen/v1".to_string(),
         model: Some("gpt-5-nano".to_string()),
+        has_key: false,
     }
 }
 
@@ -58,6 +64,7 @@ fn default_anthropic() -> ProviderConfig {
         default: false,
         endpoint: "https://api.anthropic.com".to_string(),
         model: None,
+        has_key: false,
     }
 }
 
@@ -67,6 +74,7 @@ fn default_openai() -> ProviderConfig {
         default: false,
         endpoint: "https://api.openai.com/v1".to_string(),
         model: None,
+        has_key: false,
     }
 }
 
@@ -76,8 +84,11 @@ fn default_ollama() -> ProviderConfig {
         default: false,
         endpoint: "http://localhost:11434".to_string(),
         model: Some("llama3.2".to_string()),
+        has_key: false,
     }
 }
+
+
 
 impl Default for ProvidersConfig {
     fn default() -> Self {

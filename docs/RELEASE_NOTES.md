@@ -1,4 +1,27 @@
-# Tandem v1.1.0 Release Notes
+# Tandem v0.1.1 Release Notes
+
+## Highlights
+
+- **Enhanced Image Handling**: Implemented automatic 1024px resizing and JPEG compression, reducing image token size by up to 90%.
+- **Linux Platform Support**: Resolved clipboard image pasting issues on Linux using a native Tauri plugin fallback.
+- **Improved Reliability**: Images now persist across session reloads and are compatible with all vision-capable models via Markdown inlining.
+
+## Complete Feature List
+
+### Image Pipeline (Optimization update)
+
+- **Smart Compression**: Pasted images are automatically converted to JPEG (0.8 quality) to minimize base64 payload size.
+- **Auto-Resizing**: Images larger than 1024px are capped while preserving aspect ratio, preventing "max tokens" errors in long chats.
+- **Responsive Previews**: Added CSS constraints for inlined images to ensure they display correctly within the chat UI.
+
+### Platform Compatibility
+
+- **Linux Clipboard**: Integration with `@tauri-apps/plugin-clipboard-manager` to handle screenshots and images when standard web events fail.
+- **Markdown Inlining**: Switched image attachments to standard Markdown data URLs for universal model compatibility and persistence.
+
+---
+
+# Tandem v0.1.0 Release Notes
 
 ## Highlights
 

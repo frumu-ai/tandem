@@ -131,19 +131,26 @@ function App() {
   // Start with sidecar setup, then onboarding if no workspace, otherwise chat
   const [view, setView] = useState<View>(() => "sidecar-setup");
 
+  // Check if any provider is fully configured (enabled + has key)
+  const hasConfiguredProvider = !!state?.providers_config &&
+    ((state.providers_config.openrouter?.enabled && state.providers_config.openrouter?.has_key) ||
+      (state.providers_config.anthropic?.enabled && state.providers_config.anthropic?.has_key) ||
+      (state.providers_config.openai?.enabled && state.providers_config.openai?.has_key) ||
+      (state.providers_config.opencode_zen?.enabled && state.providers_config.opencode_zen?.has_key) ||
+      (state.providers_config.ollama?.enabled && state.providers_config.ollama?.has_key));
+
+  // Debug: Log provider state
+  console.log("[App] hasConfiguredProvider:", hasConfiguredProvider, "state:", state?.providers_config);
+
   // Update view based on workspace state after loading
   const effectiveView =
     loading || !vaultUnlocked
       ? "sidecar-setup"
       : !sidecarReady
         ? "sidecar-setup"
-        : view === "onboarding" && state?.has_workspace
-          ? "chat"
-          : view === "sidecar-setup"
-            ? state?.has_workspace
-              ? "chat"
-              : "onboarding"
-            : view;
+        : (!state?.has_workspace || !hasConfiguredProvider) && view !== "settings" && view !== "about"
+          ? "onboarding"
+          : view;
 
   // Check vault status and wait for unlock
   useEffect(() => {
@@ -156,11 +163,15 @@ function App() {
           const status: VaultStatus = await getVaultStatus();
           if (status === "unlocked") {
             setVaultUnlocked(true);
+            // Refresh state to get updated has_key status now that vault is unlocked
+            await refreshAppState();
             return;
           }
           // Also check the global flag set by splash screen
           if (window.__vaultUnlocked) {
             setVaultUnlocked(true);
+            // Refresh state to get updated has_key status now that vault is unlocked
+            await refreshAppState();
             return;
           }
         } catch (e) {
@@ -229,13 +240,14 @@ function App() {
     }
   }, []);
 
+  // Check vault status and wait for unlock
   useEffect(() => {
     if (vaultUnlocked) {
       loadUserProjects();
     }
   }, [vaultUnlocked, loadUserProjects]);
 
-  const handleSidecarReady = () => {
+  const handleSidecarReady = useCallback(() => {
     setSidecarReady(true);
     // Navigate to appropriate view
     if (state?.has_workspace) {
@@ -243,7 +255,7 @@ function App() {
     } else {
       setView("onboarding");
     }
-  };
+  }, [state?.has_workspace]);
 
   const handleSwitchProject = async (projectId: string) => {
     setProjectSwitcherLoading(true);
@@ -516,99 +528,97 @@ function App() {
   return (
     <div className="flex h-screen bg-background">
       {/* Icon Sidebar */}
-      <motion.aside
-        className="flex w-16 flex-col items-center border-r border-border bg-surface py-4 z-20"
-        initial={{ x: -64 }}
-        animate={{ x: 0 }}
-        transition={{ duration: 0.3 }}
-      >
-        {/* Brand mark */}
-        <div className="mb-8">
-          <BrandMark size="md" />
-        </div>
+      {effectiveView !== "onboarding" && effectiveView !== "sidecar-setup" && (
+        <motion.aside
+          className="flex w-16 flex-col items-center border-r border-border bg-surface py-4 z-20"
+          initial={{ x: -64 }}
+          animate={{ x: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          {/* Brand mark */}
+          <div className="mb-8">
+            <BrandMark size="md" />
+          </div>
 
-        {/* Navigation */}
-        <nav className="flex flex-1 flex-col items-center gap-2">
-          {/* Toggle sidebar button */}
-          <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
-            title={sidebarOpen ? "Hide history" : "Show history"}
-          >
-            {sidebarOpen ? (
-              <PanelLeftClose className="h-5 w-5" />
-            ) : (
-              <PanelLeft className="h-5 w-5" />
-            )}
-          </button>
-
-          <button
-            onClick={() => setView("chat")}
-            className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-              effectiveView === "chat"
-                ? "bg-primary/20 text-primary"
-                : "text-text-muted hover:bg-surface-elevated hover:text-text"
-            }`}
-            title="Chat"
-          >
-            <MessageSquare className="h-5 w-5" />
-          </button>
-          <button
-            onClick={() => setView("settings")}
-            className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-              effectiveView === "settings"
-                ? "bg-primary/20 text-primary"
-                : "text-text-muted hover:bg-surface-elevated hover:text-text"
-            }`}
-            title="Settings"
-          >
-            <SettingsIcon className="h-5 w-5" />
-          </button>
-
-          {/* Theme quick toggle */}
-          <button
-            onClick={() => cycleTheme()}
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
-            title="Switch theme"
-          >
-            <Palette className="h-5 w-5" />
-          </button>
-          <button
-            onClick={() => setView("about")}
-            className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-              effectiveView === "about"
-                ? "bg-primary/20 text-primary"
-                : "text-text-muted hover:bg-surface-elevated hover:text-text"
-            }`}
-            title="About"
-          >
-            <Info className="h-5 w-5" />
-          </button>
-
-          {/* Task sidebar toggle - visible in Plan Mode or when tasks exist */}
-          {(usePlanMode || todosData.todos.length > 0) && (
+          {/* Navigation */}
+          <nav className="flex flex-1 flex-col items-center gap-2">
+            {/* Toggle sidebar button */}
             <button
-              onClick={() => setTaskSidebarOpen(!taskSidebarOpen)}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                taskSidebarOpen
-                  ? "bg-primary/20 text-primary"
-                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
-              }`}
-              title="Tasks"
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="flex h-10 w-10 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+              title={sidebarOpen ? "Hide history" : "Show history"}
             >
-              <ListTodo className="h-5 w-5" />
-              {todosData.todos.length > 0 && (
-                <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-primary" />
+              {sidebarOpen ? (
+                <PanelLeftClose className="h-5 w-5" />
+              ) : (
+                <PanelLeft className="h-5 w-5" />
               )}
             </button>
-          )}
-        </nav>
 
-        {/* Security indicator */}
-        <div className="mt-auto" title="Zero-trust security enabled">
-          <Shield className="h-4 w-4 text-success" />
-        </div>
-      </motion.aside>
+            <button
+              onClick={() => setView("chat")}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "chat"
+                ? "bg-primary/20 text-primary"
+                : "text-text-muted hover:bg-surface-elevated hover:text-text"
+                }`}
+              title="Chat"
+            >
+              <MessageSquare className="h-5 w-5" />
+            </button>
+            <button
+              onClick={() => setView("settings")}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "settings"
+                ? "bg-primary/20 text-primary"
+                : "text-text-muted hover:bg-surface-elevated hover:text-text"
+                }`}
+              title="Settings"
+            >
+              <SettingsIcon className="h-5 w-5" />
+            </button>
+
+            {/* Theme quick toggle */}
+            <button
+              onClick={() => cycleTheme()}
+              className="flex h-10 w-10 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+              title="Switch theme"
+            >
+              <Palette className="h-5 w-5" />
+            </button>
+            <button
+              onClick={() => setView("about")}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "about"
+                ? "bg-primary/20 text-primary"
+                : "text-text-muted hover:bg-surface-elevated hover:text-text"
+                }`}
+              title="About"
+            >
+              <Info className="h-5 w-5" />
+            </button>
+
+            {/* Task sidebar toggle - visible in Plan Mode or when tasks exist */}
+            {(usePlanMode || todosData.todos.length > 0) && (
+              <button
+                onClick={() => setTaskSidebarOpen(!taskSidebarOpen)}
+                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${taskSidebarOpen
+                  ? "bg-primary/20 text-primary"
+                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
+                  }`}
+                title="Tasks"
+              >
+                <ListTodo className="h-5 w-5" />
+                {todosData.todos.length > 0 && (
+                  <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-primary" />
+                )}
+              </button>
+            )}
+          </nav>
+
+          {/* Security indicator */}
+          <div className="mt-auto" title="Zero-trust security enabled">
+            <Shield className="h-4 w-4 text-success" />
+          </div>
+        </motion.aside>
+      )}
 
       {/* Tabbed Sidebar (Sessions / Files) */}
       {effectiveView === "chat" && (
@@ -707,8 +717,13 @@ function App() {
           >
             <SidecarDownloader onComplete={handleSidecarReady} />
           </motion.div>
-        ) : effectiveView === "onboarding" && !state?.has_workspace ? (
-          <OnboardingView key="onboarding" onComplete={() => setView("settings")} />
+        ) : effectiveView === "onboarding" ? (
+          <OnboardingView
+            key="onboarding"
+            onComplete={() => setView("settings")}
+            hasConfiguredProvider={hasConfiguredProvider}
+            hasWorkspace={!!state?.has_workspace}
+          />
         ) : (
           <>
             {/* Chat Area */}
@@ -732,6 +747,8 @@ function App() {
                 pendingTasks={todosData.pending}
                 fileToAttach={fileToAttach}
                 onFileAttached={() => setFileToAttach(null)}
+                hasConfiguredProvider={hasConfiguredProvider}
+                onOpenSettings={() => setView("settings")}
                 onFileOpen={(filePath) => {
                   // Resolve relative paths to absolute using workspace path
                   const workspacePath = activeProject?.path || state?.workspace_path;
@@ -764,7 +781,11 @@ function App() {
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.8, ease: "easeOut" }}
                   >
-                    <Settings onClose={handleSettingsClose} onProjectChange={loadUserProjects} />
+                    <Settings
+                      onClose={handleSettingsClose}
+                      onProjectChange={loadUserProjects}
+                      onProviderChange={refreshAppState}
+                    />
                   </motion.div>
                 )}
                 {effectiveView === "about" && (
@@ -831,12 +852,14 @@ function App() {
 
 interface OnboardingViewProps {
   onComplete: () => void;
+  hasConfiguredProvider: boolean;
+  hasWorkspace: boolean;
 }
 
-function OnboardingView({ onComplete }: OnboardingViewProps) {
+function OnboardingView({ onComplete, hasConfiguredProvider, hasWorkspace }: OnboardingViewProps) {
   return (
     <motion.div
-      className="flex h-full flex-col items-center justify-center p-8"
+      className="flex h-full w-full flex-col items-center justify-center p-8"
       initial={{ opacity: 0, y: 50 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -50 }}
@@ -860,8 +883,7 @@ function OnboardingView({ onComplete }: OnboardingViewProps) {
           animate={{ opacity: 1 }}
           transition={{ delay: 0.4 }}
         >
-          Your local-first AI workspace. Let's get started by adding a project folder and
-          configuring your LLM provider.
+          Your local-first AI workspace. Let's get started by setting up your environment.
         </motion.p>
 
         <motion.div
@@ -870,13 +892,56 @@ function OnboardingView({ onComplete }: OnboardingViewProps) {
           animate={{ opacity: 1 }}
           transition={{ delay: 0.5 }}
         >
-          <div className="rounded-lg border border-border bg-surface p-4 text-left">
+          <div
+            className={cn(
+              "rounded-lg border p-4 text-left transition-colors",
+              hasWorkspace ? "border-border bg-surface" : "border-primary/50 bg-primary/5"
+            )}
+          >
             <div className="flex items-start gap-3">
-              <FolderOpen className="mt-0.5 h-5 w-5 text-primary" />
+              <FolderOpen
+                className={cn("mt-0.5 h-5 w-5", hasWorkspace ? "text-success" : "text-primary")}
+              />
               <div>
-                <p className="font-medium text-text">Add a project</p>
+                <p className="font-medium text-text">
+                  1. Add a project
+                  {hasWorkspace && (
+                    <span className="ml-2 text-xs font-normal text-success">(Completed)</span>
+                  )}
+                </p>
                 <p className="text-sm text-text-muted">
                   Add project folders to work with. Each project is an independent workspace.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div
+            className={cn(
+              "rounded-lg border p-4 text-left transition-colors",
+              hasConfiguredProvider
+                ? "border-border bg-surface"
+                : "border-primary/50 bg-primary/5"
+            )}
+          >
+            <div className="flex items-start gap-3">
+              <MessageSquare
+                className={cn(
+                  "mt-0.5 h-5 w-5",
+                  hasConfiguredProvider ? "text-success" : "text-primary"
+                )}
+              />
+              <div>
+                <p className="font-medium text-text">
+                  2. Configure AI Provider
+                  {hasConfiguredProvider && (
+                    <span className="ml-2 text-xs font-normal text-success">(Configured)</span>
+                  )}
+                </p>
+                <p className="text-sm text-text-muted">
+                  {hasConfiguredProvider
+                    ? "You are ready to chat!"
+                    : "Connect an LLM provider (OpenAI, Anthropic, OpenRouter) to start chatting."}
                 </p>
               </div>
             </div>
@@ -897,7 +962,7 @@ function OnboardingView({ onComplete }: OnboardingViewProps) {
           <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.98 }}>
             <Button onClick={onComplete} size="lg" className="w-full">
               <SettingsIcon className="mr-2 h-4 w-4" />
-              Open Settings
+              {hasConfiguredProvider ? "Open Settings" : "Open Settings to Configure"}
             </Button>
           </motion.div>
         </motion.div>

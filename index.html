@@ -1,491 +1,580 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tandem</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Rubik:ital,wght@0,300..900;1,300..900&display=swap"
-      rel="stylesheet"
-    />
-    <style>
-      /* Immediate loading screen - shows before React loads */
-      /* Scoped to splash screen only to avoid conflicts with app styles */
-      #splash-screen {
-        /* These are set at runtime by `src/vault-splash.ts` based on saved theme. */
-        --matrix-green: #00ff88;
-        --matrix-green-rgb: 0, 255, 136;
-        --matrix-bg: #000000;
-        --matrix-bg-rgb: 0, 0, 0;
-        --matrix-text: #ffffff;
-        --matrix-text-rgb: 255, 255, 255;
-        --error-red: #ff4444;
-      }
-      
-      #splash-screen {
-        position: fixed;
-        inset: 0;
-        z-index: 9999;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        background: var(--matrix-bg);
-        transition: opacity 0.5s ease-out;
-        font-family: 'JetBrains Mono', 'Courier New', monospace;
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
-      
-      #splash-screen * {
-        box-sizing: border-box;
-      }
-      
-      #splash-screen.hidden {
-        opacity: 0;
-        pointer-events: none;
-      }
-      
-      /* Matrix rain canvas */
-      #matrix-canvas {
-        position: absolute;
-        inset: 0;
-        opacity: 0.7;
-      }
-      
-      /* Center content */
-      .splash-content {
-        position: relative;
-        z-index: 10;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 2rem;
-      }
-      
-      .splash-title {
-        font-family: 'Rubik', sans-serif;
-        font-size: 3.5rem;
-        font-weight: 900;
-        letter-spacing: 0.2em;
-        margin-right: -0.2em; /* Offset for letter-spacing to ensure true centering */
-        color: var(--matrix-green);
-        text-shadow: 
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tandem</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:ital,wght@0,300..900;1,300..900&display=swap"
+    rel="stylesheet" />
+  <style>
+    /* Immediate loading screen - shows before React loads */
+    /* Scoped to splash screen only to avoid conflicts with app styles */
+    #splash-screen {
+      /* These are set at runtime by `src/vault-splash.ts` based on saved theme. */
+      --matrix-green: #00ff88;
+      --matrix-green-rgb: 0, 255, 136;
+      --matrix-bg: #000000;
+      --matrix-bg-rgb: 0, 0, 0;
+      --matrix-text: #ffffff;
+      --matrix-text-rgb: 255, 255, 255;
+      --error-red: #ff4444;
+    }
+
+    #splash-screen {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--matrix-bg);
+      transition: opacity 0.5s ease-out;
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      opacity: 0;
+      /* Hidden initially until theme logic runs */
+    }
+
+    #splash-screen * {
+      box-sizing: border-box;
+    }
+
+    #splash-screen.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Matrix rain canvas */
+    #matrix-canvas {
+      position: absolute;
+      inset: 0;
+      opacity: 0.7;
+    }
+
+    /* Center content */
+    .splash-content {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2rem;
+    }
+
+    .splash-title {
+      font-family: 'Rubik', sans-serif;
+      font-size: 3.5rem;
+      font-weight: 900;
+      letter-spacing: 0.2em;
+      margin-right: -0.2em;
+      /* Offset for letter-spacing to ensure true centering */
+      color: var(--matrix-green);
+      text-shadow:
+        0 0 20px rgba(var(--matrix-green-rgb), 0.5),
+        0 0 40px rgba(var(--matrix-green-rgb), 0.3),
+        0 0 60px rgba(var(--matrix-green-rgb), 0.1);
+      animation: glow 2s ease-in-out infinite alternate;
+    }
+
+    @keyframes glow {
+      from {
+        text-shadow:
           0 0 20px rgba(var(--matrix-green-rgb), 0.5),
-          0 0 40px rgba(var(--matrix-green-rgb), 0.3),
-          0 0 60px rgba(var(--matrix-green-rgb), 0.1);
-        animation: glow 2s ease-in-out infinite alternate;
-      }
-      
-      @keyframes glow {
-        from {
-          text-shadow: 
-            0 0 20px rgba(var(--matrix-green-rgb), 0.5),
-            0 0 40px rgba(var(--matrix-green-rgb), 0.3);
-        }
-        to {
-          text-shadow: 
-            0 0 30px rgba(var(--matrix-green-rgb), 0.8),
-            0 0 60px rgba(var(--matrix-green-rgb), 0.5),
-            0 0 80px rgba(var(--matrix-green-rgb), 0.3);
-        }
-      }
-      
-      .splash-subtitle {
-        font-family: 'Rubik', sans-serif;
-        font-size: 0.75rem;
-        letter-spacing: 0.3em;
-        margin-right: -0.3em; /* Offset for letter-spacing */
-        text-transform: uppercase;
-        color: rgba(var(--matrix-green-rgb), 0.5);
-      }
-      
-      /* Spinner */
-      .spinner-container {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 1rem;
-      }
-      
-      .spinner {
-        position: relative;
-        width: 60px;
-        height: 60px;
-      }
-      
-      .spinner-ring {
-        position: absolute;
-        inset: 0;
-        border-radius: 50%;
-        border: 2px solid transparent;
-      }
-      
-      .spinner-ring-1 {
-        border-top-color: var(--matrix-green);
-        animation: spin 1s linear infinite;
-      }
-      
-      .spinner-ring-2 {
-        inset: 6px;
-        border-bottom-color: rgba(var(--matrix-green-rgb), 0.6);
-        animation: spin 1.5s linear infinite reverse;
-      }
-      
-      .spinner-ring-3 {
-        inset: 12px;
-        border-left-color: rgba(var(--matrix-green-rgb), 0.3);
-        animation: spin 2s linear infinite;
-      }
-      
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
-      
-      .loading-text {
-        font-size: 0.875rem;
-        color: var(--matrix-green);
-        opacity: 0.8;
-      }
-      
-      .loading-dots::after {
-        content: '';
-        animation: dots 1.5s steps(4, end) infinite;
-      }
-      
-      @keyframes dots {
-        0%, 20% { content: ''; }
-        40% { content: '.'; }
-        60% { content: '..'; }
-        80%, 100% { content: '...'; }
-      }
-      
-      /* Progress bars */
-      .progress-bars {
-        display: flex;
-        gap: 0.5rem;
-        margin-top: 1rem;
-      }
-      
-      .progress-bar {
-        width: 2rem;
-        height: 4px;
-        background: rgba(var(--matrix-green-rgb), 0.2);
-        border-radius: 2px;
-        overflow: hidden;
-      }
-      
-      .progress-bar::after {
-        content: '';
-        display: block;
-        height: 100%;
-        background: var(--matrix-green);
-        animation: progress 1.5s ease-in-out infinite;
-      }
-      
-      .progress-bar:nth-child(1)::after { animation-delay: 0s; }
-      .progress-bar:nth-child(2)::after { animation-delay: 0.2s; }
-      .progress-bar:nth-child(3)::after { animation-delay: 0.4s; }
-      .progress-bar:nth-child(4)::after { animation-delay: 0.6s; }
-      .progress-bar:nth-child(5)::after { animation-delay: 0.8s; }
-      
-      @keyframes progress {
-        0%, 100% { 
-          width: 30%;
-          opacity: 0.3;
-        }
-        50% { 
-          width: 100%;
-          opacity: 1;
-        }
-      }
-      
-      /* Corner decorations */
-      .corner-text {
-        position: absolute;
-        font-size: 0.65rem;
-        color: rgba(var(--matrix-green-rgb), 0.4);
-        z-index: 10;
-      }
-      
-      .corner-tl { top: 1rem; left: 1rem; }
-      .corner-tr { top: 1rem; right: 1rem; text-align: right; }
-      .corner-bl { bottom: 1rem; left: 1rem; }
-      .corner-br { bottom: 1rem; right: 1rem; }
-      
-      .blink {
-        animation: blink 2s ease-in-out infinite;
-      }
-      
-      @keyframes blink {
-        0%, 100% { opacity: 0.4; }
-        50% { opacity: 1; }
+          0 0 40px rgba(var(--matrix-green-rgb), 0.3);
       }
 
-      /* ============================================ */
-      /* PIN Entry UI                                 */
-      /* ============================================ */
-      
-      .pin-container {
-        display: none;
-        flex-direction: column;
-        align-items: center;
-        gap: 1.5rem;
-        padding: 2rem;
-        min-width: 320px;
-        max-width: 400px;
+      to {
+        text-shadow:
+          0 0 30px rgba(var(--matrix-green-rgb), 0.8),
+          0 0 60px rgba(var(--matrix-green-rgb), 0.5),
+          0 0 80px rgba(var(--matrix-green-rgb), 0.3);
+      }
+    }
+
+    .splash-subtitle {
+      font-family: 'Rubik', sans-serif;
+      font-size: 0.75rem;
+      letter-spacing: 0.3em;
+      margin-right: -0.3em;
+      /* Offset for letter-spacing */
+      text-transform: uppercase;
+      color: rgba(var(--matrix-green-rgb), 0.5);
+    }
+
+    /* Spinner */
+    .spinner-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .spinner {
+      position: relative;
+      width: 60px;
+      height: 60px;
+    }
+
+    .spinner-ring {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 2px solid transparent;
+    }
+
+    .spinner-ring-1 {
+      border-top-color: var(--matrix-green);
+      animation: spin 1s linear infinite;
+    }
+
+    .spinner-ring-2 {
+      inset: 6px;
+      border-bottom-color: rgba(var(--matrix-green-rgb), 0.6);
+      animation: spin 1.5s linear infinite reverse;
+    }
+
+    .spinner-ring-3 {
+      inset: 12px;
+      border-left-color: rgba(var(--matrix-green-rgb), 0.3);
+      animation: spin 2s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .loading-text {
+      font-size: 0.875rem;
+      color: var(--matrix-green);
+      opacity: 0.8;
+    }
+
+    .loading-dots::after {
+      content: '';
+      animation: dots 1.5s steps(4, end) infinite;
+    }
+
+    @keyframes dots {
+
+      0%,
+      20% {
+        content: '';
+      }
+
+      40% {
+        content: '.';
+      }
+
+      60% {
+        content: '..';
+      }
+
+      80%,
+      100% {
+        content: '...';
+      }
+    }
+
+    /* Progress bars */
+    .progress-bars {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+
+    .progress-bar {
+      width: 2rem;
+      height: 4px;
+      background: rgba(var(--matrix-green-rgb), 0.2);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-bar::after {
+      content: '';
+      display: block;
+      height: 100%;
+      background: var(--matrix-green);
+      animation: progress 1.5s ease-in-out infinite;
+    }
+
+    .progress-bar:nth-child(1)::after {
+      animation-delay: 0s;
+    }
+
+    .progress-bar:nth-child(2)::after {
+      animation-delay: 0.2s;
+    }
+
+    .progress-bar:nth-child(3)::after {
+      animation-delay: 0.4s;
+    }
+
+    .progress-bar:nth-child(4)::after {
+      animation-delay: 0.6s;
+    }
+
+    .progress-bar:nth-child(5)::after {
+      animation-delay: 0.8s;
+    }
+
+    @keyframes progress {
+
+      0%,
+      100% {
+        width: 30%;
+        opacity: 0.3;
+      }
+
+      50% {
         width: 100%;
-        background: rgba(var(--matrix-bg-rgb), 0.8);
-        border: 1px solid rgba(var(--matrix-green-rgb), 0.3);
-        border-radius: 16px;
-        backdrop-filter: blur(10px);
-        box-shadow: 0 0 40px rgba(var(--matrix-green-rgb), 0.1);
+        opacity: 1;
       }
-      
-      .pin-container.visible {
-        display: flex;
-        animation: fadeIn 0.3s ease-out;
-      }
-      
-      @keyframes fadeIn {
-        from { opacity: 0; transform: scale(0.95); }
-        to { opacity: 1; transform: scale(1); }
-      }
-      
-      .pin-title {
-        font-family: 'Rubik', sans-serif;
-        font-size: 1rem;
-        font-weight: 700;
-        color: var(--matrix-green);
-        text-transform: uppercase;
-        letter-spacing: 0.15em;
-        margin-right: -0.15em; /* Offset for centering */
-        margin-bottom: 0;
-        margin-top: 0;
-        min-height: 1.2em;
-        text-align: center;
-      }
-      
-      .pin-subtitle {
-        font-family: 'Rubik', sans-serif;
-        font-size: 0.7rem;
-        color: rgba(var(--matrix-green-rgb), 0.5);
-        margin: -0.5rem 0 0 0;
-        min-height: 1em;
-        text-align: center;
-      }
-      
-      /* PIN dots display */
-      .pin-dots {
-        display: flex;
-        gap: 0.75rem;
-        padding: 1rem 1.5rem;
-        background: rgba(0, 0, 0, 0.5);
-        border: 1px solid rgba(var(--matrix-green-rgb), 0.2);
-        border-radius: 8px;
-      }
-      
-      .pin-dot {
-        width: 16px;
-        height: 16px;
-        border-radius: 50%;
-        border: 2px solid rgba(var(--matrix-green-rgb), 0.4);
-        background: transparent;
-        transition: all 0.15s ease;
-      }
-      
-      .pin-dot.filled {
-        background: var(--matrix-green);
-        border-color: var(--matrix-green);
-        box-shadow: 0 0 10px rgba(var(--matrix-green-rgb), 0.5);
-      }
-      
-      .pin-dot.error {
-        border-color: var(--error-red);
-        animation: shake 0.3s ease;
-      }
-      
-      .pin-dot.filled.error {
-        background: var(--error-red);
-        box-shadow: 0 0 10px rgba(255, 68, 68, 0.5);
-      }
-      
-      @keyframes shake {
-        0%, 100% { transform: translateX(0); }
-        20%, 60% { transform: translateX(-5px); }
-        40%, 80% { transform: translateX(5px); }
-      }
-      
-      /* Numeric keypad */
-      .pin-keypad {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 0.75rem;
-      }
-      
-      .pin-key {
-        width: 60px;
-        height: 60px;
-        border: 1px solid rgba(var(--matrix-green-rgb), 0.3);
-        border-radius: 12px;
-        background: rgba(var(--matrix-bg-rgb), 0.6);
-        color: var(--matrix-green);
-        font-size: 1.5rem;
-        font-family: 'JetBrains Mono', monospace;
-        cursor: pointer;
-        transition: all 0.15s ease;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      
-      .pin-key:hover {
-        background: rgba(var(--matrix-green-rgb), 0.1);
-        border-color: var(--matrix-green);
-        box-shadow: 0 0 15px rgba(var(--matrix-green-rgb), 0.2);
-      }
-      
-      .pin-key:active {
-        transform: scale(0.95);
-        background: rgba(var(--matrix-green-rgb), 0.2);
-      }
-      
-      .pin-key.action {
-        font-size: 0.75rem;
-        letter-spacing: 0.05em;
-      }
-      
-      .pin-key.delete {
-        color: var(--error-red);
-        border-color: rgba(255, 68, 68, 0.3);
-      }
-      
-      .pin-key.delete:hover {
-        border-color: var(--error-red);
-        box-shadow: 0 0 15px rgba(255, 68, 68, 0.2);
-      }
-      
-      /* Error message */
-      .pin-error {
-        color: var(--error-red);
-        font-size: 0.75rem;
-        min-height: 1.2em;
-        text-align: center;
-      }
-      
-      /* Confirm PIN section (for create mode) */
-      .pin-confirm-hint {
-        font-size: 0.7rem;
-        color: rgba(var(--matrix-green-rgb), 0.6);
-        text-align: center;
-      }
-      
-      /* Loading state for PIN submission */
-      .pin-container.loading .pin-keypad {
-        opacity: 0.5;
-        pointer-events: none;
-      }
-    </style>
-  </head>
+    }
 
-  <body style="margin: 0; padding: 0; background: #000; overflow: hidden;">
-    <!-- Splash screen that shows immediately -->
-    <div id="splash-screen" style="position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: var(--matrix-bg);">
-      <canvas id="matrix-canvas" style="position: absolute; inset: 0;"></canvas>
-      
-      <div class="splash-content" style="position: relative; z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 2rem;">
-        <div style="text-align: center;">
-          <h1 class="splash-title">TANDEM</h1>
-          <p class="splash-subtitle" style="margin: 0.5rem 0 0 0;">AI Workspace</p>
-        </div>
-        
-        <!-- Loading spinner (shown while checking vault status) -->
-        <div id="loading-section" class="spinner-container" style="display: flex; flex-direction: column; align-items: center; gap: 1rem;">
-          <div class="spinner" style="position: relative; width: 60px; height: 60px;">
-            <div class="spinner-ring spinner-ring-1" style="position: absolute; inset: 0; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--matrix-green);"></div>
-            <div class="spinner-ring spinner-ring-2" style="position: absolute; inset: 6px; border-radius: 50%; border: 2px solid transparent; border-bottom-color: rgba(var(--matrix-green-rgb), 0.6);"></div>
-            <div class="spinner-ring spinner-ring-3" style="position: absolute; inset: 12px; border-radius: 50%; border: 2px solid transparent; border-left-color: rgba(var(--matrix-green-rgb), 0.3);"></div>
+    /* Corner decorations */
+    .corner-text {
+      position: absolute;
+      font-size: 0.65rem;
+      color: rgba(var(--matrix-green-rgb), 0.4);
+      z-index: 10;
+    }
+
+    .corner-tl {
+      top: 1rem;
+      left: 1rem;
+    }
+
+    .corner-tr {
+      top: 1rem;
+      right: 1rem;
+      text-align: right;
+    }
+
+    .corner-bl {
+      bottom: 1rem;
+      left: 1rem;
+    }
+
+    .corner-br {
+      bottom: 1rem;
+      right: 1rem;
+    }
+
+    .blink {
+      animation: blink 2s ease-in-out infinite;
+    }
+
+    @keyframes blink {
+
+      0%,
+      100% {
+        opacity: 0.4;
+      }
+
+      50% {
+        opacity: 1;
+      }
+    }
+
+    /* ============================================ */
+    /* PIN Entry UI                                 */
+    /* ============================================ */
+
+    .pin-container {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 1.5rem;
+      padding: 2rem;
+      min-width: 320px;
+      max-width: 400px;
+      width: 100%;
+      background: rgba(var(--matrix-bg-rgb), 0.8);
+      border: 1px solid rgba(var(--matrix-green-rgb), 0.3);
+      border-radius: 16px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 0 40px rgba(var(--matrix-green-rgb), 0.1);
+    }
+
+    .pin-container.visible {
+      display: flex;
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: scale(0.95);
+      }
+
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    .pin-title {
+      font-family: 'Rubik', sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--matrix-green);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      margin-right: -0.15em;
+      /* Offset for centering */
+      margin-bottom: 0;
+      margin-top: 0;
+      min-height: 1.2em;
+      text-align: center;
+    }
+
+    .pin-subtitle {
+      font-family: 'Rubik', sans-serif;
+      font-size: 0.7rem;
+      color: rgba(var(--matrix-green-rgb), 0.5);
+      margin: -0.5rem 0 0 0;
+      min-height: 1em;
+      text-align: center;
+    }
+
+    /* PIN dots display */
+    .pin-dots {
+      display: flex;
+      gap: 0.75rem;
+      padding: 1rem 1.5rem;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(var(--matrix-green-rgb), 0.2);
+      border-radius: 8px;
+    }
+
+    .pin-dot {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 2px solid rgba(var(--matrix-green-rgb), 0.4);
+      background: transparent;
+      transition: all 0.15s ease;
+    }
+
+    .pin-dot.filled {
+      background: var(--matrix-green);
+      border-color: var(--matrix-green);
+      box-shadow: 0 0 10px rgba(var(--matrix-green-rgb), 0.5);
+    }
+
+    .pin-dot.error {
+      border-color: var(--error-red);
+      animation: shake 0.3s ease;
+    }
+
+    .pin-dot.filled.error {
+      background: var(--error-red);
+      box-shadow: 0 0 10px rgba(255, 68, 68, 0.5);
+    }
+
+    @keyframes shake {
+
+      0%,
+      100% {
+        transform: translateX(0);
+      }
+
+      20%,
+      60% {
+        transform: translateX(-5px);
+      }
+
+      40%,
+      80% {
+        transform: translateX(5px);
+      }
+    }
+
+    /* Numeric keypad */
+    .pin-keypad {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.75rem;
+    }
+
+    .pin-key {
+      width: 60px;
+      height: 60px;
+      border: 1px solid rgba(var(--matrix-green-rgb), 0.3);
+      border-radius: 12px;
+      background: rgba(var(--matrix-bg-rgb), 0.6);
+      color: var(--matrix-green);
+      font-size: 1.5rem;
+      font-family: 'JetBrains Mono', monospace;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .pin-key:hover {
+      background: rgba(var(--matrix-green-rgb), 0.1);
+      border-color: var(--matrix-green);
+      box-shadow: 0 0 15px rgba(var(--matrix-green-rgb), 0.2);
+    }
+
+    .pin-key:active {
+      transform: scale(0.95);
+      background: rgba(var(--matrix-green-rgb), 0.2);
+    }
+
+    .pin-key.action {
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+    }
+
+    .pin-key.delete {
+      color: var(--error-red);
+      border-color: rgba(255, 68, 68, 0.3);
+    }
+
+    .pin-key.delete:hover {
+      border-color: var(--error-red);
+      box-shadow: 0 0 15px rgba(255, 68, 68, 0.2);
+    }
+
+    /* Error message */
+    .pin-error {
+      color: var(--error-red);
+      font-size: 0.75rem;
+      min-height: 1.2em;
+      text-align: center;
+    }
+
+    /* Confirm PIN section (for create mode) */
+    .pin-confirm-hint {
+      font-size: 0.7rem;
+      color: rgba(var(--matrix-green-rgb), 0.6);
+      text-align: center;
+    }
+
+    /* Loading state for PIN submission */
+    .pin-container.loading .pin-keypad {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+  </style>
+</head>
+
+<body style="margin: 0; padding: 0; background: #000; overflow: hidden;">
+  <!-- Splash screen that shows immediately -->
+  <div id="splash-screen"
+    style="position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: var(--matrix-bg); opacity: 0;">
+    <canvas id="matrix-canvas" style="position: absolute; inset: 0;"></canvas>
+
+    <div class="splash-content"
+      style="position: relative; z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 2rem;">
+      <div style="text-align: center;">
+        <h1 class="splash-title">TANDEM</h1>
+        <p class="splash-subtitle" style="margin: 0.5rem 0 0 0;">AI Workspace</p>
+      </div>
+
+      <!-- Loading spinner (shown while checking vault status) -->
+      <div id="loading-section" class="spinner-container"
+        style="display: flex; flex-direction: column; align-items: center; gap: 1rem;">
+        <div class="spinner" style="position: relative; width: 60px; height: 60px;">
+          <div class="spinner-ring spinner-ring-1"
+            style="position: absolute; inset: 0; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--matrix-green);">
           </div>
-          <p id="loading-text" class="loading-text" style="font-size: 0.875rem; color: var(--matrix-green); opacity: 0.8; margin: 0; font-family: 'JetBrains Mono', monospace;">Initializing<span class="loading-dots"></span></p>
-        </div>
-        
-        <!-- PIN Entry UI (shown when vault needs PIN) -->
-        <div id="pin-section" class="pin-container">
-          <h2 id="pin-title" class="pin-title">Enter Your PIN</h2>
-          <p id="pin-subtitle" class="pin-subtitle">Unlock your secure vault</p>
-          
-          <!-- PIN dots -->
-          <div id="pin-dots" class="pin-dots">
-            <div class="pin-dot"></div>
-            <div class="pin-dot"></div>
-            <div class="pin-dot"></div>
-            <div class="pin-dot"></div>
+          <div class="spinner-ring spinner-ring-2"
+            style="position: absolute; inset: 6px; border-radius: 50%; border: 2px solid transparent; border-bottom-color: rgba(var(--matrix-green-rgb), 0.6);">
           </div>
-          
-          <!-- Error message -->
-          <p id="pin-error" class="pin-error"></p>
-          
-          <!-- Confirm hint (for create mode) -->
-          <p id="pin-confirm-hint" class="pin-confirm-hint" style="display: none;"></p>
-          
-          <!-- Numeric keypad -->
-          <div class="pin-keypad">
-            <button class="pin-key" data-key="1">1</button>
-            <button class="pin-key" data-key="2">2</button>
-            <button class="pin-key" data-key="3">3</button>
-            <button class="pin-key" data-key="4">4</button>
-            <button class="pin-key" data-key="5">5</button>
-            <button class="pin-key" data-key="6">6</button>
-            <button class="pin-key" data-key="7">7</button>
-            <button class="pin-key" data-key="8">8</button>
-            <button class="pin-key" data-key="9">9</button>
-            <button class="pin-key action" data-key="clear">CLR</button>
-            <button class="pin-key" data-key="0">0</button>
-            <button class="pin-key action delete" data-key="delete">DEL</button>
+          <div class="spinner-ring spinner-ring-3"
+            style="position: absolute; inset: 12px; border-radius: 50%; border: 2px solid transparent; border-left-color: rgba(var(--matrix-green-rgb), 0.3);">
           </div>
         </div>
-        
-        <div class="progress-bars">
-          <div class="progress-bar"></div>
-          <div class="progress-bar"></div>
-          <div class="progress-bar"></div>
-          <div class="progress-bar"></div>
-          <div class="progress-bar"></div>
+        <p id="loading-text" class="loading-text"
+          style="font-size: 0.875rem; color: var(--matrix-green); opacity: 0.8; margin: 0; font-family: 'JetBrains Mono', monospace;">
+          Initializing<span class="loading-dots"></span></p>
+      </div>
+
+      <!-- PIN Entry UI (shown when vault needs PIN) -->
+      <div id="pin-section" class="pin-container">
+        <h2 id="pin-title" class="pin-title">Enter Your PIN</h2>
+        <p id="pin-subtitle" class="pin-subtitle">Unlock your secure vault</p>
+
+        <!-- PIN dots -->
+        <div id="pin-dots" class="pin-dots">
+          <div class="pin-dot"></div>
+          <div class="pin-dot"></div>
+          <div class="pin-dot"></div>
+          <div class="pin-dot"></div>
+        </div>
+
+        <!-- Error message -->
+        <p id="pin-error" class="pin-error"></p>
+
+        <!-- Confirm hint (for create mode) -->
+        <p id="pin-confirm-hint" class="pin-confirm-hint" style="display: none;"></p>
+
+        <!-- Numeric keypad -->
+        <div class="pin-keypad">
+          <button class="pin-key" data-key="1">1</button>
+          <button class="pin-key" data-key="2">2</button>
+          <button class="pin-key" data-key="3">3</button>
+          <button class="pin-key" data-key="4">4</button>
+          <button class="pin-key" data-key="5">5</button>
+          <button class="pin-key" data-key="6">6</button>
+          <button class="pin-key" data-key="7">7</button>
+          <button class="pin-key" data-key="8">8</button>
+          <button class="pin-key" data-key="9">9</button>
+          <button class="pin-key action" data-key="clear">CLR</button>
+          <button class="pin-key" data-key="0">0</button>
+          <button class="pin-key action delete" data-key="delete">DEL</button>
         </div>
       </div>
-      
-      <div class="corner-text corner-tl">
-        <div>SYS.INIT</div>
-        <div>v0.1.0</div>
+
+      <div class="progress-bars">
+        <div class="progress-bar"></div>
+        <div class="progress-bar"></div>
+        <div class="progress-bar"></div>
+        <div class="progress-bar"></div>
+        <div class="progress-bar"></div>
       </div>
-      <div class="corner-text corner-tr">
-        <div>SECURE</div>
-        <div>MODE</div>
-      </div>
-      <div class="corner-text corner-bl blink">● ZERO-TRUST ACTIVE</div>
-      <div class="corner-text corner-br">LOCAL-FIRST</div>
     </div>
-    
-    <div id="root"></div>
-    
-    <script>
-      // Track when splash screen started (before React loads). The themed matrix animation
-      // itself is started in `src/vault-splash.ts` so it can match the saved theme.
-      window.__splashStartedAt = Date.now();
-      window.__vaultUnlocked = false;
-    </script>
-    
-    <!-- Vault PIN logic (runs as module to access Tauri APIs) -->
-    <script type="module" src="/src/vault-splash.ts"></script>
-    
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+
+    <div class="corner-text corner-tl">
+      <div>SYS.INIT</div>
+      <div>v0.1.0</div>
+    </div>
+    <div class="corner-text corner-tr">
+      <div>SECURE</div>
+      <div>MODE</div>
+    </div>
+    <div class="corner-text corner-bl blink">● ZERO-TRUST ACTIVE</div>
+    <div class="corner-text corner-br">LOCAL-FIRST</div>
+  </div>
+
+  <div id="root"></div>
+
+  <script>
+    // Track when splash screen started (before React loads). The themed matrix animation
+    // itself is started in `src/vault-splash.ts` so it can match the saved theme.
+    window.__splashStartedAt = Date.now();
+    window.__vaultUnlocked = false;
+  </script>
+
+  <!-- Vault PIN logic (runs as module to access Tauri APIs) -->
+  <script type="module" src="/src/vault-splash.ts"></script>
+
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
 </html>

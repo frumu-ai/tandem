@@ -85,6 +85,9 @@ function applySplashTheme() {
   if (textRgb) {
     splash.style.setProperty("--matrix-text-rgb", `${textRgb.r}, ${textRgb.g}, ${textRgb.b}`);
   }
+
+  // Reveal the splash screen now that theme is applied
+  splash.style.opacity = "1";
 }
 
 function startMatrixRain() {

@@ -38,9 +38,10 @@ import { open } from "@tauri-apps/plugin-dialog";
 interface SettingsProps {
   onClose?: () => void;
   onProjectChange?: () => void;
+  onProviderChange?: () => void; // Called when API keys are added/removed
 }
 
-export function Settings({ onClose, onProjectChange }: SettingsProps) {
+export function Settings({ onClose, onProjectChange, onProviderChange }: SettingsProps) {
   const [providers, setProviders] = useState<ProvidersConfig | null>(null);
   const [projects, setProjects] = useState<UserProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -104,37 +105,37 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
     // When enabling a provider, disable all others
     const updated = enabled
       ? {
-          openrouter: {
-            ...providers.openrouter,
-            enabled: provider === "openrouter",
-            default: provider === "openrouter",
-          },
-          opencode_zen: {
-            ...providers.opencode_zen,
-            enabled: provider === "opencode_zen",
-            default: provider === "opencode_zen",
-          },
-          anthropic: {
-            ...providers.anthropic,
-            enabled: provider === "anthropic",
-            default: provider === "anthropic",
-          },
-          openai: {
-            ...providers.openai,
-            enabled: provider === "openai",
-            default: provider === "openai",
-          },
-          ollama: {
-            ...providers.ollama,
-            enabled: provider === "ollama",
-            default: provider === "ollama",
-          },
-          custom: providers.custom,
-        }
+        openrouter: {
+          ...providers.openrouter,
+          enabled: provider === "openrouter",
+          default: provider === "openrouter",
+        },
+        opencode_zen: {
+          ...providers.opencode_zen,
+          enabled: provider === "opencode_zen",
+          default: provider === "opencode_zen",
+        },
+        anthropic: {
+          ...providers.anthropic,
+          enabled: provider === "anthropic",
+          default: provider === "anthropic",
+        },
+        openai: {
+          ...providers.openai,
+          enabled: provider === "openai",
+          default: provider === "openai",
+        },
+        ollama: {
+          ...providers.ollama,
+          enabled: provider === "ollama",
+          default: provider === "ollama",
+        },
+        custom: providers.custom,
+      }
       : {
-          ...providers,
-          [provider]: { ...providers[provider], enabled: false, default: false },
-        };
+        ...providers,
+        [provider]: { ...providers[provider], enabled: false, default: false },
+      };
 
     setProviders(updated);
     await setProvidersConfig(updated);
@@ -296,6 +297,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
           default: customEnabled,
           endpoint: customEndpoint,
           model: customModel || undefined,
+          has_key: false, // Custom provider key checking not implemented yet
         },
       ],
     };
@@ -330,6 +332,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
             default: true,
             endpoint: customEndpoint || "https://api.example.com/v1",
             model: customModel || undefined,
+            has_key: false, // Custom provider key checking not implemented yet
           },
         ],
       };
@@ -585,6 +588,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
                 onEnabledChange={(enabled) => handleProviderChange("openrouter", enabled)}
                 onModelChange={(model) => handleModelChange("openrouter", model)}
                 onSetDefault={() => handleSetDefault("openrouter")}
+                onKeyChange={onProviderChange}
                 docsUrl="https://openrouter.ai/keys"
               />
 
@@ -599,6 +603,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
                 onEnabledChange={(enabled) => handleProviderChange("opencode_zen", enabled)}
                 onModelChange={(model) => handleModelChange("opencode_zen", model)}
                 onSetDefault={() => handleSetDefault("opencode_zen")}
+                onKeyChange={onProviderChange}
                 docsUrl="https://opencode.ai/auth"
               />
 
@@ -613,6 +618,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
                 onEnabledChange={(enabled) => handleProviderChange("anthropic", enabled)}
                 onModelChange={(model) => handleModelChange("anthropic", model)}
                 onSetDefault={() => handleSetDefault("anthropic")}
+                onKeyChange={onProviderChange}
                 docsUrl="https://console.anthropic.com/settings/keys"
               />
 
@@ -627,6 +633,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
                 onEnabledChange={(enabled) => handleProviderChange("openai", enabled)}
                 onModelChange={(model) => handleModelChange("openai", model)}
                 onSetDefault={() => handleSetDefault("openai")}
+                onKeyChange={onProviderChange}
                 docsUrl="https://platform.openai.com/api-keys"
               />
 
@@ -641,6 +648,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
                 onEnabledChange={(enabled) => handleProviderChange("ollama", enabled)}
                 onModelChange={(model) => handleModelChange("ollama", model)}
                 onSetDefault={() => handleSetDefault("ollama")}
+                onKeyChange={onProviderChange}
                 docsUrl="https://ollama.ai"
               />
 

@@ -161,22 +161,7 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Get app data directory early for logging
-    let app_data_dir = tauri::Builder::default()
-        .build(tauri::generate_context!())
-        .ok()
-        .and_then(|app| app.path().app_data_dir().ok())
-        .unwrap_or_else(|| {
-            // Fallback to temp dir if we can't get app data
-            std::env::temp_dir().join("tandem")
-        });
-
-    std::fs::create_dir_all(&app_data_dir).ok();
-
-    init_tracing(&app_data_dir);
-
-    tracing::info!("Starting Tandem application");
-
+    // We'll initialize tracing inside the builder to avoid double initialization of GTK on Linux
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -184,13 +169,17 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
-            // Get app data directory
+            // Get app data directory for logging and state
             let app_data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("Failed to get app data directory");
+            
             std::fs::create_dir_all(&app_data_dir).ok();
+            init_tracing(&app_data_dir);
+            tracing::info!("Starting Tandem application");
 
             // Initialize vault state (manages PIN-based encryption)
             let vault_state = VaultState::new(app_data_dir.clone());

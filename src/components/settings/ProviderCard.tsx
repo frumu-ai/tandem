@@ -74,6 +74,7 @@ interface ProviderCardProps {
   onEnabledChange: (enabled: boolean) => void;
   onModelChange?: (model: string) => void;
   onSetDefault?: () => void;
+  onKeyChange?: () => void; // Called when API key is saved or deleted
   docsUrl?: string;
 }
 
@@ -88,6 +89,7 @@ export function ProviderCard({
   onEnabledChange,
   onModelChange,
   onSetDefault,
+  onKeyChange,
   docsUrl,
 }: ProviderCardProps) {
   const [apiKey, setApiKey] = useState("");
@@ -142,6 +144,8 @@ export function ProviderCard({
       setApiKey("");
       setSuccess(true);
       setTimeout(() => setSuccess(false), 2000);
+      // Notify parent that key state changed
+      onKeyChange?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save API key");
     } finally {
@@ -153,6 +157,8 @@ export function ProviderCard({
     try {
       await deleteApiKey(id);
       setHasKey(false);
+      // Notify parent that key state changed
+      onKeyChange?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete API key");
     }
@@ -268,9 +274,8 @@ export function ProviderCard({
                                 onModelChange?.(s);
                                 setShowSuggestions(false);
                               }}
-                              className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors hover:bg-surface-elevated ${
-                                s === model ? "bg-primary/10 text-primary" : "text-text"
-                              }`}
+                              className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors hover:bg-surface-elevated ${s === model ? "bg-primary/10 text-primary" : "text-text"
+                                }`}
                             >
                               <span className="font-mono text-xs">{s}</span>
                               {s === model && <Check className="h-3 w-3" />}
@@ -339,9 +344,8 @@ export function ProviderCard({
                                 onModelChange?.(m.id);
                                 setShowModelDropdown(false);
                               }}
-                              className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-surface-elevated ${
-                                m.id === selectedModel ? "bg-primary/10" : ""
-                              }`}
+                              className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-surface-elevated ${m.id === selectedModel ? "bg-primary/10" : ""
+                                }`}
                             >
                               <div>
                                 <p className="text-sm font-medium text-text">{m.name}</p>
