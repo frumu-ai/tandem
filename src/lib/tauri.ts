@@ -326,6 +326,18 @@ export async function deleteApiKey(keyType: ApiKeyType): Promise<void> {
 }
 
 // ============================================================================
+// Theme / Appearance
+// ============================================================================
+
+export async function getUserTheme(): Promise<string> {
+  return invoke("get_user_theme");
+}
+
+export async function setUserTheme(themeId: string): Promise<void> {
+  return invoke("set_user_theme", { themeId });
+}
+
+// ============================================================================
 // Provider Configuration
 // ============================================================================
 

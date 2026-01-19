@@ -9,11 +9,14 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = "primary", size = "md", loading, disabled, children, ...props }, ref) => {
-    const baseStyles = "inline-flex items-center justify-center font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98]";
-    
+    const baseStyles =
+      "inline-flex items-center justify-center font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98]";
+
     const variants = {
-      primary: "bg-primary text-white hover:bg-primary-hover focus-visible:ring-primary",
-      secondary: "bg-surface-elevated text-text border border-border hover:bg-surface hover:border-border-subtle focus-visible:ring-secondary",
+      // In Charcoal & Fire, Solar Yellow reads best with dark text
+      primary: "bg-primary text-background hover:bg-primary-hover focus-visible:ring-primary",
+      secondary:
+        "bg-surface-elevated text-text border border-border hover:bg-surface hover:border-border-subtle focus-visible:ring-secondary",
       ghost: "text-text-muted hover:text-text hover:bg-surface-elevated focus-visible:ring-primary",
       danger: "bg-error text-white hover:bg-red-600 focus-visible:ring-error",
     };
@@ -21,7 +24,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     const sizes = {
       sm: "h-8 px-3 text-sm rounded-md",
       md: "h-10 px-4 text-sm rounded-lg",
-      lg: "h-12 px-6 text-base rounded-lg",
+      lg: "h-12 px-6 text-base rounded-xl",
     };
 
     return (

@@ -72,6 +72,26 @@ export function About() {
           <p className="text-text-muted">Powered by Frumu.ai</p>
         </motion.div>
 
+        {/* GitHub Sponsors (top + centered) */}
+        <motion.div
+          className="mb-12 flex flex-col items-center justify-center gap-3 text-center"
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.05 }}
+        >
+          <button
+            onClick={() => handleOpenExternal("https://github.com/sponsors/frumu-ai")}
+            className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-pink-500/20 to-rose-500/20 px-6 py-3 text-sm font-medium text-pink-400 transition-all hover:from-pink-500/30 hover:to-rose-500/30 hover:shadow-[0_0_16px_rgba(236,72,153,0.4)]"
+          >
+            <Heart className="h-4 w-4 fill-current" />
+            <span>Sponsor on GitHub</span>
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+          <p className="text-xs text-text-subtle">
+            Support the development of Tandem and other open-source projects
+          </p>
+        </motion.div>
+
         {/* Content Grid */}
         <div className="grid gap-8 md:grid-cols-2">
           {/* Frumu.ai Section */}
@@ -203,21 +223,6 @@ export function About() {
                     : updateStatus === "error"
                       ? updateError || "Update check failed."
                       : ""}
-            </p>
-          </div>
-
-          {/* GitHub Sponsors */}
-          <div className="mt-8">
-            <button
-              onClick={() => handleOpenExternal("https://github.com/sponsors/frumu-ai")}
-              className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-pink-500/20 to-rose-500/20 px-6 py-3 text-sm font-medium text-pink-400 transition-all hover:from-pink-500/30 hover:to-rose-500/30 hover:shadow-[0_0_16px_rgba(236,72,153,0.4)]"
-            >
-              <Heart className="h-4 w-4 fill-current" />
-              <span>Sponsor on GitHub</span>
-              <ExternalLink className="h-3.5 w-3.5" />
-            </button>
-            <p className="mt-3 text-xs text-text-subtle">
-              Support the development of Tandem and other open-source projects
             </p>
           </div>
         </motion.div>

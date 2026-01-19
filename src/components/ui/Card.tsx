@@ -15,11 +15,7 @@ const Card = forwardRef<HTMLDivElement, CardProps>(
     return (
       <div
         ref={ref}
-        className={cn(
-          "rounded-xl p-6 animate-fade-in",
-          variants[variant],
-          className
-        )}
+        className={cn("rounded-2xl p-6 animate-fade-in", variants[variant], className)}
         {...props}
       >
         {children}
@@ -32,11 +28,7 @@ Card.displayName = "Card";
 
 const CardHeader = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
-    <div
-      ref={ref}
-      className={cn("mb-4 flex flex-col space-y-1.5", className)}
-      {...props}
-    />
+    <div ref={ref} className={cn("mb-4 flex flex-col space-y-1.5", className)} {...props} />
   )
 );
 
@@ -46,7 +38,7 @@ const CardTitle = forwardRef<HTMLHeadingElement, HTMLAttributes<HTMLHeadingEleme
   ({ className, ...props }, ref) => (
     <h3
       ref={ref}
-      className={cn("text-lg font-semibold text-text", className)}
+      className={cn("text-lg font-bold tracking-tight text-text", className)}
       {...props}
     />
   )
@@ -56,20 +48,14 @@ CardTitle.displayName = "CardTitle";
 
 const CardDescription = forwardRef<HTMLParagraphElement, HTMLAttributes<HTMLParagraphElement>>(
   ({ className, ...props }, ref) => (
-    <p
-      ref={ref}
-      className={cn("text-sm text-text-muted", className)}
-      {...props}
-    />
+    <p ref={ref} className={cn("text-sm text-text-muted", className)} {...props} />
   )
 );
 
 CardDescription.displayName = "CardDescription";
 
 const CardContent = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
-  ({ className, ...props }, ref) => (
-    <div ref={ref} className={cn("", className)} {...props} />
-  )
+  ({ className, ...props }, ref) => <div ref={ref} className={cn("", className)} {...props} />
 );
 
 CardContent.displayName = "CardContent";

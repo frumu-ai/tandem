@@ -266,10 +266,7 @@ export function Message({
         {attachments && attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-2">
             {attachments.map((attachment, idx) => (
-              <div
-                key={idx}
-                className="flex items-center gap-2 rounded-lg border-glass bg-surface p-2"
-              >
+              <div key={idx} className="flex items-center gap-2 rounded-lg glass border-glass p-2">
                 {attachment.type === "image" && attachment.preview ? (
                   <img
                     src={attachment.preview}
@@ -321,6 +318,39 @@ export function Message({
               remarkPlugins={[remarkGfm]}
               components={
                 {
+                  a({ href, children, ...props }) {
+                    // Treat markdown links to local files as "open in file browser"
+                    // instead of navigating the SPA (which refreshes the app).
+                    const filePathPattern =
+                      /^(?:(?:[A-Za-z]:[\\/])|(?:\.\.?[\\/])|[^:/]+[\\/])?[^\s<>:"|?*]+\.(json|ts|tsx|js|jsx|md|txt|py|rs|go|java|cpp|c|h|css|scss|html|xml|yaml|yml|toml|pptx|ppt|docx|doc|xlsx|xls|pdf|png|jpg|jpeg|gif|svg|webp)$/;
+
+                    if (href && filePathPattern.test(href)) {
+                      return (
+                        <button
+                          onClick={() => onFileOpen?.(href)}
+                          className="inline-flex items-center gap-1 text-primary hover:text-primary/80 hover:underline transition-colors font-mono text-sm"
+                          title={`Open ${href}`}
+                          type="button"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          {children}
+                        </button>
+                      );
+                    }
+
+                    // Normal URL: keep as link (open in new tab/window).
+                    return (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline"
+                        {...props}
+                      >
+                        {children}
+                      </a>
+                    );
+                  },
                   code({ className, children, ...props }) {
                     const match = /language-(\w+)/.exec(className || "");
                     if (match) {

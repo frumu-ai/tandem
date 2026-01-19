@@ -38,20 +38,16 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-expand when there's activity
-  useEffect(() => {
-    const hasRunning = activities.some((a) => a.status === "running");
-    if (hasRunning && !isExpanded) {
-      setIsExpanded(true);
-    }
-  }, [activities]);
+  const hasRunning = activities.some((a) => a.status === "running");
+  // Keep the drawer open while anything is running, but preserve user toggle when idle.
+  const isEffectivelyExpanded = isExpanded || hasRunning;
 
   // Auto-scroll to bottom when new activities arrive
   useEffect(() => {
-    if (scrollRef.current && isExpanded) {
+    if (scrollRef.current && isEffectivelyExpanded) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [activities, isExpanded]);
+  }, [activities, isEffectivelyExpanded]);
 
   const runningCount = activities.filter((a) => a.status === "running").length;
   const recentActivities = activities.slice(-20); // Show last 20 activities
@@ -74,10 +70,18 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
       if (toolLower.includes("read") || toolLower.includes("file")) {
         return <FileText className="h-3.5 w-3.5" />;
       }
-      if (toolLower.includes("search") || toolLower.includes("grep") || toolLower.includes("find")) {
+      if (
+        toolLower.includes("search") ||
+        toolLower.includes("grep") ||
+        toolLower.includes("find")
+      ) {
         return <Search className="h-3.5 w-3.5" />;
       }
-      if (toolLower.includes("bash") || toolLower.includes("shell") || toolLower.includes("command")) {
+      if (
+        toolLower.includes("bash") ||
+        toolLower.includes("shell") ||
+        toolLower.includes("command")
+      ) {
         return <Terminal className="h-3.5 w-3.5" />;
       }
       if (toolLower.includes("browse") || toolLower.includes("web")) {
@@ -146,9 +150,9 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
     <motion.div
       className="absolute bottom-0 left-0 right-0 bg-surface-elevated border-t border-border shadow-lg z-20"
       initial={{ y: "100%" }}
-      animate={{ 
+      animate={{
         y: 0,
-        height: isExpanded ? 200 : 40 
+        height: isEffectivelyExpanded ? 200 : 40,
       }}
       transition={{ type: "spring", damping: 25, stiffness: 300 }}
     >
@@ -166,7 +170,7 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
               {runningCount} running
             </span>
           )}
-          {!isExpanded && recentActivities.length > 0 && (
+          {!isEffectivelyExpanded && recentActivities.length > 0 && (
             <span className="text-xs text-text-muted truncate max-w-[200px]">
               {recentActivities[recentActivities.length - 1]?.title}
             </span>
@@ -174,7 +178,7 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-text-subtle">{activities.length} actions</span>
-          {isExpanded ? (
+          {isEffectivelyExpanded ? (
             <ChevronDown className="h-4 w-4 text-text-muted" />
           ) : (
             <ChevronUp className="h-4 w-4 text-text-muted" />
@@ -183,11 +187,8 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
       </button>
 
       {/* Expanded Content */}
-      {isExpanded && (
-        <div
-          ref={scrollRef}
-          className="h-[160px] overflow-y-auto border-t border-border/50"
-        >
+      {isEffectivelyExpanded && (
+        <div ref={scrollRef} className="h-[160px] overflow-y-auto border-t border-border/50">
           {recentActivities.length === 0 ? (
             <div className="flex items-center justify-center h-full text-text-muted">
               <p className="text-sm">Waiting for AI actions...</p>
@@ -195,10 +196,7 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
           ) : (
             <div className="divide-y divide-border/30">
               {recentActivities.map((activity) => (
-                <div
-                  key={activity.id}
-                  className="px-4 py-2 hover:bg-surface/50 transition-colors"
-                >
+                <div key={activity.id} className="px-4 py-2 hover:bg-surface/50 transition-colors">
                   <div className="flex items-start gap-3">
                     {/* Icon */}
                     <div className={cn("mt-0.5", getTypeColor(activity.type))}>
@@ -208,20 +206,16 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
                     {/* Content */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm text-text truncate flex-1">
-                          {activity.title}
-                        </span>
+                        <span className="text-sm text-text truncate flex-1">{activity.title}</span>
                         {getStatusIcon(activity.status)}
                         <span className="text-xs text-text-subtle">
                           {formatTime(activity.timestamp)}
                         </span>
                       </div>
                       {activity.detail && (
-                        <p className="text-xs text-text-muted mt-0.5 truncate">
-                          {activity.detail}
-                        </p>
+                        <p className="text-xs text-text-muted mt-0.5 truncate">{activity.detail}</p>
                       )}
-                      
+
                       {/* Expandable result */}
                       {activity.result && (
                         <button
@@ -231,7 +225,7 @@ export function ActivityDrawer({ activities, isGenerating }: ActivityDrawerProps
                           {expandedItems.has(activity.id) ? "Hide result" : "Show result"}
                         </button>
                       )}
-                      
+
                       <AnimatePresence>
                         {expandedItems.has(activity.id) && activity.result && (
                           <motion.pre

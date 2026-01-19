@@ -684,6 +684,37 @@ async fn get_api_key(app: &AppHandle, key_type: &str) -> Result<Option<String>> 
 }
 
 // ============================================================================
+// Theme / Appearance
+// ============================================================================
+
+/// Get the user's selected theme id
+#[tauri::command]
+pub fn get_user_theme(app: AppHandle) -> Result<String> {
+    // Default to the new design-system theme
+    let default_theme = "charcoal_fire".to_string();
+
+    if let Ok(store) = app.store("settings.json") {
+        if let Some(value) = store.get("user_theme") {
+            if let Some(theme_id) = value.as_str() {
+                return Ok(theme_id.to_string());
+            }
+        }
+    }
+
+    Ok(default_theme)
+}
+
+/// Persist the user's selected theme id
+#[tauri::command]
+pub fn set_user_theme(app: AppHandle, theme_id: String) -> Result<()> {
+    if let Ok(store) = app.store("settings.json") {
+        store.set("user_theme", serde_json::json!(theme_id));
+        let _ = store.save();
+    }
+    Ok(())
+}
+
+// ============================================================================
 // Provider Configuration
 // ============================================================================
 

@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronLeft,
-  ChevronRight,
   ChevronDown,
   Plus,
   Trash2,
@@ -225,190 +224,170 @@ export function SessionSidebar({
 
   return (
     <>
-      {/* Sidebar */}
-      <AnimatePresence>
-        {isOpen && (
-          <motion.aside
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 280, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="glass flex h-full flex-col border-r border-white/10 overflow-hidden"
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-              <div className="flex items-center gap-2">
-                <MessageSquare className="h-4 w-4 text-primary" />
-                <span className="font-medium text-sm">Chat History</span>
-              </div>
-              <button
-                onClick={onToggle}
-                className="p-1 hover:bg-surface-elevated/70 rounded transition-colors"
-              >
-                <ChevronLeft className="h-4 w-4 text-text-muted" />
-              </button>
+      {isOpen && (
+        <div className="flex h-full w-full flex-col overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <div className="flex items-center gap-2">
+              <MessageSquare className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">Chat History</span>
             </div>
+            <button
+              onClick={onToggle}
+              className="rounded p-1 transition-colors hover:bg-surface-elevated"
+              title="Hide sidebar"
+            >
+              <ChevronLeft className="h-4 w-4 text-text-muted" />
+            </button>
+          </div>
 
-            {/* Project Switcher */}
-            {onSwitchProject && onAddProject && onManageProjects && (
-              <div className="p-3 border-b border-white/10">
-                <ProjectSwitcher
-                  projects={userProjects}
-                  activeProject={activeProject || null}
-                  onSwitchProject={onSwitchProject}
-                  onAddProject={onAddProject}
-                  onManageProjects={onManageProjects}
-                  isLoading={projectSwitcherLoading}
-                />
+          {/* Project Switcher */}
+          {onSwitchProject && onAddProject && onManageProjects && (
+            <div className="border-b border-border p-4">
+              <ProjectSwitcher
+                projects={userProjects}
+                activeProject={activeProject || null}
+                onSwitchProject={onSwitchProject}
+                onAddProject={onAddProject}
+                onManageProjects={onManageProjects}
+                isLoading={projectSwitcherLoading}
+              />
+            </div>
+          )}
+
+          {/* New Chat Button */}
+          <div className="border-b border-border p-4">
+            <button
+              onClick={onNewChat}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-primary to-secondary px-4 py-2 text-white transition-all hover:shadow-lg hover:shadow-black/30"
+            >
+              <Plus className="h-4 w-4" />
+              <span className="text-sm font-medium">New Chat</span>
+            </button>
+          </div>
+
+          {/* Sessions List */}
+          <div className="flex-1 overflow-y-auto">
+            {isLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              </div>
+            ) : Object.keys(sessionsByProject).length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-8 text-text-muted">
+                <MessageSquare className="mb-2 h-8 w-8 opacity-50" />
+                <p className="text-sm">No chat history</p>
+                <p className="mt-1 text-xs text-text-subtle">Start a new chat to begin</p>
+              </div>
+            ) : (
+              <div className="py-2">
+                {Object.keys(sessionsByProject).map((projectId) => (
+                  <div key={projectId} className="mb-1">
+                    {/* Project Header */}
+                    <button
+                      onClick={() => toggleProject(projectId)}
+                      className="flex w-full items-center gap-2 px-3 py-2 transition-colors hover:bg-surface-elevated"
+                    >
+                      <ChevronDown
+                        className={cn(
+                          "h-3 w-3 text-text-muted transition-transform",
+                          !expandedProjects.has(projectId) && "-rotate-90"
+                        )}
+                      />
+                      <FolderOpen className="h-4 w-4 text-warning" />
+                      <span className="flex-1 truncate text-left text-sm font-medium text-text">
+                        {getProjectName(projectId)}
+                      </span>
+                      <span className="text-xs text-text-subtle">
+                        {sessionsByProject[projectId].length}
+                      </span>
+                    </button>
+
+                    {/* Project Path */}
+                    {expandedProjects.has(projectId) && (
+                      <div className="px-8 pb-1">
+                        <p className="truncate text-xs text-text-subtle">
+                          {getProjectPath(projectId)}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Sessions */}
+                    <AnimatePresence>
+                      {expandedProjects.has(projectId) && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.15 }}
+                          className="overflow-hidden"
+                        >
+                          {sessionsByProject[projectId].map((session) => (
+                            <div
+                              key={session.id}
+                              onClick={() => onSelectSession(session.id)}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => e.key === "Enter" && onSelectSession(session.id)}
+                              className={cn(
+                                "group relative flex w-full cursor-pointer items-start gap-2 px-3 py-2 pl-10 transition-colors hover:bg-surface-elevated",
+                                "before:absolute before:left-4 before:top-1/2 before:h-5 before:w-1 before:-translate-y-1/2 before:rounded-full before:bg-primary/40",
+                                currentSessionId === session.id && "bg-primary/10 before:bg-primary"
+                              )}
+                            >
+                              <MessageSquare
+                                className={cn(
+                                  "mt-0.5 h-4 w-4 flex-shrink-0",
+                                  currentSessionId === session.id
+                                    ? "text-primary"
+                                    : "text-text-muted"
+                                )}
+                              />
+                              <div className="min-w-0 flex-1 text-left">
+                                <p
+                                  className={cn(
+                                    "truncate text-sm",
+                                    currentSessionId === session.id
+                                      ? "font-medium text-primary"
+                                      : "text-text"
+                                  )}
+                                >
+                                  {session.title || "New Chat"}
+                                </p>
+                                <div className="mt-0.5 flex items-center gap-2">
+                                  <Clock className="h-3 w-3 text-text-subtle" />
+                                  <span className="text-xs text-text-subtle">
+                                    {formatTime(session.time.updated)}
+                                  </span>
+                                  {session.summary && session.summary.files > 0 && (
+                                    <>
+                                      <FileText className="h-3 w-3 text-text-subtle" />
+                                      <span className="text-xs text-text-subtle">
+                                        {session.summary.files} file
+                                        {session.summary.files !== 1 ? "s" : ""}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                              {/* Delete button */}
+                              <button
+                                onClick={(e) => handleDelete(session, e)}
+                                className="rounded p-1 text-text-muted opacity-0 transition-colors hover:bg-surface hover:text-error group-hover:opacity-100"
+                                title="Delete chat"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                ))}
               </div>
             )}
-
-            {/* New Chat Button */}
-            <div className="p-3 border-b border-white/10">
-              <button
-                onClick={onNewChat}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-white transition-all bg-gradient-to-r from-primary to-secondary hover:shadow-[0_0_12px_rgba(59,130,246,0.45)]"
-              >
-                <Plus className="h-4 w-4" />
-                <span className="text-sm font-medium">New Chat</span>
-              </button>
-            </div>
-
-            {/* Sessions List */}
-            <div className="flex-1 overflow-y-auto">
-              {isLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <div className="animate-spin h-5 w-5 border-2 border-primary border-t-transparent rounded-full" />
-                </div>
-              ) : Object.keys(sessionsByProject).length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-8 text-text-muted">
-                  <MessageSquare className="h-8 w-8 mb-2 opacity-50" />
-                  <p className="text-sm">No chat history</p>
-                  <p className="text-xs mt-1">Start a new chat to begin</p>
-                </div>
-              ) : (
-                <div className="py-2">
-                  {Object.keys(sessionsByProject).map((projectId) => (
-                    <div key={projectId} className="mb-1">
-                      {/* Project Header */}
-                      <button
-                        onClick={() => toggleProject(projectId)}
-                        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface-elevated/70 transition-colors"
-                      >
-                        <ChevronDown
-                          className={cn(
-                            "h-3 w-3 text-text-muted transition-transform",
-                            !expandedProjects.has(projectId) && "-rotate-90"
-                          )}
-                        />
-                        <FolderOpen className="h-4 w-4 text-amber-500" />
-                        <span className="flex-1 text-sm font-medium text-text truncate text-left">
-                          {getProjectName(projectId)}
-                        </span>
-                        <span className="text-xs text-text-subtle">
-                          {sessionsByProject[projectId].length}
-                        </span>
-                      </button>
-
-                      {/* Project Path */}
-                      {expandedProjects.has(projectId) && (
-                        <div className="px-8 pb-1">
-                          <p className="text-xs text-text-subtle truncate">
-                            {getProjectPath(projectId)}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Sessions */}
-                      <AnimatePresence>
-                        {expandedProjects.has(projectId) && (
-                          <motion.div
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: "auto", opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.15 }}
-                            className="overflow-hidden"
-                          >
-                            {sessionsByProject[projectId].map((session) => (
-                              <div
-                                key={session.id}
-                                onClick={() => onSelectSession(session.id)}
-                                role="button"
-                                tabIndex={0}
-                                onKeyDown={(e) => e.key === "Enter" && onSelectSession(session.id)}
-                                className={cn(
-                                  "relative w-full flex items-start gap-2 px-3 py-2 pl-10 hover:bg-surface-elevated/70 transition-colors group cursor-pointer",
-                                  "before:absolute before:left-4 before:top-1/2 before:-translate-y-1/2 before:h-5 before:w-1 before:rounded-full before:bg-primary/40",
-                                  currentSessionId === session.id &&
-                                    "bg-primary/10 before:bg-primary before:shadow-[0_0_8px_rgba(59,130,246,0.6)]"
-                                )}
-                              >
-                                <MessageSquare
-                                  className={cn(
-                                    "h-4 w-4 mt-0.5 flex-shrink-0",
-                                    currentSessionId === session.id
-                                      ? "text-primary"
-                                      : "text-text-muted"
-                                  )}
-                                />
-                                <div className="flex-1 min-w-0 text-left">
-                                  <p
-                                    className={cn(
-                                      "text-sm truncate",
-                                      currentSessionId === session.id
-                                        ? "text-primary font-medium"
-                                        : "text-text"
-                                    )}
-                                  >
-                                    {session.title || "New Chat"}
-                                  </p>
-                                  <div className="flex items-center gap-2 mt-0.5">
-                                    <Clock className="h-3 w-3 text-text-subtle" />
-                                    <span className="text-xs text-text-subtle">
-                                      {formatTime(session.time.updated)}
-                                    </span>
-                                    {session.summary && session.summary.files > 0 && (
-                                      <>
-                                        <FileText className="h-3 w-3 text-text-subtle" />
-                                        <span className="text-xs text-text-subtle">
-                                          {session.summary.files} file
-                                          {session.summary.files !== 1 ? "s" : ""}
-                                        </span>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                                {/* Delete button */}
-                                <button
-                                  onClick={(e) => handleDelete(session, e)}
-                                  className="p-1 rounded transition-colors opacity-0 group-hover:opacity-100 hover:bg-surface text-text-muted hover:text-error"
-                                  title="Delete chat"
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                </button>
-                              </div>
-                            ))}
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </motion.aside>
-        )}
-      </AnimatePresence>
-
-      {/* Toggle Button (when closed) */}
-      {!isOpen && (
-        <button
-          onClick={onToggle}
-          className="absolute left-16 top-1/2 -translate-y-1/2 z-10 p-1 bg-surface-elevated border-glass rounded-r-lg hover:bg-surface transition-colors"
-          title="Show chat history"
-        >
-          <ChevronRight className="h-4 w-4 text-text-muted" />
-        </button>
+          </div>
+        </div>
       )}
 
       {/* Delete Confirmation Dialog */}

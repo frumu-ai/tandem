@@ -22,14 +22,11 @@ export function useTodos(sessionId: string | null) {
 
   // Fetch todos when session changes
   useEffect(() => {
-    if (!sessionId) {
-      console.log("[useTodos] No session, clearing todos");
-      setTodos([]);
-      return;
-    }
+    if (!sessionId) return;
 
     console.log("[useTodos] Fetching todos for session:", sessionId);
-    setIsLoading(true);
+    // Avoid synchronous setState in effect body (eslint rule: react-hooks/set-state-in-effect)
+    Promise.resolve().then(() => setIsLoading(true));
     getSessionTodos(sessionId)
       .then((fetchedTodos) => {
         console.log("[useTodos] Fetched todos:", fetchedTodos);
@@ -52,12 +49,17 @@ export function useTodos(sessionId: string | null) {
     const setupListener = async () => {
       unlisten = await listen<StreamEventPayload>("sidecar_event", (event) => {
         const payload = event.payload;
-        
+
         // Check if this is a todo_updated event for our session
         // The Rust StreamEvent uses #[serde(tag = "type", rename_all = "snake_case")]
         if (payload.type === "todo_updated") {
           const typedPayload = payload as TodoUpdatedPayload;
-          console.log("[useTodos] todo_updated event for session:", typedPayload.session_id, "current:", sessionId);
+          console.log(
+            "[useTodos] todo_updated event for session:",
+            typedPayload.session_id,
+            "current:",
+            sessionId
+          );
           if (typedPayload.session_id === sessionId && typedPayload.todos) {
             console.log("[useTodos] Updating todos:", typedPayload.todos);
             setTodos(typedPayload.todos);
@@ -76,18 +78,21 @@ export function useTodos(sessionId: string | null) {
     };
   }, [sessionId]);
 
+  // If there's no active session, present an empty view without mutating state in an effect.
+  const effectiveTodos = sessionId ? todos : [];
+
   // Categorize todos by status
-  const pending = todos.filter((t) => t.status === "pending");
-  const inProgress = todos.filter((t) => t.status === "in_progress");
-  const completed = todos.filter((t) => t.status === "completed");
-  const cancelled = todos.filter((t) => t.status === "cancelled");
+  const pending = effectiveTodos.filter((t) => t.status === "pending");
+  const inProgress = effectiveTodos.filter((t) => t.status === "in_progress");
+  const completed = effectiveTodos.filter((t) => t.status === "completed");
+  const cancelled = effectiveTodos.filter((t) => t.status === "cancelled");
 
   return {
-    todos,
+    todos: effectiveTodos,
     pending,
     inProgress,
     completed,
     cancelled,
-    isLoading,
+    isLoading: sessionId ? isLoading : false,
   };
 }

@@ -102,6 +102,7 @@ export function Chat({
   const currentAssistantMessageIdRef = useRef<string | null>(null);
   const generationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastEventAtRef = useRef<number | null>(null);
+  const prevPropSessionIdRef = useRef<string | null>(null);
 
   // Staging area hook
   const {
@@ -218,48 +219,51 @@ Start with task #1 and continue through each one. Let me know when each task is 
     autoConnect();
   }, []); // Only run on mount
 
-  // Sync internal session ID with prop
+  // Sync internal session ID with prop (only when prop truly changes)
   useEffect(() => {
-    console.log("[Chat] Session ID changed from", currentSessionId, "to", propSessionId || null);
+    const nextSessionId = propSessionId || null;
+    const prevSessionId = currentSessionIdRef.current;
 
-    // Don't change session if we're actively generating (prevents message loss)
-    if (isGenerating && currentSessionId && propSessionId !== currentSessionId) {
-      console.log("[Chat] Ignoring session change during active generation");
-      return;
-    }
+    // No change → do nothing (prevents churn from unrelated state updates)
+    if (nextSessionId === prevSessionId) return;
 
-    setCurrentSessionId(propSessionId || null);
-    currentSessionIdRef.current = propSessionId || null; // Update ref synchronously
+    console.log("[Chat] Session ID changed from", prevSessionId, "to", nextSessionId);
 
-    // Clear any ongoing generation state when session changes
+    setCurrentSessionId(nextSessionId);
+    currentSessionIdRef.current = nextSessionId; // Update ref synchronously
+
+    // Reset streaming state for the new session
     setIsGenerating(false);
     currentAssistantMessageRef.current = "";
     currentAssistantMessageIdRef.current = null;
 
-    // Clear any generation timeouts
     if (generationTimeoutRef.current) {
       clearTimeout(generationTimeoutRef.current);
       generationTimeoutRef.current = null;
     }
-  }, [propSessionId, isGenerating, currentSessionId]);
+  }, [propSessionId]);
 
-  // Load session history when sessionId changes from props
+  // Load session history when prop session changes (avoid transient mismatches)
   useEffect(() => {
-    // Only load history if switching to a different session than we currently have
-    if (propSessionId && propSessionId !== currentSessionId) {
-      console.log("[Chat] Loading session history for:", propSessionId);
+    const nextSessionId = propSessionId || null;
+    const prevPropSessionId = prevPropSessionIdRef.current;
+
+    if (nextSessionId === prevPropSessionId) return;
+    prevPropSessionIdRef.current = nextSessionId;
+
+    if (nextSessionId) {
+      console.log("[Chat] Loading session history for:", nextSessionId);
       setMessages([]);
-      // setActivities([]);
       currentAssistantMessageRef.current = "";
-      loadSessionHistory(propSessionId);
-    } else if (!propSessionId && currentSessionId) {
-      // Clear messages when switching to no session (New Chat)
+      loadSessionHistory(nextSessionId);
+    } else {
+      // Switching to new chat
       console.log("[Chat] Clearing messages for new chat");
       setMessages([]);
-      // setActivities([]);
       currentAssistantMessageRef.current = "";
     }
-  }, [propSessionId, currentSessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propSessionId]);
 
   // Check if workspace is a Git repository
   useEffect(() => {
@@ -520,18 +524,43 @@ Start with task #1 and continue through each one. Let me know when each task is 
             currentAssistantMessageRef.current = newContent;
           }
           setMessages((prev) => {
+            const targetId = currentAssistantMessageIdRef.current;
+            const contentToApply = currentAssistantMessageRef.current;
+
+            // 1) If we have a stable OpenCode message id, prefer updating that message
+            if (targetId) {
+              const idx = prev.findIndex((m) => m.id === targetId);
+              if (idx >= 0) {
+                const updated = [...prev];
+                updated[idx] = { ...updated[idx], content: contentToApply };
+                return updated;
+              }
+            }
+
+            // 2) Otherwise, update the last assistant message if present
             const lastMessage = prev[prev.length - 1];
             if (lastMessage && lastMessage.role === "assistant") {
               return [
                 ...prev.slice(0, -1),
                 {
                   ...lastMessage,
-                  id: currentAssistantMessageIdRef.current || lastMessage.id,
-                  content: currentAssistantMessageRef.current,
+                  id: targetId || lastMessage.id,
+                  content: contentToApply,
                 },
               ];
             }
-            return prev;
+
+            // 3) If placeholder assistant message is missing (e.g., cleared by a session effect),
+            // append a new assistant message so content isn't lost.
+            return [
+              ...prev,
+              {
+                id: targetId || crypto.randomUUID(),
+                role: "assistant",
+                content: contentToApply,
+                timestamp: new Date(),
+              },
+            ];
           });
           break;
         }
@@ -1277,9 +1306,6 @@ ${g.example}
       {/* Header */}
       <header className="flex items-center justify-between border-b border-border px-6 py-4">
         <div className="flex items-center gap-3">
-          <div className="h-10 w-10 overflow-hidden rounded-xl ring-1 ring-white/10">
-            <img src="/tandem-logo.png" alt="Tandem logo" className="h-full w-full object-cover" />
-          </div>
           <div>
             <h1 className="font-semibold text-text">Tandem</h1>
             {workspacePath && (
@@ -1311,7 +1337,7 @@ ${g.example}
             <div
               className={`h-2 w-2 rounded-full ${
                 sidecarStatus === "running"
-                  ? "bg-success"
+                  ? "bg-primary"
                   : sidecarStatus === "starting"
                     ? "bg-warning animate-pulse"
                     : "bg-text-subtle"

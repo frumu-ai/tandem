@@ -11,6 +11,10 @@
 
 A local-first, privacy-focused AI workspace. Your AI coworker that runs entirely on your machine.
 
+<div align="center">
+  <img src=".github/assets/app.png" alt="Tandem AI Workspace" width="90%">
+</div>
+
 Inspired by [Claude Cowork](https://claude.com/blog/cowork-research-preview), but open source and provider-agnostic.
 
 ## Why Tandem?

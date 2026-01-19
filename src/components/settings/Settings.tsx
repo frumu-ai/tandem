@@ -5,11 +5,15 @@ import {
   FolderOpen,
   Shield,
   Cpu,
+  Palette,
+  ChevronDown,
+  ChevronRight,
   Check,
   Trash2,
   Plus,
 } from "lucide-react";
 import { ProviderCard } from "./ProviderCard";
+import { ThemePicker } from "./ThemePicker";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
@@ -43,7 +47,8 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
   const [loading, setLoading] = useState(true);
   const [projectLoading, setProjectLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  
+  const [projectsExpanded, setProjectsExpanded] = useState(false);
+
   // Custom provider state
   const [customEndpoint, setCustomEndpoint] = useState("");
   const [customModel, setCustomModel] = useState("");
@@ -53,7 +58,9 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
   // Git initialization dialog state
   const [showGitDialog, setShowGitDialog] = useState(false);
   const [pendingProjectPath, setPendingProjectPath] = useState<string | null>(null);
-  const [gitStatus, setGitStatus] = useState<{ git_installed: boolean; is_repo: boolean } | null>(null);
+  const [gitStatus, setGitStatus] = useState<{ git_installed: boolean; is_repo: boolean } | null>(
+    null
+  );
 
   useEffect(() => {
     loadSettings();
@@ -95,18 +102,40 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
     if (!providers) return;
 
     // When enabling a provider, disable all others
-    const updated = enabled ? {
-      openrouter: { ...providers.openrouter, enabled: provider === "openrouter", default: provider === "openrouter" },
-      opencode_zen: { ...providers.opencode_zen, enabled: provider === "opencode_zen", default: provider === "opencode_zen" },
-      anthropic: { ...providers.anthropic, enabled: provider === "anthropic", default: provider === "anthropic" },
-      openai: { ...providers.openai, enabled: provider === "openai", default: provider === "openai" },
-      ollama: { ...providers.ollama, enabled: provider === "ollama", default: provider === "ollama" },
-      custom: providers.custom,
-    } : {
-      ...providers,
-      [provider]: { ...providers[provider], enabled: false, default: false },
-    };
-    
+    const updated = enabled
+      ? {
+          openrouter: {
+            ...providers.openrouter,
+            enabled: provider === "openrouter",
+            default: provider === "openrouter",
+          },
+          opencode_zen: {
+            ...providers.opencode_zen,
+            enabled: provider === "opencode_zen",
+            default: provider === "opencode_zen",
+          },
+          anthropic: {
+            ...providers.anthropic,
+            enabled: provider === "anthropic",
+            default: provider === "anthropic",
+          },
+          openai: {
+            ...providers.openai,
+            enabled: provider === "openai",
+            default: provider === "openai",
+          },
+          ollama: {
+            ...providers.ollama,
+            enabled: provider === "ollama",
+            default: provider === "ollama",
+          },
+          custom: providers.custom,
+        }
+      : {
+          ...providers,
+          [provider]: { ...providers[provider], enabled: false, default: false },
+        };
+
     setProviders(updated);
     await setProvidersConfig(updated);
   };
@@ -152,7 +181,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
       if (selected && typeof selected === "string") {
         // Check Git status
         const status = await checkGitStatus(selected);
-        
+
         if (status.can_enable_undo) {
           // Git is installed but folder isn't a repo - prompt user
           setPendingProjectPath(selected);
@@ -166,7 +195,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
           setShowGitDialog(true);
           return;
         }
-        
+
         // Git is already set up - proceed
         await finalizeAddProject(selected);
       }
@@ -196,14 +225,14 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
   // Handle Git initialization from dialog
   const handleGitInitialize = async () => {
     if (!pendingProjectPath) return;
-    
+
     try {
       await initializeGitRepo(pendingProjectPath);
       console.log("Git initialized successfully");
     } catch (e) {
       console.error("Failed to initialize Git:", e);
     }
-    
+
     setShowGitDialog(false);
     await finalizeAddProject(pendingProjectPath);
     setPendingProjectPath(null);
@@ -213,7 +242,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
   // Handle skipping Git initialization
   const handleGitSkip = async () => {
     if (!pendingProjectPath) return;
-    
+
     setShowGitDialog(false);
     await finalizeAddProject(pendingProjectPath);
     setPendingProjectPath(null);
@@ -261,17 +290,19 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
       anthropic: { ...providers.anthropic, enabled: false, default: false },
       openai: { ...providers.openai, enabled: false, default: false },
       ollama: { ...providers.ollama, enabled: false, default: false },
-      custom: [{
-        enabled: customEnabled,
-        default: customEnabled,
-        endpoint: customEndpoint,
-        model: customModel || undefined,
-      }],
+      custom: [
+        {
+          enabled: customEnabled,
+          default: customEnabled,
+          endpoint: customEndpoint,
+          model: customModel || undefined,
+        },
+      ],
     };
-    
+
     setProviders(updated);
     await setProvidersConfig(updated);
-    
+
     // Store custom API key if provided
     if (customApiKey.trim() && customEnabled) {
       try {
@@ -284,7 +315,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
 
   const handleCustomProviderToggle = async (enabled: boolean) => {
     setCustomEnabled(enabled);
-    
+
     if (enabled && providers) {
       // When enabling custom provider, disable all others
       const updated: ProvidersConfig = {
@@ -293,14 +324,16 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
         anthropic: { ...providers.anthropic, enabled: false, default: false },
         openai: { ...providers.openai, enabled: false, default: false },
         ollama: { ...providers.ollama, enabled: false, default: false },
-        custom: [{
-          enabled: true,
-          default: true,
-          endpoint: customEndpoint || "https://api.example.com/v1",
-          model: customModel || undefined,
-        }],
+        custom: [
+          {
+            enabled: true,
+            default: true,
+            endpoint: customEndpoint || "https://api.example.com/v1",
+            model: customModel || undefined,
+          },
+        ],
       };
-      
+
       setProviders(updated);
       await setProvidersConfig(updated);
     } else if (!enabled && providers) {
@@ -309,7 +342,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
         ...providers,
         custom: [],
       };
-      
+
       setProviders(updated);
       await setProvidersConfig(updated);
     }
@@ -322,6 +355,8 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
       </div>
     );
   }
+
+  const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
 
   return (
     <motion.div
@@ -352,112 +387,175 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
         {/* Projects Section */}
         <Card>
           <CardHeader>
-            <div className="flex items-center gap-3">
-              <FolderOpen className="h-5 w-5 text-secondary" />
+            <div className="flex items-start gap-3">
+              <FolderOpen className="mt-0.5 h-5 w-5 text-secondary" />
               <div className="flex-1">
-                <CardTitle>Projects</CardTitle>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <CardTitle>Projects</CardTitle>
+                    <CardDescription>
+                      Add and manage project folders. Each project is an independent workspace.
+                    </CardDescription>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setProjectsExpanded((v) => !v)}
+                    className="rounded-md p-1 text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                    aria-expanded={projectsExpanded}
+                    title={projectsExpanded ? "Collapse projects" : "Expand projects"}
+                  >
+                    {projectsExpanded ? (
+                      <ChevronDown className="h-5 w-5" />
+                    ) : (
+                      <ChevronRight className="h-5 w-5" />
+                    )}
+                  </button>
+                </div>
+
+                {!projectsExpanded && (
+                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-subtle">
+                    <span>
+                      {projects.length} project{projects.length === 1 ? "" : "s"}
+                    </span>
+                    <span className="opacity-60">•</span>
+                    <span className="truncate">Active: {activeProject?.name ?? "None"}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </CardHeader>
+          <AnimatePresence initial={false}>
+            {projectsExpanded && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2, ease: "easeOut" }}
+                className="overflow-hidden"
+              >
+                <CardContent>
+                  <div className="space-y-3">
+                    {projects.length === 0 ? (
+                      <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
+                        <FolderOpen className="mx-auto mb-2 h-8 w-8 text-text-subtle" />
+                        <p className="text-sm text-text-muted">No projects added yet</p>
+                        <p className="text-xs text-text-subtle">
+                          Add a project folder to get started
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <AnimatePresence>
+                          {projects.map((project) => (
+                            <motion.div
+                              key={project.id}
+                              initial={{ opacity: 0, y: -10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, x: -20 }}
+                              className="flex items-center gap-3 rounded-lg border border-border bg-surface-elevated p-3"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <p className="font-medium text-text">{project.name}</p>
+                                  {activeProjectId === project.id && (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-primary/20 px-2 py-0.5 text-xs text-primary">
+                                      <Check className="h-3 w-3" />
+                                      Active
+                                    </span>
+                                  )}
+                                </div>
+                                <p
+                                  className="truncate font-mono text-xs text-text-muted"
+                                  title={project.path}
+                                >
+                                  {project.path}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {activeProjectId !== project.id && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => handleSetActiveProject(project.id)}
+                                    disabled={projectLoading}
+                                  >
+                                    Set Active
+                                  </Button>
+                                )}
+                                {deleteConfirm === project.id ? (
+                                  <>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => handleRemoveProject(project.id)}
+                                      disabled={projectLoading}
+                                      className="text-error hover:bg-error/10"
+                                    >
+                                      Confirm
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => setDeleteConfirm(null)}
+                                      disabled={projectLoading}
+                                    >
+                                      Cancel
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => setDeleteConfirm(project.id)}
+                                    disabled={projectLoading}
+                                    className="text-text-subtle hover:text-error"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                )}
+                              </div>
+                            </motion.div>
+                          ))}
+                        </AnimatePresence>
+                      </div>
+                    )}
+
+                    <Button
+                      onClick={handleSelectWorkspace}
+                      disabled={projectLoading}
+                      className="w-full"
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Project
+                    </Button>
+                  </div>
+
+                  <p className="mt-3 text-xs text-text-subtle">
+                    <Shield className="mr-1 inline h-3 w-3" />
+                    Tandem can only access files within project folders. Sensitive files (.env,
+                    .ssh, etc.) are always blocked.
+                  </p>
+                </CardContent>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </Card>
+
+        {/* Appearance Section */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <Palette className="h-5 w-5 text-primary" />
+              <div className="flex-1">
+                <CardTitle>Appearance</CardTitle>
                 <CardDescription>
-                  Add and manage project folders. Each project is an independent workspace.
+                  Choose a theme. Changes apply instantly and are saved on this device.
                 </CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              {projects.length === 0 ? (
-                <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
-                  <FolderOpen className="mx-auto mb-2 h-8 w-8 text-text-subtle" />
-                  <p className="text-sm text-text-muted">No projects added yet</p>
-                  <p className="text-xs text-text-subtle">Add a project folder to get started</p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <AnimatePresence>
-                    {projects.map((project) => (
-                      <motion.div
-                        key={project.id}
-                        initial={{ opacity: 0, y: -10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, x: -20 }}
-                        className="flex items-center gap-3 rounded-lg border border-border bg-surface-elevated p-3"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="font-medium text-text">{project.name}</p>
-                            {activeProjectId === project.id && (
-                              <span className="inline-flex items-center gap-1 rounded-full bg-primary/20 px-2 py-0.5 text-xs text-primary">
-                                <Check className="h-3 w-3" />
-                                Active
-                              </span>
-                            )}
-                          </div>
-                          <p
-                            className="truncate font-mono text-xs text-text-muted"
-                            title={project.path}
-                          >
-                            {project.path}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {activeProjectId !== project.id && (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleSetActiveProject(project.id)}
-                              disabled={projectLoading}
-                            >
-                              Set Active
-                            </Button>
-                          )}
-                          {deleteConfirm === project.id ? (
-                            <>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => handleRemoveProject(project.id)}
-                                disabled={projectLoading}
-                                className="text-error hover:bg-error/10"
-                              >
-                                Confirm
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => setDeleteConfirm(null)}
-                                disabled={projectLoading}
-                              >
-                                Cancel
-                              </Button>
-                            </>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => setDeleteConfirm(project.id)}
-                              disabled={projectLoading}
-                              className="text-text-subtle hover:text-error"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          )}
-                        </div>
-                      </motion.div>
-                    ))}
-                  </AnimatePresence>
-                </div>
-              )}
-
-              <Button onClick={handleSelectWorkspace} disabled={projectLoading} className="w-full">
-                <Plus className="mr-2 h-4 w-4" />
-                Add Project
-              </Button>
-            </div>
-
-            <p className="mt-3 text-xs text-text-subtle">
-              <Shield className="mr-1 inline h-3 w-3" />
-              Tandem can only access files within project folders. Sensitive files (.env, .ssh,
-              etc.) are always blocked.
-            </p>
+            <ThemePicker />
           </CardContent>
         </Card>
 
@@ -556,7 +654,7 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
                         Configure your own LLM provider with a custom endpoint
                       </CardDescription>
                     </div>
-                    <Switch 
+                    <Switch
                       checked={customEnabled}
                       onChange={(e) => handleCustomProviderToggle(e.target.checked)}
                     />
@@ -572,8 +670,10 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
                     >
                       <CardContent className="space-y-4">
                         <div>
-                          <label className="text-xs font-medium text-text-subtle">Endpoint URL</label>
-                          <Input 
+                          <label className="text-xs font-medium text-text-subtle">
+                            Endpoint URL
+                          </label>
+                          <Input
                             placeholder="https://api.example.com/v1"
                             value={customEndpoint}
                             onChange={(e) => setCustomEndpoint(e.target.value)}
@@ -581,22 +681,24 @@ export function Settings({ onClose, onProjectChange }: SettingsProps) {
                         </div>
                         <div>
                           <label className="text-xs font-medium text-text-subtle">Model</label>
-                          <Input 
+                          <Input
                             placeholder="model-name"
                             value={customModel}
                             onChange={(e) => setCustomModel(e.target.value)}
                           />
                         </div>
                         <div>
-                          <label className="text-xs font-medium text-text-subtle">API Key (optional)</label>
-                          <Input 
+                          <label className="text-xs font-medium text-text-subtle">
+                            API Key (optional)
+                          </label>
+                          <Input
                             type="password"
                             placeholder="sk-..."
                             value={customApiKey}
                             onChange={(e) => setCustomApiKey(e.target.value)}
                           />
                         </div>
-                        <Button 
+                        <Button
                           onClick={handleCustomProviderSave}
                           disabled={!customEndpoint.trim()}
                           className="w-full"

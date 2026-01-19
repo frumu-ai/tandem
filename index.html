@@ -11,12 +11,21 @@
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Rubik:ital,wght@0,300..900;1,300..900&display=swap"
+      rel="stylesheet"
+    />
     <style>
       /* Immediate loading screen - shows before React loads */
       /* Scoped to splash screen only to avoid conflicts with app styles */
       #splash-screen {
+        /* These are set at runtime by `src/vault-splash.ts` based on saved theme. */
         --matrix-green: #00ff88;
-        --matrix-dark: #001a0d;
+        --matrix-green-rgb: 0, 255, 136;
+        --matrix-bg: #000000;
+        --matrix-bg-rgb: 0, 0, 0;
+        --matrix-text: #ffffff;
+        --matrix-text-rgb: 255, 255, 255;
         --error-red: #ff4444;
       }
       
@@ -28,7 +37,7 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        background: #000;
+        background: var(--matrix-bg);
         transition: opacity 0.5s ease-out;
         font-family: 'JetBrains Mono', 'Courier New', monospace;
         margin: 0;
@@ -68,23 +77,23 @@
         letter-spacing: 0.2em;
         color: var(--matrix-green);
         text-shadow: 
-          0 0 20px rgba(0, 255, 136, 0.5),
-          0 0 40px rgba(0, 255, 136, 0.3),
-          0 0 60px rgba(0, 255, 136, 0.1);
+          0 0 20px rgba(var(--matrix-green-rgb), 0.5),
+          0 0 40px rgba(var(--matrix-green-rgb), 0.3),
+          0 0 60px rgba(var(--matrix-green-rgb), 0.1);
         animation: glow 2s ease-in-out infinite alternate;
       }
       
       @keyframes glow {
         from {
           text-shadow: 
-            0 0 20px rgba(0, 255, 136, 0.5),
-            0 0 40px rgba(0, 255, 136, 0.3);
+            0 0 20px rgba(var(--matrix-green-rgb), 0.5),
+            0 0 40px rgba(var(--matrix-green-rgb), 0.3);
         }
         to {
           text-shadow: 
-            0 0 30px rgba(0, 255, 136, 0.8),
-            0 0 60px rgba(0, 255, 136, 0.5),
-            0 0 80px rgba(0, 255, 136, 0.3);
+            0 0 30px rgba(var(--matrix-green-rgb), 0.8),
+            0 0 60px rgba(var(--matrix-green-rgb), 0.5),
+            0 0 80px rgba(var(--matrix-green-rgb), 0.3);
         }
       }
       
@@ -92,7 +101,7 @@
         font-size: 0.75rem;
         letter-spacing: 0.3em;
         text-transform: uppercase;
-        color: rgba(0, 255, 136, 0.5);
+        color: rgba(var(--matrix-green-rgb), 0.5);
       }
       
       /* Spinner */
@@ -123,13 +132,13 @@
       
       .spinner-ring-2 {
         inset: 6px;
-        border-bottom-color: rgba(0, 255, 136, 0.6);
+        border-bottom-color: rgba(var(--matrix-green-rgb), 0.6);
         animation: spin 1.5s linear infinite reverse;
       }
       
       .spinner-ring-3 {
         inset: 12px;
-        border-left-color: rgba(0, 255, 136, 0.3);
+        border-left-color: rgba(var(--matrix-green-rgb), 0.3);
         animation: spin 2s linear infinite;
       }
       
@@ -165,7 +174,7 @@
       .progress-bar {
         width: 2rem;
         height: 4px;
-        background: rgba(0, 255, 136, 0.2);
+        background: rgba(var(--matrix-green-rgb), 0.2);
         border-radius: 2px;
         overflow: hidden;
       }
@@ -199,7 +208,7 @@
       .corner-text {
         position: absolute;
         font-size: 0.65rem;
-        color: rgba(0, 255, 136, 0.4);
+        color: rgba(var(--matrix-green-rgb), 0.4);
         z-index: 10;
       }
       
@@ -230,11 +239,11 @@
         min-width: 320px;
         max-width: 400px;
         width: 100%;
-        background: rgba(0, 10, 5, 0.8);
-        border: 1px solid rgba(0, 255, 136, 0.3);
+        background: rgba(var(--matrix-bg-rgb), 0.8);
+        border: 1px solid rgba(var(--matrix-green-rgb), 0.3);
         border-radius: 16px;
         backdrop-filter: blur(10px);
-        box-shadow: 0 0 40px rgba(0, 255, 136, 0.1);
+        box-shadow: 0 0 40px rgba(var(--matrix-green-rgb), 0.1);
       }
       
       .pin-container.visible {
@@ -259,7 +268,7 @@
       
       .pin-subtitle {
         font-size: 0.7rem;
-        color: rgba(0, 255, 136, 0.5);
+        color: rgba(var(--matrix-green-rgb), 0.5);
         margin: -0.5rem 0 0 0;
         min-height: 1em;
         text-align: center;
@@ -271,7 +280,7 @@
         gap: 0.75rem;
         padding: 1rem 1.5rem;
         background: rgba(0, 0, 0, 0.5);
-        border: 1px solid rgba(0, 255, 136, 0.2);
+        border: 1px solid rgba(var(--matrix-green-rgb), 0.2);
         border-radius: 8px;
       }
       
@@ -279,7 +288,7 @@
         width: 16px;
         height: 16px;
         border-radius: 50%;
-        border: 2px solid rgba(0, 255, 136, 0.4);
+        border: 2px solid rgba(var(--matrix-green-rgb), 0.4);
         background: transparent;
         transition: all 0.15s ease;
       }
@@ -287,7 +296,7 @@
       .pin-dot.filled {
         background: var(--matrix-green);
         border-color: var(--matrix-green);
-        box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+        box-shadow: 0 0 10px rgba(var(--matrix-green-rgb), 0.5);
       }
       
       .pin-dot.error {
@@ -316,9 +325,9 @@
       .pin-key {
         width: 60px;
         height: 60px;
-        border: 1px solid rgba(0, 255, 136, 0.3);
+        border: 1px solid rgba(var(--matrix-green-rgb), 0.3);
         border-radius: 12px;
-        background: rgba(0, 20, 10, 0.6);
+        background: rgba(var(--matrix-bg-rgb), 0.6);
         color: var(--matrix-green);
         font-size: 1.5rem;
         font-family: 'JetBrains Mono', monospace;
@@ -330,14 +339,14 @@
       }
       
       .pin-key:hover {
-        background: rgba(0, 255, 136, 0.1);
+        background: rgba(var(--matrix-green-rgb), 0.1);
         border-color: var(--matrix-green);
-        box-shadow: 0 0 15px rgba(0, 255, 136, 0.2);
+        box-shadow: 0 0 15px rgba(var(--matrix-green-rgb), 0.2);
       }
       
       .pin-key:active {
         transform: scale(0.95);
-        background: rgba(0, 255, 136, 0.2);
+        background: rgba(var(--matrix-green-rgb), 0.2);
       }
       
       .pin-key.action {
@@ -366,7 +375,7 @@
       /* Confirm PIN section (for create mode) */
       .pin-confirm-hint {
         font-size: 0.7rem;
-        color: rgba(0, 255, 136, 0.6);
+        color: rgba(var(--matrix-green-rgb), 0.6);
         text-align: center;
       }
       
@@ -380,23 +389,23 @@
 
   <body style="margin: 0; padding: 0; background: #000; overflow: hidden;">
     <!-- Splash screen that shows immediately -->
-    <div id="splash-screen" style="position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: #000;">
+    <div id="splash-screen" style="position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: var(--matrix-bg);">
       <canvas id="matrix-canvas" style="position: absolute; inset: 0;"></canvas>
       
       <div class="splash-content" style="position: relative; z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 2rem;">
         <div style="text-align: center;">
-          <h1 class="splash-title" style="font-size: 3.5rem; font-weight: bold; letter-spacing: 0.2em; color: #00ff88; margin: 0; font-family: 'JetBrains Mono', monospace;">TANDEM</h1>
-          <p class="splash-subtitle" style="font-size: 0.75rem; letter-spacing: 0.3em; text-transform: uppercase; color: rgba(0, 255, 136, 0.5); margin: 0.5rem 0 0 0; font-family: 'JetBrains Mono', monospace;">AI Workspace</p>
+          <h1 class="splash-title" style="font-size: 3.5rem; font-weight: bold; letter-spacing: 0.2em; color: var(--matrix-green); margin: 0; font-family: 'JetBrains Mono', monospace;">TANDEM</h1>
+          <p class="splash-subtitle" style="font-size: 0.75rem; letter-spacing: 0.3em; text-transform: uppercase; color: rgba(var(--matrix-green-rgb), 0.5); margin: 0.5rem 0 0 0; font-family: 'JetBrains Mono', monospace;">AI Workspace</p>
         </div>
         
         <!-- Loading spinner (shown while checking vault status) -->
         <div id="loading-section" class="spinner-container" style="display: flex; flex-direction: column; align-items: center; gap: 1rem;">
           <div class="spinner" style="position: relative; width: 60px; height: 60px;">
-            <div class="spinner-ring spinner-ring-1" style="position: absolute; inset: 0; border-radius: 50%; border: 2px solid transparent; border-top-color: #00ff88;"></div>
-            <div class="spinner-ring spinner-ring-2" style="position: absolute; inset: 6px; border-radius: 50%; border: 2px solid transparent; border-bottom-color: rgba(0, 255, 136, 0.6);"></div>
-            <div class="spinner-ring spinner-ring-3" style="position: absolute; inset: 12px; border-radius: 50%; border: 2px solid transparent; border-left-color: rgba(0, 255, 136, 0.3);"></div>
+            <div class="spinner-ring spinner-ring-1" style="position: absolute; inset: 0; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--matrix-green);"></div>
+            <div class="spinner-ring spinner-ring-2" style="position: absolute; inset: 6px; border-radius: 50%; border: 2px solid transparent; border-bottom-color: rgba(var(--matrix-green-rgb), 0.6);"></div>
+            <div class="spinner-ring spinner-ring-3" style="position: absolute; inset: 12px; border-radius: 50%; border: 2px solid transparent; border-left-color: rgba(var(--matrix-green-rgb), 0.3);"></div>
           </div>
-          <p id="loading-text" class="loading-text" style="font-size: 0.875rem; color: #00ff88; opacity: 0.8; margin: 0; font-family: 'JetBrains Mono', monospace;">Initializing<span class="loading-dots"></span></p>
+          <p id="loading-text" class="loading-text" style="font-size: 0.875rem; color: var(--matrix-green); opacity: 0.8; margin: 0; font-family: 'JetBrains Mono', monospace;">Initializing<span class="loading-dots"></span></p>
         </div>
         
         <!-- PIN Entry UI (shown when vault needs PIN) -->
@@ -459,57 +468,10 @@
     <div id="root"></div>
     
     <script>
-      // Track when splash screen started (before React loads)
+      // Track when splash screen started (before React loads). The themed matrix animation
+      // itself is started in `src/vault-splash.ts` so it can match the saved theme.
       window.__splashStartedAt = Date.now();
       window.__vaultUnlocked = false;
-
-      // Matrix rain animation - runs immediately
-      (function() {
-        const canvas = document.getElementById('matrix-canvas');
-        const ctx = canvas.getContext('2d');
-        
-        function resize() {
-          canvas.width = window.innerWidth;
-          canvas.height = window.innerHeight;
-        }
-        resize();
-        window.addEventListener('resize', resize);
-        
-        const chars = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        const fontSize = 14;
-        let columns = Math.floor(canvas.width / fontSize);
-        let drops = Array(columns).fill(1);
-        
-        function draw() {
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          
-          ctx.fillStyle = '#00ff88';
-          ctx.font = fontSize + 'px monospace';
-          
-          for (let i = 0; i < drops.length; i++) {
-            const char = chars[Math.floor(Math.random() * chars.length)];
-            const x = i * fontSize;
-            const y = drops[i] * fontSize;
-            
-            // Brighter head
-            ctx.fillStyle = drops[i] * fontSize < 50 ? '#fff' : '#00ff88';
-            ctx.globalAlpha = Math.random() * 0.5 + 0.5;
-            ctx.fillText(char, x, y);
-            ctx.globalAlpha = 1;
-            
-            if (y > canvas.height && Math.random() > 0.975) {
-              drops[i] = 0;
-            }
-            drops[i]++;
-          }
-        }
-        
-        const interval = setInterval(draw, 33);
-        
-        // Store interval for cleanup
-        window.__matrixInterval = interval;
-      })();
     </script>
     
     <!-- Vault PIN logic (runs as module to access Tauri APIs) -->

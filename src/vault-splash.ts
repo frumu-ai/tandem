@@ -2,6 +2,8 @@
 // This runs before the main React app loads
 
 import { invoke } from "@tauri-apps/api/core";
+import { DEFAULT_THEME_ID, getThemeById } from "./lib/themes";
+import type { ThemeId } from "./types/theme";
 
 const MIN_PIN_LENGTH = 4;
 const MAX_PIN_LENGTH = 4;
@@ -14,6 +16,142 @@ let isLoading = false;
 
 type VaultStatus = "not_created" | "locked" | "unlocked";
 
+function parseRgb(color: string): { r: number; g: number; b: number } | null {
+  const c = color.trim();
+  if (!c) return null;
+
+  // rgb()/rgba()
+  const rgbMatch = c.match(
+    /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*[\d.]+\s*)?\)$/
+  );
+  if (rgbMatch) {
+    return { r: Number(rgbMatch[1]), g: Number(rgbMatch[2]), b: Number(rgbMatch[3]) };
+  }
+
+  // #rgb / #rrggbb
+  const hex = c.startsWith("#") ? c.slice(1) : c;
+  if (hex.length === 3) {
+    const r = Number.parseInt(hex[0] + hex[0], 16);
+    const g = Number.parseInt(hex[1] + hex[1], 16);
+    const b = Number.parseInt(hex[2] + hex[2], 16);
+    return { r, g, b };
+  }
+  if (hex.length === 6) {
+    const r = Number.parseInt(hex.slice(0, 2), 16);
+    const g = Number.parseInt(hex.slice(2, 4), 16);
+    const b = Number.parseInt(hex.slice(4, 6), 16);
+    return { r, g, b };
+  }
+
+  return null;
+}
+
+function applySplashTheme() {
+  const themeId = (localStorage.getItem("tandem.themeId") as ThemeId | null) ?? DEFAULT_THEME_ID;
+  const theme = getThemeById(themeId);
+
+  // Apply core theme vars early (so splash + first paint match)
+  for (const [name, value] of Object.entries(theme.cssVars)) {
+    if (value == null) continue;
+    document.documentElement.style.setProperty(name, value);
+  }
+  document.documentElement.dataset.theme = theme.id;
+
+  const splash = document.getElementById("splash-screen");
+  if (!splash) return;
+
+  const accent = theme.cssVars["--color-primary"] ?? "#00ff88";
+  const bg = theme.cssVars["--color-background"] ?? "#000000";
+  const text = theme.cssVars["--color-text"] ?? "#ffffff";
+  const err = theme.cssVars["--color-error"] ?? "#ff4444";
+
+  splash.style.setProperty("--matrix-green", accent);
+  splash.style.setProperty("--matrix-bg", bg);
+  splash.style.setProperty("--matrix-text", text);
+  splash.style.setProperty("--error-red", err);
+
+  const accentRgb = parseRgb(accent);
+  const bgRgb = parseRgb(bg);
+  const textRgb = parseRgb(text);
+  if (accentRgb) {
+    splash.style.setProperty(
+      "--matrix-green-rgb",
+      `${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}`
+    );
+  }
+  if (bgRgb) {
+    splash.style.setProperty("--matrix-bg-rgb", `${bgRgb.r}, ${bgRgb.g}, ${bgRgb.b}`);
+  }
+  if (textRgb) {
+    splash.style.setProperty("--matrix-text-rgb", `${textRgb.r}, ${textRgb.g}, ${textRgb.b}`);
+  }
+}
+
+function startMatrixRain() {
+  const canvasEl = document.getElementById("matrix-canvas");
+  const splashEl = document.getElementById("splash-screen");
+  if (!(canvasEl instanceof HTMLCanvasElement) || !(splashEl instanceof HTMLElement)) return;
+
+  const canvas = canvasEl;
+  const splash = splashEl;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const context = ctx;
+
+  const chars =
+    "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const fontSize = 14;
+
+  function readVar(name: string, fallback: string) {
+    const v = getComputedStyle(splash).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    columns = Math.floor(canvas.width / fontSize);
+    drops = Array(columns).fill(1);
+  }
+
+  let columns = 0;
+  let drops: number[] = [];
+  resize();
+  window.addEventListener("resize", resize);
+
+  function draw() {
+    const bgRgb = readVar("--matrix-bg-rgb", "0, 0, 0");
+    const accent = readVar("--matrix-green", "#00ff88");
+    const text = readVar("--matrix-text", "#ffffff");
+
+    context.fillStyle = `rgba(${bgRgb}, 0.08)`;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    context.font = `${fontSize}px monospace`;
+
+    for (let i = 0; i < drops.length; i++) {
+      const char = chars[Math.floor(Math.random() * chars.length)];
+      const x = i * fontSize;
+      const y = drops[i] * fontSize;
+
+      // Brighter head for the top area
+      context.fillStyle = y < 50 ? text : accent;
+      context.globalAlpha = Math.random() * 0.5 + 0.5;
+      context.fillText(char, x, y);
+      context.globalAlpha = 1;
+
+      if (y > canvas.height && Math.random() > 0.975) {
+        drops[i] = 0;
+      }
+      drops[i]++;
+    }
+  }
+
+  const interval = window.setInterval(draw, 33);
+  (window as any).__matrixInterval = interval;
+}
+
 // Get DOM elements
 const loadingSection = document.getElementById("loading-section")!;
 const pinSection = document.getElementById("pin-section")!;
@@ -23,6 +161,10 @@ const pinDots = document.getElementById("pin-dots")!;
 const pinError = document.getElementById("pin-error")!;
 const pinConfirmHint = document.getElementById("pin-confirm-hint")!;
 const loadingText = document.getElementById("loading-text")!;
+
+// Theme + matrix start (must happen before we begin interactions)
+applySplashTheme();
+startMatrixRain();
 
 function updatePinDots() {
   const dots = pinDots.querySelectorAll(".pin-dot");

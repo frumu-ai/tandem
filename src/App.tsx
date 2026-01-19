@@ -11,9 +11,10 @@ import { FilePreview } from "@/components/files/FilePreview";
 import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
 import { Button } from "@/components/ui";
 import { useAppState } from "@/hooks/useAppState";
+import { useTheme } from "@/hooks/useTheme";
 import { useTodos } from "@/hooks/useTodos";
 import { cn } from "@/lib/utils";
-import logo from "@/assets/logo.png";
+import { BrandMark } from "@/components/ui/BrandMark";
 import {
   listSessions,
   listProjects,
@@ -45,6 +46,7 @@ import {
   Info,
   ListTodo,
   Files,
+  Palette,
 } from "lucide-react";
 
 type View = "chat" | "settings" | "about" | "onboarding" | "sidecar-setup";
@@ -74,6 +76,7 @@ declare global {
 
 function App() {
   const { state, loading, refresh: refreshAppState } = useAppState();
+  const { cycleTheme } = useTheme();
   const [sidecarReady, setSidecarReady] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [taskSidebarOpen, setTaskSidebarOpen] = useState(false);
@@ -519,9 +522,9 @@ function App() {
         animate={{ x: 0 }}
         transition={{ duration: 0.3 }}
       >
-        {/* Logo */}
-        <div className="mb-8 h-10 w-10 overflow-hidden rounded-xl ring-1 ring-white/10">
-          <img src={logo} alt="Tandem logo" className="h-full w-full object-cover" />
+        {/* Brand mark */}
+        <div className="mb-8">
+          <BrandMark size="md" />
         </div>
 
         {/* Navigation */}
@@ -561,6 +564,15 @@ function App() {
           >
             <SettingsIcon className="h-5 w-5" />
           </button>
+
+          {/* Theme quick toggle */}
+          <button
+            onClick={() => cycleTheme()}
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+            title="Switch theme"
+          >
+            <Palette className="h-5 w-5" />
+          </button>
           <button
             onClick={() => setView("about")}
             className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
@@ -599,13 +611,13 @@ function App() {
       </motion.aside>
 
       {/* Tabbed Sidebar (Sessions / Files) */}
-      {effectiveView === "chat" && sidebarOpen && (
+      {effectiveView === "chat" && (
         <motion.div
-          className="flex h-full w-80 flex-col border-r border-border bg-surface z-10"
-          initial={{ x: -320 }}
-          animate={{ x: 0 }}
-          exit={{ x: -320 }}
-          transition={{ duration: 0.3 }}
+          className="flex h-full flex-col border-r border-border bg-surface z-10 overflow-hidden"
+          initial={false}
+          animate={{ width: sidebarOpen ? 320 : 0, opacity: sidebarOpen ? 1 : 0 }}
+          transition={{ duration: 0.25, ease: "easeOut" }}
+          style={{ pointerEvents: sidebarOpen ? "auto" : "none" }}
         >
           {/* Tab Switcher */}
           <div className="flex border-b border-border">
@@ -691,6 +703,7 @@ function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            transition={{ duration: 0.8, ease: "easeOut" }}
           >
             <SidecarDownloader onComplete={handleSidecarReady} />
           </motion.div>
@@ -749,6 +762,7 @@ function App() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
+                    transition={{ duration: 0.8, ease: "easeOut" }}
                   >
                     <Settings onClose={handleSettingsClose} onProjectChange={loadUserProjects} />
                   </motion.div>
@@ -760,6 +774,7 @@ function App() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
+                    transition={{ duration: 0.8, ease: "easeOut" }}
                   >
                     <About />
                   </motion.div>
@@ -822,19 +837,13 @@ function OnboardingView({ onComplete }: OnboardingViewProps) {
   return (
     <motion.div
       className="flex h-full flex-col items-center justify-center p-8"
-      initial={{ opacity: 0, y: 20 }}
+      initial={{ opacity: 0, y: 50 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -20 }}
+      exit={{ opacity: 0, y: -50 }}
+      transition={{ duration: 0.8, ease: "easeOut" }}
     >
       <div className="max-w-md text-center">
-        <motion.div
-          className="mx-auto mb-6 h-20 w-20 overflow-hidden rounded-2xl ring-1 ring-white/10"
-          initial={{ scale: 0 }}
-          animate={{ scale: 1 }}
-          transition={{ delay: 0.2, type: "spring" }}
-        >
-          <img src={logo} alt="Tandem logo" className="h-full w-full object-cover" />
-        </motion.div>
+        {/* Removed brand mark from onboarding header (it's already in the sidebar) */}
 
         <motion.h1
           className="mb-3 text-3xl font-bold text-text"
@@ -885,10 +894,12 @@ function OnboardingView({ onComplete }: OnboardingViewProps) {
             </div>
           </div>
 
-          <Button onClick={onComplete} size="lg" className="w-full">
-            <SettingsIcon className="mr-2 h-4 w-4" />
-            Open Settings
-          </Button>
+          <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.98 }}>
+            <Button onClick={onComplete} size="lg" className="w-full">
+              <SettingsIcon className="mr-2 h-4 w-4" />
+              Open Settings
+            </Button>
+          </motion.div>
         </motion.div>
       </div>
     </motion.div>

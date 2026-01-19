@@ -323,6 +323,9 @@ pub fn run() {
             commands::store_api_key,
             commands::has_api_key,
             commands::delete_api_key,
+            // Theme / appearance
+            commands::get_user_theme,
+            commands::set_user_theme,
             // Provider configuration
             commands::get_providers_config,
             commands::set_providers_config,
