@@ -363,6 +363,7 @@ pub fn run() {
             // Tool approval
             commands::approve_tool,
             commands::deny_tool,
+            commands::answer_question,
             // Execution planning / staging area
             commands::stage_tool_operation,
             commands::get_staged_operations,

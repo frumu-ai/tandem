@@ -477,6 +477,21 @@ pub enum StreamEvent {
         session_id: String,
         todos: Vec<TodoItem>,
     },
+    /// Question asked by LLM
+    QuestionAsked {
+        session_id: String,
+        question_id: String,
+        header: Option<String>,
+        question: String,
+        options: Vec<QuestionOption>,
+    },
+}
+
+/// Question option from OpenCode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub id: String,
+    pub label: String,
 }
 
 /// Model info from OpenCode
@@ -1284,6 +1299,44 @@ impl SidecarManager {
         }
     }
 
+    /// Answer a question from the LLM
+    pub async fn answer_question(
+        &self,
+        session_id: &str,
+        question_id: &str,
+        answer: String,
+    ) -> Result<()> {
+        self.check_circuit_breaker().await?;
+
+        let url = format!(
+            "{}/sessions/{}/questions/{}/answer",
+            self.base_url().await?,
+            session_id,
+            question_id
+        );
+
+        let body = serde_json::json!({ "answer": answer });
+
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to answer question: {}", e)))?;
+
+        if response.status().is_success() {
+            self.record_success().await;
+            Ok(())
+        } else {
+            self.record_failure().await;
+            Err(TandemError::Sidecar(format!(
+                "Failed to answer question: {}",
+                response.status()
+            )))
+        }
+    }
+
     // ========================================================================
     // Helpers
     // ========================================================================
@@ -1599,6 +1652,41 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                 request_id,
                 tool,
                 args,
+            })
+        }
+        "question.asked" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let question_id = props
+                .get("questionID")
+                .and_then(|s| s.as_str())?
+                .to_string();
+            let header = props
+                .get("header")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+            let question = props.get("question").and_then(|s| s.as_str())?.to_string();
+
+            let options = props
+                .get("options")
+                .and_then(|o| o.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|opt| {
+                            Some(QuestionOption {
+                                id: opt.get("id")?.as_str()?.to_string(),
+                                label: opt.get("label")?.as_str()?.to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            Some(StreamEvent::QuestionAsked {
+                session_id,
+                question_id,
+                header,
+                question,
+                options,
             })
         }
         "todo.updated" => {

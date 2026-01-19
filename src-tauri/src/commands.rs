@@ -1469,6 +1469,20 @@ pub async fn deny_tool(
     state.sidecar.deny_tool(&session_id, &tool_call_id).await
 }
 
+/// Answer a question from the LLM
+#[tauri::command]
+pub async fn answer_question(
+    state: State<'_, AppState>,
+    session_id: String,
+    question_id: String,
+    answer: String,
+) -> Result<()> {
+    state
+        .sidecar
+        .answer_question(&session_id, &question_id, answer)
+        .await
+}
+
 // ============================================================================
 // Execution Planning / Staging Area
 // ============================================================================

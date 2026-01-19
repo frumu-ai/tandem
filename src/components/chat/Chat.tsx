@@ -8,6 +8,7 @@ import {
 } from "@/components/permissions/PermissionToast";
 import { ExecutionPlanPanel } from "@/components/plan/ExecutionPlanPanel";
 import { PlanActionButtons } from "./PlanActionButtons";
+import { QuestionDialog } from "./QuestionDialog";
 import { useStagingArea } from "@/hooks/useStagingArea";
 import { FolderOpen, Sparkles, AlertCircle, Loader2 } from "lucide-react";
 import {
@@ -19,12 +20,14 @@ import {
   onSidecarEvent,
   approveTool,
   denyTool,
+  answerQuestion,
   getSessionMessages,
   undoViaCommand,
   isGitRepo,
   type StreamEvent,
   type SidecarState,
   type TodoItem,
+  type QuestionEvent,
 } from "@/lib/tauri";
 
 interface ChatProps {
@@ -63,7 +66,7 @@ export function Chat({
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(propSessionId || null);
-  
+
   // Notify parent when generating state changes
   useEffect(() => {
     onGeneratingChange?.(isGenerating);
@@ -72,15 +75,19 @@ export function Chat({
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
+  const [pendingQuestion, setPendingQuestion] = useState<QuestionEvent | null>(null);
   // const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isGitRepository, setIsGitRepository] = useState(false);
-  
+
   // Support both new agent prop and legacy usePlanMode
-  const selectedAgent = propSelectedAgent !== undefined ? propSelectedAgent : (propUsePlanMode ? "plan" : undefined);
-  const onAgentChange = propOnAgentChange || ((agent: string | undefined) => {
-    onPlanModeChange?.(agent === "plan");
-  });
+  const selectedAgent =
+    propSelectedAgent !== undefined ? propSelectedAgent : propUsePlanMode ? "plan" : undefined;
+  const onAgentChange =
+    propOnAgentChange ||
+    ((agent: string | undefined) => {
+      onPlanModeChange?.(agent === "plan");
+    });
   const usePlanMode = selectedAgent === "plan";
   const setUsePlanMode = (enabled: boolean) => {
     onAgentChange(enabled ? "plan" : undefined);
@@ -103,18 +110,23 @@ export function Chat({
 
   // Handle execute pending tasks from sidebar
   useEffect(() => {
-    if (executePendingTasksTrigger && executePendingTasksTrigger > 0 && currentSessionId && !isGenerating && pendingTasks && pendingTasks.length > 0) {
+    if (
+      executePendingTasksTrigger &&
+      executePendingTasksTrigger > 0 &&
+      currentSessionId &&
+      !isGenerating &&
+      pendingTasks &&
+      pendingTasks.length > 0
+    ) {
       // Build a message with actual task content - use action-oriented prompts
-      const taskList = pendingTasks
-        .map((t, i) => `${i + 1}. ${t.content}`)
-        .join('\n');
-      
+      const taskList = pendingTasks.map((t, i) => `${i + 1}. ${t.content}`).join("\n");
+
       const message = `Please implement the following tasks from our plan:
 
 ${taskList}
 
 Start with task #1 and continue through each one. Let me know when each task is complete.`;
-      
+
       // Small delay to ensure state is ready
       setTimeout(() => {
         handleSend(message);
@@ -387,7 +399,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
 
   // Use a ref to track the current session without causing re-renders
   const currentSessionIdRef = useRef<string | null>(null);
-  
+
   // Update ref when session changes (but this doesn't cause handleStreamEvent to recreate)
   useEffect(() => {
     currentSessionIdRef.current = currentSessionId;
@@ -409,7 +421,11 @@ Start with task #1 and continue through each one. Let me know when each task is 
       // Filter events for the current session
       // IMPORTANT: Use ref value to avoid recreating this callback
       const eventSessionId = (event as { session_id?: string }).session_id;
-      if (eventSessionId && currentSessionIdRef.current && eventSessionId !== currentSessionIdRef.current) {
+      if (
+        eventSessionId &&
+        currentSessionIdRef.current &&
+        eventSessionId !== currentSessionIdRef.current
+      ) {
         console.log(
           "[StreamEvent] Ignoring event for different session:",
           eventSessionId,
@@ -652,20 +668,20 @@ Start with task #1 and continue through each one. Let me know when each task is 
 
         case "session_error":
           console.error("[StreamEvent] Session error:", event.error);
-          
+
           // Display the error to the user
           setError(`Session error: ${event.error}`);
-          
+
           // Stop generation and clean up
           setIsGenerating(false);
           currentAssistantMessageRef.current = "";
-          
+
           // Clear generation timeout
           if (generationTimeoutRef.current) {
             clearTimeout(generationTimeoutRef.current);
             generationTimeoutRef.current = null;
           }
-          
+
           // Update the last assistant message with the error if it exists
           setMessages((prev) => {
             const lastMessage = prev[prev.length - 1];
@@ -734,6 +750,18 @@ Start with task #1 and continue through each one. Let me know when each task is 
             };
             setPendingPermissions((prev) => [...prev, permissionRequest]);
           }
+          break;
+        }
+
+        case "question_asked": {
+          const questionEvent: QuestionEvent = {
+            session_id: event.session_id,
+            question_id: event.question_id,
+            header: event.header,
+            question: event.question,
+            options: event.options,
+          };
+          setPendingQuestion(questionEvent);
           break;
         }
 
@@ -842,7 +870,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
 
       // Select agent
       const agentToUse = selectedAgent;
-      
+
       // In Plan Mode, guide the AI to use todowrite for task tracking
       let finalContent = content;
       if (usePlanMode) {
@@ -903,7 +931,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
                 // eslint-disable-next-line no-undef
                 escape(atob(base64Data))
               );
-              
+
               // Use a generic format that won't trigger OpenCode to look for files
               messageContent += `\n\nHere is the attached content:\n\`\`\`\n${decodedContent}\n\`\`\`\n`;
             }
@@ -1124,6 +1152,18 @@ Start with task #1 and continue through each one. Let me know when each task is 
     }
   };
 
+  const handleAnswerQuestion = async (answer: string) => {
+    if (!pendingQuestion || !currentSessionId) return;
+
+    try {
+      await answerQuestion(currentSessionId, pendingQuestion.question_id, answer);
+      setPendingQuestion(null);
+    } catch (err) {
+      console.error("Failed to answer question:", err);
+      setError(`Failed to answer question: ${err}`);
+    }
+  };
+
   const needsConnection = sidecarStatus !== "running" && !isConnecting;
 
   return (
@@ -1156,7 +1196,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
             >
               <div className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
               <span className="text-xs font-medium text-amber-500">
-                {stagedOperations.length} change{stagedOperations.length !== 1 ? 's' : ''} pending
+                {stagedOperations.length} change{stagedOperations.length !== 1 ? "s" : ""} pending
               </span>
             </motion.div>
           )}
@@ -1195,14 +1235,11 @@ Start with task #1 and continue through each one. Let me know when each task is 
               <AlertCircle className="h-4 w-4 text-primary" />
             </div>
             <div className="flex-1">
-              <p className="text-sm font-medium text-text">
-                Plan Mode Active
-              </p>
+              <p className="text-sm font-medium text-text">Plan Mode Active</p>
               <p className="mt-1 text-xs text-text-muted">
-                {stagedOperations.length > 0 
-                  ? `${stagedOperations.length} change${stagedOperations.length !== 1 ? 's' : ''} staged. Review them in the Execution Plan panel (bottom-right) and click "Execute Plan" when ready.`
-                  : "The AI will propose file changes for your review. When changes are proposed, they'll appear in the Execution Plan panel for batch approval."
-                }
+                {stagedOperations.length > 0
+                  ? `${stagedOperations.length} change${stagedOperations.length !== 1 ? "s" : ""} staged. Review them in the Execution Plan panel (bottom-right) and click "Execute Plan" when ready.`
+                  : "The AI will propose file changes for your review. When changes are proposed, they'll appear in the Execution Plan panel for batch approval."}
               </p>
             </div>
           </div>
@@ -1246,7 +1283,8 @@ Start with task #1 and continue through each one. Let me know when each task is 
             messages.map((message, index) => {
               const isLastMessage = index === messages.length - 1;
               const isAssistant = message.role === "assistant";
-              const showActionButtons = usePlanMode && isLastMessage && isAssistant && !isGenerating;
+              const showActionButtons =
+                usePlanMode && isLastMessage && isAssistant && !isGenerating;
 
               return (
                 <div key={message.id}>
@@ -1338,6 +1376,9 @@ Start with task #1 and continue through each one. Let me know when each task is 
         />
       )}
 
+      {/* Question dialog */}
+      <QuestionDialog question={pendingQuestion} onAnswer={handleAnswerQuestion} />
+
       {/* Execution plan panel - only show in plan mode */}
       {usePlanMode && (
         <ExecutionPlanPanel
@@ -1346,16 +1387,21 @@ Start with task #1 and continue through each one. Let me know when each task is 
             try {
               await executePlan();
               console.log("[ExecutionPlan] Plan executed successfully");
-              
+
               // Send confirmation message to AI that plan was executed
               if (currentSessionId && stagedOperations.length > 0) {
                 const confirmMessage = `The execution plan with ${stagedOperations.length} change(s) has been applied successfully. You can continue with the next steps.`;
-                
+
                 // Send as a user message so the AI knows to continue
                 setTimeout(async () => {
                   try {
                     // Use the same agent (plan agent if in plan mode)
-                    await sendMessageStreaming(currentSessionId, confirmMessage, undefined, usePlanMode ? "plan" : undefined);
+                    await sendMessageStreaming(
+                      currentSessionId,
+                      confirmMessage,
+                      undefined,
+                      usePlanMode ? "plan" : undefined
+                    );
                   } catch (err) {
                     console.error("[ExecutionPlan] Failed to send confirmation:", err);
                   }

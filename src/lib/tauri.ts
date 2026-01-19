@@ -147,6 +147,19 @@ export interface TodoItem {
   status: "pending" | "in_progress" | "completed" | "cancelled";
 }
 
+export interface QuestionOption {
+  id: string;
+  label: string;
+}
+
+export interface QuestionEvent {
+  session_id: string;
+  question_id: string;
+  header?: string;
+  question: string;
+  options: QuestionOption[];
+}
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -197,6 +210,14 @@ export type StreamEvent =
       request_id: string;
       tool?: string;
       args?: Record<string, unknown>;
+    }
+  | {
+      type: "question_asked";
+      session_id: string;
+      question_id: string;
+      header?: string;
+      question: string;
+      options: QuestionOption[];
     }
   | { type: "raw"; event_type: string; data: unknown };
 
@@ -548,6 +569,14 @@ export async function denyTool(
     args: meta?.args,
     messageId: meta?.messageId,
   });
+}
+
+export async function answerQuestion(
+  sessionId: string,
+  questionId: string,
+  answer: string
+): Promise<void> {
+  return invoke("answer_question", { sessionId, questionId, answer });
 }
 
 // ============================================================================
