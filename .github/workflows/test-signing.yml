@@ -31,11 +31,22 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           PUBLIC_KEY: ${{ steps.pubkey.outputs.pubkey }}
         run: |
-          echo "Step 1: Writing private key to file..."
-          printf '%s\n' "$TAURI_SIGNING_PRIVATE_KEY" > /tmp/private.key
+          echo "Step 1: Basic secret diagnostics (no secret output)..."
+          python - <<'PY'
+          import os, re
+          key = os.environ.get("TAURI_SIGNING_PRIVATE_KEY", "")
+          print(f"Key length: {len(key)}")
+          print(f"Starts with 'dW50'?: {key.startswith('dW50')}")
+          print(f"Looks like Windows path?: {(':\\\\' in key) or (key.startswith('C:\\\\')) or ('.tauri' in key)}")
+          invalid = re.sub(r"[A-Za-z0-9+/=\\r\\n]", "", key)
+          print(f"Non-base64 chars count (excluding newlines): {len(invalid)}")
+          if invalid:
+            # Print only the first invalid char codepoint, not the char itself.
+            print(f"First invalid char codepoint: {ord(invalid[0])}")
+          PY
 
-          echo "Step 2: Displaying key format (first line only)..."
-          head -n 1 /tmp/private.key
+          echo "Step 2: Writing private key to file..."
+          printf '%s\n' "$TAURI_SIGNING_PRIVATE_KEY" > /tmp/private.key
 
           echo "Step 3: Creating test file..."
           echo "test content" > test.txt
