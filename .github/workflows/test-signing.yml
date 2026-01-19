@@ -60,7 +60,8 @@ jobs:
           echo "Step 4: Verifying signature with public key (minisign)..."
           # `PUBLIC_KEY` is base64; decode to minisign public key format, then verify.
           printf '%s' "$PUBLIC_KEY" | base64 -d > /tmp/public.key
-          minisign -Vm test.txt -p /tmp/public.key
+          # Tauri produces a `.sig` file; minisign defaults to `.minisig` unless specified.
+          minisign -Vm test.txt -x test.txt.sig -p /tmp/public.key
 
           echo "✅ SUCCESS! Private key, password, and public key all match!"
 
