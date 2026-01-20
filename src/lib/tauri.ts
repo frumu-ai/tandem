@@ -199,6 +199,7 @@ export type StreamEvent =
       session_id: string;
       message_id: string;
       part_id: string;
+      tool: string;
       result?: unknown;
       error?: string;
     }

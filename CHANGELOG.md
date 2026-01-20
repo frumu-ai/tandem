@@ -21,9 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Taskbar no longer overlays the About and Settings screens.
 - OpenCode sidecar API compatibility after upstream route changes (provider/model listing and prompt submission).
 - Streaming event parsing for newer OpenCode SSE payload shapes.
-- Structured provider errors now surface in the chat UI instead of failing silently.
+- Structured provider errors now surface in the chat UI instead of failing silently; improved extraction of specific reasons (e.g., credit limits) from nested responses.
 - Permission prompts now render correctly for updated tool event payloads.
 - Provider key status refreshes immediately after saving or deleting API keys.
+- Technical tool calls (edit, write, ls, etc.) are now handled as transient background tasks and auto-cleanup from chat on success.
+- Final AI responses now render reliably at the end of a session, with an automatic backfill mechanism if the stream is interrupted.
+- Reduced terminal log spam by downgrading verbose background activity and summarizing large event payloads.
+- Fixed a TypeScript error where the `tool` property was missing from the `tool_end` event payload.
 
 ### Changed
 

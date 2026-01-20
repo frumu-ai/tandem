@@ -78,6 +78,10 @@ export function Chat({
 }: ChatProps) {
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const isGeneratingRef = useRef(isGenerating);
+  useEffect(() => {
+    isGeneratingRef.current = isGenerating;
+  }, [isGenerating]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(propSessionId || null);
   const [allowAllTools, setAllowAllTools] = useState(false);
   const [enabledToolCategories, setEnabledToolCategories] = useState<Set<string>>(new Set());
@@ -109,6 +113,7 @@ export function Chat({
     onAgentChange(enabled ? "plan" : undefined);
   };
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<MessageProps[]>([]);
   const currentAssistantMessageRef = useRef<string>("");
   const currentAssistantMessageIdRef = useRef<string | null>(null);
   const generationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -402,25 +407,48 @@ Start with task #1 and continue through each one. Let me know when each task is 
                 content += `\n[📎 Attached file: ${filename}]\n`;
               }
             } else if (partObj.type === "tool" || partObj.type === "tool-invocation") {
+              const toolName = (partObj.tool || "unknown") as string;
+              const technicalTools = [
+                "todowrite",
+                "edit",
+                "write",
+                "patch",
+                "ls",
+                "read",
+                "list",
+                "search",
+                "bash",
+                "run_command",
+                "delete_file",
+              ];
+
+              // Skip finished technical tools in history to keep chat clean
               const state = partObj.state as Record<string, unknown> | undefined;
+              const status =
+                state?.status === "completed"
+                  ? "completed"
+                  : state?.status === "failed"
+                    ? "failed"
+                    : "pending";
+
+              if (technicalTools.includes(toolName) && status === "completed") {
+                continue;
+              }
+
               toolCalls.push({
                 id: (partObj.id || partObj.callID || "") as string,
-                tool: (partObj.tool || "unknown") as string,
+                tool: toolName,
                 args: (state?.input || partObj.args || {}) as Record<string, unknown>,
                 result: state?.output ? String(state.output) : undefined,
-                status:
-                  state?.status === "completed"
-                    ? "completed"
-                    : state?.status === "failed"
-                      ? "failed"
-                      : "pending",
+                status,
+                isTechnical: technicalTools.includes(toolName),
               });
             }
           }
 
           // Only add messages that have actual text content or are user messages
           // Skip assistant messages that only have tool calls (internal OpenCode operations)
-          if (content || role === "user") {
+          if (content.trim() || role === "user" || (toolCalls.length > 0 && role === "assistant")) {
             convertedMessages.push({
               id: msg.info.id,
               role,
@@ -429,6 +457,8 @@ Start with task #1 and continue through each one. Let me know when each task is 
               toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
               attachments: attachments.length > 0 ? (attachments as any) : undefined,
             });
+          } else {
+            console.log(`[LoadHistory] Skipping empty/technical assistant message: ${msg.info.id}`);
           }
         }
 
@@ -508,6 +538,10 @@ Start with task #1 and continue through each one. Let me know when each task is 
   useEffect(() => {
     currentSessionIdRef.current = currentSessionId;
   }, [currentSessionId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const handleStreamEvent = useCallback(
     (event: StreamEvent) => {
@@ -623,35 +657,21 @@ Start with task #1 and continue through each one. Let me know when each task is 
         case "tool_start": {
           const args = event.args as Record<string, unknown>;
 
-          // Add to activity panel - DISABLED
-          // const activityType = getActivityType(event.tool);
-          // const activityTitle = getActivityTitle(event.tool, args);
-
-          // setActivities((prev) => {
-          //   // Check if activity already exists (update) or is new (add)
-          //   const existingIdx = prev.findIndex((a) => a.id === event.part_id);
-          //   if (existingIdx >= 0) {
-          //     const updated = [...prev];
-          //     updated[existingIdx] = {
-          //       ...updated[existingIdx],
-          //       status: "running",
-          //     };
-          //     return updated;
-          //   }
-          //   return [
-          //     ...prev,
-          //     {
-          //       id: event.part_id,
-          //       type: activityType,
-          //       tool: event.tool,
-          //       title: activityTitle,
-          //       detail: (args.path as string) || (args.query as string) || undefined,
-          //       status: "running",
-          //       timestamp: new Date(),
-          //       args,
-          //     },
-          //   ];
-          // });
+          // Technical tools are handled as transient background tasks
+          const technicalTools = [
+            "todowrite",
+            "edit",
+            "write",
+            "patch",
+            "ls",
+            "read",
+            "list",
+            "search",
+            "bash",
+            "run_command",
+            "delete_file",
+          ];
+          const isTechnical = technicalTools.includes(event.tool);
 
           // Add tool call to the message
           setMessages((prev) => {
@@ -683,6 +703,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
                         tool: event.tool,
                         args: event.args as Record<string, unknown>,
                         status: "pending" as const,
+                        isTechnical, // Mark as technical for transient display
                       },
                     ],
                   },
@@ -724,26 +745,33 @@ Start with task #1 and continue through each one. Let me know when each task is 
         }
 
         case "tool_end": {
-          // Update activity status - DISABLED
-          // const resultStr =
-          //   event.error || (event.result ? JSON.stringify(event.result).slice(0, 500) : "");
-          // setActivities((prev) =>
-          //   prev.map((a) =>
-          //     a.id === event.part_id
-          //       ? {
-          //           ...a,
-          //           status: event.error ? "failed" : "completed",
-          //           result: resultStr,
-          //         }
-          //       : a
-          //   )
-          // );
+          // Technical tools are handled as transient background tasks
+          const technicalTools = [
+            "todowrite",
+            "edit",
+            "write",
+            "patch",
+            "ls",
+            "read",
+            "list",
+            "search",
+            "bash",
+            "run_command",
+            "delete_file",
+          ];
+          const isTechnical = technicalTools.includes(event.tool);
 
           // Update tool call with result
           setMessages((prev) => {
             const lastMessage = prev[prev.length - 1];
             if (lastMessage && lastMessage.role === "assistant" && lastMessage.toolCalls) {
-              const toolCalls = lastMessage.toolCalls.map((tc) =>
+              // If it's a technical tool, we might want to remove it entirely once done
+              if (isTechnical && !event.error) {
+                const newToolCalls = lastMessage.toolCalls.filter((tc) => tc.id !== event.part_id);
+                return [...prev.slice(0, -1), { ...lastMessage, toolCalls: newToolCalls }];
+              }
+
+              const newToolCalls = lastMessage.toolCalls.map((tc) =>
                 tc.id === event.part_id
                   ? {
                       ...tc,
@@ -752,7 +780,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
                     }
                   : tc
               );
-              return [...prev.slice(0, -1), { ...lastMessage, toolCalls }];
+              return [...prev.slice(0, -1), { ...lastMessage, toolCalls: newToolCalls }];
             }
             return prev;
           });
@@ -765,6 +793,8 @@ Start with task #1 and continue through each one. Let me know when each task is 
           break;
 
         case "session_idle":
+          console.log("[StreamEvent] Session idle - completing generation");
+
           // Generation complete - ensure final message content is saved before clearing
           setMessages((prev) => {
             const lastMessage = prev[prev.length - 1];
@@ -773,6 +803,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
               lastMessage.role === "assistant" &&
               currentAssistantMessageRef.current
             ) {
+              console.log("[StreamEvent] Applying final content to assistant message");
               // Ensure the final content is applied with the correct ID
               return [
                 ...prev.slice(0, -1),
@@ -786,13 +817,26 @@ Start with task #1 and continue through each one. Let me know when each task is 
             return prev;
           });
 
-          // Mark any remaining running activities as completed - DISABLED
-          // setActivities((prev) =>
-          //   prev.map((a) => (a.status === "running" ? { ...a, status: "completed" } : a))
-          // );
+          // Wait 500ms before clearing references, giving time for final message.updated events
+          setTimeout(() => {
+            if (!isGeneratingRef.current) {
+              currentAssistantMessageRef.current = "";
+              currentAssistantMessageIdRef.current = null;
+            }
+          }, 500);
+
+          // If we never received a content event, backfill from session history.
+          if (!currentAssistantMessageRef.current.trim()) {
+            const lastMessage = messagesRef.current[messagesRef.current.length - 1];
+            const needsBackfill =
+              !lastMessage || lastMessage.role !== "assistant" || !lastMessage.content?.trim();
+            if (needsBackfill && currentSessionIdRef.current) {
+              console.log("[Chat] Backfilling assistant content from history");
+              void loadSessionHistory(currentSessionIdRef.current);
+            }
+          }
+
           setIsGenerating(false);
-          currentAssistantMessageRef.current = "";
-          currentAssistantMessageIdRef.current = null; // Reset the ID ref
           if (generationTimeoutRef.current) {
             clearTimeout(generationTimeoutRef.current);
             generationTimeoutRef.current = null;
