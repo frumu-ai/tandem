@@ -7,24 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.7] - 2026-01-20
+## [0.1.6] - 2026-01-20
 
 ### Added
 
 - **Collapsible Tool Outputs:** Large tool outputs (like `todowrite` or file operations) are now collapsed by default in the chat view, reducing visual noise. Users can expand them to see full details.
 - **Chart Generation Capabilities:** Updated internal marketing documentation to highlight the new capability of generating interactive visual dashboards directly from research data.
-
-### Fixed
-
-- **Linux UI Transparency:** Fixed an issue where the project switcher dropdown was unreadable on Linux due to incorrect glass effect rendering.
-- **Session Loading:** Resolved a bug where the application would start with a blank screen instead of loading the previously selected chat session.
-- **External Link Handling:** Fixed permission issues preventing "Open in Browser" from working for generated files.
-- **HTML Preview:** Links within generated HTML reports now correctly open in the system default browser.
-
-## [0.1.6] - 2026-01-20
-
-### Added
-
 - HTML Canvas/Report feature: render interactive HTML files in a sandboxed iframe with Tailwind, Chart.js, and Font Awesome support.
 - "Research" tool category with dedicated instructions for a robust "Search → Select → Fetch" workflow.
 - Visibility of AI reasoning/thinking parts in both live streaming and chat history.
@@ -33,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Linux UI Transparency:** Fixed an issue where the project switcher dropdown was unreadable on Linux due to incorrect glass effect rendering.
+- **Session Loading:** Resolved a bug where the application would start with a blank screen instead of loading the previously selected chat session.
+- **External Link Handling:** Fixed permission issues preventing "Open in Browser" from working for generated files.
+- **HTML Preview:** Links within generated HTML reports now correctly open in the system default browser.
 - Robust cancellation: Stop button now reliably terminates backend AI processes using a fallback API mechanism.
 - Tool visibility: All tool calls (including technical ones) are now visible throughout the session per user request.
 - Fixed chat "freezing" by ensuring intermediate reasoning and tool steps are always streamed to the UI.
