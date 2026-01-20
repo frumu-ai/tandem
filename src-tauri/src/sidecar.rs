@@ -466,6 +466,7 @@ pub enum StreamEvent {
         session_id: String,
         message_id: String,
         part_id: String,
+        tool: String,
         result: Option<serde_json::Value>,
         error: Option<String>,
     },
@@ -660,7 +661,7 @@ impl SidecarManager {
         {
             let state = self.state.read().await;
             if *state == SidecarState::Running {
-                tracing::info!("Sidecar already running");
+                tracing::debug!("Sidecar already running");
                 return Ok(());
             }
         }
@@ -679,7 +680,7 @@ impl SidecarManager {
         let config = self.config.read().await;
         let env_vars = self.env_vars.read().await;
 
-        tracing::info!(
+        tracing::debug!(
             "Sidecar env set: OPENROUTER_API_KEY={} OPENCODE_ZEN_API_KEY={} ANTHROPIC_API_KEY={} OPENAI_API_KEY={}",
             env_vars.contains_key("OPENROUTER_API_KEY"),
             env_vars.contains_key("OPENCODE_ZEN_API_KEY"),
@@ -1058,7 +1059,7 @@ impl SidecarManager {
         self.check_circuit_breaker().await?;
 
         let url = format!("{}/session/{}/todo", self.base_url().await?, session_id);
-        tracing::info!("Fetching todos from: {}", url);
+        tracing::debug!("Fetching todos from: {}", url);
 
         let response = self
             .http_client
@@ -1067,10 +1068,10 @@ impl SidecarManager {
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to get session todos: {}", e)))?;
 
-        tracing::info!("Todos API response status: {}", response.status());
+        tracing::debug!("Todos API response status: {}", response.status());
 
         let todos: Vec<TodoItem> = self.handle_response(response).await?;
-        tracing::info!("Fetched {} todos for session {}", todos.len(), session_id);
+        tracing::debug!("Fetched {} todos for session {}", todos.len(), session_id);
 
         Ok(todos)
     }
@@ -1090,14 +1091,14 @@ impl SidecarManager {
         let fallback_url = format!("{}/api/session/{}/prompt_async", base, session_id);
 
         if let Some(model) = &request.model {
-            tracing::info!(
+            tracing::debug!(
                 "Sending prompt to sidecar (session {}): provider={} model={}",
                 session_id,
                 model.provider_id,
                 model.model_id
             );
         } else {
-            tracing::warn!(
+            tracing::debug!(
                 "Sending prompt to sidecar (session {}) without explicit model spec",
                 session_id
             );
@@ -1928,6 +1929,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                                 session_id,
                                 message_id,
                                 part_id,
+                                tool,
                                 result,
                                 error,
                             })
@@ -2105,14 +2107,14 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                     })
                     .collect();
 
-                tracing::info!(
+                tracing::debug!(
                     "Parsed {} todos from todo.updated event for session {}",
                     parsed_todos.len(),
                     session_id
                 );
                 parsed_todos
             } else {
-                tracing::warn!(
+                tracing::debug!(
                     "todo.updated event missing or malformed todos array for session {}",
                     session_id
                 );
@@ -2136,23 +2138,9 @@ fn extract_error_message(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(message) => Some(message.clone()),
         serde_json::Value::Object(map) => {
-            if let Some(message) = map.get("message").and_then(|m| m.as_str()) {
-                return Some(message.to_string());
-            }
-            if let Some(message) = map
-                .get("data")
-                .and_then(|data| data.get("message"))
-                .and_then(|m| m.as_str())
-            {
-                return Some(message.to_string());
-            }
-            if let Some(message) = map
-                .get("error")
-                .and_then(|err| err.get("message"))
-                .and_then(|m| m.as_str())
-            {
-                return Some(message.to_string());
-            }
+            // Prioritize deeper, more specific error messages from providers
+
+            // Try data.error.message (common in wrapped provider errors)
             if let Some(message) = map
                 .get("data")
                 .and_then(|data| data.get("error"))
@@ -2161,6 +2149,39 @@ fn extract_error_message(value: &serde_json::Value) -> Option<String> {
             {
                 return Some(message.to_string());
             }
+
+            // Try error.message
+            if let Some(message) = map
+                .get("error")
+                .and_then(|err| err.get("message"))
+                .and_then(|m| m.as_str())
+            {
+                return Some(message.to_string());
+            }
+
+            // Try data.message
+            if let Some(message) = map
+                .get("data")
+                .and_then(|data| data.get("message"))
+                .and_then(|m| m.as_str())
+            {
+                return Some(message.to_string());
+            }
+
+            // Try the top-level message, but if it's generic like "Provider returned error",
+            // keep looking for something better or combine it.
+            let top_message = map.get("message").and_then(|m| m.as_str());
+            if let Some(msg) = top_message {
+                if msg != "Provider returned error" && msg != "Error" {
+                    return Some(msg.to_string());
+                }
+            }
+
+            // If we found a generic message but also have a raw error string elsewhere
+            if let Some(msg) = top_message {
+                return Some(msg.to_string());
+            }
+
             Some(value.to_string())
         }
         serde_json::Value::Null => None,

@@ -3,8 +3,11 @@
 ## Highlights
 
 - **OpenCode API Compatibility**: Sidecar requests now align with the latest OpenCode routes, restoring provider/model listings and prompt delivery after upstream changes.
-- **Error Surfacing**: Structured provider errors (like OpenRouter credit limits) are now displayed directly in the chat UI.
+- **Error Surfacing**: Structured provider errors (like OpenRouter credit limits) are now displayed directly in the chat UI with improved extraction of specific error reasons.
 - **Permission Prompts**: Tool permission requests are displayed correctly again after upstream event schema changes.
+- **Transient Tool UI**: Technical background tasks (file reads, edits, etc.) now appear briefly in the chat and clear automatically on success, keeping the conversation focused.
+- **Reliable Responses**: Improved the synchronization of final message parts and added a history backfill mechanism to ensure responses appear correctly without needing to switch sessions.
+- **Log Spam Reduction**: Terminal output is now significantly quieter, summarizing large data payloads and hiding routine background activity.
 - **Settings Update UX**: Update checking and download/install progress is now surfaced at the top of Settings.
 - **UI Fixes + Polish**: The taskbar no longer overlays the About/Settings screens, the theme picker is now a compact dropdown with previews, and the active provider/model badge appears next to the tool selector.
 - **Allow-All Mode**: New chats can opt into an “Allow all tools” mode to skip per-tool approval prompts.

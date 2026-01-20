@@ -51,6 +51,7 @@ export interface ToolCall {
   args: Record<string, unknown>;
   status: "pending" | "running" | "completed" | "failed";
   result?: string;
+  isTechnical?: boolean;
 }
 
 /**
@@ -427,7 +428,11 @@ export function Message({
   );
 }
 
-function ToolCallCard({ tool, args, status, result }: ToolCall) {
+function ToolCallCard({ tool, args, status, result, isTechnical }: ToolCall) {
+  // Don't render completed technical tools (redundant if Chat.tsx filters them,
+  // but good for safety)
+  if (isTechnical && status === "completed") return null;
+
   const getIcon = () => {
     switch (tool) {
       case "read_file":

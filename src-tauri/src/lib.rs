@@ -117,7 +117,7 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
         }
     };
 
-    tracing::info!("Keystore initialized");
+    tracing::debug!("Keystore initialized");
 
     // Load API keys and set them in sidecar environment
     let app_state = app.state::<state::AppState>();
@@ -141,7 +141,7 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
                 } else {
                     "***".to_string()
                 };
-                tracing::info!("Loaded {} from vault ({})", env_var, masked);
+                tracing::debug!("Loaded {} from vault ({})", env_var, masked);
                 let sidecar_clone = sidecar.clone();
                 tauri::async_runtime::spawn(async move {
                     sidecar_clone.set_env(env_var, &key).await;
@@ -161,7 +161,7 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
     let sidecar_for_restart = sidecar.clone();
     tauri::async_runtime::spawn(async move {
         if sidecar_for_restart.state().await == sidecar::SidecarState::Running {
-            tracing::info!("Restarting sidecar to apply updated API keys");
+            tracing::debug!("Restarting sidecar to apply updated API keys");
             if let Err(e) = sidecar_for_restart.stop().await {
                 tracing::warn!("Failed to stop sidecar for key refresh: {}", e);
                 return;
@@ -207,7 +207,7 @@ pub fn run() {
 
             std::fs::create_dir_all(&app_data_dir).ok();
             init_tracing(&app_data_dir);
-            tracing::info!("Starting Tandem application");
+            tracing::debug!("Starting Tandem application");
 
             // Initialize vault state (manages PIN-based encryption)
             let vault_state = VaultState::new(app_data_dir.clone());
@@ -224,7 +224,7 @@ pub fn run() {
                 if let Ok(providers) =
                     serde_json::from_value::<state::ProvidersConfig>(config.clone())
                 {
-                    tracing::info!("Loaded saved providers config");
+                    tracing::debug!("Loaded saved providers config");
                     *app_state.providers_config.write().unwrap() = providers;
                 }
             }
@@ -234,7 +234,7 @@ pub fn run() {
                 if let Some(path_str) = path.as_str() {
                     let path_buf = std::path::PathBuf::from(path_str);
                     if path_buf.exists() {
-                        tracing::info!("Loaded saved workspace: {}", path_str);
+                        tracing::debug!("Loaded saved workspace: {}", path_str);
                         app_state.set_workspace(path_buf);
                     }
                 }
@@ -245,7 +245,7 @@ pub fn run() {
                 if let Ok(projects) =
                     serde_json::from_value::<Vec<state::UserProject>>(projects_value.clone())
                 {
-                    tracing::info!("Loaded {} user projects", projects.len());
+                    tracing::debug!("Loaded {} user projects", projects.len());
                     *app_state.user_projects.write().unwrap() = projects;
                 }
             }
@@ -253,7 +253,7 @@ pub fn run() {
             // Load active project ID
             if let Some(active_id) = store.get("active_project_id") {
                 if let Some(id_str) = active_id.as_str() {
-                    tracing::info!("Loaded active project ID: {}", id_str);
+                    tracing::debug!("Loaded active project ID: {}", id_str);
                     *app_state.active_project_id.write().unwrap() = Some(id_str.to_string());
 
                     // Set the active project's path as workspace
@@ -311,7 +311,7 @@ pub fn run() {
             // Note: Keystore is NOT initialized here - it will be initialized
             // when the vault is unlocked via the unlock_vault command
 
-            tracing::info!("Tandem setup complete (vault locked, awaiting PIN)");
+            tracing::debug!("Tandem setup complete (vault locked, awaiting PIN)");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

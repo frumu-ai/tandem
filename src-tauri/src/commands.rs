@@ -927,7 +927,7 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
                 .iter()
                 .map(|p| format!("{} ({})", p.id, p.name))
                 .collect();
-            tracing::info!("Sidecar providers: {}", provider_list.join(", "));
+            tracing::debug!("Sidecar providers: {}", provider_list.join(", "));
         }
         Err(e) => {
             tracing::warn!("Failed to list sidecar providers: {}", e);
@@ -940,7 +940,7 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
                 .iter()
                 .filter(|m| m.provider.as_deref() == Some("openrouter"))
                 .count();
-            tracing::info!(
+            tracing::debug!(
                 "Sidecar models: total={} openrouter={}",
                 models.len(),
                 openrouter_count
@@ -1113,7 +1113,7 @@ pub async fn send_message(
         let config = state.providers_config.read().unwrap();
         let resolved = resolve_default_model_spec(&config);
         if let Some(spec) = &resolved {
-            tracing::info!(
+            tracing::debug!(
                 "Resolved model spec: provider={} model={} (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
                 spec.provider_id,
                 spec.model_id,
@@ -1124,7 +1124,7 @@ pub async fn send_message(
                 config.ollama.default
             );
         } else {
-            tracing::warn!(
+            tracing::debug!(
                 "No model spec resolved (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
                 config.openrouter.enabled,
                 config.openrouter.default,
@@ -1175,7 +1175,7 @@ pub async fn send_message_streaming(
         let config = state.providers_config.read().unwrap();
         let resolved = resolve_default_model_spec(&config);
         if let Some(spec) = &resolved {
-            tracing::info!(
+            tracing::debug!(
                 "Resolved model spec (streaming): provider={} model={} (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
                 spec.provider_id,
                 spec.model_id,
@@ -1186,7 +1186,7 @@ pub async fn send_message_streaming(
                 config.ollama.default
             );
         } else {
-            tracing::warn!(
+            tracing::debug!(
                 "No model spec resolved for streaming (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
                 config.openrouter.enabled,
                 config.openrouter.default,
@@ -1276,8 +1276,40 @@ pub async fn send_message_streaming(
                     };
 
                     if is_our_session {
-                        // Log event for debugging
-                        tracing::info!("[StreamEvent] Emitting to frontend: type={:?}", event);
+                        // Log event for debugging - summarize large payloads
+                        match &event {
+                            StreamEvent::Content { content, delta, .. } => {
+                                tracing::info!(
+                                    "[StreamEvent] Emitting Content: len={}, delta={}",
+                                    content.len(),
+                                    delta.as_ref().map(|d| d.len()).unwrap_or(0)
+                                );
+                            }
+                            StreamEvent::ToolStart { tool, .. } => {
+                                tracing::info!("[StreamEvent] Emitting ToolStart: tool={}", tool);
+                            }
+                            StreamEvent::ToolEnd { tool, error, .. } => {
+                                tracing::info!(
+                                    "[StreamEvent] Emitting ToolEnd: tool={}, success={}",
+                                    tool,
+                                    error.is_none()
+                                );
+                            }
+                            StreamEvent::Raw { event_type, data } => {
+                                let data_str = data.to_string();
+                                tracing::info!(
+                                    "[StreamEvent] Emitting Raw: type={}, len={}",
+                                    event_type,
+                                    data_str.len()
+                                );
+                            }
+                            _ => {
+                                tracing::info!(
+                                    "[StreamEvent] Emitting to frontend: type={:?}",
+                                    event
+                                );
+                            }
+                        }
 
                         // Emit the event to the frontend
                         if let Err(e) = app.emit("sidecar_event", &event) {
@@ -2143,12 +2175,12 @@ NOTE: When the JSON file is created, Tandem will automatically export it to a `.
                 tracing::debug!("Spreadsheets tool category not yet implemented");
             }
             _ => {
-                tracing::warn!("Unknown tool category: {}", category);
+                tracing::debug!("Unknown tool category: {}", category);
             }
         }
     }
 
-    tracing::info!(
+    tracing::debug!(
         "Returning {} tool guidance items for categories: {:?}",
         guidance.len(),
         categories
