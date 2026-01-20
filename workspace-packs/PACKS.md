@@ -10,6 +10,7 @@ This catalog provides an overview of all available Tandem Workspace Packs for th
 | ------------------------------------------------------------------------- | -------------------------------------------------------------------- | --------------------- | ------------- |
 | [Micro-Drama Script Studio Pack](./packs/micro-drama-script-studio-pack/) | Create short-form micro-drama scripts with structured workflows      | Intermediate          | 15-20 min     |
 | [Research Synthesis Pack](./packs/research-synthesis-pack/)               | Synthesize research across multiple documents with conflict analysis | Intermediate-Advanced | 20-25 min     |
+| [Web Research Refresh Pack](./packs/web-research-refresh-pack/)           | Verify and refresh stale facts using web research and citations      | Beginner-Intermediate | 15-20 min     |
 | [Web Starter Audit Pack](./packs/web-starter-audit-pack/)                 | Audit web projects for accessibility, UX, and code quality           | Beginner-Intermediate | 15-20 min     |
 | [Security Playbook Pack](./packs/security-playbook-pack/)                 | Build comprehensive security runbooks for small teams                | Intermediate          | 20-25 min     |
 
@@ -64,6 +65,32 @@ This catalog provides an overview of all available Tandem Workspace Packs for th
 - Research Brief Dashboard (HTML)
 
 **Best For**: Researchers, policy analysts, knowledge workers, demonstrating synthesis capabilities
+
+---
+
+### Web Research Refresh Pack
+
+**Purpose**: Demonstrate supervised web research using webfetch to verify and update stale documentation with authoritative sources.
+
+**Key Capabilities Showcased**:
+
+- Stale document analysis and claim identification
+- Web research with authoritative source verification
+- Evidence logging with URLs and access dates
+- Citable report generation with inline citations
+- Auditable research workflow documentation
+
+**Inputs**: Stale brief with outdated claims, verification questions for research topics
+
+**Outputs**:
+
+- Claims inventory (Markdown)
+- Research plan (Markdown)
+- Evidence log with sources (Markdown)
+- Updated facts sheet (Markdown)
+- Web Research Report (HTML)
+
+**Best For**: Technical writers, documentation teams, fact-checking workflows, demonstrating research methodology
 
 ---
 
@@ -122,28 +149,29 @@ This catalog provides an overview of all available Tandem Workspace Packs for th
 
 ### By Use Case
 
-| Use Case                 | Recommended Pack          |
-| ------------------------ | ------------------------- |
-| Content creation/writing | Micro-Drama Script Studio |
-| Research and analysis    | Research Synthesis        |
-| Code review/quality      | Web Starter Audit         |
-| Security/compliance      | Security Playbook         |
+| Use Case                   | Recommended Pack          |
+| -------------------------- | ------------------------- |
+| Content creation/writing   | Micro-Drama Script Studio |
+| Research and analysis      | Research Synthesis        |
+| Web research/fact-checking | Web Research Refresh      |
+| Code review/quality        | Web Starter Audit         |
+| Security/compliance        | Security Playbook         |
 
 ### By Complexity Level
 
 | Level                 | Packs                                        |
 | --------------------- | -------------------------------------------- |
-| Beginner              | Web Starter Audit                            |
+| Beginner              | Web Starter Audit, Web Research Refresh      |
 | Intermediate          | Micro-Drama Script Studio, Security Playbook |
 | Intermediate-Advanced | Research Synthesis                           |
 | Advanced              | All packs can scale in depth                 |
 
 ### By Time Available
 
-| Time Available | Pack                                         |
-| -------------- | -------------------------------------------- |
-| 10-15 minutes  | Web Starter Audit, Micro-Drama Script Studio |
-| 20-25 minutes  | Research Synthesis, Security Playbook        |
+| Time Available | Pack                                    |
+| -------------- | --------------------------------------- |
+| 10-15 minutes  | Web Starter Audit, Web Research Refresh |
+| 20-25 minutes  | Research Synthesis, Security Playbook   |
 
 ---
 
