@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Welcome to Our Site</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="header">
+      <img src="logo.svg" alt="" class="logo" />
+      <div class="nav">
+        <a href="#" class="nav-link">Home</a>
+        <a href="#" class="nav-link">About</a>
+        <a href="#" class="nav-link">Products</a>
+        <a href="#" class="nav-link">Contact</a>
+      </div>
+      <div class="search-container">
+        <input type="text" placeholder="Search..." aria-label="Search" class="search-input" />
+        <button class="btn-primary">Submit</button>
+      </div>
+    </div>
+
+    <div class="hero">
+      <h1>Welcome to Our Site</h1>
+      <p class="hero-text">Discover amazing products for your needs</p>
+      <button class="btn-primary">Get Started</button>
+      <button class="btn-secondary">Learn More</button>
+    </div>
+
+    <div class="main-content">
+      <h4>Featured Categories</h4>
+
+      <div class="categories">
+        <div class="category-card">
+          <h3>Electronics</h3>
+          <p>Latest gadgets and devices</p>
+          <button class="btn-success">Shop Now</button>
+        </div>
+        <div class="category-card">
+          <h3>Clothing</h3>
+          <p>Trendy apparel for everyone</p>
+          <button class="btn-success">Shop Now</button>
+        </div>
+        <div class="category-card">
+          <h3>Home & Garden</h3>
+          <p>Everything for your home</p>
+          <button class="btn-success">Shop Now</button>
+        </div>
+      </div>
+
+      <div class="products-section">
+        <h2>Popular Products</h2>
+        <div class="filter-bar">
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" data-filter="electronics">Electronics</button>
+          <button class="filter-btn" data-filter="clothing">Clothing</button>
+          <button class="filter-btn" data-filter="home">Home</button>
+        </div>
+        <div class="products-grid" id="products">
+          <div class="product-card" data-category="electronics">
+            <h3>Laptop Pro</h3>
+            <p class="price">$999.99</p>
+            <p>High-performance laptop for professionals</p>
+            <button class="btn-primary">Add to Cart</button>
+          </div>
+          <div class="product-card" data-category="electronics">
+            <h3>Wireless Earbuds</h3>
+            <p class="price">$149.99</p>
+            <p>Premium sound quality</p>
+            <button class="btn-primary">Add to Cart</button>
+          </div>
+          <div class="product-card" data-category="clothing">
+            <h3>Casual Jacket</h3>
+            <p class="price">$79.99</p>
+            <p>Stylish everyday wear</p>
+            <button class="btn-primary">Add to Cart</button>
+          </div>
+          <div class="product-card" data-category="clothing">
+            <h3>Denim Jeans</h3>
+            <p class="price">$59.99</p>
+            <p>Classic fit comfort</p>
+            <button class="btn-primary">Add to Cart</button>
+          </div>
+          <div class="product-card" data-category="home">
+            <h3>Coffee Maker</h3>
+            <p class="price">$89.99</p>
+            <p>Start your day right</p>
+            <button class="btn-primary">Add to Cart</button>
+          </div>
+          <div class="product-card" data-category="home">
+            <h3>Desk Lamp</h3>
+            <p class="price">$34.99</p>
+            <p>Brighten your workspace</p>
+            <button class="btn-primary">Add to Cart</button>
+          </div>
+          <div class="product-card" data-category="electronics">
+            <h3>Smart Watch</h3>
+            <p class="price">$299.99</p>
+            <p>Stay connected on the go</p>
+            <button class="btn-primary">Add to Cart</button>
+          </div>
+          <div class="product-card" data-category="electronics">
+            <h3>Tablet 10</h3>
+            <p class="price">$449.99</p>
+            <p>Perfect for entertainment</p>
+            <button class="btn-primary">Add to Cart</button>
+          </div>
+          <div class="product-card" data-category="clothing">
+            <h3>Running Shoes</h3>
+            <p class="price">$119.99</p>
+            <p>Comfortable for daily runs</p>
+            <button class="btn-primary">Add to Cart</button>
+          </div>
+          <div class="product-card" data-category="electronics">
+            <h3>Gaming Headset</h3>
+            <p class="price">$199.99</p>
+            <p>Immersive audio experience</p>
+            <button class="btn-primary">Add to Cart</button>
+          </div>
+        </div>
+        <div class="sort-controls">
+          <label for="sort-select">Sort by:</label>
+          <select id="sort-select">
+            <option value="name-asc">Name (A-Z)</option>
+            <option value="name-desc">Name (Z-A)</option>
+            <option value="price-asc">Price (Low to High)</option>
+            <option value="price-desc">Price (High to Low)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>Copyright 2024 Our Site. All rights reserved.</p>
+      <a href="#" class="footer-link">Privacy Policy</a>
+      <a href="#" class="footer-link">Terms of Service</a>
+      <a href="#" class="footer-link">Contact Us</a>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
