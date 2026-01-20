@@ -24,7 +24,7 @@ const TOOL_CATEGORIES: ToolCategory[] = [
     id: "presentations",
     label: "Slides",
     icon: Presentation,
-    description: "Create PowerPoint presentations",
+    description: "Create high-fidelity HTML slides",
     defaultEnabled: false,
   },
   {

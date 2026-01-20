@@ -21,7 +21,7 @@ import {
   ExternalLink,
   ChevronDown,
 } from "lucide-react";
-import { useState, ReactNode } from "react";
+import React, { useState, ReactNode } from "react";
 
 export interface MessageAttachment {
   name: string;
@@ -73,7 +73,7 @@ function FilePathParser({
   // Regex to match file paths with common extensions
   // Captures Windows (C:\...), Unix (/...), and relative (./..., ../...) paths
   const filePathRegex =
-    /(?:(?:[A-Za-z]:[\\/])|(?:\.\.?[\\/])|(?:^|[\s`'"(]))([^\s`'"()<>]+\.(json|ts|tsx|js|jsx|md|txt|py|rs|go|java|cpp|c|h|css|scss|html|xml|yaml|yml|toml|pptx|ppt|docx|doc|xlsx|xls|pdf|png|jpg|jpeg|gif|svg|webp))\b/g;
+    /(?:(?:[A-Za-z]:[\\/])|(?:\.\.?[\\/])|(?:^|[\s`'"(:=]))([^\s`'"()<>|*?]+\.(json|ts|tsx|js|jsx|md|txt|py|rs|go|java|cpp|c|h|css|scss|html|xml|yaml|yml|toml|pptx|ppt|docx|doc|xlsx|xls|pdf|png|jpg|jpeg|gif|svg|webp))\b/g;
 
   const parts: (string | ReactNode)[] = [];
   let lastIndex = 0;
@@ -384,30 +384,29 @@ export function Message({
                     );
                   },
                   // Custom paragraph renderer to parse file paths in text
-                  p({ children }) {
-                    if (typeof children === "string") {
-                      return (
-                        <p>
-                          <FilePathParser text={children} onFileOpen={onFileOpen} />
-                        </p>
-                      );
-                    }
-                    // Handle arrays of children (mixed content)
-                    if (Array.isArray(children)) {
-                      return (
-                        <p>
-                          {children.map((child, index) =>
-                            typeof child === "string" ? (
-                              <FilePathParser key={index} text={child} onFileOpen={onFileOpen} />
-                            ) : (
-                              child
-                            )
-                          )}
-                        </p>
-                      );
-                    }
-                    return <p>{children}</p>;
-                  },
+                  p: ({ children }) => (
+                    <p>
+                      {React.Children.map(children, (child, index) =>
+                        typeof child === "string" ? (
+                          <FilePathParser key={index} text={child} onFileOpen={onFileOpen} />
+                        ) : (
+                          child
+                        )
+                      )}
+                    </p>
+                  ),
+                  // Custom list item renderer to parse file paths
+                  li: ({ children }) => (
+                    <li>
+                      {React.Children.map(children, (child, index) =>
+                        typeof child === "string" ? (
+                          <FilePathParser key={index} text={child} onFileOpen={onFileOpen} />
+                        ) : (
+                          child
+                        )
+                      )}
+                    </li>
+                  ),
                 } as Components
               }
             >

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **High-Fidelity HTML Slides:** Replaced legacy PPTX generation with an interactive 16:9 HTML slideshow system featuring Chart.js integration, keyboard navigation, and optimized PDF export.
 - **Collapsible Tool Outputs:** Large tool outputs (like `todowrite` or file operations) are now collapsed by default in the chat view, reducing visual noise. Users can expand them to see full details.
 - **Chart Generation Capabilities:** Updated internal marketing documentation to highlight the new capability of generating interactive visual dashboards directly from research data.
 - HTML Canvas/Report feature: render interactive HTML files in a sandboxed iframe with Tailwind, Chart.js, and Font Awesome support.
@@ -21,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **File Link Detection:** Improved reliability of clickable file paths in chat, including support for absolute paths and links within markdown lists.
+- **Slide Layout & Scaling:** Fixed vertical stacking of slides in the HTML generator and added auto-scaling to fit the viewer's viewport dimensions.
+- **Chat Error Handling:** Implemented deduplication for session error messages to prevent repeated bubbles during stream failures.
 - **Linux UI Transparency:** Fixed an issue where the project switcher dropdown was unreadable on Linux due to incorrect glass effect rendering.
 - **Session Loading:** Resolved a bug where the application would start with a blank screen instead of loading the previously selected chat session.
 - **External Link Handling:** Fixed permission issues preventing "Open in Browser" from working for generated files.
@@ -31,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed chat "freezing" by ensuring intermediate reasoning and tool steps are always streamed to the UI.
 - Replaced hardcoded version numbers with dynamic values in `MatrixLoader`, `Settings`, and the initial splash screen.
 - Improved error handling in the sidecar manager when primary cancellation endpoints are unavailable.
+- Resolved ESLint warnings in `Message.tsx` and `Chat.tsx`.
 
 ### Changed
 

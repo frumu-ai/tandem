@@ -917,15 +917,21 @@ Start with task #1 and continue through each one. Let me know when each task is 
             generationTimeoutRef.current = null;
           }
 
-          // Update the last assistant message - preserve existing content and append error
+          // Update the last assistant message - preserve existing content and append error (deduplicated)
           setMessages((prev) => {
             const lastMessage = prev[prev.length - 1];
             if (lastMessage && lastMessage.role === "assistant") {
               // Use existing content from ref, or message content, or empty string
               const existingContent = errorTimeContent || lastMessage.content || "";
-              const errorSuffix = existingContent
-                ? `\n\n**Error:** ${event.error}`
-                : `Error: ${event.error}`;
+              const errorText = `**Error:** ${event.error}`;
+
+              // Only append if the error isn't already there
+              if (existingContent.includes(errorText)) {
+                return prev;
+              }
+
+              const errorSuffix = existingContent ? `\n\n${errorText}` : `Error: ${event.error}`;
+
               const updated = [...prev];
               updated[updated.length - 1] = {
                 ...lastMessage,

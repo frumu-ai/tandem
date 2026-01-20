@@ -2112,111 +2112,114 @@ pub fn get_tool_guidance(categories: Vec<String>) -> Vec<ToolGuidance> {
             "presentations" => {
                 guidance.push(ToolGuidance {
                     category: "presentations".to_string(),
-                    instructions: r#"# PowerPoint Presentation Creation
+                    instructions: r#"# High-Fidelity 16:9 HTML Slideshows
 
-IMPORTANT: This capability works best in Plan Mode for review and approval.
+Use this capability to create premium, interactive presentations that look like modern dashboards.
 
-When user requests a presentation, follow a TWO-PHASE workflow:
+## TWO-PHASE WORKFLOW:
 
-## PHASE 1: PLANNING (Required First Step)
+### PHASE 1: PLANNING (Required First Step)
+Before generating code, present a structured outline:
+1. **Title & Theme**: (e.g., Midnight Pro, Modern Enterprise, Glassmorphism)
+2. **Slide-by-Slide Outline**: Briefly describe the visual layout and content for each slide.
+3. **Approval**: Wait for user confirmation.
 
-Present a structured outline in this EXACT format:
+### PHASE 2: EXECUTION (After User Approval)
+Use the `write` tool to create a single standalone `{filename}.slides.html` file.
 
+## TECHNICAL REQUIREMENTS:
+
+### 1. Slide Stacking (Critical)
+- **NO Vertical Scrolling**: Slides MUST NOT appear below each other.
+- **Absolute Stacking**: All `.slide` elements must be stacked on top of each other (usually via `position: absolute` or `grid`).
+- **Visibility**: Only the `.active` slide should be visible (`display: flex` or `block`); all others MUST be `display: none !important`.
+
+### 2. Layout & Scaling
+- **16:9 Aspect Ratio**: Use 1920x1080 as the base dimensions.
+- **Scale to Fit**: Use a container that scales the entire deck to fit the viewport while maintaining aspect ratio.
+
+### 3. PDF Export
+Add a `@media print` style block that:
+- Forces each slide to be visible and occupy exactly one page.
+- Hides all interactive UI (buttons, counters).
+
+## SLIDESHOW HTML TEMPLATE:
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #020617; }
+        #viewport { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+        #deck { 
+            width: 1920px; height: 1080px; 
+            position: relative; 
+            transform-origin: center;
+        }
+        .slide { 
+            position: absolute; inset: 0; 
+            display: none; 
+            padding: 80px;
+            flex-direction: column;
+        }
+        .slide.active { display: flex; }
+        @media print {
+            body { background: white; overflow: visible; height: auto; }
+            #viewport, #deck { width: 100%; height: auto; transform: none !important; display: block; }
+            .slide { position: relative; display: block !important; break-after: page; width: 100%; height: auto; aspect-ratio: 16/9; page-break-after: always; }
+            .no-print { display: none !important; }
+        }
+    </style>
+</head>
+<body>
+    <div id="viewport">
+        <div id="deck">
+            <!-- SLIDE 1 -->
+            <div class="slide active bg-slate-900 text-white">
+                <h1 class="text-9xl font-bold italic tracking-tighter">TITLE</h1>
+            </div>
+            <!-- MORE SLIDES -->
+        </div>
+    </div>
+    <!-- Nav buttons -->
+    <div class="no-print fixed bottom-8 right-8 flex gap-4 items-center bg-black/40 backdrop-blur-xl p-4 rounded-2xl border border-white/10">
+        <button onclick="prev()" class="w-12 h-12 flex items-center justify-center rounded-xl bg-white/10 hover:bg-white/20"><i class="fas fa-chevron-left"></i></button>
+        <span id="counter" class="text-white font-mono min-w-[60px] text-center">1 / X</span>
+        <button onclick="next()" class="w-12 h-12 flex items-center justify-center rounded-xl bg-white/10 hover:bg-white/20"><i class="fas fa-chevron-right"></i></button>
+    </div>
+    <script>
+        let current = 0;
+        const slides = document.querySelectorAll('.slide');
+        function update() {
+            slides.forEach((s, i) => s.classList.toggle('active', i === current));
+            document.getElementById('counter').innerText = `${current + 1} / ${slides.length}`;
+        }
+        function next() { current = (current + 1) % slides.length; update(); }
+        function prev() { current = (current - 1 + slides.length) % slides.length; update(); }
+        window.onkeydown = (e) => { 
+            if (['ArrowRight', 'Space', 'ArrowDown'].includes(e.code)) next();
+            if (['ArrowLeft', 'ArrowUp'].includes(e.code)) prev();
+        };
+        function fit() {
+            const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+            document.getElementById('deck').style.transform = `scale(${scale})`;
+        }
+        window.onresize = fit; fit();
+    </script>
+</body>
+</html>
 ```
-# 📊 Presentation Plan: [Title]
-
-**Theme:** [light/dark/corporate/minimal]
-**Author:** [Author name or "User"]
-
-## Slide Structure:
-
-### Slide 1: [Layout Type]
-**Title:** [Slide title]
-**Subtitle:** [Subtitle if applicable]
-**Content:**
-- Bullet point 1
-- Bullet point 2
-- Bullet point 3
-**Notes:** [Speaker notes if applicable]
-
-### Slide 2: [Layout Type]
-[... repeat structure ...]
-
----
-
-**Ready to create this presentation?**
-Please review the structure and let me know if you'd like any changes.
-Once approved, I'll generate the .tandem.ppt.json file.
-```
-
-**Layout Types:**
-- `title` - Title slide with title and subtitle (opening slide)
-- `content` - Content slide with title and bullet points
-- `section` - Section divider with title and subtitle
-- `blank` - Blank slide for custom content
-
-## PHASE 2: EXECUTION (After User Approval)
-
-Only after user confirms the plan, use the 'write' tool to create `{filename}.tandem.ppt.json` with this structure.
-
-NOTE: When the JSON file is created, Tandem will automatically export it to a `.pptx` file that can be opened in PowerPoint, Google Slides, or any presentation software.
-
 "#.to_string(),
                     json_schema: serde_json::json!({
-                        "title": "Presentation title (string, required)",
-                        "author": "Author name (string, optional)",
-                        "theme": "Visual theme: light|dark|corporate|minimal (optional, default: light)",
-                        "slides": "Array of slide objects (required, minimum 1 slide)",
-                        "slide_structure": {
-                            "id": "Unique identifier like 'slide_1', 'slide_2' (string)",
-                            "layout": "Layout type: title|content|section|blank (required)",
-                            "title": "Slide title (string, optional)",
-                            "subtitle": "Slide subtitle (string, optional, for title/section layouts)",
-                            "elements": "Array of content elements",
-                            "element_structure": {
-                                "type": "Element type: bullet_list|text|image",
-                                "content": "For bullet_list: array of strings; for text: single string",
-                                "position": "Optional: {x, y, w, h} in percentages (0-100)"
-                            },
-                            "notes": "Speaker notes (string, optional)"
-                        }
+                        "file_type": "HTML Slideshow",
+                        "scaling": "Auto-fit viewport",
+                        "navigation": "Arrows, Space, Click"
                     }),
-                    example: serde_json::json!({
-                        "title": "Q1 Strategy 2026",
-                        "author": "Product Team",
-                        "theme": "corporate",
-                        "slides": [
-                            {
-                                "id": "slide_1",
-                                "layout": "title",
-                                "title": "Q1 Strategy 2026",
-                                "subtitle": "Growth & Innovation",
-                                "elements": []
-                            },
-                            {
-                                "id": "slide_2",
-                                "layout": "content",
-                                "title": "Key Objectives",
-                                "elements": [{
-                                    "type": "bullet_list",
-                                    "content": [
-                                        "Increase ARR by 40%",
-                                        "Launch 3 major features",
-                                        "Expand to EMEA region"
-                                    ],
-                                    "position": { "x": 10, "y": 25, "w": 80, "h": 60 }
-                                }],
-                                "notes": "Emphasize the timeline for each objective"
-                            },
-                            {
-                                "id": "slide_3",
-                                "layout": "section",
-                                "title": "Revenue Targets",
-                                "subtitle": "Quarterly Breakdown",
-                                "elements": []
-                            }
-                        ]
-                    }).to_string(),
+                    example: "Generate 'strategic_path.slides.html' with 6 absolutely stacked slides and a scale-to-fit script.".to_string(),
                 });
             }
             "canvas" => {
