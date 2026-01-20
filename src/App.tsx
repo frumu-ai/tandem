@@ -10,6 +10,7 @@ import { FileBrowser } from "@/components/files/FileBrowser";
 import { FilePreview } from "@/components/files/FilePreview";
 import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
 import { Button } from "@/components/ui";
+import { UpdateToast } from "@/components/ui/UpdateToast";
 import { useAppState } from "@/hooks/useAppState";
 import { useTheme } from "@/hooks/useTheme";
 import { useTodos } from "@/hooks/useTodos";
@@ -877,6 +878,7 @@ function App() {
           </>
         )}
       </main>
+      <UpdateToast />
     </div>
   );
 }

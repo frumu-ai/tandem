@@ -7,6 +7,7 @@ import "@fontsource-variable/geist-mono";
 import App from "./App";
 import "./index.css";
 import { ThemeProvider } from "@/hooks/useTheme";
+import { UpdaterProvider } from "@/hooks/useUpdater";
 import { DEFAULT_THEME_ID, getThemeById } from "@/lib/themes";
 import type { ThemeId } from "@/types/theme";
 
@@ -28,7 +29,9 @@ import type { ThemeId } from "@/types/theme";
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ThemeProvider>
-      <App />
+      <UpdaterProvider>
+        <App />
+      </UpdaterProvider>
     </ThemeProvider>
   </React.StrictMode>
 );

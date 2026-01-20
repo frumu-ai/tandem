@@ -1,60 +1,16 @@
-import { useState } from "react";
 import { motion } from "framer-motion";
 import { Building2, Smartphone, ExternalLink, Heart } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { useUpdater } from "@/hooks/useUpdater";
 
 export function About() {
-  const [updateStatus, setUpdateStatus] = useState<
-    "idle" | "checking" | "available" | "downloading" | "installed" | "upToDate" | "error"
-  >("idle");
-  const [updateInfo, setUpdateInfo] = useState<Update | null>(null);
-  const [updateError, setUpdateError] = useState<string | null>(null);
+  const { status: updateStatus, updateInfo, error: updateError, checkUpdates, installUpdate } = useUpdater();
 
   const handleOpenExternal = async (url: string) => {
     try {
       await openUrl(url);
     } catch (error) {
       console.error("Failed to open URL:", error);
-    }
-  };
-
-  const handleCheckUpdates = async () => {
-    setUpdateStatus("checking");
-    setUpdateError(null);
-
-    try {
-      const update = await check();
-      if (!update) {
-        setUpdateStatus("upToDate");
-        setUpdateInfo(null);
-        return;
-      }
-
-      setUpdateInfo(update);
-      setUpdateStatus("available");
-    } catch (error) {
-      setUpdateStatus("error");
-      setUpdateError(error instanceof Error ? error.message : "Update check failed.");
-    }
-  };
-
-  const handleInstallUpdate = async () => {
-    if (!updateInfo) {
-      return;
-    }
-
-    setUpdateStatus("downloading");
-    setUpdateError(null);
-
-    try {
-      await updateInfo.downloadAndInstall();
-      setUpdateStatus("installed");
-      await relaunch();
-    } catch (error) {
-      setUpdateStatus("error");
-      setUpdateError(error instanceof Error ? error.message : "Update install failed.");
     }
   };
 
@@ -201,7 +157,7 @@ export function About() {
           </p>
           <div className="mt-6 flex flex-col items-center gap-3">
             <button
-              onClick={updateStatus === "available" ? handleInstallUpdate : handleCheckUpdates}
+              onClick={updateStatus === "available" ? installUpdate : () => checkUpdates(false)}
               disabled={updateStatus === "checking" || updateStatus === "downloading"}
               className="rounded-lg border border-border px-4 py-2 text-sm text-text transition-all hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -210,6 +166,7 @@ export function About() {
               {updateStatus === "available" && "Install update"}
               {(updateStatus === "idle" ||
                 updateStatus === "upToDate" ||
+                updateStatus === "installed" ||
                 updateStatus === "error") &&
                 "Check for updates"}
             </button>
