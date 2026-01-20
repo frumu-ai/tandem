@@ -55,7 +55,7 @@ impl Default for SidecarConfig {
             port: 0, // Auto-assign
             max_failures: 3,
             cooldown_duration: Duration::from_secs(30),
-            operation_timeout: Duration::from_secs(120),
+            operation_timeout: Duration::from_secs(300),
             heartbeat_interval: Duration::from_secs(5),
             workspace_path: None,
         }
@@ -547,6 +547,8 @@ pub struct SidecarManager {
     circuit_breaker: Mutex<CircuitBreaker>,
     port: RwLock<Option<u16>>,
     http_client: Client,
+    /// HTTP client without global timeout for long-lived streams
+    stream_client: Client,
     /// Environment variables to pass to OpenCode
     env_vars: RwLock<HashMap<String, String>>,
 }
@@ -558,6 +560,12 @@ impl SidecarManager {
             .build()
             .expect("Failed to create HTTP client");
 
+        let stream_client = Client::builder()
+            .http1_only() // SSE works best with HTTP/1.1 on many platforms
+            .tcp_keepalive(Duration::from_secs(60))
+            .build()
+            .expect("Failed to create stream client");
+
         Self {
             circuit_breaker: Mutex::new(CircuitBreaker::new(config.clone())),
             config: RwLock::new(config),
@@ -565,6 +573,7 @@ impl SidecarManager {
             process: Mutex::new(None),
             port: RwLock::new(None),
             http_client,
+            stream_client,
             env_vars: RwLock::new(HashMap::new()),
         }
     }
@@ -1134,7 +1143,7 @@ impl SidecarManager {
         tracing::debug!("Subscribing to events at: {}", url);
 
         let response = self
-            .http_client
+            .stream_client
             .get(&url)
             .header("Accept", "text/event-stream")
             .send()
@@ -1175,7 +1184,14 @@ impl SidecarManager {
                         }
                     }
                     Err(e) => {
-                        tracing::error!("SSE stream error: {}", e);
+                        let err_msg = e.to_string();
+                        // "error decoding response body" is a common reqwest error when connection is closed
+                        // during a chunked transfer. On Linux this often happens during idle timeouts.
+                        if err_msg.contains("error decoding response body") {
+                            tracing::warn!("SSE stream closed by server (likely timeout): {}", err_msg);
+                        } else {
+                            tracing::error!("SSE stream error: {}", e);
+                        }
                         yield Err(TandemError::Sidecar(format!("Stream error: {}", e)));
                         break;
                     }

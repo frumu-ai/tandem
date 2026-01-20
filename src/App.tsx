@@ -47,6 +47,7 @@ import {
   ListTodo,
   Files,
   Palette,
+  AlertCircle,
 } from "lucide-react";
 
 type View = "chat" | "settings" | "about" | "onboarding" | "sidecar-setup";
@@ -99,6 +100,7 @@ function App() {
   const [userProjects, setUserProjects] = useState<UserProject[]>([]);
   const [activeProject, setActiveProjectState] = useState<UserProject | null>(null);
   const [projectSwitcherLoading, setProjectSwitcherLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Git initialization dialog state
   const [showGitDialog, setShowGitDialog] = useState(false);
@@ -302,6 +304,7 @@ function App() {
   const handleAddProject = async () => {
     // Clear current session FIRST to reset the chat view
     setCurrentSessionId(null);
+    setError(null);
 
     try {
       const selected = await open({
@@ -311,33 +314,50 @@ function App() {
       });
 
       if (selected && typeof selected === "string") {
-        // Check Git status
-        const status = await checkGitStatus(selected);
+        // Check Git status with timeout
+        // On macOS, git check can hang if it triggers the "install command line tools" prompt
+        // We set a short timeout to prevent the UI from freezing
+        try {
+          const checkPromise = checkGitStatus(selected);
+          const timeoutPromise = new Promise<{
+            git_installed: boolean;
+            is_repo: boolean;
+            can_enable_undo: boolean;
+          }>((_, reject) => setTimeout(() => reject(new Error("Git check timed out")), 2000));
 
-        if (status.can_enable_undo) {
-          // Git is installed but folder isn't a repo - prompt user
-          setPendingProjectPath(selected);
-          setGitStatus(status);
-          setShowGitDialog(true);
-          return; // Wait for dialog response
-        } else if (!status.git_installed) {
-          // Git not installed - show warning but allow continuing
-          setPendingProjectPath(selected);
-          setGitStatus(status);
-          setShowGitDialog(true);
-          return;
+          const status = await Promise.race([checkPromise, timeoutPromise]);
+
+          if (status.can_enable_undo) {
+            // Git is installed but folder isn't a repo - prompt user
+            setPendingProjectPath(selected);
+            setGitStatus(status);
+            setShowGitDialog(true);
+            return; // Wait for dialog response
+          } else if (!status.git_installed) {
+            // Git not installed - show warning but allow continuing
+            setPendingProjectPath(selected);
+            setGitStatus(status);
+            setShowGitDialog(true);
+            return;
+          }
+        } catch (e) {
+          console.warn("Git check failed or timed out:", e);
+          // If git check fails or times out, proceed without git features
+          // This prevents the onboarding from getting stuck
         }
 
-        // Git is already set up or user doesn't want it - proceed
+        // Git is already set up, user doesn't want it, or check failed - proceed
         await finalizeAddProject(selected);
       }
     } catch (e) {
       console.error("Failed to add project:", e);
+      setError(e instanceof Error ? e.message : "Failed to add project");
     }
   };
 
   // New helper function to complete project addition
   const finalizeAddProject = async (path: string) => {
+    setError(null);
     try {
       setProjectSwitcherLoading(true);
       const project = await addProject(path);
@@ -362,6 +382,7 @@ function App() {
       await loadHistory();
     } catch (e) {
       console.error("Failed to finalize project:", e);
+      setError(e instanceof Error ? e.message : "Failed to setup project");
     } finally {
       setProjectSwitcherLoading(false);
     }
@@ -732,6 +753,7 @@ function App() {
             onComplete={() => setView("settings")}
             hasConfiguredProvider={hasConfiguredProvider}
             hasWorkspace={!!state?.has_workspace}
+            error={error}
           />
         ) : (
           <>
@@ -863,9 +885,15 @@ interface OnboardingViewProps {
   onComplete: () => void;
   hasConfiguredProvider: boolean;
   hasWorkspace: boolean;
+  error?: string | null;
 }
 
-function OnboardingView({ onComplete, hasConfiguredProvider, hasWorkspace }: OnboardingViewProps) {
+function OnboardingView({
+  onComplete,
+  hasConfiguredProvider,
+  hasWorkspace,
+  error,
+}: OnboardingViewProps) {
   return (
     <motion.div
       className="flex h-full w-full flex-col items-center justify-center p-8"
@@ -894,6 +922,20 @@ function OnboardingView({ onComplete, hasConfiguredProvider, hasWorkspace }: Onb
         >
           Your local-first AI workspace. Let's get started by setting up your environment.
         </motion.p>
+
+        {error && (
+          <motion.div
+            className="mb-6 flex items-start gap-3 rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-left text-red-500"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+          >
+            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+            <div className="text-sm">
+              <p className="font-semibold">Setup Error</p>
+              <p className="opacity-90">{error}</p>
+            </div>
+          </motion.div>
+        )}
 
         <motion.div
           className="space-y-4"

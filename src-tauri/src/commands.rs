@@ -1119,12 +1119,22 @@ pub async fn send_message_streaming(
                     }
                 }
                 Err(e) => {
+                    let err_msg = e.to_string();
+                    tracing::warn!("[StreamEvent] Stream error: {}", err_msg);
+
+                    // If it's a common timeout error, provide a more user-friendly message
+                    let friendly_error = if err_msg.contains("error decoding response body") {
+                        "Connection to AI engine timed out. The AI might be taking too long to respond.".to_string()
+                    } else {
+                        format!("Stream error: {}", err_msg)
+                    };
+
                     // Emit error event
                     let _ = app.emit(
                         "sidecar_event",
                         StreamEvent::SessionError {
                             session_id: target_session_id.clone(),
-                            error: e.to_string(),
+                            error: friendly_error,
                         },
                     );
                     break;

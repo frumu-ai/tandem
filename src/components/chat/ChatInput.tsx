@@ -410,7 +410,9 @@ export function ChatInput({
                     exit={{ scale: 0.8, opacity: 0 }}
                     className="relative group"
                   >
-                    {attachment.type === "image" && attachment.preview ? (
+                    {attachment.type === "image" &&
+                    attachment.preview &&
+                    attachment.preview !== "" ? (
                       <>
                         <div className="w-16 h-16 rounded-lg overflow-hidden border border-border bg-surface">
                           <img

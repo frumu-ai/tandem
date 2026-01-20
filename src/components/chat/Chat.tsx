@@ -238,6 +238,13 @@ Start with task #1 and continue through each one. Let me know when each task is 
     // No change → do nothing (prevents churn from unrelated state updates)
     if (nextSessionId === prevSessionId) return;
 
+    // If we are currently generating a response for a session we just created,
+    // don't let a null/undefined prop wipe it out while the parent is still updating.
+    if (!nextSessionId && isGenerating && prevSessionId) {
+      console.log("[Chat] Ignoring null propSessionId while generating:", prevSessionId);
+      return;
+    }
+
     console.log("[Chat] Session ID changed from", prevSessionId, "to", nextSessionId);
 
     setCurrentSessionId(nextSessionId);
@@ -252,7 +259,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
       clearTimeout(generationTimeoutRef.current);
       generationTimeoutRef.current = null;
     }
-  }, [propSessionId]);
+  }, [propSessionId, isGenerating]);
 
   // Load session history when prop session changes (avoid transient mismatches)
   useEffect(() => {
@@ -261,6 +268,19 @@ Start with task #1 and continue through each one. Let me know when each task is 
 
     if (nextSessionId === prevPropSessionId) return;
     prevPropSessionIdRef.current = nextSessionId;
+
+    // CRITICAL: If we are already active in this session (e.g. we just created it),
+    // don't wipe messages or reload history, as it will interrupt the stream.
+    if (nextSessionId && nextSessionId === currentSessionId) {
+      console.log("[Chat] Prop sessionId matches current, skipping history reload");
+      return;
+    }
+
+    if (isGenerating) {
+      deferredSessionLoadRef.current = nextSessionId;
+      console.log("[Chat] Deferring history load while generating:", nextSessionId);
+      return;
+    }
 
     if (nextSessionId) {
       console.log("[Chat] Loading session history for:", nextSessionId);
@@ -274,7 +294,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
       currentAssistantMessageRef.current = "";
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [propSessionId]);
+  }, [propSessionId, isGenerating]);
 
   // Check if workspace is a Git repository
   useEffect(() => {
@@ -476,6 +496,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
 
   // Use a ref to track the current session without causing re-renders
   const currentSessionIdRef = useRef<string | null>(null);
+  const deferredSessionLoadRef = useRef<string | null>(null);
 
   // Update ref when session changes (but this doesn't cause handleStreamEvent to recreate)
   useEffect(() => {
@@ -498,6 +519,10 @@ Start with task #1 and continue through each one. Let me know when each task is 
       // Filter events for the current session
       // IMPORTANT: Use ref value to avoid recreating this callback
       const eventSessionId = (event as { session_id?: string }).session_id;
+      if (!currentSessionIdRef.current && eventSessionId) {
+        currentSessionIdRef.current = eventSessionId;
+        console.log("[StreamEvent] Late-bound session id:", eventSessionId);
+      }
       if (
         eventSessionId &&
         currentSessionIdRef.current &&
@@ -766,6 +791,19 @@ Start with task #1 and continue through each one. Let me know when each task is 
             clearTimeout(generationTimeoutRef.current);
             generationTimeoutRef.current = null;
           }
+          if (deferredSessionLoadRef.current) {
+            const deferredId = deferredSessionLoadRef.current;
+            deferredSessionLoadRef.current = null;
+            console.log("[Chat] Loading deferred session history:", deferredId);
+            if (deferredId) {
+              setMessages([]);
+              currentAssistantMessageRef.current = "";
+              loadSessionHistory(deferredId);
+            } else {
+              setMessages([]);
+              currentAssistantMessageRef.current = "";
+            }
+          }
           // Force re-render to ensure final content displays
           setTimeout(() => forceUpdate({}), 50);
           break;
@@ -897,7 +935,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
         }
       }
     },
-    [isGenerating] // Using ref for currentSessionId, so no need to include it
+    [isGenerating, loadSessionHistory] // Using ref for currentSessionId, so no need to include it
   );
 
   // Listen for sidecar events
@@ -1082,6 +1120,10 @@ ${g.example}
 
         if (attachments && attachments.length > 0) {
           for (const attachment of attachments) {
+            if (!attachment.url) {
+              console.warn("[Attachments] Skipping attachment with empty url:", attachment.name);
+              continue;
+            }
             const isImage =
               attachment.type.startsWith("image/") || attachment.mime.startsWith("image/");
 

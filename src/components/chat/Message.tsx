@@ -267,7 +267,7 @@ export function Message({
           <div className="flex flex-wrap gap-2 mb-2">
             {attachments.map((attachment, idx) => (
               <div key={idx} className="flex items-center gap-2 rounded-lg glass border-glass p-2">
-                {attachment.type === "image" && attachment.preview ? (
+                {attachment.type === "image" && attachment.preview && attachment.preview !== "" ? (
                   <img
                     src={attachment.preview}
                     alt={attachment.name}
