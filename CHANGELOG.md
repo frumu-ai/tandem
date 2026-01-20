@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Session Loading:** Resolved a bug where the application would start with a blank screen instead of loading the previously selected chat session.
 - **External Link Handling:** Fixed permission issues preventing "Open in Browser" from working for generated files.
 - **HTML Preview:** Links within generated HTML reports now correctly open in the system default browser.
+- **Tool Selector Cleanup:** Temporarily disabled the unimplemented "Diagrams" and "Tables" categories from the specialized tools selector to improve UX.
 - Robust cancellation: Stop button now reliably terminates backend AI processes using a fallback API mechanism.
 - Tool visibility: All tool calls (including technical ones) are now visible throughout the session per user request.
 - Fixed chat "freezing" by ensuring intermediate reasoning and tool steps are always streamed to the UI.

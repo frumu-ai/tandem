@@ -15,6 +15,7 @@ Use this table in blog posts, README updates, or Product Hunt descriptions.
 | **Open Source**        | ✅ Yes (MIT)                | 🚫 No                    | 🚫 No                    | ❓ Varies               |
 | **API Keys**           | 🏦 Encrypted Vault          | 🔐 Claude Account        | 🔐 SaaS Managed          | 📝 Often Plaintext      |
 | **Provider Choice**    | 🔓 Any (BYOK)               | 🚫 Claude only           | 🚫 Provider-locked       | ⚠️ Limited              |
+| **Visual Reports**     | 📊 Dashboards/HTML Canvas   | 🚫 Text Only             | 🚫 Text Only             | 🚫 Text Only            |
 
 ---
 
@@ -26,10 +27,12 @@ Use this table in blog posts, README updates, or Product Hunt descriptions.
     - Close-up of the **Execution Plan Panel** with a diff open.
     - **Settings Page** showing various providers (Ollama, OpenRouter).
     - **Visual Permission Toast** in action.
+    - **Interactive Dashboard:** A generated "Global Intelligence Report" with charts and Tailwind styling.
 - [ ] **Teaser Video (30-60s):**
     - Show selecting a workspace folder.
-    - Show toggling "Plan Mode".
+    - Show toggled "Plan Mode".
     - Show the AI proposing changes and the user clicking "Execute".
+    - **Show research flow:** From 50 PDFs to a visual HTML report in 30 seconds.
 - [ ] **Compelling Tagline:**
     - "Developer superpowers for everyone."
     - "The tools that changed how programmers work. Now for the rest of us."

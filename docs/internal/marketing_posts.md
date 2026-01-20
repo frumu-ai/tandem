@@ -228,3 +228,34 @@ It's open-source, runs locally (your files never leave your computer), and you c
 
 Happy to answer questions!
 
+## 📍 Platform: LinkedIn / X - Visual Intelligence
+
+**Post 1 (The Visual Hook):**
+Research doesn't have to be a wall of text. 📊
+
+I used Tandem to synthesize 50+ market research reports and asked for a "Global Intelligence Dashboard."
+
+In seconds, it built a local, interactive HTML report with:
+✅ Tailwind-designed aesthetics
+✅ Chart.js visualizations
+✅ Regional performance breakdowns
+✅ Competitive directory
+
+All running locally. All private. Research isn't just about reading; it's about seeing the answer.
+
+[Screenshot of a beautiful dashboard] #MarketResearch #AI #Innovation #Productivity
+
+---
+
+**Post 2 (The Business Value):**
+Turn raw data into boardroom-ready insights. 💼
+
+Tandem isn't just a chatbot. It's an AI engine that builds standing-room-only reports from your local files.
+
+1. **Point** to your folder of reports/data.
+2. **Ask** for a visual summary.
+3. **Download** a locally-rendered dashboard.
+
+Stop copy-pasting into Excel. Let Tandem author your next data story.
+
+[Link] #DataVisualization #BusinessIntelligence #AI
