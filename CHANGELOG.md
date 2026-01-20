@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-01-20
+
+### Added
+
+- HTML Canvas/Report feature: render interactive HTML files in a sandboxed iframe with Tailwind, Chart.js, and Font Awesome support.
+- "Research" tool category with dedicated instructions for a robust "Search → Select → Fetch" workflow.
+- Visibility of AI reasoning/thinking parts in both live streaming and chat history.
+- Automatic persistence of the current active session across reloads/refreshes.
+- Default "allow" rules for safe tools (`ls`, `read`, `todowrite`, `websearch`, `webfetch`) to reduce permission prompts.
+
+### Fixed
+
+- Robust cancellation: Stop button now reliably terminates backend AI processes using a fallback API mechanism.
+- Tool visibility: All tool calls (including technical ones) are now visible throughout the session per user request.
+- Fixed chat "freezing" by ensuring intermediate reasoning and tool steps are always streamed to the UI.
+- Replaced hardcoded version numbers with dynamic values in `MatrixLoader`, `Settings`, and the initial splash screen.
+- Improved error handling in the sidecar manager when primary cancellation endpoints are unavailable.
+
+### Changed
+
+- Updated `create_session` and `rewind_to_message` to include default safe-tool permissions.
+- Modified `sidecar.rs` to treat "reasoning" parts as visible content.
+
 ## [0.1.5] - 2026-01-20
 
 ### Added
@@ -64,7 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/frumu-ai/tandem/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/frumu-ai/tandem/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/frumu-ai/tandem/compare/v0.1.0...v0.1.4
 [0.1.0]: https://github.com/frumu-ai/tandem/releases/tag/v0.1.0

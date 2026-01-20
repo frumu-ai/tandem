@@ -86,11 +86,26 @@ function App() {
   const [selectedAgent, setSelectedAgent] = useState<string | undefined>(undefined);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  // Initialize currentSessionId from localStorage to persist state across reloads/rebuilds
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("tandem_current_session_id");
+    }
+    return null;
+  });
   const [historyLoading, setHistoryLoading] = useState(false);
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
   const [executePendingTrigger, setExecutePendingTrigger] = useState(0);
   const [isExecutingTasks, setIsExecutingTasks] = useState(false);
+
+  // Persist currentSessionId to localStorage whenever it changes
+  useEffect(() => {
+    if (currentSessionId) {
+      localStorage.setItem("tandem_current_session_id", currentSessionId);
+    } else {
+      localStorage.removeItem("tandem_current_session_id");
+    }
+  }, [currentSessionId]);
 
   // File browser state
   const [sidebarTab, setSidebarTab] = useState<"sessions" | "files">("sessions");

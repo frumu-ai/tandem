@@ -386,7 +386,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
 
           for (const part of msg.parts) {
             const partObj = part as Record<string, unknown>;
-            if (partObj.type === "text" && partObj.text) {
+            if ((partObj.type === "text" || partObj.type === "reasoning") && partObj.text) {
               content += partObj.text as string;
             } else if (partObj.type === "file") {
               // Handle file attachments
@@ -408,6 +408,9 @@ Start with task #1 and continue through each one. Let me know when each task is 
               }
             } else if (partObj.type === "tool" || partObj.type === "tool-invocation") {
               const toolName = (partObj.tool || "unknown") as string;
+              // Technical tools list - we keep these visible in history now per user request
+              // to see what happened during the session.
+              /* 
               const technicalTools = [
                 "todowrite",
                 "edit",
@@ -434,6 +437,15 @@ Start with task #1 and continue through each one. Let me know when each task is 
               if (technicalTools.includes(toolName) && status === "completed") {
                 continue;
               }
+              */
+
+              const state = partObj.state as Record<string, unknown> | undefined;
+              const status =
+                state?.status === "completed"
+                  ? "completed"
+                  : state?.status === "failed"
+                    ? "failed"
+                    : "pending";
 
               toolCalls.push({
                 id: (partObj.id || partObj.callID || "") as string,
@@ -441,7 +453,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
                 args: (state?.input || partObj.args || {}) as Record<string, unknown>,
                 result: state?.output ? String(state.output) : undefined,
                 status,
-                isTechnical: technicalTools.includes(toolName),
+                isTechnical: false, // technicalTools.includes(toolName), // Always show in history
               });
             }
           }
@@ -473,7 +485,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
         setIsLoadingHistory(false);
       }
     },
-    [getSidecarStatus, getSessionMessages, setError, setIsLoadingHistory, setMessages]
+    [setError, setIsLoadingHistory, setMessages]
   );
 
   // Helper to determine activity type from tool name - DISABLED
@@ -658,6 +670,8 @@ Start with task #1 and continue through each one. Let me know when each task is 
           const args = event.args as Record<string, unknown>;
 
           // Technical tools are handled as transient background tasks
+          // UPDATE: User wants to see all tools, so we disable technical hiding
+          /*
           const technicalTools = [
             "todowrite",
             "edit",
@@ -672,6 +686,8 @@ Start with task #1 and continue through each one. Let me know when each task is 
             "delete_file",
           ];
           const isTechnical = technicalTools.includes(event.tool);
+          */
+          const isTechnical = false;
 
           // Add tool call to the message
           setMessages((prev) => {
@@ -746,6 +762,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
 
         case "tool_end": {
           // Technical tools are handled as transient background tasks
+          /*
           const technicalTools = [
             "todowrite",
             "edit",
@@ -760,6 +777,8 @@ Start with task #1 and continue through each one. Let me know when each task is 
             "delete_file",
           ];
           const isTechnical = technicalTools.includes(event.tool);
+          */
+          const isTechnical = false;
 
           // Update tool call with result
           setMessages((prev) => {
@@ -985,7 +1004,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
         }
       }
     },
-    [isGenerating, loadSessionHistory] // Using ref for currentSessionId, so no need to include it
+    [isGenerating, loadSessionHistory, currentSessionId, stageOperation, usePlanMode]
   );
 
   // Listen for sidecar events
@@ -1260,6 +1279,7 @@ ${g.example}
       selectedAgent,
       enabledToolCategories,
       stagedOperations.length,
+      allowAllTools,
     ]
   );
 
@@ -1301,7 +1321,7 @@ ${g.example}
         console.error("[Undo] Error:", e);
       }
     },
-    [currentSessionId]
+    [currentSessionId, loadSessionHistory]
   );
 
   const handleEdit = useCallback(

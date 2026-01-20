@@ -428,10 +428,10 @@ export function Message({
   );
 }
 
-function ToolCallCard({ tool, args, status, result, isTechnical }: ToolCall) {
+function ToolCallCard({ tool, args, status, result }: ToolCall) {
   // Don't render completed technical tools (redundant if Chat.tsx filters them,
   // but good for safety)
-  if (isTechnical && status === "completed") return null;
+  // if (isTechnical && status === "completed") return null; // ALWAYS SHOW TOOLS PER USER REQUEST
 
   const getIcon = () => {
     switch (tool) {

@@ -2,6 +2,7 @@
 // This runs before the main React app loads
 
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { DEFAULT_THEME_ID, getThemeById } from "./lib/themes";
 import type { ThemeId } from "./types/theme";
 
@@ -343,6 +344,15 @@ document.addEventListener("keydown", (e) => {
 
 // Check vault status
 async function checkVaultStatus() {
+  // Set version
+  try {
+    const version = await getVersion();
+    const el = document.getElementById("app-version");
+    if (el) el.textContent = `v${version}`;
+  } catch (e) {
+    console.error("Failed to get version:", e);
+  }
+
   try {
     console.log("[Vault] Checking status...");
     loadingText.innerHTML = 'Checking vault<span class="loading-dots"></span>';

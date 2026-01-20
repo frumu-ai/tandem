@@ -1,5 +1,13 @@
 import { useState, useRef, useEffect } from "react";
-import { Wrench, Presentation, GitBranch, Table, ChevronDown } from "lucide-react";
+import {
+  Wrench,
+  Presentation,
+  GitBranch,
+  Table,
+  ChevronDown,
+  LayoutTemplate,
+  Globe,
+} from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 
@@ -17,6 +25,20 @@ const TOOL_CATEGORIES: ToolCategory[] = [
     label: "Slides",
     icon: Presentation,
     description: "Create PowerPoint presentations",
+    defaultEnabled: false,
+  },
+  {
+    id: "canvas",
+    label: "Reports",
+    icon: LayoutTemplate,
+    description: "Create interactive HTML dashboards",
+    defaultEnabled: false,
+  },
+  {
+    id: "research",
+    label: "Research",
+    icon: Globe,
+    description: "Smart web browsing & search",
     defaultEnabled: false,
   },
   {
@@ -65,10 +87,14 @@ export function ToolCategoryPicker({
     } else {
       next.add(id);
 
-      // Auto-enable Plan Mode for presentation tools (requires approval workflow)
-      if (id === "presentations" && onAgentChange && selectedAgent !== "plan") {
+      // Auto-enable Plan Mode for presentation/canvas tools (requires approval workflow)
+      if (
+        (id === "presentations" || id === "canvas") &&
+        onAgentChange &&
+        selectedAgent !== "plan"
+      ) {
         onAgentChange("plan");
-        console.log("[AutoPlan] Enabled Plan Mode for presentation workflow");
+        console.log(`[AutoPlan] Enabled Plan Mode for ${id} workflow`);
       }
     }
     onCategoriesChange(next);

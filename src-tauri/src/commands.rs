@@ -996,7 +996,34 @@ pub async fn create_session(
             action: "allow".to_string(),
         }])
     } else {
-        None
+        // Default safe tools allowed even if "Allow all" is off
+        Some(vec![
+            crate::sidecar::PermissionRule {
+                permission: "ls".to_string(),
+                pattern: "*".to_string(),
+                action: "allow".to_string(),
+            },
+            crate::sidecar::PermissionRule {
+                permission: "read".to_string(),
+                pattern: "*".to_string(),
+                action: "allow".to_string(),
+            },
+            crate::sidecar::PermissionRule {
+                permission: "todowrite".to_string(),
+                pattern: "*".to_string(),
+                action: "allow".to_string(),
+            },
+            crate::sidecar::PermissionRule {
+                permission: "websearch".to_string(),
+                pattern: "*".to_string(),
+                action: "allow".to_string(),
+            },
+            crate::sidecar::PermissionRule {
+                permission: "webfetch".to_string(),
+                pattern: "*".to_string(),
+                action: "allow".to_string(),
+            },
+        ])
     };
 
     let request = CreateSessionRequest {
@@ -1468,7 +1495,33 @@ pub async fn rewind_to_message(
             title: Some(format!("Rewind from {}", session_id)),
             model: default_model,
             provider: default_provider,
-            permission: None,
+            permission: Some(vec![
+                crate::sidecar::PermissionRule {
+                    permission: "ls".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                crate::sidecar::PermissionRule {
+                    permission: "read".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                crate::sidecar::PermissionRule {
+                    permission: "todowrite".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                crate::sidecar::PermissionRule {
+                    permission: "websearch".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                crate::sidecar::PermissionRule {
+                    permission: "webfetch".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+            ]),
         })
         .await?;
 
@@ -2164,6 +2217,95 @@ NOTE: When the JSON file is created, Tandem will automatically export it to a `.
                             }
                         ]
                     }).to_string(),
+                });
+            }
+            "canvas" => {
+                guidance.push(ToolGuidance {
+                    category: "canvas".to_string(),
+                    instructions: r#"# HTML Canvas / Report Creation
+
+Use this capability when the user asks for "reports", "visualizations", "dashboards", or "canvases".
+
+You can create rich, interactive HTML files that render directly in Tandem's preview.
+
+## Requirements:
+1. Create a SINGLE standalone HTML file (e.g., `report.html`, `dashboard.html`).
+2. Use **Tailwind CSS** via CDN for styling.
+3. Use **Chart.js** via CDN for charts.
+4. Use **Font Awesome** via CDN for icons.
+5. Use **Google Fonts** (Inter) for typography.
+6. The HTML must be self-contained (CSS/JS inside `<style>` and `<script>` tags).
+
+## Template:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Report Title</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div class="max-w-7xl mx-auto p-8">
+        <!-- Content Here -->
+        <canvas id="myChart"></canvas>
+    </div>
+    <script>
+        // Chart.js logic here
+    </script>
+</body>
+</html>
+```
+
+## Workflow:
+1. **Plan:** Propose the structure/content of the report (Plan Mode).
+2. **Execute:** Use the `write` tool to create the HTML file.
+"#.to_string(),
+                    json_schema: serde_json::json!({
+                        "file_type": "HTML",
+                        "libraries": ["Tailwind CSS", "Chart.js", "Font Awesome"],
+                        "structure": "Single file, self-contained"
+                    }),
+                    example: "Use the `write` tool to create `quarterly_report.html` with Tailwind and Chart.js code.".to_string(),
+                });
+            }
+            "research" => {
+                guidance.push(ToolGuidance {
+                    category: "research".to_string(),
+                    instructions: r#"# Web Research & Browsing
+
+Use this capability for finding information, verifying facts, or gathering data from the web.
+
+## Best Practices:
+1. **Search First:** Always start with `websearch` to find valid, up-to-date URLs.
+2. **Avoid Dead Links:** Do not `webfetch` URLs that likely don't exist or are deep links without verifying them first.
+3. **Handle Blocking:** Many sites (e.g., Statista, Airbnb, LinkedIn) block bots.
+   - If `webfetch` returns 403/404/Timeout:
+     - Do NOT retry the exact same URL immediately.
+     - Try searching for the specific information on a different site.
+     - Try fetching the root domain or a generic page if appropriate.
+4. **Prefer Text:** `webfetch` works best on content-heavy pages (docs, blogs, articles). It may fail on heavy SPAs.
+
+## Workflow:
+1. **Search:** `websearch` query: "latest real estate trends asia 2025"
+2. **Select:** Pick 1-2 promising URLs from the search results.
+3. **Fetch:** `webfetch` url: "..."
+4. **Fallback:** If fetch fails, go back to step 1 with a refined query or try the next URL.
+"#.to_string(),
+                    json_schema: serde_json::json!({
+                        "strategy": "Search -> Select -> Fetch -> Fallback",
+                        "error_handling": "Stop retrying failing URLs; use alternatives",
+                        "limitations": "Some sites block automated access"
+                    }),
+                    example: "Search for 'rust tauri docs', then fetch the official documentation page.".to_string(),
                 });
             }
             "diagrams" => {

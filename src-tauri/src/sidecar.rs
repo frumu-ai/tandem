@@ -1343,17 +1343,43 @@ impl SidecarManager {
         self.check_circuit_breaker().await?;
 
         // 1. Send cancel request to the sidecar via HTTP API
-        // Correct endpoint is /session/{id}/cancel (singular 'session')
-        let url = format!("{}/session/{}/cancel", self.base_url().await?, session_id);
+        let base = self.base_url().await?;
+        let url = format!("{}/session/{}/cancel", base, session_id);
+        let fallback_url = format!("{}/api/session/{}/cancel", base, session_id);
 
         tracing::info!("Cancelling session: {}", session_id);
 
-        let response = self
+        // Try primary URL
+        let mut response = self
             .http_client
             .post(&url)
             .timeout(Duration::from_secs(5)) // Short timeout for cancel
             .send()
             .await;
+
+        // If primary fails or returns 404, try fallback
+        if response.is_err()
+            || response
+                .as_ref()
+                .is_ok_and(|r| r.status() == reqwest::StatusCode::NOT_FOUND)
+        {
+            tracing::warn!(
+                "Cancel failed on primary URL {}, trying fallback {}",
+                url,
+                fallback_url
+            );
+            let fallback_response = self
+                .http_client
+                .post(&fallback_url)
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await;
+
+            // Only use fallback if it didn't error (or if primary was an error)
+            if fallback_response.is_ok() {
+                response = fallback_response;
+            }
+        }
 
         match response {
             Ok(resp) => {
@@ -1849,7 +1875,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
             let part_type = part.get("type").and_then(|s| s.as_str()).unwrap_or("text");
 
             match part_type {
-                "text" => {
+                "text" | "reasoning" => {
                     // Only emit content events if there's a delta (streaming from assistant)
                     // This prevents echoing user messages which come without delta
                     if delta.is_none() {
@@ -1862,7 +1888,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                             .unwrap_or("");
                         if role != "assistant" {
                             tracing::debug!(
-                                "Skipping text part without delta (likely user message)"
+                                "Skipping text/reasoning part without delta (likely user message)"
                             );
                             return None;
                         }
@@ -1881,7 +1907,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                     })
                 }
                 // Ignore reasoning parts to avoid showing "[REDACTED]" in chat
-                "reasoning" => None,
+                //"reasoning" => None,
                 "tool-invocation" | "tool" => {
                     let tool = part
                         .get("tool")

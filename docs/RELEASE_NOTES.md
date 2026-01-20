@@ -1,3 +1,22 @@
+# Tandem v0.1.6 Release Notes
+
+## Highlights
+
+- **Canvas Feature**: Securely render LLM-generated HTML reports and dashboards in a sandboxed iframe. Built-in support for Tailwind CSS, Chart.js, and Font Awesome via CDN allows the AI to create rich, interactive visual artifacts directly in the preview.
+- **Improved Web Research**: Introduced a dedicated "Research" tool category. The AI now follows a smarter "Search → Select → Fetch" workflow, reducing failures and avoiding anti-bot blocks on popular sites.
+- **Reasoning & Tool Visibility**: AI "thinking" steps (reasoning) are now visible in real-time and saved in chat history. Technical tool calls are no longer hidden, providing full transparency into the AI's internal logic and progress.
+- **Robust Stop Command**: Fixed a critical issue where the "Stop" button failed to halt the backend process. Implemented a fallback cancellation mechanism to ensure provider API calls are terminated immediately, preventing credit waste.
+- **Session Persistence**: Your active chat session now survives application reloads and rebuilds. No more losing your place or accidentally creating "New Chat" sessions on refresh.
+- **Dynamic Versioning**: Hardcoded version numbers have been removed. The loading screen, splash screen, and settings now dynamically display the actual version of Tandem and the OpenCode sidecar.
+- **Optimized Permissions**: Safe, non-destructive tools (listing files, reading code, searching the web) are now allowed by default. This reduces permission fatigue while keeping destructive actions (writing, deleting, commands) securely gated.
+
+## Notes
+
+- The Canvas feature is most reliable in **Plan Mode**, allowing you to review the proposed report structure before the AI writes the HTML file.
+- If a web fetch fails due to bot detection, the AI is now instructed to pivot to alternative sources rather than retrying the same blocked URL.
+
+---
+
 # Tandem v0.1.5 Release Notes
 
 ## Highlights

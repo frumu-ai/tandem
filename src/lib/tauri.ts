@@ -56,6 +56,14 @@ export type ApiKeyType = "openrouter" | "opencode_zen" | "anthropic" | "openai" 
 
 export type SidecarState = "stopped" | "starting" | "running" | "stopping" | "failed";
 
+export interface SidecarStatus {
+  installed: boolean;
+  version: string | null;
+  last_update_check: string | null;
+  update_available: boolean;
+  remote_version: string | null;
+}
+
 export interface SessionTime {
   created: number;
   updated: number;
@@ -365,6 +373,14 @@ export async function stopSidecar(): Promise<void> {
 
 export async function getSidecarStatus(): Promise<SidecarState> {
   return invoke("get_sidecar_status");
+}
+
+export async function checkSidecarStatus(): Promise<SidecarStatus> {
+  return invoke("check_sidecar_status");
+}
+
+export async function downloadSidecar(): Promise<void> {
+  return invoke("download_sidecar");
 }
 
 // ============================================================================

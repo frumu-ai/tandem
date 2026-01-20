@@ -13,9 +13,11 @@ import {
   Loader2,
   AlertCircle,
   MessageSquarePlus,
+  LayoutTemplate,
 } from "lucide-react";
 import { readFileContent, readBinaryFile, type FileEntry, logFrontendError } from "@/lib/tauri";
 import { PresentationPreview } from "./PresentationPreview";
+import { HtmlPreview } from "./HtmlPreview";
 // import { cn } from "@/lib/utils"; // Unused
 
 interface FilePreviewProps {
@@ -24,7 +26,15 @@ interface FilePreviewProps {
   onAddToChat?: (file: FileEntry) => void;
 }
 
-type PreviewType = "code" | "markdown" | "image" | "pdf" | "text" | "binary" | "presentation";
+type PreviewType =
+  | "code"
+  | "markdown"
+  | "image"
+  | "pdf"
+  | "text"
+  | "binary"
+  | "presentation"
+  | "html";
 
 const CODE_EXTENSIONS = new Set([
   "ts",
@@ -48,7 +58,6 @@ const CODE_EXTENSIONS = new Set([
   "bash",
   "css",
   "scss",
-  "html",
   "xml",
   "sql",
   "r",
@@ -76,6 +85,7 @@ function getPreviewType(file: FileEntry): PreviewType {
   const ext = file.extension?.toLowerCase();
   if (!ext) return "binary";
 
+  if (ext === "html" || ext === "htm") return "html";
   if (ext === "md") return "markdown";
   if (ext === "pdf") return "pdf";
   if (IMAGE_EXTENSIONS.has(ext)) return "image";
@@ -242,6 +252,9 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
     }
 
     switch (previewType) {
+      case "html":
+        return <HtmlPreview content={content} />;
+
       case "image":
         return (
           <div className="flex h-full items-center justify-center p-4 bg-surface">
@@ -355,6 +368,8 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
 
   const getIcon = () => {
     switch (previewType) {
+      case "html":
+        return LayoutTemplate;
       case "image":
         return ImageIcon;
       case "pdf":

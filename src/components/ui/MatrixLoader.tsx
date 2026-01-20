@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { getVersion } from "@tauri-apps/api/app";
 
 interface MatrixLoaderProps {
   isLoading: boolean;
@@ -145,6 +146,11 @@ export function MatrixLoader({ isLoading, onLoadingComplete }: MatrixLoaderProps
   const [loadingText, setLoadingText] = useState("Initializing secure vault");
   const [dots, setDots] = useState("");
   const [titleGlow, setTitleGlow] = useState<string | undefined>(undefined);
+  const [appVersion, setAppVersion] = useState("v0.1.0");
+
+  useEffect(() => {
+    getVersion().then((v) => setAppVersion(`v${v}`));
+  }, []);
 
   useEffect(() => {
     const updateDimensions = () => {
@@ -328,7 +334,7 @@ export function MatrixLoader({ isLoading, onLoadingComplete }: MatrixLoaderProps
           {/* Corner decorations */}
           <div className="absolute left-4 top-4 font-mono text-xs text-text-subtle">
             <div>SYS.INIT</div>
-            <div>v0.1.0</div>
+            <div>{appVersion}</div>
           </div>
           <div className="absolute right-4 top-4 font-mono text-xs text-text-subtle text-right">
             <div>SECURE</div>

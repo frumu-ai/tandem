@@ -11,7 +11,9 @@ import {
   Check,
   Trash2,
   Plus,
+  Info,
 } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
 import { ProviderCard } from "./ProviderCard";
 import { ThemePicker } from "./ThemePicker";
 import { Button } from "@/components/ui/Button";
@@ -32,8 +34,10 @@ import {
   storeApiKey,
   checkGitStatus,
   initializeGitRepo,
+  checkSidecarStatus,
   type ProvidersConfig,
   type UserProject,
+  type SidecarStatus,
 } from "@/lib/tauri";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -61,6 +65,10 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [projectsExpanded, setProjectsExpanded] = useState(false);
 
+  // Version info
+  const [appVersion, setAppVersion] = useState<string>("");
+  const [sidecarStatus, setSidecarStatus] = useState<SidecarStatus | null>(null);
+
   // Custom provider state
   const [customEndpoint, setCustomEndpoint] = useState("");
   const [customModel, setCustomModel] = useState("");
@@ -76,6 +84,8 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
 
   useEffect(() => {
     loadSettings();
+    getVersion().then(setAppVersion);
+    checkSidecarStatus().then(setSidecarStatus).catch(console.error);
   }, []);
 
   const loadSettings = async () => {
@@ -396,6 +406,16 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
               Close
             </Button>
           )}
+        </div>
+
+        {/* Version Info */}
+        <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-surface-elevated/50 p-3 text-sm text-text-muted">
+          <div className="flex items-center gap-2">
+            <Info className="h-4 w-4 text-primary" />
+            <span>Tandem v{appVersion || "..."}</span>
+            <span className="text-text-subtle">•</span>
+            <span>OpenCode v{sidecarStatus?.version || "..."}</span>
+          </div>
         </div>
 
         {/* Updates */}
