@@ -14,6 +14,9 @@ interface ContextToolbarProps {
   selectedModel?: string;
   onModelChange?: (model: string) => void;
   availableModels?: ModelInfo[];
+  // Provider indicator
+  activeProviderLabel?: string;
+  activeModelLabel?: string;
   // State
   disabled?: boolean;
 }
@@ -26,8 +29,14 @@ export function ContextToolbar({
   selectedModel,
   onModelChange,
   availableModels,
+  activeProviderLabel,
+  activeModelLabel,
   disabled,
 }: ContextToolbarProps) {
+  const providerSummary = activeProviderLabel
+    ? `${activeProviderLabel}${activeModelLabel ? ` · ${activeModelLabel}` : ""}`
+    : null;
+
   return (
     <div className="flex items-center gap-2 px-3 py-2 border-t border-border/50 bg-surface/30">
       {/* Agent selector */}
@@ -50,6 +59,19 @@ export function ContextToolbar({
         selectedAgent={selectedAgent}
         disabled={disabled}
       />
+
+      {providerSummary && (
+        <>
+          <div className="h-4 w-px bg-border" />
+          <div
+            className="max-w-[200px] truncate rounded-md bg-surface-elevated px-2 py-1 text-[10px] text-text-muted"
+            title={providerSummary}
+          >
+            <span className="font-medium text-text">{activeProviderLabel}</span>
+            {activeModelLabel && <span className="text-text-subtle"> · {activeModelLabel}</span>}
+          </div>
+        </>
+      )}
 
       {/* Model selector (optional) */}
       {onModelChange && availableModels && availableModels.length > 0 && (

@@ -20,6 +20,52 @@ use tauri_plugin_store::StoreExt;
 use uuid::Uuid;
 
 // ============================================================================
+// Updater helpers
+// ============================================================================
+
+/// Returns an updater target override when we can reliably detect packaging.
+///
+/// Why: On Linux, `@tauri-apps/plugin-updater` defaults to `linux-x86_64`, which
+/// in our `latest.json` maps to the AppImage. If the app is installed via a
+/// `.deb` (e.g. `/usr/bin/tandem`), the updater will try to treat that AppImage
+/// as a deb and fail with "update is not a valid deb package".
+#[tauri::command]
+pub fn get_updater_target() -> Option<String> {
+    // Only override on Linux; other platforms can rely on defaults.
+    #[cfg(not(target_os = "linux"))]
+    {
+        return None;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // AppImage runs set APPIMAGE; prefer explicit appimage target.
+        if std::env::var_os("APPIMAGE").is_some() {
+            let target = match std::env::consts::ARCH {
+                "x86_64" => "linux-x86_64-appimage",
+                "aarch64" => "linux-aarch64-appimage",
+                _ => return None,
+            };
+            return Some(target.to_string());
+        }
+
+        // Detect deb-installed binary path.
+        if let Ok(exe) = std::env::current_exe() {
+            if exe == std::path::Path::new("/usr/bin/tandem") {
+                let target = match std::env::consts::ARCH {
+                    "x86_64" => "linux-x86_64-deb",
+                    "aarch64" => "linux-aarch64-deb",
+                    _ => return None,
+                };
+                return Some(target.to_string());
+            }
+        }
+
+        None
+    }
+}
+
+// ============================================================================
 // Vault Commands (PIN-based encryption)
 // ============================================================================
 
@@ -619,6 +665,11 @@ pub async fn store_api_key(
 
     tracing::info!("API key saved");
 
+    {
+        let mut providers = state.providers_config.write().unwrap();
+        populate_provider_keys(&app, &mut providers);
+    }
+
     // Restart sidecar if it's running to reload env vars
     if matches!(state.sidecar.state().await, SidecarState::Running) {
         let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
@@ -663,6 +714,10 @@ pub async fn delete_api_key(
 
     if let Some(env_key) = env_var_for_key(&key_type_enum) {
         state.sidecar.remove_env(env_key).await;
+        {
+            let mut providers = state.providers_config.write().unwrap();
+            populate_provider_keys(&app, &mut providers);
+        }
         if matches!(state.sidecar.state().await, SidecarState::Running) {
             let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
             state
@@ -865,6 +920,37 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
         .start(sidecar_path.to_string_lossy().as_ref())
         .await?;
 
+    // Log provider availability for debugging
+    match state.sidecar.list_providers().await {
+        Ok(providers) => {
+            let provider_list: Vec<String> = providers
+                .iter()
+                .map(|p| format!("{} ({})", p.id, p.name))
+                .collect();
+            tracing::info!("Sidecar providers: {}", provider_list.join(", "));
+        }
+        Err(e) => {
+            tracing::warn!("Failed to list sidecar providers: {}", e);
+        }
+    }
+
+    match state.sidecar.list_models().await {
+        Ok(models) => {
+            let openrouter_count = models
+                .iter()
+                .filter(|m| m.provider.as_deref() == Some("openrouter"))
+                .count();
+            tracing::info!(
+                "Sidecar models: total={} openrouter={}",
+                models.len(),
+                openrouter_count
+            );
+        }
+        Err(e) => {
+            tracing::warn!("Failed to list sidecar models: {}", e);
+        }
+    }
+
     // Return the port
     state
         .sidecar
@@ -1013,7 +1099,29 @@ pub async fn send_message(
 
     let model_spec = {
         let config = state.providers_config.read().unwrap();
-        resolve_default_model_spec(&config)
+        let resolved = resolve_default_model_spec(&config);
+        if let Some(spec) = &resolved {
+            tracing::info!(
+                "Resolved model spec: provider={} model={} (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
+                spec.provider_id,
+                spec.model_id,
+                config.openrouter.enabled,
+                config.openrouter.default,
+                config.openrouter.has_key,
+                config.ollama.enabled,
+                config.ollama.default
+            );
+        } else {
+            tracing::warn!(
+                "No model spec resolved (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
+                config.openrouter.enabled,
+                config.openrouter.default,
+                config.openrouter.has_key,
+                config.ollama.enabled,
+                config.ollama.default
+            );
+        }
+        resolved
     };
     request.model = model_spec;
 
@@ -1053,7 +1161,29 @@ pub async fn send_message_streaming(
 
     let model_spec = {
         let config = state.providers_config.read().unwrap();
-        resolve_default_model_spec(&config)
+        let resolved = resolve_default_model_spec(&config);
+        if let Some(spec) = &resolved {
+            tracing::info!(
+                "Resolved model spec (streaming): provider={} model={} (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
+                spec.provider_id,
+                spec.model_id,
+                config.openrouter.enabled,
+                config.openrouter.default,
+                config.openrouter.has_key,
+                config.ollama.enabled,
+                config.ollama.default
+            );
+        } else {
+            tracing::warn!(
+                "No model spec resolved for streaming (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
+                config.openrouter.enabled,
+                config.openrouter.default,
+                config.openrouter.has_key,
+                config.ollama.enabled,
+                config.ollama.default
+            );
+        }
+        resolved
     };
     request.model = model_spec;
 
@@ -1079,8 +1209,14 @@ pub async fn send_message_streaming(
                 Ok(event) => {
                     // Filter events for our session
                     let is_our_session = match &event {
-                        StreamEvent::Content { session_id, content, .. } => {
-                            if session_id == &target_session_id && content.len() > MAX_RESPONSE_CHARS {
+                        StreamEvent::Content {
+                            session_id,
+                            content,
+                            ..
+                        } => {
+                            if session_id == &target_session_id
+                                && content.len() > MAX_RESPONSE_CHARS
+                            {
                                 tracing::warn!(
                                     "Response exceeded safety limit ({} chars), cancelling session {}",
                                     MAX_RESPONSE_CHARS,

@@ -5,7 +5,7 @@ use crate::error::{Result, TandemError};
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -527,6 +527,37 @@ pub struct ProviderInfo {
     pub configured: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ProviderCatalogResponse {
+    #[serde(default)]
+    all: Vec<ProviderCatalogEntry>,
+    #[serde(default)]
+    connected: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProviderCatalogEntry {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    models: HashMap<String, ProviderCatalogModel>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProviderCatalogModel {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    limit: Option<ProviderCatalogLimit>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProviderCatalogLimit {
+    #[serde(default)]
+    context: Option<u32>,
+}
+
 /// Todo item from OpenCode
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItem {
@@ -638,6 +669,14 @@ impl SidecarManager {
         // Get config and env vars
         let config = self.config.read().await;
         let env_vars = self.env_vars.read().await;
+
+        tracing::info!(
+            "Sidecar env set: OPENROUTER_API_KEY={} OPENCODE_ZEN_API_KEY={} ANTHROPIC_API_KEY={} OPENAI_API_KEY={}",
+            env_vars.contains_key("OPENROUTER_API_KEY"),
+            env_vars.contains_key("OPENCODE_ZEN_API_KEY"),
+            env_vars.contains_key("ANTHROPIC_API_KEY"),
+            env_vars.contains_key("OPENAI_API_KEY")
+        );
 
         // Build the command
         let mut cmd = Command::new(sidecar_path);
@@ -1037,11 +1076,24 @@ impl SidecarManager {
     pub async fn send_message(&self, session_id: &str, request: SendMessageRequest) -> Result<()> {
         self.check_circuit_breaker().await?;
 
-        let url = format!(
-            "{}/session/{}/prompt_async",
-            self.base_url().await?,
-            session_id
-        );
+        let base = self.base_url().await?;
+        let url = format!("{}/session/{}/prompt_async", base, session_id);
+        let fallback_url = format!("{}/api/session/{}/prompt_async", base, session_id);
+
+        if let Some(model) = &request.model {
+            tracing::info!(
+                "Sending prompt to sidecar (session {}): provider={} model={}",
+                session_id,
+                model.provider_id,
+                model.model_id
+            );
+        } else {
+            tracing::warn!(
+                "Sending prompt to sidecar (session {}) without explicit model spec",
+                session_id
+            );
+        }
+
         tracing::debug!("Sending prompt to: {} with {:?}", url, request);
 
         let response = self
@@ -1052,18 +1104,93 @@ impl SidecarManager {
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
 
-        // prompt_async returns 204 No Content on success
-        if response.status().as_u16() == 204 || response.status().is_success() {
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        // prompt_async should return 204 No Content on success
+        if status.as_u16() == 204 {
             self.record_success().await;
-            Ok(())
-        } else {
-            self.record_failure().await;
+            return Ok(());
+        }
+
+        if status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            Err(TandemError::Sidecar(format!(
+            let is_html = content_type.contains("text/html")
+                || body.trim_start().starts_with("<!doctype html")
+                || body.trim_start().starts_with("<html");
+
+            if is_html {
+                tracing::warn!(
+                    "prompt_async returned HTML from {} (status {}), retrying via {}",
+                    url,
+                    status,
+                    fallback_url
+                );
+
+                let response = self
+                    .http_client
+                    .post(&fallback_url)
+                    .json(&request)
+                    .send()
+                    .await
+                    .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
+
+                let status = response.status();
+                let content_type = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+
+                if status.as_u16() == 204 {
+                    self.record_success().await;
+                    return Ok(());
+                }
+
+                let body = response.text().await.unwrap_or_default();
+                tracing::warn!(
+                    "Sidecar prompt_async failed (fallback): status={} content_type={} body={}",
+                    status,
+                    content_type,
+                    body
+                );
+                self.record_failure().await;
+                return Err(TandemError::Sidecar(format!(
+                    "Failed to send message: {}",
+                    body
+                )));
+            }
+
+            tracing::warn!(
+                "Sidecar prompt_async unexpected success status: status={} content_type={} body={}",
+                status,
+                content_type,
+                body
+            );
+            self.record_failure().await;
+            return Err(TandemError::Sidecar(format!(
                 "Failed to send message: {}",
                 body
-            )))
+            )));
         }
+
+        self.record_failure().await;
+        let body = response.text().await.unwrap_or_default();
+        tracing::warn!(
+            "Sidecar prompt_async failed: status={} body={}",
+            status,
+            body
+        );
+        Err(TandemError::Sidecar(format!(
+            "Failed to send message: {}",
+            body
+        )))
     }
 
     /// Revert a message (undo)
@@ -1208,9 +1335,9 @@ impl SidecarManager {
         // 1. Send cancel request to the sidecar via HTTP API
         // Correct endpoint is /session/{id}/cancel (singular 'session')
         let url = format!("{}/session/{}/cancel", self.base_url().await?, session_id);
-        
+
         tracing::info!("Cancelling session: {}", session_id);
-        
+
         let response = self
             .http_client
             .post(&url)
@@ -1251,7 +1378,13 @@ impl SidecarManager {
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         self.check_circuit_breaker().await?;
 
-        let url = format!("{}/models", self.base_url().await?);
+        let base = self.base_url().await?;
+        if let Ok(catalog) = self.fetch_provider_catalog(&base).await {
+            return Ok(Self::models_from_provider_catalog(&catalog));
+        }
+
+        let url = format!("{}/models", base);
+        let fallback_url = format!("{}/api/models", base);
 
         let response = self
             .http_client
@@ -1260,14 +1393,39 @@ impl SidecarManager {
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to list models: {}", e)))?;
 
-        self.handle_response(response).await
+        match self.handle_response(response).await {
+            Ok(models) => Ok(models),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to parse models from {}, retrying with {}: {}",
+                    url,
+                    fallback_url,
+                    e
+                );
+                let response = self
+                    .http_client
+                    .get(&fallback_url)
+                    .send()
+                    .await
+                    .map_err(|err| {
+                        TandemError::Sidecar(format!("Failed to list models: {}", err))
+                    })?;
+                self.handle_response(response).await
+            }
+        }
     }
 
     /// List available providers
     pub async fn list_providers(&self) -> Result<Vec<ProviderInfo>> {
         self.check_circuit_breaker().await?;
 
-        let url = format!("{}/providers", self.base_url().await?);
+        let base = self.base_url().await?;
+        if let Ok(catalog) = self.fetch_provider_catalog(&base).await {
+            return Ok(Self::providers_from_provider_catalog(catalog));
+        }
+
+        let url = format!("{}/providers", base);
+        let fallback_url = format!("{}/api/providers", base);
 
         let response = self
             .http_client
@@ -1276,7 +1434,26 @@ impl SidecarManager {
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to list providers: {}", e)))?;
 
-        self.handle_response(response).await
+        match self.handle_response(response).await {
+            Ok(providers) => Ok(providers),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to parse providers from {}, retrying with {}: {}",
+                    url,
+                    fallback_url,
+                    e
+                );
+                let response = self
+                    .http_client
+                    .get(&fallback_url)
+                    .send()
+                    .await
+                    .map_err(|err| {
+                        TandemError::Sidecar(format!("Failed to list providers: {}", err))
+                    })?;
+                self.handle_response(response).await
+            }
+        }
     }
 
     // ========================================================================
@@ -1393,6 +1570,55 @@ impl SidecarManager {
         Ok(())
     }
 
+    async fn fetch_provider_catalog(&self, base: &str) -> Result<ProviderCatalogResponse> {
+        let url = format!("{}/provider", base);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list providers: {}", e)))?;
+
+        self.handle_response(response).await.map_err(|e| {
+            tracing::warn!("Failed to parse providers from {}: {}", url, e);
+            e
+        })
+    }
+
+    fn providers_from_provider_catalog(catalog: ProviderCatalogResponse) -> Vec<ProviderInfo> {
+        let connected: HashSet<String> = catalog.connected.into_iter().collect();
+        catalog
+            .all
+            .into_iter()
+            .map(|provider| {
+                let models = provider.models.keys().cloned().collect::<Vec<_>>();
+                ProviderInfo {
+                    id: provider.id.clone(),
+                    name: provider.name.unwrap_or_else(|| provider.id.clone()),
+                    models,
+                    configured: connected.contains(&provider.id),
+                }
+            })
+            .collect()
+    }
+
+    fn models_from_provider_catalog(catalog: &ProviderCatalogResponse) -> Vec<ModelInfo> {
+        let mut models = Vec::new();
+        for provider in &catalog.all {
+            for (model_id, model) in &provider.models {
+                let name = model.name.clone().unwrap_or_else(|| model_id.clone());
+                let context_length = model.limit.as_ref().and_then(|limit| limit.context);
+                models.push(ModelInfo {
+                    id: model_id.clone(),
+                    name,
+                    provider: Some(provider.id.clone()),
+                    context_length,
+                });
+            }
+        }
+        models
+    }
+
     async fn record_success(&self) {
         let mut cb = self.circuit_breaker.lock().await;
         cb.record_success();
@@ -1461,42 +1687,61 @@ impl Drop for SidecarManager {
 
 /// Parse a single SSE event from the buffer
 fn parse_sse_event(buffer: &mut String) -> Option<StreamEvent> {
-    // SSE format: "data: {json}\n\n" or "event: type\ndata: {json}\n\n"
-    if let Some(end_idx) = buffer.find("\n\n") {
-        let event_str = buffer[..end_idx].to_string();
-        *buffer = buffer[end_idx + 2..].to_string();
+    // SSE format:
+    //   data: {json}\n\n
+    // or
+    //   event: type\ndata:{json}\n\n
+    //
+    // Notes:
+    // - The `data:` prefix may or may not include a space after the colon.
+    // - An event may contain multiple `data:` lines; they must be concatenated with '\n'.
+    // - Some servers use \r\n line endings.
 
-        // Parse the event
-        for line in event_str.lines() {
-            if let Some(data) = line.strip_prefix("data: ") {
-                if data == "[DONE]" {
-                    // Generic done signal
-                    return Some(StreamEvent::SessionIdle {
-                        session_id: "unknown".to_string(),
-                    });
-                }
+    // Find event delimiter (\n\n or \r\n\r\n)
+    let (end_idx, delim_len) = if let Some(i) = buffer.find("\r\n\r\n") {
+        (i, 4)
+    } else if let Some(i) = buffer.find("\n\n") {
+        (i, 2)
+    } else {
+        return None;
+    };
 
-                // Try to parse as OpenCode event format
-                match serde_json::from_str::<OpenCodeEvent>(data) {
-                    Ok(event) => {
-                        return convert_opencode_event(event);
-                    }
-                    Err(e) => {
-                        tracing::debug!("Failed to parse as OpenCodeEvent: {} - data: {}", e, data);
-                        // Return as raw event for debugging
-                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
-                            return Some(StreamEvent::Raw {
-                                event_type: "unknown".to_string(),
-                                data: value,
-                            });
-                        }
-                    }
-                }
-            }
+    let event_str = buffer[..end_idx].to_string();
+    *buffer = buffer[end_idx + delim_len..].to_string();
+
+    let mut data_lines: Vec<String> = Vec::new();
+    for raw_line in event_str.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if let Some(rest) = line.strip_prefix("data:") {
+            data_lines.push(rest.trim_start().to_string());
         }
     }
 
-    None
+    if data_lines.is_empty() {
+        return None;
+    }
+
+    let data = data_lines.join("\n");
+    if data == "[DONE]" {
+        // Generic done signal
+        return Some(StreamEvent::SessionIdle {
+            session_id: "unknown".to_string(),
+        });
+    }
+
+    match serde_json::from_str::<OpenCodeEvent>(&data) {
+        Ok(event) => convert_opencode_event(event),
+        Err(e) => {
+            tracing::debug!("Failed to parse as OpenCodeEvent: {} - data: {}", e, data);
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) {
+                return Some(StreamEvent::Raw {
+                    event_type: "unknown".to_string(),
+                    data: value,
+                });
+            }
+            None
+        }
+    }
 }
 
 /// Convert OpenCode event to our StreamEvent format
@@ -1515,8 +1760,74 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
             // from the assistant. Events without delta are typically user message confirmations.
             let delta = props
                 .get("delta")
-                .and_then(|d| d.as_str())
-                .map(|s| s.to_string());
+                .and_then(|d| match d {
+                    // Historical format: delta is a string
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    // Newer format: delta can be an object, commonly with a `text` field
+                    serde_json::Value::Object(map) => map
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string()),
+                    // Some implementations send an array of chunks
+                    serde_json::Value::Array(items) => {
+                        let mut out = String::new();
+                        for item in items {
+                            match item {
+                                serde_json::Value::String(s) => out.push_str(s),
+                                serde_json::Value::Object(map) => {
+                                    if let Some(s) = map
+                                        .get("text")
+                                        .and_then(|t| t.as_str())
+                                        .map(|s| s.to_string())
+                                    {
+                                        out.push_str(&s);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        if out.is_empty() {
+                            None
+                        } else {
+                            Some(out)
+                        }
+                    }
+                    _ => None,
+                })
+                // Some event versions nest delta under the part payload
+                .or_else(|| {
+                    part.get("delta").and_then(|d| match d {
+                        serde_json::Value::String(s) => Some(s.clone()),
+                        serde_json::Value::Object(map) => map
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string()),
+                        serde_json::Value::Array(items) => {
+                            let mut out = String::new();
+                            for item in items {
+                                match item {
+                                    serde_json::Value::String(s) => out.push_str(s),
+                                    serde_json::Value::Object(map) => {
+                                        if let Some(s) = map
+                                            .get("text")
+                                            .and_then(|t| t.as_str())
+                                            .map(|s| s.to_string())
+                                        {
+                                            out.push_str(&s);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if out.is_empty() {
+                                None
+                            } else {
+                                Some(out)
+                            }
+                        }
+                        _ => None,
+                    })
+                });
 
             let session_id = part.get("sessionID").and_then(|s| s.as_str())?.to_string();
             let message_id = part.get("messageID").and_then(|s| s.as_str())?.to_string();
@@ -1532,8 +1843,19 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                     // Only emit content events if there's a delta (streaming from assistant)
                     // This prevents echoing user messages which come without delta
                     if delta.is_none() {
-                        tracing::debug!("Skipping text part without delta (likely user message)");
-                        return None;
+                        // Some OpenCode builds omit `delta` for assistant streaming updates.
+                        // In that case, only allow this event through if the role is explicitly assistant.
+                        let role = props
+                            .get("message")
+                            .and_then(|m| m.get("role").or_else(|| m.get("info")?.get("role")))
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("");
+                        if role != "assistant" {
+                            tracing::debug!(
+                                "Skipping text part without delta (likely user message)"
+                            );
+                            return None;
+                        }
                     }
 
                     let text = part
@@ -1550,17 +1872,26 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                 }
                 // Ignore reasoning parts to avoid showing "[REDACTED]" in chat
                 "reasoning" => None,
-                "tool-invocation" => {
+                "tool-invocation" | "tool" => {
                     let tool = part
                         .get("tool")
                         .and_then(|s| s.as_str())
                         .unwrap_or("unknown")
                         .to_string();
-                    let args = part.get("args").cloned().unwrap_or(serde_json::Value::Null);
-                    let state = part
-                        .get("state")
+                    let state_value = part.get("state");
+                    let state = state_value
+                        .and_then(|s| s.get("status"))
                         .and_then(|s| s.as_str())
-                        .unwrap_or("pending");
+                        .unwrap_or_else(|| {
+                            part.get("state")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("pending")
+                        });
+                    let args = state_value
+                        .and_then(|s| s.get("input"))
+                        .cloned()
+                        .or_else(|| part.get("args").cloned())
+                        .unwrap_or(serde_json::Value::Null);
 
                     match state {
                         "pending" | "running" => Some(StreamEvent::ToolStart {
@@ -1570,12 +1901,20 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                             tool,
                             args,
                         }),
-                        "completed" | "failed" => {
-                            let result = part.get("result").cloned();
-                            let error = part
-                                .get("error")
+                        "completed" | "failed" | "error" => {
+                            let result = state_value
+                                .and_then(|s| s.get("output"))
+                                .cloned()
+                                .or_else(|| part.get("result").cloned());
+                            let error = state_value
+                                .and_then(|s| s.get("error"))
                                 .and_then(|e| e.as_str())
-                                .map(|s| s.to_string());
+                                .map(|s| s.to_string())
+                                .or_else(|| {
+                                    part.get("error")
+                                        .and_then(|e| e.as_str())
+                                        .map(|s| s.to_string())
+                                });
                             Some(StreamEvent::ToolEnd {
                                 session_id,
                                 message_id,
@@ -1616,6 +1955,12 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
                 .to_string();
+
+            if let Some(error_value) = info.get("error") {
+                if let Some(error) = extract_error_message(error_value) {
+                    return Some(StreamEvent::SessionError { session_id, error });
+                }
+            }
 
             let parts = message
                 .get("parts")
@@ -1673,7 +2018,9 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
         }
         "session.error" => {
             let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
-            let error = props.get("error").and_then(|s| s.as_str())?.to_string();
+            let error_value = props.get("error").unwrap_or(&serde_json::Value::Null);
+            let error =
+                extract_error_message(error_value).unwrap_or_else(|| error_value.to_string());
             Some(StreamEvent::SessionError { session_id, error })
         }
         "file.edited" => {
@@ -1773,6 +2120,42 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                 data: event.properties,
             })
         }
+    }
+}
+
+fn extract_error_message(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(message) => Some(message.clone()),
+        serde_json::Value::Object(map) => {
+            if let Some(message) = map.get("message").and_then(|m| m.as_str()) {
+                return Some(message.to_string());
+            }
+            if let Some(message) = map
+                .get("data")
+                .and_then(|data| data.get("message"))
+                .and_then(|m| m.as_str())
+            {
+                return Some(message.to_string());
+            }
+            if let Some(message) = map
+                .get("error")
+                .and_then(|err| err.get("message"))
+                .and_then(|m| m.as_str())
+            {
+                return Some(message.to_string());
+            }
+            if let Some(message) = map
+                .get("data")
+                .and_then(|data| data.get("error"))
+                .and_then(|err| err.get("message"))
+                .and_then(|m| m.as_str())
+            {
+                return Some(message.to_string());
+            }
+            Some(value.to_string())
+        }
+        serde_json::Value::Null => None,
+        _ => Some(value.to_string()),
     }
 }
 

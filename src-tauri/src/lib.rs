@@ -125,6 +125,7 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
 
     let mappings: Vec<(keystore::ApiKeyType, &str)> = vec![
         (keystore::ApiKeyType::OpenRouter, "OPENROUTER_API_KEY"),
+        (keystore::ApiKeyType::OpenCodeZen, "OPENCODE_ZEN_API_KEY"),
         (keystore::ApiKeyType::Anthropic, "ANTHROPIC_API_KEY"),
         (keystore::ApiKeyType::OpenAI, "OPENAI_API_KEY"),
     ];
@@ -154,6 +155,33 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
             }
         }
     }
+
+    // Restart sidecar to ensure it picks up new env vars (keys are only applied on start).
+    let app_clone = app.clone();
+    let sidecar_for_restart = sidecar.clone();
+    tauri::async_runtime::spawn(async move {
+        if sidecar_for_restart.state().await == sidecar::SidecarState::Running {
+            tracing::info!("Restarting sidecar to apply updated API keys");
+            if let Err(e) = sidecar_for_restart.stop().await {
+                tracing::warn!("Failed to stop sidecar for key refresh: {}", e);
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            match sidecar_manager::get_sidecar_binary_path(&app_clone) {
+                Ok(path) => {
+                    if let Err(e) = sidecar_for_restart
+                        .start(path.to_string_lossy().as_ref())
+                        .await
+                    {
+                        tracing::error!("Failed to restart sidecar for key refresh: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to resolve sidecar path for key refresh: {}", e);
+                }
+            }
+        }
+    });
 
     // Manage the keystore
     app.manage(keystore);
@@ -287,6 +315,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // Updater helpers
+            commands::get_updater_target,
             // Vault commands (must be called before other commands that need the keystore)
             commands::get_vault_status,
             commands::create_vault,

@@ -1,7 +1,7 @@
 {
   "name": "tandem",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -65,7 +65,7 @@
       "prettier --write"
     ],
     "*.rs": [
-      "rustfmt",
+      "rustfmt --edition 2021",
       "node scripts/check-secrets.js"
     ]
   }

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
@@ -7,14 +8,23 @@ export type UpdateStatus =
   | "checking"
   | "available"
   | "downloading"
+  | "installing"
   | "installed"
   | "upToDate"
   | "error";
+
+export interface UpdateProgress {
+  downloaded: number;
+  total: number;
+  percent: number;
+}
 
 interface UpdaterContextType {
   status: UpdateStatus;
   updateInfo: Update | null;
   error: string | null;
+  progress: UpdateProgress | null;
+  isDismissed: boolean;
   checkUpdates: (silent?: boolean) => Promise<void>;
   installUpdate: () => Promise<void>;
   dismissUpdate: () => void;
@@ -26,6 +36,7 @@ export function UpdaterProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const [updateInfo, setUpdateInfo] = useState<Update | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<UpdateProgress | null>(null);
   const [isDismissed, setIsDismissed] = useState(false);
 
   const checkUpdates = useCallback(async (silent = false) => {
@@ -35,7 +46,11 @@ export function UpdaterProvider({ children }: { children: React.ReactNode }) {
     setError(null);
 
     try {
-      const update = await check();
+      // On Linux, default target selection can pick the AppImage artifact even when
+      // we're installed via `.deb` (`/usr/bin/tandem`). Ask the backend for a
+      // target override when it can reliably detect packaging.
+      const target = await invoke<string | null>("get_updater_target").catch(() => null);
+      const update = await (target ? check({ target }) : check());
       if (!update) {
         if (!silent) setStatus("upToDate");
         setUpdateInfo(null);
@@ -60,9 +75,51 @@ export function UpdaterProvider({ children }: { children: React.ReactNode }) {
 
     setStatus("downloading");
     setError(null);
+    setProgress({ downloaded: 0, total: 0, percent: 0 });
 
     try {
-      await updateInfo.downloadAndInstall();
+      let downloaded = 0;
+      const updateAny = updateInfo as unknown as {
+        downloadAndInstall: (onEvent?: (event: any) => void) => Promise<void>;
+      };
+
+      await updateAny.downloadAndInstall((event: any) => {
+        // https://v2.tauri.app/reference/javascript/updater/
+        // DownloadEvent: { event: "Started"|"Progress"|"Finished", data: { contentLength?, chunkLength? } }
+        const name = event?.event;
+        const data = event?.data ?? {};
+
+        if (name === "Started") {
+          const total = Number(data.contentLength ?? 0);
+          downloaded = 0;
+          setProgress({
+            downloaded: 0,
+            total,
+            percent: total > 0 ? 0 : 0,
+          });
+          return;
+        }
+
+        if (name === "Progress") {
+          const chunk = Number(data.chunkLength ?? 0);
+          downloaded += Number.isFinite(chunk) ? chunk : 0;
+          setProgress((prev) => {
+            const total = prev?.total ?? 0;
+            const percent = total > 0 ? (downloaded / total) * 100 : 0;
+            return {
+              downloaded,
+              total,
+              percent: Math.max(0, Math.min(100, percent)),
+            };
+          });
+          return;
+        }
+
+        if (name === "Finished") {
+          setStatus("installing");
+          return;
+        }
+      });
       setStatus("installed");
       await relaunch();
     } catch (err) {
@@ -78,7 +135,10 @@ export function UpdaterProvider({ children }: { children: React.ReactNode }) {
 
   // Check for updates on mount
   useEffect(() => {
-    checkUpdates(true);
+    const timer = setTimeout(() => {
+      void checkUpdates(true);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [checkUpdates]);
 
   // If dismissed, effectively hide it from the UI consumers (unless they explicitly check status)
@@ -96,11 +156,11 @@ export function UpdaterProvider({ children }: { children: React.ReactNode }) {
         status,
         updateInfo,
         error,
+        progress,
+        isDismissed,
         checkUpdates,
         installUpdate,
         dismissUpdate,
-        // @ts-ignore - appending hidden prop for Toast usage
-        isDismissed,
       }}
     >
       {children}
@@ -113,5 +173,5 @@ export function useUpdater() {
   if (!context) {
     throw new Error("useUpdater must be used within an UpdaterProvider");
   }
-  return context as UpdaterContextType & { isDismissed: boolean };
+  return context;
 }

@@ -20,6 +20,7 @@ import { Switch } from "@/components/ui/Switch";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
 import { UpdateToast } from "@/components/ui/UpdateToast";
+import { useUpdater } from "@/hooks/useUpdater";
 import {
   getProvidersConfig,
   setProvidersConfig,
@@ -43,6 +44,15 @@ interface SettingsProps {
 }
 
 export function Settings({ onClose, onProjectChange, onProviderChange }: SettingsProps) {
+  const {
+    status: updateStatus,
+    updateInfo,
+    error: updateError,
+    progress: updateProgress,
+    checkUpdates,
+    installUpdate,
+  } = useUpdater();
+
   const [providers, setProviders] = useState<ProvidersConfig | null>(null);
   const [projects, setProjects] = useState<UserProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -388,6 +398,77 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
           )}
         </div>
 
+        {/* Updates */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <CardTitle>Updates</CardTitle>
+                <CardDescription>Keep Tandem up to date.</CardDescription>
+              </div>
+              <Button
+                size="sm"
+                onClick={updateStatus === "available" ? installUpdate : () => checkUpdates(false)}
+                disabled={
+                  updateStatus === "checking" ||
+                  updateStatus === "downloading" ||
+                  updateStatus === "installing"
+                }
+              >
+                {updateStatus === "checking" && "Checking..."}
+                {updateStatus === "downloading" && "Downloading..."}
+                {updateStatus === "installing" && "Installing..."}
+                {updateStatus === "available" && "Download & Install"}
+                {(updateStatus === "idle" ||
+                  updateStatus === "upToDate" ||
+                  updateStatus === "installed" ||
+                  updateStatus === "error") &&
+                  "Check for Updates"}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="text-sm text-text-muted">
+              {updateStatus === "available" && updateInfo
+                ? `Update available: v${updateInfo.version}`
+                : updateStatus === "upToDate"
+                  ? "You're on the latest version."
+                  : updateStatus === "installed"
+                    ? "Update installed. Relaunching..."
+                    : updateStatus === "error"
+                      ? updateError || "Update failed."
+                      : updateStatus === "checking"
+                        ? "Checking for updates..."
+                        : updateStatus === "installing"
+                          ? "Installing update..."
+                          : updateStatus === "downloading"
+                            ? "Downloading update..."
+                            : ""}
+            </div>
+
+            {updateStatus === "downloading" && updateProgress && (
+              <div className="space-y-2">
+                <div className="h-2 w-full overflow-hidden rounded-full bg-surface-elevated">
+                  <motion.div
+                    className="h-full bg-gradient-to-r from-primary to-secondary"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${updateProgress.percent}%` }}
+                    transition={{ duration: 0.2 }}
+                  />
+                </div>
+                <div className="flex justify-between text-xs text-text-subtle">
+                  <span>{Math.round(updateProgress.percent)}%</span>
+                  <span>
+                    {updateProgress.total > 0
+                      ? `${Math.round(updateProgress.downloaded / 1024 / 1024)}MB / ${Math.round(updateProgress.total / 1024 / 1024)}MB`
+                      : "Downloading..."}
+                  </span>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Projects Section */}
         <Card>
           <CardHeader>
@@ -559,7 +640,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
             </div>
           </CardHeader>
           <CardContent>
-            <ThemePicker />
+            <ThemePicker variant="compact" />
           </CardContent>
         </Card>
 

@@ -1,3 +1,19 @@
+# Tandem v0.1.5 Release Notes
+
+## Highlights
+
+- **OpenCode API Compatibility**: Sidecar requests now align with the latest OpenCode routes, restoring provider/model listings and prompt delivery after upstream changes.
+- **Error Surfacing**: Structured provider errors (like OpenRouter credit limits) are now displayed directly in the chat UI.
+- **Settings Update UX**: Update checking and download/install progress is now surfaced at the top of Settings.
+- **UI Fixes + Polish**: The taskbar no longer overlays the About/Settings screens, the theme picker is now a compact dropdown with previews, and the active provider/model badge appears next to the tool selector.
+
+## Notes
+
+- If you see OpenRouter credit-limit errors, add credits or lower max output tokens for the selected model.
+- AppImage installs are unchanged and continue to update via the AppImage artifact.
+
+---
+
 # Tandem v0.1.1 Release Notes
 
 ## Highlights

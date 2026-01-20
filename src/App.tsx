@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Settings } from "@/components/settings";
 import { About } from "@/components/about";
@@ -113,24 +113,6 @@ function App() {
   // Todos for task sidebar
   const todosData = useTodos(currentSessionId);
 
-  // Auto-open task sidebar when tasks are created (but not on initial load)
-  const previousTaskCountRef = useRef(0);
-  useEffect(() => {
-    const currentTaskCount = todosData.todos.length;
-
-    // If tasks increased (new tasks created) and we're not already open
-    if (
-      currentTaskCount > previousTaskCountRef.current &&
-      currentTaskCount > 0 &&
-      !taskSidebarOpen
-    ) {
-      console.log(`[TaskSidebar] Auto-opening: ${currentTaskCount} tasks detected`);
-      setTaskSidebarOpen(true);
-    }
-
-    previousTaskCountRef.current = currentTaskCount;
-  }, [todosData.todos.length, taskSidebarOpen]);
-
   // Start with sidecar setup, then onboarding if no workspace, otherwise chat
   const [view, setView] = useState<View>(() => "sidecar-setup");
 
@@ -152,6 +134,29 @@ function App() {
     state?.providers_config
   );
 
+  const activeProviderInfo = useMemo(() => {
+    const config = state?.providers_config;
+    if (!config) return null;
+
+    const candidates = [
+      { id: "openrouter", label: "OpenRouter", config: config.openrouter },
+      { id: "opencode_zen", label: "OpenCode Zen", config: config.opencode_zen },
+      { id: "anthropic", label: "Anthropic", config: config.anthropic },
+      { id: "openai", label: "OpenAI", config: config.openai },
+      { id: "ollama", label: "Ollama", config: config.ollama },
+    ];
+
+    const preferred =
+      candidates.find((c) => c.config.enabled && c.config.default) ||
+      candidates.find((c) => c.config.enabled);
+
+    if (!preferred) return null;
+    return {
+      providerLabel: preferred.label,
+      modelLabel: preferred.config.model ?? null,
+    };
+  }, [state?.providers_config]);
+
   // Update view based on workspace state after loading
   const effectiveView =
     loading || !vaultUnlocked
@@ -159,10 +164,37 @@ function App() {
       : !sidecarReady
         ? "sidecar-setup"
         : (!state?.has_workspace || !hasConfiguredProvider) &&
-          view !== "settings" &&
-          view !== "about"
+            view !== "settings" &&
+            view !== "about"
           ? "onboarding"
           : view;
+
+  // Auto-open task sidebar when tasks are created (but not on initial load).
+  // Only do this while in chat view.
+  const previousTaskCountRef = useRef(0);
+  useEffect(() => {
+    const currentTaskCount = todosData.todos.length;
+
+    // If tasks increased (new tasks created) and we're not already open
+    if (
+      effectiveView === "chat" &&
+      currentTaskCount > previousTaskCountRef.current &&
+      currentTaskCount > 0 &&
+      !taskSidebarOpen
+    ) {
+      console.log(`[TaskSidebar] Auto-opening: ${currentTaskCount} tasks detected`);
+      setTaskSidebarOpen(true);
+    }
+
+    previousTaskCountRef.current = currentTaskCount;
+  }, [effectiveView, todosData.todos.length, taskSidebarOpen]);
+
+  // Ensure the task sidebar is only visible in chat mode.
+  useEffect(() => {
+    if (effectiveView !== "chat" && taskSidebarOpen) {
+      setTaskSidebarOpen(false);
+    }
+  }, [effectiveView, taskSidebarOpen]);
 
   // Check vault status and wait for unlock
   useEffect(() => {
@@ -588,20 +620,22 @@ function App() {
 
             <button
               onClick={() => setView("chat")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "chat"
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                effectiveView === "chat"
                   ? "bg-primary/20 text-primary"
                   : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                }`}
+              }`}
               title="Chat"
             >
               <MessageSquare className="h-5 w-5" />
             </button>
             <button
               onClick={() => setView("settings")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "settings"
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                effectiveView === "settings"
                   ? "bg-primary/20 text-primary"
                   : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                }`}
+              }`}
               title="Settings"
             >
               <SettingsIcon className="h-5 w-5" />
@@ -617,23 +651,25 @@ function App() {
             </button>
             <button
               onClick={() => setView("about")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "about"
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                effectiveView === "about"
                   ? "bg-primary/20 text-primary"
                   : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                }`}
+              }`}
               title="About"
             >
               <Info className="h-5 w-5" />
             </button>
 
-            {/* Task sidebar toggle - visible in Plan Mode or when tasks exist */}
-            {(usePlanMode || todosData.todos.length > 0) && (
+            {/* Task sidebar toggle - only visible in chat */}
+            {effectiveView === "chat" && (usePlanMode || todosData.todos.length > 0) && (
               <button
                 onClick={() => setTaskSidebarOpen(!taskSidebarOpen)}
-                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${taskSidebarOpen
+                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                  taskSidebarOpen
                     ? "bg-primary/20 text-primary"
                     : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                  }`}
+                }`}
                 title="Tasks"
               >
                 <ListTodo className="h-5 w-5" />
@@ -780,6 +816,8 @@ function App() {
                 fileToAttach={fileToAttach}
                 onFileAttached={() => setFileToAttach(null)}
                 hasConfiguredProvider={hasConfiguredProvider}
+                activeProviderLabel={activeProviderInfo?.providerLabel || undefined}
+                activeModelLabel={activeProviderInfo?.modelLabel || undefined}
                 onOpenSettings={() => setView("settings")}
                 onFileOpen={(filePath) => {
                   // Resolve relative paths to absolute using workspace path
@@ -864,17 +902,19 @@ function App() {
             />
 
             {/* Task Sidebar */}
-            <TaskSidebar
-              isOpen={taskSidebarOpen}
-              onClose={() => setTaskSidebarOpen(false)}
-              todos={todosData.todos}
-              pending={todosData.pending}
-              inProgress={todosData.inProgress}
-              completed={todosData.completed}
-              isLoading={todosData.isLoading}
-              onExecutePending={handleExecutePendingTasks}
-              isExecuting={isExecutingTasks}
-            />
+            {effectiveView === "chat" && (
+              <TaskSidebar
+                isOpen={taskSidebarOpen}
+                onClose={() => setTaskSidebarOpen(false)}
+                todos={todosData.todos}
+                pending={todosData.pending}
+                inProgress={todosData.inProgress}
+                completed={todosData.completed}
+                isLoading={todosData.isLoading}
+                onExecutePending={handleExecutePendingTasks}
+                isExecuting={isExecutingTasks}
+              />
+            )}
           </>
         )}
       </main>

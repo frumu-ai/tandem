@@ -1,60 +1,138 @@
 #!/usr/bin/env node
 /**
- * Extract release notes from CHANGELOG.md for a given version
- * Usage: node scripts/extract-release-notes.js v0.1.0
+ * Extract release notes for a given tag/version.
+ *
+ * Sources (in priority order):
+ * - docs/RELEASE_NOTES.md (per-version sections)
+ * - CHANGELOG.md (Keep a Changelog style)
+ *
+ * Usage:
+ *   node scripts/extract-release-notes.js v0.1.4
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'node:fs';
+import path from 'node:path';
+import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const version = process.argv[2];
-if (!version) {
-  console.error('Usage: node extract-release-notes.js <version>');
+const input = process.argv[2];
+if (!input) {
+  console.error('Usage: node scripts/extract-release-notes.js <tag-or-version>');
   process.exit(1);
 }
 
-// Remove 'v' prefix if present
-const versionNumber = version.replace(/^v/, '');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, '..');
 
-const changelogPath = path.join(__dirname, '..', 'CHANGELOG.md');
-const changelog = fs.readFileSync(changelogPath, 'utf8');
+const raw = input.replace(/^refs\/tags\//, '');
+const versionNumber = raw.replace(/^v/, '');
+const currentTag = raw.startsWith('v') ? raw : `v${versionNumber}`;
 
-// Find the section for this version
-const versionRegex = new RegExp(`## \\[${versionNumber}\\]([\\s\\S]*?)(?=## \\[|$)`, 'i');
-const match = changelog.match(versionRegex);
+const repo =
+  process.env.GITHUB_REPOSITORY ||
+  process.env.REPO ||
+  // fallback for local runs
+  'frumu-ai/tandem';
 
-if (!match) {
-  // If not found, try to extract from [Unreleased]
-  const unreleasedRegex = /## \[Unreleased\]([\s\S]*?)(?=## \[|$)/i;
-  const unreleasedMatch = changelog.match(unreleasedRegex);
-  
-  if (unreleasedMatch) {
-    console.log(`# Release ${version}\n`);
-    console.log(unreleasedMatch[1].trim());
-    console.log('\n---\n');
-    console.log('**Full Changelog**: See commits since last release');
-  } else {
-    console.log(`# Release ${version}\n`);
-    console.log('See the assets below to download the installer for your platform.\n');
-    console.log('## What\'s Changed\n');
-    console.log('This release includes bug fixes and improvements.\n');
+const releaseNotesPath = path.join(repoRoot, 'docs', 'RELEASE_NOTES.md');
+const changelogPath = path.join(repoRoot, 'CHANGELOG.md');
+
+const intro = 'See the assets below to download the installer for your platform.';
+
+const fromReleaseNotes = safeRead(releaseNotesPath);
+const fromChangelog = safeRead(changelogPath);
+
+const extracted =
+  (fromReleaseNotes ? extractFromReleaseNotesMd(fromReleaseNotes, versionNumber) : null) ||
+  (fromChangelog ? extractFromChangelog(fromChangelog, versionNumber) : null) ||
+  null;
+
+const previousTag = getPreviousTag(currentTag);
+const fullChangelogLine = previousTag
+  ? `**Full Changelog**: https://github.com/${repo}/compare/${previousTag}...${currentTag}`
+  : null;
+
+const bodyParts = [
+  intro,
+  extracted?.trim() ? stripLeadingTopHeader(extracted.trim()) : '## What’s Changed\n\n- Bug fixes and improvements.',
+  fullChangelogLine,
+].filter(Boolean);
+
+process.stdout.write(`${bodyParts.join('\n\n')}\n`);
+
+function safeRead(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return null;
   }
-} else {
-  console.log(`# Release ${version}\n`);
-  console.log(match[1].trim());
-  console.log('\n---\n');
-  console.log(`**Full Changelog**: https://github.com/frumu-ai/tandem/compare/v${getPreviousVersion(changelog, versionNumber)}...v${versionNumber}`);
 }
 
-function getPreviousVersion(changelog, currentVersion) {
-  const versions = [];
-  const versionRegex = /## \[(\d+\.\d+\.\d+)\]/g;
-  let match;
-  
-  while ((match = versionRegex.exec(changelog)) !== null) {
-    versions.push(match[1]);
+function stripLeadingTopHeader(markdown) {
+  // If section begins with a top-level header ("# ..."), drop it to avoid duplicating the GitHub Release title.
+  const lines = markdown.split(/\r?\n/);
+  if (!lines.length) return markdown;
+  if (!/^#\s+/.test(lines[0])) return markdown;
+
+  // Drop first line, and at most one subsequent blank line.
+  let start = 1;
+  if (lines[start] === '') start += 1;
+  return lines.slice(start).join('\n').trim();
+}
+
+function extractFromReleaseNotesMd(markdown, version) {
+  // Match: "# Tandem v0.1.4 ..." (the docs file uses # for per-version sections)
+  const startRe = new RegExp(`^#\\s+Tandem\\s+v${escapeRegExp(version)}\\b.*$`, 'mi');
+  const startMatch = markdown.match(startRe);
+  if (!startMatch || startMatch.index == null) return null;
+
+  const startIdx = startMatch.index;
+  const afterStart = markdown.slice(startIdx);
+
+  // End at next "# Tandem vX.Y.Z" section, or EOF.
+  const nextRe = /^#\s+Tandem\s+v\d+\.\d+\.\d+\b.*$/gim;
+  nextRe.lastIndex = startMatch[0].length;
+  const nextMatch = nextRe.exec(afterStart);
+  const endIdx = nextMatch?.index != null ? nextMatch.index : afterStart.length;
+
+  return afterStart.slice(0, endIdx).trim();
+}
+
+function extractFromChangelog(markdown, version) {
+  // Prefer explicit version section.
+  const versionRe = new RegExp(`^##\\s+\\[${escapeRegExp(version)}\\]([\\s\\S]*?)(?=^##\\s+\\[|\\Z)`, 'im');
+  const match = markdown.match(versionRe);
+  if (match) return `## What’s Changed\n\n${match[1].trim()}`;
+
+  // Fallback to [Unreleased].
+  const unreleasedRe = /^##\s+\[Unreleased\]([\s\S]*?)(?=^##\s+\[|\Z)/im;
+  const unreleasedMatch = markdown.match(unreleasedRe);
+  if (unreleasedMatch) return `## What’s Changed\n\n${unreleasedMatch[1].trim()}`;
+
+  return null;
+}
+
+function getPreviousTag(current) {
+  try {
+    // Requires checkout fetch-depth: 0 (or tags fetched) in CI.
+    const tags = execSync('git tag --list "v*" --sort=-version:refname', {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    })
+      .split(/\r?\n/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    const idx = tags.indexOf(current);
+    if (idx === -1) return null;
+    return idx < tags.length - 1 ? tags[idx + 1] : null;
+  } catch {
+    return null;
   }
-  
-  const currentIndex = versions.indexOf(currentVersion);
-  return currentIndex < versions.length - 1 ? versions[currentIndex + 1] : currentVersion;
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

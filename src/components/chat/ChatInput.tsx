@@ -32,6 +32,8 @@ interface ChatInputProps {
   selectedModel?: string;
   onModelChange?: (model: string) => void;
   availableModels?: ModelInfo[];
+  activeProviderLabel?: string;
+  activeModelLabel?: string;
 }
 
 export function ChatInput({
@@ -49,6 +51,8 @@ export function ChatInput({
   selectedModel,
   onModelChange,
   availableModels,
+  activeProviderLabel,
+  activeModelLabel,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
@@ -543,6 +547,8 @@ export function ChatInput({
           selectedModel={selectedModel}
           onModelChange={onModelChange}
           availableModels={availableModels}
+          activeProviderLabel={activeProviderLabel}
+          activeModelLabel={activeModelLabel}
           disabled={disabled}
         />
       </div>

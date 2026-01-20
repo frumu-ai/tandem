@@ -4,7 +4,14 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useUpdater } from "@/hooks/useUpdater";
 
 export function About() {
-  const { status: updateStatus, updateInfo, error: updateError, checkUpdates, installUpdate } = useUpdater();
+  const {
+    status: updateStatus,
+    updateInfo,
+    error: updateError,
+    progress: updateProgress,
+    checkUpdates,
+    installUpdate,
+  } = useUpdater();
 
   const handleOpenExternal = async (url: string) => {
     try {
@@ -158,11 +165,17 @@ export function About() {
           <div className="mt-6 flex flex-col items-center gap-3">
             <button
               onClick={updateStatus === "available" ? installUpdate : () => checkUpdates(false)}
-              disabled={updateStatus === "checking" || updateStatus === "downloading"}
+              disabled={
+                updateStatus === "checking" ||
+                updateStatus === "downloading" ||
+                updateStatus === "installing"
+              }
               className="rounded-lg border border-border px-4 py-2 text-sm text-text transition-all hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
               {updateStatus === "checking" && "Checking for updates..."}
-              {updateStatus === "downloading" && "Installing update..."}
+              {updateStatus === "downloading" &&
+                `Downloading update${updateProgress ? ` (${Math.round(updateProgress.percent)}%)` : ""}...`}
+              {updateStatus === "installing" && "Installing update..."}
               {updateStatus === "available" && "Install update"}
               {(updateStatus === "idle" ||
                 updateStatus === "upToDate" ||

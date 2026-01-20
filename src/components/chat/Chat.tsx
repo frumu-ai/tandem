@@ -50,6 +50,8 @@ interface ChatProps {
   onAgentChange?: (agent: string | undefined) => void;
   onFileOpen?: (filePath: string) => void;
   hasConfiguredProvider?: boolean;
+  activeProviderLabel?: string;
+  activeModelLabel?: string;
   onOpenSettings?: () => void;
 }
 
@@ -70,6 +72,8 @@ export function Chat({
   onAgentChange: propOnAgentChange,
   onFileOpen,
   hasConfiguredProvider = true,
+  activeProviderLabel,
+  activeModelLabel,
   onOpenSettings,
 }: ChatProps) {
   const [messages, setMessages] = useState<MessageProps[]>([]);
@@ -704,8 +708,8 @@ Start with task #1 and continue through each one. Let me know when each task is 
               reasoning: (args.reasoning as string) || "AI wants to perform this action",
               riskLevel:
                 event.tool === "delete_file" ||
-                  event.tool === "run_command" ||
-                  event.tool === "bash"
+                event.tool === "run_command" ||
+                event.tool === "bash"
                   ? "high"
                   : "medium",
               tool: event.tool,
@@ -740,10 +744,10 @@ Start with task #1 and continue through each one. Let me know when each task is 
               const toolCalls = lastMessage.toolCalls.map((tc) =>
                 tc.id === event.part_id
                   ? {
-                    ...tc,
-                    result: event.error || String(event.result || ""),
-                    status: (event.error ? "failed" : "completed") as "failed" | "completed",
-                  }
+                      ...tc,
+                      result: event.error || String(event.result || ""),
+                      status: (event.error ? "failed" : "completed") as "failed" | "completed",
+                    }
                   : tc
               );
               return [...prev.slice(0, -1), { ...lastMessage, toolCalls }];
@@ -1435,12 +1439,13 @@ ${g.example}
 
           <div className="flex items-center gap-2">
             <div
-              className={`h-2 w-2 rounded-full ${sidecarStatus === "running"
+              className={`h-2 w-2 rounded-full ${
+                sidecarStatus === "running"
                   ? "bg-primary"
                   : sidecarStatus === "starting"
                     ? "bg-warning animate-pulse"
                     : "bg-text-subtle"
-                }`}
+              }`}
             />
             <span className="text-xs text-text-muted">
               {sidecarStatus === "running"
@@ -1652,6 +1657,8 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
           onExternalAttachmentProcessed={onFileAttached}
           enabledToolCategories={enabledToolCategories}
           onToolCategoriesChange={setEnabledToolCategories}
+          activeProviderLabel={activeProviderLabel}
+          activeModelLabel={activeModelLabel}
         />
       )}
 

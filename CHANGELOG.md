@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-01-20
+
+### Added
+
+- Compact theme selector dropdown with theme details and color swatches.
+- Active provider/model badge next to the tool selector in chat.
+
+### Fixed
+
+- Linux `.deb` auto-update now downloads the `.deb` artifact (instead of the AppImage), preventing `update is not a valid deb package`.
+- Taskbar no longer overlays the About and Settings screens.
+- OpenCode sidecar API compatibility after upstream route changes (provider/model listing and prompt submission).
+- Streaming event parsing for newer OpenCode SSE payload shapes.
+- Structured provider errors now surface in the chat UI instead of failing silently.
+- Provider key status refreshes immediately after saving or deleting API keys.
+
+### Changed
+
+- Update checking and install progress is now shown at the top of Settings.
+
+## [0.1.4] - 2026-01-20
+
 ### Added
 
 - Auto-update functionality with GitHub releases
@@ -36,5 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/frumu-ai/tandem/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/frumu-ai/tandem/compare/v0.1.0...v0.1.4
 [0.1.0]: https://github.com/frumu-ai/tandem/releases/tag/v0.1.0
