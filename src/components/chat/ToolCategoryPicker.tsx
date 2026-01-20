@@ -2,8 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import {
   Wrench,
   Presentation,
-  GitBranch,
-  Table,
+  // GitBranch,
+  // Table,
   ChevronDown,
   LayoutTemplate,
   Globe,
@@ -41,6 +41,7 @@ const TOOL_CATEGORIES: ToolCategory[] = [
     description: "Smart web browsing & search",
     defaultEnabled: false,
   },
+  /*
   {
     id: "diagrams",
     label: "Diagrams",
@@ -55,6 +56,7 @@ const TOOL_CATEGORIES: ToolCategory[] = [
     description: "Create data tables & CSVs",
     defaultEnabled: false,
   },
+  */
 ];
 
 interface ToolCategoryPickerProps {
