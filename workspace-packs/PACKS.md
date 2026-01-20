@@ -13,6 +13,8 @@ This catalog provides an overview of all available Tandem Workspace Packs for th
 | [Web Starter Audit Pack](./packs/web-starter-audit-pack/)                 | Audit web projects for accessibility, UX, and code quality           | Beginner-Intermediate | 15-20 min     |
 | [Security Playbook Pack](./packs/security-playbook-pack/)                 | Build comprehensive security runbooks for small teams                | Intermediate          | 20-25 min     |
 
+**Note**: Pack documentation (prompts, guides, quality criteria) is located in [`pack-docs/`](./pack-docs/) to keep the pack directories clean and realistic for LLM evaluation.
+
 ---
 
 ## Pack Overview
@@ -147,34 +149,37 @@ This catalog provides an overview of all available Tandem Workspace Packs for th
 
 ## Pack Structure Standard
 
-All packs follow this consistent structure:
+Each pack directory contains **only realistic inputs** - no meta files or documentation. This ensures LLMs evaluate the packs as they would appear in real use:
 
 ```
 packs/<PACK_SLUG>/
-├── PACK_INFO.md           # Pack metadata and description
-├── START_HERE.md          # Step-by-step user instructions
-├── PROMPTS.md             # Five copy/paste prompts for Tandem
-├── EXPECTED_OUTPUTS.md    # Quality criteria and validation
-├── inputs/                # Curated source materials
+├── inputs/                # Curated source materials (visible to LLM)
 │   ├── *.md               # Input documents
 │   └── papers/            # (optional) Paper collection
-├── outputs/               # Generated content
+├── outputs/               # Generated content (runtime only)
 │   └── .gitkeep           # Keep empty outputs directory
 └── src/                   # (optional) Source files for audit packs
 ```
 
-### Required Files per Pack
+### Pack Documentation (in pack-docs/)
 
-1. **PACK_INFO.md**: Pack metadata, capabilities demonstrated, use cases, prerequisites
-2. **START_HERE.md**: Click-by-click instructions for getting started
-3. **PROMPTS.md**: Five sequential prompts (Prompt 5 generates HTML artifact)
-4. **EXPECTED_OUTPUTS.md**: Quality criteria and validation checklist
+Metadata and instructions are stored separately to maintain realism:
 
-### Optional Files
+```
+pack-docs/<PACK_SLUG>/
+├── PACK_INFO.md           # Pack metadata and description
+├── START_HERE.md          # Step-by-step user instructions
+├── PROMPTS.md             # Five copy/paste prompts for Tandem
+└── EXPECTED_OUTPUTS.md    # Quality criteria and validation
+```
 
-- **inputs/**: Source materials appropriate to the pack
-- **src/**: Source code/files for audit-type packs
-- **outputs/**: Empty directory with .gitkeep (runtime outputs only)
+### Why Separate Documentation?
+
+Keeping meta files outside the pack directories ensures:
+
+- **Realistic evaluation**: LLMs see only the inputs, not the "answers"
+- **Clean user experience**: Users follow prompts from pack-docs/
+- **Separation of concerns**: Pack content vs. pack instructions are distinct
 
 ---
 
@@ -193,11 +198,16 @@ All packs adhere to these standards:
 
 To create a new pack:
 
-1. Create directory: `workspace-packs/packs/<PACK_SLUG>/`
-2. Create required files: PACK_INFO.md, START_HERE.md, PROMPTS.md, EXPECTED_OUTPUTS.md
-3. Add inputs appropriate to the pack type
-4. Add outputs/.gitkeep
-5. Update this catalog (PACKS.md)
+1. **Create pack directory**: `workspace-packs/packs/<PACK_SLUG>/`
+2. **Add realistic inputs**: Create inputs/ with appropriate source materials
+3. **Add outputs/.gitkeep**: Create empty outputs directory
+4. **Add src/ if needed**: For audit/code packs, add source files
+5. **Create pack docs**: Add files to `workspace-packs/pack-docs/<PACK_SLUG>/`
+   - PACK_INFO.md
+   - START_HERE.md
+   - PROMPTS.md
+   - EXPECTED_OUTPUTS.md
+6. **Update catalog**: Add pack to PACKS.md
 
 ### Pack Naming Convention
 
