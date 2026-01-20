@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OpenCode sidecar API compatibility after upstream route changes (provider/model listing and prompt submission).
 - Streaming event parsing for newer OpenCode SSE payload shapes.
 - Structured provider errors now surface in the chat UI instead of failing silently.
+- Permission prompts now render correctly for updated tool event payloads.
 - Provider key status refreshes immediately after saving or deleting API keys.
 
 ### Changed
