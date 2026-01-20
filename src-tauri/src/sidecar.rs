@@ -1899,6 +1899,12 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                         .and_then(|s| s.as_str())
                         .unwrap_or("")
                         .to_string();
+
+                    // Filter out [REDACTED] markers that leak from reasoning output
+                    if text.trim() == "[REDACTED]" || text.is_empty() {
+                        return None;
+                    }
+
                     Some(StreamEvent::Content {
                         session_id,
                         message_id,

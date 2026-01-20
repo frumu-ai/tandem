@@ -70,18 +70,18 @@ function FilePathParser({
   text: string;
   onFileOpen?: (filePath: string) => void;
 }) {
-  // Regex to match file paths with common extensions
-  // Captures Windows (C:\...), Unix (/...), and relative (./..., ../...) paths
+  // Comprehensive regex for file paths with extensions
+  // Matches: /abs/path/file.ext, C:\path\file.ext, ./rel/file.ext, ../rel/file.ext
   const filePathRegex =
-    /(?:(?:[A-Za-z]:[\\/])|(?:\.\.?[\\/])|(?:^|[\s`'"(:=]))([^\s`'"()<>|*?]+\.(json|ts|tsx|js|jsx|md|txt|py|rs|go|java|cpp|c|h|css|scss|html|xml|yaml|yml|toml|pptx|ppt|docx|doc|xlsx|xls|pdf|png|jpg|jpeg|gif|svg|webp))\b/g;
+    /(?:\/[\w\-./_]+|[A-Za-z]:[/\\][\w\-.:/_\\]+|\.\.\/[\w\-./_]+|\.\/[\w\-./_]+)\.(json|ts|tsx|js|jsx|md|txt|py|rs|go|java|cpp|c|h|css|scss|html|xml|yaml|yml|toml|pptx|ppt|docx|doc|xlsx|xls|pdf|png|jpg|jpeg|gif|svg|webp)\b/g;
 
   const parts: (string | ReactNode)[] = [];
   let lastIndex = 0;
   let match;
 
   while ((match = filePathRegex.exec(text)) !== null) {
-    const filePath = match[1]; // Captured file path
-    const matchStart = match.index + (match[0].length - filePath.length); // Adjust for leading chars
+    const filePath = match[0]; // Full matched path
+    const matchStart = match.index;
 
     // Add text before the match
     if (matchStart > lastIndex) {
