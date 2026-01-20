@@ -2140,7 +2140,13 @@ Use the `write` tool to create a single standalone `{filename}.slides.html` file
 - **Safe Margins**: Keep all important content at least 100px from slide edges to prevent cutoff.
 - **Scale to Fit**: Use a container that scales the entire deck to fit the viewport while maintaining aspect ratio.
 
-### 3. PDF Export
+### 3. Content Density Limits (CRITICAL)
+- **Max List Items**: Never exceed 6 bullet points per slide. If you have more content, split across multiple slides.
+- **Max Columns**: Use at most 2 columns per slide for lists.
+- **Text Sizing**: Titles should be `text-7xl` or smaller, body text `text-2xl` or smaller.
+- **Vertical Space**: Leave at least 200px of vertical space empty on each slide (don't fill to the edges).
+
+### 4. PDF Export
 - Add a dedicated "Export to PDF" button that calls `window.print()`.
 - Add a `@media print` style block that:
   - Forces each slide to be visible and occupy exactly one page.
