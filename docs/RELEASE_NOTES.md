@@ -7,6 +7,7 @@
 - **Permission Prompts**: Tool permission requests are displayed correctly again after upstream event schema changes.
 - **Settings Update UX**: Update checking and download/install progress is now surfaced at the top of Settings.
 - **UI Fixes + Polish**: The taskbar no longer overlays the About/Settings screens, the theme picker is now a compact dropdown with previews, and the active provider/model badge appears next to the tool selector.
+- **Allow-All Mode**: New chats can opt into an “Allow all tools” mode to skip per-tool approval prompts.
 
 ## Notes
 

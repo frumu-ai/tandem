@@ -373,9 +373,15 @@ export async function getSidecarStatus(): Promise<SidecarState> {
 export async function createSession(
   title?: string,
   model?: string,
-  provider?: string
+  provider?: string,
+  allowAllTools?: boolean
 ): Promise<Session> {
-  return invoke("create_session", { title, model, provider });
+  return invoke("create_session", {
+    title,
+    model,
+    provider,
+    allow_all_tools: allowAllTools,
+  });
 }
 
 export async function getSession(sessionId: string): Promise<Session> {

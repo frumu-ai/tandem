@@ -34,6 +34,9 @@ interface ChatInputProps {
   availableModels?: ModelInfo[];
   activeProviderLabel?: string;
   activeModelLabel?: string;
+  allowAllTools?: boolean;
+  onAllowAllToolsChange?: (allow: boolean) => void;
+  allowAllToolsLocked?: boolean;
 }
 
 export function ChatInput({
@@ -53,6 +56,9 @@ export function ChatInput({
   availableModels,
   activeProviderLabel,
   activeModelLabel,
+  allowAllTools,
+  onAllowAllToolsChange,
+  allowAllToolsLocked,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
@@ -549,6 +555,9 @@ export function ChatInput({
           availableModels={availableModels}
           activeProviderLabel={activeProviderLabel}
           activeModelLabel={activeModelLabel}
+          allowAllTools={allowAllTools}
+          onAllowAllToolsChange={onAllowAllToolsChange}
+          allowAllToolsLocked={allowAllToolsLocked}
           disabled={disabled}
         />
       </div>

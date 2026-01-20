@@ -129,6 +129,15 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission: Option<Vec<PermissionRule>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PermissionRule {
+    pub permission: String,
+    pub pattern: String,
+    pub action: String,
 }
 
 /// Session time information from OpenCode

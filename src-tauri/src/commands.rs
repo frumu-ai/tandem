@@ -982,16 +982,28 @@ pub async fn create_session(
     title: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    allow_all_tools: Option<bool>,
 ) -> Result<Session> {
     let (default_provider, default_model) = {
         let config = state.providers_config.read().unwrap();
         resolve_default_provider_and_model(&config)
     };
 
+    let permission = if allow_all_tools.unwrap_or(false) {
+        Some(vec![crate::sidecar::PermissionRule {
+            permission: "*".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        }])
+    } else {
+        None
+    };
+
     let request = CreateSessionRequest {
         title,
         model: model.or(default_model),
         provider: provider.or(default_provider),
+        permission,
     };
 
     let session = state.sidecar.create_session(request).await?;
@@ -1424,6 +1436,7 @@ pub async fn rewind_to_message(
             title: Some(format!("Rewind from {}", session_id)),
             model: default_model,
             provider: default_provider,
+            permission: None,
         })
         .await?;
 

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Compact theme selector dropdown with theme details and color swatches.
 - Active provider/model badge next to the tool selector in chat.
+- Allow-all toggle for tool permissions on new chats.
 
 ### Fixed
 

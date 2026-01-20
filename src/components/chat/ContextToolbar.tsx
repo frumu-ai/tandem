@@ -2,6 +2,7 @@ import { AgentSelector } from "./AgentSelector";
 import { ToolCategoryPicker } from "./ToolCategoryPicker";
 import { ModelSelector } from "./ModelSelector";
 import type { ModelInfo } from "@/lib/tauri";
+import { ShieldCheck, ShieldOff } from "lucide-react";
 
 interface ContextToolbarProps {
   // Agent
@@ -17,6 +18,9 @@ interface ContextToolbarProps {
   // Provider indicator
   activeProviderLabel?: string;
   activeModelLabel?: string;
+  allowAllTools?: boolean;
+  onAllowAllToolsChange?: (allow: boolean) => void;
+  allowAllToolsLocked?: boolean;
   // State
   disabled?: boolean;
 }
@@ -31,6 +35,9 @@ export function ContextToolbar({
   availableModels,
   activeProviderLabel,
   activeModelLabel,
+  allowAllTools,
+  onAllowAllToolsChange,
+  allowAllToolsLocked,
   disabled,
 }: ContextToolbarProps) {
   const providerSummary = activeProviderLabel
@@ -59,6 +66,34 @@ export function ContextToolbar({
         selectedAgent={selectedAgent}
         disabled={disabled}
       />
+
+      {onAllowAllToolsChange && (
+        <>
+          <div className="h-4 w-px bg-border" />
+          <button
+            type="button"
+            onClick={() => onAllowAllToolsChange(!allowAllTools)}
+            disabled={disabled || allowAllToolsLocked}
+            className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] transition-colors ${
+              allowAllTools
+                ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-200"
+                : "border-border bg-surface-elevated text-text-subtle hover:text-text"
+            } ${allowAllToolsLocked ? "cursor-not-allowed opacity-60" : ""}`}
+            title={
+              allowAllToolsLocked
+                ? "Allow all was applied when this chat was created."
+                : "Skip tool permission prompts for this new chat."
+            }
+          >
+            {allowAllTools ? (
+              <ShieldCheck className="h-3 w-3" />
+            ) : (
+              <ShieldOff className="h-3 w-3" />
+            )}
+            <span>Allow all</span>
+          </button>
+        </>
+      )}
 
       {providerSummary && (
         <>

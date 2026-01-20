@@ -79,6 +79,7 @@ export function Chat({
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(propSessionId || null);
+  const [allowAllTools, setAllowAllTools] = useState(false);
   const [enabledToolCategories, setEnabledToolCategories] = useState<Set<string>>(new Set());
   const [, forceUpdate] = useState({}); // Keep for critical display updates
 
@@ -296,6 +297,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
       console.log("[Chat] Clearing messages for new chat");
       setMessages([]);
       currentAssistantMessageRef.current = "";
+      setAllowAllTools(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propSessionId, isGenerating]);
@@ -1003,7 +1005,7 @@ Start with task #1 and continue through each one. Let me know when each task is 
       let sessionId = currentSessionId;
       if (!sessionId) {
         try {
-          const session = await createSession();
+          const session = await createSession(undefined, undefined, undefined, allowAllTools);
           sessionId = session.id;
           setCurrentSessionId(session.id);
           currentSessionIdRef.current = session.id; // Update ref synchronously before events arrive
@@ -1657,6 +1659,9 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
           onExternalAttachmentProcessed={onFileAttached}
           enabledToolCategories={enabledToolCategories}
           onToolCategoriesChange={setEnabledToolCategories}
+          allowAllTools={allowAllTools}
+          onAllowAllToolsChange={setAllowAllTools}
+          allowAllToolsLocked={!!currentSessionId}
           activeProviderLabel={activeProviderLabel}
           activeModelLabel={activeModelLabel}
         />
