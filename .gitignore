@@ -45,7 +45,7 @@ Thumbs.db
 npm-debug.log*
 
 # Internal docs (not for repo)
-# docs/internal/
+docs/internal/
 
 # Test coverage
 coverage/
