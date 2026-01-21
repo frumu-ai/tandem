@@ -1,3 +1,12 @@
+# Tandem v0.1.8 Release Notes
+
+## Highlights
+
+- **macOS Styling Polish**: Refined the global glass effect and UI variables for a more sophisticated, premium look and feel on macOS.
+- **Improved HTML Previews**: Added `baseHref` support to the sandboxed HTML preview component. Relative paths for images, scripts, and stylesheets now resolve correctly, ensuring generated reports look exactly as intended.
+
+---
+
 # Tandem v0.1.7 Release Notes
 
 ## Highlights
