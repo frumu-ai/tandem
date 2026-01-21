@@ -4,9 +4,10 @@ import { useRef, useEffect } from "react";
 interface HtmlPreviewProps {
   content: string;
   className?: string;
+  baseHref?: string;
 }
 
-export function HtmlPreview({ content, className = "" }: HtmlPreviewProps) {
+export function HtmlPreview({ content, className = "", baseHref }: HtmlPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   useEffect(() => {
@@ -14,11 +15,23 @@ export function HtmlPreview({ content, className = "" }: HtmlPreviewProps) {
     // The srcDoc attribute on the iframe handles the rendering safely.
   }, [content]);
 
+  // Inject <base> tag if baseHref is provided
+  const processedContent = baseHref
+    ? content.replace(/<head>/i, `<head>\n<base href="${baseHref}" />`)
+    : content;
+
+  // Fallback: if no <head> tag is found but baseHref exists, prepend it.
+  // This is a simple heuristic; robust parsing would be better but likely overkill here.
+  const finalContent =
+    baseHref && !processedContent.includes("<base")
+      ? `<base href="${baseHref}" />\n${processedContent}`
+      : processedContent;
+
   return (
     <div className={`h-full w-full bg-white ${className}`}>
       <iframe
         ref={iframeRef}
-        srcDoc={content}
+        srcDoc={finalContent}
         title="HTML Preview"
         className="h-full w-full border-none"
         // Sandbox permissions:

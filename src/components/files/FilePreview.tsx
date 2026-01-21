@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -255,7 +256,11 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
 
     switch (previewType) {
       case "html":
-        return <HtmlPreview content={content} />;
+        // eslint-disable-next-line no-case-declarations
+        const parentDir = file.path.substring(0, file.path.lastIndexOf(file.name));
+        // eslint-disable-next-line no-case-declarations
+        const baseHref = convertFileSrc(parentDir);
+        return <HtmlPreview content={content} baseHref={baseHref} />;
 
       case "image":
         return (
