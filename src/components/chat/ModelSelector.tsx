@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Check, ChevronDown, Search, Sparkles } from "lucide-react";
-import { type ModelInfo, listModels, getProvidersConfig } from "@/lib/tauri";
+import { type ModelInfo, listModels, listOllamaModels, getProvidersConfig } from "@/lib/tauri";
 
 interface ModelSelectorProps {
   currentModel?: string; // e.g. "gpt-4o" or "claude-3-5-sonnet"
@@ -45,8 +45,12 @@ export function ModelSelector({ currentModel, onModelSelect, className }: ModelS
   const loadModels = async () => {
     setLoading(true);
     try {
-      const [allModels, config] = await Promise.all([
+      const [allModels, ollamaModels, config] = await Promise.all([
         listModels(),
+        listOllamaModels().catch((err: unknown) => {
+          console.warn("Failed to list Ollama models:", err);
+          return [] as ModelInfo[];
+        }),
         getProvidersConfig() // We need this to check has_key
       ]);
 
@@ -65,8 +69,22 @@ export function ModelSelector({ currentModel, onModelSelect, className }: ModelS
         }
       };
 
+      // Combine models (Ollama models might also be returned by sidecar if configured there, but we prioritize explicit list)
+      const combinedModels = [...allModels];
+
+      // Add discovered Ollama models if not already present
+      ollamaModels.forEach((om: ModelInfo) => {
+        // Check if we already have this model from sidecar
+        const exists = combinedModels.some(m =>
+          (m.id === om.id || m.name === om.name) && m.provider === "ollama"
+        );
+        if (!exists) {
+          combinedModels.push(om);
+        }
+      });
+
       // Add models from API
-      allModels.forEach(model => {
+      combinedModels.forEach(model => {
         // Normalize provider ID
         let providerId = model.provider || "unknown";
         if (providerId === "opencode") providerId = "opencode_zen";

@@ -195,50 +195,50 @@ export interface ProviderInfo {
 export type StreamEvent =
   | { type: "content"; session_id: string; message_id: string; content: string; delta?: string }
   | {
-      type: "tool_start";
-      session_id: string;
-      message_id: string;
-      part_id: string;
-      tool: string;
-      args: Record<string, unknown>;
-    }
+    type: "tool_start";
+    session_id: string;
+    message_id: string;
+    part_id: string;
+    tool: string;
+    args: Record<string, unknown>;
+  }
   | {
-      type: "tool_end";
-      session_id: string;
-      message_id: string;
-      part_id: string;
-      tool: string;
-      result?: unknown;
-      error?: string;
-    }
+    type: "tool_end";
+    session_id: string;
+    message_id: string;
+    part_id: string;
+    tool: string;
+    result?: unknown;
+    error?: string;
+  }
   | { type: "session_status"; session_id: string; status: string }
   | { type: "session_idle"; session_id: string }
   | { type: "session_error"; session_id: string; error: string }
   | {
-      type: "permission_asked";
-      session_id: string;
-      request_id: string;
-      tool?: string;
-      args?: Record<string, unknown>;
-    }
+    type: "permission_asked";
+    session_id: string;
+    request_id: string;
+    tool?: string;
+    args?: Record<string, unknown>;
+  }
   | {
-      type: "question_asked";
-      session_id: string;
-      question_id: string;
-      header?: string;
-      question: string;
-      options: QuestionOption[];
-    }
+    type: "question_asked";
+    session_id: string;
+    question_id: string;
+    header?: string;
+    question: string;
+    options: QuestionOption[];
+  }
   | {
-      type: "todo_updated";
-      session_id: string;
-      todos: TodoItem[];
-    }
+    type: "todo_updated";
+    session_id: string;
+    todos: TodoItem[];
+  }
   | {
-      type: "file_edited";
-      session_id: string;
-      file_path: string;
-    }
+    type: "file_edited";
+    session_id: string;
+    file_path: string;
+  }
   | { type: "raw"; event_type: string; data: unknown };
 
 // ============================================================================
@@ -488,6 +488,22 @@ export async function listModels(): Promise<ModelInfo[]> {
 
 export async function listProvidersFromSidecar(): Promise<ProviderInfo[]> {
   return invoke("list_providers_from_sidecar");
+}
+
+export async function listOllamaModels(): Promise<ModelInfo[]> {
+  return invoke("list_ollama_models");
+}
+
+export async function listRunningOllamaModels(): Promise<ModelInfo[]> {
+  return invoke("list_running_ollama_models");
+}
+
+export async function stopOllamaModel(name: string): Promise<void> {
+  return invoke("stop_ollama_model", { name });
+}
+
+export async function runOllamaModel(name: string): Promise<void> {
+  return invoke("run_ollama_model", { name });
 }
 
 // ============================================================================

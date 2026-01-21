@@ -167,7 +167,7 @@ Tandem supports multiple LLM providers. Configure them in Settings:
 | **OpenCode Zen**  | Fast, cost-effective models optimized for coding | [opencode.ai/zen](https://opencode.ai/zen)                           |
 | **Anthropic**     | Claude models (Sonnet, Opus, Haiku)              | [console.anthropic.com](https://console.anthropic.com/settings/keys) |
 | **OpenAI**        | GPT-4, GPT-3.5 and other OpenAI models           | [platform.openai.com](https://platform.openai.com/api-keys)          |
-| **Ollama**        | Run models locally (no API key needed)           | [ollama.com](https://ollama.com)                                     |
+| **Ollama**        | Run models locally (no API key needed)           | [Setup Guide](docs/OLLAMA_GUIDE.md)                                  |
 | **Custom**        | Any OpenAI-compatible API endpoint               | Configure endpoint URL                                               |
 
 4. Enter your API key - it's encrypted with AES-256-GCM and stored securely in the local vault

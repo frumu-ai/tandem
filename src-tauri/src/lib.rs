@@ -370,6 +370,10 @@ pub fn run() {
             // Model & provider info
             commands::list_models,
             commands::list_providers_from_sidecar,
+            commands::list_ollama_models,
+            commands::list_running_ollama_models,
+            commands::stop_ollama_model,
+            commands::run_ollama_model,
             // File operation undo
             commands::can_undo_file_change,
             commands::undo_last_file_change,

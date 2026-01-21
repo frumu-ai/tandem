@@ -4,9 +4,19 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
-import { Key, Check, X, Eye, EyeOff, ExternalLink, ChevronDown } from "lucide-react";
+import { Key, Check, X, Eye, EyeOff, ExternalLink, ChevronDown, Play, Square, RefreshCw } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { storeApiKey, deleteApiKey, hasApiKey, type ApiKeyType } from "@/lib/tauri";
+import {
+  storeApiKey,
+  deleteApiKey,
+  hasApiKey,
+  listOllamaModels,
+  listRunningOllamaModels,
+  stopOllamaModel,
+  runOllamaModel,
+  type ApiKeyType,
+  type ModelInfo,
+} from "@/lib/tauri";
 
 // Popular/suggested models for providers with limited options
 const PROVIDER_MODELS: Record<string, { id: string; name: string; description?: string }[]> = {
@@ -103,10 +113,18 @@ export function ProviderCard({
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [modelInput, setModelInput] = useState(model || "");
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [discoveredModels, setDiscoveredModels] = useState<ModelInfo[]>([]);
+  const [runningModels, setRunningModels] = useState<ModelInfo[]>([]);
+  const [loadingOllama, setLoadingOllama] = useState(false);
 
   const isTextInputProvider = TEXT_INPUT_PROVIDERS.includes(id);
   const availableModels = PROVIDER_MODELS[id] || [];
-  const suggestions = SUGGESTED_MODELS[id] || [];
+
+  // Use discovered models for Ollama suggestions, otherwise fallback to static ones
+  const suggestions = id === "ollama" && discoveredModels.length > 0
+    ? discoveredModels.map(m => m.id)
+    : SUGGESTED_MODELS[id] || [];
+
   const selectedModel = model || availableModels[0]?.id || "";
   const selectedModelInfo = availableModels.find((m) => m.id === selectedModel);
   const requiresApiKey = id !== "ollama";
@@ -129,6 +147,48 @@ export function ProviderCard({
   useEffect(() => {
     setModelInput(model || "");
   }, [model]);
+
+  // Load Ollama data
+  const loadOllamaData = async () => {
+    if (id !== "ollama" || !enabled) return;
+    setLoadingOllama(true);
+    try {
+      const [discovered, running] = await Promise.all([
+        listOllamaModels(),
+        listRunningOllamaModels()
+      ]);
+      setDiscoveredModels(discovered);
+      setRunningModels(running);
+    } catch (err) {
+      console.error("Failed to load Ollama data:", err);
+    } finally {
+      setLoadingOllama(false);
+    }
+  };
+
+  useEffect(() => {
+    if (id === "ollama" && enabled) {
+      loadOllamaData();
+    }
+  }, [id, enabled]);
+
+  const handleStopModel = async (name: string) => {
+    try {
+      await stopOllamaModel(name);
+      await loadOllamaData();
+    } catch (err) {
+      setError(`Failed to stop model: ${err}`);
+    }
+  };
+
+  const handleRunModel = async (name: string) => {
+    try {
+      await runOllamaModel(name);
+      await loadOllamaData();
+    } catch (err) {
+      setError(`Failed to run model: ${err}`);
+    }
+  };
 
   const handleSaveKey = async () => {
     if (!apiKey.trim()) {
@@ -300,6 +360,79 @@ export function ProviderCard({
                     <p className="text-xs text-text-muted">
                       Current: <span className="font-mono text-text">{model}</span>
                     </p>
+                  )}
+                </div>
+              )}
+
+              {/* Ollama Running Models & Management */}
+              {id === "ollama" && enabled && (
+                <div className="space-y-3 rounded-lg border border-border bg-surface-elevated/50 p-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-text-subtle">
+                      Ollama Status
+                    </h4>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={loadOllamaData}
+                      disabled={loadingOllama}
+                      className="h-6 px-2 text-xs"
+                    >
+                      <RefreshCw className={`mr-1 h-3 w-3 ${loadingOllama ? "animate-spin" : ""}`} />
+                      Refresh
+                    </Button>
+                  </div>
+
+                  {runningModels.length > 0 ? (
+                    <div className="space-y-2">
+                      <p className="text-xs text-text-subtle">Currently Running:</p>
+                      {runningModels.map((m) => (
+                        <div key={m.id} className="flex items-center justify-between rounded bg-surface p-2 text-sm">
+                          <span className="font-mono font-medium">{m.name}</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleStopModel(m.id)}
+                            className="h-7 px-2 text-xs text-error hover:bg-error/10 hover:text-error"
+                          >
+                            <Square className="mr-1 h-3 w-3 fill-current" />
+                            Stop
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs italic text-text-muted">No models currently in memory</p>
+                  )}
+
+                  {discoveredModels.length > 0 && (
+                    <div className="space-y-2 border-t border-border pt-2">
+                      <p className="text-xs text-text-subtle">Installed Models:</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {discoveredModels.map((m) => {
+                          const isRunning = runningModels.some((rm) => rm.id === m.id);
+                          return (
+                            <div key={m.id} className="flex items-center justify-between rounded border border-border bg-surface/50 p-1.5 text-xs">
+                              <span className="truncate pr-1 font-mono">{m.name}</span>
+                              {!isRunning && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleRunModel(m.id)}
+                                  className="h-6 w-6 p-0 text-primary hover:bg-primary/10"
+                                  title="Load into memory"
+                                >
+                                  <Play className="h-3 w-3 fill-current" />
+                                </Button>
+                              )}
+                              {isRunning && (
+                                <span className="flex h-2 w-2 rounded-full bg-success ring-4 ring-success/20" title="Running" />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   )}
                 </div>
               )}

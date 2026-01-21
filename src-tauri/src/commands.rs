@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_store::StoreExt;
 use uuid::Uuid;
+use std::process::Command;
 
 // ============================================================================
 // Updater helpers
@@ -1402,6 +1403,100 @@ pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelInfo>> {
 #[tauri::command]
 pub async fn list_providers_from_sidecar(state: State<'_, AppState>) -> Result<Vec<ProviderInfo>> {
     state.sidecar.list_providers().await
+}
+
+/// List models installed locally via Ollama
+#[tauri::command]
+pub async fn list_ollama_models() -> Result<Vec<ModelInfo>> {
+    let output = Command::new("ollama")
+        .arg("list")
+        .output()
+        .map_err(|e| TandemError::Sidecar(format!("Failed to execute 'ollama list': {}. Is Ollama installed?", e)))?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut models = Vec::new();
+
+    // Skip header line
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        let name = parts[0].to_string();
+        // Ollama names are often like 'llama3:latest' or just 'llama3'
+        // We use the full name as the ID as well for simplify
+        models.push(ModelInfo {
+            id: name.clone(),
+            name: name.clone(),
+            provider: Some("ollama".to_string()),
+            context_length: None,
+        });
+    }
+
+    Ok(models)
+}
+
+/// List running Ollama models (ollama ps)
+#[tauri::command]
+pub async fn list_running_ollama_models() -> Result<Vec<ModelInfo>> {
+    let output = Command::new("ollama")
+        .arg("ps")
+        .output()
+        .map_err(|e| TandemError::Sidecar(format!("Failed to execute 'ollama ps': {}", e)))?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut models = Vec::new();
+
+    // Skip header line
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        let name = parts[0].to_string();
+        models.push(ModelInfo {
+            id: name.clone(),
+            name: name.clone(),
+            provider: Some("ollama".to_string()),
+            context_length: None,
+        });
+    }
+
+    Ok(models)
+}
+
+/// Stop a running Ollama model
+#[tauri::command]
+pub async fn stop_ollama_model(name: String) -> Result<()> {
+    Command::new("ollama")
+        .arg("stop")
+        .arg(name)
+        .output()
+        .map_err(|e| TandemError::Sidecar(format!("Failed to execute 'ollama stop': {}", e)))?;
+    Ok(())
+}
+
+/// Run (load) an Ollama model
+#[tauri::command]
+pub async fn run_ollama_model(name: String) -> Result<()> {
+    // We run with an empty prompt to just trigger loading
+    Command::new("ollama")
+        .arg("run")
+        .arg(name)
+        .arg("")
+        .output()
+        .map_err(|e| TandemError::Sidecar(format!("Failed to execute 'ollama run': {}", e)))?;
+    Ok(())
 }
 
 // ============================================================================
