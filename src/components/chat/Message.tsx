@@ -60,9 +60,10 @@ const FILE_EXTENSIONS =
 const FILE_PATH_BASE = String.raw`@?(?:` +
   String.raw`(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|\/)[\w\-./\\]+` +
   String.raw`|` +
-  String.raw`(?:[\w.-]+[\\/])[\w\-./\\]+` +
+  String.raw`[\w\-.]+[\\/][\w\-./\\]+` +
   String.raw`)` +
-  String.raw`\.${FILE_EXTENSIONS}`;
+  String.raw`\.` + // MUST have a literal dot
+  `(?:${FILE_EXTENSIONS})`;
 const FILE_PATH_EXACT = new RegExp(`^${FILE_PATH_BASE}$`, "i");
 
 const normalizeFilePath = (rawPath: string) =>

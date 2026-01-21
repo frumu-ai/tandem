@@ -2,6 +2,8 @@
 
 ## Highlights
 
+- **Dynamic Ollama Support**: Implemented zero-config model discovery for Ollama. Tandem now automatically detects your local models and configures the sidecar on-the-fly, so "Ollama (Local)" works instantly for all users.
+- **Improved Chat Rendering**: Fixed a bug where normal text was being incorrectly identified as file paths. The chat UI is now significantly more robust and no longer produces "jarbled" clickable words.
 - **Model Selection UX**: The provider/model selector has been streamlined to prioritize OpenCode Zen and Ollama, while automatically hiding unconfigured providers to reduce list noise.
 - **Instant Settings Sync**: Changing your preferred model or provider in Settings now updates the Chat interface immediately without requiring a refresh.
 - **Mid-Stream Permissions**: The "Allow All" button is now unblocked during generation, AND the auto-approval logic has been fixed to reliably intercept and approve tool requests without prompting.

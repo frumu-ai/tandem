@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Tandem",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "identifier": "ai.frumu.tandem",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -28,7 +28,11 @@
       "assetProtocol": {
         "enable": true,
         "scope": {
-          "allow": ["$APPDATA/**", "$RESOURCE/**", "**"],
+          "allow": [
+            "$APPDATA/**",
+            "$RESOURCE/**",
+            "**"
+          ],
           "deny": []
         }
       }
@@ -45,6 +49,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": [
+      "resources/default_config.json"
+    ],
     "windows": {
       "nsis": {
         "installMode": "perMachine"
@@ -54,7 +61,9 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzQUU3MDU2MEFDMEU4RDIKUldUUzZNQUtWbkN1RTB4VWNzZzdHa1czNEFHZGYxUWFsN054Q05reHFNK1pPMFp1TUlJd3FmZU8K",
-      "endpoints": ["https://github.com/frumu-ai/tandem/releases/latest/download/latest.json"],
+      "endpoints": [
+        "https://github.com/frumu-ai/tandem/releases/latest/download/latest.json"
+      ],
       "windows": {
         "installMode": "passive"
       }
