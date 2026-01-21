@@ -28,6 +28,7 @@ const PROVIDER_MODELS: Record<string, { id: string; name: string; description?: 
     { id: "o1-mini", name: "o1 Mini", description: "Fast reasoning" },
   ],
   opencode_zen: [
+    { id: "minimax-m2.1-free", name: "Minimax M2", description: "Free (Flash)" },
     { id: "gpt-5-nano", name: "GPT 5 Nano", description: "Free" },
     { id: "grok-code", name: "Grok Code Fast 1", description: "Free (limited time)" },
     { id: "glm-4.7-free", name: "GLM 4.7", description: "Free (limited time)" },
@@ -49,6 +50,7 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
   ],
   ollama: ["llama3.2", "codellama", "mistral", "deepseek-coder-v2", "qwen2.5-coder"],
   opencode_zen: [
+    "minimax-m2.1-free",
     "gpt-5-nano",
     "grok-code",
     "glm-4.7-free",
@@ -274,9 +276,8 @@ export function ProviderCard({
                                 onModelChange?.(s);
                                 setShowSuggestions(false);
                               }}
-                              className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors hover:bg-surface-elevated ${
-                                s === model ? "bg-primary/10 text-primary" : "text-text"
-                              }`}
+                              className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors hover:bg-surface-elevated ${s === model ? "bg-primary/10 text-primary" : "text-text"
+                                }`}
                             >
                               <span className="font-mono text-xs">{s}</span>
                               {s === model && <Check className="h-3 w-3" />}
@@ -345,9 +346,8 @@ export function ProviderCard({
                                 onModelChange?.(m.id);
                                 setShowModelDropdown(false);
                               }}
-                              className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-surface-elevated ${
-                                m.id === selectedModel ? "bg-primary/10" : ""
-                              }`}
+                              className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-surface-elevated ${m.id === selectedModel ? "bg-primary/10" : ""
+                                }`}
                             >
                               <div>
                                 <p className="text-sm font-medium text-text">{m.name}</p>

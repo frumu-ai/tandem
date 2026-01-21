@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Paperclip, StopCircle, X, FileText } from "lucide-react";
 import { Button } from "@/components/ui";
@@ -37,6 +37,7 @@ interface ChatInputProps {
   allowAllTools?: boolean;
   onAllowAllToolsChange?: (allow: boolean) => void;
   allowAllToolsLocked?: boolean;
+  onModelSelect?: (modelId: string, providerId: string) => void;
 }
 
 export function ChatInput({
@@ -59,18 +60,13 @@ export function ChatInput({
   allowAllTools,
   onAllowAllToolsChange,
   allowAllToolsLocked,
+  onModelSelect,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const mergedAttachments = useMemo(() => {
-    if (!externalAttachment) return attachments;
-    const exists = attachments.some((attachment) => attachment.id === externalAttachment.id);
-    return exists ? attachments : [...attachments, externalAttachment];
-  }, [attachments, externalAttachment]);
 
   // Auto-focus on mount
   useEffect(() => {
@@ -81,9 +77,14 @@ export function ChatInput({
     return () => clearTimeout(timer);
   }, []);
 
-  // Let parent clear external attachment after we've seen it
+  // Let parent clear external attachment after we've saved it to local state
   useEffect(() => {
     if (externalAttachment) {
+      setAttachments((prev) => {
+        const exists = prev.some((a) => a.id === externalAttachment.id);
+        if (exists) return prev;
+        return [...prev, externalAttachment];
+      });
       onExternalAttachmentProcessed?.();
     }
   }, [externalAttachment, onExternalAttachmentProcessed]);
@@ -264,6 +265,7 @@ export function ChatInput({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [addFile]);
 
+  // File browser state
   const handlePaste = useCallback(
     async (e: React.ClipboardEvent) => {
       const clipboardData = e.clipboardData;
@@ -356,8 +358,8 @@ export function ChatInput({
   };
 
   const handleSubmit = () => {
-    if ((!message.trim() && mergedAttachments.length === 0) || disabled) return;
-    onSend(message.trim(), mergedAttachments.length > 0 ? mergedAttachments : undefined);
+    if ((!message.trim() && attachments.length === 0) || disabled) return;
+    onSend(message.trim(), attachments.length > 0 ? attachments : undefined);
     setMessage("");
     setAttachments([]);
   };
@@ -404,7 +406,7 @@ export function ChatInput({
 
         {/* Attachment previews */}
         <AnimatePresence>
-          {mergedAttachments.length > 0 && (
+          {attachments.length > 0 && (
             <motion.div
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: "auto", opacity: 1 }}
@@ -412,7 +414,7 @@ export function ChatInput({
               className="mb-3 overflow-hidden"
             >
               <div className="flex flex-wrap gap-2 p-1">
-                {mergedAttachments.map((attachment) => (
+                {attachments.map((attachment) => (
                   <motion.div
                     key={attachment.id}
                     initial={{ scale: 0.8, opacity: 0 }}
@@ -421,8 +423,8 @@ export function ChatInput({
                     className="relative group"
                   >
                     {attachment.type === "image" &&
-                    attachment.preview &&
-                    attachment.preview !== "" ? (
+                      attachment.preview &&
+                      attachment.preview !== "" ? (
                       <>
                         <div className="w-16 h-16 rounded-lg overflow-hidden border border-border bg-surface">
                           <img
@@ -535,7 +537,7 @@ export function ChatInput({
             <Button
               size="sm"
               onClick={handleSubmit}
-              disabled={(!message.trim() && mergedAttachments.length === 0) || disabled}
+              disabled={(!message.trim() && attachments.length === 0) || disabled}
               className="h-9 w-9 p-0"
               title="Send message"
             >
@@ -549,7 +551,7 @@ export function ChatInput({
           selectedAgent={selectedAgent}
           onAgentChange={onAgentChange}
           enabledToolCategories={enabledToolCategories || new Set()}
-          onToolCategoriesChange={onToolCategoriesChange || (() => {})}
+          onToolCategoriesChange={onToolCategoriesChange || (() => { })}
           selectedModel={selectedModel}
           onModelChange={onModelChange}
           availableModels={availableModels}
@@ -558,6 +560,7 @@ export function ChatInput({
           allowAllTools={allowAllTools}
           onAllowAllToolsChange={onAllowAllToolsChange}
           allowAllToolsLocked={allowAllToolsLocked}
+          onModelSelect={onModelSelect}
           disabled={disabled}
         />
       </div>

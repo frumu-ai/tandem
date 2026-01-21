@@ -224,3 +224,37 @@ TEXT ON SCREEN: "TO BE CONTINUED..."
 
 [END EPISODE - CLIFFHANGER]
 ```
+
+## LLM Formatting Notes
+
+When generating scripts via LLM, use standard Markdown formatting to ensure the scripts render correctly in the Tandem app.
+
+### Guidelines for LLM
+
+1.  **Markdown Compatible**: Ensure all output is valid Markdown.
+2.  **Visual Hierarchy**: Use bolding and headers to distinguish between scene headings, characters, and action lines.
+3.  **Spacing & Line Breaks**:
+    *   **Left-Aligned**: This micro-drama format is strictly left-aligned. Do not attempt to center character names or dialogue using spaces, as this breaks on different screen sizes.
+    *   **Vertical Separation**: Use a full empty line between distinct elements (e.g., between Action and Character, or between Dialogue and next Character) to ensure clear paragraph rendering.
+    *   **Tight Dialogue**: To keep the Character Name and Dialogue visually connected, you may use a single line break if the renderer supports it, but standard double-newline paragraphs are safest for compatibility.
+4.  **Code Blocks**: You may wrap the script in a markdown code block for easy copying, but plain markdown is preferred for direct rendering.
+
+### Prompting Information
+
+To get the best results, instruct the LLM with:
+
+> "Format the script in Markdown. Use bold for Scene Headings (e.g., **INT. ROOM - DAY**) and Character Names (e.g., **JOHN**). Italicize parentheticals. Keep dialogue as plain text."
+
+### Example Markdown Render
+
+**INT. SPACESHIP COCKPIT - NIGHT**
+
+Stars streak past the viewport. **CAPTAIN** grips the controls.
+
+**CAPTAIN**
+*(shouting)*
+Hold on!
+
+**EXT. SPACE - CONTINUOUS**
+
+The ship barrel-rolls through an asteroid field.

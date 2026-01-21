@@ -41,7 +41,7 @@ pub struct ProvidersConfig {
 fn default_openrouter() -> ProviderConfig {
     ProviderConfig {
         enabled: false,
-        default: true,
+        default: false,
         endpoint: "https://openrouter.ai/api/v1".to_string(),
         model: Some("xiaomi/mimo-v2-flash:free".to_string()),
         has_key: false,
@@ -50,10 +50,10 @@ fn default_openrouter() -> ProviderConfig {
 
 fn default_opencode_zen() -> ProviderConfig {
     ProviderConfig {
-        enabled: false,
-        default: false,
+        enabled: true,
+        default: true,
         endpoint: "https://opencode.ai/zen/v1".to_string(),
-        model: Some("gpt-5-nano".to_string()),
+        model: Some("minimax-m2.1-free".to_string()),
         has_key: false,
     }
 }

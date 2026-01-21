@@ -26,12 +26,16 @@ import {
   undoViaCommand,
   isGitRepo,
   getToolGuidance,
+  getProvidersConfig,
+  setProvidersConfig,
+  type ProvidersConfig,
   type StreamEvent,
   type SidecarState,
   type TodoItem,
   type QuestionEvent,
   type FileAttachmentInput,
 } from "@/lib/tauri";
+
 
 interface ChatProps {
   workspacePath: string | null;
@@ -50,9 +54,11 @@ interface ChatProps {
   onAgentChange?: (agent: string | undefined) => void;
   onFileOpen?: (filePath: string) => void;
   hasConfiguredProvider?: boolean;
+  activeProviderId?: string;
   activeProviderLabel?: string;
   activeModelLabel?: string;
   onOpenSettings?: () => void;
+  onProviderChange?: () => void;
 }
 
 export function Chat({
@@ -72,9 +78,11 @@ export function Chat({
   onAgentChange: propOnAgentChange,
   onFileOpen,
   hasConfiguredProvider = true,
+  activeProviderId,
   activeProviderLabel,
   activeModelLabel,
   onOpenSettings,
+  onProviderChange,
 }: ChatProps) {
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -555,6 +563,40 @@ Start with task #1 and continue through each one. Let me know when each task is 
     messagesRef.current = messages;
   }, [messages]);
 
+  const handleApprovePermission = async (id: string, _remember?: "once" | "session" | "always") => {
+    if (!currentSessionId) return;
+
+    try {
+      const req = pendingPermissions.find((p) => p.id === id);
+      await approveTool(currentSessionId, id, {
+        tool: req?.tool,
+        args: req?.args,
+        messageId: req?.messageId,
+      });
+
+      // Update tool call status
+      setMessages((prev) => {
+        return prev.map((msg) => {
+          if (msg.role === "assistant" && msg.toolCalls) {
+            return {
+              ...msg,
+              toolCalls: msg.toolCalls.map((tc) =>
+                tc.id === id ? { ...tc, status: "completed" as const } : tc
+              ),
+            };
+          }
+          return msg;
+        });
+      });
+
+      // Remove from pending
+      setPendingPermissions((prev) => prev.filter((p) => p.id !== id));
+    } catch (e) {
+      console.error("Failed to approve tool:", e);
+      setError(`Failed to approve action: ${e}`);
+    }
+  };
+
   const handleStreamEvent = useCallback(
     (event: StreamEvent) => {
       // Debug: Log all events
@@ -747,8 +789,8 @@ Start with task #1 and continue through each one. Let me know when each task is 
               reasoning: (args.reasoning as string) || "AI wants to perform this action",
               riskLevel:
                 event.tool === "delete_file" ||
-                event.tool === "run_command" ||
-                event.tool === "bash"
+                  event.tool === "run_command" ||
+                  event.tool === "bash"
                   ? "high"
                   : "medium",
               tool: event.tool,
@@ -793,10 +835,10 @@ Start with task #1 and continue through each one. Let me know when each task is 
               const newToolCalls = lastMessage.toolCalls.map((tc) =>
                 tc.id === event.part_id
                   ? {
-                      ...tc,
-                      result: event.error || String(event.result || ""),
-                      status: (event.error ? "failed" : "completed") as "failed" | "completed",
-                    }
+                    ...tc,
+                    result: event.error || String(event.result || ""),
+                    status: (event.error ? "failed" : "completed") as "failed" | "completed",
+                  }
                   : tc
               );
               return [...prev.slice(0, -1), { ...lastMessage, toolCalls: newToolCalls }];
@@ -989,19 +1031,25 @@ Start with task #1 and continue through each one. Let me know when each task is 
               setError(`Failed to stage operation: ${err}`);
             });
           } else {
-            // Immediate mode: show permission toast as before
-            const permissionRequest: PermissionRequest = {
-              id: event.request_id,
-              type: (event.tool || "unknown") as PermissionRequest["type"],
-              path: event.args?.path as string | undefined,
-              command: event.args?.command as string | undefined,
-              reasoning: "AI requests permission to perform this action",
-              riskLevel: event.tool === "delete_file" || event.tool === "bash" ? "high" : "medium",
-              tool: event.tool || undefined,
-              args: (event.args as Record<string, unknown>) || undefined,
-              messageId: currentMsgId || undefined, // Associate with current message for undo
-            };
-            setPendingPermissions((prev) => [...prev, permissionRequest]);
+            // Auto-approve if allowAllTools is enabled on frontend
+            if (allowAllTools) {
+              console.log("[Permission] Auto-approving due to Allow All setting");
+              handleApprovePermission(event.request_id);
+            } else {
+              // Immediate mode: show permission toast as before
+              const permissionRequest: PermissionRequest = {
+                id: event.request_id,
+                type: (event.tool || "unknown") as PermissionRequest["type"],
+                path: event.args?.path as string | undefined,
+                command: event.args?.command as string | undefined,
+                reasoning: "AI requests permission to perform this action",
+                riskLevel: event.tool === "delete_file" || event.tool === "bash" ? "high" : "medium",
+                tool: event.tool || undefined,
+                args: (event.args as Record<string, unknown>) || undefined,
+                messageId: currentMsgId || undefined, // Associate with current message for undo
+              };
+              setPendingPermissions((prev) => [...prev, permissionRequest]);
+            }
           }
           break;
         }
@@ -1041,12 +1089,12 @@ Start with task #1 and continue through each one. Let me know when each task is 
           }
 
           // Log other raw events for debugging
-          console.log("Raw event:", event.event_type, data);
+          console.warn("Raw event (unhandled):", event.event_type, data);
           break;
         }
       }
     },
-    [isGenerating, loadSessionHistory, currentSessionId, stageOperation, usePlanMode]
+    [isGenerating, loadSessionHistory, currentSessionId, stageOperation, usePlanMode, allowAllTools, handleApprovePermission]
   );
 
   // Listen for sidecar events
@@ -1430,40 +1478,7 @@ ${g.example}
     }
   }, []);
 
-  const handleApprovePermission = async (id: string, _remember?: "once" | "session" | "always") => {
-    if (!currentSessionId) return;
 
-    try {
-      const req = pendingPermissions.find((p) => p.id === id);
-      console.log("[Approve] Tool:", req?.tool, "messageId:", req?.messageId, "args:", req?.args);
-      await approveTool(currentSessionId, id, {
-        tool: req?.tool,
-        args: req?.args,
-        messageId: req?.messageId,
-      });
-
-      // Update tool call status
-      setMessages((prev) => {
-        return prev.map((msg) => {
-          if (msg.role === "assistant" && msg.toolCalls) {
-            return {
-              ...msg,
-              toolCalls: msg.toolCalls.map((tc) =>
-                tc.id === id ? { ...tc, status: "running" as const } : tc
-              ),
-            };
-          }
-          return msg;
-        });
-      });
-
-      // Remove from pending
-      setPendingPermissions((prev) => prev.filter((p) => p.id !== id));
-    } catch (e) {
-      console.error("Failed to approve tool:", e);
-      setError(`Failed to approve action: ${e}`);
-    }
-  };
 
   const handleDenyPermission = async (id: string, _remember?: boolean) => {
     if (!currentSessionId) return;
@@ -1529,6 +1544,7 @@ ${g.example}
           </div>
         </div>
 
+
         {/* Connection status */}
         <div className="flex items-center gap-4">
           {/* Staged operations counter */}
@@ -1547,13 +1563,12 @@ ${g.example}
 
           <div className="flex items-center gap-2">
             <div
-              className={`h-2 w-2 rounded-full ${
-                sidecarStatus === "running"
-                  ? "bg-primary"
-                  : sidecarStatus === "starting"
-                    ? "bg-warning animate-pulse"
-                    : "bg-text-subtle"
-              }`}
+              className={`h-2 w-2 rounded-full ${sidecarStatus === "running"
+                ? "bg-primary"
+                : sidecarStatus === "starting"
+                  ? "bg-warning animate-pulse"
+                  : "bg-text-subtle"
+                }`}
             />
             <span className="text-xs text-text-muted">
               {sidecarStatus === "running"
@@ -1564,42 +1579,46 @@ ${g.example}
             </span>
           </div>
         </div>
-      </header>
+      </header >
 
       {/* Plan Mode info banner */}
-      {usePlanMode && (
-        <motion.div
-          initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: 1, height: "auto" }}
-          exit={{ opacity: 0, height: 0 }}
-          className="bg-primary/5 border-b border-primary/10 px-4 py-3"
-        >
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 rounded-full bg-primary/10 p-1">
-              <AlertCircle className="h-4 w-4 text-primary" />
+      {
+        usePlanMode && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="bg-primary/5 border-b border-primary/10 px-4 py-3"
+          >
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-full bg-primary/10 p-1">
+                <AlertCircle className="h-4 w-4 text-primary" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-text">Plan Mode Active</p>
+                <p className="mt-1 text-xs text-text-muted">
+                  {stagedOperations.length > 0
+                    ? `${stagedOperations.length} change${stagedOperations.length !== 1 ? "s" : ""} staged. Review them in the Execution Plan panel (bottom-right) and click "Execute Plan" when ready.`
+                    : "The AI will propose file changes for your review. When changes are proposed, they'll appear in the Execution Plan panel for batch approval."}
+                </p>
+              </div>
             </div>
-            <div className="flex-1">
-              <p className="text-sm font-medium text-text">Plan Mode Active</p>
-              <p className="mt-1 text-xs text-text-muted">
-                {stagedOperations.length > 0
-                  ? `${stagedOperations.length} change${stagedOperations.length !== 1 ? "s" : ""} staged. Review them in the Execution Plan panel (bottom-right) and click "Execute Plan" when ready.`
-                  : "The AI will propose file changes for your review. When changes are proposed, they'll appear in the Execution Plan panel for batch approval."}
-              </p>
-            </div>
-          </div>
-        </motion.div>
-      )}
+          </motion.div>
+        )
+      }
 
       {/* Error banner */}
-      {error && (
-        <div className="flex items-center gap-2 bg-error/10 px-4 py-2 text-sm text-error">
-          <AlertCircle className="h-4 w-4" />
-          {error}
-          <button onClick={() => setError(null)} className="ml-auto text-error/70 hover:text-error">
-            ×
-          </button>
-        </div>
-      )}
+      {
+        error && (
+          <div className="flex items-center gap-2 bg-error/10 px-4 py-2 text-sm text-error">
+            <AlertCircle className="h-4 w-4" />
+            {error}
+            <button onClick={() => setError(null)} className="ml-auto text-error/70 hover:text-error">
+              ×
+            </button>
+          </div>
+        )
+      }
 
       {/* Messages */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto pb-48">
@@ -1634,14 +1653,10 @@ ${g.example}
 
               // Use content length in key ONLY for streaming messages to force re-renders
               const isActivelyStreaming = isGenerating && isLastMessage && isAssistant;
-              const messageKey = isActivelyStreaming
-                ? `${message.id}-${message.content?.length || 0}`
-                : message.id;
-
               return (
-                <div key={messageKey}>
+                <div key={message.id}>
                   <Message
-                    key={messageKey}
+                    key={message.id}
                     {...message}
                     isStreaming={isActivelyStreaming}
                     onEdit={handleEdit}
@@ -1705,8 +1720,8 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
         {isGenerating && (
           <motion.div
             className="glass border-glass rounded-2xl shadow-lg shadow-black/20 ring-1 ring-white/5 px-4 py-6 flex gap-4"
-            initial={{ opacity: 0, filter: "blur(6px)" }}
-            animate={{ opacity: 1, filter: "blur(0px)" }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
             transition={{ duration: 0.2 }}
           >
             <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-secondary to-primary text-white shadow-[0_0_12px_rgba(59,130,246,0.45)]">
@@ -1728,119 +1743,167 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
       </div>
 
       {/* Input or Configuration Prompt */}
-      {!hasConfiguredProvider ? (
-        <div className="border-t border-border bg-surface p-4">
-          <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-yellow-500/50 bg-yellow-500/5 p-6 text-center">
-            <div className="flex items-center gap-2 text-yellow-500">
-              <AlertCircle className="h-5 w-5" />
-              <p className="font-semibold">Setup Required</p>
+      {
+        !hasConfiguredProvider ? (
+          <div className="border-t border-border bg-surface p-4">
+            <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-yellow-500/50 bg-yellow-500/5 p-6 text-center">
+              <div className="flex items-center gap-2 text-yellow-500">
+                <AlertCircle className="h-5 w-5" />
+                <p className="font-semibold">Setup Required</p>
+              </div>
+              <p className="text-sm text-text-muted">
+                Configure an AI provider (OpenAI, Anthropic, etc.) to start chatting.
+              </p>
+              {onOpenSettings && (
+                <Button onClick={onOpenSettings} variant="primary" className="mt-2 text-white">
+                  <SettingsIcon className="mr-2 h-4 w-4" />
+                  Open Settings
+                </Button>
+              )}
             </div>
-            <p className="text-sm text-text-muted">
-              Configure an AI provider (OpenAI, Anthropic, etc.) to start chatting.
-            </p>
-            {onOpenSettings && (
-              <Button onClick={onOpenSettings} variant="primary" className="mt-2 text-white">
-                <SettingsIcon className="mr-2 h-4 w-4" />
-                Open Settings
-              </Button>
-            )}
           </div>
-        </div>
-      ) : (
-        <ChatInput
-          onSend={handleSend}
-          onStop={handleStop}
-          isGenerating={isGenerating}
-          disabled={!workspacePath || isGenerating}
-          placeholder={
-            workspacePath
-              ? needsConnection
-                ? "Type to connect and start chatting..."
-                : "Ask Tandem anything..."
-              : "Select a workspace to start chatting"
-          }
-          selectedAgent={selectedAgent}
-          onAgentChange={onAgentChange}
-          externalAttachment={fileToAttach}
-          onExternalAttachmentProcessed={onFileAttached}
-          enabledToolCategories={enabledToolCategories}
-          onToolCategoriesChange={setEnabledToolCategories}
-          allowAllTools={allowAllTools}
-          onAllowAllToolsChange={setAllowAllTools}
-          allowAllToolsLocked={!!currentSessionId}
-          activeProviderLabel={activeProviderLabel}
-          activeModelLabel={activeModelLabel}
-        />
-      )}
+        ) : (
+          <ChatInput
+            onSend={handleSend}
+            onStop={handleStop}
+            isGenerating={isGenerating}
+            disabled={!workspacePath}
+            placeholder={
+              workspacePath
+                ? needsConnection
+                  ? "Type to connect and start chatting..."
+                  : "Ask Tandem anything..."
+                : "Select a workspace to start chatting"
+            }
+            selectedAgent={selectedAgent}
+            onAgentChange={onAgentChange}
+            externalAttachment={fileToAttach}
+            onExternalAttachmentProcessed={onFileAttached}
+            enabledToolCategories={enabledToolCategories}
+            onToolCategoriesChange={setEnabledToolCategories}
+            allowAllTools={allowAllTools}
+            onAllowAllToolsChange={setAllowAllTools}
+            allowAllToolsLocked={false}
+            activeProviderLabel={activeProviderLabel}
+            activeModelLabel={activeModelLabel}
+            onModelSelect={async (modelId, providerIdRaw) => {
+              // Update the global provider config to switch to this model
+              try {
+                // Normalize provider ID (sidecar uses 'opencode', tandem use 'opencode_zen')
+                const providerId = providerIdRaw === 'opencode' ? 'opencode_zen' : providerIdRaw;
+
+                const config = await getProvidersConfig();
+
+                // Determine which top-level provider to use
+                const knownProviders = ['openai', 'anthropic', 'openrouter', 'opencode_zen', 'ollama'];
+                let targetProvider = providerId;
+
+                if (!knownProviders.includes(targetProvider)) {
+                  // If it's a sub-provider or unknown, stay with current active provider
+                  // This handles OpenCode Zen and OpenRouter which have many sub-providers (AIHUBMIX, etc)
+                  targetProvider = activeProviderId || 'opencode_zen';
+                }
+
+                // We need to enable the selected provider and disable others
+                const updated: ProvidersConfig = {
+                  openrouter: { ...config.openrouter, enabled: targetProvider === 'openrouter', default: targetProvider === 'openrouter' },
+                  opencode_zen: { ...config.opencode_zen, enabled: targetProvider === 'opencode_zen', default: targetProvider === 'opencode_zen' },
+                  anthropic: { ...config.anthropic, enabled: targetProvider === 'anthropic', default: targetProvider === 'anthropic' },
+                  openai: { ...config.openai, enabled: targetProvider === 'openai', default: targetProvider === 'openai' },
+                  ollama: { ...config.ollama, enabled: targetProvider === 'ollama', default: targetProvider === 'ollama' },
+                  custom: config.custom,
+                };
+
+                // Update model for target provider
+                if (targetProvider === 'opencode_zen') updated.opencode_zen.model = modelId;
+                if (targetProvider === 'openrouter') updated.openrouter.model = modelId;
+                if (targetProvider === 'anthropic') updated.anthropic.model = modelId;
+                if (targetProvider === 'openai') updated.openai.model = modelId;
+                if (targetProvider === 'ollama') updated.ollama.model = modelId;
+
+                await setProvidersConfig(updated);
+                // Trigger refresh in parent to update labels
+                onProviderChange?.();
+              } catch (e) {
+                console.error("Failed to update model selection:", e);
+              }
+            }}
+          />
+        )
+      }
 
       {/* Permission requests - only show in immediate mode */}
-      {!usePlanMode && (
-        <PermissionToastContainer
-          requests={pendingPermissions}
-          onApprove={handleApprovePermission}
-          onDeny={handleDenyPermission}
-        />
-      )}
+      {
+        !usePlanMode && (
+          <PermissionToastContainer
+            requests={pendingPermissions}
+            onApprove={handleApprovePermission}
+            onDeny={handleDenyPermission}
+          />
+        )
+      }
 
       {/* Question dialog */}
       <QuestionDialog question={pendingQuestion} onAnswer={handleAnswerQuestion} />
 
       {/* Execution plan panel - only show in plan mode */}
-      {usePlanMode && (
-        <ExecutionPlanPanel
-          operations={stagedOperations}
-          onExecute={async () => {
-            try {
-              await executePlan();
-              console.log("[ExecutionPlan] Plan executed successfully");
+      {
+        usePlanMode && (
+          <ExecutionPlanPanel
+            operations={stagedOperations}
+            onExecute={async () => {
+              try {
+                await executePlan();
+                console.log("[ExecutionPlan] Plan executed successfully");
 
-              // Send confirmation message to AI that plan was executed
-              if (currentSessionId && stagedOperations.length > 0) {
-                const confirmMessage = `The execution plan with ${stagedOperations.length} change(s) has been applied successfully. You can continue with the next steps.`;
+                // Send confirmation message to AI that plan was executed
+                if (currentSessionId && stagedOperations.length > 0) {
+                  const confirmMessage = `The execution plan with ${stagedOperations.length} change(s) has been applied successfully. You can continue with the next steps.`;
 
-                // Send as a user message so the AI knows to continue
-                setTimeout(async () => {
-                  try {
-                    // Use the same agent (plan agent if in plan mode)
-                    await sendMessageStreaming(
-                      currentSessionId,
-                      confirmMessage,
-                      undefined,
-                      usePlanMode ? "plan" : undefined
-                    );
-                  } catch (err) {
-                    console.error("[ExecutionPlan] Failed to send confirmation:", err);
-                  }
-                }, 500); // Small delay to ensure UI updates first
+                  // Send as a user message so the AI knows to continue
+                  setTimeout(async () => {
+                    try {
+                      // Use the same agent (plan agent if in plan mode)
+                      await sendMessageStreaming(
+                        currentSessionId,
+                        confirmMessage,
+                        undefined,
+                        usePlanMode ? "plan" : undefined
+                      );
+                    } catch (err) {
+                      console.error("[ExecutionPlan] Failed to send confirmation:", err);
+                    }
+                  }, 500); // Small delay to ensure UI updates first
+                }
+              } catch (err) {
+                console.error("[ExecutionPlan] Failed to execute plan:", err);
+                setError(`Failed to execute plan: ${err}`);
               }
-            } catch (err) {
-              console.error("[ExecutionPlan] Failed to execute plan:", err);
-              setError(`Failed to execute plan: ${err}`);
-            }
-          }}
-          onRemove={async (id) => {
-            try {
-              await removeOperation(id);
-            } catch (err) {
-              console.error("[ExecutionPlan] Failed to remove operation:", err);
-              setError(`Failed to remove operation: ${err}`);
-            }
-          }}
-          onClear={async () => {
-            try {
-              await clearStaging();
-            } catch (err) {
-              console.error("[ExecutionPlan] Failed to clear staging:", err);
-              setError(`Failed to clear staging: ${err}`);
-            }
-          }}
-          isExecuting={isExecutingPlan}
-        />
-      )}
+            }}
+            onRemove={async (id) => {
+              try {
+                await removeOperation(id);
+              } catch (err) {
+                console.error("[ExecutionPlan] Failed to remove operation:", err);
+                setError(`Failed to remove operation: ${err}`);
+              }
+            }}
+            onClear={async () => {
+              try {
+                await clearStaging();
+              } catch (err) {
+                console.error("[ExecutionPlan] Failed to clear staging:", err);
+                setError(`Failed to clear staging: ${err}`);
+              }
+            }}
+            isExecuting={isExecutingPlan}
+          />
+        )
+      }
 
       {/* Activity drawer - Hidden for now as it's always empty */}
       {/* <ActivityDrawer activities={activities} isGenerating={isGenerating} /> */}
-    </div>
+    </div >
   );
 }
 

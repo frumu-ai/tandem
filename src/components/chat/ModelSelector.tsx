@@ -1,128 +1,233 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, Bot } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { cn } from "@/lib/utils";
-import type { ModelInfo } from "@/lib/tauri";
+import { Check, ChevronDown, Search, Sparkles } from "lucide-react";
+import { type ModelInfo, listModels, getProvidersConfig } from "@/lib/tauri";
 
 interface ModelSelectorProps {
-  selectedModel?: string;
-  onModelChange: (model: string) => void;
-  models: ModelInfo[];
-  disabled?: boolean;
+  currentModel?: string; // e.g. "gpt-4o" or "claude-3-5-sonnet"
+  onModelSelect: (modelId: string, providerId: string) => void;
+  className?: string; // Add className prop
 }
 
-export function ModelSelector({
-  selectedModel,
-  onModelChange,
-  models,
-  disabled,
-}: ModelSelectorProps) {
+interface GroupedModel {
+  providerId: string;
+  providerName: string;
+  models: ModelInfo[];
+}
+
+export function ModelSelector({ currentModel, onModelSelect, className }: ModelSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [search, setSearch] = useState("");
+  const [groupedModels, setGroupedModels] = useState<GroupedModel[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const currentModel = models.find((m) => m.id === selectedModel);
-  const displayName = currentModel?.name || "Select Model";
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdown when clicking outside
+  // Close when clicking outside
   useEffect(() => {
-    const handleClickOutside = (event: globalThis.MouseEvent) => {
-      const target = event.target;
-      if (!dropdownRef.current || !(target instanceof globalThis.Node)) return;
-      if (!dropdownRef.current.contains(target)) {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
         setIsOpen(false);
       }
     };
 
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Load models when opening
+  useEffect(() => {
     if (isOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-      return () => document.removeEventListener("mousedown", handleClickOutside);
+      loadModels();
     }
   }, [isOpen]);
 
-  const handleSelect = (modelId: string) => {
-    onModelChange(modelId);
-    setIsOpen(false);
+  const loadModels = async () => {
+    setLoading(true);
+    try {
+      const [allModels, config] = await Promise.all([
+        listModels(),
+        getProvidersConfig() // We need this to check has_key
+      ]);
+
+      // Group by provider
+      const groups: Record<string, GroupedModel> = {};
+
+      // Helper to get friendly name
+      const getProviderName = (id: string) => {
+        switch (id) {
+          case "openai": return "OpenAI";
+          case "anthropic": return "Anthropic";
+          case "openrouter": return "OpenRouter";
+          case "opencode_zen": return "OpenCode Zen";
+          case "ollama": return "Ollama";
+          default: return id.charAt(0).toUpperCase() + id.slice(1);
+        }
+      };
+
+      // Add models from API
+      allModels.forEach(model => {
+        // Normalize provider ID
+        let providerId = model.provider || "unknown";
+        if (providerId === "opencode") providerId = "opencode_zen";
+
+        if (!groups[providerId]) {
+          groups[providerId] = {
+            providerId,
+            providerName: getProviderName(providerId),
+            models: []
+          };
+        }
+        groups[providerId].models.push(model);
+      });
+
+      setGroupedModels(Object.values(groups).filter(group => {
+        // Filter: Only show "valid" providers
+        const getConf = (pid: string) => {
+          if (pid === "openai") return config.openai;
+          if (pid === "anthropic") return config.anthropic;
+          if (pid === "openrouter") return config.openrouter;
+          if (pid === "opencode_zen") return config.opencode_zen;
+          if (pid === "ollama") return config.ollama;
+          return undefined;
+        };
+
+        // Always show OpenCode Zen and Ollama (local/free)
+        if (group.providerId === "opencode_zen" || group.providerId === "ollama") return true;
+
+        // For others, check if they have a key or are enabled
+        const conf = getConf(group.providerId);
+        return conf?.has_key || conf?.enabled;
+      }).sort((a, b) => {
+        // 1. OpenCode Zen always first
+        if (a.providerId === "opencode_zen") return -1;
+        if (b.providerId === "opencode_zen") return 1;
+
+        // 2. Providers with keys configured come next (already filtered, but for ordering)
+        const getConf = (pid: string) => {
+          if (pid === "openai") return config.openai;
+          if (pid === "anthropic") return config.anthropic;
+          if (pid === "openrouter") return config.openrouter;
+          if (pid === "opencode_zen") return config.opencode_zen;
+          if (pid === "ollama") return config.ollama;
+          return undefined;
+        };
+
+        const confA = getConf(a.providerId);
+        const confB = getConf(b.providerId);
+
+        const hasKeyA = confA?.has_key || confA?.enabled;
+        const hasKeyB = confB?.has_key || confB?.enabled;
+
+        const isPriorityA = hasKeyA || a.providerId === "ollama";
+        const isPriorityB = hasKeyB || b.providerId === "ollama";
+
+        if (isPriorityA && !isPriorityB) return -1;
+        if (!isPriorityA && isPriorityB) return 1;
+
+        // 3. Alphabetical for the rest
+        return a.providerName.localeCompare(b.providerName);
+      }));
+
+    } catch (e) {
+      console.error("Failed to load models:", e);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Group models by provider
-  const modelsByProvider = models.reduce(
-    (acc, model) => {
-      const provider = model.provider || "Other";
-      if (!acc[provider]) {
-        acc[provider] = [];
-      }
-      acc[provider].push(model);
-      return acc;
-    },
-    {} as Record<string, ModelInfo[]>
-  );
+  const filteredGroups = groupedModels.map(group => ({
+    ...group,
+    models: group.models.filter(m =>
+      m.name.toLowerCase().includes(search.toLowerCase()) ||
+      m.id.toLowerCase().includes(search.toLowerCase())
+    )
+  })).filter(g => g.models.length > 0);
+
+  // Find current model display name
+  const currentModelDisplay = (() => {
+    if (!currentModel) return "Select Model";
+    // Try to find in loaded groups first if available
+    for (const group of groupedModels) {
+      const found = group.models.find(m => m.id === currentModel);
+      if (found) return found.name;
+    }
+    // Fallback to simple format
+    return currentModel.split("/").pop() || currentModel;
+  })();
 
   return (
-    <div className="relative" ref={dropdownRef}>
+    <div className={`relative ${className || ""}`} ref={containerRef}>
       <button
-        type="button"
         onClick={() => setIsOpen(!isOpen)}
-        disabled={disabled}
-        className={cn(
-          "flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors",
-          disabled
-            ? "cursor-not-allowed opacity-50"
-            : "hover:bg-surface text-text-muted hover:text-text",
-          isOpen && "bg-surface text-text"
-        )}
-        title={currentModel?.name || "Select model"}
+        className="flex items-center gap-2 rounded-lg border border-border/50 bg-surface px-3 py-1.5 text-xs hover:bg-surface-elevated transition-colors"
       >
-        <Bot className="h-3.5 w-3.5" />
-        <span className="max-w-[120px] truncate">{displayName}</span>
-        <ChevronDown className={cn("h-3 w-3 transition-transform", isOpen && "rotate-180")} />
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-3.5 w-3.5 text-primary" />
+          <span className="font-medium text-text max-w-[150px] truncate">
+            {currentModelDisplay}
+          </span>
+        </div>
+        <ChevronDown className={`h-3 w-3 text-text-subtle transition-transform ${isOpen ? "rotate-180" : ""}`} />
       </button>
 
       <AnimatePresence>
         {isOpen && (
           <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
-            transition={{ duration: 0.15 }}
-            className="absolute left-0 bottom-full z-50 mb-2 w-72 max-h-96 overflow-y-auto rounded-lg border border-border bg-surface-elevated shadow-lg"
+            initial={{ opacity: 0, y: 10, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 10, scale: 0.98 }}
+            transition={{ duration: 0.1 }}
+            className="absolute left-0 bottom-full mb-2 w-[300px] origin-bottom-left rounded-xl border border-border bg-surface shadow-xl z-50 overflow-hidden"
           >
-            <div className="p-2 border-b border-border">
-              <p className="text-xs font-medium text-text">Select Model</p>
-              <p className="text-[10px] text-text-muted">Choose AI model for this session</p>
+            <div className="p-2 border-b border-border bg-surface-elevated/30">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-subtle" />
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="Search models..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full rounded-lg bg-surface border border-border px-8 py-1.5 text-xs text-text placeholder:text-text-subtle focus:border-primary focus:outline-none"
+                />
+              </div>
             </div>
-            <div className="p-1">
-              {Object.entries(modelsByProvider).map(([provider, providerModels]) => (
-                <div key={provider}>
-                  <div className="px-2 py-1.5 text-[10px] font-semibold text-text-muted uppercase tracking-wider">
-                    {provider}
-                  </div>
-                  {providerModels.map((model) => {
-                    const isSelected = model.id === selectedModel;
 
-                    return (
-                      <button
-                        key={model.id}
-                        type="button"
-                        onClick={() => handleSelect(model.id)}
-                        className={cn(
-                          "flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
-                          isSelected ? "bg-primary/10 text-primary" : "text-text hover:bg-surface"
-                        )}
-                      >
-                        <div className="flex-1 min-w-0">
-                          <div className="text-xs font-medium truncate">{model.name}</div>
-                          {model.context_length && (
-                            <div className="text-[10px] text-text-muted">
-                              {(model.context_length / 1000).toFixed(0)}K context
-                            </div>
-                          )}
-                        </div>
-                        {isSelected && <span className="text-primary text-[10px]">✓</span>}
-                      </button>
-                    );
-                  })}
+            <div className="max-h-[300px] overflow-y-auto p-1">
+              {loading ? (
+                <div className="py-8 text-center text-xs text-text-subtle">
+                  Loading models...
                 </div>
-              ))}
+              ) : filteredGroups.length === 0 ? (
+                <div className="py-8 text-center text-xs text-text-subtle">
+                  No models found
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {filteredGroups.map(group => (
+                    <div key={group.providerId}>
+                      <div className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-text-subtle sticky top-0 bg-surface/95 backdrop-blur-sm">
+                        {group.providerName}
+                      </div>
+                      {group.models.map(model => (
+                        <button
+                          key={model.id}
+                          onClick={() => {
+                            onModelSelect(model.id, group.providerId);
+                            setIsOpen(false);
+                          }}
+                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-elevated ${currentModel === model.id ? "bg-primary/10 text-primary" : "text-text"
+                            }`}
+                        >
+                          <span className="truncate">{model.name}</span>
+                          {currentModel === model.id && <Check className="h-3 w-3" />}
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </motion.div>
         )}
