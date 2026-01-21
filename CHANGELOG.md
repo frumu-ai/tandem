@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-01-21
+
+### Fixed
+
+- **macOS Styling:** Refined the glass effect styling and other UI polish to improve the overall look and feel on macOS.
+- **BaseHref Support:** Added support for `baseHref` in HTML previews to correctly resolve relative paths for images and stylesheets.
+
 ## [0.1.7] - 2026-01-21
 
 ### Fixed
@@ -116,7 +123,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/frumu-ai/tandem/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/frumu-ai/tandem/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/frumu-ai/tandem/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/frumu-ai/tandem/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/frumu-ai/tandem/compare/v0.1.0...v0.1.4
