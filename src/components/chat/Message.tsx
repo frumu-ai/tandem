@@ -160,9 +160,9 @@ export function Message({
           ? "bg-transparent border-l-2 border-primary/70"
           : "glass border-glass shadow-lg shadow-black/20 ring-1 ring-white/5"
       )}
-      initial={{ opacity: 0, y: 10, filter: "blur(6px)" }}
-      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-      transition={{ duration: 0.25 }}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.15 }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >

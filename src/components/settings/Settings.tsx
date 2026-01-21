@@ -126,40 +126,41 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
     // When enabling a provider, disable all others
     const updated = enabled
       ? {
-          openrouter: {
-            ...providers.openrouter,
-            enabled: provider === "openrouter",
-            default: provider === "openrouter",
-          },
-          opencode_zen: {
-            ...providers.opencode_zen,
-            enabled: provider === "opencode_zen",
-            default: provider === "opencode_zen",
-          },
-          anthropic: {
-            ...providers.anthropic,
-            enabled: provider === "anthropic",
-            default: provider === "anthropic",
-          },
-          openai: {
-            ...providers.openai,
-            enabled: provider === "openai",
-            default: provider === "openai",
-          },
-          ollama: {
-            ...providers.ollama,
-            enabled: provider === "ollama",
-            default: provider === "ollama",
-          },
-          custom: providers.custom,
-        }
+        openrouter: {
+          ...providers.openrouter,
+          enabled: provider === "openrouter",
+          default: provider === "openrouter",
+        },
+        opencode_zen: {
+          ...providers.opencode_zen,
+          enabled: provider === "opencode_zen",
+          default: provider === "opencode_zen",
+        },
+        anthropic: {
+          ...providers.anthropic,
+          enabled: provider === "anthropic",
+          default: provider === "anthropic",
+        },
+        openai: {
+          ...providers.openai,
+          enabled: provider === "openai",
+          default: provider === "openai",
+        },
+        ollama: {
+          ...providers.ollama,
+          enabled: provider === "ollama",
+          default: provider === "ollama",
+        },
+        custom: providers.custom,
+      }
       : {
-          ...providers,
-          [provider]: { ...providers[provider], enabled: false, default: false },
-        };
+        ...providers,
+        [provider]: { ...providers[provider], enabled: false, default: false },
+      };
 
     setProviders(updated);
     await setProvidersConfig(updated);
+    onProviderChange?.();
   };
 
   const handleSetDefault = async (provider: keyof Omit<ProvidersConfig, "custom">) => {
@@ -176,6 +177,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
     };
     setProviders(updated);
     await setProvidersConfig(updated);
+    onProviderChange?.();
   };
 
   const handleModelChange = async (
@@ -190,6 +192,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
     };
     setProviders(updated);
     await setProvidersConfig(updated);
+    onProviderChange?.();
   };
 
   const handleSelectWorkspace = async () => {
@@ -680,21 +683,6 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
           {providers && (
             <div className="space-y-4">
               <ProviderCard
-                id="openrouter"
-                name="OpenRouter"
-                description="Access 100+ models with one API key"
-                endpoint="https://openrouter.ai/api/v1"
-                model={providers.openrouter.model}
-                isDefault={providers.openrouter.default}
-                enabled={providers.openrouter.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("openrouter", enabled)}
-                onModelChange={(model) => handleModelChange("openrouter", model)}
-                onSetDefault={() => handleSetDefault("openrouter")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://openrouter.ai/keys"
-              />
-
-              <ProviderCard
                 id="opencode_zen"
                 name="OpenCode Zen"
                 description="Access to free and premium models - includes free options"
@@ -707,6 +695,21 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
                 onSetDefault={() => handleSetDefault("opencode_zen")}
                 onKeyChange={onProviderChange}
                 docsUrl="https://opencode.ai/auth"
+              />
+
+              <ProviderCard
+                id="openrouter"
+                name="OpenRouter"
+                description="Access 100+ models with one API key"
+                endpoint="https://openrouter.ai/api/v1"
+                model={providers.openrouter.model}
+                isDefault={providers.openrouter.default}
+                enabled={providers.openrouter.enabled}
+                onEnabledChange={(enabled) => handleProviderChange("openrouter", enabled)}
+                onModelChange={(model) => handleModelChange("openrouter", model)}
+                onSetDefault={() => handleSetDefault("openrouter")}
+                onKeyChange={onProviderChange}
+                docsUrl="https://openrouter.ai/keys"
               />
 
               <ProviderCard

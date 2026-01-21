@@ -1892,6 +1892,10 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                             );
                             return None;
                         }
+
+                        // If it's an assistant message with text but no delta, we should probably emit it
+                        // to ensure we don't miss content.
+                        tracing::debug!("Emitting text part without delta for assistant");
                     }
 
                     let text = part
@@ -2157,7 +2161,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
         }
         _ => {
             // Return as raw event for other types
-            tracing::debug!("Unhandled event type: {}", event.event_type);
+            tracing::warn!("Unhandled event type: {} - data: {:?}", event.event_type, event.properties);
             Some(StreamEvent::Raw {
                 event_type: event.event_type,
                 data: event.properties,

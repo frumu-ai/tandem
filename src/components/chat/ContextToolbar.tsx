@@ -21,6 +21,8 @@ interface ContextToolbarProps {
   allowAllTools?: boolean;
   onAllowAllToolsChange?: (allow: boolean) => void;
   allowAllToolsLocked?: boolean;
+  // New prop for model selection
+  onModelSelect?: (modelId: string, providerId: string) => void;
   // State
   disabled?: boolean;
 }
@@ -38,8 +40,13 @@ export function ContextToolbar({
   allowAllTools,
   onAllowAllToolsChange,
   allowAllToolsLocked,
+  onModelSelect,
   disabled,
 }: ContextToolbarProps) {
+  // We can remove the old providerSummary logic or keep it as fallback?
+  // Actually, we'll replace the static display with ModelSelector entirely if onModelSelect is present.
+
+  // existing logic...
   const providerSummary = activeProviderLabel
     ? `${activeProviderLabel}${activeModelLabel ? ` · ${activeModelLabel}` : ""}`
     : null;
@@ -74,15 +81,14 @@ export function ContextToolbar({
             type="button"
             onClick={() => onAllowAllToolsChange(!allowAllTools)}
             disabled={disabled || allowAllToolsLocked}
-            className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] transition-colors ${
-              allowAllTools
-                ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-200"
-                : "border-border bg-surface-elevated text-text-subtle hover:text-text"
-            } ${allowAllToolsLocked ? "cursor-not-allowed opacity-60" : ""}`}
+            className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] transition-colors ${allowAllTools
+              ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-200"
+              : "border-border bg-surface-elevated text-text-subtle hover:text-text"
+              } ${allowAllToolsLocked ? "cursor-not-allowed opacity-60" : ""}`}
             title={
-              allowAllToolsLocked
-                ? "Allow all was applied when this chat was created."
-                : "Skip tool permission prompts for this new chat."
+              allowAllTools
+                ? "Click to disable auto-approval for tools."
+                : "Click to auto-approve all tool requests."
             }
           >
             {allowAllTools ? (
@@ -95,7 +101,19 @@ export function ContextToolbar({
         </>
       )}
 
-      {providerSummary && (
+      {onModelSelect && (
+        <>
+          <div className="h-4 w-px bg-border" />
+          <ModelSelector
+            currentModel={activeModelLabel} // Pass label/ID
+            onModelSelect={onModelSelect}
+            className="min-w-0 flex-shrink-0"
+          />
+        </>
+      )}
+
+      {/* Fallback for when no onModelSelect but we have labels (fetched from sidecar maybe?) */}
+      {!onModelSelect && providerSummary && (
         <>
           <div className="h-4 w-px bg-border" />
           <div
@@ -108,20 +126,6 @@ export function ContextToolbar({
         </>
       )}
 
-      {/* Model selector (optional) */}
-      {onModelChange && availableModels && availableModels.length > 0 && (
-        <>
-          {/* Divider */}
-          <div className="h-4 w-px bg-border" />
-
-          <ModelSelector
-            selectedModel={selectedModel}
-            onModelChange={onModelChange}
-            models={availableModels}
-            disabled={disabled}
-          />
-        </>
-      )}
 
       {/* Spacer to push hints right */}
       <div className="flex-1" />

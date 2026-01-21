@@ -137,8 +137,7 @@ function App() {
     ((state.providers_config.openrouter?.enabled && state.providers_config.openrouter?.has_key) ||
       (state.providers_config.anthropic?.enabled && state.providers_config.anthropic?.has_key) ||
       (state.providers_config.openai?.enabled && state.providers_config.openai?.has_key) ||
-      (state.providers_config.opencode_zen?.enabled &&
-        state.providers_config.opencode_zen?.has_key) ||
+      state.providers_config.opencode_zen?.enabled ||
       (state.providers_config.ollama?.enabled && state.providers_config.ollama?.has_key));
 
   // Debug: Log provider state
@@ -167,10 +166,13 @@ function App() {
 
     if (!preferred) return null;
     return {
+      providerId: preferred.id,
       providerLabel: preferred.label,
       modelLabel: preferred.config.model ?? null,
     };
   }, [state?.providers_config]);
+
+  const activeProviderId = activeProviderInfo?.providerId || null;
 
   // Update view based on workspace state after loading
   const effectiveView =
@@ -179,8 +181,8 @@ function App() {
       : !sidecarReady
         ? "sidecar-setup"
         : (!state?.has_workspace || !hasConfiguredProvider) &&
-            view !== "settings" &&
-            view !== "about"
+          view !== "settings" &&
+          view !== "about"
           ? "onboarding"
           : view;
 
@@ -508,12 +510,6 @@ function App() {
     }
   };
 
-  const handleSessionCreated = (sessionId: string) => {
-    setCurrentSessionId(sessionId);
-    // Refresh history to include the new session
-    loadHistory();
-  };
-
   const handleExecutePendingTasks = () => {
     // Switch to immediate mode and trigger execution in Chat
     setUsePlanMode(false);
@@ -570,6 +566,8 @@ function App() {
             return "text/plain";
           case "log":
             return "text/plain";
+          case "html":
+            return "text/html";
           default:
             return "text/plain";
         }
@@ -644,22 +642,20 @@ function App() {
 
             <button
               onClick={() => setView("chat")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                effectiveView === "chat"
-                  ? "bg-primary/20 text-primary"
-                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
-              }`}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "chat"
+                ? "bg-primary/20 text-primary"
+                : "text-text-muted hover:bg-surface-elevated hover:text-text"
+                }`}
               title="Chat"
             >
               <MessageSquare className="h-5 w-5" />
             </button>
             <button
               onClick={() => setView("settings")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                effectiveView === "settings"
-                  ? "bg-primary/20 text-primary"
-                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
-              }`}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "settings"
+                ? "bg-primary/20 text-primary"
+                : "text-text-muted hover:bg-surface-elevated hover:text-text"
+                }`}
               title="Settings"
             >
               <SettingsIcon className="h-5 w-5" />
@@ -675,11 +671,10 @@ function App() {
             </button>
             <button
               onClick={() => setView("about")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                effectiveView === "about"
-                  ? "bg-primary/20 text-primary"
-                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
-              }`}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "about"
+                ? "bg-primary/20 text-primary"
+                : "text-text-muted hover:bg-surface-elevated hover:text-text"
+                }`}
               title="About"
             >
               <Info className="h-5 w-5" />
@@ -689,11 +684,10 @@ function App() {
             {effectiveView === "chat" && (usePlanMode || todosData.todos.length > 0) && (
               <button
                 onClick={() => setTaskSidebarOpen(!taskSidebarOpen)}
-                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                  taskSidebarOpen
-                    ? "bg-primary/20 text-primary"
-                    : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                }`}
+                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${taskSidebarOpen
+                  ? "bg-primary/20 text-primary"
+                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
+                  }`}
                 title="Tasks"
               >
                 <ListTodo className="h-5 w-5" />
@@ -754,23 +748,7 @@ function App() {
               <SessionSidebar
                 isOpen={true}
                 onToggle={() => setSidebarOpen(!sidebarOpen)}
-                sessions={sessions.filter((session) => {
-                  // Only show sessions from the active project
-                  if (!activeProject) return true;
-                  if (!session.directory) return false;
-
-                  // Normalize paths for comparison (handle both / and \ separators)
-                  const normalizedSessionDir = session.directory.toLowerCase().replace(/\\/g, "/");
-                  const normalizedProjectPath = activeProject.path
-                    .toLowerCase()
-                    .replace(/\\/g, "/");
-
-                  // Check if session directory starts with or contains the project path
-                  return (
-                    normalizedSessionDir.includes(normalizedProjectPath) ||
-                    normalizedProjectPath.includes(normalizedSessionDir)
-                  );
-                })}
+                sessions={sessions.filter((session) => true)}
                 projects={projects}
                 currentSessionId={currentSessionId}
                 onSelectSession={handleSelectSession}
@@ -824,25 +802,27 @@ function App() {
                 key={activeProject?.id || "no-project"}
                 workspacePath={activeProject?.path || state?.workspace_path || null}
                 sessionId={currentSessionId}
-                onSessionCreated={handleSessionCreated}
-                onSidecarConnected={loadHistory}
+                onSessionCreated={async (id) => {
+                  setCurrentSessionId(id);
+                  await loadHistory();
+                }}
+                onSidecarConnected={() => setSidecarReady(true)}
                 usePlanMode={usePlanMode}
                 onPlanModeChange={setUsePlanMode}
-                selectedAgent={selectedAgent}
-                onAgentChange={(agent) => {
-                  setSelectedAgent(agent);
-                  setUsePlanMode(agent === "plan");
-                }}
-                onToggleTaskSidebar={() => setTaskSidebarOpen((prev) => !prev)}
+                onToggleTaskSidebar={() => setTaskSidebarOpen(!taskSidebarOpen)}
                 executePendingTasksTrigger={executePendingTrigger}
                 onGeneratingChange={setIsExecutingTasks}
-                pendingTasks={todosData.pending}
-                fileToAttach={fileToAttach}
+                pendingTasks={todosData.todos}
+                fileToAttach={fileToAttach || undefined}
                 onFileAttached={() => setFileToAttach(null)}
+                selectedAgent={selectedAgent}
+                onAgentChange={setSelectedAgent}
                 hasConfiguredProvider={hasConfiguredProvider}
+                activeProviderId={activeProviderId || undefined}
                 activeProviderLabel={activeProviderInfo?.providerLabel || undefined}
                 activeModelLabel={activeProviderInfo?.modelLabel || undefined}
                 onOpenSettings={() => setView("settings")}
+                onProviderChange={refreshAppState}
                 onFileOpen={(filePath) => {
                   // Resolve relative paths to absolute using workspace path
                   const workspacePath = activeProject?.path || state?.workspace_path;

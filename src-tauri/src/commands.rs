@@ -795,7 +795,11 @@ pub async fn get_providers_config(
 }
 
 /// Helper to populate has_key status from keystore
-fn populate_provider_keys(app: &AppHandle, config: &mut ProvidersConfig) {
+// This function is local to commands but we need to ensure keys are populated on load too.
+// Actually, `lib.rs` initializes keys into env vars via `init_keystore_and_keys`.
+// `populate_provider_keys` here updates the *config object* in memory to say `has_key = true`.
+// We need to make sure this happens on app startup after loading config.
+pub fn populate_provider_keys(app: &AppHandle, config: &mut ProvidersConfig) {
     use crate::keystore::ApiKeyType;
 
     if let Some(keystore) = app.try_state::<SecureKeyStore>() {
@@ -2118,39 +2122,39 @@ Use this capability to create premium, interactive presentations that look like 
 
 ## TWO-PHASE WORKFLOW:
 
-### PHASE 1: PLANNING (Required First Step)
-Before generating code, present a structured outline:
-1. **Title & Theme**: (e.g., Midnight Pro, Modern Enterprise, Glassmorphism)
-2. **Slide-by-Slide Outline**: Briefly describe the visual layout and content for each slide.
-3. **Approval**: Wait for user confirmation.
+### PHASE 1: PLANNING
+1. **Outline**: Present a structured outline (Title, Theme, Slide-by-slide layout).
+2. **Review**: Allow the user to request changes to colors, layout, or content.
+3. **Approval**: Once the user approves the outline, proceed to Phase 2.
 
-### PHASE 2: EXECUTION (After User Approval)
-Use the `write` tool to create a single standalone `{filename}.slides.html` file.
+### PHASE 2: IMPLEMENTATION
+1. **Apply Feedback**: Incorporate all requested refinements from the planning phase.
+2. **Generate Code**: Use the `write` tool to create the `{filename}.slides.html` file.
+3. **Summary**: Briefly confirm that the file has been generated with the requested styles.
 
 ## TECHNICAL REQUIREMENTS:
 
 ### 1. Slide Stacking (Critical)
-- **NO Vertical Scrolling**: Slides MUST NOT appear below each other.
-- **Absolute Stacking**: All `.slide` elements must be stacked on top of each other (usually via `position: absolute` or `grid`).
-- **Visibility**: Only the `.active` slide should be visible (`display: flex` or `block`); all others MUST be `display: none !important`.
-- **Content Containment**: Add `overflow: hidden` to `.slide` to prevent content from spilling outside bounds.
+- **Absolute Stacking**: All `.slide` elements must be stacked on top of each other.
+- **Visibility**: Only the `.active` slide should be visible; all others MUST be `display: none !important`.
+- **Content Containment**: Add `overflow: hidden` to `.slide` to prevent content spill.
 
 ### 2. Layout & Scaling
-- **16:9 Aspect Ratio**: Use 1920x1080 as the base dimensions.
-- **Safe Margins**: Keep all important content at least 100px from slide edges to prevent cutoff.
-- **Scale to Fit**: Use a container that scales the entire deck to fit the viewport while maintaining aspect ratio.
+- **16:9 aspect ratio** (1920x1080).
+- **Safe Margins**: 100px padding for all content.
+- **Scale to Fit**: Multi-directional scaling for the entire deck.
 
-### 3. Content Density Limits (CRITICAL)
-- **Max List Items**: Never exceed 6 bullet points per slide. If you have more content, split across multiple slides.
-- **Max Columns**: Use at most 2 columns per slide for lists.
-- **Text Sizing**: Titles should be `text-7xl` or smaller, body text `text-2xl` or smaller.
-- **Vertical Space**: Leave at least 200px of vertical space empty on each slide (don't fill to the edges).
+### 3. Content Density Limits (STRICT)
+- **Max List Items**: 6 per slide.
+- **Max Columns**: 2 per slide.
+- **Vertical Space**: Leave 200px empty at the bottom.
 
-### 4. PDF Export
-- Add a dedicated "Export to PDF" button that calls `window.print()`.
-- Add a `@media print` style block that:
-  - Forces each slide to be visible and occupy exactly one page.
-  - Hides all interactive UI (buttons, counters).
+### 4. High-Fidelity PDF Export
+- Add an "Export to PDF" button that triggers `window.print()`.
+- **CSS Requirements for Clean PDFs**:
+  - `@page { margin: 0; size: landscape; }` (Crucial: Removes headers/footers).
+  - `html, body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }` (Preserves background colors/gradients).
+  - Hide all navigation buttons and counters via `.no-print { display: none !important; }`.
 
 ## SLIDESHOW HTML TEMPLATE:
 ```html
@@ -2162,7 +2166,11 @@ Use the `write` tool to create a single standalone `{filename}.slides.html` file
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #020617; }
+        @page { margin: 0; size: landscape; }
+        body, html { 
+            margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #020617; 
+            -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;
+        }
         #viewport { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
         #deck { 
             width: 1920px; height: 1080px; 

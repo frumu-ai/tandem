@@ -13,6 +13,7 @@ This catalog provides an overview of all available Tandem Workspace Packs for th
 | [Web Research Refresh Pack](./packs/web-research-refresh-pack/)           | Verify and refresh stale facts using web research and citations      | Beginner-Intermediate | 15-20 min     |
 | [Web Starter Audit Pack](./packs/web-starter-audit-pack/)                 | Audit web projects for accessibility, UX, and code quality           | Beginner-Intermediate | 15-20 min     |
 | [Security Playbook Pack](./packs/security-playbook-pack/)                 | Build comprehensive security runbooks for small teams                | Intermediate          | 20-25 min     |
+| [Legal Research Pack](./packs/legal-research-pack/)                       | Analyze legal contracts and synthesize case notes                    | Intermediate-Advanced | 20-25 min     |
 
 **Note**: Pack documentation (prompts, guides, quality criteria) is located in [`pack-docs/`](./pack-docs/) to keep the pack directories clean and realistic for LLM evaluation.
 
@@ -145,6 +146,31 @@ This catalog provides an overview of all available Tandem Workspace Packs for th
 
 ---
 
+### Legal Research Pack
+
+**Purpose**: Demonstrate legal analysis, contract review, and case summarization capabilities.
+
+**Key Capabilities Showcased**:
+
+- Contract risk analysis
+- Case law summarization
+- Conflict detection in legal documents
+- Professional legal memo drafting
+- Litigation status visualization
+
+**Inputs**: NDA template, employment agreement draft, case notes (Smith v. Jones)
+
+**Outputs**:
+
+- Contract Risk Matrix (Markdown)
+- Case Summary (Markdown)
+- Legal Memorandum (Markdown)
+- Litigation Dashboard (HTML)
+
+**Best For**: Lawyers, paralegals, legal tech teams, demonstrating document analysis
+
+---
+
 ## Pack Selection Guide
 
 ### By Use Case
@@ -156,6 +182,7 @@ This catalog provides an overview of all available Tandem Workspace Packs for th
 | Web research/fact-checking | Web Research Refresh      |
 | Code review/quality        | Web Starter Audit         |
 | Security/compliance        | Security Playbook         |
+| Legal/contracts            | Legal Research Pack       |
 
 ### By Complexity Level
 
@@ -163,15 +190,15 @@ This catalog provides an overview of all available Tandem Workspace Packs for th
 | --------------------- | -------------------------------------------- |
 | Beginner              | Web Starter Audit, Web Research Refresh      |
 | Intermediate          | Micro-Drama Script Studio, Security Playbook |
-| Intermediate-Advanced | Research Synthesis                           |
+| Intermediate-Advanced | Research Synthesis, Legal Research Pack      |
 | Advanced              | All packs can scale in depth                 |
 
 ### By Time Available
 
 | Time Available | Pack                                    |
 | -------------- | --------------------------------------- |
-| 10-15 minutes  | Web Starter Audit, Web Research Refresh |
-| 20-25 minutes  | Research Synthesis, Security Playbook   |
+| 10-15 minutes  | Web Starter Audit, Web Research Refresh      |
+| 20-25 minutes  | Research Synthesis, Security Playbook, Legal Research Pack |
 
 ---
 
