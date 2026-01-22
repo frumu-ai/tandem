@@ -3087,3 +3087,95 @@ pub fn read_binary_file(path: String) -> Result<String> {
     let bytes = fs::read(&file_path).map_err(TandemError::Io)?;
     Ok(STANDARD.encode(&bytes))
 }
+
+// ============================================================================
+// Skills Management Commands
+// ============================================================================
+
+/// List all installed skills
+#[tauri::command]
+pub fn list_skills(state: State<'_, AppState>) -> Result<Vec<crate::skills::SkillInfo>> {
+    let workspace = state.workspace_path.read().unwrap();
+    let workspace_str = workspace.as_ref().map(|p| p.to_str().unwrap());
+
+    tracing::info!("Listing skills for workspace: {:?}", workspace_str);
+    let skills = crate::skills::discover_skills(workspace_str);
+    tracing::info!("Found {} skills", skills.len());
+    for skill in &skills {
+        tracing::info!("  - {} ({:?}): {}", skill.name, skill.location, skill.path);
+    }
+
+    Ok(skills)
+}
+
+/// Import a skill from raw SKILL.md content
+#[tauri::command]
+pub fn import_skill(
+    state: State<'_, AppState>,
+    content: String,
+    location: crate::skills::SkillLocation,
+) -> Result<crate::skills::SkillInfo> {
+    // Parse content to get name
+    let (name, description, body) = crate::skills::parse_skill_content(&content)?;
+
+    // Determine target directory
+    let target_dir = match location {
+        crate::skills::SkillLocation::Project => {
+            let ws = state.workspace_path.read().unwrap();
+            let workspace = ws
+                .as_ref()
+                .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+            workspace.join(".opencode").join("skill").join(&name)
+        }
+        crate::skills::SkillLocation::Global => {
+            let config_dir = dirs::config_dir()
+                .ok_or_else(|| TandemError::InvalidConfig("No config directory".to_string()))?;
+            config_dir.join("opencode").join("skills").join(&name)
+        }
+    };
+
+    // Create directory and write file
+    fs::create_dir_all(&target_dir).map_err(TandemError::Io)?;
+
+    // Write original content directly (don't reconstruct to avoid formatting issues)
+    fs::write(target_dir.join("SKILL.md"), &content).map_err(TandemError::Io)?;
+
+    tracing::info!("Imported skill '{}' to {:?}", name, location);
+
+    Ok(crate::skills::SkillInfo {
+        name,
+        description,
+        location,
+        path: target_dir.to_string_lossy().to_string(),
+    })
+}
+
+/// Delete a skill
+#[tauri::command]
+pub fn delete_skill(
+    state: State<'_, AppState>,
+    name: String,
+    location: crate::skills::SkillLocation,
+) -> Result<()> {
+    let target_dir = match location {
+        crate::skills::SkillLocation::Project => {
+            let ws = state.workspace_path.read().unwrap();
+            let workspace = ws
+                .as_ref()
+                .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+            workspace.join(".opencode").join("skill").join(&name)
+        }
+        crate::skills::SkillLocation::Global => {
+            let config_dir = dirs::config_dir()
+                .ok_or_else(|| TandemError::InvalidConfig("No config directory".to_string()))?;
+            config_dir.join("opencode").join("skills").join(&name)
+        }
+    };
+
+    if target_dir.exists() {
+        fs::remove_dir_all(&target_dir).map_err(TandemError::Io)?;
+        tracing::info!("Deleted skill '{}' from {:?}", name, location);
+    }
+
+    Ok(())
+}

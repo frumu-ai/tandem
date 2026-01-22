@@ -12,10 +12,13 @@ import {
   Trash2,
   Plus,
   Info,
+  Sparkles,
+  RefreshCw,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { ProviderCard } from "./ProviderCard";
 import { ThemePicker } from "./ThemePicker";
+import { SkillsPanel } from "@/components/skills";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
@@ -35,9 +38,13 @@ import {
   checkGitStatus,
   initializeGitRepo,
   checkSidecarStatus,
+  stopSidecar,
+  startSidecar,
+  listSkills,
   type ProvidersConfig,
   type UserProject,
   type SidecarStatus,
+  type SkillInfo,
 } from "@/lib/tauri";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -65,6 +72,11 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [projectsExpanded, setProjectsExpanded] = useState(false);
 
+  // Skills state
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [skillsExpanded, setSkillsExpanded] = useState(false);
+  const [restartingSidecar, setRestartingSidecar] = useState(false);
+
   // Version info
   const [appVersion, setAppVersion] = useState<string>("");
   const [sidecarStatus, setSidecarStatus] = useState<SidecarStatus | null>(null);
@@ -90,13 +102,15 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
 
   const loadSettings = async () => {
     try {
-      const [config, userProjects, activeProj] = await Promise.all([
+      const [config, userProjects, activeProj, skillsList] = await Promise.all([
         getProvidersConfig(),
         getUserProjects(),
         getActiveProject(),
+        listSkills(),
       ]);
       setProviders(config);
       setProjects(userProjects);
+      setSkills(skillsList);
 
       // Load custom provider if exists
       if (config.custom && config.custom.length > 0) {
@@ -126,37 +140,37 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
     // When enabling a provider, disable all others
     const updated = enabled
       ? {
-        openrouter: {
-          ...providers.openrouter,
-          enabled: provider === "openrouter",
-          default: provider === "openrouter",
-        },
-        opencode_zen: {
-          ...providers.opencode_zen,
-          enabled: provider === "opencode_zen",
-          default: provider === "opencode_zen",
-        },
-        anthropic: {
-          ...providers.anthropic,
-          enabled: provider === "anthropic",
-          default: provider === "anthropic",
-        },
-        openai: {
-          ...providers.openai,
-          enabled: provider === "openai",
-          default: provider === "openai",
-        },
-        ollama: {
-          ...providers.ollama,
-          enabled: provider === "ollama",
-          default: provider === "ollama",
-        },
-        custom: providers.custom,
-      }
+          openrouter: {
+            ...providers.openrouter,
+            enabled: provider === "openrouter",
+            default: provider === "openrouter",
+          },
+          opencode_zen: {
+            ...providers.opencode_zen,
+            enabled: provider === "opencode_zen",
+            default: provider === "opencode_zen",
+          },
+          anthropic: {
+            ...providers.anthropic,
+            enabled: provider === "anthropic",
+            default: provider === "anthropic",
+          },
+          openai: {
+            ...providers.openai,
+            enabled: provider === "openai",
+            default: provider === "openai",
+          },
+          ollama: {
+            ...providers.ollama,
+            enabled: provider === "ollama",
+            default: provider === "ollama",
+          },
+          custom: providers.custom,
+        }
       : {
-        ...providers,
-        [provider]: { ...providers[provider], enabled: false, default: false },
-      };
+          ...providers,
+          [provider]: { ...providers[provider], enabled: false, default: false },
+        };
 
     setProviders(updated);
     await setProvidersConfig(updated);
@@ -453,7 +467,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
           <CardContent className="space-y-3">
             <div className="text-sm text-text-muted">
               {updateStatus === "available" && updateInfo
-                ? `Update available: v${updateInfo.version}`
+                ? `Update available: v${updateInfo.version} `
                 : updateStatus === "upToDate"
                   ? "You're on the latest version."
                   : updateStatus === "installed"
@@ -475,7 +489,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
                   <motion.div
                     className="h-full bg-gradient-to-r from-primary to-secondary"
                     initial={{ width: 0 }}
-                    animate={{ width: `${updateProgress.percent}%` }}
+                    animate={{ width: `${updateProgress.percent}% ` }}
                     transition={{ duration: 0.2 }}
                   />
                 </div>
@@ -483,7 +497,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
                   <span>{Math.round(updateProgress.percent)}%</span>
                   <span>
                     {updateProgress.total > 0
-                      ? `${Math.round(updateProgress.downloaded / 1024 / 1024)}MB / ${Math.round(updateProgress.total / 1024 / 1024)}MB`
+                      ? `${Math.round(updateProgress.downloaded / 1024 / 1024)} MB / ${Math.round(updateProgress.total / 1024 / 1024)} MB`
                       : "Downloading..."}
                   </span>
                 </div>
@@ -665,6 +679,79 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
           <CardContent>
             <ThemePicker variant="compact" />
           </CardContent>
+        </Card>
+
+        {/* Skills Section */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-start gap-3">
+              <Sparkles className="mt-0.5 h-5 w-5 text-accent" />
+              <div className="flex-1">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <CardTitle>Skills</CardTitle>
+                    <CardDescription>
+                      Add custom skills to extend the AI's capabilities. Skills are automatically
+                      discovered and used when relevant.
+                    </CardDescription>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSkillsExpanded((v) => !v)}
+                    className="rounded-md p-1 text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                    aria-expanded={skillsExpanded}
+                    title={skillsExpanded ? "Collapse skills" : "Expand skills"}
+                  >
+                    {skillsExpanded ? (
+                      <ChevronDown className="h-5 w-5" />
+                    ) : (
+                      <ChevronRight className="h-5 w-5" />
+                    )}
+                  </button>
+                </div>
+
+                {!skillsExpanded && (
+                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-subtle">
+                    <span>
+                      {skills.length} skill{skills.length === 1 ? "" : "s"} installed
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </CardHeader>
+          <AnimatePresence initial={false}>
+            {skillsExpanded && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <CardContent>
+                  <SkillsPanel
+                    skills={skills}
+                    onRefresh={async () => {
+                      const skillsList = await listSkills();
+                      setSkills(skillsList);
+                    }}
+                    projectPath={activeProject?.path}
+                    onRestartSidecar={async () => {
+                      setRestartingSidecar(true);
+                      try {
+                        await stopSidecar();
+                        await new Promise((resolve) => setTimeout(resolve, 500));
+                        await startSidecar();
+                        await new Promise((resolve) => setTimeout(resolve, 1000)); // Brief delay to show success
+                      } finally {
+                        setRestartingSidecar(false);
+                      }
+                    }}
+                  />
+                </CardContent>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </Card>
 
         {/* LLM Providers Section */}
@@ -855,6 +942,63 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
 
       {/* Update Notification */}
       <UpdateToast />
+
+      {/* Sidecar Restart Overlay */}
+      <AnimatePresence>
+        {restartingSidecar && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="flex flex-col items-center gap-6"
+            >
+              <div className="relative h-16 w-16">
+                <motion.div
+                  className="absolute inset-0 rounded-2xl bg-primary/10"
+                  animate={{ scale: [1, 1.05, 1] }}
+                  transition={{ duration: 1, repeat: Infinity }}
+                />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                  >
+                    <RefreshCw className="h-8 w-8 text-primary" />
+                  </motion.div>
+                </div>
+              </div>
+              <div className="text-center">
+                <h3 className="text-lg font-semibold text-text mb-1">Restarting AI Engine</h3>
+                <p className="text-sm text-text-muted">Loading new skill...</p>
+              </div>
+              {/* Animated progress bars */}
+              <div className="flex gap-1">
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <motion.div
+                    key={i}
+                    className="h-1.5 w-6 rounded-full bg-primary/30"
+                    animate={{
+                      opacity: [0.3, 1, 0.3],
+                      scaleX: [1, 1.2, 1],
+                    }}
+                    transition={{
+                      duration: 1.5,
+                      repeat: Infinity,
+                      delay: i * 0.2,
+                    }}
+                  />
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
