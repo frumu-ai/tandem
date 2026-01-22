@@ -17,9 +17,19 @@ Before creating a release, ensure:
 - [ ] All changes are committed and pushed to `main`
 - [ ] `CHANGELOG.md` is updated with the new version
 - [ ] `docs/RELEASE_NOTES.md` is updated with detailed release notes
-- [ ] Version numbers are updated in:
-  - `src-tauri/Cargo.toml` (if needed)
-  - `package.json` (if needed)
+- [ ] **Version numbers are updated in ALL three files** (critical for auto-updater):
+  - `src-tauri/tauri.conf.json` - **REQUIRED** (this is what the app reports as its version)
+  - `package.json` - **REQUIRED**
+  - `src-tauri/Cargo.toml` - **REQUIRED**
+
+> [!CAUTION]
+> **DO NOT create a release tag without updating all three version numbers first!** The auto-updater will fail if version numbers are mismatched. Always verify with:
+>
+> ```bash
+> grep '"version"' src-tauri/tauri.conf.json
+> grep '"version"' package.json
+> grep '^version' src-tauri/Cargo.toml
+> ```
 
 ## Release Steps
 
