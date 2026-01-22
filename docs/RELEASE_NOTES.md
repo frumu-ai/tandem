@@ -1,3 +1,30 @@
+# Tandem v0.1.11 Release Notes
+
+## Highlights
+
+- **Version Metadata Repair**: Corrected mismatched version numbers across files (some 0.1.8/0.1.9 while the built version was 0.1.10) to restore reliable auto-update detection. If you're on v0.1.9, you should now be able to update to v0.1.11 and receive all the Skills Management features from v0.1.10.
+- **Safer File Access**: Tightened file browser access to the active workspace with stronger denylist enforcement on Windows.
+- **Quieter Streaming**: Removed verbose debug logs to keep the UI responsive during long streaming sessions.
+
+## Complete Fix List
+
+### Security & Stability
+
+- **Workspace Allowlist Enforcement**: File browsing, text reads, and binary reads now require the path to be inside the active workspace.
+- **Denylist Normalization**: Windows path separators are normalized to ensure patterns like `.env`, `.key`, and `.pem` are consistently blocked.
+- **Binary Read Guardrails**: Large binary files are now blocked by default with a safe size limit.
+
+### Performance
+
+- **Streaming Log Reduction**: Removed high-volume stream and provider logs that could slow down the UI during generation.
+
+## Notes
+
+- This is a patch release to fix the v0.1.10 update detection issue. All features from v0.1.10 (Skills Management, automatic sidecar restart, etc.) are included.
+- If you're manually installing, you can skip directly to v0.1.11.
+
+---
+
 # Tandem v0.1.10 Release Notes
 
 ## Highlights

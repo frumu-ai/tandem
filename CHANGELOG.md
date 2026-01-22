@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-01-22
+
+### Fixed
+
+- **Version Metadata**: Fixed version numbers in `tauri.conf.json`, `package.json`, and `Cargo.toml` to ensure proper auto-update detection. Previous release (v0.1.10) had mismatched version metadata (some files were 0.1.8 or 0.1.9 while the built version was 0.1.10), causing update failures.
+- **File Access Guardrails**: Enforced workspace allowlist checks for file browsing, text reads, and binary reads to prevent unintended access outside the active workspace.
+- **Windows Path Denylist**: Normalized Windows path separators so deny patterns like `.env` and key files reliably block access.
+- **Binary Read Limits**: Added size limits for binary reads to avoid large base64 payloads.
+- **Log Noise**: Removed verbose streaming and provider debug logs to reduce UI overhead during active sessions.
+
 ## [0.1.10] - 2026-01-22
 
 ### Added
@@ -147,7 +157,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/frumu-ai/tandem/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/frumu-ai/tandem/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/frumu-ai/tandem/compare/v0.1.7...v0.1.9
 [0.1.8]: https://github.com/frumu-ai/tandem/compare/v0.1.7...v0.1.8
