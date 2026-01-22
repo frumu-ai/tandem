@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-01-22
+
+### Added
+
+- **Skills Management UI**: Added a complete skills management interface in Settings, allowing users to import, view, and manage OpenCode-compatible skills (both project-specific and global).
+- **Skill Discovery**: Implemented automatic discovery of installed skills from both project (`.opencode/skill/`) and global (`~/.config/opencode/skills/`) directories.
+- **Smart Project Selection**: Skills panel now displays the active project name and automatically disables project-specific installation when no project is selected.
+- **Skill Resource Links**: Added clickable links to popular skill repositories (Awesome Claude Skills, SkillHub, GitHub, Claude Code Docs) using Tauri's native URL opener.
+- **Automatic Sidecar Restart**: Implemented seamless AI engine restart after skill import with a full-screen overlay matching the app's aesthetic. Features animated rotating icon, pulsing progress bars, and backdrop blur.
+
+### Fixed
+
+- **Skills Import Reliability**: Fixed critical bug where SKILL.md files with YAML frontmatter containing colons (e.g., "for: (1)") would fail to parse. The parser now automatically quotes descriptions with special characters.
+- **Skills Save Format**: Fixed issue where imported skills were being reconstructed incorrectly, causing frontmatter corruption. Skills are now saved with their original content preserved.
+- **TypeScript Errors**: Resolved missing `projectPath` prop type in SkillsPanel component.
+- **External Links**: Fixed broken external links in Skills panel to use Tauri's `openUrl()` instead of non-functional `href` attributes.
+
+### Changed
+
+- **Button Styling**: Cleaned up Save button appearance by removing emoji for a more professional look.
+- **Project Name Display**: Improved visual hierarchy in project selection with bold primary-colored project names and muted path indicators.
+- **Error Handling**: Added comprehensive debug logging for skill discovery and YAML parsing to improve troubleshooting.
+- **Auto-Refresh**: Skills list now properly refreshes after importing new skills by awaiting the refresh callback.
+
 ## [0.1.9] - 2026-01-21
 
 ### Fixed
@@ -123,7 +147,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/frumu-ai/tandem/compare/v0.1.9...v0.1.10
+[0.1.9]: https://github.com/frumu-ai/tandem/compare/v0.1.7...v0.1.9
 [0.1.8]: https://github.com/frumu-ai/tandem/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/frumu-ai/tandem/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/frumu-ai/tandem/compare/v0.1.5...v0.1.6

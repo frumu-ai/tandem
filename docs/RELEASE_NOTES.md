@@ -1,3 +1,46 @@
+# Tandem v0.1.10 Release Notes
+
+## Highlights
+
+- **Skills Management System**: Introduced a complete skills management interface allowing you to import, discover, and organize OpenCode-compatible skills. Skills extend the AI's capabilities with specialized instructions for specific workflows like code review, documentation, and more.
+- **Robust YAML Parsing**: Fixed critical compatibility issues with SKILL.md files containing special characters (colons, quotes) in descriptions. The parser now automatically handles edge cases for seamless skill imports.
+- **Smart Project Context**: The Skills panel intelligently displays your active project name and automatically adjusts UI based on workspace state, preventing errors when no project is selected.
+- **Resource Discovery**: Added direct links to popular skill repositories (Awesome Claude Skills with 100+ curated skills, SkillHub with 7,000+ community contributions, and official documentation) to help you discover and import useful skills quickly.
+
+## Complete Feature List
+
+### Skills Management
+
+- **Visual Skills Panel**: New dedicated section in Settings for managing skills with clear separation between Project and Global skills
+- **Import Workflow**: Paste SKILL.md content directly into the interface, choose installation location (project-specific or global), and save with one click
+- **Automatic Discovery**: Skills are automatically detected from both `.opencode/skill/` (project) and `~/.config/opencode/skills/` (global) directories
+- **Blank Skill Template**: Quick-start option to create a new skill from scratch with proper YAML frontmatter structure
+- **Delete Support**: Remove unwanted skills directly from the UI
+- **Seamless Restart**: After importing a skill, the AI engine automatically restarts with a polished full-screen overlay featuring animated icons and progress indicators - no manual intervention required
+
+### UX Improvements
+
+- **Active Project Indicator**: Bold, color-highlighted display of the current project name with human-readable folder name
+- **Context-Aware UI**: Project option automatically disabled when no workspace is selected, with clear "(no project selected)" messaging
+- **Auto-Refresh**: Skills list updates immediately after importing without requiring manual refresh
+- **Professional Styling**: Cleaned up button text and visual hierarchy for a more polished appearance
+
+### Technical Fixes
+
+- **YAML Frontmatter Parsing**: Automatically quotes description values containing colons, preventing parse failures with complex skill descriptions
+- **Content Preservation**: Skills are now saved with their original formatting intact instead of being reconstructed, eliminating corruption issues
+- **External Link Support**: All skill resource links use Tauri's native `openUrl()` for proper desktop app integration
+- **Type Safety**: Resolved TypeScript prop type errors in SkillsPanel component
+- **Enhanced Logging**: Added detailed debug output for skill discovery and parsing to aid troubleshooting
+
+## Notes
+
+- **Skill Location**: Project skills (`.opencode/skill/`) are workspace-specific and can be version-controlled. Global skills (`~/.config/opencode/skills/`) are available across all projects.
+- **YAML Format**: While SKILL.md uses YAML frontmatter (industry standard), you no longer need to worry about quoting special characters - the parser handles this automatically.
+- **Skill Discovery**: The AI automatically uses installed skills when relevant to the conversation - no manual selection needed.
+
+---
+
 # Tandem v0.1.9 Release Notes
 
 ## Highlights

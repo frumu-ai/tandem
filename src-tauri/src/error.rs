@@ -34,6 +34,13 @@ pub enum TandemError {
     Vault(String),
 }
 
+// Allow conversion from String to TandemError
+impl From<String> for TandemError {
+    fn from(err: String) -> Self {
+        TandemError::InvalidConfig(err)
+    }
+}
+
 // Implement serialization for Tauri commands
 impl serde::Serialize for TandemError {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>

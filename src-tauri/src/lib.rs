@@ -8,6 +8,7 @@ mod llm_router;
 mod presentation;
 mod sidecar;
 mod sidecar_manager;
+mod skills;
 mod state;
 mod tool_proxy;
 mod vault;
@@ -409,6 +410,10 @@ pub fn run() {
             commands::read_directory,
             commands::read_file_content,
             commands::read_binary_file,
+            // Skills management
+            commands::list_skills,
+            commands::import_skill,
+            commands::delete_skill,
         ]);
 
     // Add desktop-only plugins
