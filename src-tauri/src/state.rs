@@ -259,7 +259,7 @@ impl AppState {
             if path.starts_with(allowed_path) {
                 // Also check against denied patterns
                 let denied = self.denied_patterns.read().unwrap();
-                let path_str = path.to_string_lossy();
+                let path_str = path.to_string_lossy().replace('\\', "/");
 
                 for pattern in denied.iter() {
                     // Simple glob matching (could use glob crate for more complex patterns)

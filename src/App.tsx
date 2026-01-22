@@ -140,14 +140,6 @@ function App() {
       state.providers_config.opencode_zen?.enabled ||
       (state.providers_config.ollama?.enabled && state.providers_config.ollama?.has_key));
 
-  // Debug: Log provider state
-  console.log(
-    "[App] hasConfiguredProvider:",
-    hasConfiguredProvider,
-    "state:",
-    state?.providers_config
-  );
-
   const activeProviderInfo = useMemo(() => {
     const config = state?.providers_config;
     if (!config) return null;
@@ -181,8 +173,8 @@ function App() {
       : !sidecarReady
         ? "sidecar-setup"
         : (!state?.has_workspace || !hasConfiguredProvider) &&
-          view !== "settings" &&
-          view !== "about"
+            view !== "settings" &&
+            view !== "about"
           ? "onboarding"
           : view;
 
@@ -642,20 +634,22 @@ function App() {
 
             <button
               onClick={() => setView("chat")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "chat"
-                ? "bg-primary/20 text-primary"
-                : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                }`}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                effectiveView === "chat"
+                  ? "bg-primary/20 text-primary"
+                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
+              }`}
               title="Chat"
             >
               <MessageSquare className="h-5 w-5" />
             </button>
             <button
               onClick={() => setView("settings")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "settings"
-                ? "bg-primary/20 text-primary"
-                : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                }`}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                effectiveView === "settings"
+                  ? "bg-primary/20 text-primary"
+                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
+              }`}
               title="Settings"
             >
               <SettingsIcon className="h-5 w-5" />
@@ -671,10 +665,11 @@ function App() {
             </button>
             <button
               onClick={() => setView("about")}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${effectiveView === "about"
-                ? "bg-primary/20 text-primary"
-                : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                }`}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                effectiveView === "about"
+                  ? "bg-primary/20 text-primary"
+                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
+              }`}
               title="About"
             >
               <Info className="h-5 w-5" />
@@ -684,10 +679,11 @@ function App() {
             {effectiveView === "chat" && (usePlanMode || todosData.todos.length > 0) && (
               <button
                 onClick={() => setTaskSidebarOpen(!taskSidebarOpen)}
-                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${taskSidebarOpen
-                  ? "bg-primary/20 text-primary"
-                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                  }`}
+                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                  taskSidebarOpen
+                    ? "bg-primary/20 text-primary"
+                    : "text-text-muted hover:bg-surface-elevated hover:text-text"
+                }`}
                 title="Tasks"
               >
                 <ListTodo className="h-5 w-5" />
@@ -754,15 +750,18 @@ function App() {
                   if (!session.directory) return false;
 
                   // Normalize paths for comparison: lowercase, standard slashes, remove trailing slash
-                  const normSession = session.directory.toLowerCase().replace(/\\/g, "/").replace(/\/$/, "");
-                  const normProject = activeProject.path.toLowerCase().replace(/\\/g, "/").replace(/\/$/, "");
+                  const normSession = session.directory
+                    .toLowerCase()
+                    .replace(/\\/g, "/")
+                    .replace(/\/$/, "");
+                  const normProject = activeProject.path
+                    .toLowerCase()
+                    .replace(/\\/g, "/")
+                    .replace(/\/$/, "");
 
                   // Check if session directory starts with or contains the project path
                   // We check both ways to handle nested workspaces or root mismatches
-                  return (
-                    normSession.includes(normProject) ||
-                    normProject.includes(normSession)
-                  );
+                  return normSession.includes(normProject) || normProject.includes(normSession);
                 })}
                 projects={projects}
                 currentSessionId={currentSessionId}

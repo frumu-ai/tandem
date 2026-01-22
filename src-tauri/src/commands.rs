@@ -2933,7 +2933,7 @@ pub struct FileEntry {
 
 /// Read directory contents with gitignore support
 #[tauri::command]
-pub async fn read_directory(path: String) -> Result<Vec<FileEntry>> {
+pub async fn read_directory(state: State<'_, AppState>, path: String) -> Result<Vec<FileEntry>> {
     use ignore::WalkBuilder;
 
     let dir_path = PathBuf::from(&path);
@@ -2950,6 +2950,11 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>> {
             "Path is not a directory: {}",
             path
         )));
+    }
+
+    let canonical_path = fs::canonicalize(&dir_path).map_err(TandemError::Io)?;
+    if !state.is_path_allowed(&canonical_path) {
+        return Err(TandemError::PathNotAllowed(path));
     }
 
     let mut entries = Vec::new();
@@ -3029,7 +3034,11 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>> {
 
 /// Read file content with size limit
 #[tauri::command]
-pub async fn read_file_content(path: String, max_size: Option<u64>) -> Result<String> {
+pub async fn read_file_content(
+    state: State<'_, AppState>,
+    path: String,
+    max_size: Option<u64>,
+) -> Result<String> {
     let file_path = PathBuf::from(&path);
 
     if !file_path.exists() {
@@ -3044,6 +3053,11 @@ pub async fn read_file_content(path: String, max_size: Option<u64>) -> Result<St
             "Path is not a file: {}",
             path
         )));
+    }
+
+    let canonical_path = fs::canonicalize(&file_path).map_err(TandemError::Io)?;
+    if !state.is_path_allowed(&canonical_path) {
+        return Err(TandemError::PathNotAllowed(path));
     }
 
     let metadata = fs::metadata(&file_path).map_err(TandemError::Io)?;
@@ -3065,7 +3079,11 @@ pub async fn read_file_content(path: String, max_size: Option<u64>) -> Result<St
 
 /// Read a binary file and return it as base64
 #[tauri::command]
-pub fn read_binary_file(path: String) -> Result<String> {
+pub fn read_binary_file(
+    state: State<'_, AppState>,
+    path: String,
+    max_size: Option<u64>,
+) -> Result<String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
 
     let file_path = PathBuf::from(&path);
@@ -3081,6 +3099,22 @@ pub fn read_binary_file(path: String) -> Result<String> {
         return Err(TandemError::InvalidConfig(format!(
             "Path is not a file: {}",
             path
+        )));
+    }
+
+    let canonical_path = fs::canonicalize(&file_path).map_err(TandemError::Io)?;
+    if !state.is_path_allowed(&canonical_path) {
+        return Err(TandemError::PathNotAllowed(path));
+    }
+
+    let metadata = fs::metadata(&file_path).map_err(TandemError::Io)?;
+    let file_size = metadata.len();
+    let size_limit = max_size.unwrap_or(10 * 1024 * 1024);
+
+    if file_size > size_limit {
+        return Err(TandemError::InvalidConfig(format!(
+            "File too large: {} bytes (limit: {} bytes)",
+            file_size, size_limit
         )));
     }
 
