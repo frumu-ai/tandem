@@ -5,8 +5,8 @@ use crate::memory::chunking::{chunk_text_semantic, ChunkingConfig, Tokenizer};
 use crate::memory::db::MemoryDatabase;
 use crate::memory::embeddings::EmbeddingService;
 use crate::memory::types::{
-    CleanupLogEntry, MemoryChunk, MemoryConfig, MemoryContext, MemoryError, MemoryResult,
-    MemorySearchResult, MemoryStats, MemoryTier, StoreMessageRequest,
+    CleanupLogEntry, MemoryChunk, MemoryConfig, MemoryContext, MemoryResult, MemorySearchResult,
+    MemoryStats, MemoryTier, StoreMessageRequest,
 };
 use chrono::Utc;
 use std::path::Path;

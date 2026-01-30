@@ -8,6 +8,7 @@ mod keystore;
 mod llm_router;
 mod memory;
 mod presentation;
+mod ralph;
 mod sidecar;
 mod sidecar_manager;
 mod skills;
@@ -443,6 +444,14 @@ pub fn run() {
             commands::delete_skill,
             // Guaranteed Plan Mode
             commands::start_plan_session,
+            // Ralph Loop commands
+            commands::ralph_start,
+            commands::ralph_cancel,
+            commands::ralph_pause,
+            commands::ralph_resume,
+            commands::ralph_add_context,
+            commands::ralph_status,
+            commands::ralph_history,
         ]);
 
     // Add desktop-only plugins

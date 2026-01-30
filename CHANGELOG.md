@@ -11,8 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ralph Loop**: Implemented iterative task execution mode with the following features:
+  - New `ralph` Rust module with `RalphLoopManager`, `RalphStorage`, and `RalphRunHandle`
+  - Toggle button in chat control bar to enable/disable loop mode
+  - Status chip showing current iteration and status (Running/Paused/Completed/Error)
+  - Side panel with pause/resume/cancel controls and context injection
+  - Completion detection via `<promise>COMPLETE</promise>` token matching
+  - Struggle detection after 3 iterations with no file changes or repeated errors
+  - Git-based file change tracking between iterations
+  - Workspace-local storage at `.opencode/tandem/ralph/` (state.json, history.json, context.md)
+  - Seven Tauri commands: `ralph_start`, `ralph_cancel`, `ralph_pause`, `ralph_resume`, `ralph_add_context`, `ralph_status`, `ralph_history`
+  - Plan Mode integration - Ralph respects staging and never auto-executes
+  - Frontend components: `LoopToggle`, `LoopStatusChip`, `RalphPanel`
 - **Memory Context System**: Integrated a semantic memory store using `sqlite-vec`. This allows the AI to store and retrieve context from past sessions and project documentation, enabling long-term memory and smarter context-aware responses.
-- **Ralph Loop**: Added a robust "Ralph Loop" mode for iterative task execution. The AI can now loop on a task until a completion promise is met, with support for pause, resume, and plan-aware execution.
 
 ### Fixed
 

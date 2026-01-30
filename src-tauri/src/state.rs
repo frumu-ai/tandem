@@ -210,6 +210,8 @@ pub struct AppState {
     pub staging_store: Arc<StagingStore>,
     /// Memory manager for context storage
     pub memory_manager: Option<Arc<MemoryManager>>,
+    /// Ralph Loop manager for iterative task execution
+    pub ralph_manager: Arc<crate::ralph::RalphLoopManager>,
 }
 
 impl AppState {
@@ -239,6 +241,7 @@ impl AppState {
             operation_journal: Arc::new(OperationJournal::new(100)),
             staging_store: Arc::new(StagingStore::new()),
             memory_manager: None,
+            ralph_manager: Arc::new(crate::ralph::RalphLoopManager::new()),
         }
     }
 

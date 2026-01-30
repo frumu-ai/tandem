@@ -1,6 +1,8 @@
 import { AgentSelector } from "./AgentSelector";
 import { ToolCategoryPicker } from "./ToolCategoryPicker";
 import { ModelSelector } from "./ModelSelector";
+import { LoopToggle, LoopStatusChip } from "@/components/ralph";
+import type { RalphStateSnapshot } from "@/components/ralph";
 import { ShieldCheck, ShieldOff } from "lucide-react";
 
 interface ContextToolbarProps {
@@ -20,6 +22,11 @@ interface ContextToolbarProps {
   onModelSelect?: (modelId: string, providerId: string) => void;
   // State
   disabled?: boolean;
+  // Ralph Loop
+  loopEnabled?: boolean;
+  onLoopToggle?: (enabled: boolean) => void;
+  loopStatus?: RalphStateSnapshot;
+  onLoopPanelOpen?: () => void;
 }
 
 export function ContextToolbar({
@@ -34,6 +41,10 @@ export function ContextToolbar({
   allowAllToolsLocked,
   onModelSelect,
   disabled,
+  loopEnabled,
+  onLoopToggle,
+  loopStatus,
+  onLoopPanelOpen,
 }: ContextToolbarProps) {
   // We can remove the old providerSummary logic or keep it as fallback?
   // Actually, we'll replace the static display with ModelSelector entirely if onModelSelect is present.
@@ -73,10 +84,11 @@ export function ContextToolbar({
             type="button"
             onClick={() => onAllowAllToolsChange(!allowAllTools)}
             disabled={disabled || allowAllToolsLocked}
-            className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] transition-colors ${allowAllTools
-              ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-200"
-              : "border-border bg-surface-elevated text-text-subtle hover:text-text"
-              } ${allowAllToolsLocked ? "cursor-not-allowed opacity-60" : ""}`}
+            className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] transition-colors ${
+              allowAllTools
+                ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-200"
+                : "border-border bg-surface-elevated text-text-subtle hover:text-text"
+            } ${allowAllToolsLocked ? "cursor-not-allowed opacity-60" : ""}`}
             title={
               allowAllTools
                 ? "Click to disable auto-approval for tools."
@@ -118,6 +130,28 @@ export function ContextToolbar({
         </>
       )}
 
+      {/* Ralph Loop Toggle */}
+      {onLoopToggle && (
+        <>
+          <div className="h-4 w-px bg-border" />
+          <LoopToggle enabled={loopEnabled ?? false} onToggle={onLoopToggle} disabled={disabled} />
+        </>
+      )}
+
+      {/* Ralph Loop Status Chip */}
+      {loopStatus &&
+        loopStatus.status !== "idle" &&
+        loopStatus.status !== "completed" &&
+        onLoopPanelOpen && (
+          <>
+            <div className="h-4 w-px bg-border" />
+            <LoopStatusChip
+              status={loopStatus.status}
+              iteration={loopStatus.iteration}
+              onClick={onLoopPanelOpen}
+            />
+          </>
+        )}
 
       {/* Spacer to push hints right */}
       <div className="flex-1" />

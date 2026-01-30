@@ -2,8 +2,8 @@
 
 ## Highlights
 
-- **Long-Term Memory**: Tandem now remembers! We've integrated a semantic memory system using `sqlite-vec` that allows the AI to recall context from previous sessions and project documents. This means smarter, more context-aware assistance that grows with your project.
 - **Ralph Loop (Iterative Task Agent)**: Meet Ralph—a new mode that puts the AI in a robust "do-loop." Give it a complex task, and it will iterate, verify, and refine its work until it meets a strict completion promise. It's like having a tireless junior developer who checks their own work.
+- **Long-Term Memory**: Tandem now remembers! We've integrated a semantic memory system using `sqlite-vec` that allows the AI to recall context from previous sessions and project documents. This means smarter, more context-aware assistance that grows with your project.
 - **Semantic Context Retrieval**: Questions about your project now tap into a vector database of your codebase, providing accurate, relevant context even for large repositories that don't fit in a standard prompt.
 
 ## Complete Feature List
@@ -15,13 +15,24 @@
 
 ### Workflow
 
-- **Iterative Execution Loop**: The new "Ralph Loop" mode automates the [Plan -> Execute -> Verify] cycle. It loops until the task is verifiable complete, with built-in pause/resume controls for human oversight.
+- **Ralph Loop Mode**: New "Loop" toggle in the chat control bar enables iterative task execution. The AI loops until `<promise>COMPLETE</promise>` is detected, with configurable min/max iterations and struggle detection.
+- **Iterative Execution Loop**: Automates the [Plan -> Execute -> Verify] cycle. It loops until the task is verifiably complete, with built-in pause/resume controls for human oversight.
 - **Plan Mode Integration**: Ralph works hand-in-hand with Plan Mode, respecting your review process while automating the repetitive parts of implementation.
+- **Context Injection**: Add mid-loop context via the Ralph panel to guide the AI when it gets stuck or needs clarification.
+- **Struggle Detection**: Automatically detects when the AI is stuck (no file changes for 3+ iterations or repeated errors) and injects helpful hints.
+
+### Ralph Loop Technical Details
+
+- **Workspace-local Storage**: Loop state, history, and context stored in `.opencode/tandem/ralph/` directory
+- **Git Integration**: Tracks file changes via `git status` and `git diff` between iterations
+- **Completion Detection**: Uses regex pattern matching for `<promise>COMPLETE</promise>` token
+- **Safety Features**: Max iteration limit (50), graceful cancellation, error handling with state persistence
+- **Tauri Commands**: Full API with `ralph_start`, `ralph_pause`, `ralph_resume`, `ralph_cancel`, `ralph_add_context`, `ralph_status`, `ralph_history`
 
 ### Technical improvements
 
 - **SQLite Extension Fix**: Resolved a critical build issue with `sqlite-vec` by properly registering the C-extension initialization, ensuring stable memory database connections.
-- **Documentation**: Added comprehensive documentation for the Ralph Loop architecture and implementation details.
+- **Documentation**: Added comprehensive documentation for the Ralph Loop architecture and implementation details in `docs/ralph-loop/`.
 
 ---
 

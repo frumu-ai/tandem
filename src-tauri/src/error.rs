@@ -32,6 +32,9 @@ pub enum TandemError {
 
     #[error("Vault error: {0}")]
     Vault(String),
+
+    #[error("Ralph loop error: {0}")]
+    Ralph(String),
 }
 
 // Allow conversion from String to TandemError

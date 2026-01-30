@@ -34,6 +34,11 @@ interface ChatInputProps {
   onAllowAllToolsChange?: (allow: boolean) => void;
   allowAllToolsLocked?: boolean;
   onModelSelect?: (modelId: string, providerId: string) => void;
+  // Ralph Loop
+  loopEnabled?: boolean;
+  onLoopToggle?: (enabled: boolean) => void;
+  loopStatus?: any; // Imported type would be better but keeping it simple for now to correspond with ContextToolbar
+  onLoopPanelOpen?: () => void;
 }
 
 export function ChatInput({
@@ -54,6 +59,10 @@ export function ChatInput({
   onAllowAllToolsChange,
   allowAllToolsLocked,
   onModelSelect,
+  loopEnabled,
+  onLoopToggle,
+  loopStatus,
+  onLoopPanelOpen,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
@@ -416,8 +425,8 @@ export function ChatInput({
                     className="relative group"
                   >
                     {attachment.type === "image" &&
-                      attachment.preview &&
-                      attachment.preview !== "" ? (
+                    attachment.preview &&
+                    attachment.preview !== "" ? (
                       <>
                         <div className="w-16 h-16 rounded-lg overflow-hidden border border-border bg-surface">
                           <img
@@ -544,7 +553,7 @@ export function ChatInput({
           selectedAgent={selectedAgent}
           onAgentChange={onAgentChange}
           enabledToolCategories={enabledToolCategories || new Set()}
-          onToolCategoriesChange={onToolCategoriesChange || (() => { })}
+          onToolCategoriesChange={onToolCategoriesChange || (() => {})}
           activeProviderLabel={activeProviderLabel}
           activeModelLabel={activeModelLabel}
           allowAllTools={allowAllTools}
@@ -552,6 +561,10 @@ export function ChatInput({
           allowAllToolsLocked={allowAllToolsLocked}
           onModelSelect={onModelSelect}
           disabled={disabled}
+          loopEnabled={loopEnabled}
+          onLoopToggle={onLoopToggle}
+          loopStatus={loopStatus}
+          onLoopPanelOpen={onLoopPanelOpen}
         />
       </div>
     </motion.div>

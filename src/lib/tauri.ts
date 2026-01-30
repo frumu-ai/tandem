@@ -776,3 +776,59 @@ export async function importSkill(content: string, location: SkillLocation): Pro
 export async function deleteSkill(name: string, location: SkillLocation): Promise<void> {
   return invoke<void>("delete_skill", { name, location });
 }
+
+// ============================================================================
+// Ralph Loop (Iterative Task Agent)
+// ============================================================================
+
+export type RalphRunStatus = "idle" | "running" | "paused" | "completed" | "cancelled" | "error";
+
+export interface RalphStateSnapshot {
+  run_id: string;
+  status: RalphRunStatus;
+  iteration: number;
+  total_iterations: number;
+  last_duration_ms?: number;
+  files_modified_count: number;
+  struggle_detected: boolean;
+}
+
+export interface IterationRecord {
+  iteration: number;
+  started_at: string;
+  ended_at: string;
+  duration_ms: number;
+  completion_detected: boolean;
+  tools_used: Record<string, number>;
+  files_modified: string[];
+  errors: string[];
+  context_injected?: string;
+}
+
+export async function ralphStart(goal: string, permissions: string[]): Promise<string> {
+  return invoke("ralph_start", { goal, permissions });
+}
+
+export async function ralphCancel(runId: string): Promise<void> {
+  return invoke("ralph_cancel", { runId });
+}
+
+export async function ralphPause(runId: string): Promise<void> {
+  return invoke("ralph_pause", { runId });
+}
+
+export async function ralphResume(runId: string): Promise<void> {
+  return invoke("ralph_resume", { runId });
+}
+
+export async function ralphAddContext(runId: string, text: string): Promise<void> {
+  return invoke("ralph_add_context", { runId, text });
+}
+
+export async function ralphStatus(runId?: string): Promise<RalphStateSnapshot> {
+  return invoke("ralph_status", { runId });
+}
+
+export async function ralphHistory(runId: string, limit?: number): Promise<IterationRecord[]> {
+  return invoke("ralph_history", { runId, limit });
+}

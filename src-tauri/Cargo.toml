@@ -46,6 +46,8 @@ ppt-rs = "0.2"
 dirs = "5"
 serde_yaml = "0.9"
 notify = "6.1"
+regex = "1"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Memory context dependencies
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }

@@ -1,7 +1,0 @@
-feat: Release v0.1.14 - Memory Context & Ralph Loop
-
-- Implemented semantic memory store using `sqlite-vec` for long-term context retention.
-- Fixed `sqlite-vec` build issues by correctly registering the `sqlite3_vec_init` C-extension via `rusqlite`'s `sqlite3_auto_extension`.
-- Added comprehensive documentation for "Ralph Loop" (Iterative Task Agent) in `docs/ralph-loop/`.
-- Bumped version to 0.1.14 in `Cargo.toml` and `package.json`.
-- Updated `CHANGELOG.md` and `docs/RELEASE_NOTES.md` to reflect new features and fixes.
