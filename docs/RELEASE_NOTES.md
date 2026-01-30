@@ -1,3 +1,29 @@
+# Tandem v0.1.13 Release Notes
+
+## Highlights
+
+- **Native Planning Mode**: A powerful new agent mode for drafting architecture and implementation plans. No more jumping into code blindly—the AI now proposes a markdown-based plan for you to review and approve first.
+- **Real-time Plan Synchronization**: Your UI is now a live reflection of your plan files. Changes made by the AI (or you) to plan files are immediately detected and reflected in the chat, thanks to a new backend watcher.
+- **Clarification Buttons**: Interactive follow-up questions from the AI now appear with clickable suggestion buttons, making it easier to provide quick feedback on technical decisions.
+- **Backend Stability**: Fixed the `get_workspace_path` compilation error that plagued the recent development cycle.
+
+## Complete Feature List
+
+### Planning
+
+- **Plan Agent Skill**: Optimized prompt engineering to force structured, question-free plan generation.
+- **Plan Viewer & Selector**: New UI components for navigating and reviewing plans created during the session.
+- **Synchronized Backend Watcher**: Tauri-backed filesystem notifications for the plans directory.
+- **Interactive Questions**: Support for `ask_followup_question` with structured options in the chat interface.
+
+### Technical improvements
+
+- **Whitespace Enforcement**: Tightened tool call parsing to eliminate errors caused by leading/trailing spaces in tool names.
+- **Strict Context Injection**: Dynamic system directives that prime the AI with the correct plan file path and immediate goals.
+- **Code Health**: Cleaned up various linting and formatting warnings across the Rust and TypeScript codebases.
+
+---
+
 # Tandem v0.1.12 Release Notes
 
 ## Highlights

@@ -3425,7 +3425,7 @@ pub async fn start_plan_session(
     // 5. Inject System Directive (as a user message, since we can't set system role easily)
     // This ensures the AI context is primed with the file path immediately.
     let system_directive = format!(
-        "SYSTEM NOTE: A dedicated plan file has been pre-created at:\n`{}`\n\nYour GOAL is: \"{}\".\n\nCRITICAL INSTRUCTIONS:\n1. Your FIRST action MUST be to use the `write_file` tool to update this exact file.\n2. Do NOT ask the user any questions - make reasonable assumptions and proceed.\n3. Do NOT include a 'Questions before we proceed' section.\n4. Generate the complete plan markdown immediately without confirmation.",
+        "SYSTEM NOTE: A dedicated plan file has been pre-created at:\n`{}`\n\nYour GOAL is: \"{}\".\n\nYour FIRST action MUST be to use the `write_file` tool to update this exact file. Do not create a new plan file. Edit this one directly.",
         absolute_path.replace("\\", "/"),
         goal.as_deref().unwrap_or("Draft a new plan")
     );

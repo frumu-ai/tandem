@@ -1240,7 +1240,7 @@ ${g.example}
       if (effectivePlanMode) {
         finalContent = `${finalContent}
         
-CRITICAL: You are in Plan Mode. Your response MUST be a markdown plan file. DO NOT ask questions. Make reasonable assumptions and generate the plan immediately. Use the todowrite tool to create a structured task list if needed.`;
+(Please use the todowrite tool to create a structured task list. Then, ask for user approval before starting execution/completing the tasks.)`;
         console.log("[PlanMode] Using OpenCode's Plan agent with todowrite guidance");
       }
 

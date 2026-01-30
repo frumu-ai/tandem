@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-01-30
+
+### Added
+
+- **Planning Mode**: Introduced a dedicated planning agent that generates comprehensive markdown-based implementation plans before executing code changes. Includes support for real-time plan file synchronization and a specialized UI for plan management.
+- **Plan File Watcher**: Backend file watcher for `.opencode/plans/` that automatically updates the UI when plans are modified, ensuring the frontend is always in sync with the AI's latest proposals.
+- **Ask Follow-up Question**: Integrated support for the `ask_followup_question` tool in the planning process, allowing the AI to clarify scope and technical preferences with interactive suggestion buttons.
+
+### Fixed
+
+- **Backend Compilation**: Resolved a critical "no method named `get_workspace_path` found" error in `commands.rs` by adding the missing method to `AppState`.
+- **Tool Parsing Accuracy**: Improved sidecar communication by strictly enforcing tool name formatting (removing potential leading spaces) and correcting invalid tool examples in the plan skill instructions.
+
+### Changed
+
+- **Planning Flow**: Streamlined the transition from plan to execution. The AI is now instructed to generate plans immediately without conversational filler, using strict system directives.
+
 ## [0.1.12] - 2026-01-22
 
 ### Fixed
@@ -166,7 +183,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/frumu-ai/tandem/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/frumu-ai/tandem/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/frumu-ai/tandem/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/frumu-ai/tandem/compare/v0.1.9...v0.1.10
