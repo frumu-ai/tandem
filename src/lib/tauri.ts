@@ -431,6 +431,15 @@ export async function setCurrentSessionId(sessionId: string | null): Promise<voi
   return invoke("set_current_session_id", { sessionId });
 }
 
+export interface PlanSessionResult {
+  session: Session;
+  plan_path: string;
+}
+
+export async function startPlanSession(goal?: string): Promise<PlanSessionResult> {
+  return invoke("start_plan_session", { goal });
+}
+
 // ============================================================================
 // Project & History
 // ============================================================================

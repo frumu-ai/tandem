@@ -3,6 +3,7 @@
 
 mod commands;
 mod error;
+mod file_watcher;
 mod keystore;
 mod llm_router;
 mod presentation;
@@ -309,6 +310,30 @@ pub fn run() {
 
             app.manage(app_state);
 
+            // Sync bundled skills (like Plan agent) to global OpenCode config
+            match skills::sync_bundled_skills(app.handle()) {
+                Ok(synced) => {
+                    if !synced.is_empty() {
+                        tracing::info!("Synced {} bundled skill(s): {:?}", synced.len(), synced);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to sync bundled skills: {}", e);
+                }
+            }
+
+            // Sync bundled tools (like the Plan tool) to global OpenCode config
+            match skills::sync_bundled_tools(app.handle()) {
+                Ok(synced) => {
+                    if !synced.is_empty() {
+                        tracing::info!("Synced {} bundled tool(s): {:?}", synced.len(), synced);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to sync bundled tools: {}", e);
+                }
+            }
+
             // Note: Keystore is NOT initialized here - it will be initialized
             // when the vault is unlocked via the unlock_vault command
 
@@ -412,8 +437,11 @@ pub fn run() {
             commands::read_binary_file,
             // Skills management
             commands::list_skills,
+            commands::list_skills,
             commands::import_skill,
             commands::delete_skill,
+            // Guaranteed Plan Mode
+            commands::start_plan_session,
         ]);
 
     // Add desktop-only plugins

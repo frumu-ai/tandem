@@ -45,6 +45,8 @@ ignore = "0.4"
 ppt-rs = "0.2"
 dirs = "5"
 serde_yaml = "0.9"
+notify = "6.1"
+
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"

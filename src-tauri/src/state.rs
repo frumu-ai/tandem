@@ -281,6 +281,11 @@ impl AppState {
 
         false
     }
+
+    /// Get the current workspace path
+    pub fn get_workspace_path(&self) -> Option<PathBuf> {
+        self.workspace_path.read().unwrap().clone()
+    }
 }
 
 impl Default for AppState {

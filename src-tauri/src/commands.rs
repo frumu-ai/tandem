@@ -247,6 +247,21 @@ fn env_var_for_key(key_type: &ApiKeyType) -> Option<&'static str> {
     }
 }
 
+/// Check if a file operation should be auto-approved based on path
+/// Auto-approve writes to .opencode/plans/ for real-time plan updates
+fn is_plan_file_operation(path: &str, tool: &str) -> bool {
+    // Only auto-approve write operations
+    if tool != "write" && tool != "write_file" {
+        return false;
+    }
+
+    // Normalize path separators for Windows/Unix compatibility
+    let normalized_path = path.replace('\\', "/");
+
+    // Check if the path is within .opencode/plans/
+    normalized_path.contains("/.opencode/plans/") || normalized_path.starts_with(".opencode/plans/")
+}
+
 // ============================================================================
 // Basic Commands
 // ============================================================================
@@ -2013,6 +2028,23 @@ pub async fn stage_tool_operation(
         .or_else(|| args.get("file").and_then(|v| v.as_str()))
         .map(|s| s.to_string());
 
+    // Check if this operation should be auto-approved (e.g., plan file writes)
+    let should_auto_approve = if let Some(path) = path_str.as_ref() {
+        is_plan_file_operation(path, &tool)
+    } else {
+        false
+    };
+
+    // If auto-approved, execute immediately instead of staging
+    if should_auto_approve {
+        if let Some(path) = path_str.as_ref() {
+            tracing::info!("Auto-approving plan file operation: {} on {}", tool, path);
+        }
+        // Approve the request ID so OpenCode can proceed
+        state.sidecar.approve_tool(&session_id, &request_id).await?;
+        return Ok(());
+    }
+
     // Create snapshot for file operations
     let (before_snapshot, proposed_content) = if let Some(path) = path_str.as_ref() {
         let path_buf = PathBuf::from(path);
@@ -3203,4 +3235,214 @@ pub fn delete_skill(
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Plan Management Commands
+// ============================================================================
+
+/// Information about a plan file
+#[derive(serde::Serialize, Clone)]
+pub struct PlanInfo {
+    /// Session name (parent directory name)
+    pub session_name: String,
+    /// File name (e.g., "PLAN_jwt_tokens.md")
+    pub file_name: String,
+    /// Full absolute path to the plan file
+    pub full_path: String,
+    /// Last modified timestamp (Unix timestamp in milliseconds)
+    pub last_modified: u64,
+}
+
+/// List all plan files in the workspace, grouped by session
+#[tauri::command]
+pub fn list_plans(state: State<'_, AppState>) -> Result<Vec<PlanInfo>> {
+    let workspace = state.workspace_path.read().unwrap();
+    let workspace_path = workspace
+        .as_ref()
+        .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+
+    let plans_dir = workspace_path.join(".opencode").join("plans");
+
+    // Create plans directory if it doesn't exist
+    if !plans_dir.exists() {
+        tracing::debug!(
+            "[list_plans] Plans directory doesn't exist, creating: {:?}",
+            plans_dir
+        );
+        fs::create_dir_all(&plans_dir).map_err(TandemError::Io)?;
+        return Ok(Vec::new());
+    }
+
+    let mut plans = Vec::new();
+
+    // Recursively scan for .md files in session subdirectories
+    for session_entry in fs::read_dir(&plans_dir).map_err(TandemError::Io)? {
+        let session_entry = session_entry.map_err(TandemError::Io)?;
+        let session_path = session_entry.path();
+
+        // Skip if not a directory
+        if !session_path.is_dir() {
+            continue;
+        }
+
+        let session_name = session_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Scan for plan files in this session directory
+        for plan_entry in fs::read_dir(&session_path).map_err(TandemError::Io)? {
+            let plan_entry = plan_entry.map_err(TandemError::Io)?;
+            let plan_path = plan_entry.path();
+
+            // Only include .md files that start with "PLAN_"
+            if let Some(file_name) = plan_path.file_name().and_then(|n| n.to_str()) {
+                if file_name.ends_with(".md") && file_name.starts_with("PLAN_") {
+                    let metadata = fs::metadata(&plan_path).map_err(TandemError::Io)?;
+                    let last_modified = metadata
+                        .modified()
+                        .map_err(TandemError::Io)?
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+
+                    plans.push(PlanInfo {
+                        session_name: session_name.clone(),
+                        file_name: file_name.to_string(),
+                        full_path: plan_path.to_string_lossy().to_string(),
+                        last_modified,
+                    });
+                }
+            }
+        }
+    }
+
+    // Sort by last modified (newest first)
+    plans.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+
+    tracing::debug!("[list_plans] Found {} plans", plans.len());
+    Ok(plans)
+}
+
+/// Read the content of a plan file
+#[tauri::command]
+pub fn read_plan_content(plan_path: String) -> Result<String> {
+    let path = PathBuf::from(&plan_path);
+
+    // Security check: ensure the path is within .opencode/plans/
+    if !path.components().any(|c| c.as_os_str() == ".opencode") {
+        return Err(TandemError::InvalidConfig(
+            "Plan path must be within .opencode/plans/".to_string(),
+        ));
+    }
+
+    fs::read_to_string(&path).map_err(|e| TandemError::Io(e))
+}
+
+/// Result of starting a plan session
+#[derive(serde::Serialize)]
+pub struct PlanSessionResult {
+    pub session: Session,
+    pub plan_path: String,
+}
+
+/// Start a new planning session with a guaranteed pre-created plan file
+#[tauri::command]
+pub async fn start_plan_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    goal: Option<String>,
+) -> Result<PlanSessionResult> {
+    // 1. Generate Session ID and Plan Name
+    let session_id = Uuid::new_v4().to_string();
+
+    // If goal is provided, sanitize it for the filename. Otherwise use "draft".
+    let plan_name = if let Some(g) = goal.as_ref() {
+        let sanitized: String = g
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        format!("PLAN_{}", sanitized)
+    } else {
+        "PLAN_draft".to_string()
+    };
+
+    // 2. Prepare Directory structure: .opencode/plans/{session_id}/
+    // We use session_id for the folder to ensure uniqueness and "frictionless" start (no name collision)
+    let workspace_path = state
+        .get_workspace_path()
+        .ok_or_else(|| TandemError::InvalidConfig("No workspace selected".to_string()))?;
+
+    let plans_dir = PathBuf::from(workspace_path)
+        .join(".opencode")
+        .join("plans")
+        .join(&session_id);
+    let plan_file_path = plans_dir.join(format!("{}.md", plan_name));
+
+    // 3. Pre-create the file
+    fs::create_dir_all(&plans_dir).map_err(|e| TandemError::Io(e))?;
+
+    let template = format!(
+        "# Plan: {}\n\n## Goal\n{}\n\n## Proposed Changes\n- [ ] Analyze requirements\n- [ ] Design solution\n\n## Verification\n- [ ] Test case 1",
+        goal.as_deref().unwrap_or("Draft Plan"),
+        goal.as_deref().unwrap_or("Describe the goal here")
+    );
+
+    fs::write(&plan_file_path, template).map_err(|e| TandemError::Io(e))?;
+
+    let absolute_path = plan_file_path.to_string_lossy().to_string();
+    tracing::info!("Pre-created plan file at: {}", absolute_path);
+
+    // 4. Create Sidecar Session
+    // We explicitly instruct the AI about the file we just made via the title or a follow-up message.
+    // Ideally we would inject a system prompt, but we'll handle that by ensuring the frontend
+    // or the "System" recognizes this session type.
+    // For now, we create the session with a specific Title that hints at the plan.
+
+    let (default_provider, default_model) = {
+        let config = state.providers_config.read().unwrap();
+        crate::commands::resolve_default_provider_and_model(&config)
+    };
+
+    let session = state
+        .sidecar
+        .create_session(CreateSessionRequest {
+            title: Some(goal.clone().unwrap_or_else(|| "Plan Mode".to_string())),
+            model: default_model,
+            provider: default_provider,
+            permission: None,
+        })
+        .await?;
+
+    // 5. Inject System Directive (as a user message, since we can't set system role easily)
+    // This ensures the AI context is primed with the file path immediately.
+    let system_directive = format!(
+        "SYSTEM NOTE: A dedicated plan file has been pre-created at:\n`{}`\n\nYour GOAL is: \"{}\".\n\nCRITICAL INSTRUCTIONS:\n1. Your FIRST action MUST be to use the `write_file` tool to update this exact file.\n2. Do NOT ask the user any questions - make reasonable assumptions and proceed.\n3. Do NOT include a 'Questions before we proceed' section.\n4. Generate the complete plan markdown immediately without confirmation.",
+        absolute_path.replace("\\", "/"),
+        goal.as_deref().unwrap_or("Draft a new plan")
+    );
+
+    // We fire-and-forget this message so the frontend doesn't hang waiting for a response (though it returns quickly)
+    // Actually, we should wait to ensure it's in history before the user chats.
+    let request = SendMessageRequest::text(system_directive);
+
+    // We ignore the result of the message send itself, as long as session exists
+    if let Err(e) = state.sidecar.send_message(&session.id, request).await {
+        tracing::warn!("Failed to inject plan directive: {}", e);
+    } else {
+        tracing::info!("Injected plan directive into session {}", session.id);
+    }
+
+    Ok(PlanSessionResult {
+        session,
+        plan_path: absolute_path,
+    })
 }

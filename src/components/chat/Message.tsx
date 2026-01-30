@@ -57,7 +57,8 @@ export interface ToolCall {
 
 const FILE_EXTENSIONS =
   "json|ts|tsx|js|jsx|md|txt|py|rs|go|java|cpp|c|h|css|scss|html|xml|yaml|yml|toml|pptx|ppt|docx|doc|xlsx|xls|pdf|png|jpg|jpeg|gif|svg|webp";
-const FILE_PATH_BASE = String.raw`@?(?:` +
+const FILE_PATH_BASE =
+  String.raw`@?(?:` +
   String.raw`(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|\/)[\w\-./\\]+` +
   String.raw`|` +
   String.raw`[\w\-.]+[\\/][\w\-./\\]+` +
@@ -442,15 +443,100 @@ export function Message({
           </div>
         )}
 
-        {/* Tool calls */}
-        {toolCalls && toolCalls.length > 0 && (
-          <div className="space-y-2">
-            {toolCalls.map((tool) => (
-              <ToolCallCard key={tool.id} {...tool} />
-            ))}
+        {/* Tool calls - collapsed when multiple */}
+        {toolCalls &&
+          toolCalls.length > 0 &&
+          (toolCalls.length >= 2 ? (
+            <CollapsedToolCalls toolCalls={toolCalls} />
+          ) : (
+            <div className="space-y-2">
+              {toolCalls.map((tool) => (
+                <ToolCallCard key={tool.id} {...tool} />
+              ))}
+            </div>
+          ))}
+      </div>
+    </motion.div>
+  );
+}
+
+// Collapsed tool calls for Plan Mode - shows summary with expand toggle
+function CollapsedToolCalls({ toolCalls }: { toolCalls: ToolCall[] }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const runningCount = toolCalls.filter((t) => t.status === "running").length;
+  const completedCount = toolCalls.filter((t) => t.status === "completed").length;
+  const pendingCount = toolCalls.filter((t) => t.status === "pending").length;
+
+  // Group by tool type for summary
+  const toolGroups = toolCalls.reduce(
+    (acc, tool) => {
+      const name = tool.tool.replace(/^(read_file|write_file|read|write)$/, (m) =>
+        m.includes("read") ? "read" : "write"
+      );
+      acc[name] = (acc[name] || 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>
+  );
+
+  const summary = Object.entries(toolGroups)
+    .map(([name, count]) => `${count} ${name}`)
+    .join(", ");
+
+  return (
+    <motion.div
+      className="rounded-lg border border-glass bg-surface/50 overflow-hidden"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+    >
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center gap-3 px-3 py-2 hover:bg-surface-elevated/50 transition-colors"
+      >
+        <div className="flex items-center gap-2 text-text-muted">
+          <Terminal className="h-4 w-4" />
+          <span className="text-xs font-medium">
+            {toolCalls.length} tool {toolCalls.length === 1 ? "call" : "calls"}
+          </span>
+        </div>
+
+        <span className="text-xs text-text-subtle truncate flex-1 text-left">{summary}</span>
+
+        {runningCount > 0 && (
+          <div className="flex items-center gap-1 text-primary">
+            <div className="h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <span className="text-xs">{runningCount} running</span>
           </div>
         )}
-      </div>
+
+        {pendingCount > 0 && <span className="text-xs text-warning">{pendingCount} pending</span>}
+
+        {completedCount === toolCalls.length && (
+          <span className="text-xs text-success">✓ all complete</span>
+        )}
+
+        <ChevronDown
+          className={cn("h-4 w-4 text-text-muted transition-transform", isExpanded && "rotate-180")}
+        />
+      </button>
+
+      <AnimatePresence>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0 }}
+            animate={{ height: "auto" }}
+            exit={{ height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="p-2 space-y-2 border-t border-glass">
+              {toolCalls.map((tool) => (
+                <ToolCallCard key={tool.id} {...tool} />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

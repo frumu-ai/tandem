@@ -7,11 +7,15 @@ import {
   type PermissionRequest,
 } from "@/components/permissions/PermissionToast";
 import { ExecutionPlanPanel } from "@/components/plan/ExecutionPlanPanel";
+import { PlanViewer } from "@/components/plan/PlanViewer";
+import { PlanSelector } from "@/components/plan/PlanSelector";
 import { PlanActionButtons } from "./PlanActionButtons";
 import { QuestionDialog } from "./QuestionDialog";
 import { useStagingArea } from "@/hooks/useStagingArea";
+import { usePlans } from "@/hooks/usePlans";
 import { FolderOpen, Sparkles, AlertCircle, Loader2, Settings as SettingsIcon } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { cn } from "@/lib/utils";
 import {
   startSidecar,
   getSidecarStatus,
@@ -34,6 +38,7 @@ import {
   type TodoItem,
   type QuestionEvent,
   type FileAttachmentInput,
+  startPlanSession,
 } from "@/lib/tauri";
 
 interface ChatProps {
@@ -137,6 +142,45 @@ export function Chat({
     executePlan,
     clearStaging,
   } = useStagingArea();
+
+  // Plan management hook
+  const {
+    plans,
+    activePlan,
+    setActivePlan,
+    isLoading: isLoadingPlans,
+    refreshPlans,
+  } = usePlans(workspacePath);
+  const [showPlanView, setShowPlanView] = useState(false);
+
+  // Handle creating a new frictionless plan
+  const handleNewPlan = async () => {
+    try {
+      console.log("[Chat] Starting new frictionless plan session...");
+      const result = await startPlanSession();
+
+      // Force refresh of plans to pick up the new file
+      await refreshPlans();
+
+      // Update session ID to the new one
+      if (onSessionCreated) {
+        onSessionCreated(result.session.id);
+      }
+
+      setCurrentSessionId(result.session.id);
+
+      // Manually find and set the active plan since we know the path
+      // This might be redundant if we just wait for the refresh, but good for UX
+      // const newPlan = plans.find(p => p.fullPath === result.plan_path);
+      // if (newPlan) setActivePlan(newPlan);
+
+      // Enable plan view
+      setShowPlanView(true);
+    } catch (e) {
+      console.error("Failed to start plan session:", e);
+      setError("Failed to create new plan");
+    }
+  };
 
   // Enable default tool categories on mount
   useEffect(() => {
@@ -1196,7 +1240,7 @@ ${g.example}
       if (effectivePlanMode) {
         finalContent = `${finalContent}
         
-(Please use the todowrite tool to create a structured task list. Then, ask for user approval before starting execution/completing the tasks.)`;
+CRITICAL: You are in Plan Mode. Your response MUST be a markdown plan file. DO NOT ask questions. Make reasonable assumptions and generate the plan immediately. Use the todowrite tool to create a structured task list if needed.`;
         console.log("[PlanMode] Using OpenCode's Plan agent with todowrite guidance");
       }
 
@@ -1551,20 +1595,27 @@ ${g.example}
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: "auto" }}
           exit={{ opacity: 0, height: 0 }}
-          className="bg-primary/5 border-b border-primary/10 px-4 py-3"
+          className="border-b border-border bg-surface-elevated px-4 py-2"
         >
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 rounded-full bg-primary/10 p-1">
-              <AlertCircle className="h-4 w-4 text-primary" />
-            </div>
-            <div className="flex-1">
-              <p className="text-sm font-medium text-text">Plan Mode Active</p>
-              <p className="mt-1 text-xs text-text-muted">
-                {stagedOperations.length > 0
-                  ? `${stagedOperations.length} change${stagedOperations.length !== 1 ? "s" : ""} staged. Review them in the Execution Plan panel (bottom-right) and click "Execute Plan" when ready.`
-                  : "The AI will propose file changes for your review. When changes are proposed, they'll appear in the Execution Plan panel for batch approval."}
-              </p>
-            </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-text-muted">Plan Mode Active</span>
+            <button
+              onClick={() => setShowPlanView(!showPlanView)}
+              className="text-xs text-primary hover:underline"
+            >
+              {showPlanView ? "Hide Plans" : "Show Plans"}
+            </button>
+          </div>
+
+          {/* Inline Plan Selector */}
+          <div className="mt-2">
+            <PlanSelector
+              plans={plans}
+              activePlan={activePlan}
+              onSelectPlan={setActivePlan}
+              onNewPlan={handleNewPlan}
+              isLoading={isLoadingPlans}
+            />
           </div>
         </motion.div>
       )}
@@ -1580,253 +1631,281 @@ ${g.example}
         </div>
       )}
 
-      {/* Messages */}
-      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto pb-48">
-        <AnimatePresence>
-          {isLoadingHistory ? (
-            <motion.div
-              className="flex h-full items-center justify-center"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-            >
-              <div className="flex flex-col items-center gap-3">
-                <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                <p className="text-sm text-text-muted">Loading chat history...</p>
-              </div>
-            </motion.div>
-          ) : messages.length === 0 && !isGenerating ? (
-            <EmptyState
-              needsConnection={needsConnection}
-              isConnecting={isConnecting}
-              onConnect={connectSidecar}
-              workspacePath={workspacePath}
-              onSendMessage={handleSend}
-              hasConfiguredProvider={hasConfiguredProvider}
-              onOpenSettings={onOpenSettings}
-            />
-          ) : (
-            messages.map((message, index) => {
-              const isLastMessage = index === messages.length - 1;
-              const isAssistant = message.role === "assistant";
-              const showActionButtons =
-                usePlanMode && isLastMessage && isAssistant && !isGenerating;
+      {/* Main content area with split view support */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Messages area */}
+        <div
+          className={cn(
+            "flex flex-col flex-1 overflow-hidden",
+            showPlanView && activePlan && "w-1/2"
+          )}
+        >
+          {/* Messages */}
+          <div ref={messagesContainerRef} className="flex-1 overflow-y-auto pb-48">
+            <AnimatePresence>
+              {isLoadingHistory ? (
+                <motion.div
+                  className="flex h-full items-center justify-center"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                >
+                  <div className="flex flex-col items-center gap-3">
+                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                    <p className="text-sm text-text-muted">Loading chat history...</p>
+                  </div>
+                </motion.div>
+              ) : messages.length === 0 && !isGenerating ? (
+                <EmptyState
+                  needsConnection={needsConnection}
+                  isConnecting={isConnecting}
+                  onConnect={connectSidecar}
+                  workspacePath={workspacePath}
+                  onSendMessage={handleSend}
+                  hasConfiguredProvider={hasConfiguredProvider}
+                  onOpenSettings={onOpenSettings}
+                />
+              ) : (
+                messages.map((message, index) => {
+                  const isLastMessage = index === messages.length - 1;
+                  const isAssistant = message.role === "assistant";
+                  const showActionButtons =
+                    usePlanMode && isLastMessage && isAssistant && !isGenerating;
 
-              // Use content length in key ONLY for streaming messages to force re-renders
-              const isActivelyStreaming = isGenerating && isLastMessage && isAssistant;
-              return (
-                <div key={message.id}>
-                  <Message
-                    key={message.id}
-                    {...message}
-                    isStreaming={isActivelyStreaming}
-                    onEdit={handleEdit}
-                    onRewind={handleRewind}
-                    onRegenerate={handleRegenerate}
-                    onCopy={handleCopy}
-                    onUndo={isGitRepository ? handleUndo : undefined}
-                    onFileOpen={onFileOpen}
-                  />
-                  {showActionButtons && (
-                    <div className="ml-14 mb-4">
-                      <PlanActionButtons
-                        onImplement={() => {
-                          // Switch to immediate mode for execution
-                          setUsePlanMode(false);
-                          handleSend("Please implement this plan now.");
-                        }}
-                        onRework={(feedback) => {
-                          handleSend(`Please rework the plan with this feedback: ${feedback}
+                  // Use content length in key ONLY for streaming messages to force re-renders
+                  const isActivelyStreaming = isGenerating && isLastMessage && isAssistant;
+                  return (
+                    <div key={message.id}>
+                      <Message
+                        key={message.id}
+                        {...message}
+                        isStreaming={isActivelyStreaming}
+                        onEdit={handleEdit}
+                        onRewind={handleRewind}
+                        onRegenerate={handleRegenerate}
+                        onCopy={handleCopy}
+                        onUndo={isGitRepository ? handleUndo : undefined}
+                        onFileOpen={onFileOpen}
+                      />
+                      {showActionButtons && (
+                        <div className="ml-14 mb-4">
+                          <PlanActionButtons
+                            onImplement={() => {
+                              // Switch to immediate mode for execution
+                              setUsePlanMode(false);
+                              handleSend("Please implement this plan now.");
+                            }}
+                            onRework={(feedback) => {
+                              handleSend(`Please rework the plan with this feedback: ${feedback}
 
 After making the changes, present the updated plan in full (including the complete JSON structure) so I can review it before implementation.`);
-                        }}
-                        onCancel={() => {
-                          clearStaging();
-                          handleSend("Let's try a different approach. Cancel the current plan.");
-                        }}
-                        onViewTasks={onToggleTaskSidebar}
-                        disabled={isGenerating}
-                        pendingTasks={pendingTasks}
-                        onExecuteTasks={() => {
-                          // Execute pending tasks with their specific content
-                          if (pendingTasks && pendingTasks.length > 0) {
-                            console.log(
-                              "[ExecuteTasks] Switching to Immediate mode for task execution"
-                            );
-                            // Switch to immediate mode for execution
-                            setUsePlanMode(false);
+                            }}
+                            onCancel={() => {
+                              clearStaging();
+                              handleSend(
+                                "Let's try a different approach. Cancel the current plan."
+                              );
+                            }}
+                            onViewTasks={onToggleTaskSidebar}
+                            disabled={isGenerating}
+                            pendingTasks={pendingTasks}
+                            onExecuteTasks={() => {
+                              // Execute pending tasks with their specific content
+                              if (pendingTasks && pendingTasks.length > 0) {
+                                console.log(
+                                  "[ExecuteTasks] Switching to Immediate mode for task execution"
+                                );
+                                // Switch to immediate mode for execution
+                                setUsePlanMode(false);
 
-                            const taskList = pendingTasks
-                              .map((t, i) => `${i + 1}. ${t.content}`)
-                              .join("\n");
-                            const message = `EXECUTION MODE: Please implement the following approved tasks now. Create the files and write the content directly.
+                                const taskList = pendingTasks
+                                  .map((t, i) => `${i + 1}. ${t.content}`)
+                                  .join("\n");
+                                const message = `EXECUTION MODE: Please implement the following approved tasks now. Create the files and write the content directly.
 
 ${taskList}
 
 Start with task #1 and execute each one. Use the 'write' tool to create files immediately.`;
-                            // Force immediate mode for this specific message
-                            handleSend(message, undefined, "immediate");
-                          }
-                        }}
-                      />
+                                // Force immediate mode for this specific message
+                                handleSend(message, undefined, "immediate");
+                              }
+                            }}
+                          />
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </AnimatePresence>
+                  );
+                })
+              )}
+            </AnimatePresence>
 
-        {/* Streaming indicator */}
-        {isGenerating && (
-          <motion.div
-            className="glass border-glass rounded-2xl shadow-lg shadow-black/20 ring-1 ring-white/5 px-4 py-6 flex gap-4"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.2 }}
-          >
-            <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-secondary to-primary text-white shadow-[0_0_12px_rgba(59,130,246,0.45)]">
-              <Sparkles className="h-4 w-4 animate-pulse" />
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="inline-block h-3 w-1.5 bg-primary animate-pulse" />
-              <span className="terminal-text text-text-muted">Processing</span>
-              <div className="flex gap-1">
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.3s]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.15s]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle" />
+            {/* Streaming indicator */}
+            {isGenerating && (
+              <motion.div
+                className="glass border-glass rounded-2xl shadow-lg shadow-black/20 ring-1 ring-white/5 px-4 py-6 flex gap-4"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.2 }}
+              >
+                <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-secondary to-primary text-white shadow-[0_0_12px_rgba(59,130,246,0.45)]">
+                  <Sparkles className="h-4 w-4 animate-pulse" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="inline-block h-3 w-1.5 bg-primary animate-pulse" />
+                  <span className="terminal-text text-text-muted">Processing</span>
+                  <div className="flex gap-1">
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.3s]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.15s]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle" />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Input or Configuration Prompt */}
+          {!hasConfiguredProvider ? (
+            <div className="border-t border-border bg-surface p-4">
+              <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-yellow-500/50 bg-yellow-500/5 p-6 text-center">
+                <div className="flex items-center gap-2 text-yellow-500">
+                  <AlertCircle className="h-5 w-5" />
+                  <p className="font-semibold">Setup Required</p>
+                </div>
+                <p className="text-sm text-text-muted">
+                  Configure an AI provider (OpenAI, Anthropic, etc.) to start chatting.
+                </p>
+                {onOpenSettings && (
+                  <Button onClick={onOpenSettings} variant="primary" className="mt-2 text-white">
+                    <SettingsIcon className="mr-2 h-4 w-4" />
+                    Open Settings
+                  </Button>
+                )}
               </div>
             </div>
-          </motion.div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input or Configuration Prompt */}
-      {!hasConfiguredProvider ? (
-        <div className="border-t border-border bg-surface p-4">
-          <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-yellow-500/50 bg-yellow-500/5 p-6 text-center">
-            <div className="flex items-center gap-2 text-yellow-500">
-              <AlertCircle className="h-5 w-5" />
-              <p className="font-semibold">Setup Required</p>
-            </div>
-            <p className="text-sm text-text-muted">
-              Configure an AI provider (OpenAI, Anthropic, etc.) to start chatting.
-            </p>
-            {onOpenSettings && (
-              <Button onClick={onOpenSettings} variant="primary" className="mt-2 text-white">
-                <SettingsIcon className="mr-2 h-4 w-4" />
-                Open Settings
-              </Button>
-            )}
-          </div>
-        </div>
-      ) : (
-        <ChatInput
-          onSend={handleSend}
-          onStop={handleStop}
-          isGenerating={isGenerating}
-          disabled={!workspacePath}
-          placeholder={
-            workspacePath
-              ? needsConnection
-                ? "Type to connect and start chatting..."
-                : "Ask Tandem anything..."
-              : "Select a workspace to start chatting"
-          }
-          selectedAgent={selectedAgent}
-          onAgentChange={onAgentChange}
-          externalAttachment={fileToAttach}
-          onExternalAttachmentProcessed={onFileAttached}
-          enabledToolCategories={enabledToolCategories}
-          onToolCategoriesChange={setEnabledToolCategories}
-          allowAllTools={allowAllTools}
-          onAllowAllToolsChange={setAllowAllTools}
-          allowAllToolsLocked={false}
-          activeProviderLabel={activeProviderLabel}
-          activeModelLabel={activeModelLabel}
-          onModelSelect={async (modelId, providerIdRaw) => {
-            // Update the global provider config to switch to this model
-            try {
-              // Normalize provider ID (sidecar uses 'opencode', tandem use 'opencode_zen')
-              const providerId = providerIdRaw === "opencode" ? "opencode_zen" : providerIdRaw;
-
-              const config = await getProvidersConfig();
-
-              // Determine which top-level provider to use
-              const knownProviders = [
-                "openai",
-                "anthropic",
-                "openrouter",
-                "opencode_zen",
-                "ollama",
-              ];
-              let targetProvider = providerId;
-
-              if (!knownProviders.includes(targetProvider)) {
-                // If it's a sub-provider or unknown, stay with current active provider
-                // This handles OpenCode Zen and OpenRouter which have many sub-providers (AIHUBMIX, etc)
-                targetProvider = activeProviderId || "opencode_zen";
+          ) : (
+            <ChatInput
+              onSend={handleSend}
+              onStop={handleStop}
+              isGenerating={isGenerating}
+              disabled={!workspacePath}
+              placeholder={
+                workspacePath
+                  ? needsConnection
+                    ? "Type to connect and start chatting..."
+                    : "Ask Tandem anything..."
+                  : "Select a workspace to start chatting"
               }
+              selectedAgent={selectedAgent}
+              onAgentChange={onAgentChange}
+              externalAttachment={fileToAttach}
+              onExternalAttachmentProcessed={onFileAttached}
+              enabledToolCategories={enabledToolCategories}
+              onToolCategoriesChange={setEnabledToolCategories}
+              allowAllTools={allowAllTools}
+              onAllowAllToolsChange={setAllowAllTools}
+              allowAllToolsLocked={false}
+              activeProviderLabel={activeProviderLabel}
+              activeModelLabel={activeModelLabel}
+              onModelSelect={async (modelId, providerIdRaw) => {
+                // Update the global provider config to switch to this model
+                try {
+                  // Normalize provider ID (sidecar uses 'opencode', tandem use 'opencode_zen')
+                  const providerId = providerIdRaw === "opencode" ? "opencode_zen" : providerIdRaw;
 
-              // We need to enable the selected provider and disable others
-              const updated: ProvidersConfig = {
-                openrouter: {
-                  ...config.openrouter,
-                  enabled: targetProvider === "openrouter",
-                  default: targetProvider === "openrouter",
-                },
-                opencode_zen: {
-                  ...config.opencode_zen,
-                  enabled: targetProvider === "opencode_zen",
-                  default: targetProvider === "opencode_zen",
-                },
-                anthropic: {
-                  ...config.anthropic,
-                  enabled: targetProvider === "anthropic",
-                  default: targetProvider === "anthropic",
-                },
-                openai: {
-                  ...config.openai,
-                  enabled: targetProvider === "openai",
-                  default: targetProvider === "openai",
-                },
-                ollama: {
-                  ...config.ollama,
-                  enabled: targetProvider === "ollama",
-                  default: targetProvider === "ollama",
-                },
-                custom: config.custom,
-              };
+                  const config = await getProvidersConfig();
 
-              // Update model for target provider
-              if (targetProvider === "opencode_zen") updated.opencode_zen.model = modelId;
-              if (targetProvider === "openrouter") updated.openrouter.model = modelId;
-              if (targetProvider === "anthropic") updated.anthropic.model = modelId;
-              if (targetProvider === "openai") updated.openai.model = modelId;
-              if (targetProvider === "ollama") updated.ollama.model = modelId;
+                  // Determine which top-level provider to use
+                  const knownProviders = [
+                    "openai",
+                    "anthropic",
+                    "openrouter",
+                    "opencode_zen",
+                    "ollama",
+                  ];
+                  let targetProvider = providerId;
 
-              await setProvidersConfig(updated);
-              // Trigger refresh in parent to update labels
-              onProviderChange?.();
-            } catch (e) {
-              console.error("Failed to update model selection:", e);
-            }
-          }}
-        />
-      )}
+                  if (!knownProviders.includes(targetProvider)) {
+                    // If it's a sub-provider or unknown, stay with current active provider
+                    // This handles OpenCode Zen and OpenRouter which have many sub-providers (AIHUBMIX, etc)
+                    targetProvider = activeProviderId || "opencode_zen";
+                  }
 
-      {/* Permission requests - only show in immediate mode */}
-      {!usePlanMode && (
-        <PermissionToastContainer
-          requests={pendingPermissions}
-          onApprove={handleApprovePermission}
-          onDeny={handleDenyPermission}
-        />
-      )}
+                  // We need to enable the selected provider and disable others
+                  const updated: ProvidersConfig = {
+                    openrouter: {
+                      ...config.openrouter,
+                      enabled: targetProvider === "openrouter",
+                      default: targetProvider === "openrouter",
+                    },
+                    opencode_zen: {
+                      ...config.opencode_zen,
+                      enabled: targetProvider === "opencode_zen",
+                      default: targetProvider === "opencode_zen",
+                    },
+                    anthropic: {
+                      ...config.anthropic,
+                      enabled: targetProvider === "anthropic",
+                      default: targetProvider === "anthropic",
+                    },
+                    openai: {
+                      ...config.openai,
+                      enabled: targetProvider === "openai",
+                      default: targetProvider === "openai",
+                    },
+                    ollama: {
+                      ...config.ollama,
+                      enabled: targetProvider === "ollama",
+                      default: targetProvider === "ollama",
+                    },
+                    custom: config.custom,
+                  };
 
-      {/* Question dialog */}
-      <QuestionDialog question={pendingQuestion} onAnswer={handleAnswerQuestion} />
+                  // Update model for target provider
+                  if (targetProvider === "opencode_zen") updated.opencode_zen.model = modelId;
+                  if (targetProvider === "openrouter") updated.openrouter.model = modelId;
+                  if (targetProvider === "anthropic") updated.anthropic.model = modelId;
+                  if (targetProvider === "openai") updated.openai.model = modelId;
+                  if (targetProvider === "ollama") updated.ollama.model = modelId;
+
+                  await setProvidersConfig(updated);
+                  // Trigger refresh in parent to update labels
+                  onProviderChange?.();
+                } catch (e) {
+                  console.error("Failed to update model selection:", e);
+                }
+              }}
+            />
+          )}
+
+          {/* Permission requests - only show in immediate mode */}
+          {!usePlanMode && (
+            <PermissionToastContainer
+              requests={pendingPermissions}
+              onApprove={handleApprovePermission}
+              onDeny={handleDenyPermission}
+            />
+          )}
+
+          {/* Question dialog */}
+          <QuestionDialog question={pendingQuestion} onAnswer={handleAnswerQuestion} />
+        </div>
+
+        {/* Plan Viewer - Split view */}
+        <AnimatePresence>
+          {showPlanView && activePlan && (
+            <motion.div
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: "50%", opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: 0.3 }}
+              className="overflow-hidden"
+            >
+              <PlanViewer plan={activePlan} onClose={() => setShowPlanView(false)} />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
 
       {/* Execution plan panel - only show in plan mode */}
       {usePlanMode && (

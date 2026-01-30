@@ -235,6 +235,236 @@ pub fn discover_skills(workspace: Option<&str>) -> Vec<SkillInfo> {
     skills
 }
 
+/// Get the global skills directory path
+/// OpenCode uses ~/.config/opencode/ on all platforms (including Windows)
+pub fn get_global_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|d| d.join(".config").join("opencode").join("skills"))
+}
+
+/// Sync bundled skills to the global OpenCode config directory
+/// This ensures that Tandem's built-in skills (like the Plan agent) are always up-to-date
+pub fn sync_bundled_skills(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
+    use tauri::Manager;
+
+    let global_skills_dir = get_global_skills_dir()
+        .ok_or_else(|| "Could not determine global config directory".to_string())?;
+
+    // Ensure the global skills directory exists
+    fs::create_dir_all(&global_skills_dir)
+        .map_err(|e| format!("Failed to create global skills directory: {}", e))?;
+
+    let mut synced_skills = Vec::new();
+
+    // Get the resources directory from Tauri
+    let resource_path = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to get resource directory: {}", e))?;
+
+    let bundled_skills_dir = resource_path.join("skills");
+
+    // In dev mode, resource_dir() may not contain our bundled resources yet.
+    // Fall back to the source directory structure using compile-time path.
+    let bundled_skills_dir = if bundled_skills_dir.exists() {
+        bundled_skills_dir
+    } else {
+        // In dev mode, use compile-time CARGO_MANIFEST_DIR to find source resources
+        // CARGO_MANIFEST_DIR points to the directory containing Cargo.toml (src-tauri/)
+        #[cfg(debug_assertions)]
+        {
+            let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("skills");
+
+            if dev_path.exists() {
+                tracing::info!("Using dev mode fallback for bundled skills: {:?}", dev_path);
+                dev_path
+            } else {
+                tracing::warn!(
+                    "Bundled skills directory does not exist: {:?} (dev fallback also missing: {:?})",
+                    bundled_skills_dir,
+                    dev_path
+                );
+                return Ok(synced_skills);
+            }
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            tracing::warn!(
+                "Bundled skills directory does not exist: {:?}",
+                bundled_skills_dir
+            );
+            return Ok(synced_skills);
+        }
+    };
+
+    tracing::info!(
+        "Syncing bundled skills from {:?} to {:?}",
+        bundled_skills_dir,
+        global_skills_dir
+    );
+
+    // Iterate through bundled skills
+    if let Ok(entries) = fs::read_dir(&bundled_skills_dir) {
+        for entry in entries.flatten() {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_dir() {
+                    let skill_name = entry.file_name();
+                    let source_skill_file = entry.path().join("SKILL.md");
+
+                    if source_skill_file.exists() {
+                        let dest_skill_dir = global_skills_dir.join(&skill_name);
+                        let dest_skill_file = dest_skill_dir.join("SKILL.md");
+
+                        // Read source content
+                        let source_content = fs::read_to_string(&source_skill_file)
+                            .map_err(|e| format!("Failed to read bundled skill: {}", e))?;
+
+                        // Check if we need to update
+                        let needs_update = if dest_skill_file.exists() {
+                            let dest_content =
+                                fs::read_to_string(&dest_skill_file).unwrap_or_default();
+                            // Compare content (could use hash for efficiency)
+                            source_content != dest_content
+                        } else {
+                            true
+                        };
+
+                        if needs_update {
+                            // Create destination directory
+                            fs::create_dir_all(&dest_skill_dir)
+                                .map_err(|e| format!("Failed to create skill directory: {}", e))?;
+
+                            // Copy the skill file
+                            fs::write(&dest_skill_file, &source_content)
+                                .map_err(|e| format!("Failed to write skill file: {}", e))?;
+
+                            tracing::info!(
+                                "Synced bundled skill: {} -> {:?}",
+                                skill_name.to_string_lossy(),
+                                dest_skill_file
+                            );
+                            synced_skills.push(skill_name.to_string_lossy().to_string());
+                        } else {
+                            tracing::debug!(
+                                "Bundled skill already up-to-date: {}",
+                                skill_name.to_string_lossy()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(synced_skills)
+}
+
+/// Get the global tools directory path
+/// OpenCode uses ~/.config/opencode/ on all platforms (including Windows)
+pub fn get_global_tools_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|d| d.join(".config").join("opencode").join("tools"))
+}
+
+/// Sync bundled tools to the global OpenCode config directory
+pub fn sync_bundled_tools(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
+    use tauri::Manager;
+
+    let global_tools_dir = get_global_tools_dir()
+        .ok_or_else(|| "Could not determine global config directory".to_string())?;
+
+    // Ensure the global tools directory exists
+    fs::create_dir_all(&global_tools_dir)
+        .map_err(|e| format!("Failed to create global tools directory: {}", e))?;
+
+    let mut synced_tools = Vec::new();
+
+    // Get the resources directory from Tauri
+    let resource_path = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to get resource directory: {}", e))?;
+
+    let bundled_tools_dir = resource_path.join("tools");
+
+    // In dev mode, resource_dir() may not contain our bundled resources yet.
+    // Fall back to the source directory structure using compile-time path.
+    let bundled_tools_dir = if bundled_tools_dir.exists() {
+        bundled_tools_dir
+    } else {
+        // In dev mode, use compile-time CARGO_MANIFEST_DIR to find source resources
+        #[cfg(debug_assertions)]
+        {
+            let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("tools");
+
+            if dev_path.exists() {
+                tracing::info!("Using dev mode fallback for bundled tools: {:?}", dev_path);
+                dev_path
+            } else {
+                tracing::warn!(
+                    "Bundled tools directory does not exist: {:?} (dev fallback also missing: {:?})",
+                    bundled_tools_dir,
+                    dev_path
+                );
+                return Ok(synced_tools);
+            }
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            return Ok(synced_tools);
+        }
+    };
+
+    tracing::info!(
+        "Syncing bundled tools from {:?} to {:?}",
+        bundled_tools_dir,
+        global_tools_dir
+    );
+
+    // Iterate through bundled tools
+    if let Ok(entries) = fs::read_dir(&bundled_tools_dir) {
+        for entry in entries.flatten() {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_file() {
+                    let file_name = entry.file_name();
+                    let source_file = entry.path();
+                    let dest_file = global_tools_dir.join(&file_name);
+
+                    // Read source content
+                    let source_content = fs::read(&source_file)
+                        .map_err(|e| format!("Failed to read bundled tool: {}", e))?;
+
+                    // Check if we need to update
+                    let needs_update = if dest_file.exists() {
+                        let dest_content = fs::read(&dest_file).unwrap_or_default();
+                        source_content != dest_content
+                    } else {
+                        true
+                    };
+
+                    if needs_update {
+                        fs::write(&dest_file, &source_content)
+                            .map_err(|e| format!("Failed to write tool file: {}", e))?;
+
+                        tracing::info!(
+                            "Synced bundled tool: {} -> {:?}",
+                            file_name.to_string_lossy(),
+                            dest_file
+                        );
+                        synced_tools.push(file_name.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(synced_tools)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
