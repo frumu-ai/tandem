@@ -1,9 +1,7 @@
 // Embedding Service Module
 // Generates embeddings using local fastembed-compatible implementation
 
-use crate::memory::types::{
-    MemoryError, MemoryResult, DEFAULT_EMBEDDING_DIMENSION, DEFAULT_EMBEDDING_MODEL,
-};
+use crate::memory::types::{MemoryResult, DEFAULT_EMBEDDING_DIMENSION, DEFAULT_EMBEDDING_MODEL};
 use once_cell::sync::OnceCell;
 use std::sync::Arc;
 use tokio::sync::Mutex;

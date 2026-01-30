@@ -5456,6 +5456,7 @@ dependencies = [
  "once_cell",
  "ppt-rs",
  "rand 0.8.5",
+ "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -5478,6 +5479,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tiktoken-rs",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -6215,6 +6217,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

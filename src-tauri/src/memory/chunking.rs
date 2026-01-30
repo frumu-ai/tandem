@@ -1,7 +1,7 @@
 // Text Chunking Module
 // Splits text into chunks with configurable size and overlap
 
-use crate::memory::types::{MemoryError, MemoryResult, MAX_CHUNK_LENGTH, MIN_CHUNK_LENGTH};
+use crate::memory::types::{MemoryError, MemoryResult, MIN_CHUNK_LENGTH};
 use tiktoken_rs::cl100k_base;
 
 /// A text chunk with metadata

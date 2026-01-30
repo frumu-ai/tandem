@@ -39,7 +39,10 @@ import {
   type QuestionEvent,
   type FileAttachmentInput,
   startPlanSession,
+  ralphStatus,
+  type RalphStateSnapshot,
 } from "@/lib/tauri";
+import { RalphPanel } from "@/components/ralph";
 
 interface ChatProps {
   workspacePath: string | null;
@@ -97,6 +100,12 @@ export function Chat({
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(propSessionId || null);
   const [allowAllTools, setAllowAllTools] = useState(false);
   const [enabledToolCategories, setEnabledToolCategories] = useState<Set<string>>(new Set());
+  // Ralph Loop State
+  const [loopEnabled, setLoopEnabled] = useState(false);
+  const [showRalphPanel, setShowRalphPanel] = useState(false);
+  const [ralphStatusSnapshot, setRalphStatusSnapshot] = useState<RalphStateSnapshot | undefined>(
+    undefined
+  );
   const [, forceUpdate] = useState({}); // Keep for critical display updates
 
   // Notify parent when generating state changes
@@ -1442,6 +1451,53 @@ ${g.example}
     [messages, handleSend]
   );
 
+  // Ralph Loop polling
+  useEffect(() => {
+    let intervalId: ReturnType<typeof setInterval>;
+
+    const pollRalph = async () => {
+      // Only poll if enabled or if we have a known active run
+      if (
+        !loopEnabled &&
+        (!ralphStatusSnapshot ||
+          ["idle", "cancelled", "completed", "error"].includes(ralphStatusSnapshot.status))
+      ) {
+        return;
+      }
+
+      try {
+        // Find existing run ID if we have one, otherwise just poll generic status (which might return last run)
+        const status = await ralphStatus(ralphStatusSnapshot?.run_id);
+        setRalphStatusSnapshot(status);
+
+        // Auto-enable if we detect a running state we didn't know about
+        if (status.status === "running" || status.status === "paused") {
+          setLoopEnabled(true);
+        }
+      } catch (e) {
+        // Silent fail for polling
+      }
+    };
+
+    if (
+      loopEnabled ||
+      (ralphStatusSnapshot && ["running", "paused"].includes(ralphStatusSnapshot.status))
+    ) {
+      pollRalph(); // Initial poll
+      intervalId = setInterval(pollRalph, 1000);
+    }
+
+    return () => clearInterval(intervalId);
+  }, [loopEnabled, ralphStatusSnapshot?.status, ralphStatusSnapshot?.run_id]);
+
+  const handleLoopToggle = (enabled: boolean) => {
+    setLoopEnabled(enabled);
+    if (enabled) {
+      // Maybe automatically check status?
+      ralphStatus().then(setRalphStatusSnapshot).catch(console.error);
+    }
+  };
+
   const handleRewind = useCallback(
     async (messageId: string) => {
       // Find this user message
@@ -1807,6 +1863,10 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
               allowAllToolsLocked={false}
               activeProviderLabel={activeProviderLabel}
               activeModelLabel={activeModelLabel}
+              loopEnabled={loopEnabled}
+              onLoopToggle={handleLoopToggle}
+              loopStatus={ralphStatusSnapshot}
+              onLoopPanelOpen={() => setShowRalphPanel(true)}
               onModelSelect={async (modelId, providerIdRaw) => {
                 // Update the global provider config to switch to this model
                 try {
@@ -1962,6 +2022,11 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
 
       {/* Activity drawer - Hidden for now as it's always empty */}
       {/* <ActivityDrawer activities={activities} isGenerating={isGenerating} /> */}
+
+      {/* Ralph Panel */}
+      {showRalphPanel && ralphStatusSnapshot && (
+        <RalphPanel runId={ralphStatusSnapshot.run_id} onClose={() => setShowRalphPanel(false)} />
+      )}
     </div>
   );
 }
