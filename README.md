@@ -59,6 +59,8 @@ What Cursor did for developers, Tandem does for everyone.
 - **🌐 Cross-platform** - Native installers for Windows, macOS (Intel & Apple Silicon), and Linux
 - **👁️ Visual permissions** - Approve every file access and action with granular control
 - **⏪ Full undo** - Rollback any AI operation with comprehensive operation journaling
+- **🧠 Long-Term Memory** - Vector database stores codebase context and history for smarter answers
+- **🧩 Skills System** - Import and manage custom AI capabilities and instructions
 - **📋 Execution Planning** - Review and batch-approve multi-step AI operations before execution
 - **🔄 Auto-updates** - Seamless updates with code-signed releases (when using installers)
 
@@ -67,7 +69,8 @@ What Cursor did for developers, Tandem does for everyone.
 Tandem supports multiple specialized agent modes powered by OpenCode:
 
 - **💬 Chat Mode** - Interactive conversation with context-aware file operations
-- **📝 Plan Mode** - Batch file changes with review before execution
+- **📝 Plan Mode** - Draft comprehensive implementation plans (`.md`) before executing changes
+- **♾️ Ralph Loop** - Autonomous iterative loop that works until a task is verifiably complete
 - **🔍 Ask Mode** - Read-only exploration and analysis without making changes
 - **🐛 Debug Mode** - Systematic debugging with runtime evidence
 
@@ -77,6 +80,12 @@ Tandem supports multiple specialized agent modes powered by OpenCode:
 - **🔐 Per-project permissions** - Fine-grained file access control
 - **📊 Project switching** - Quick navigation between different codebases
 - **💾 Persistent history** - Chat history saved per project
+
+### Artifacts & Outputs
+
+- **📊 HTML/Canvas** - Generate secure, interactive HTML dashboards and reports
+- **📽️ Presentation Engine** - Export high-fidelity PPTX slides with theme support
+- **📑 Markdown Reports** - Clean, formatted documents and plans
 
 ## Quick Start
 
@@ -88,10 +97,10 @@ Tandem supports multiple specialized agent modes powered by OpenCode:
 
 **Platform-specific:**
 
-| Platform | Additional Requirements                                                        |
-| -------- | ------------------------------------------------------------------------------ |
-| Windows  | [Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/) |
-| macOS    | Xcode Command Line Tools: `xcode-select --install`                             |
+| Platform | Additional Requirements                                                                          |
+| -------- | ------------------------------------------------------------------------------------------------ |
+| Windows  | [Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/)                   |
+| macOS    | Xcode Command Line Tools: `xcode-select --install`                                               |
 | Linux    | `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `build-essential`, `pkg-config` |
 
 ### Installation
@@ -323,10 +332,11 @@ tandem/
 - [x] **Phase 6: Project Management** - Multi-workspace support
 - [x] **Phase 7: Advanced Presentations** - PPTX export engine, theme mapping, explicit positioning
 - [x] **Phase 8: Brand Evolution** - Rubik 900 typography, polished boot sequence
-- [ ] **Phase 9: Browser Integration** - Web content access
-- [ ] **Phase 10: Connectors & Skills** - Extensibility system
-- [ ] **Phase 11: Team Features** - Collaboration tools
-- [ ] **Phase 12: Mobile Companion** - iOS/Android apps
+- [x] **Phase 9: Memory & Context** - Vector database integration (`sqlite-vec`)
+- [x] **Phase 10: Skills System** - Importable agent skills and custom instructions
+- [ ] **Phase 11: Browser Integration** - Web content access
+- [ ] **Phase 12: Team Features** - Collaboration tools
+- [ ] **Phase 13: Mobile Companion** - iOS/Android apps
 
 See [docs/todo_specialists.md](docs/todo_specialists.md) for ideas on specialized AI assistants for non-technical users.
 
