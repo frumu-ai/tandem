@@ -429,6 +429,10 @@ impl RalphRunHandle {
             prompt.push_str("Wait for user approval before executing.\n\n");
         }
 
+        // Task completion instruction
+        prompt.push_str("IMPORTANT: As you verify that tasks are done, you MUST use the `todowrite` tool to mark them as completed.\n");
+        prompt.push_str("Call `todowrite` with status=\"completed\" for the specific task ID in the TODO list.\n\n");
+
         // Completion token instruction
         prompt.push_str(&format!(
             "When the task is genuinely complete, output: <promise>{}</promise>\n",

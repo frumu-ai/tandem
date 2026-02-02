@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.14] - 2026-01-30
+## [0.1.14] - 2026-01-31
+
+### Improved
+
+- **Ralph Loop Reliability**: Updated the prompt engineering for both Ralph Loop and Plan Execution modes to explicitly enforce the use of the `todowrite` tool. This ensures that tasks are visually marked as "completed" in the UI as the AI finishes them, preventing the state desync where work was done but tasks remained unchecked.
+- **Task Execution Flow**: When executing approved tasks from the Plan sidebar, the system now provides stronger directives to the AI to update task status immediately upon completion.
+
+## [0.1.13] - 2026-01-30
 
 ### Added
 

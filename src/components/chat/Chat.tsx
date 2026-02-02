@@ -213,7 +213,7 @@ export function Chat({
 
 ${taskList}
 
-Start with task #1 and continue through each one. Let me know when each task is complete.`;
+Start with task #1 and continue through each one. IMPORTANT: After verifying each task is done, you MUST use the 'todowrite' tool to set its status to "completed" in the task list. Call 'todowrite' with status="completed" for each task ID.`;
 
       // Small delay to ensure state is ready
       setTimeout(() => {
@@ -1780,7 +1780,7 @@ After making the changes, present the updated plan in full (including the comple
 
 ${taskList}
 
-Start with task #1 and execute each one. Use the 'write' tool to create files immediately.`;
+Start with task #1 and execute each one. Use the 'write' tool to create files immediately. IMPORTANT: As you finish each task, you MUST use the 'todowrite' tool to mark it as "completed".`;
                                 // Force immediate mode for this specific message
                                 handleSend(message, undefined, "immediate");
                               }
