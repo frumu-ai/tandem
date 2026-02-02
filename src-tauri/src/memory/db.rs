@@ -28,7 +28,8 @@ impl MemoryDatabase {
         let conn = Connection::open(db_path)?;
 
         // Enable WAL mode for better concurrency
-        conn.execute("PRAGMA journal_mode = WAL", [])?;
+        // PRAGMA journal_mode returns a row, so we use query_row to ignore it
+        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
         conn.execute("PRAGMA synchronous = NORMAL", [])?;
 
         let db = Self {
