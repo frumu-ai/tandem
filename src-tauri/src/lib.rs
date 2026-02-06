@@ -7,6 +7,7 @@ mod file_watcher;
 mod keystore;
 mod llm_router;
 mod memory;
+pub mod orchestrator;
 mod presentation;
 mod ralph;
 mod sidecar;
@@ -451,7 +452,25 @@ pub fn run() {
             commands::ralph_resume,
             commands::ralph_add_context,
             commands::ralph_status,
+            commands::ralph_status,
             commands::ralph_history,
+            // Orchestrator commands
+            commands::orchestrator_create_run,
+            commands::orchestrator_start,
+            commands::orchestrator_get_run,
+            commands::orchestrator_get_budget,
+            commands::orchestrator_list_tasks,
+            commands::orchestrator_get_config,
+            commands::orchestrator_get_run_model,
+            commands::orchestrator_set_resume_model,
+            commands::orchestrator_approve,
+            commands::orchestrator_request_revision,
+            commands::orchestrator_pause,
+            commands::orchestrator_resume,
+            commands::orchestrator_cancel,
+            commands::orchestrator_list_runs,
+            commands::orchestrator_load_run,
+            commands::orchestrator_restart_run,
         ]);
 
     // Add desktop-only plugins

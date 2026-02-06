@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 
 export interface PermissionRequest {
   id: string;
+  session_id: string;
   type:
     | "read_file"
     | "write_file"

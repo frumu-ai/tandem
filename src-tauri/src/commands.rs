@@ -3,6 +3,12 @@
 
 use crate::error::{Result, TandemError};
 use crate::keystore::{validate_api_key, validate_key_type, ApiKeyType, SecureKeyStore};
+use crate::orchestrator::{
+    engine::OrchestratorEngine,
+    policy::{PolicyConfig, PolicyEngine},
+    store::OrchestratorStore,
+    types::{Budget, OrchestratorConfig, Run, RunSnapshot, RunStatus, RunSummary, Task, TaskState},
+};
 use crate::sidecar::{
     CreateSessionRequest, FilePartInput, ModelInfo, ModelSpec, Project, ProviderInfo,
     SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent, TodoItem,
@@ -16,6 +22,7 @@ use futures::StreamExt;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_store::StoreExt;
 use uuid::Uuid;
@@ -1877,7 +1884,10 @@ pub async fn approve_tool(
     // We only snapshot direct file tools (write/delete). Shell commands and reads are too broad.
     // Note: OpenCode's tool names are "write", "delete", "read", "bash", "list", "search", etc.
     if let (Some(tool_name), Some(args_val)) = (tool.clone(), args.clone()) {
-        let is_file_tool = matches!(tool_name.as_str(), "write" | "delete");
+        let is_file_tool = matches!(
+            tool_name.as_str(),
+            "write" | "write_file" | "create_file" | "delete" | "delete_file"
+        );
 
         if is_file_tool {
             tracing::info!("[approve_tool] File tool detected: {}", tool_name);
@@ -1899,6 +1909,18 @@ pub async fn approve_tool(
 
                 // Validate path against allowed workspace scope
                 if state.is_path_allowed(&path_buf) {
+                    let _fs_write_permit = state
+                        .fs_write_semaphore
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .map_err(|_| {
+                        TandemError::InvalidOperation(
+                            "Failed to acquire fs_write permit".to_string(),
+                        )
+                    })?;
+                    let _path_lock = state.path_locks.write_lock(&path_buf).await;
+
                     let (exists, is_directory) = match fs::metadata(&path_buf) {
                         Ok(meta) => (true, meta.is_dir()),
                         Err(_) => (false, false),
@@ -2050,6 +2072,23 @@ pub async fn stage_tool_operation(
         let path_buf = PathBuf::from(path);
 
         if state.is_path_allowed(&path_buf) {
+            if matches!(
+                tool.as_str(),
+                "write" | "delete" | "write_file" | "delete_file" | "create_file"
+            ) {
+                let _fs_write_permit = state
+                    .fs_write_semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| {
+                        TandemError::InvalidOperation(
+                            "Failed to acquire fs_write permit".to_string(),
+                        )
+                    })?;
+                let _path_lock = state.path_locks.write_lock(&path_buf).await;
+            }
+
             let (exists, is_directory) = match fs::metadata(&path_buf) {
                 Ok(meta) => (true, meta.is_dir()),
                 Err(_) => (false, false),
@@ -3532,4 +3571,640 @@ pub async fn ralph_history(
         .ralph_manager
         .history(&run_id, limit.unwrap_or(50))
         .await
+}
+// ============================================================================
+// Orchestrator Commands
+// ============================================================================
+
+#[derive(Debug, serde::Serialize)]
+pub struct OrchestratorModelSelection {
+    pub model: Option<String>,
+    pub provider: Option<String>,
+}
+
+fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
+    vec![
+        crate::sidecar::PermissionRule {
+            permission: "ls".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+        crate::sidecar::PermissionRule {
+            permission: "read".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+        crate::sidecar::PermissionRule {
+            permission: "todowrite".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+        crate::sidecar::PermissionRule {
+            permission: "websearch".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+        crate::sidecar::PermissionRule {
+            permission: "webfetch".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+        crate::sidecar::PermissionRule {
+            permission: "glob".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+        crate::sidecar::PermissionRule {
+            permission: "grep".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+        crate::sidecar::PermissionRule {
+            permission: "search".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+    ]
+}
+
+fn normalize_provider_id_for_sidecar(provider: Option<String>) -> Option<String> {
+    provider.map(|p| {
+        if p == "opencode_zen" {
+            "opencode".to_string()
+        } else {
+            p
+        }
+    })
+}
+
+/// Create a new orchestration run
+#[tauri::command]
+pub async fn orchestrator_create_run(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    objective: String,
+    config: OrchestratorConfig,
+    model: Option<String>,
+    provider: Option<String>,
+) -> Result<String> {
+    use crate::sidecar::CreateSessionRequest;
+
+    let run_id = Uuid::new_v4().to_string();
+
+    // Get default provider/model (same as chat sessions)
+    let (default_provider, default_model) = {
+        let config = state.providers_config.read().unwrap();
+        resolve_default_provider_and_model(&config)
+    };
+
+    // Use provided values or fallback to defaults
+    let final_model = model.or(default_model);
+    let final_provider = normalize_provider_id_for_sidecar(provider.or(default_provider));
+
+    // Create a NEW session specifically for the orchestrator
+    let session_request = CreateSessionRequest {
+        title: Some(format!(
+            "Orchestrator: {}",
+            &objective[..objective.len().min(50)]
+        )),
+        model: final_model,
+        provider: final_provider,
+        permission: Some(orchestrator_permission_rules()),
+    };
+
+    let session = state
+        .sidecar
+        .create_session(session_request)
+        .await
+        .map_err(|e| {
+            TandemError::Sidecar(format!("Failed to create orchestrator session: {}", e))
+        })?;
+
+    let session_id = session.id;
+    tracing::info!(
+        "Created orchestrator session: {} with model: {:?}, provider: {:?}",
+        session_id,
+        session.model,
+        session.provider
+    );
+
+    // Guard against old UI defaults when creating new runs.
+    let mut config = config;
+    if config.max_iterations == 10 || config.max_iterations == 30 {
+        config.max_iterations = 200;
+    }
+    if config.max_subagent_runs == 20 || config.max_subagent_runs == 50 {
+        config.max_subagent_runs = 500;
+    }
+    if config.max_wall_time_secs == 20 * 60 {
+        config.max_wall_time_secs = 60 * 60;
+    }
+
+    // Create the run object
+    let run = Run::new(run_id.clone(), session_id, objective, config);
+
+    // Initialize dependencies
+    let workspace_path = state
+        .get_workspace_path()
+        .ok_or_else(|| TandemError::InvalidConfig("No workspace selected".to_string()))?;
+
+    let policy_config = PolicyConfig::new(workspace_path.clone());
+    let policy = PolicyEngine::new(policy_config);
+    let store = OrchestratorStore::new(&workspace_path)?;
+
+    // Channel for events
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // Create engine
+    let engine = Arc::new(OrchestratorEngine::new(
+        run,
+        policy,
+        store,
+        state.sidecar.clone(),
+        workspace_path,
+        event_tx,
+    ));
+
+    // Store engine in state
+    {
+        let mut engines = state.orchestrator_engines.write().unwrap();
+        engines.insert(run_id.clone(), engine.clone());
+    }
+
+    // Spawn event forwarder
+    let app_handle = app.clone();
+    let run_id_clone = run_id.clone();
+
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            // Emit to frontend
+            if let Err(e) = app_handle.emit("orchestrator-event", event) {
+                tracing::error!("Failed to emit orchestrator event: {}", e);
+            }
+        }
+        tracing::info!("Orchestrator event loop ended for run {}", run_id_clone);
+    });
+
+    tracing::info!("Created orchestrator run: {}", run_id);
+    Ok(run_id)
+}
+
+/// Start the planning phase
+#[tauri::command]
+pub async fn orchestrator_start(state: State<'_, AppState>, run_id: String) -> Result<()> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    // Spawn execution to avoid blocking the command
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = engine.start().await {
+            tracing::error!("Orchestrator run {} failed to start: {}", run_id, e);
+        }
+    });
+
+    Ok(())
+}
+
+/// Get the current status of a run
+#[tauri::command]
+pub async fn orchestrator_get_run(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<RunSnapshot> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    Ok(engine.get_snapshot().await)
+}
+
+/// Get the current budget status
+#[tauri::command]
+pub async fn orchestrator_get_budget(state: State<'_, AppState>, run_id: String) -> Result<Budget> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    Ok(engine.get_budget().await)
+}
+
+/// Get the task list
+#[tauri::command]
+pub async fn orchestrator_list_tasks(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<Task>> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    Ok(engine.get_tasks().await)
+}
+
+#[tauri::command]
+pub async fn orchestrator_get_config(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<OrchestratorConfig> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    Ok(engine.get_config().await)
+}
+
+#[tauri::command]
+pub async fn orchestrator_get_run_model(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<OrchestratorModelSelection> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    let session_id = engine.get_base_session_id().await;
+    let session = state.sidecar.get_session(&session_id).await?;
+
+    Ok(OrchestratorModelSelection {
+        model: session.model,
+        provider: session.provider,
+    })
+}
+
+#[tauri::command]
+pub async fn orchestrator_set_resume_model(
+    state: State<'_, AppState>,
+    run_id: String,
+    model: String,
+    provider: String,
+) -> Result<OrchestratorModelSelection> {
+    use crate::sidecar::CreateSessionRequest;
+
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    let snapshot = engine.get_snapshot().await;
+    if snapshot.status != RunStatus::Paused && snapshot.status != RunStatus::Cancelled {
+        return Err(TandemError::InvalidOperation(
+            "Run must be paused or cancelled to change model".to_string(),
+        ));
+    }
+
+    let normalized_provider = normalize_provider_id_for_sidecar(Some(provider.clone()));
+    let request = CreateSessionRequest {
+        title: Some(format!(
+            "Orchestrator Resume: {}",
+            &snapshot.objective[..snapshot.objective.len().min(50)]
+        )),
+        model: Some(model.clone()),
+        provider: normalized_provider.clone(),
+        permission: Some(orchestrator_permission_rules()),
+    };
+
+    let session = state.sidecar.create_session(request).await?;
+
+    engine
+        .set_base_session_for_resume(session.id.clone())
+        .await?;
+
+    Ok(OrchestratorModelSelection {
+        model: session.model.or(Some(model)),
+        provider: session.provider.or(normalized_provider),
+    })
+}
+
+/// Approve the plan and start execution
+#[tauri::command]
+pub async fn orchestrator_approve(state: State<'_, AppState>, run_id: String) -> Result<()> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    // Execute in background
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = engine.approve().await {
+            tracing::error!("Failed to approve run {}: {}", run_id, e);
+        }
+    });
+
+    Ok(())
+}
+
+/// Request revision of the plan
+#[tauri::command]
+pub async fn orchestrator_request_revision(
+    state: State<'_, AppState>,
+    run_id: String,
+    feedback: String,
+) -> Result<()> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    // Execute in background
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = engine.request_revision(feedback).await {
+            tracing::error!("Failed to request revision for run {}: {}", run_id, e);
+        }
+    });
+
+    Ok(())
+}
+
+/// Pause an executing run
+#[tauri::command]
+pub async fn orchestrator_pause(state: State<'_, AppState>, run_id: String) -> Result<()> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    engine.pause().await;
+    Ok(())
+}
+
+/// Resume a paused run
+#[tauri::command]
+pub async fn orchestrator_resume(state: State<'_, AppState>, run_id: String) -> Result<()> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    engine.resume().await?;
+
+    // Restart execution loop
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = engine.execute().await {
+            tracing::error!("Failed to resume run {}: {}", run_id, e);
+        }
+    });
+
+    Ok(())
+}
+
+/// Cancel a run
+#[tauri::command]
+pub async fn orchestrator_cancel(state: State<'_, AppState>, run_id: String) -> Result<()> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    engine.cancel_and_finalize().await?;
+    Ok(())
+}
+
+/// List all orchestrator runs (from disk)
+#[tauri::command]
+pub async fn orchestrator_list_runs(state: State<'_, AppState>) -> Result<Vec<RunSummary>> {
+    // Get workspace path
+    let workspace_path = {
+        let path_guard = state.workspace_path.read().unwrap();
+        path_guard.clone()
+    };
+
+    let workspace_path = match workspace_path {
+        Some(p) => p,
+        None => return Ok(Vec::new()), // No workspace, no runs
+    };
+
+    // List all run directories
+    let runs_dir = workspace_path.join(".tandem").join("orchestrator");
+    if !runs_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    // Create store to access disk
+    let store = OrchestratorStore::new(&workspace_path)?;
+
+    let mut summaries = Vec::new();
+    if let Ok(entries) = fs::read_dir(&runs_dir) {
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+
+            let run_id = entry.file_name().to_string_lossy().to_string();
+
+            // Try to load run from disk
+            if let Ok(run) = store.load_run(&run_id) {
+                summaries.push(RunSummary {
+                    run_id: run.run_id,
+                    session_id: run.session_id,
+                    objective: run.objective,
+                    status: run.status,
+                    created_at: run.started_at,
+                    updated_at: run.ended_at.unwrap_or_else(chrono::Utc::now),
+                });
+            }
+        }
+    }
+
+    // Sort by updated_at descending (most recent first)
+    summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+    Ok(summaries)
+}
+
+/// Load a specific run from disk
+#[tauri::command]
+pub async fn orchestrator_load_run(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Run> {
+    let workspace_path = state
+        .get_workspace_path()
+        .ok_or_else(|| TandemError::NotFound("No workspace configured".to_string()))?;
+
+    let store = OrchestratorStore::new(&workspace_path)?;
+    let run = store.load_run(&run_id)?;
+
+    // Check if engine already exists in memory
+    {
+        let engines = state.orchestrator_engines.read().unwrap();
+        if engines.contains_key(&run_id) {
+            return Ok(run);
+        }
+    }
+
+    // Re-hydrate engine
+    let policy_config = PolicyConfig::new(workspace_path.clone());
+    let policy = PolicyEngine::new(policy_config);
+
+    // Channel for events
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // Create engine
+    // NOTE: When loading a run, we should try to update its config to the latest defaults
+    // if the existing config seems to have the old low limits.
+    // However, the `Run` struct loaded from disk has the OLD config.
+    // We should patch the config here before creating the engine.
+    let mut run_to_load = run.clone();
+
+    // Patch limits if they match the old defaults (to allow continuation)
+    if run_to_load.config.max_subagent_runs == 20 || run_to_load.config.max_subagent_runs == 50 {
+        run_to_load.config.max_subagent_runs = 500;
+    }
+    if run_to_load.config.max_iterations == 10 || run_to_load.config.max_iterations == 30 {
+        run_to_load.config.max_iterations = 200;
+    }
+    if run_to_load.config.max_wall_time_secs == 20 * 60 {
+        run_to_load.config.max_wall_time_secs = 60 * 60;
+    }
+    if run_to_load.budget.max_wall_time_secs == 20 * 60 {
+        run_to_load.budget.max_wall_time_secs = 60 * 60;
+    }
+    let still_exceeded = run_to_load.budget.iterations_used >= run_to_load.budget.max_iterations
+        || run_to_load.budget.tokens_used >= run_to_load.budget.max_tokens
+        || run_to_load.budget.wall_time_secs >= run_to_load.budget.max_wall_time_secs
+        || run_to_load.budget.subagent_runs_used >= run_to_load.budget.max_subagent_runs;
+
+    if run_to_load.budget.exceeded && !still_exceeded {
+        run_to_load.budget.exceeded = false;
+        run_to_load.budget.exceeded_reason = None;
+
+        if run_to_load.status == RunStatus::Failed
+            && run_to_load
+                .error_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("Budget exceeded:"))
+        {
+            run_to_load.status = RunStatus::Paused;
+            run_to_load.ended_at = None;
+            run_to_load.error_message = None;
+            for task in run_to_load.tasks.iter_mut() {
+                if task.state == TaskState::InProgress {
+                    task.state = TaskState::Pending;
+                }
+            }
+        }
+    }
+
+    let engine = Arc::new(OrchestratorEngine::new(
+        run_to_load.clone(),
+        policy,
+        store,
+        state.sidecar.clone(),
+        workspace_path,
+        event_tx,
+    ));
+
+    // Also explicitly update the budget tracker limits in the engine
+    // (The engine constructor does init the tracker from the run, but we want to be sure)
+    // Actually, Engine::new calls BudgetTracker::from_budget(run.budget)
+    // which copies the *old* limits from the saved budget snapshot.
+    // So we need to update the tracker's limits after creation.
+    engine.update_budget_limits().await;
+
+    // Store engine in state
+    {
+        let mut engines = state.orchestrator_engines.write().unwrap();
+        engines.insert(run_id.clone(), engine.clone());
+    }
+
+    // Check if the run was in an active state when last saved (e.g. app crash/close)
+    // If so, force it to Paused so the user can explicitly Resume.
+    {
+        let current_status = engine.get_snapshot().await.status;
+        if current_status == RunStatus::Executing || current_status == RunStatus::Planning {
+            tracing::info!(
+                "Run {} loaded in state {:?}, forcing to Paused",
+                run_id,
+                current_status
+            );
+            engine.force_pause_persisted().await?;
+            run_to_load.status = RunStatus::Paused;
+            run_to_load.ended_at = None;
+        }
+    }
+
+    // Spawn event forwarder
+    let app_handle = app.clone();
+    let run_id_clone = run_id.clone();
+
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            // Emit to frontend
+            if let Err(e) = app_handle.emit("orchestrator-event", event) {
+                tracing::error!("Failed to emit orchestrator event: {}", e);
+            }
+        }
+        tracing::info!("Orchestrator event loop ended for run {}", run_id_clone);
+    });
+
+    // Do NOT auto-restart the execution loop on load.
+    // Users can explicitly resume or restart from the UI for full control.
+
+    tracing::info!("Loaded and re-hydrated orchestrator run: {}", run_id);
+    Ok(run_to_load)
+}
+
+/// Restart execution manually (even after failure or cancellation)
+#[tauri::command]
+pub async fn orchestrator_restart_run(state: State<'_, AppState>, run_id: String) -> Result<()> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    // Execute in background
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = engine.restart().await {
+            tracing::error!("Failed to restart run {}: {}", run_id, e);
+        }
+    });
+
+    Ok(())
 }

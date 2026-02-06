@@ -1,3 +1,29 @@
+# Tandem v0.2.0 Release Notes
+
+## Highlights
+
+- **Multi-Agent Orchestration (Phase 1)**: The biggest update to Tandem yet. We've introduced a dedicated Orchestration Mode that coordinates specialized AI agents to solve complex, multi-step problems together. Instead of a single chat loop, Tandem now builds a plan, delegates tasks to "Builder" and "Validator" agents, and manages the entire process with a visual Kanban board.
+- **Unified Sidebar**: We've simplified navigation by merging standard Chat Sessions and Orchestrator Runs into a single, unified list. Your entire history is now organized chronologically under smart project headers, so you never lose track of a context.
+
+## Complete Feature List
+
+### Orchestration
+
+- **DAG Execution Engine**: Tasks are no longer linear. The orchestrator manages dependencies, allowing independent tasks to run in parallel.
+- **Specialized Sub-Agents**:
+  - **Planner**: Breaks down objectives into executable steps.
+  - **Builder**: Writes code and applies patches.
+  - **Validator**: Runs tests and verifies acceptance criteria.
+- **Safety First**: New policy engine enforces distinct permission tiers for reading vs. writing vs. web access.
+- **Budget Controls**: Hard limits on tokens, time, and iterations prevent runaway costs.
+
+### UX Improvements
+
+- **Unified Session List**: A cleaner, more organized sidebar that handles both Chat and Orchestrator contexts seamlessly.
+- **Real-time Status**: See at a glance which runs are completed, failed, or still in progress directly from the sidebar.
+
+---
+
 # Tandem v0.1.15 Release Notes
 
 ## Highlights

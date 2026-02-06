@@ -9,6 +9,8 @@ import { TaskSidebar } from "@/components/tasks/TaskSidebar";
 import { FileBrowser } from "@/components/files/FileBrowser";
 import { FilePreview } from "@/components/files/FilePreview";
 import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
+import { OrchestratorPanel } from "@/components/orchestrate/OrchestratorPanel";
+import { type RunSummary } from "@/components/orchestrate/types";
 import { Button } from "@/components/ui";
 import { AppUpdateOverlay } from "@/components/updates/AppUpdateOverlay";
 import { useAppState } from "@/hooks/useAppState";
@@ -37,6 +39,7 @@ import {
 } from "@/lib/tauri";
 import { type FileAttachment } from "@/components/chat/ChatInput";
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Settings as SettingsIcon,
   MessageSquare,
@@ -124,6 +127,36 @@ function App() {
   const [gitStatus, setGitStatus] = useState<{ git_installed: boolean; is_repo: boolean } | null>(
     null
   );
+
+  // Orchestrator panel state
+  const [orchestratorOpen, setOrchestratorOpen] = useState(false);
+  const [currentOrchestratorRunId, setCurrentOrchestratorRunId] = useState<string | null>(null);
+  const [orchestratorRuns, setOrchestratorRuns] = useState<RunSummary[]>([]);
+
+  // Poll for orchestrator runs
+  useEffect(() => {
+    // Initial fetch
+    invoke<RunSummary[]>("orchestrator_list_runs").then(setOrchestratorRuns).catch(console.error);
+
+    const interval = setInterval(() => {
+      invoke<RunSummary[]>("orchestrator_list_runs").then(setOrchestratorRuns).catch(console.error);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [activeProject]); // Re-fetch when project changes
+
+  // If panel opens with no explicit run selected, pick the most recent active run
+  useEffect(() => {
+    if (!orchestratorOpen || currentOrchestratorRunId) return;
+    invoke<RunSummary[]>("orchestrator_list_runs")
+      .then((runs) => {
+        if (!runs || runs.length === 0) return;
+        // Prefer Executing/Paused, otherwise most recent by updated_at
+        const preferred =
+          runs.find((r) => r.status === "executing" || r.status === "paused") ?? runs[0];
+        setCurrentOrchestratorRunId(preferred.run_id);
+      })
+      .catch(console.error);
+  }, [orchestratorOpen, currentOrchestratorRunId]);
 
   // Todos for task sidebar
   const todosData = useTodos(currentSessionId);
@@ -309,10 +342,29 @@ function App() {
       // If there's a saved session, trigger Chat to reload it now that sidecar is ready
       // We do this by briefly clearing and restoring the session ID
       if (currentSessionId) {
-        const savedId = currentSessionId;
-        setCurrentSessionId(null);
-        // Use setTimeout to ensure state update is processed before restoring
-        setTimeout(() => setCurrentSessionId(savedId), 50);
+        // Check if this session ID belongs to an orchestrator run
+        // If so, switch to orchestrator mode instead
+        invoke<RunSummary[]>("orchestrator_list_runs")
+          .then((runs) => {
+            const run = runs.find((r) => r.session_id === currentSessionId);
+            if (run) {
+              setOrchestratorOpen(true);
+              setCurrentOrchestratorRunId(run.run_id);
+              setCurrentSessionId(null); // Clear session ID as we're in orchestrator mode
+            } else {
+              const savedId = currentSessionId;
+              setCurrentSessionId(null);
+              // Use setTimeout to ensure state update is processed before restoring
+              setTimeout(() => setCurrentSessionId(savedId), 50);
+            }
+          })
+          .catch((e) => {
+            console.error("Failed to check orchestrator runs:", e);
+            // Fallback to chat logic
+            const savedId = currentSessionId;
+            setCurrentSessionId(null);
+            setTimeout(() => setCurrentSessionId(savedId), 50);
+          });
       }
     } else {
       setView("onboarding");
@@ -507,6 +559,14 @@ function App() {
     setUsePlanMode(false);
     setSelectedAgent(undefined);
     setExecutePendingTrigger((prev) => prev + 1);
+  };
+
+  // Handle agent selection changes - open orchestrator panel when orchestrate is selected
+  const handleAgentChange = (agent: string | undefined) => {
+    setSelectedAgent(agent);
+    if (agent === "orchestrate") {
+      setOrchestratorOpen(true);
+    }
   };
 
   const handleAddFileToChat = async (file: FileEntry) => {
@@ -739,43 +799,54 @@ function App() {
           </div>
 
           {/* Tab Content */}
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 overflow-hidden flex flex-col">
             {sidebarTab === "sessions" ? (
-              <SessionSidebar
-                isOpen={true}
-                onToggle={() => setSidebarOpen(!sidebarOpen)}
-                sessions={sessions.filter((session) => {
-                  // Only show sessions from the active project
-                  if (!activeProject) return true;
-                  if (!session.directory) return false;
+              <>
+                {/* Unified Sessions List */}
+                <div className="flex-1 overflow-hidden">
+                  <SessionSidebar
+                    isOpen={true}
+                    onToggle={() => setSidebarOpen(!sidebarOpen)}
+                    sessions={sessions.filter((session) => {
+                      // Only show sessions from the active project
+                      if (!activeProject) return true;
+                      if (!session.directory) return false;
 
-                  // Normalize paths for comparison: lowercase, standard slashes, remove trailing slash
-                  const normSession = session.directory
-                    .toLowerCase()
-                    .replace(/\\/g, "/")
-                    .replace(/\/$/, "");
-                  const normProject = activeProject.path
-                    .toLowerCase()
-                    .replace(/\\/g, "/")
-                    .replace(/\/$/, "");
+                      // Normalize paths for comparison: lowercase, standard slashes, remove trailing slash
+                      const normSession = session.directory
+                        .toLowerCase()
+                        .replace(/\\/g, "/")
+                        .replace(/\/$/, "");
+                      const normProject = activeProject.path
+                        .toLowerCase()
+                        .replace(/\\/g, "/")
+                        .replace(/\/$/, "");
 
-                  // Check if session directory starts with or contains the project path
-                  // We check both ways to handle nested workspaces or root mismatches
-                  return normSession.includes(normProject) || normProject.includes(normSession);
-                })}
-                projects={projects}
-                currentSessionId={currentSessionId}
-                onSelectSession={handleSelectSession}
-                onNewChat={handleNewChat}
-                onDeleteSession={handleDeleteSession}
-                isLoading={historyLoading}
-                userProjects={userProjects}
-                activeProject={activeProject}
-                onSwitchProject={handleSwitchProject}
-                onAddProject={handleAddProject}
-                onManageProjects={handleManageProjects}
-                projectSwitcherLoading={projectSwitcherLoading}
-              />
+                      // Check if session directory starts with or contains the project path
+                      // We check both ways to handle nested workspaces or root mismatches
+                      return normSession.includes(normProject) || normProject.includes(normSession);
+                    })}
+                    runs={orchestratorRuns}
+                    projects={projects}
+                    currentSessionId={currentSessionId}
+                    currentRunId={currentOrchestratorRunId}
+                    onSelectSession={handleSelectSession}
+                    onSelectRun={(runId) => {
+                      setCurrentOrchestratorRunId(runId);
+                      setOrchestratorOpen(true);
+                    }}
+                    onNewChat={handleNewChat}
+                    onDeleteSession={handleDeleteSession}
+                    isLoading={historyLoading}
+                    userProjects={userProjects}
+                    activeProject={activeProject}
+                    onSwitchProject={handleSwitchProject}
+                    onAddProject={handleAddProject}
+                    onManageProjects={handleManageProjects}
+                    projectSwitcherLoading={projectSwitcherLoading}
+                  />
+                </div>
+              </>
             ) : (
               <FileBrowser
                 rootPath={activeProject?.path || null}
@@ -812,53 +883,66 @@ function App() {
           <>
             {/* Chat Area */}
             <div className={cn("flex-1 overflow-hidden relative", selectedFile && "w-1/2")}>
-              <Chat
-                key={activeProject?.id || "no-project"}
-                workspacePath={activeProject?.path || state?.workspace_path || null}
-                sessionId={currentSessionId}
-                onSessionCreated={async (id) => {
-                  setCurrentSessionId(id);
-                  await loadHistory();
-                }}
-                onSidecarConnected={() => setSidecarReady(true)}
-                usePlanMode={usePlanMode}
-                onPlanModeChange={setUsePlanMode}
-                onToggleTaskSidebar={() => setTaskSidebarOpen(!taskSidebarOpen)}
-                executePendingTasksTrigger={executePendingTrigger}
-                onGeneratingChange={setIsExecutingTasks}
-                pendingTasks={todosData.todos}
-                fileToAttach={fileToAttach || undefined}
-                onFileAttached={() => setFileToAttach(null)}
-                selectedAgent={selectedAgent}
-                onAgentChange={setSelectedAgent}
-                hasConfiguredProvider={hasConfiguredProvider}
-                activeProviderId={activeProviderId || undefined}
-                activeProviderLabel={activeProviderInfo?.providerLabel || undefined}
-                activeModelLabel={activeProviderInfo?.modelLabel || undefined}
-                onOpenSettings={() => setView("settings")}
-                onProviderChange={refreshAppState}
-                onFileOpen={(filePath) => {
-                  // Resolve relative paths to absolute using workspace path
-                  const workspacePath = activeProject?.path || state?.workspace_path;
-                  let absolutePath = filePath;
+              {orchestratorOpen ? (
+                // Orchestrator as main view
+                <OrchestratorPanel
+                  runId={currentOrchestratorRunId}
+                  onClose={() => {
+                    setOrchestratorOpen(false);
+                    // Reset to default agent when closing
+                    setSelectedAgent(undefined);
+                  }}
+                />
+              ) : (
+                // Chat view
+                <Chat
+                  key={activeProject?.id || "no-project"}
+                  workspacePath={activeProject?.path || state?.workspace_path || null}
+                  sessionId={currentSessionId}
+                  onSessionCreated={async (id) => {
+                    setCurrentSessionId(id);
+                    await loadHistory();
+                  }}
+                  onSidecarConnected={() => setSidecarReady(true)}
+                  usePlanMode={usePlanMode}
+                  onPlanModeChange={setUsePlanMode}
+                  onToggleTaskSidebar={() => setTaskSidebarOpen(!taskSidebarOpen)}
+                  executePendingTasksTrigger={executePendingTrigger}
+                  onGeneratingChange={setIsExecutingTasks}
+                  pendingTasks={todosData.todos}
+                  fileToAttach={fileToAttach || undefined}
+                  onFileAttached={() => setFileToAttach(null)}
+                  selectedAgent={selectedAgent}
+                  onAgentChange={handleAgentChange}
+                  hasConfiguredProvider={hasConfiguredProvider}
+                  activeProviderId={activeProviderId || undefined}
+                  activeProviderLabel={activeProviderInfo?.providerLabel || undefined}
+                  activeModelLabel={activeProviderInfo?.modelLabel || undefined}
+                  onOpenSettings={() => setView("settings")}
+                  onProviderChange={refreshAppState}
+                  onFileOpen={(filePath) => {
+                    // Resolve relative paths to absolute using workspace path
+                    const workspacePath = activeProject?.path || state?.workspace_path;
+                    let absolutePath = filePath;
 
-                  // If path is not absolute, resolve it relative to workspace
-                  if (workspacePath && !filePath.match(/^([a-zA-Z]:[\\/]|\/)/)) {
-                    absolutePath = `${workspacePath}/${filePath}`.replace(/\\/g, "/");
-                  }
+                    // If path is not absolute, resolve it relative to workspace
+                    if (workspacePath && !filePath.match(/^([a-zA-Z]:[\\/]|\/)/)) {
+                      absolutePath = `${workspacePath}/${filePath}`.replace(/\\/g, "/");
+                    }
 
-                  // Create FileEntry from path and open in preview
-                  const fileName = absolutePath.split(/[\\/]/).pop() || absolutePath;
-                  const fileEntry: FileEntry = {
-                    path: absolutePath,
-                    name: fileName,
-                    is_directory: false,
-                    extension: fileName.includes(".") ? fileName.split(".").pop() : undefined,
-                  };
-                  setSelectedFile(fileEntry);
-                  setSidebarTab("files"); // Switch to files tab for context
-                }}
-              />
+                    // Create FileEntry from path and open in preview
+                    const fileName = absolutePath.split(/[\\/]/).pop() || absolutePath;
+                    const fileEntry: FileEntry = {
+                      path: absolutePath,
+                      name: fileName,
+                      is_directory: false,
+                      extension: fileName.includes(".") ? fileName.split(".").pop() : undefined,
+                    };
+                    setSelectedFile(fileEntry);
+                    setSidebarTab("files"); // Switch to files tab for context
+                  }}
+                />
+              )}
               <AnimatePresence>
                 {effectiveView === "settings" && (
                   <motion.div
@@ -919,8 +1003,8 @@ function App() {
               folderPath={pendingProjectPath ?? ""}
             />
 
-            {/* Task Sidebar */}
-            {effectiveView === "chat" && (
+            {/* Task Sidebar - only show in chat mode */}
+            {!orchestratorOpen && (
               <TaskSidebar
                 isOpen={taskSidebarOpen}
                 onClose={() => setTaskSidebarOpen(false)}

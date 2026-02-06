@@ -1,5 +1,13 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, Zap, ListChecks, Code, MessageCircleQuestion, Search } from "lucide-react";
+import {
+  ChevronDown,
+  Zap,
+  ListChecks,
+  Code,
+  MessageCircleQuestion,
+  Search,
+  Sparkles,
+} from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +21,12 @@ export interface Agent {
 const AGENTS: Agent[] = [
   { id: undefined, label: "Immediate", icon: Zap, description: "Execute changes directly" },
   { id: "plan", label: "Plan", icon: ListChecks, description: "Propose changes for review" },
+  {
+    id: "orchestrate",
+    label: "Orchestrate",
+    icon: Sparkles,
+    description: "AI plans & executes multi-step tasks",
+  },
   { id: "coder", label: "Coder", icon: Code, description: "Focus on code generation" },
   {
     id: "general",

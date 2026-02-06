@@ -74,6 +74,22 @@ Tandem supports multiple specialized agent modes powered by OpenCode:
 - **🔍 Ask Mode** - Read-only exploration and analysis without making changes
 - **🐛 Debug Mode** - Systematic debugging with runtime evidence
 
+### 🎼 Multi-Agent Orchestration
+
+**New in v0.2.0**: Tandem now features a powerful Orchestration Mode that coordinates specialized sub-agents to solve complex problems.
+
+<div align="center">
+  <img src=".github/assets/app11.png" alt="Tandem Orchestration Mode" width="90%">
+</div>
+
+Instead of a single AI trying to do everything, Tandem builds a dependency graph of tasks and delegates them to:
+
+- **Planner**: Architect your solution
+- **Builder**: Write the code
+- **Validator**: Verify the results
+
+This supervised loop ensures complex features are implemented correctly with human-in-the-loop approval at every critical step.
+
 ### Project Management
 
 - **📁 Multi-project support** - Manage multiple workspaces with separate contexts

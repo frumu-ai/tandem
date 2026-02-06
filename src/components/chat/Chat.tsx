@@ -620,11 +620,10 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
   }, [messages]);
 
   const handleApprovePermission = async (id: string, _remember?: "once" | "session" | "always") => {
-    if (!currentSessionId) return;
-
     try {
       const req = pendingPermissions.find((p) => p.id === id);
-      await approveTool(currentSessionId, id, {
+      if (!req?.session_id) return;
+      await approveTool(req.session_id, id, {
         tool: req?.tool,
         args: req?.args,
         messageId: req?.messageId,
@@ -1018,11 +1017,11 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           ].includes(event.tool || "");
 
           // Route to staging if plan mode is enabled and operation is destructive
-          if (usePlanMode && isDestructive && currentSessionId) {
+          if (usePlanMode && isDestructive) {
             console.log("[Permission] Routing to staging area");
             stageOperation(
               event.request_id,
-              currentSessionId,
+              event.session_id,
               event.tool || "unknown",
               (event.args as Record<string, unknown>) || {},
               currentMsgId || undefined
@@ -1033,17 +1032,16 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           } else {
             // Auto-approve if allowAllTools is enabled on frontend
             if (allowAllTools) {
-              if (currentSessionId) {
-                approveTool(currentSessionId, event.request_id, {
-                  tool: event.tool || undefined,
-                  args: (event.args as Record<string, unknown>) || undefined,
-                  messageId: currentMsgId || undefined,
-                }).catch(console.error);
-              }
+              approveTool(event.session_id, event.request_id, {
+                tool: event.tool || undefined,
+                args: (event.args as Record<string, unknown>) || undefined,
+                messageId: currentMsgId || undefined,
+              }).catch(console.error);
             } else {
               // Immediate mode: show permission toast as before
               const permissionRequest: PermissionRequest = {
                 id: event.request_id,
+                session_id: event.session_id,
                 type: (event.tool || "unknown") as PermissionRequest["type"],
                 path: event.args?.path as string | undefined,
                 command: event.args?.command as string | undefined,
@@ -1545,11 +1543,10 @@ ${g.example}
   }, []);
 
   const handleDenyPermission = async (id: string, _remember?: boolean) => {
-    if (!currentSessionId) return;
-
     try {
       const req = pendingPermissions.find((p) => p.id === id);
-      await denyTool(currentSessionId, id, {
+      if (!req?.session_id) return;
+      await denyTool(req.session_id, id, {
         tool: req?.tool,
         args: req?.args,
         messageId: req?.messageId,

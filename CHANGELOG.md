@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-06
+
+### Added
+
+- **Multi-Agent Orchestration**: Introduced a major new mode for complex task execution.
+  - **Task DAG**: Supports dependency-aware task graphs (Planner -> Builder -> Validator).
+  - **Sub-Agents**: Orchestrates specialized agents for planning, coding, and verifying.
+  - **Cost & Safety**: Implements strict budget controls (tokens, time, iterations) and policy-based tool gating.
+  - **Visualize**: New Kanban board and budget meter to track progress in real-time.
+- **Unified Session Sidebar**: Completely redesigned the sidebar to merge chat sessions and orchestrator runs into a single, cohesive chronological list.
+  - **Project Grouping**: Items are smartly grouped by project with sticky headers.
+  - **Status Indicators**: Orchestrator runs show live status (Running, Completed, Failed).
+
 ## [0.1.15] - 2026-02-03
 
 ### Added

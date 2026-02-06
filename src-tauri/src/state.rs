@@ -1,11 +1,13 @@
 // Tandem Application State
 use crate::memory::MemoryManager;
+use crate::orchestrator::PathLockManager;
 use crate::sidecar::{SidecarConfig, SidecarManager};
 use crate::tool_proxy::{OperationJournal, StagingStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use tokio::sync::Semaphore;
 
 /// Provider configuration for LLM routing
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,10 +210,15 @@ pub struct AppState {
     pub operation_journal: Arc<OperationJournal>,
     /// Staging store for execution planning
     pub staging_store: Arc<StagingStore>,
-    /// Memory manager for context storage
+    pub fs_write_semaphore: Arc<Semaphore>,
+    pub path_locks: Arc<PathLockManager>,
+    /// memory manager for context storage
     pub memory_manager: Option<Arc<MemoryManager>>,
     /// Ralph Loop manager for iterative task execution
     pub ralph_manager: Arc<crate::ralph::RalphLoopManager>,
+    /// Active orchestrator engines (run_id -> engine)
+    pub orchestrator_engines:
+        RwLock<std::collections::HashMap<String, Arc<crate::orchestrator::OrchestratorEngine>>>,
 }
 
 impl AppState {
@@ -240,8 +247,11 @@ impl AppState {
             current_session_id: RwLock::new(None),
             operation_journal: Arc::new(OperationJournal::new(100)),
             staging_store: Arc::new(StagingStore::new()),
+            fs_write_semaphore: Arc::new(Semaphore::new(1)),
+            path_locks: Arc::new(PathLockManager::new()),
             memory_manager: None,
             ralph_manager: Arc::new(crate::ralph::RalphLoopManager::new()),
+            orchestrator_engines: RwLock::new(std::collections::HashMap::new()),
         }
     }
 

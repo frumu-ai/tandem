@@ -35,6 +35,24 @@ pub enum TandemError {
 
     #[error("Ralph loop error: {0}")]
     Ralph(String),
+
+    #[error("IO error: {0}")]
+    IoError(String),
+
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+
+    #[error("Parse error: {0}")]
+    ParseError(String),
+
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
+    #[error("Orchestrator error: {0}")]
+    Orchestrator(String),
 }
 
 // Allow conversion from String to TandemError

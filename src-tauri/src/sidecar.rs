@@ -844,8 +844,12 @@ impl SidecarManager {
         tracing::info!("Stopping OpenCode sidecar");
 
         // Kill the process
-        let mut process_guard = self.process.lock().await;
-        if let Some(mut child) = process_guard.take() {
+        let child = {
+            let mut process_guard = self.process.lock().await;
+            process_guard.take()
+        };
+
+        if let Some(mut child) = child {
             #[cfg(windows)]
             {
                 // On Windows, try graceful termination first, then force kill

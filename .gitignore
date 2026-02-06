@@ -35,6 +35,7 @@ secrets/
 .idea/
 *.swp
 *.swo
+.trae/
 
 # OS
 .DS_Store

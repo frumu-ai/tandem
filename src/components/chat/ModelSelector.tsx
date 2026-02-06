@@ -6,7 +6,9 @@ import { type ModelInfo, listModels, listOllamaModels, getProvidersConfig } from
 interface ModelSelectorProps {
   currentModel?: string; // e.g. "gpt-4o" or "claude-3-5-sonnet"
   onModelSelect: (modelId: string, providerId: string) => void;
-  className?: string; // Add className prop
+  className?: string;
+  align?: "left" | "right";
+  side?: "top" | "bottom";
 }
 
 interface GroupedModel {
@@ -15,7 +17,13 @@ interface GroupedModel {
   models: ModelInfo[];
 }
 
-export function ModelSelector({ currentModel, onModelSelect, className }: ModelSelectorProps) {
+export function ModelSelector({
+  currentModel,
+  onModelSelect,
+  className,
+  align = "left",
+  side = "top",
+}: ModelSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [groupedModels, setGroupedModels] = useState<GroupedModel[]>([]);
@@ -51,7 +59,7 @@ export function ModelSelector({ currentModel, onModelSelect, className }: ModelS
           console.warn("Failed to list Ollama models:", err);
           return [] as ModelInfo[];
         }),
-        getProvidersConfig() // We need this to check has_key
+        getProvidersConfig(), // We need this to check has_key
       ]);
 
       // Group by provider
@@ -60,12 +68,18 @@ export function ModelSelector({ currentModel, onModelSelect, className }: ModelS
       // Helper to get friendly name
       const getProviderName = (id: string) => {
         switch (id) {
-          case "openai": return "OpenAI";
-          case "anthropic": return "Anthropic";
-          case "openrouter": return "OpenRouter";
-          case "opencode_zen": return "OpenCode Zen";
-          case "ollama": return "Ollama";
-          default: return id.charAt(0).toUpperCase() + id.slice(1);
+          case "openai":
+            return "OpenAI";
+          case "anthropic":
+            return "Anthropic";
+          case "openrouter":
+            return "OpenRouter";
+          case "opencode_zen":
+            return "OpenCode Zen";
+          case "ollama":
+            return "Ollama";
+          default:
+            return id.charAt(0).toUpperCase() + id.slice(1);
         }
       };
 
@@ -75,8 +89,8 @@ export function ModelSelector({ currentModel, onModelSelect, className }: ModelS
       // Add discovered Ollama models if not already present
       ollamaModels.forEach((om: ModelInfo) => {
         // Check if we already have this model from sidecar
-        const exists = combinedModels.some(m =>
-          (m.id === om.id || m.name === om.name) && m.provider === "ollama"
+        const exists = combinedModels.some(
+          (m) => (m.id === om.id || m.name === om.name) && m.provider === "ollama"
         );
         if (!exists) {
           combinedModels.push(om);
@@ -84,7 +98,7 @@ export function ModelSelector({ currentModel, onModelSelect, className }: ModelS
       });
 
       // Add models from API
-      combinedModels.forEach(model => {
+      combinedModels.forEach((model) => {
         // Normalize provider ID
         let providerId = model.provider || "unknown";
         if (providerId === "opencode") providerId = "opencode_zen";
@@ -93,60 +107,63 @@ export function ModelSelector({ currentModel, onModelSelect, className }: ModelS
           groups[providerId] = {
             providerId,
             providerName: getProviderName(providerId),
-            models: []
+            models: [],
           };
         }
         groups[providerId].models.push(model);
       });
 
-      setGroupedModels(Object.values(groups).filter(group => {
-        // Filter: Only show "valid" providers
-        const getConf = (pid: string) => {
-          if (pid === "openai") return config.openai;
-          if (pid === "anthropic") return config.anthropic;
-          if (pid === "openrouter") return config.openrouter;
-          if (pid === "opencode_zen") return config.opencode_zen;
-          if (pid === "ollama") return config.ollama;
-          return undefined;
-        };
+      setGroupedModels(
+        Object.values(groups)
+          .filter((group) => {
+            // Filter: Only show "valid" providers
+            const getConf = (pid: string) => {
+              if (pid === "openai") return config.openai;
+              if (pid === "anthropic") return config.anthropic;
+              if (pid === "openrouter") return config.openrouter;
+              if (pid === "opencode_zen") return config.opencode_zen;
+              if (pid === "ollama") return config.ollama;
+              return undefined;
+            };
 
-        // Always show OpenCode Zen and Ollama (local/free)
-        if (group.providerId === "opencode_zen" || group.providerId === "ollama") return true;
+            // Always show OpenCode Zen and Ollama (local/free)
+            if (group.providerId === "opencode_zen" || group.providerId === "ollama") return true;
 
-        // For others, check if they have a key or are enabled
-        const conf = getConf(group.providerId);
-        return conf?.has_key || conf?.enabled;
-      }).sort((a, b) => {
-        // 1. OpenCode Zen always first
-        if (a.providerId === "opencode_zen") return -1;
-        if (b.providerId === "opencode_zen") return 1;
+            // For others, check if they have a key or are enabled
+            const conf = getConf(group.providerId);
+            return conf?.has_key || conf?.enabled;
+          })
+          .sort((a, b) => {
+            // 1. OpenCode Zen always first
+            if (a.providerId === "opencode_zen") return -1;
+            if (b.providerId === "opencode_zen") return 1;
 
-        // 2. Providers with keys configured come next (already filtered, but for ordering)
-        const getConf = (pid: string) => {
-          if (pid === "openai") return config.openai;
-          if (pid === "anthropic") return config.anthropic;
-          if (pid === "openrouter") return config.openrouter;
-          if (pid === "opencode_zen") return config.opencode_zen;
-          if (pid === "ollama") return config.ollama;
-          return undefined;
-        };
+            // 2. Providers with keys configured come next (already filtered, but for ordering)
+            const getConf = (pid: string) => {
+              if (pid === "openai") return config.openai;
+              if (pid === "anthropic") return config.anthropic;
+              if (pid === "openrouter") return config.openrouter;
+              if (pid === "opencode_zen") return config.opencode_zen;
+              if (pid === "ollama") return config.ollama;
+              return undefined;
+            };
 
-        const confA = getConf(a.providerId);
-        const confB = getConf(b.providerId);
+            const confA = getConf(a.providerId);
+            const confB = getConf(b.providerId);
 
-        const hasKeyA = confA?.has_key || confA?.enabled;
-        const hasKeyB = confB?.has_key || confB?.enabled;
+            const hasKeyA = confA?.has_key || confA?.enabled;
+            const hasKeyB = confB?.has_key || confB?.enabled;
 
-        const isPriorityA = hasKeyA || a.providerId === "ollama";
-        const isPriorityB = hasKeyB || b.providerId === "ollama";
+            const isPriorityA = hasKeyA || a.providerId === "ollama";
+            const isPriorityB = hasKeyB || b.providerId === "ollama";
 
-        if (isPriorityA && !isPriorityB) return -1;
-        if (!isPriorityA && isPriorityB) return 1;
+            if (isPriorityA && !isPriorityB) return -1;
+            if (!isPriorityA && isPriorityB) return 1;
 
-        // 3. Alphabetical for the rest
-        return a.providerName.localeCompare(b.providerName);
-      }));
-
+            // 3. Alphabetical for the rest
+            return a.providerName.localeCompare(b.providerName);
+          })
+      );
     } catch (e) {
       console.error("Failed to load models:", e);
     } finally {
@@ -154,25 +171,38 @@ export function ModelSelector({ currentModel, onModelSelect, className }: ModelS
     }
   };
 
-  const filteredGroups = groupedModels.map(group => ({
-    ...group,
-    models: group.models.filter(m =>
-      m.name.toLowerCase().includes(search.toLowerCase()) ||
-      m.id.toLowerCase().includes(search.toLowerCase())
-    )
-  })).filter(g => g.models.length > 0);
+  const filteredGroups = groupedModels
+    .map((group) => ({
+      ...group,
+      models: group.models.filter(
+        (m) =>
+          m.name.toLowerCase().includes(search.toLowerCase()) ||
+          m.id.toLowerCase().includes(search.toLowerCase())
+      ),
+    }))
+    .filter((g) => g.models.length > 0);
 
   // Find current model display name
   const currentModelDisplay = (() => {
     if (!currentModel) return "Select Model";
     // Try to find in loaded groups first if available
     for (const group of groupedModels) {
-      const found = group.models.find(m => m.id === currentModel);
+      const found = group.models.find((m) => m.id === currentModel);
       if (found) return found.name;
     }
     // Fallback to simple format
     return currentModel.split("/").pop() || currentModel;
   })();
+
+  // Determine positioning classes
+  const positionClasses = [
+    "absolute",
+    "z-50",
+    side === "top" ? "bottom-full mb-2" : "top-full mt-2",
+    align === "left" ? "left-0 origin-bottom-left" : "right-0 origin-bottom-right",
+    "w-[300px]",
+    "rounded-xl border border-border bg-surface shadow-xl overflow-hidden",
+  ].join(" ");
 
   return (
     <div className={`relative ${className || ""}`} ref={containerRef}>
@@ -186,17 +216,19 @@ export function ModelSelector({ currentModel, onModelSelect, className }: ModelS
             {currentModelDisplay}
           </span>
         </div>
-        <ChevronDown className={`h-3 w-3 text-text-subtle transition-transform ${isOpen ? "rotate-180" : ""}`} />
+        <ChevronDown
+          className={`h-3 w-3 text-text-subtle transition-transform ${isOpen ? "rotate-180" : ""}`}
+        />
       </button>
 
       <AnimatePresence>
         {isOpen && (
           <motion.div
-            initial={{ opacity: 0, y: 10, scale: 0.98 }}
+            initial={{ opacity: 0, y: side === "top" ? 10 : -10, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.98 }}
+            exit={{ opacity: 0, y: side === "top" ? 10 : -10, scale: 0.98 }}
             transition={{ duration: 0.1 }}
-            className="absolute left-0 bottom-full mb-2 w-[300px] origin-bottom-left rounded-xl border border-border bg-surface shadow-xl z-50 overflow-hidden"
+            className={positionClasses}
           >
             <div className="p-2 border-b border-border bg-surface-elevated/30">
               <div className="relative">
@@ -214,29 +246,26 @@ export function ModelSelector({ currentModel, onModelSelect, className }: ModelS
 
             <div className="max-h-[300px] overflow-y-auto p-1">
               {loading ? (
-                <div className="py-8 text-center text-xs text-text-subtle">
-                  Loading models...
-                </div>
+                <div className="py-8 text-center text-xs text-text-subtle">Loading models...</div>
               ) : filteredGroups.length === 0 ? (
-                <div className="py-8 text-center text-xs text-text-subtle">
-                  No models found
-                </div>
+                <div className="py-8 text-center text-xs text-text-subtle">No models found</div>
               ) : (
                 <div className="space-y-1">
-                  {filteredGroups.map(group => (
+                  {filteredGroups.map((group) => (
                     <div key={group.providerId}>
                       <div className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-text-subtle sticky top-0 bg-surface/95 backdrop-blur-sm">
                         {group.providerName}
                       </div>
-                      {group.models.map(model => (
+                      {group.models.map((model) => (
                         <button
                           key={model.id}
                           onClick={() => {
                             onModelSelect(model.id, group.providerId);
                             setIsOpen(false);
                           }}
-                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-elevated ${currentModel === model.id ? "bg-primary/10 text-primary" : "text-text"
-                            }`}
+                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-elevated ${
+                            currentModel === model.id ? "bg-primary/10 text-primary" : "text-text"
+                          }`}
                         >
                           <span className="truncate">{model.name}</span>
                           {currentModel === model.id && <Check className="h-3 w-3" />}
