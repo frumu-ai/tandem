@@ -1,3 +1,38 @@
+# Tandem v0.2.1 Release Notes
+
+## Highlights
+
+- **First-outcome onboarding**: a guided wizard helps new users pick a folder, connect AI, and run a starter workflow in minutes.
+- **Starter Packs + Starter Skills (offline)**: install curated, local-first templates directly from the app—no copy/paste required (advanced SKILL.md paste remains available).
+- **More reliable Orchestration**: runs now pause on provider quota/rate-limit errors so you can switch model/provider and resume, instead of failing after max retries.
+
+## Complete Feature List
+
+### UX
+
+- Onboarding wizard to drive a “first successful outcome”.
+- Packs panel for browsing and installing bundled workflow packs.
+- Starter Skills gallery with a clear separation between templates and “Advanced: paste SKILL.md”.
+- Reduced developer-jargon in key surfaces to better match a non-coder-first product.
+
+### Orchestration
+
+- Increased default iteration/sub-agent budgets and auto-upgraded older runs created with too-low limits.
+- Provider quota/rate-limit detection now pauses runs (and avoids burning retries), enabling recovery without restarting from scratch.
+- Model selection is available even after a run fails to support “switch and resume”.
+
+### Platform / Reliability
+
+- Provider env vars are explicitly synced/removed and sidecar restarts correctly apply config changes.
+
+### Contributors
+
+- Added top-level product docs (`VISION.md`, `PRODUCT.md`, `PRINCIPLES.md`, `ARCHITECTURE.md`, `ROADMAP.md`).
+- Added GitHub issue templates and a PR template.
+- CI now fails on frontend lint instead of ignoring violations.
+
+---
+
 # Tandem v0.2.0 Release Notes
 
 ## Highlights
