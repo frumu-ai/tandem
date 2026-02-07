@@ -66,6 +66,19 @@ impl BudgetTracker {
         self.budget.max_tokens = new_budget.max_tokens;
         self.budget.max_wall_time_secs = new_budget.max_wall_time_secs;
         self.budget.max_subagent_runs = new_budget.max_subagent_runs;
+
+        // If we increased limits, we may no longer be exceeded.
+        if self.budget.exceeded {
+            let still_exceeded = self.budget.iterations_used >= self.budget.max_iterations
+                || self.budget.tokens_used >= self.budget.max_tokens
+                || self.budget.wall_time_secs >= self.budget.max_wall_time_secs
+                || self.budget.subagent_runs_used >= self.budget.max_subagent_runs;
+
+            if !still_exceeded {
+                self.budget.exceeded = false;
+                self.budget.exceeded_reason = None;
+            }
+        }
     }
 
     pub fn set_active(&mut self, active: bool) {

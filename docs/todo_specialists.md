@@ -26,7 +26,7 @@ Each specialist maps to capabilities developers already have:
 | File Managers (tree, mv) | File Organizer    |
 | Research Tools           | Research Helper   |
 
-**The Insight:** In 2024, tools like Cursor and Claude Code gave developers AI-powered capabilities for working with entire codebases. Tandem brings these same capabilities to everyone - researchers, writers, analysts, and administrators who work with documents instead of code.
+**The Insight:** In 2024, tools like Cursor gave developers AI-powered capabilities for working with entire codebases. Tandem brings these same capabilities to everyone - researchers, writers, analysts, and administrators who work with documents instead of code.
 
 ---
 

@@ -777,6 +777,55 @@ export async function deleteSkill(name: string, location: SkillLocation): Promis
   return invoke<void>("delete_skill", { name, location });
 }
 
+export interface SkillTemplateInfo {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export async function listSkillTemplates(): Promise<SkillTemplateInfo[]> {
+  return invoke<SkillTemplateInfo[]>("skills_list_templates");
+}
+
+export async function installSkillTemplate(
+  templateId: string,
+  location: SkillLocation
+): Promise<SkillInfo> {
+  return invoke<SkillInfo>("skills_install_template", { templateId, location });
+}
+
+// ============================================================================
+// Packs (guided workflows)
+// ============================================================================
+
+export interface PackMeta {
+  id: string;
+  title: string;
+  description: string;
+  complexity: string;
+  time_estimate: string;
+  tags: string[];
+}
+
+export interface PackInstallResult {
+  installed_path: string;
+}
+
+export async function listPacks(): Promise<PackMeta[]> {
+  return invoke<PackMeta[]>("packs_list");
+}
+
+export async function installPack(
+  packId: string,
+  destinationDir: string
+): Promise<PackInstallResult> {
+  return invoke<PackInstallResult>("packs_install", { packId, destinationDir });
+}
+
+export async function installPackDefault(packId: string): Promise<PackInstallResult> {
+  return invoke<PackInstallResult>("packs_install_default", { packId });
+}
+
 // ============================================================================
 // Ralph Loop (Iterative Task Agent)
 // ============================================================================

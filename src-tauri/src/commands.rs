@@ -28,6 +28,32 @@ use tauri_plugin_store::StoreExt;
 use uuid::Uuid;
 
 // ============================================================================
+// Packs (guided workflows)
+// ============================================================================
+
+#[tauri::command]
+pub fn packs_list() -> Vec<crate::packs::PackMeta> {
+    crate::packs::list_packs()
+}
+
+#[tauri::command]
+pub fn packs_install(
+    app: AppHandle,
+    pack_id: String,
+    destination_dir: String,
+) -> Result<crate::packs::PackInstallResult> {
+    crate::packs::install_pack(&app, &pack_id, &destination_dir).map_err(TandemError::InvalidConfig)
+}
+
+#[tauri::command]
+pub fn packs_install_default(
+    app: AppHandle,
+    pack_id: String,
+) -> Result<crate::packs::PackInstallResult> {
+    crate::packs::install_pack_default(&app, &pack_id).map_err(TandemError::InvalidConfig)
+}
+
+// ============================================================================
 // Updater helpers
 // ============================================================================
 
@@ -586,38 +612,19 @@ pub async fn set_active_project(
         // Get the sidecar path (checks AppData first, then resources)
         let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
 
+        // Sync env vars BEFORE starting so the sidecar actually picks them up.
+        let providers = {
+            let config = state.providers_config.read().unwrap();
+            config.clone()
+        };
+        sync_ollama_env(&state, &providers).await;
+        sync_provider_keys_env(&app, &state, &providers).await;
+
         // Restart with new workspace
         state
             .sidecar
             .start(sidecar_path.to_string_lossy().as_ref())
             .await?;
-
-        // Re-set API keys
-        let providers = {
-            let config = state.providers_config.read().unwrap();
-            config.clone()
-        };
-
-        if providers.openrouter.enabled {
-            if let Ok(Some(key)) = get_api_key(&app, "openrouter").await {
-                state.sidecar.set_env("OPENROUTER_API_KEY", &key).await;
-            }
-        }
-        if providers.opencode_zen.enabled {
-            if let Ok(Some(key)) = get_api_key(&app, "opencode_zen").await {
-                state.sidecar.set_env("OPENCODE_ZEN_API_KEY", &key).await;
-            }
-        }
-        if providers.anthropic.enabled {
-            if let Ok(Some(key)) = get_api_key(&app, "anthropic").await {
-                state.sidecar.set_env("ANTHROPIC_API_KEY", &key).await;
-            }
-        }
-        if providers.openai.enabled {
-            if let Ok(Some(key)) = get_api_key(&app, "openai").await {
-                state.sidecar.set_env("OPENAI_API_KEY", &key).await;
-            }
-        }
 
         tracing::info!("Sidecar restarted successfully");
     }
@@ -881,6 +888,52 @@ async fn sync_ollama_env(state: &AppState, config: &ProvidersConfig) {
     }
 }
 
+async fn sync_provider_keys_env(app: &AppHandle, state: &AppState, config: &ProvidersConfig) {
+    // OPENROUTER
+    if config.openrouter.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "openrouter").await {
+            state.sidecar.set_env("OPENROUTER_API_KEY", &key).await;
+        } else {
+            state.sidecar.remove_env("OPENROUTER_API_KEY").await;
+        }
+    } else {
+        state.sidecar.remove_env("OPENROUTER_API_KEY").await;
+    }
+
+    // OpenCode Zen
+    if config.opencode_zen.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "opencode_zen").await {
+            state.sidecar.set_env("OPENCODE_ZEN_API_KEY", &key).await;
+        } else {
+            state.sidecar.remove_env("OPENCODE_ZEN_API_KEY").await;
+        }
+    } else {
+        state.sidecar.remove_env("OPENCODE_ZEN_API_KEY").await;
+    }
+
+    // Anthropic
+    if config.anthropic.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "anthropic").await {
+            state.sidecar.set_env("ANTHROPIC_API_KEY", &key).await;
+        } else {
+            state.sidecar.remove_env("ANTHROPIC_API_KEY").await;
+        }
+    } else {
+        state.sidecar.remove_env("ANTHROPIC_API_KEY").await;
+    }
+
+    // OpenAI
+    if config.openai.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "openai").await {
+            state.sidecar.set_env("OPENAI_API_KEY", &key).await;
+        } else {
+            state.sidecar.remove_env("OPENAI_API_KEY").await;
+        }
+    } else {
+        state.sidecar.remove_env("OPENAI_API_KEY").await;
+    }
+}
+
 /// Set the providers configuration
 #[tauri::command]
 pub async fn set_providers_config(
@@ -912,8 +965,15 @@ pub async fn set_providers_config(
     let ollama_changed = previous_config.ollama.enabled != config.ollama.enabled
         || previous_config.ollama.endpoint != config.ollama.endpoint;
 
-    if ollama_changed {
+    let key_providers_changed = previous_config.openrouter.enabled != config.openrouter.enabled
+        || previous_config.opencode_zen.enabled != config.opencode_zen.enabled
+        || previous_config.anthropic.enabled != config.anthropic.enabled
+        || previous_config.openai.enabled != config.openai.enabled;
+
+    if ollama_changed || key_providers_changed {
         sync_ollama_env(&state, &config).await;
+        sync_provider_keys_env(&app, &state, &config).await;
+
         if matches!(state.sidecar.state().await, SidecarState::Running) {
             let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
             state
@@ -954,27 +1014,9 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
     // Configure Ollama endpoint env (local models)
     sync_ollama_env(&state, &providers).await;
 
-    // Set API key for the default/enabled provider
-    if providers.openrouter.enabled {
-        if let Ok(Some(key)) = get_api_key(&app, "openrouter").await {
-            state.sidecar.set_env("OPENROUTER_API_KEY", &key).await;
-        }
-    }
-    if providers.opencode_zen.enabled {
-        if let Ok(Some(key)) = get_api_key(&app, "opencode_zen").await {
-            state.sidecar.set_env("OPENCODE_ZEN_API_KEY", &key).await;
-        }
-    }
-    if providers.anthropic.enabled {
-        if let Ok(Some(key)) = get_api_key(&app, "anthropic").await {
-            state.sidecar.set_env("ANTHROPIC_API_KEY", &key).await;
-        }
-    }
-    if providers.openai.enabled {
-        if let Ok(Some(key)) = get_api_key(&app, "openai").await {
-            state.sidecar.set_env("OPENAI_API_KEY", &key).await;
-        }
-    }
+    // Set/remove API keys based on enabled providers.
+    // (Important: remove_env only applies after restart, but we call this before start().)
+    sync_provider_keys_env(&app, &state, &providers).await;
 
     // Start the sidecar
     state
@@ -3188,6 +3230,46 @@ pub fn read_binary_file(
 // Skills Management Commands
 // ============================================================================
 
+fn import_skill_from_content(
+    state: &State<'_, AppState>,
+    content: &str,
+    location: crate::skills::SkillLocation,
+) -> Result<crate::skills::SkillInfo> {
+    // Parse content to get name
+    let (name, description, _body) = crate::skills::parse_skill_content(content)?;
+
+    // Determine target directory
+    let target_dir = match location {
+        crate::skills::SkillLocation::Project => {
+            let ws = state.workspace_path.read().unwrap();
+            let workspace = ws
+                .as_ref()
+                .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+            workspace.join(".opencode").join("skill").join(&name)
+        }
+        crate::skills::SkillLocation::Global => {
+            let config_dir = dirs::config_dir()
+                .ok_or_else(|| TandemError::InvalidConfig("No config directory".to_string()))?;
+            config_dir.join("opencode").join("skills").join(&name)
+        }
+    };
+
+    // Create directory and write file
+    fs::create_dir_all(&target_dir).map_err(TandemError::Io)?;
+
+    // Write original content directly (don't reconstruct to avoid formatting issues)
+    fs::write(target_dir.join("SKILL.md"), content).map_err(TandemError::Io)?;
+
+    tracing::info!("Imported skill '{}' to {:?}", name, location);
+
+    Ok(crate::skills::SkillInfo {
+        name,
+        description,
+        location,
+        path: target_dir.to_string_lossy().to_string(),
+    })
+}
+
 /// List all installed skills
 #[tauri::command]
 pub fn list_skills(state: State<'_, AppState>) -> Result<Vec<crate::skills::SkillInfo>> {
@@ -3211,39 +3293,7 @@ pub fn import_skill(
     content: String,
     location: crate::skills::SkillLocation,
 ) -> Result<crate::skills::SkillInfo> {
-    // Parse content to get name
-    let (name, description, _body) = crate::skills::parse_skill_content(&content)?;
-
-    // Determine target directory
-    let target_dir = match location {
-        crate::skills::SkillLocation::Project => {
-            let ws = state.workspace_path.read().unwrap();
-            let workspace = ws
-                .as_ref()
-                .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
-            workspace.join(".opencode").join("skill").join(&name)
-        }
-        crate::skills::SkillLocation::Global => {
-            let config_dir = dirs::config_dir()
-                .ok_or_else(|| TandemError::InvalidConfig("No config directory".to_string()))?;
-            config_dir.join("opencode").join("skills").join(&name)
-        }
-    };
-
-    // Create directory and write file
-    fs::create_dir_all(&target_dir).map_err(TandemError::Io)?;
-
-    // Write original content directly (don't reconstruct to avoid formatting issues)
-    fs::write(target_dir.join("SKILL.md"), &content).map_err(TandemError::Io)?;
-
-    tracing::info!("Imported skill '{}' to {:?}", name, location);
-
-    Ok(crate::skills::SkillInfo {
-        name,
-        description,
-        location,
-        path: target_dir.to_string_lossy().to_string(),
-    })
+    import_skill_from_content(&state, &content, location)
 }
 
 /// Delete a skill
@@ -3274,6 +3324,29 @@ pub fn delete_skill(
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Starter Skill Templates (offline)
+// ============================================================================
+
+#[tauri::command]
+pub fn skills_list_templates(
+    app: AppHandle,
+) -> Result<Vec<crate::skill_templates::SkillTemplateInfo>> {
+    crate::skill_templates::list_skill_templates(&app).map_err(TandemError::InvalidConfig)
+}
+
+#[tauri::command]
+pub fn skills_install_template(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    template_id: String,
+    location: crate::skills::SkillLocation,
+) -> Result<crate::skills::SkillInfo> {
+    let content = crate::skill_templates::read_skill_template_content(&app, &template_id)
+        .map_err(TandemError::InvalidConfig)?;
+    import_skill_from_content(&state, &content, location)
 }
 
 // ============================================================================
@@ -3690,11 +3763,14 @@ pub async fn orchestrator_create_run(
 
     // Guard against old UI defaults when creating new runs.
     let mut config = config;
-    if config.max_iterations == 10 || config.max_iterations == 30 {
-        config.max_iterations = 200;
+    if config.max_iterations == 10 || config.max_iterations == 30 || config.max_iterations == 200 {
+        config.max_iterations = 500;
     }
-    if config.max_subagent_runs == 20 || config.max_subagent_runs == 50 {
-        config.max_subagent_runs = 500;
+    if config.max_subagent_runs == 20
+        || config.max_subagent_runs == 50
+        || config.max_subagent_runs == 500
+    {
+        config.max_subagent_runs = 2000;
     }
     if config.max_wall_time_secs == 20 * 60 {
         config.max_wall_time_secs = 60 * 60;
@@ -3874,9 +3950,12 @@ pub async fn orchestrator_set_resume_model(
     };
 
     let snapshot = engine.get_snapshot().await;
-    if snapshot.status != RunStatus::Paused && snapshot.status != RunStatus::Cancelled {
+    if snapshot.status != RunStatus::Paused
+        && snapshot.status != RunStatus::Cancelled
+        && snapshot.status != RunStatus::Failed
+    {
         return Err(TandemError::InvalidOperation(
-            "Run must be paused or cancelled to change model".to_string(),
+            "Run must be paused, failed, or cancelled to change model".to_string(),
         ));
     }
 
@@ -4091,15 +4170,26 @@ pub async fn orchestrator_load_run(
     let mut run_to_load = run.clone();
 
     // Patch limits if they match the old defaults (to allow continuation)
-    if run_to_load.config.max_subagent_runs == 20 || run_to_load.config.max_subagent_runs == 50 {
-        run_to_load.config.max_subagent_runs = 500;
+    if run_to_load.config.max_subagent_runs == 20
+        || run_to_load.config.max_subagent_runs == 50
+        || run_to_load.config.max_subagent_runs == 500
+    {
+        run_to_load.config.max_subagent_runs = 2000;
     }
-    if run_to_load.config.max_iterations == 10 || run_to_load.config.max_iterations == 30 {
-        run_to_load.config.max_iterations = 200;
+    if run_to_load.config.max_iterations == 10
+        || run_to_load.config.max_iterations == 30
+        || run_to_load.config.max_iterations == 200
+    {
+        run_to_load.config.max_iterations = 500;
     }
     if run_to_load.config.max_wall_time_secs == 20 * 60 {
         run_to_load.config.max_wall_time_secs = 60 * 60;
     }
+
+    // Keep budget max values aligned with config so "still_exceeded" is accurate.
+    run_to_load.budget.max_iterations = run_to_load.config.max_iterations;
+    run_to_load.budget.max_subagent_runs = run_to_load.config.max_subagent_runs;
+    run_to_load.budget.max_wall_time_secs = run_to_load.config.max_wall_time_secs;
     if run_to_load.budget.max_wall_time_secs == 20 * 60 {
         run_to_load.budget.max_wall_time_secs = 60 * 60;
     }

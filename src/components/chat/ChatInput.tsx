@@ -21,6 +21,8 @@ interface ChatInputProps {
   disabled?: boolean;
   isGenerating?: boolean;
   placeholder?: string;
+  draftMessage?: string;
+  onDraftMessageConsumed?: () => void;
   selectedAgent?: string;
   onAgentChange?: (agent: string | undefined) => void;
   externalAttachment?: FileAttachment | null;
@@ -47,6 +49,8 @@ export function ChatInput({
   disabled,
   isGenerating,
   placeholder = "Ask Tandem anything...",
+  draftMessage,
+  onDraftMessageConsumed,
   selectedAgent,
   onAgentChange,
   externalAttachment,
@@ -78,6 +82,15 @@ export function ChatInput({
     }, 100);
     return () => clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!draftMessage) return;
+    // Only prefill if the user hasn't started typing.
+    if (message.trim().length > 0) return;
+    setMessage(draftMessage);
+    onDraftMessageConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftMessage]);
 
   // Let parent clear external attachment after we've saved it to local state
   useEffect(() => {

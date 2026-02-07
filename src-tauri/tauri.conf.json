@@ -45,7 +45,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/default_config.json", "resources/skills/**/*"],
+    "resources": [
+      "resources/default_config.json",
+      "resources/skills/**/*",
+      "resources/skill-templates/**/*",
+      "resources/packs/**/*",
+      "resources/pack-docs/**/*"
+    ],
     "windows": {
       "nsis": {
         "installMode": "perMachine"

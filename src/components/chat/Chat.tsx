@@ -66,6 +66,8 @@ interface ChatProps {
   activeModelLabel?: string;
   onOpenSettings?: () => void;
   onProviderChange?: () => void;
+  draftMessage?: string;
+  onDraftMessageConsumed?: () => void;
 }
 
 export function Chat({
@@ -90,6 +92,8 @@ export function Chat({
   activeModelLabel,
   onOpenSettings,
   onProviderChange,
+  draftMessage,
+  onDraftMessageConsumed,
 }: ChatProps) {
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -371,7 +375,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propSessionId, isGenerating]);
 
-  // Check if workspace is a Git repository
+  // Check if folder is a Git repository
   useEffect(() => {
     const checkGitRepo = async () => {
       if (workspacePath) {
@@ -1847,8 +1851,10 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                   ? needsConnection
                     ? "Type to connect and start chatting..."
                     : "Ask Tandem anything..."
-                  : "Select a workspace to start chatting"
+                  : "Select a folder to start chatting"
               }
+              draftMessage={draftMessage}
+              onDraftMessageConsumed={onDraftMessageConsumed}
               selectedAgent={selectedAgent}
               onAgentChange={onAgentChange}
               externalAttachment={fileToAttach}
@@ -2127,7 +2133,7 @@ function EmptyState({
 
         <p className="mb-8 text-text-muted">
           I can read and write files, search your codebase, run commands, and help you accomplish
-          tasks in your workspace.
+          tasks in your folder.
         </p>
 
         {needsConnection && workspacePath && (

@@ -47,11 +47,16 @@ pub struct OrchestratorConfig {
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 200, // Increased from 30
+            // Safety cap on overall run "steps". This is intentionally generous because
+            // we also cap tokens + subagent calls, and users shouldn't see runs fail
+            // simply due to long multi-step workflows.
+            max_iterations: 500, // Increased from 200
             max_total_tokens: 400_000,
             max_tokens_per_step: 60_000,
             max_wall_time_secs: 60 * 60, // 60 minutes
-            max_subagent_runs: 500,      // Increased from 50
+            // Each task attempt currently includes multiple model calls (e.g. build + validate).
+            // Keep this cap generous to avoid premature pauses while still bounding cost.
+            max_subagent_runs: 2000, // Increased from 500
             max_web_sources: 30,
             max_task_retries: 3,
             require_write_approval: true,

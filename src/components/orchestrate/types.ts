@@ -20,11 +20,11 @@ export interface OrchestratorConfig {
 }
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
-  max_iterations: 200,
+  max_iterations: 500,
   max_total_tokens: 400_000,
   max_tokens_per_step: 60_000,
   max_wall_time_secs: 60 * 60,
-  max_subagent_runs: 500,
+  max_subagent_runs: 2000,
   max_web_sources: 30,
   max_task_retries: 3,
   require_write_approval: true,

@@ -376,7 +376,7 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
   const isCompleted = runStatus === "completed";
   const isFailed = runStatus === "failed";
   const isCancelled = runStatus === "cancelled";
-  const canAdjustResumeModel = isPaused || isCancelled;
+  const canAdjustResumeModel = isPaused || isCancelled || isFailed;
   const canShowRuntimeControls = Boolean(snapshot && (!isReadOnly || isPaused || isActive));
   const runningCount = tasks.filter((t) => t.state === "in_progress").length;
   const hasRunningTasks = runningCount > 0;

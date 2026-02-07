@@ -219,7 +219,7 @@ async fn set_base_session_for_resume_requires_paused() {
         .await
         .unwrap_err();
     let msg = format!("{}", err);
-    assert!(msg.contains("Run must be paused or cancelled"));
+    assert!(msg.contains("Run must be paused"));
 }
 
 #[tokio::test]

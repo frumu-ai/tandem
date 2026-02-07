@@ -15,7 +15,7 @@ A local-first, privacy-focused AI workspace. Your AI coworker that runs entirely
   <img src=".github/assets/app.png" alt="Tandem AI Workspace" width="90%">
 </div>
 
-Inspired by [Claude Cowork](https://claude.com/blog/cowork-research-preview), but open source and provider-agnostic.
+Inspired by early AI coworking research previews, but open source and provider-agnostic.
 
 ## Why Tandem?
 
@@ -31,7 +31,7 @@ Inspired by [Claude Cowork](https://claude.com/blog/cowork-research-preview), bu
 
 ## Developer Superpowers for Everyone
 
-In 2024, AI coding tools like Cursor and Claude Code transformed how developers work - letting them interact with entire codebases, automate complex tasks, and review changes before they happen.
+In 2024, AI coding tools like Cursor transformed how developers work - letting them interact with entire codebases, automate complex tasks, and review changes before they happen.
 
 **But why should only programmers have these capabilities?**
 
@@ -190,7 +190,7 @@ Tandem supports multiple LLM providers. Configure them in Settings:
 | ----------------- | ------------------------------------------------ | -------------------------------------------------------------------- |
 | **OpenRouter** ⭐ | Access 100+ models through one API (recommended) | [openrouter.ai/keys](https://openrouter.ai/keys)                     |
 | **OpenCode Zen**  | Fast, cost-effective models optimized for coding | [opencode.ai/zen](https://opencode.ai/zen)                           |
-| **Anthropic**     | Claude models (Sonnet, Opus, Haiku)              | [console.anthropic.com](https://console.anthropic.com/settings/keys) |
+| **Anthropic**     | Anthropic models (Sonnet, Opus, Haiku)           | [console.anthropic.com](https://console.anthropic.com/settings/keys) |
 | **OpenAI**        | GPT-4, GPT-3.5 and other OpenAI models           | [platform.openai.com](https://platform.openai.com/api-keys)          |
 | **Ollama**        | Run models locally (no API key needed)           | [Setup Guide](docs/OLLAMA_GUIDE.md)                                  |
 | **Custom**        | Any OpenAI-compatible API endpoint               | Configure endpoint URL                                               |

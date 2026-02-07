@@ -4,7 +4,7 @@ import { Check, ChevronDown, Search, Sparkles } from "lucide-react";
 import { type ModelInfo, listModels, listOllamaModels, getProvidersConfig } from "@/lib/tauri";
 
 interface ModelSelectorProps {
-  currentModel?: string; // e.g. "gpt-4o" or "claude-3-5-sonnet"
+  currentModel?: string; // e.g. "gpt-4o"
   onModelSelect: (modelId: string, providerId: string) => void;
   className?: string;
   align?: "left" | "right";

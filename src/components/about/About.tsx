@@ -83,7 +83,7 @@ export function About() {
             <div className="space-y-3">
               <div className="flex items-start gap-3">
                 <div className="mt-1 h-2 w-2 rounded-full bg-primary" />
-                <p className="text-sm text-text-muted">Privacy-first AI workspace tools</p>
+                <p className="text-sm text-text-muted">Privacy-first AI folder tools</p>
               </div>
               <div className="flex items-start gap-3">
                 <div className="mt-1 h-2 w-2 rounded-full bg-primary" />
@@ -160,7 +160,7 @@ export function About() {
         >
           <p className="text-sm text-text-subtle">Tandem is built with ❤️ by the Frumu.ai team</p>
           <p className="mt-2 text-xs text-text-subtle">
-            Open source • Privacy-focused • Developer-first
+            Open source • Privacy-focused • For everyone
           </p>
           <div className="mt-6 flex flex-col items-center gap-3">
             <button

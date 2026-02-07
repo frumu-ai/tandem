@@ -54,7 +54,7 @@ export function ProjectSwitcher({
                 <p className="truncate text-xs text-text-subtle">{activeProject.path}</p>
               </>
             ) : (
-              <p className="text-sm text-text-muted">No project selected</p>
+              <p className="text-sm text-text-muted">No folder selected</p>
             )}
           </div>
         </div>
@@ -80,10 +80,10 @@ export function ProjectSwitcher({
               transition={{ duration: 0.15 }}
               className="bg-surface-elevated border border-border absolute left-0 right-0 top-full z-50 mt-2 max-h-96 overflow-y-auto rounded-lg shadow-2xl ring-1 ring-white/5"
             >
-              {/* Projects List */}
+              {/* Folders List */}
               {projects.length > 0 ? (
                 <div className="p-2">
-                  <p className="mb-2 px-3 text-xs font-medium text-text-subtle">Projects</p>
+                  <p className="mb-2 px-3 text-xs font-medium text-text-subtle">Folders</p>
                   {projects.map((project) => (
                     <button
                       key={project.id}
@@ -105,7 +105,7 @@ export function ProjectSwitcher({
               ) : (
                 <div className="p-4 text-center">
                   <FolderOpen className="mx-auto mb-2 h-8 w-8 text-text-subtle" />
-                  <p className="text-sm text-text-muted">No projects yet</p>
+                  <p className="text-sm text-text-muted">No folders yet</p>
                 </div>
               )}
 
@@ -120,7 +120,7 @@ export function ProjectSwitcher({
                   className="flex w-full items-center gap-3 rounded-lg p-3 text-left transition-colors hover:bg-surface-elevated disabled:opacity-50"
                 >
                   <Plus className="h-4 w-4 text-primary" />
-                  <span className="text-sm text-primary">Add Project</span>
+                  <span className="text-sm text-primary">Add Folder</span>
                 </button>
                 <button
                   onClick={handleManageProjects}
@@ -128,7 +128,7 @@ export function ProjectSwitcher({
                   className="flex w-full items-center gap-3 rounded-lg p-3 text-left transition-colors hover:bg-surface-elevated disabled:opacity-50"
                 >
                   <SettingsIcon className="h-4 w-4 text-text-muted" />
-                  <span className="text-sm text-text-muted">Manage Projects</span>
+                  <span className="text-sm text-text-muted">Manage Folders</span>
                 </button>
               </div>
             </motion.div>

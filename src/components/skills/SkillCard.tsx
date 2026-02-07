@@ -34,7 +34,7 @@ export function SkillCard({ skill, onDelete }: SkillCardProps) {
         </div>
         <p className="text-sm text-text-muted">{skill.description}</p>
         <p className="text-xs text-text-subtle font-mono">
-          📍 {skill.location === "project" ? "Project" : "Global"} • {skill.path}
+          📍 {skill.location === "project" ? "Folder" : "Global"} • {skill.path}
         </p>
       </div>
       <div className="flex items-center gap-2">

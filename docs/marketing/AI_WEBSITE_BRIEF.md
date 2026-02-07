@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-Tandem is a **local-first, privacy-focused AI workspace** designed to bring the power of AI coding tools (like Cursor/Claude Dev) to _general_ file management and project work. It runs entirely on the user's desktop (Windows, macOS, Linux), ensuring that sensitive data never leaves their machine unless explicitly sent to an LLM provider of their choice.
+Tandem is a **local-first, privacy-focused AI workspace** designed to bring the power of AI coding tools (like Cursor and similar assistants) to _general_ file management and project work. It runs entirely on the user's desktop (Windows, macOS, Linux), ensuring that sensitive data never leaves their machine unless explicitly sent to an LLM provider of their choice.
 
 ## Core Value Proposition
 

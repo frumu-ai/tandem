@@ -11,13 +11,14 @@ import { FilePreview } from "@/components/files/FilePreview";
 import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
 import { OrchestratorPanel } from "@/components/orchestrate/OrchestratorPanel";
 import { type RunSummary } from "@/components/orchestrate/types";
-import { Button } from "@/components/ui";
+import { PacksPanel } from "@/components/packs";
 import { AppUpdateOverlay } from "@/components/updates/AppUpdateOverlay";
 import { useAppState } from "@/hooks/useAppState";
 import { useTheme } from "@/hooks/useTheme";
 import { useTodos } from "@/hooks/useTodos";
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/ui/BrandMark";
+import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
 import {
   listSessions,
   listProjects,
@@ -43,7 +44,6 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Settings as SettingsIcon,
   MessageSquare,
-  FolderOpen,
   Shield,
   PanelLeftClose,
   PanelLeft,
@@ -51,10 +51,10 @@ import {
   ListTodo,
   Files,
   Palette,
-  AlertCircle,
+  Sparkles,
 } from "lucide-react";
 
-type View = "chat" | "settings" | "about" | "onboarding" | "sidecar-setup";
+type View = "chat" | "settings" | "about" | "packs" | "onboarding" | "sidecar-setup";
 
 // Hide the HTML splash screen once React is ready and vault is unlocked
 function hideSplashScreen() {
@@ -89,6 +89,11 @@ function App() {
   const [selectedAgent, setSelectedAgent] = useState<string | undefined>(undefined);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [draftMessage, setDraftMessage] = useState<string | null>(null);
+  const [settingsInitialSection, setSettingsInitialSection] = useState<
+    "providers" | "projects" | "skills" | null
+  >(null);
+  const [postAddProjectView, setPostAddProjectView] = useState<View | null>(null);
   // Initialize currentSessionId from localStorage to persist state across reloads/rebuilds
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(() => {
     if (typeof window !== "undefined") {
@@ -207,7 +212,8 @@ function App() {
         ? "sidecar-setup"
         : (!state?.has_workspace || !hasConfiguredProvider) &&
             view !== "settings" &&
-            view !== "about"
+            view !== "about" &&
+            view !== "packs"
           ? "onboarding"
           : view;
 
@@ -404,6 +410,50 @@ function App() {
     }
   };
 
+  const beginAddProject = async (path: string) => {
+    setError(null);
+
+    try {
+      // Check Git status with timeout
+      // On macOS, git check can hang if it triggers the "install command line tools" prompt
+      // We set a short timeout to prevent the UI from freezing
+      try {
+        const checkPromise = checkGitStatus(path);
+        const timeoutPromise = new Promise<{
+          git_installed: boolean;
+          is_repo: boolean;
+          can_enable_undo: boolean;
+        }>((_, reject) => setTimeout(() => reject(new Error("Git check timed out")), 2000));
+
+        const status = await Promise.race([checkPromise, timeoutPromise]);
+
+        if (status.can_enable_undo) {
+          // Git is installed but folder isn't a repo - prompt user
+          setPendingProjectPath(path);
+          setGitStatus(status);
+          setShowGitDialog(true);
+          return; // Wait for dialog response
+        } else if (!status.git_installed) {
+          // Git not installed - show warning but allow continuing
+          setPendingProjectPath(path);
+          setGitStatus(status);
+          setShowGitDialog(true);
+          return;
+        }
+      } catch (e) {
+        console.warn("Git check failed or timed out:", e);
+        // If git check fails or times out, proceed without git features
+        // This prevents onboarding from getting stuck
+      }
+
+      // Git is already set up, user doesn't want it, or check failed - proceed
+      await finalizeAddProject(path);
+    } catch (e) {
+      console.error("Failed to add project:", e);
+      setError(e instanceof Error ? e.message : "Failed to add project");
+    }
+  };
+
   const handleAddProject = async () => {
     // Clear current session FIRST to reset the chat view
     setCurrentSessionId(null);
@@ -413,45 +463,10 @@ function App() {
       const selected = await open({
         directory: true,
         multiple: false,
-        title: "Select Project Folder",
+        title: "Select Folder",
       });
 
-      if (selected && typeof selected === "string") {
-        // Check Git status with timeout
-        // On macOS, git check can hang if it triggers the "install command line tools" prompt
-        // We set a short timeout to prevent the UI from freezing
-        try {
-          const checkPromise = checkGitStatus(selected);
-          const timeoutPromise = new Promise<{
-            git_installed: boolean;
-            is_repo: boolean;
-            can_enable_undo: boolean;
-          }>((_, reject) => setTimeout(() => reject(new Error("Git check timed out")), 2000));
-
-          const status = await Promise.race([checkPromise, timeoutPromise]);
-
-          if (status.can_enable_undo) {
-            // Git is installed but folder isn't a repo - prompt user
-            setPendingProjectPath(selected);
-            setGitStatus(status);
-            setShowGitDialog(true);
-            return; // Wait for dialog response
-          } else if (!status.git_installed) {
-            // Git not installed - show warning but allow continuing
-            setPendingProjectPath(selected);
-            setGitStatus(status);
-            setShowGitDialog(true);
-            return;
-          }
-        } catch (e) {
-          console.warn("Git check failed or timed out:", e);
-          // If git check fails or times out, proceed without git features
-          // This prevents the onboarding from getting stuck
-        }
-
-        // Git is already set up, user doesn't want it, or check failed - proceed
-        await finalizeAddProject(selected);
-      }
+      if (selected && typeof selected === "string") await beginAddProject(selected);
     } catch (e) {
       console.error("Failed to add project:", e);
       setError(e instanceof Error ? e.message : "Failed to add project");
@@ -483,6 +498,11 @@ function App() {
       await refreshAppState();
       await loadUserProjects();
       await loadHistory();
+
+      if (postAddProjectView) {
+        setView(postAddProjectView);
+        setPostAddProjectView(null);
+      }
     } catch (e) {
       console.error("Failed to finalize project:", e);
       setError(e instanceof Error ? e.message : "Failed to setup project");
@@ -520,6 +540,16 @@ function App() {
 
   const handleManageProjects = () => {
     setView("settings");
+  };
+
+  const handleOpenPacks = () => {
+    setView("packs");
+  };
+
+  const handleOpenInstalledPack = async (installedPath: string) => {
+    setDraftMessage("Open `START_HERE.md` and follow it step-by-step.");
+    setPostAddProjectView("chat");
+    await beginAddProject(installedPath);
   };
 
   const handleSettingsClose = async () => {
@@ -704,6 +734,17 @@ function App() {
               <MessageSquare className="h-5 w-5" />
             </button>
             <button
+              onClick={handleOpenPacks}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                effectiveView === "packs"
+                  ? "bg-primary/20 text-primary"
+                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
+              }`}
+              title="Starter Packs"
+            >
+              <Sparkles className="h-5 w-5" />
+            </button>
+            <button
               onClick={() => setView("settings")}
               className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
                 effectiveView === "settings"
@@ -836,6 +877,7 @@ function App() {
                       setOrchestratorOpen(true);
                     }}
                     onNewChat={handleNewChat}
+                    onOpenPacks={() => setView("packs")}
                     onDeleteSession={handleDeleteSession}
                     isLoading={historyLoading}
                     userProjects={userProjects}
@@ -872,12 +914,29 @@ function App() {
             <SidecarDownloader onComplete={handleSidecarReady} />
           </motion.div>
         ) : effectiveView === "onboarding" ? (
-          <OnboardingView
-            key="onboarding"
-            onComplete={() => setView("settings")}
+          <OnboardingWizard
             hasConfiguredProvider={hasConfiguredProvider}
             hasWorkspace={!!state?.has_workspace}
             error={error}
+            onChooseFolder={handleAddProject}
+            onOpenProviders={() => {
+              setSettingsInitialSection("providers");
+              setView("settings");
+            }}
+            onBrowsePacks={() => setView("packs")}
+            onSkip={() => {
+              setSettingsInitialSection("projects");
+              setView("settings");
+            }}
+          />
+        ) : effectiveView === "packs" ? (
+          <PacksPanel
+            activeProjectPath={activeProject?.path || state?.workspace_path || undefined}
+            onOpenInstalledPack={handleOpenInstalledPack}
+            onOpenSkills={() => {
+              setSettingsInitialSection("skills");
+              setView("settings");
+            }}
           />
         ) : (
           <>
@@ -920,6 +979,8 @@ function App() {
                   activeModelLabel={activeProviderInfo?.modelLabel || undefined}
                   onOpenSettings={() => setView("settings")}
                   onProviderChange={refreshAppState}
+                  draftMessage={draftMessage ?? undefined}
+                  onDraftMessageConsumed={() => setDraftMessage(null)}
                   onFileOpen={(filePath) => {
                     // Resolve relative paths to absolute using workspace path
                     const workspacePath = activeProject?.path || state?.workspace_path;
@@ -957,6 +1018,8 @@ function App() {
                       onClose={handleSettingsClose}
                       onProjectChange={loadUserProjects}
                       onProviderChange={refreshAppState}
+                      initialSection={settingsInitialSection ?? undefined}
+                      onInitialSectionConsumed={() => setSettingsInitialSection(null)}
                     />
                   </motion.div>
                 )}
@@ -1022,145 +1085,6 @@ function App() {
       </main>
       <AppUpdateOverlay />
     </div>
-  );
-}
-
-interface OnboardingViewProps {
-  onComplete: () => void;
-  hasConfiguredProvider: boolean;
-  hasWorkspace: boolean;
-  error?: string | null;
-}
-
-function OnboardingView({
-  onComplete,
-  hasConfiguredProvider,
-  hasWorkspace,
-  error,
-}: OnboardingViewProps) {
-  return (
-    <motion.div
-      className="flex h-full w-full flex-col items-center justify-center p-8"
-      initial={{ opacity: 0, y: 50 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -50 }}
-      transition={{ duration: 0.8, ease: "easeOut" }}
-    >
-      <div className="max-w-md text-center">
-        {/* Removed brand mark from onboarding header (it's already in the sidebar) */}
-
-        <motion.h1
-          className="mb-3 text-3xl font-bold text-text"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.3 }}
-        >
-          Welcome to Tandem
-        </motion.h1>
-
-        <motion.p
-          className="mb-8 text-text-muted"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.4 }}
-        >
-          Your local-first AI workspace. Let's get started by setting up your environment.
-        </motion.p>
-
-        {error && (
-          <motion.div
-            className="mb-6 flex items-start gap-3 rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-left text-red-500"
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-          >
-            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
-            <div className="text-sm">
-              <p className="font-semibold">Setup Error</p>
-              <p className="opacity-90">{error}</p>
-            </div>
-          </motion.div>
-        )}
-
-        <motion.div
-          className="space-y-4"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.5 }}
-        >
-          <div
-            className={cn(
-              "rounded-lg border p-4 text-left transition-colors",
-              hasWorkspace ? "border-border bg-surface" : "border-primary/50 bg-primary/5"
-            )}
-          >
-            <div className="flex items-start gap-3">
-              <FolderOpen
-                className={cn("mt-0.5 h-5 w-5", hasWorkspace ? "text-success" : "text-primary")}
-              />
-              <div>
-                <p className="font-medium text-text">
-                  1. Add a project
-                  {hasWorkspace && (
-                    <span className="ml-2 text-xs font-normal text-success">(Completed)</span>
-                  )}
-                </p>
-                <p className="text-sm text-text-muted">
-                  Add project folders to work with. Each project is an independent workspace.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div
-            className={cn(
-              "rounded-lg border p-4 text-left transition-colors",
-              hasConfiguredProvider ? "border-border bg-surface" : "border-primary/50 bg-primary/5"
-            )}
-          >
-            <div className="flex items-start gap-3">
-              <MessageSquare
-                className={cn(
-                  "mt-0.5 h-5 w-5",
-                  hasConfiguredProvider ? "text-success" : "text-primary"
-                )}
-              />
-              <div>
-                <p className="font-medium text-text">
-                  2. Configure AI Provider
-                  {hasConfiguredProvider && (
-                    <span className="ml-2 text-xs font-normal text-success">(Configured)</span>
-                  )}
-                </p>
-                <p className="text-sm text-text-muted">
-                  {hasConfiguredProvider
-                    ? "You are ready to chat!"
-                    : "Connect an LLM provider (OpenAI, Anthropic, OpenRouter) to start chatting."}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-border bg-surface p-4 text-left">
-            <div className="flex items-start gap-3">
-              <Shield className="mt-0.5 h-5 w-5 text-success" />
-              <div>
-                <p className="font-medium text-text">Your data stays local</p>
-                <p className="text-sm text-text-muted">
-                  API keys are encrypted. No telemetry. Zero-trust security.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.98 }}>
-            <Button onClick={onComplete} size="lg" className="w-full">
-              <SettingsIcon className="mr-2 h-4 w-4" />
-              {hasConfiguredProvider ? "Open Settings" : "Open Settings to Configure"}
-            </Button>
-          </motion.div>
-        </motion.div>
-      </div>
-    </motion.div>
   );
 }
 

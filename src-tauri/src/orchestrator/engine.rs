@@ -59,6 +59,25 @@ pub struct OrchestratorEngine {
 }
 
 impl OrchestratorEngine {
+    fn is_rate_limit_error(error: &str) -> bool {
+        let e = error.to_lowercase();
+        e.contains("rate limit")
+            || e.contains("ratelimit")
+            || e.contains("too many requests")
+            || e.contains("http 429")
+            || e.contains("429")
+    }
+
+    fn is_provider_quota_error(error: &str) -> bool {
+        let e = error.to_lowercase();
+        e.contains("key limit exceeded")
+            || e.contains("monthly limit")
+            || e.contains("quota exceeded")
+            || e.contains("insufficient_quota")
+            || e.contains("out of credits")
+            || e.contains("billing")
+            || e.contains("payment required")
+    }
     /// Create a new orchestrator engine
     pub fn new(
         run: Run,
@@ -334,6 +353,16 @@ impl OrchestratorEngine {
                 }
             }
 
+            // A task may have raised a pause request (e.g. provider quota/rate-limit)
+            // while we were draining join results. Honor it immediately so we don't
+            // schedule more work in the same loop tick.
+            if *self.pause_signal.read().await {
+                join_set.abort_all();
+                self.stop_active_generations().await;
+                self.handle_pause().await?;
+                return Ok(());
+            }
+
             let runnable_task_ids = {
                 let run = self.run.read().await;
                 TaskScheduler::get_all_runnable(&run.tasks)
@@ -505,112 +534,202 @@ impl OrchestratorEngine {
 
         let task_id = task.id.clone();
 
-        let session_id = self.get_or_create_task_session_id(&task).await?;
-        self.emit_task_trace(&task_id, Some(&session_id), "EXEC_STARTED", None);
+        // If anything inside this task execution errors out, we MUST not leave the task
+        // stuck in `in_progress` (otherwise the orphan-recovery logic will keep re-queuing
+        // it forever and budgets will "explode").
+        let execution_result: Result<(String, bool, Option<ValidationResult>)> = async {
+            let session_id = self.get_or_create_task_session_id(&task).await?;
+            self.emit_task_trace(&task_id, Some(&session_id), "EXEC_STARTED", None);
 
-        self.emit_event(OrchestratorEvent::TaskStarted {
-            run_id: self.get_run_id().await,
-            task_id: task_id.clone(),
-            timestamp: chrono::Utc::now(),
-        });
+            self.emit_event(OrchestratorEvent::TaskStarted {
+                run_id: self.get_run_id().await,
+                task_id: task_id.clone(),
+                timestamp: chrono::Utc::now(),
+            });
 
-        // Build context for builder
-        let file_context = self.get_task_file_context(&task).await?;
+            // Build context for builder
+            let file_context = self.get_task_file_context(&task).await?;
 
-        // Build builder prompt
-        let prompt = AgentPrompts::build_builder_prompt(&task, &file_context, None);
+            // Build builder prompt
+            let prompt = AgentPrompts::build_builder_prompt(&task, &file_context, None);
 
-        // Record budget
-        {
-            let mut tracker = self.budget_tracker.write().await;
-            tracker.record_subagent_run();
-            tracker.record_iteration();
+            // Record budget
+            {
+                let mut tracker = self.budget_tracker.write().await;
+                tracker.record_subagent_run();
+                tracker.record_iteration();
+            }
+
+            let builder_response = self
+                .call_agent(Some(&task_id), &session_id, &prompt)
+                .await?;
+
+            // Record tokens
+            {
+                let mut tracker = self.budget_tracker.write().await;
+                tracker.record_tokens(None, Some(builder_response.len()));
+            }
+
+            // Get changes for validation
+            let changes_diff = self.get_recent_changes().await?;
+
+            // Build validator prompt
+            let validator_prompt = AgentPrompts::build_validator_prompt(&task, &changes_diff, None);
+
+            // Call validator
+            {
+                let mut tracker = self.budget_tracker.write().await;
+                tracker.record_subagent_run();
+            }
+
+            let validator_response = self
+                .call_agent(Some(&task_id), &session_id, &validator_prompt)
+                .await?;
+
+            // Record tokens
+            {
+                let mut tracker = self.budget_tracker.write().await;
+                tracker.record_tokens(None, Some(validator_response.len()));
+            }
+
+            // Parse validation result
+            let validation = AgentPrompts::parse_validation_result(&validator_response);
+            let passed = validation.as_ref().map(|v| v.passed).unwrap_or(false);
+
+            Ok((session_id, passed, validation))
         }
+        .await;
 
-        let builder_response = self
-            .call_agent(Some(&task_id), &session_id, &prompt)
-            .await?;
+        match execution_result {
+            Ok((session_id, passed, validation)) => {
+                // Update task state
+                {
+                    let mut run = self.run.write().await;
+                    // Extract config value before mutable borrow of tasks
+                    let max_retries = run.config.max_task_retries;
 
-        // Record tokens
-        {
-            let mut tracker = self.budget_tracker.write().await;
-            tracker.record_tokens(None, Some(builder_response.len()));
+                    if let Some(t) = run.tasks.iter_mut().find(|t| t.id == task_id) {
+                        t.validation_result = validation;
+
+                        if passed {
+                            t.state = TaskState::Done;
+                            t.error_message = None;
+                        } else {
+                            t.retry_count += 1;
+
+                            if t.retry_count >= max_retries {
+                                t.state = TaskState::Failed;
+                                t.error_message = Some("Max retries exceeded".to_string());
+                            } else {
+                                // Reset to pending for retry
+                                t.state = TaskState::Pending;
+                            }
+                        }
+                    }
+
+                    // Update blocked tasks
+                    TaskScheduler::update_blocked_tasks(&mut run.tasks);
+                }
+
+                // Save state
+                self.save_state().await?;
+
+                self.emit_event(OrchestratorEvent::TaskCompleted {
+                    run_id: self.get_run_id().await,
+                    task_id: task_id.clone(),
+                    passed,
+                    timestamp: chrono::Utc::now(),
+                });
+
+                self.emit_task_trace(
+                    &task.id,
+                    task.session_id.as_deref().or(Some(session_id.as_str())),
+                    "EXEC_FINISHED",
+                    Some(if passed {
+                        "passed".to_string()
+                    } else {
+                        "failed".to_string()
+                    }),
+                );
+
+                Ok(())
+            }
+            Err(e) => {
+                self.mark_task_error(&task_id, &e.to_string()).await?;
+                Err(e)
+            }
         }
+    }
 
-        // Get changes for validation
-        let changes_diff = self.get_recent_changes().await?;
+    async fn mark_task_error(&self, task_id: &str, error: &str) -> Result<()> {
+        let rate_limited = Self::is_rate_limit_error(error);
+        let quota_exceeded = Self::is_provider_quota_error(error);
+        let should_pause = rate_limited || quota_exceeded;
 
-        // Build validator prompt
-        let validator_prompt = AgentPrompts::build_validator_prompt(&task, &changes_diff, None);
-
-        // Call validator
-        {
-            let mut tracker = self.budget_tracker.write().await;
-            tracker.record_subagent_run();
-        }
-
-        let validator_response = self
-            .call_agent(Some(&task_id), &session_id, &validator_prompt)
-            .await?;
-
-        // Record tokens
-        {
-            let mut tracker = self.budget_tracker.write().await;
-            tracker.record_tokens(None, Some(validator_response.len()));
-        }
-
-        // Parse validation result
-        let validation = AgentPrompts::parse_validation_result(&validator_response);
-
-        let passed = validation.as_ref().map(|v| v.passed).unwrap_or(false);
-
-        // Update task state
-        {
+        let session_id = {
             let mut run = self.run.write().await;
-            // Extract config value before mutable borrow of tasks
             let max_retries = run.config.max_task_retries;
 
-            if let Some(t) = run.tasks.iter_mut().find(|t| t.id == task_id) {
-                t.validation_result = validation;
+            let mut session_id = None;
 
-                if passed {
-                    t.state = TaskState::Done;
+            if let Some(t) = run.tasks.iter_mut().find(|t| t.id == task_id) {
+                session_id = t.session_id.clone();
+                t.error_message = Some(error.to_string());
+
+                if should_pause {
+                    // Treat provider capacity/quota failures as a "pause and switch model" event,
+                    // not a normal task failure that burns retries.
+                    t.state = TaskState::Pending;
+                    if quota_exceeded {
+                        t.error_message = Some(
+                            "Provider quota/credits exceeded. Switch model/provider and retry."
+                                .to_string(),
+                        );
+                    } else if rate_limited {
+                        t.error_message = Some(
+                            "Provider rate-limited. Switch model/provider and retry.".to_string(),
+                        );
+                    }
+                    run.error_message = Some(if quota_exceeded {
+                        "Paused: provider quota/credits exceeded. Switch model/provider and retry."
+                            .to_string()
+                    } else {
+                        "Paused: provider rate-limited. Switch model/provider and retry."
+                            .to_string()
+                    });
                 } else {
                     t.retry_count += 1;
-
                     if t.retry_count >= max_retries {
                         t.state = TaskState::Failed;
-                        t.error_message = Some("Max retries exceeded".to_string());
                     } else {
-                        // Reset to pending for retry
                         t.state = TaskState::Pending;
                     }
                 }
             }
 
-            // Update blocked tasks
             TaskScheduler::update_blocked_tasks(&mut run.tasks);
-        }
+            session_id
+        };
 
-        // Save state
         self.save_state().await?;
+
+        if should_pause {
+            let mut pause = self.pause_signal.write().await;
+            *pause = true;
+        }
 
         self.emit_event(OrchestratorEvent::TaskCompleted {
             run_id: self.get_run_id().await,
-            task_id,
-            passed,
+            task_id: task_id.to_string(),
+            passed: false,
             timestamp: chrono::Utc::now(),
         });
 
         self.emit_task_trace(
-            &task.id,
-            task.session_id.as_deref().or(Some(session_id.as_str())),
+            task_id,
+            session_id.as_deref(),
             "EXEC_FINISHED",
-            Some(if passed {
-                "passed".to_string()
-            } else {
-                "failed".to_string()
-            }),
+            Some(format!("error: {}", error)),
         );
 
         Ok(())
@@ -1123,17 +1242,21 @@ impl OrchestratorEngine {
         self.budget_tracker.write().await.set_active(false);
         {
             let mut run = self.run.write().await;
-            run.status = RunStatus::Failed;
-            run.ended_at = Some(chrono::Utc::now());
-            run.error_message = Some(format!("Budget exceeded: {} - {}", dimension, reason));
+            // Budget limits are a safety rail, not a "hard crash" moment.
+            // Pause the run so users can resume (and we can upgrade defaults on resume).
+            run.status = RunStatus::Paused;
+            run.ended_at = None;
+            run.error_message = Some(format!(
+                "Paused: budget limit reached ({}). {}",
+                dimension, reason
+            ));
             self.reset_in_progress_tasks_to_pending(&mut run);
         }
 
         self.save_state().await?;
 
-        self.emit_event(OrchestratorEvent::RunFailed {
+        self.emit_event(OrchestratorEvent::RunPaused {
             run_id: self.get_run_id().await,
-            reason: format!("Budget exceeded: {}", reason),
             timestamp: chrono::Utc::now(),
         });
 
@@ -1282,9 +1405,12 @@ impl OrchestratorEngine {
     pub async fn set_base_session_for_resume(&self, new_session_id: String) -> Result<()> {
         {
             let mut run = self.run.write().await;
-            if run.status != RunStatus::Paused && run.status != RunStatus::Cancelled {
+            if run.status != RunStatus::Paused
+                && run.status != RunStatus::Cancelled
+                && run.status != RunStatus::Failed
+            {
                 return Err(TandemError::InvalidOperation(
-                    "Run must be paused or cancelled to change resume model".to_string(),
+                    "Run must be paused, failed, or cancelled to change resume model".to_string(),
                 ));
             }
 
@@ -1347,12 +1473,18 @@ impl OrchestratorEngine {
     fn upgrade_legacy_limits(run: &mut Run) -> bool {
         let mut changed = false;
 
-        if run.config.max_iterations == 10 || run.config.max_iterations == 30 {
-            run.config.max_iterations = 200;
+        if run.config.max_iterations == 10
+            || run.config.max_iterations == 30
+            || run.config.max_iterations == 200
+        {
+            run.config.max_iterations = 500;
             changed = true;
         }
-        if run.config.max_subagent_runs == 20 || run.config.max_subagent_runs == 50 {
-            run.config.max_subagent_runs = 500;
+        if run.config.max_subagent_runs == 20
+            || run.config.max_subagent_runs == 50
+            || run.config.max_subagent_runs == 500
+        {
+            run.config.max_subagent_runs = 2000;
             changed = true;
         }
         if run.config.max_wall_time_secs == 20 * 60 {

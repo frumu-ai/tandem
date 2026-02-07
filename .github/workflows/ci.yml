@@ -35,7 +35,7 @@ jobs:
         run: pnpm exec tsc --noEmit
 
       - name: Run linter
-        run: pnpm lint || true # Don't fail on lint errors for now
+        run: pnpm lint
 
   lint-backend:
     name: Lint Backend

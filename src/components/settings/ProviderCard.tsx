@@ -5,7 +5,18 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
-import { Key, Check, X, Eye, EyeOff, ExternalLink, ChevronDown, Play, Square, RefreshCw } from "lucide-react";
+import {
+  Key,
+  Check,
+  X,
+  Eye,
+  EyeOff,
+  ExternalLink,
+  ChevronDown,
+  Play,
+  Square,
+  RefreshCw,
+} from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   storeApiKey,
@@ -24,12 +35,12 @@ const PROVIDER_MODELS: Record<string, { id: string; name: string; description?: 
   anthropic: [
     {
       id: "claude-sonnet-4-20250514",
-      name: "Claude Sonnet 4",
+      name: "Sonnet 4",
       description: "Latest, most intelligent",
     },
-    { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet", description: "Fast & capable" },
-    { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku", description: "Fastest" },
-    { id: "claude-3-opus-20240229", name: "Claude 3 Opus", description: "Most capable (legacy)" },
+    { id: "claude-3-5-sonnet-20241022", name: "3.5 Sonnet", description: "Fast & capable" },
+    { id: "claude-3-5-haiku-20241022", name: "3.5 Haiku", description: "Fastest" },
+    { id: "claude-3-opus-20240229", name: "3 Opus", description: "Most capable (legacy)" },
   ],
   openai: [
     { id: "gpt-4o", name: "GPT-4o", description: "Flagship model" },
@@ -45,7 +56,7 @@ const PROVIDER_MODELS: Record<string, { id: string; name: string; description?: 
     { id: "glm-4.7-free", name: "GLM 4.7", description: "Free (limited time)" },
     { id: "big-pickle", name: "Big Pickle", description: "Free (limited time)" },
     { id: "gpt-5.2-codex", name: "GPT 5.2 Codex", description: "Premium coding" },
-    { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", description: "Premium" },
+    { id: "claude-sonnet-4-5", name: "Sonnet 4.5", description: "Premium" },
     { id: "qwen3-coder", name: "Qwen3 Coder 480B", description: "Premium coding" },
   ],
 };
@@ -122,9 +133,10 @@ export function ProviderCard({
   const availableModels = PROVIDER_MODELS[id] || [];
 
   // Use discovered models for Ollama suggestions, otherwise fallback to static ones
-  const suggestions = id === "ollama" && discoveredModels.length > 0
-    ? discoveredModels.map(m => m.id)
-    : SUGGESTED_MODELS[id] || [];
+  const suggestions =
+    id === "ollama" && discoveredModels.length > 0
+      ? discoveredModels.map((m) => m.id)
+      : SUGGESTED_MODELS[id] || [];
 
   const selectedModel = model || availableModels[0]?.id || "";
   const selectedModelInfo = availableModels.find((m) => m.id === selectedModel);
@@ -156,7 +168,7 @@ export function ProviderCard({
     try {
       const [discovered, running] = await Promise.all([
         listOllamaModels(),
-        listRunningOllamaModels()
+        listRunningOllamaModels(),
       ]);
       setDiscoveredModels(discovered);
       setRunningModels(running);
@@ -281,9 +293,7 @@ export function ProviderCard({
                   <div className="relative">
                     <Input
                       type="text"
-                      placeholder={
-                        id === "openrouter" ? "e.g., anthropic/claude-sonnet-4" : "e.g., llama3.2"
-                      }
+                      placeholder={id === "openrouter" ? "e.g., openai/gpt-4o" : "e.g., llama3.2"}
                       value={modelInput}
                       onChange={(e) => {
                         setModelInput(e.target.value);
@@ -337,8 +347,9 @@ export function ProviderCard({
                                 onModelChange?.(s);
                                 setShowSuggestions(false);
                               }}
-                              className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors hover:bg-surface-elevated ${s === model ? "bg-primary/10 text-primary" : "text-text"
-                                }`}
+                              className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors hover:bg-surface-elevated ${
+                                s === model ? "bg-primary/10 text-primary" : "text-text"
+                              }`}
                             >
                               <span className="font-mono text-xs">{s}</span>
                               {s === model && <Check className="h-3 w-3" />}
@@ -379,7 +390,9 @@ export function ProviderCard({
                       disabled={loadingOllama}
                       className="h-6 px-2 text-xs"
                     >
-                      <RefreshCw className={`mr-1 h-3 w-3 ${loadingOllama ? "animate-spin" : ""}`} />
+                      <RefreshCw
+                        className={`mr-1 h-3 w-3 ${loadingOllama ? "animate-spin" : ""}`}
+                      />
                       Refresh
                     </Button>
                   </div>
@@ -388,7 +401,10 @@ export function ProviderCard({
                     <div className="space-y-2">
                       <p className="text-xs text-text-subtle">Currently Running:</p>
                       {runningModels.map((m) => (
-                        <div key={m.id} className="flex items-center justify-between rounded bg-surface p-2 text-sm">
+                        <div
+                          key={m.id}
+                          className="flex items-center justify-between rounded bg-surface p-2 text-sm"
+                        >
                           <span className="font-mono font-medium">{m.name}</span>
                           <Button
                             variant="ghost"
@@ -424,10 +440,14 @@ export function ProviderCard({
                                   : "border-border bg-surface/50 hover:border-border-subtle hover:bg-surface-elevated"
                               )}
                             >
-                              <span className={cn(
-                                "truncate pr-1 font-mono",
-                                isSelected ? "text-primary font-medium" : "text-text"
-                              )}>{m.name}</span>
+                              <span
+                                className={cn(
+                                  "truncate pr-1 font-mono",
+                                  isSelected ? "text-primary font-medium" : "text-text"
+                                )}
+                              >
+                                {m.name}
+                              </span>
                               <div className="flex items-center gap-1.5">
                                 {!isRunning && (
                                   <Button
@@ -445,7 +465,10 @@ export function ProviderCard({
                                   </Button>
                                 )}
                                 {isRunning && (
-                                  <span className="flex h-2 w-2 rounded-full bg-success ring-4 ring-success/20" title="Running" />
+                                  <span
+                                    className="flex h-2 w-2 rounded-full bg-success ring-4 ring-success/20"
+                                    title="Running"
+                                  />
                                 )}
                               </div>
                             </div>
@@ -499,8 +522,9 @@ export function ProviderCard({
                                 onModelChange?.(m.id);
                                 setShowModelDropdown(false);
                               }}
-                              className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-surface-elevated ${m.id === selectedModel ? "bg-primary/10" : ""
-                                }`}
+                              className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-surface-elevated ${
+                                m.id === selectedModel ? "bg-primary/10" : ""
+                              }`}
                             >
                               <div>
                                 <p className="text-sm font-medium text-text">{m.name}</p>

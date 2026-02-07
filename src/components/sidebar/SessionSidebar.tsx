@@ -70,6 +70,7 @@ interface SessionSidebarProps {
   onSelectSession: (sessionId: string) => void;
   onSelectRun?: (runId: string) => void;
   onNewChat: () => void;
+  onOpenPacks?: () => void;
   onDeleteSession: (sessionId: string) => void;
   isLoading?: boolean;
   // Project switcher props
@@ -92,6 +93,7 @@ export function SessionSidebar({
   onSelectSession,
   onSelectRun,
   onNewChat,
+  onOpenPacks,
   onDeleteSession,
   isLoading,
   userProjects = [],
@@ -270,7 +272,7 @@ export function SessionSidebar({
       return activeProject.name;
     }
 
-    return "Unknown Project";
+    return "Unknown Folder";
   };
 
   const getProjectPath = (projectId: string) => {
@@ -358,6 +360,16 @@ export function SessionSidebar({
               <Plus className="h-4 w-4" />
               <span className="text-sm font-medium">New Chat</span>
             </button>
+
+            {onOpenPacks && (
+              <button
+                onClick={onOpenPacks}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-surface-elevated px-4 py-2 text-text transition-all hover:bg-surface"
+              >
+                <Sparkles className="h-4 w-4 text-accent" />
+                <span className="text-sm font-medium">Starter Packs</span>
+              </button>
+            )}
           </div>
 
           {/* Sessions List */}

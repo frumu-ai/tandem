@@ -1,7 +1,14 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { SkillCard } from "./SkillCard";
-import { importSkill, type SkillInfo, type SkillLocation } from "@/lib/tauri";
+import {
+  importSkill,
+  installSkillTemplate,
+  listSkillTemplates,
+  type SkillInfo,
+  type SkillLocation,
+  type SkillTemplateInfo,
+} from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 interface SkillsPanelProps {
@@ -18,10 +25,41 @@ export function SkillsPanel({
   onRestartSidecar,
 }: SkillsPanelProps) {
   const [content, setContent] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   // Default to global if no project path available
   const [location, setLocation] = useState<SkillLocation>(projectPath ? "project" : "global");
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [templates, setTemplates] = useState<SkillTemplateInfo[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [installingTemplateId, setInstallingTemplateId] = useState<string | null>(null);
+
+  // Extract project name from path for display
+  const projectName = projectPath ? projectPath.split(/[\\/]/).pop() || "Active Folder" : null;
+  const hasActiveProject = !!projectPath;
+
+  useEffect(() => {
+    if (!hasActiveProject && location === "project") {
+      setLocation("global");
+    }
+  }, [hasActiveProject, location]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setTemplatesLoading(true);
+        setTemplates(await listSkillTemplates());
+      } catch (e) {
+        // Non-fatal: templates are a convenience feature.
+        console.warn("Failed to load skill templates:", e);
+      } finally {
+        setTemplatesLoading(false);
+      }
+    })();
+  }, []);
 
   const handleSave = async () => {
     if (!content.trim()) {
@@ -36,7 +74,6 @@ export function SkillsPanel({
       setContent("");
       await onRefresh();
 
-      // Trigger sidecar restart via callback
       if (onRestartSidecar) {
         await onRestartSidecar();
       }
@@ -48,6 +85,7 @@ export function SkillsPanel({
   };
 
   const handleCreateBlank = () => {
+    setAdvancedOpen(true);
     setContent(`---
 name: my-skill
 description: What this skill does
@@ -57,88 +95,143 @@ Instructions for the AI...
 `);
   };
 
-  // Extract project name from path for display
-  const projectName = projectPath ? projectPath.split(/[\\/]/).pop() || "Active Project" : null;
-  const hasActiveProject = !!projectPath;
+  const handleInstallTemplate = async (templateId: string) => {
+    try {
+      setInstallingTemplateId(templateId);
+      setError(null);
 
-  // Auto-switch to global if project becomes unavailable
-  useEffect(() => {
-    if (!hasActiveProject && location === "project") {
-      setLocation("global");
+      await installSkillTemplate(templateId, location);
+      await onRefresh();
+
+      if (onRestartSidecar) await onRestartSidecar();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to install starter skill");
+    } finally {
+      setInstallingTemplateId(null);
     }
-  }, [hasActiveProject, location]);
+  };
 
   const projectSkills = skills.filter((s) => s.location === "project");
   const globalSkills = skills.filter((s) => s.location === "global");
 
   return (
     <div className="space-y-6">
-      {/* Add a skill section */}
-      <div className="space-y-3">
-        <label className="text-sm font-medium text-text">Add a skill</label>
-        <textarea
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          placeholder="Paste SKILL.md content here..."
-          rows={10}
-          className="w-full rounded-lg border border-border bg-surface p-3 font-mono text-sm text-text placeholder:text-text-subtle focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-        />
+      {error && (
+        <div className="rounded-lg border border-error/20 bg-error/10 p-3 text-sm text-error">
+          {error}
+        </div>
+      )}
 
-        {error && (
-          <div className="rounded-lg border border-error/20 bg-error/10 p-3 text-sm text-error">
-            {error}
+      {/* Location choice */}
+      <div className="flex flex-wrap items-center gap-4 rounded-lg border border-border bg-surface-elevated/50 p-3">
+        <span className="text-sm text-text-muted">Save to:</span>
+        <label className="flex items-center gap-2">
+          <input
+            type="radio"
+            name="location"
+            value="project"
+            checked={location === "project"}
+            onChange={(e) => setLocation(e.target.value as SkillLocation)}
+            disabled={!hasActiveProject}
+            className="h-4 w-4 border-border text-primary focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
+          />
+          <span className={`text-sm ${hasActiveProject ? "text-text" : "text-text-muted"}`}>
+            {hasActiveProject ? (
+              <>
+                Active Folder:{" "}
+                <span className="font-bold" style={{ color: "var(--color-primary)" }}>
+                  {projectName}
+                </span>
+                <span className="ml-2 text-text-subtle text-xs">(.opencode/skill/)</span>
+              </>
+            ) : (
+              "Folder (no folder selected)"
+            )}
+          </span>
+        </label>
+
+        <label className="flex items-center gap-2">
+          <input
+            type="radio"
+            name="location"
+            value="global"
+            checked={location === "global"}
+            onChange={(e) => setLocation(e.target.value as SkillLocation)}
+            className="h-4 w-4 border-border text-primary focus:ring-primary"
+          />
+          <span className="text-sm text-text">Global (~/.config/opencode/skills/)</span>
+        </label>
+      </div>
+
+      {/* Starter templates */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium text-text">Starter skills</label>
+          <span className="text-xs text-text-subtle">Quick adds (offline)</span>
+        </div>
+
+        {templatesLoading ? (
+          <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
+            Loading starter skills...
+          </div>
+        ) : templates.length === 0 ? (
+          <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
+            No starter skills found.
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2">
+            {templates.map((t) => (
+              <div key={t.id} className="rounded-lg border border-border bg-surface-elevated p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-text">{t.name}</p>
+                    <p className="mt-1 text-xs text-text-muted">{t.description}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    onClick={() => handleInstallTemplate(t.id)}
+                    disabled={!!installingTemplateId}
+                  >
+                    {installingTemplateId === t.id ? "Installing..." : "Install"}
+                  </Button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
+      </div>
 
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-text-muted">📍 Save to:</span>
-            <label className="flex items-center gap-2">
-              <input
-                type="radio"
-                name="location"
-                value="project"
-                checked={location === "project"}
-                onChange={(e) => setLocation(e.target.value as SkillLocation)}
-                disabled={!hasActiveProject}
-                className="h-4 w-4 border-border text-primary focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
-              />
-              <span className={`text-sm ${hasActiveProject ? "text-text" : "text-text-muted"}`}>
-                {hasActiveProject ? (
-                  <>
-                    Active Project:{" "}
-                    <span className="font-bold" style={{ color: "var(--color-primary)" }}>
-                      {projectName}
-                    </span>
-                    <span className="ml-2 text-text-subtle text-xs">(.opencode/skill/)</span>
-                  </>
-                ) : (
-                  "Project (no project selected)"
-                )}
-              </span>
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="radio"
-                name="location"
-                value="global"
-                checked={location === "global"}
-                onChange={(e) => setLocation(e.target.value as SkillLocation)}
-                className="h-4 w-4 border-border text-primary focus:ring-primary"
-              />
-              <span className="text-sm text-text">Global (~/.config/opencode/skills/)</span>
-            </label>
-          </div>
+      {/* Advanced: paste SKILL.md */}
+      <div className="space-y-3">
+        <button
+          type="button"
+          onClick={() => setAdvancedOpen((v) => !v)}
+          className="flex w-full items-center justify-between rounded-lg border border-border bg-surface-elevated/50 p-3 text-left"
+        >
+          <span className="text-sm font-medium text-text">Advanced: paste SKILL.md</span>
+          <span className="text-xs text-text-subtle">{advancedOpen ? "Hide" : "Show"}</span>
+        </button>
 
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" onClick={handleCreateBlank} disabled={saving}>
-              Create Blank
-            </Button>
-            <Button onClick={handleSave} disabled={!content.trim() || saving}>
-              {saving ? "Saving..." : "Save"}
-            </Button>
+        {advancedOpen && (
+          <div className="space-y-3">
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Paste SKILL.md content here..."
+              rows={10}
+              className="w-full rounded-lg border border-border bg-surface p-3 font-mono text-sm text-text placeholder:text-text-subtle focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+
+            <div className="flex items-center justify-between">
+              <Button variant="ghost" onClick={handleCreateBlank} disabled={saving}>
+                Create Blank
+              </Button>
+              <Button onClick={handleSave} disabled={!content.trim() || saving}>
+                {saving ? "Saving..." : "Save"}
+              </Button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Installed skills */}
@@ -149,13 +242,13 @@ Instructions for the AI...
 
         {skills.length === 0 ? (
           <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
-            <p className="text-sm text-text-muted">No skills detected in `.opencode / skill / `.</p>
+            <p className="text-sm text-text-muted">No skills detected in `.opencode/skill/`.</p>
           </div>
         ) : (
           <div className="space-y-3">
             {projectSkills.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs font-medium text-text-subtle">📦 Project Skills</p>
+                <p className="text-xs font-medium text-text-subtle">Folder Skills</p>
                 {projectSkills.map((skill) => (
                   <SkillCard key={skill.path} skill={skill} onDelete={onRefresh} />
                 ))}
@@ -164,7 +257,7 @@ Instructions for the AI...
 
             {globalSkills.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs font-medium text-text-subtle">🌍 Global Skills</p>
+                <p className="text-xs font-medium text-text-subtle">Global Skills</p>
                 {globalSkills.map((skill) => (
                   <SkillCard key={skill.path} skill={skill} onDelete={onRefresh} />
                 ))}
@@ -177,24 +270,15 @@ Instructions for the AI...
       {/* Help links */}
       <div className="space-y-2 rounded-lg border border-border bg-surface-elevated/50 p-4 text-sm">
         <p className="text-text-muted">
-          💡 The AI automatically uses installed skills when relevant - no selection needed.
+          Tandem automatically uses installed skills when relevant - no selection needed.
         </p>
         <div className="text-text-muted">
-          <p className="font-medium">📚 Find skills to copy:</p>
+          <p className="font-medium">Find skills to copy:</p>
           <ul className="ml-4 mt-1 list-disc space-y-1 text-xs">
             <li>
               <button
-                onClick={() => openUrl("https://github.com/VoltAgent/awesome-claude-skills")}
-                className="text-primary hover:underline cursor-pointer"
-              >
-                Awesome Claude Skills
-              </button>{" "}
-              - Curated list (official + community)
-            </li>
-            <li>
-              <button
                 onClick={() => openUrl("https://skillhub.club")}
-                className="text-primary hover:underline cursor-pointer"
+                className="cursor-pointer text-primary hover:underline"
               >
                 SkillHub
               </button>{" "}
@@ -203,20 +287,11 @@ Instructions for the AI...
             <li>
               <button
                 onClick={() => openUrl("https://github.com/search?q=SKILL.md&type=code")}
-                className="text-primary hover:underline cursor-pointer"
+                className="cursor-pointer text-primary hover:underline"
               >
                 GitHub
               </button>{" "}
-              - Search "SKILL.md"
-            </li>
-            <li>
-              <button
-                onClick={() => openUrl("https://code.claude.com/docs/en/skills")}
-                className="text-primary hover:underline cursor-pointer"
-              >
-                Claude Code Docs
-              </button>{" "}
-              - Official documentation
+              - Search &quot;SKILL.md&quot;
             </li>
           </ul>
         </div>

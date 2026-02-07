@@ -18,7 +18,7 @@ Ralph loop is already implemented. Orchestration can optionally use Ralph intern
 
 ## References (Patterns, Not Code)
 
-1. **Claude Code "Ralph Wiggum"** — Looping + state directory concepts
+1. **Modern agentic coding tools** — Looping + state directory concepts
    https://github.com/anthropics/claude-code/tree/main/plugins/ralph-wiggum
 
 2. **Open Ralph Wiggum (TypeScript)** — Loop controller patterns + persisted run state

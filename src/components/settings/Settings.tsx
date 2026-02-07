@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Settings as SettingsIcon,
@@ -52,9 +52,17 @@ interface SettingsProps {
   onClose?: () => void;
   onProjectChange?: () => void;
   onProviderChange?: () => void; // Called when API keys are added/removed
+  initialSection?: "providers" | "projects" | "skills";
+  onInitialSectionConsumed?: () => void;
 }
 
-export function Settings({ onClose, onProjectChange, onProviderChange }: SettingsProps) {
+export function Settings({
+  onClose,
+  onProjectChange,
+  onProviderChange,
+  initialSection,
+  onInitialSectionConsumed,
+}: SettingsProps) {
   const {
     status: updateStatus,
     updateInfo,
@@ -76,6 +84,10 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [skillsExpanded, setSkillsExpanded] = useState(false);
   const [restartingSidecar, setRestartingSidecar] = useState(false);
+
+  const projectsSectionRef = useRef<HTMLDivElement>(null);
+  const skillsSectionRef = useRef<HTMLDivElement>(null);
+  const providersSectionRef = useRef<HTMLDivElement>(null);
 
   // Version info
   const [appVersion, setAppVersion] = useState<string>("");
@@ -99,6 +111,25 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
     getVersion().then(setAppVersion);
     checkSidecarStatus().then(setSidecarStatus).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    if (!initialSection) return;
+
+    if (initialSection === "projects") setProjectsExpanded(true);
+    if (initialSection === "skills") setSkillsExpanded(true);
+
+    const target =
+      initialSection === "projects"
+        ? projectsSectionRef.current
+        : initialSection === "skills"
+          ? skillsSectionRef.current
+          : providersSectionRef.current;
+
+    // Wait a tick so accordions have time to open.
+    setTimeout(() => target?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    onInitialSectionConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSection]);
 
   const loadSettings = async () => {
     try {
@@ -209,12 +240,12 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
     onProviderChange?.();
   };
 
-  const handleSelectWorkspace = async () => {
+  const handleSelectFolder = async () => {
     try {
       const selected = await open({
         directory: true,
         multiple: false,
-        title: "Select Project Folder",
+        title: "Select Folder",
       });
 
       if (selected && typeof selected === "string") {
@@ -415,7 +446,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
             </div>
             <div>
               <h1 className="text-2xl font-bold text-text">Settings</h1>
-              <p className="text-text-muted">Configure your Tandem workspace</p>
+              <p className="text-text-muted">Configure your Tandem folders and AI</p>
             </div>
           </div>
           {onClose && (
@@ -506,7 +537,8 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
           </CardContent>
         </Card>
 
-        {/* Projects Section */}
+        {/* Folders Section */}
+        <div ref={projectsSectionRef} />
         <Card>
           <CardHeader>
             <div className="flex items-start gap-3">
@@ -514,9 +546,9 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
               <div className="flex-1">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <CardTitle>Projects</CardTitle>
+                    <CardTitle>Folders</CardTitle>
                     <CardDescription>
-                      Add and manage project folders. Each project is an independent workspace.
+                      Add and manage folders. Each folder is an independent space.
                     </CardDescription>
                   </div>
                   <button
@@ -524,7 +556,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
                     onClick={() => setProjectsExpanded((v) => !v)}
                     className="rounded-md p-1 text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
                     aria-expanded={projectsExpanded}
-                    title={projectsExpanded ? "Collapse projects" : "Expand projects"}
+                    title={projectsExpanded ? "Collapse folders" : "Expand folders"}
                   >
                     {projectsExpanded ? (
                       <ChevronDown className="h-5 w-5" />
@@ -537,7 +569,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
                 {!projectsExpanded && (
                   <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-subtle">
                     <span>
-                      {projects.length} project{projects.length === 1 ? "" : "s"}
+                      {projects.length} folder{projects.length === 1 ? "" : "s"}
                     </span>
                     <span className="opacity-60">•</span>
                     <span className="truncate">Active: {activeProject?.name ?? "None"}</span>
@@ -560,10 +592,8 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
                     {projects.length === 0 ? (
                       <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
                         <FolderOpen className="mx-auto mb-2 h-8 w-8 text-text-subtle" />
-                        <p className="text-sm text-text-muted">No projects added yet</p>
-                        <p className="text-xs text-text-subtle">
-                          Add a project folder to get started
-                        </p>
+                        <p className="text-sm text-text-muted">No folders added yet</p>
+                        <p className="text-xs text-text-subtle">Add a folder to get started</p>
                       </div>
                     ) : (
                       <div className="space-y-2">
@@ -643,18 +673,18 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
                     )}
 
                     <Button
-                      onClick={handleSelectWorkspace}
+                      onClick={handleSelectFolder}
                       disabled={projectLoading}
                       className="w-full"
                     >
                       <Plus className="mr-2 h-4 w-4" />
-                      Add Project
+                      Add Folder
                     </Button>
                   </div>
 
                   <p className="mt-3 text-xs text-text-subtle">
                     <Shield className="mr-1 inline h-3 w-3" />
-                    Tandem can only access files within project folders. Sensitive files (.env,
+                    Tandem can only access files within selected folders. Sensitive files (.env,
                     .ssh, etc.) are always blocked.
                   </p>
                 </CardContent>
@@ -681,7 +711,8 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
           </CardContent>
         </Card>
 
-        {/* Skills Section */}
+        {/* Capabilities Section (Skills) */}
+        <div ref={skillsSectionRef} />
         <Card>
           <CardHeader>
             <div className="flex items-start gap-3">
@@ -689,9 +720,9 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
               <div className="flex-1">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <CardTitle>Skills</CardTitle>
+                    <CardTitle>Capabilities (Skills)</CardTitle>
                     <CardDescription>
-                      Add custom skills to extend the AI's capabilities. Skills are automatically
+                      Add starter capabilities or paste advanced SKILL.md. Skills are automatically
                       discovered and used when relevant.
                     </CardDescription>
                   </div>
@@ -755,6 +786,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
         </Card>
 
         {/* LLM Providers Section */}
+        <div ref={providersSectionRef} />
         <div className="space-y-4">
           <div className="flex items-center gap-3">
             <Cpu className="h-5 w-5 text-primary" />
@@ -802,7 +834,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
               <ProviderCard
                 id="anthropic"
                 name="Anthropic"
-                description="Direct access to Claude models"
+                description="Direct access to Anthropic models"
                 endpoint="https://api.anthropic.com"
                 model={providers.anthropic.model}
                 isDefault={providers.anthropic.default}
@@ -940,7 +972,7 @@ export function Settings({ onClose, onProjectChange, onProviderChange }: Setting
         folderPath={pendingProjectPath ?? ""}
       />
 
-      {/* Sidecar Restart Overlay */}
+      {/* Engine Restart Overlay */}
       <AnimatePresence>
         {restartingSidecar && (
           <motion.div

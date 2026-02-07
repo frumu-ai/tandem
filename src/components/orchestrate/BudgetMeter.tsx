@@ -105,7 +105,7 @@ export function BudgetMeter({ budget, className }: BudgetMeterProps) {
             label="Tokens"
             used={budget.tokens_used}
             max={budget.max_tokens}
-            icon={<span className="text-[10px]">🎯</span>}
+            icon={<span className="text-[10px]">TOK</span>}
             unit="k"
           />
           <MeterItem
@@ -115,11 +115,15 @@ export function BudgetMeter({ budget, className }: BudgetMeterProps) {
             icon={<Clock className="h-3 w-3" />}
           />
           <MeterItem
-            label="Sub-agents"
+            label="Agent calls"
             used={budget.subagent_runs_used}
             max={budget.max_subagent_runs}
             icon={<Users className="h-3 w-3" />}
           />
+
+          <p className="text-[11px] text-text-subtle">
+            Agent calls include planning + (typically) build + validation per task.
+          </p>
 
           {budget.exceeded && budget.exceeded_reason && (
             <div className="rounded-md bg-red-500/10 border border-red-500/30 p-2 text-xs text-red-300">

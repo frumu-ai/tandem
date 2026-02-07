@@ -8,10 +8,12 @@ mod keystore;
 mod llm_router;
 mod memory;
 pub mod orchestrator;
+mod packs;
 mod presentation;
 mod ralph;
 mod sidecar;
 mod sidecar_manager;
+mod skill_templates;
 mod skills;
 mod state;
 mod tool_proxy;
@@ -443,6 +445,12 @@ pub fn run() {
             commands::list_skills,
             commands::import_skill,
             commands::delete_skill,
+            commands::skills_list_templates,
+            commands::skills_install_template,
+            // Packs (guided workflows)
+            commands::packs_list,
+            commands::packs_install,
+            commands::packs_install_default,
             // Guaranteed Plan Mode
             commands::start_plan_session,
             // Ralph Loop commands

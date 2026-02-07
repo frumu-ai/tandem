@@ -7,7 +7,7 @@ This document provides a comprehensive overview of the Tandem project for AI age
 **Tandem** is a local-first, privacy-absolute AI desktop workspace. It allows users to collaborate with an AI "coworker" that has direct access to local project files, but only under strict human supervision.
 
 - **Platform**: Cross-platform (Windows, macOS, Linux) built with Tauri v2.
-- **Goal**: Mimic the collaborative experience of "Claude Cowork" but with full platform support, zero lock-in, and absolute privacy.
+- **Goal**: Mimic the collaborative experience of an AI coworking tool but with full platform support, zero lock-in, and absolute privacy.
 
 ## 2. Technical Architecture
 

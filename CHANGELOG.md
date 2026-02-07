@@ -99,7 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Skills Management UI**: Added a complete skills management interface in Settings, allowing users to import, view, and manage OpenCode-compatible skills (both project-specific and global).
 - **Skill Discovery**: Implemented automatic discovery of installed skills from both project (`.opencode/skill/`) and global (`~/.config/opencode/skills/`) directories.
 - **Smart Project Selection**: Skills panel now displays the active project name and automatically disables project-specific installation when no project is selected.
-- **Skill Resource Links**: Added clickable links to popular skill repositories (Awesome Claude Skills, SkillHub, GitHub, Claude Code Docs) using Tauri's native URL opener.
+- **Skill Resource Links**: Added clickable links to popular skill repositories (open skills library, SkillHub, GitHub) using Tauri's native URL opener.
 - **Automatic Sidecar Restart**: Implemented seamless AI engine restart after skill import with a full-screen overlay matching the app's aesthetic. Features animated rotating icon, pulsing progress bars, and backdrop blur.
 
 ### Fixed

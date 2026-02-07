@@ -170,7 +170,7 @@
 - **Skills Management System**: Introduced a complete skills management interface allowing you to import, discover, and organize OpenCode-compatible skills. Skills extend the AI's capabilities with specialized instructions for specific workflows like code review, documentation, and more.
 - **Robust YAML Parsing**: Fixed critical compatibility issues with SKILL.md files containing special characters (colons, quotes) in descriptions. The parser now automatically handles edge cases for seamless skill imports.
 - **Smart Project Context**: The Skills panel intelligently displays your active project name and automatically adjusts UI based on workspace state, preventing errors when no project is selected.
-- **Resource Discovery**: Added direct links to popular skill repositories (Awesome Claude Skills with 100+ curated skills, SkillHub with 7,000+ community contributions, and official documentation) to help you discover and import useful skills quickly.
+- **Resource Discovery**: Added direct links to popular skill repositories (open skills library, SkillHub with 7,000+ community contributions, and GitHub search) to help you discover and import useful skills quickly.
 
 ## Complete Feature List
 
