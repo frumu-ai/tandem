@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-07
+
+### Added
+
+- **Guided onboarding wizard** to drive a first outcome (choose folder → connect AI → run starter workflow).
+- **Starter Packs**: bundled, offline workflow packs you can install into a folder from inside the app.
+- **Starter Skills gallery**: bundled, offline skill templates with an “Advanced: paste SKILL.md” option retained.
+- **Contributor hygiene**: GitHub issue/PR templates and new product/architecture docs at repo root.
+
+### Improved
+
+- **Orchestration reliability**:
+  - Increased default budgets (iterations/sub-agent runs) and auto-upgraded legacy runs with too-low limits.
+  - Provider rate-limit/quota errors now **pause** runs (instead of burning retries) so you can switch model/provider and resume.
+- **Provider switching**: fixed stale env var propagation by explicitly syncing/removing provider API key env vars and restarting sidecar when provider toggles change.
+- **CI confidence**: frontend lint now fails the build instead of being ignored.
+
+### Fixed
+
+- Orchestrator could “explode” sub-agent runs due to tasks not being marked finished on error (leading to endless requeue/recovery loops).
+- Model/provider could not be changed after a run failed; model selection is now available to recover and resume.
+
 ## [0.2.0] - 2026-02-06
 
 ### Added
