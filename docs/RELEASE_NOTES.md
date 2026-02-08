@@ -1,3 +1,12 @@
+# Tandem v0.2.7 Release Notes
+
+## Highlights
+
+- **OpenCode Config Safety**: Prevent OpenCode config writes from deleting an existing `opencode.json` when replacement fails (e.g. file locked on Windows).
+- **Sidecar Idle Memory**: Set Bun/JSC memory env hints to reduce excessive idle memory usage.
+
+---
+
 # Tandem v0.2.6 Release Notes
 
 ## Highlights

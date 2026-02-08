@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-02-08
+
+### Fixed
+
+- **OpenCode Config Safety**: Prevent OpenCode config writes from deleting an existing `opencode.json` when replacement fails (e.g. file locked on Windows).
+- **Sidecar Idle Memory**: Set Bun/JSC memory env hints to reduce excessive idle memory usage.
+
 ## [0.2.6] - 2026-02-08
 
 ### Fixed

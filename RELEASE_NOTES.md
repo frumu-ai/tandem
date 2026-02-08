@@ -2,6 +2,11 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.2.7 (2026-02-08)
+
+- Fix OpenCode config writes so existing `opencode.json` is not deleted if replacement fails (Windows-safe).
+- Reduce sidecar idle memory usage with Bun/JSC environment hints.
+
 ## v0.2.6 (2026-02-08)
 
 - Fix macOS release builds by disabling signing/notarization by default (can be enabled via `MACOS_SIGNING_ENABLED=true`).

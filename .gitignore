@@ -66,9 +66,4 @@ logs.txt
 .tmp/
 
 # OpenCode workspace runtime (may be generated when the engine starts)
-# Keep `.opencode/skill/**` trackable if you want to share project-local skills,
-# but ignore the JS runtime dependencies it bootstraps.
-.opencode/node_modules/
-.opencode/package.json
-.opencode/bun.lock
-.opencode/.gitignore
+.opencode/

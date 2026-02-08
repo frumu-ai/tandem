@@ -776,6 +776,17 @@ impl SidecarManager {
             cmd.env(key, value);
         }
 
+        // OPTIMIZATION: Set Bun/JSC memory limits to avoid excessive idle usage
+        // (Addresses feedback about 500MB+ idle usage)
+        if !env_vars.contains_key("BUN_JSC_forceRAMSize") {
+            // Limit to ~256MB to force aggressive GC
+            cmd.env("BUN_JSC_forceRAMSize", "268435456");
+        }
+        if !env_vars.contains_key("BUN_GARBAGE_COLLECTOR_LEVEL") {
+            // Hint for more aggressive GC if supported
+            cmd.env("BUN_GARBAGE_COLLECTOR_LEVEL", "1");
+        }
+
         // Configure stdio
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
