@@ -108,14 +108,26 @@ jobs:
       # If Apple signing/notarization secrets are not configured, macOS builds will still
       # succeed, but Gatekeeper may report the downloaded app/dmg as "damaged" or "corrupted".
       - name: Prepare App Store Connect API key (optional, for notarization)
-        if: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY != '' }}
+        if: ${{ matrix.platform == 'macos-latest' }}
         id: asc_api_key
         shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
           set -euo pipefail
+          # Default output to empty so downstream steps can safely reference it.
+          echo "key_path=" >> "$GITHUB_OUTPUT"
+
+          if [ -z "${APPLE_API_KEY:-}" ] || [ -z "${APPLE_API_KEY_P8:-}" ]; then
+            echo "App Store Connect API key not configured; skipping."
+            exit 0
+          fi
+
           mkdir -p "$RUNNER_TEMP/apple-notary"
-          KEY_PATH="$RUNNER_TEMP/apple-notary/AuthKey_${{ secrets.APPLE_API_KEY }}.p8"
-          echo "${{ secrets.APPLE_API_KEY_P8 }}" > "$KEY_PATH"
+          KEY_PATH="$RUNNER_TEMP/apple-notary/AuthKey_${APPLE_API_KEY}.p8"
+          # Use printf to preserve exact content (p8 secrets are multiline).
+          printf '%s' "$APPLE_API_KEY_P8" > "$KEY_PATH"
           chmod 600 "$KEY_PATH"
           echo "key_path=$KEY_PATH" >> "$GITHUB_OUTPUT"
 
@@ -145,11 +157,16 @@ jobs:
 
       - name: Verify macOS DMG (Gatekeeper)
         if: ${{ matrix.platform == 'macos-latest' }}
-        # If we are not signing/notarizing yet, this will likely fail spctl; don't fail the whole release.
-        continue-on-error: ${{ secrets.APPLE_CERTIFICATE == '' }}
         shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
         run: |
           set -euo pipefail
+
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            echo "Apple signing not configured; skipping Gatekeeper validation."
+            exit 0
+          fi
 
           echo "Locating DMG..."
           DMG=""
