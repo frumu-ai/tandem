@@ -129,14 +129,44 @@ pub fn write_config_atomic(path: &Path, value: &Value) -> Result<()> {
         f.sync_all().ok(); // best-effort
     }
 
-    // Best effort rename into place (replace if necessary).
+    // First try a direct rename into place.
+    // On Unix this will replace an existing file atomically.
+    if fs::rename(&tmp_path, path).is_ok() {
+        return Ok(());
+    }
+
+    // Windows doesn't allow renaming over an existing destination. Our previous implementation
+    // removed the destination first, but that can permanently delete a user's config if the
+    // subsequent rename fails (e.g. file locked by another process). Instead, we keep a backup
+    // and only replace when we can do so safely.
+    let backup_path = parent.join(format!(".{}.bak", file_name));
+
+    // Remove a stale backup if it exists; best-effort.
+    if backup_path.exists() {
+        let _ = fs::remove_file(&backup_path);
+    }
+
+    if path.exists() {
+        // If we can't move the existing file out of the way, bail without touching it.
+        fs::rename(path, &backup_path).map_err(TandemError::Io)?;
+    }
+
     match fs::rename(&tmp_path, path) {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            // Some environments fail if destination exists; try remove then rename.
-            let _ = fs::remove_file(path);
-            fs::rename(&tmp_path, path).map_err(TandemError::Io)?;
+        Ok(_) => {
+            // Success: cleanup backup best-effort.
+            if backup_path.exists() {
+                let _ = fs::remove_file(&backup_path);
+            }
             Ok(())
+        }
+        Err(e) => {
+            // Restore backup if we moved it aside.
+            if backup_path.exists() && !path.exists() {
+                let _ = fs::rename(&backup_path, path);
+            }
+            // Cleanup temp best-effort.
+            let _ = fs::remove_file(&tmp_path);
+            Err(TandemError::Io(e))
         }
     }
 }
