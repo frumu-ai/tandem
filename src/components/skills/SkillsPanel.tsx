@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 import { SkillCard } from "./SkillCard";
 import {
   importSkill,
@@ -24,6 +25,7 @@ export function SkillsPanel({
   projectPath,
   onRestartSidecar,
 }: SkillsPanelProps) {
+  const [query, setQuery] = useState("");
   const [content, setContent] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -111,8 +113,26 @@ Instructions for the AI...
     }
   };
 
-  const projectSkills = skills.filter((s) => s.location === "project");
-  const globalSkills = skills.filter((s) => s.location === "global");
+  const queryLower = query.trim().toLowerCase();
+
+  const filteredTemplates = useMemo(() => {
+    if (!queryLower) return templates;
+    return templates.filter((t) => {
+      const hay = `${t.name} ${t.description}`.toLowerCase();
+      return hay.includes(queryLower);
+    });
+  }, [templates, queryLower]);
+
+  const filteredSkills = useMemo(() => {
+    if (!queryLower) return skills;
+    return skills.filter((s) => {
+      const hay = `${s.name} ${s.description}`.toLowerCase();
+      return hay.includes(queryLower);
+    });
+  }, [skills, queryLower]);
+
+  const projectSkills = filteredSkills.filter((s) => s.location === "project");
+  const globalSkills = filteredSkills.filter((s) => s.location === "global");
 
   return (
     <div className="space-y-6">
@@ -163,10 +183,22 @@ Instructions for the AI...
         </label>
       </div>
 
+      {/* Search */}
+      <div className="max-w-md">
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search skills (youtube, writing, data...)"
+        />
+      </div>
+
       {/* Starter templates */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <label className="text-sm font-medium text-text">Starter skills</label>
+          <label className="text-sm font-medium text-text">
+            Starter skills
+            {queryLower ? ` (${filteredTemplates.length} of ${templates.length})` : ""}
+          </label>
           <span className="text-xs text-text-subtle">Quick adds (offline)</span>
         </div>
 
@@ -174,13 +206,15 @@ Instructions for the AI...
           <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
             Loading starter skills...
           </div>
-        ) : templates.length === 0 ? (
+        ) : filteredTemplates.length === 0 ? (
           <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
-            No starter skills found.
+            {templates.length === 0
+              ? "No starter skills found."
+              : "No starter skills match your search."}
           </div>
         ) : (
           <div className="grid gap-3 md:grid-cols-2">
-            {templates.map((t) => (
+            {filteredTemplates.map((t) => (
               <div key={t.id} className="rounded-lg border border-border bg-surface-elevated p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -237,12 +271,19 @@ Instructions for the AI...
       {/* Installed skills */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium text-text">Installed skills ({skills.length})</h3>
+          <h3 className="text-sm font-medium text-text">
+            Installed skills
+            {queryLower ? ` (${filteredSkills.length} of ${skills.length})` : ` (${skills.length})`}
+          </h3>
         </div>
 
-        {skills.length === 0 ? (
+        {filteredSkills.length === 0 ? (
           <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
-            <p className="text-sm text-text-muted">No skills detected in `.opencode/skill/`.</p>
+            <p className="text-sm text-text-muted">
+              {skills.length === 0
+                ? "No skills detected in `.opencode/skill/`."
+                : "No installed skills match your search."}
+            </p>
           </div>
         ) : (
           <div className="space-y-3">

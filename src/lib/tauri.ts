@@ -795,6 +795,70 @@ export async function installSkillTemplate(
 }
 
 // ============================================================================
+// OpenCode Config (Plugins + MCP)
+// ============================================================================
+
+export type OpenCodeConfigScope = "global" | "project";
+
+export async function opencodeListPlugins(scope: OpenCodeConfigScope): Promise<string[]> {
+  return invoke<string[]>("opencode_list_plugins", { scope });
+}
+
+export async function opencodeAddPlugin(
+  scope: OpenCodeConfigScope,
+  name: string
+): Promise<string[]> {
+  return invoke<string[]>("opencode_add_plugin", { scope, name });
+}
+
+export async function opencodeRemovePlugin(
+  scope: OpenCodeConfigScope,
+  name: string
+): Promise<string[]> {
+  return invoke<string[]>("opencode_remove_plugin", { scope, name });
+}
+
+export interface OpencodeMcpServerEntry {
+  name: string;
+  config: Record<string, unknown>;
+}
+
+export async function opencodeListMcpServers(
+  scope: OpenCodeConfigScope
+): Promise<OpencodeMcpServerEntry[]> {
+  return invoke<OpencodeMcpServerEntry[]>("opencode_list_mcp_servers", { scope });
+}
+
+export async function opencodeAddMcpServer(
+  scope: OpenCodeConfigScope,
+  name: string,
+  config: Record<string, unknown>
+): Promise<OpencodeMcpServerEntry[]> {
+  return invoke<OpencodeMcpServerEntry[]>("opencode_add_mcp_server", { scope, name, config });
+}
+
+export async function opencodeRemoveMcpServer(
+  scope: OpenCodeConfigScope,
+  name: string
+): Promise<OpencodeMcpServerEntry[]> {
+  return invoke<OpencodeMcpServerEntry[]>("opencode_remove_mcp_server", { scope, name });
+}
+
+export interface OpencodeMcpTestResult {
+  status: "connected" | "failed" | "not_supported" | "not_found" | string;
+  ok: boolean;
+  http_status?: number | null;
+  error?: string | null;
+}
+
+export async function opencodeTestMcpConnection(
+  scope: OpenCodeConfigScope,
+  name: string
+): Promise<OpencodeMcpTestResult> {
+  return invoke<OpencodeMcpTestResult>("opencode_test_mcp_connection", { scope, name });
+}
+
+// ============================================================================
 // Packs (guided workflows)
 // ============================================================================
 

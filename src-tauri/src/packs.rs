@@ -232,9 +232,8 @@ fn choose_destination_dir(destination_dir: &Path, pack_id: &str) -> Result<PathB
 }
 
 fn default_pack_root(app: &AppHandle) -> Result<PathBuf, String> {
-    // Prefer a user-visible location. Fall back to app data dir.
-    if let Ok(documents) = app.path().document_dir() {
-        return Ok(documents.join("Tandem Packs"));
+    if let Ok(home) = app.path().home_dir() {
+        return Ok(home.join("Tandem Packs"));
     }
 
     let app_data_dir = app
@@ -286,7 +285,6 @@ pub fn install_pack(
 
     copy_dir_recursive(&source_pack_dir, &install_dir)?;
 
-    // Copy START_HERE.md to the root of the installed folder for a guided experience.
     let start_here_source = pack_docs_root.join(pack_id).join("START_HERE.md");
     if start_here_source.exists() {
         let start_here_dest = install_dir.join("START_HERE.md");
@@ -295,6 +293,45 @@ pub fn install_pack(
                 "Failed to copy START_HERE.md {:?} -> {:?}: {}",
                 start_here_source,
                 start_here_dest,
+                e
+            );
+        }
+    }
+
+    let pack_info_source = pack_docs_root.join(pack_id).join("PACK_INFO.md");
+    if pack_info_source.exists() {
+        let pack_info_dest = install_dir.join("PACK_INFO.md");
+        if let Err(e) = fs::copy(&pack_info_source, &pack_info_dest) {
+            tracing::warn!(
+                "Failed to copy PACK_INFO.md {:?} -> {:?}: {}",
+                pack_info_source,
+                pack_info_dest,
+                e
+            );
+        }
+    }
+
+    let prompts_source = pack_docs_root.join(pack_id).join("PROMPTS.md");
+    if prompts_source.exists() {
+        let prompts_dest = install_dir.join("PROMPTS.md");
+        if let Err(e) = fs::copy(&prompts_source, &prompts_dest) {
+            tracing::warn!(
+                "Failed to copy PROMPTS.md {:?} -> {:?}: {}",
+                prompts_source,
+                prompts_dest,
+                e
+            );
+        }
+    }
+
+    let expected_source = pack_docs_root.join(pack_id).join("EXPECTED_OUTPUTS.md");
+    if expected_source.exists() {
+        let expected_dest = install_dir.join("EXPECTED_OUTPUTS.md");
+        if let Err(e) = fs::copy(&expected_source, &expected_dest) {
+            tracing::warn!(
+                "Failed to copy EXPECTED_OUTPUTS.md {:?} -> {:?}: {}",
+                expected_source,
+                expected_dest,
                 e
             );
         }

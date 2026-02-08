@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Message, type MessageProps } from "./Message";
 import { ChatInput, type FileAttachment } from "./ChatInput";
@@ -13,7 +13,14 @@ import { PlanActionButtons } from "./PlanActionButtons";
 import { QuestionDialog } from "./QuestionDialog";
 import { useStagingArea } from "@/hooks/useStagingArea";
 import { usePlans } from "@/hooks/usePlans";
-import { FolderOpen, Sparkles, AlertCircle, Loader2, Settings as SettingsIcon } from "lucide-react";
+import {
+  FolderOpen,
+  Sparkles,
+  Link2,
+  AlertCircle,
+  Loader2,
+  Settings as SettingsIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 import {
@@ -67,6 +74,7 @@ interface ChatProps {
   onOpenSettings?: () => void;
   onProviderChange?: () => void;
   onOpenPacks?: () => void;
+  onOpenExtensions?: (tab?: "skills" | "plugins" | "integrations") => void;
   draftMessage?: string;
   onDraftMessageConsumed?: () => void;
 }
@@ -94,6 +102,7 @@ export function Chat({
   onOpenSettings,
   onProviderChange,
   onOpenPacks,
+  onOpenExtensions,
   draftMessage,
   onDraftMessageConsumed,
 }: ChatProps) {
@@ -1723,6 +1732,7 @@ ${g.example}
                   hasConfiguredProvider={hasConfiguredProvider}
                   onOpenSettings={onOpenSettings}
                   onOpenPacks={onOpenPacks}
+                  onOpenExtensions={onOpenExtensions}
                 />
               ) : (
                 messages.map((message, index) => {
@@ -2046,6 +2056,7 @@ interface EmptyStateProps {
   hasConfiguredProvider: boolean;
   onOpenSettings?: () => void;
   onOpenPacks?: () => void;
+  onOpenExtensions?: (tab?: "skills" | "plugins" | "integrations") => void;
 }
 
 type SuggestionPrompt = {
@@ -2057,7 +2068,7 @@ type SuggestionPrompt = {
 type SuggestionAction = {
   title: string;
   description: string;
-  action: "openPacks";
+  action: "openPacks" | "openIntegrations";
 };
 
 type Suggestion = SuggestionPrompt | SuggestionAction;
@@ -2108,18 +2119,25 @@ function EmptyState({
   hasConfiguredProvider,
   onOpenSettings,
   onOpenPacks,
+  onOpenExtensions,
 }: EmptyStateProps) {
   const [suggestions] = useState<Suggestion[]>(() => {
     const shuffled = [...SUGGESTION_PROMPTS].sort(() => Math.random() - 0.5);
-    const pinned: SuggestionAction[] = onOpenPacks
-      ? [
-          {
-            title: "✨ Install starter packs",
-            description: "Browse skills and starter packs to install",
-            action: "openPacks",
-          },
-        ]
-      : [];
+    const pinned: SuggestionAction[] = [];
+    if (onOpenPacks) {
+      pinned.push({
+        title: "Install starter packs",
+        description: "Browse skill templates and starter packs to install",
+        action: "openPacks",
+      });
+    }
+    if (onOpenExtensions) {
+      pinned.push({
+        title: "Set up integrations (MCP)",
+        description: "Add tool servers and test connectivity",
+        action: "openIntegrations",
+      });
+    }
     return [...pinned, ...shuffled].slice(0, 4);
   });
 
@@ -2130,6 +2148,10 @@ function EmptyState({
     }
     if (suggestion.action === "openPacks") {
       onOpenPacks?.();
+      return;
+    }
+    if (suggestion.action === "openIntegrations") {
+      onOpenExtensions?.("integrations");
     }
   };
 
@@ -2199,6 +2221,15 @@ function EmptyState({
               key={index}
               title={suggestion.title}
               description={suggestion.description}
+              icon={
+                "action" in suggestion ? (
+                  suggestion.action === "openPacks" ? (
+                    <Sparkles className="h-4 w-4 text-primary" />
+                  ) : (
+                    <Link2 className="h-4 w-4 text-primary" />
+                  )
+                ) : undefined
+              }
               onClick={() => handleSuggestionClick(suggestion)}
               disabled={needsConnection || isConnecting}
             />
@@ -2212,19 +2243,29 @@ function EmptyState({
 interface SuggestionCardProps {
   title: string;
   description: string;
+  icon?: ReactNode;
   onClick: () => void;
   disabled?: boolean;
 }
 
-function SuggestionCard({ title, description, onClick, disabled }: SuggestionCardProps) {
+function SuggestionCard({ title, description, icon, onClick, disabled }: SuggestionCardProps) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       className="rounded-lg border border-border bg-surface p-4 text-left transition-all hover:border-primary/50 hover:bg-surface-elevated hover:shadow-lg hover:shadow-primary/5 disabled:opacity-50 disabled:cursor-not-allowed"
     >
-      <p className="font-medium text-text">{title}</p>
-      <p className="text-sm text-text-muted line-clamp-2">{description}</p>
+      <div className={cn("flex items-start gap-3", !icon && "gap-0")}>
+        {icon && (
+          <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+            {icon}
+          </div>
+        )}
+        <div className={cn("min-w-0", icon ? "" : "w-full")}>
+          <p className="font-medium text-text">{title}</p>
+          <p className="text-sm text-text-muted line-clamp-2">{description}</p>
+        </div>
+      </div>
     </button>
   );
 }

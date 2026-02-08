@@ -7,6 +7,7 @@ mod file_watcher;
 mod keystore;
 mod llm_router;
 mod memory;
+mod opencode_config;
 pub mod orchestrator;
 mod packs;
 mod presentation;
@@ -447,6 +448,14 @@ pub fn run() {
             commands::delete_skill,
             commands::skills_list_templates,
             commands::skills_install_template,
+            // OpenCode config (Plugins + MCP)
+            commands::opencode_list_plugins,
+            commands::opencode_add_plugin,
+            commands::opencode_remove_plugin,
+            commands::opencode_list_mcp_servers,
+            commands::opencode_add_mcp_server,
+            commands::opencode_remove_mcp_server,
+            commands::opencode_test_mcp_connection,
             // Packs (guided workflows)
             commands::packs_list,
             commands::packs_install,

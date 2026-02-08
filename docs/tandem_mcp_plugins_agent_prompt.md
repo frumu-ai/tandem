@@ -13,17 +13,17 @@ Deliver:
 1. A new top-level **Extensions** view with tabs: Skills / Plugins / Integrations (MCP)
 2. Safe, atomic, round-trip config updates for OpenCode config (global + project scopes)
 3. Best-effort MCP status UX:
-   - HTTP servers: reachability probe
+   - HTTP servers: protocol-correct MCP `initialize` probe (POST), validate JSON-RPC response
    - stdio servers: "Not tested" (until OpenCode exposes a definitive health/status API)
 
 ## Key Repo Reality (Do Not Miss This)
 
-Tandem currently overwrites OpenCode config at sidecar start:
+Tandem updates OpenCode config at sidecar start to keep Ollama models fresh.
 
-- file: `dirs::config_dir()/opencode/config.json`
-- behavior: replaced with an Ollama-only config blob in `src-tauri/src/sidecar.rs`
+- Config path is resolved by `src-tauri/src/opencode_config.rs` (default: `dirs::config_dir()/opencode/config.json`)
+- The sidecar is spawned with `OPENCODE_CONFIG` set so OpenCode reliably loads that file.
 
-Before adding MCP/plugins settings, refactor this to **merge** provider updates (only `provider.ollama.models` etc) rather than overwriting the entire config file. Otherwise MCP/plugins will get erased every launch.
+Do not overwrite the entire config; only merge/update `provider.ollama.models` and preserve unknown fields so MCP/plugin settings survive restarts.
 
 ## UX Requirements (Match Existing Theme)
 
@@ -59,17 +59,17 @@ Then refactor `src-tauri/src/sidecar.rs` to update/merge the Ollama provider int
 Add Tauri commands (module split optional, but keep cohesive):
 Plugins:
 
-- `list_plugins(scope)`
-- `add_plugin(scope, name)`
-- `remove_plugin(scope, name)`
+- `opencode_list_plugins(scope)`
+- `opencode_add_plugin(scope, name)`
+- `opencode_remove_plugin(scope, name)`
 
 MCP:
 
-- `list_mcp_servers(scope)`
-- `add_mcp_server(scope, config)`
-- `remove_mcp_server(scope, name)`
-- `test_mcp_connection(scope, name)`:
-  - HTTP: HEAD/GET with short timeout
+- `opencode_list_mcp_servers(scope)`
+- `opencode_add_mcp_server(scope, name, config)`
+- `opencode_remove_mcp_server(scope, name)`
+- `opencode_test_mcp_connection(scope, name)`:
+  - HTTP: protocol-correct MCP `initialize` (JSON-RPC POST) with short timeout
   - stdio: return "not_supported" / "not_tested"
 
 Secrets:
@@ -87,6 +87,6 @@ Add a new view and nav entry and implement tab shells:
 ## Manual Verification
 
 1. Start sidecar, confirm config merge does not wipe unrelated fields.
-2. Extensions → Plugins: add/remove global and project entries; restart app; persists.
-3. Extensions → Integrations: add HTTP server; test connection shows success/failure; restart app; persists.
+2. Extensions -> Plugins: add/remove global and project entries; restart app; persists.
+3. Extensions -> Integrations: add HTTP server; test connection shows success/failure; restart app; persists.
 4. Invalid JSON: UI surfaces error; app does not crash.

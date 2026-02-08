@@ -7,7 +7,6 @@ import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/utils";
 import {
   installPack,
-  installPackDefault,
   installSkillTemplate,
   listPacks,
   listSkillTemplates,
@@ -37,6 +36,7 @@ export function PacksPanel({
   const [templates, setTemplates] = useState<SkillTemplateInfo[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [installingTemplateId, setInstallingTemplateId] = useState<string | null>(null);
+  const [showPackInfo, setShowPackInfo] = useState(false);
   const [skillLocation, setSkillLocation] = useState<SkillLocation>(
     activeProjectPath ? "project" : "global"
   );
@@ -93,7 +93,7 @@ export function PacksPanel({
       setInstallingTemplateId(templateId);
       setError(null);
       await installSkillTemplate(templateId, skillLocation);
-      // Installing a skill is "silent success"; users can see it under Settings → Skills.
+      // Installing a skill is "silent success"; users can see it under Extensions -> Skills.
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to install starter skill");
     } finally {
@@ -106,24 +106,10 @@ export function PacksPanel({
       setInstallingId(packId);
       setError(null);
 
-      const result = await installPackDefault(packId);
-      await onOpenInstalledPack?.(result.installed_path);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to install pack");
-    } finally {
-      setInstallingId(null);
-    }
-  };
-
-  const handleInstallChooseLocation = async (packId: string) => {
-    try {
-      setInstallingId(packId);
-      setError(null);
-
       const destination = await open({
         directory: true,
         multiple: false,
-        title: "Choose where to create the starter pack folder (advanced)",
+        title: "Choose where to create the starter pack folder",
       });
 
       if (!destination || typeof destination !== "string") return;
@@ -169,7 +155,7 @@ export function PacksPanel({
             <div className="flex items-center gap-3 text-xs text-text-subtle">
               <span>
                 <FolderOpen className="mr-1 inline h-3 w-3" />
-                Installs create a new folder with sample inputs and an `outputs/` area.
+                Installs include START_HERE.md, prompts, and sample inputs.
               </span>
               {onOpenSkills && (
                 <Button variant="ghost" size="sm" onClick={onOpenSkills} className="h-8 px-2">
@@ -177,6 +163,26 @@ export function PacksPanel({
                 </Button>
               )}
             </div>
+          </div>
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setShowPackInfo((v) => !v)}
+              className="text-xs text-text-subtle hover:text-text underline underline-offset-4"
+            >
+              {showPackInfo ? "Hide pack details" : "What are packs and where do they install?"}
+            </button>
+            {showPackInfo && (
+              <div className="mt-2 rounded-lg border border-border bg-surface-elevated p-3 text-xs text-text-muted">
+                <p>
+                  Packs are guided, copyable folders with prompts and expected outputs. After
+                  install, open START_HERE.md to follow the workflow.
+                </p>
+                <p className="mt-2">
+                  Click Install to choose a clean location and create the pack folder there.
+                </p>
+              </div>
+            )}
           </div>
         </motion.div>
 
@@ -218,16 +224,8 @@ export function PacksPanel({
                               Installing...
                             </>
                           ) : (
-                            "Install & Open"
+                            "Install"
                           )}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          onClick={() => handleInstallChooseLocation(pack.id)}
-                          disabled={isInstalling}
-                          title="Choose where to create the pack folder (advanced)"
-                        >
-                          Advanced...
                         </Button>
                       </div>
                     </div>
@@ -336,7 +334,7 @@ export function PacksPanel({
           )}
 
           <p className="text-xs text-text-subtle">
-            Tip: “Advanced: paste SKILL.md” is still available in Settings → Skills.
+            Tip: "Advanced: paste SKILL.md" is still available in Extensions {"->"} Skills.
           </p>
         </div>
       </div>

@@ -8,6 +8,8 @@
   - **Sales**: A suite of tools for account research, call prep, and asset creation.
   - **Bio-Informatics**: Specialized skills for scientific research and data analysis.
 - **Model Agnostic**: All new skills are designed to work seamlessly with any AI model you choose to connect.
+- **Extensions + MCP Integrations**: New Extensions area lets you configure OpenCode plugins and MCP servers (remote HTTP + local stdio), test remote connectivity, and use presets (Context7, DeepWiki).
+- **Skills Search**: Search Starter skills and Installed skills from one box.
 
 ## Complete Feature List
 
@@ -40,6 +42,27 @@
   - `canvas-design` (includes font library), `theme-factory`, `frontend-design`, `web-artifacts-builder`, `algorithmic-art`.
 - **Utilities**:
   - `internal-comms`, `cowork-mcp-config-assistant`.
+
+### Extensions + Integrations (MCP)
+
+- New top-level **Extensions** area with tabs:
+  - Skills
+  - Plugins
+  - Integrations (MCP)
+- Configure MCP servers in OpenCode config:
+  - Remote HTTP endpoints with optional headers
+  - Local stdio servers (command + args)
+  - Global vs Folder scope
+- Test remote MCP servers using a real MCP `initialize` request:
+  - Validates JSON-RPC response
+  - Supports servers that respond with JSON or SSE
+- Popular presets:
+  - Context7: `https://mcp.context7.com/mcp`
+  - DeepWiki: `https://mcp.deepwiki.com/mcp`
+
+### Quality / Fixes
+
+- Fixed MCP "Test connection" to stop showing Connected for HTTP errors like 405/410 and to provide actionable error labels.
 
 ---
 
