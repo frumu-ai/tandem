@@ -978,6 +978,7 @@ function App() {
                   activeProviderLabel={activeProviderInfo?.providerLabel || undefined}
                   activeModelLabel={activeProviderInfo?.modelLabel || undefined}
                   onOpenSettings={() => setView("settings")}
+                  onOpenPacks={() => setView("packs")}
                   onProviderChange={refreshAppState}
                   draftMessage={draftMessage ?? undefined}
                   onDraftMessageConsumed={() => setDraftMessage(null)}

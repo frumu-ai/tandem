@@ -68,6 +68,56 @@ pub fn list_packs() -> Vec<PackMeta> {
             time_estimate: "15-20 min".to_string(),
             tags: vec!["audit".to_string(), "quality".to_string()],
         },
+        PackMeta {
+            id: "data-visualization-pack".to_string(),
+            title: "Data Visualization".to_string(),
+            description: "Create publication-quality visualizations with Python".to_string(),
+            complexity: "Intermediate".to_string(),
+            time_estimate: "15-20 min".to_string(),
+            tags: vec![
+                "data".to_string(),
+                "visualization".to_string(),
+                "python".to_string(),
+            ],
+        },
+        PackMeta {
+            id: "finance-analysis-pack".to_string(),
+            title: "Finance Analysis".to_string(),
+            description: "Automate financial reporting and variance analysis".to_string(),
+            complexity: "Intermediate".to_string(),
+            time_estimate: "15-20 min".to_string(),
+            tags: vec![
+                "finance".to_string(),
+                "analysis".to_string(),
+                "reporting".to_string(),
+            ],
+        },
+        PackMeta {
+            id: "bio-informatics-pack".to_string(),
+            title: "Bio-Informatics".to_string(),
+            description: "Convert instrument data, run pipelines, and analyze single-cell data"
+                .to_string(),
+            complexity: "Advanced".to_string(),
+            time_estimate: "30-45 min".to_string(),
+            tags: vec![
+                "bio".to_string(),
+                "research".to_string(),
+                "python".to_string(),
+                "nextflow".to_string(),
+            ],
+        },
+        PackMeta {
+            id: "bio-informatics-pack".to_string(),
+            title: "Bio-Informatics".to_string(),
+            description: "Pipelines for instrument data conversion and scVI analysis".to_string(),
+            complexity: "Advanced".to_string(),
+            time_estimate: "30-45 min".to_string(),
+            tags: vec![
+                "science".to_string(),
+                "biology".to_string(),
+                "python".to_string(),
+            ],
+        },
     ]
 }
 

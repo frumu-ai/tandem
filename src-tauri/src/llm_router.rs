@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     OpenRouter,
+    OpenCodeZen,
     Anthropic,
     OpenAI,
     Ollama,
@@ -23,6 +24,7 @@ impl Provider {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "openrouter" => Some(Provider::OpenRouter),
+            "opencode_zen" | "opencodezen" => Some(Provider::OpenCodeZen),
             "anthropic" => Some(Provider::Anthropic),
             "openai" => Some(Provider::OpenAI),
             "ollama" => Some(Provider::Ollama),
@@ -94,6 +96,9 @@ impl LLMRouter {
 
     /// Get the default provider
     pub fn get_default_provider(&self) -> Option<Provider> {
+        if self.config.opencode_zen.default && self.config.opencode_zen.enabled {
+            return Some(Provider::OpenCodeZen);
+        }
         if self.config.openrouter.default && self.config.openrouter.enabled {
             return Some(Provider::OpenRouter);
         }
@@ -108,6 +113,9 @@ impl LLMRouter {
         }
 
         // Fallback to first enabled provider
+        if self.config.opencode_zen.enabled {
+            return Some(Provider::OpenCodeZen);
+        }
         if self.config.openrouter.enabled {
             return Some(Provider::OpenRouter);
         }
@@ -130,6 +138,13 @@ impl LLMRouter {
             Provider::OpenRouter => {
                 if self.config.openrouter.enabled {
                     Some(self.config.openrouter.endpoint.clone())
+                } else {
+                    None
+                }
+            }
+            Provider::OpenCodeZen => {
+                if self.config.opencode_zen.enabled {
+                    Some(self.config.opencode_zen.endpoint.clone())
                 } else {
                     None
                 }
@@ -166,6 +181,7 @@ impl LLMRouter {
     pub fn get_default_model(&self, provider: Provider) -> Option<String> {
         match provider {
             Provider::OpenRouter => self.config.openrouter.model.clone(),
+            Provider::OpenCodeZen => self.config.opencode_zen.model.clone(),
             Provider::Anthropic => self.config.anthropic.model.clone(),
             Provider::OpenAI => self.config.openai.model.clone(),
             Provider::Ollama => self.config.ollama.model.clone(),
@@ -180,7 +196,7 @@ impl LLMRouter {
         request: &LLMRequest,
     ) -> Result<serde_json::Value> {
         match provider {
-            Provider::OpenRouter | Provider::OpenAI => {
+            Provider::OpenRouter | Provider::OpenAI | Provider::OpenCodeZen => {
                 // OpenAI-compatible format
                 Ok(serde_json::json!({
                     "model": request.model.clone().unwrap_or_else(||
@@ -257,6 +273,7 @@ impl LLMRouter {
     pub fn get_completions_path(&self, provider: Provider) -> &'static str {
         match provider {
             Provider::OpenRouter => "/api/v1/chat/completions",
+            Provider::OpenCodeZen => "/chat/completions",
             Provider::Anthropic => "/v1/messages",
             Provider::OpenAI => "/v1/chat/completions",
             Provider::Ollama => "/api/chat",
@@ -273,6 +290,9 @@ impl LLMRouter {
                 headers.push(("Authorization".to_string(), format!("Bearer {}", api_key)));
                 headers.push(("HTTP-Referer".to_string(), "https://tandem.app".to_string()));
                 headers.push(("X-Title".to_string(), "Tandem".to_string()));
+            }
+            Provider::OpenCodeZen => {
+                headers.push(("Authorization".to_string(), format!("Bearer {}", api_key)));
             }
             Provider::Anthropic => {
                 headers.push(("x-api-key".to_string(), api_key.to_string()));
@@ -299,7 +319,7 @@ impl LLMRouter {
         response: &serde_json::Value,
     ) -> Result<LLMResponse> {
         match provider {
-            Provider::OpenRouter | Provider::OpenAI => {
+            Provider::OpenRouter | Provider::OpenAI | Provider::OpenCodeZen => {
                 let content = response["choices"][0]["message"]["content"]
                     .as_str()
                     .unwrap_or("")

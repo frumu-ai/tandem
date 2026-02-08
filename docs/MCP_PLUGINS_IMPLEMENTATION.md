@@ -1,300 +1,247 @@
-# Implementation Plan: MCP & Plugins Support for Tandem
+# MCP + Plugins Support (Plan Of Record)
 
-**Date:** 2026-01-22
-**Status:** PROPOSAL
-**Priority:** High
+This document is the single, canonical plan for adding **OpenCode MCP servers** and **OpenCode plugins** support to Tandem.
 
----
+It merges and supersedes:
 
-## Executive Summary
+- `docs/tandem_mcp_plugins_agent_prompt.md`
+- the prior contents of this file
 
-This document outlines the implementation plan for adding **MCP (Model Context Protocol)** and **Plugin** management capabilities to Tandem.
+## Summary (Best Approach)
 
-**Key Discovery:** OpenCode already supports both MCP servers and Plugins natively via `opencode.json` configuration. Tandem's role is to provide a **user-friendly UI** for managing these capabilities.
+Tandem should **not** implement an MCP client nor a plugin runtime.
 
-**Architecture Simplification:** To avoid overloading the Settings panel, we will introduce a new **"Extensions"** top-level view that houses Skills, Plugins, and MCP Integrations.
+Instead, Tandem should:
 
----
+- expose **configuration** (global + per-project/workspace) via a first-class UI (Extensions)
+- add a small Rust **config manager** that can safely read/update OpenCode config files
+- add best-effort status UX:
+  - for HTTP MCP servers: reachability probe only
+  - for stdio MCP servers: show "Not tested" unless/until OpenCode exposes status via its API
 
-## Current Problem
+Crucially: Tandem currently writes an OpenCode config file on sidecar start. That logic must be changed to **merge** (not overwrite) or else any MCP/plugin settings we add will be lost.
 
-The existing `Settings.tsx` is already ~1000 lines with:
+## Current Repo Reality (Confirmed In Code)
 
-- Updates
-- Projects (collapsible)
-- Appearance
-- Skills (collapsible)
-- LLM Providers
+- Tandem runs OpenCode as a **sidecar** (`src-tauri/src/sidecar.rs`) and sets `OPENCODE_DIR` to the active workspace.
+- On sidecar start, Tandem writes a JSON config file at:
+  - `dirs::config_dir()/opencode/config.json` (see `src-tauri/src/sidecar.rs`)
+  - The current write replaces the entire file contents with a minimal config that includes only the Ollama provider.
+- Skills are already treated as OpenCode-compatible:
+  - project skills: `<workspace>/.opencode/skill/`
+  - global skills: the repo currently uses multiple notions of "global" (see `src-tauri/src/skills.rs`), so we must unify this as part of MCP/plugins work.
 
-Adding Plugins and MCP here would make it unwieldy.
+## UX Direction (Match Tandem Theme)
 
----
+We want MCP/plugins management to feel native to Tandem. The quickest way to achieve that is to reuse the existing view + tab patterns already present in the app:
 
-## Proposed Architecture
+- Top-level navigation in Tandem is the **icon sidebar** in `src/App.tsx` (Chat, Packs, Settings, etc). Extensions should be a new top-level `view` alongside those, with the same active state styling (`bg-primary/20 text-primary` vs muted hover).
+- Tabs inside a view should match the existing **tab switcher** styling used in the Chat sidebar (Sessions/Files) in `src/App.tsx`:
+  - container: `flex border-b border-border`
+  - each tab: `flex-1 px-4 py-3 text-sm font-medium ...`
+  - active: `border-b-2 border-primary text-primary`
+  - inactive: `text-text-muted hover:text-text hover:bg-surface-elevated`
+- Page layout should match Settings:
+  - header block with icon in a `rounded-xl bg-primary/10` square and text using `text-2xl font-bold text-text` + `text-text-muted` (see `src/components/settings/Settings.tsx`)
+  - content areas should use existing `Card` components (`src/components/ui/Card.tsx`) and existing `Button`/`Input` components.
 
-### Option A: Dedicated "Extensions" View (Recommended)
+## Goals / Non-Goals
 
-Create a new top-level view accessible from the sidebar, separate from Settings.
+Goals:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Sidebar                │  Main Content                             │
-│  ──────────────────     │  ─────────────────────────────────────── │
-│  [Chat]                 │                                           │
-│  [Files]                │  ┌─────────────────────────────────────┐ │
-│  [Extensions] ← NEW     │  │  [Skills] [Plugins] [Integrations]  │ │
-│  [Settings]             │  │  ─────────────────────────────────  │ │
-│                         │  │                                     │ │
-│                         │  │  (Tab content here)                 │ │
-│                         │  │                                     │ │
-│                         │  └─────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
-```
+- Add a top-level **Extensions** view with tabs:
+  - Skills (migrated out of Settings)
+  - Plugins
+  - Integrations (MCP)
+- Support Global vs Project scope for plugins and MCP server configuration
+- Preserve unknown config fields (round-trip safe)
+- Atomic writes + clear UX errors for invalid JSON / permissions
 
-**Benefits:**
+Non-goals (initial):
 
-- Keeps Settings focused on core config (Projects, Providers, Appearance)
-- Gives extension-related features room to grow
-- Cleaner mental model: "Settings" = config, "Extensions" = capabilities
+- Full MCP handshake, tool schema introspection, or message routing in Tandem
+- Installing plugins via npm/pnpm inside Tandem (unless OpenCode already handles it purely from config)
+- OAuth flows (only placeholders in UI)
 
-### Option B: Tabbed Settings Panel
+## Key Design Decision: Config Files And Scope
 
-Keep everything in Settings but add horizontal tabs.
+The most important work is choosing config file locations and ensuring we never clobber user config.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Settings                                                           │
-│  ─────────────────────────────────────────────────────────────────  │
-│  [General] [Extensions] [Providers]                                 │
-│  ─────────────────────────────────────────────────────────────────  │
-│                                                                     │
-│  (Tab content here)                                                 │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+### OpenCode "Global" Location
 
-**Benefits:**
+The repo currently mixes these patterns:
 
-- No sidebar changes needed
-- Familiar pattern
+- `dirs::config_dir()/opencode/...` (used by `src-tauri/src/sidecar.rs` and skill discovery)
+- `dirs::home_dir()/.config/opencode/...` (used by `src-tauri/src/skills.rs` sync helpers)
 
----
+Best approach: implement an `opencode_paths` helper and **support both**, with a deterministic preference order:
 
-## Recommended: Option A - Extensions View
+1. If one location already exists on disk, treat it as canonical.
+2. If neither exists, pick one canonical default and use it consistently (and document it).
 
-### New File Structure
+This avoids breaking existing installs while we converge on the correct OpenCode expectation on Windows.
 
-```
-src/
-├── components/
-│   ├── extensions/                    [NEW] Extensions view
-│   │   ├── Extensions.tsx            Main view with tabs
-│   │   ├── SkillsTab.tsx             Skills management (moved from Settings)
-│   │   ├── PluginsTab.tsx            Plugin management
-│   │   ├── IntegrationsTab.tsx       MCP server management
-│   │   └── index.ts
-│   ├── settings/
-│   │   ├── Settings.tsx              [MODIFY] Remove Skills section
-│   │   └── ...
-│   └── sidebar/
-│       └── Sidebar.tsx               [MODIFY] Add Extensions link
-│
-src-tauri/
-├── src/
-│   ├── plugins.rs                    [NEW] Plugin management commands
-│   ├── mcp.rs                        [NEW] MCP management commands
-│   ├── opencode_config.rs            [NEW] Config file manager
-│   └── lib.rs                        [MODIFY] Register new commands
-```
+### OpenCode "Project/Workspace" Location
 
----
+Because Tandem already uses `.opencode/` for plans and skills, the plan should treat the workspace config as:
 
-## Implementation Phases
+- `<workspace>/.opencode/config.json`
 
-### Phase 0: Create Extensions View Shell (Foundation)
+If OpenCode actually expects a different workspace config file name, this is the single thing to validate during implementation; the rest of the plan remains the same.
 
-#### [NEW] `src/components/extensions/Extensions.tsx`
+## Config Manager (Rust) Requirements
 
-A new top-level view with three tabs.
+Add a shared module, e.g. `src-tauri/src/opencode_config.rs`, that supports:
 
-```tsx
-// Extensions.tsx structure
-const tabs = ["Skills", "Plugins", "Integrations"];
+- `read_config(scope) -> serde_json::Value`:
+  - returns an object (or `{}`) even if missing
+  - preserves unknown fields
+- `write_config(scope, value)`:
+  - atomic write (temp file + rename)
+  - creates parent directories if needed
+  - never crashes the app on invalid JSON; bubble errors to UI
+- `update_config(scope, mutator_fn)`:
+  - load -> mutate -> validate minimally -> write
+- `get_config_path(scope)`:
+  - uses the `opencode_paths` decision above
 
-<div className="h-full overflow-y-auto">
-  <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
+### Critical Refactor: Stop Overwriting Config On Sidecar Start
 
-  {activeTab === "Skills" && <SkillsTab />}
-  {activeTab === "Plugins" && <PluginsTab />}
-  {activeTab === "Integrations" && <IntegrationsTab />}
-</div>;
-```
+Today, `src-tauri/src/sidecar.rs` writes a whole config file each launch (to inject/update Ollama models).
 
-#### [MODIFY] `src/components/sidebar/Sidebar.tsx`
+This must change to:
 
-Add an "Extensions" navigation item with a `Puzzle` or `Blocks` icon.
+- read existing config (if any)
+- merge or update only `provider.ollama.models` (and any required provider metadata)
+- write the updated config back atomically
 
-#### [MODIFY] `src/components/settings/Settings.tsx`
+Without this, any MCP/plugin settings managed by Tandem will be erased on every sidecar start.
 
-Remove the Skills section (it moves to Extensions).
+## Schema Surface Area (What We Manage)
 
----
+We intentionally keep schema scope small and preserve everything else.
 
-### Phase 1: Migrate Skills to Extensions
+### Plugins
 
-#### [NEW] `src/components/extensions/SkillsTab.tsx`
+We store a list of plugins in whatever OpenCode expects (to be confirmed during implementation).
 
-Move the existing `SkillsPanel` logic here with full-page layout.
+Tandem manages:
 
-- Keep existing functionality
-- Expand to use available space (no longer collapsible)
+- add/remove plugin identifier strings
+- optional "installed" status (best-effort) if there is a well-known plugin directory to check
 
----
+### MCP Servers
+
+We manage a mapping of MCP server configs keyed by name (again: field names to be confirmed during implementation).
+
+Tandem manages:
+
+- HTTP servers:
+  - `url`
+  - optional headers/auth reference (do not store secrets in plaintext)
+- stdio servers:
+  - `command`
+  - `args`
+  - optional env var references
+
+Secrets:
+
+- If an MCP server needs an API key, store it in Tandem's keystore and reference it via environment variables (or whatever OpenCode supports), not in JSON.
+
+## UI Plan (Extensions View)
+
+### Phase 0: Extensions Shell
+
+- Add `Extensions` as a new top-level nav item
+- Create `Extensions` view with tabs: Skills / Plugins / Integrations
+- Move existing Skills section out of `src/components/settings/Settings.tsx` into the Skills tab
+
+### Phase 1: Skills Tab
+
+- Reuse the existing skills UI component(s) and backend commands
+- Convert from collapsible-in-settings to full-page tab layout
 
 ### Phase 2: Plugins Tab
 
-#### [NEW] `src/components/extensions/PluginsTab.tsx`
+UI:
 
-**Features:**
+- list configured plugins for chosen scope (Global/Project)
+- add plugin (string input)
+- remove plugin
 
-- List installed plugins (from `.opencode/plugins/` and npm config)
-- Install from npm (add to `opencode.json` `plugin` array)
-- Create local plugin from template
-- Link to OpenCode Ecosystem
+Backend (Tauri commands, names TBD):
 
-**UI:**
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Plugins                                                            │
-│  ─────────────────────────────────────────────────────────────────  │
-│  Plugins extend OpenCode with custom tools, hooks, and workflows.   │
-│                                                                     │
-│  Installed                                                          │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │ 📦 opencode-wakatime                              [Remove]  │   │
-│  │    Track coding time in WakaTime                             │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  ─────────────────────────────────────────────────────────────────  │
-│  Add Plugin                                                         │
-│  ┌────────────────────────────────────────────┐ [Install]          │
-│  │ npm package name (e.g. opencode-wakatime)  │                    │
-│  └────────────────────────────────────────────┘                    │
-│                                                                     │
-│  [Browse Ecosystem →]                                               │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-#### [NEW] `src-tauri/src/plugins.rs`
-
-Rust commands:
-
-- `list_plugins()` - Read `opencode.json` and scan plugin directories
-- `add_plugin(name: String, scope: "project" | "global")` - Add to config
-- `remove_plugin(name: String)` - Remove from config
-
----
+- `list_plugins(scope)`
+- `add_plugin(scope, name)`
+- `remove_plugin(scope, name)`
 
 ### Phase 3: Integrations (MCP) Tab
 
-#### [NEW] `src/components/extensions/IntegrationsTab.tsx`
+UI:
 
-**Features:**
+- list configured servers with status
+- add popular presets (optional)
+- add remote HTTP server (name + url)
+- add local stdio server (name + command + args)
+- remove server
+- test connection (HTTP only, best-effort)
 
-- List configured MCP servers with status
-- Add from popular presets (Sentry, Context7, Grep, Notion)
-- Add custom local or remote server
-- Manage authentication (API keys, OAuth)
+Backend (Tauri commands, names TBD):
 
-**UI:**
+- `list_mcp_servers(scope)`
+- `add_mcp_server(scope, config)`
+- `remove_mcp_server(scope, name)`
+- `test_mcp_connection(scope, name)`:
+  - HTTP: HEAD/GET probe with short timeout
+  - stdio: return "not_supported" unless/until OpenCode exposes a real health/status API
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Integrations                                                       │
-│  ─────────────────────────────────────────────────────────────────  │
-│  Connect external tools via Model Context Protocol (MCP).           │
-│                                                                     │
-│  Connected                                                          │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │ 🔌 sentry                                    ● Connected    │   │
-│  │    https://mcp.sentry.dev         [Configure] [Remove]      │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  ─────────────────────────────────────────────────────────────────  │
-│  Add Integration                                                    │
-│                                                                     │
-│  Popular:                                                           │
-│  [+ Sentry]  [+ Context7]  [+ Grep]  [+ GitHub]  [+ Notion]        │
-│                                                                     │
-│  Custom:                                                            │
-│  [+ Local Server]  [+ Remote Server]                                │
-└─────────────────────────────────────────────────────────────────────┘
-```
+### UI Details (Concrete Components/Styles)
 
-#### [NEW] `src-tauri/src/mcp.rs`
+To avoid UI drift and keep this shippable:
 
-Rust commands:
+- Use `Card` sections per tab for "Configured" lists and "Add new".
+- Use the existing `Input` for name/url/command fields and `Button` for actions.
+- Scope selector:
+  - simplest: a two-button segmented control built from plain buttons using the same classes as the Sessions/Files tabs in `src/App.tsx`.
+  - persist selection in local state only (do not store in config).
+- Status badges:
+  - reuse existing text colors (`text-success`, `text-error`, `text-text-subtle`) and soft backgrounds (`bg-success/10`, `bg-error/10`, etc).
+- Empty states:
+  - match Settings empty state conventions: centered `bg-surface-elevated` panel with a small icon and `text-text-muted`.
 
-- `list_mcp_servers()` - Parse `opencode.json` mcp configuration
-- `add_mcp_server(config: McpServerConfig)` - Add to config
-- `remove_mcp_server(name: String)` - Remove from config
-- `test_mcp_connection(name: String)` - Check if reachable
+## Implementation Order (PR Sequence)
 
----
+Keep PRs small and reviewable:
 
-### Phase 4: Shared Config Manager
+1. Config paths + config manager:
+   - `opencode_paths` helper
+   - `opencode_config` module with atomic update
+   - refactor sidecar startup config write to merge, not overwrite
+2. Backend commands:
+   - plugins commands (read/write config)
+   - MCP server commands (read/write config + HTTP probe)
+3. Frontend navigation:
+   - Extensions entry in sidebar + routing
+4. Skills migration:
+   - move Skills UI from Settings to Extensions
+5. Plugins UI:
+   - scope toggle + list/add/remove
+6. MCP UI:
+   - scope toggle + list/add/remove + test
+7. Docs + polish:
+   - troubleshooting + known limitations
 
-#### [NEW] `src-tauri/src/opencode_config.rs`
+## Manual Verification Checklist
 
-Unified module for reading/writing `opencode.json`:
+- Skills still work, just moved to Extensions
+- Add plugin (global): persists across restart
+- Add plugin (project): persists across restart and is scoped correctly
+- Add MCP HTTP server: persists; "Test connection" reports pass/fail
+- Add MCP stdio server: persists; status shows "Not tested"
+- Invalid JSON in config: UI shows actionable error; no crash
+- Sidecar start no longer wipes MCP/plugins settings
 
-- `read_config(scope: "project" | "global")` - Parse config
-- `write_config(scope, config)` - Safely update
-- `get_config_path(scope)` - Return path
+## Troubleshooting Notes
 
-**Config Locations:**
-
-- Global: `~/.config/opencode/opencode.json`
-- Project: `<workspace>/opencode.json`
-
----
-
-## Implementation Order
-
-| Phase | Task                                    | Effort | Dependencies |
-| :---- | :-------------------------------------- | :----- | :----------- |
-| 0.1   | Create Extensions.tsx shell with tabs   | 2h     | None         |
-| 0.2   | Add Extensions to Sidebar               | 1h     | 0.1          |
-| 0.3   | Remove Skills from Settings.tsx         | 0.5h   | 0.1          |
-| 1.1   | Create SkillsTab.tsx (migrate existing) | 2h     | 0.1          |
-| 2.1   | Create opencode_config.rs               | 2h     | None         |
-| 2.2   | Create plugins.rs                       | 2h     | 2.1          |
-| 2.3   | Create PluginsTab.tsx                   | 3h     | 2.2          |
-| 3.1   | Create mcp.rs                           | 3h     | 2.1          |
-| 3.2   | Create IntegrationsTab.tsx              | 4h     | 3.1          |
-| 3.3   | Add popular MCP presets                 | 2h     | 3.2          |
-| 4.1   | End-to-end testing                      | 2h     | All          |
-| 4.2   | Documentation and CHANGELOG             | 1h     | All          |
-
-**Total Estimated Effort:** ~24.5 hours
-
----
-
-## Verification Plan
-
-### Manual Verification
-
-1. Navigate to Extensions → Skills tab → verify existing skills visible
-2. Navigate to Extensions → Plugins tab → install `opencode-wakatime` → verify in config
-3. Navigate to Extensions → Integrations tab → add Context7 → verify tools available in chat
-4. Restart app → verify all settings persist
-
----
-
-## References
-
-- [OpenCode Plugins Documentation](https://opencode.ai/docs/plugins/)
-- [OpenCode MCP Servers Documentation](https://opencode.ai/docs/mcp-servers)
-- [OpenCode Config Schema](https://opencode.ai/config.json)
-- [Model Context Protocol Specification](https://modelcontextprotocol.io)
+- If MCP/plugins "disappear" after starting the sidecar, it indicates the sidecar config merge behavior is still overwriting config.
+- If settings aren't visible in OpenCode, verify Tandem is writing to the same config location OpenCode actually reads on that platform. The `opencode_paths` logic should make this observable and debuggable.

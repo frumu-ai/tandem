@@ -66,6 +66,7 @@ interface ChatProps {
   activeModelLabel?: string;
   onOpenSettings?: () => void;
   onProviderChange?: () => void;
+  onOpenPacks?: () => void;
   draftMessage?: string;
   onDraftMessageConsumed?: () => void;
 }
@@ -92,6 +93,7 @@ export function Chat({
   activeModelLabel,
   onOpenSettings,
   onProviderChange,
+  onOpenPacks,
   draftMessage,
   onDraftMessageConsumed,
 }: ChatProps) {
@@ -1720,6 +1722,7 @@ ${g.example}
                   onSendMessage={handleSend}
                   hasConfiguredProvider={hasConfiguredProvider}
                   onOpenSettings={onOpenSettings}
+                  onOpenPacks={onOpenPacks}
                 />
               ) : (
                 messages.map((message, index) => {
@@ -2042,10 +2045,25 @@ interface EmptyStateProps {
   onSendMessage: (message: string) => void;
   hasConfiguredProvider: boolean;
   onOpenSettings?: () => void;
+  onOpenPacks?: () => void;
 }
 
+type SuggestionPrompt = {
+  title: string;
+  description: string;
+  prompt: string;
+};
+
+type SuggestionAction = {
+  title: string;
+  description: string;
+  action: "openPacks";
+};
+
+type Suggestion = SuggestionPrompt | SuggestionAction;
+
 // Suggestion prompts - mix of developer and general user tasks
-const SUGGESTION_PROMPTS = [
+const SUGGESTION_PROMPTS: SuggestionPrompt[] = [
   {
     title: "📁 Summarize this project",
     description: "Give me an overview of what this project does",
@@ -2089,12 +2107,31 @@ function EmptyState({
   onSendMessage,
   hasConfiguredProvider,
   onOpenSettings,
+  onOpenPacks,
 }: EmptyStateProps) {
-  // Randomly select 4 suggestions to show variety
-  const [suggestions] = useState(() => {
+  const [suggestions] = useState<Suggestion[]>(() => {
     const shuffled = [...SUGGESTION_PROMPTS].sort(() => Math.random() - 0.5);
-    return shuffled.slice(0, 4);
+    const pinned: SuggestionAction[] = onOpenPacks
+      ? [
+          {
+            title: "✨ Install starter packs",
+            description: "Browse skills and starter packs to install",
+            action: "openPacks",
+          },
+        ]
+      : [];
+    return [...pinned, ...shuffled].slice(0, 4);
   });
+
+  const handleSuggestionClick = (suggestion: Suggestion) => {
+    if ("prompt" in suggestion) {
+      onSendMessage(suggestion.prompt);
+      return;
+    }
+    if (suggestion.action === "openPacks") {
+      onOpenPacks?.();
+    }
+  };
 
   return (
     <motion.div
@@ -2162,7 +2199,7 @@ function EmptyState({
               key={index}
               title={suggestion.title}
               description={suggestion.description}
-              onClick={() => onSendMessage(suggestion.prompt)}
+              onClick={() => handleSuggestionClick(suggestion)}
               disabled={needsConnection || isConnecting}
             />
           ))}

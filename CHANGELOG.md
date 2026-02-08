@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-02-08
+
+### Added
+
+- **Knowledge Work Skills Migration**: Completed the migration of all legacy knowledge work skills to the Tandem format.
+  - **Productivity Pack**: `productivity-memory`, `productivity-tasks`, `productivity-start`, `productivity-update`, `inbox-triage`, `meeting-notes`, `research-synthesis`, `writing-polish`.
+  - **Sales Pack**: `sales-account-research`, `sales-call-prep`, `sales-competitive-intelligence`, `sales-create-asset`, `sales-daily-briefing`, `sales-draft-outreach`.
+  - **Bio-Informatics Pack**: `bio-instrument-data`, `bio-nextflow-manager`, `bio-research-strategy`, `bio-single-cell`, `bio-strategy`.
+  - **Data Science Pack**: `data-analyze`, `data-build-dashboard`, `data-create-viz`, `data-explore-data`, `data-validate`, `data-write-query`.
+  - **Enterprise Knowledge Pack**: `enterprise-knowledge-synthesis`, `enterprise-search-knowledge`, `enterprise-search-source`, `enterprise-search-strategy`, `enterprise-source-management`.
+  - **Finance Pack**: `finance-income-statement`, `finance-journal-entry`, `finance-reconciliation`, `finance-sox-testing`, `finance-variance-analysis`.
+  - **Legal Pack**: `legal-canned-responses`, `legal-compliance`, `legal-contract-review`, `legal-meeting-briefing`, `legal-nda-triage`, `legal-risk-assessment`.
+  - **Marketing Pack**: `marketing-brand-voice`, `marketing-campaign-planning`, `marketing-competitive-analysis`, `marketing-content-creation`, `marketing-performance-analytics`.
+  - **Product Pack**: `product-competitive-analysis`, `product-feature-spec`, `product-metrics`, `product-roadmap`, `product-stakeholder-comms`, `product-user-research`.
+  - **Support Pack**: `support-customer-research`, `support-escalation`, `support-knowledge-management`, `support-response-drafting`, `support-ticket-triage`.
+  - **Design & Frontend Pack**: `canvas-design`, `theme-factory`, `frontend-design`, `web-artifacts-builder`, `algorithmic-art`.
+  - **Internal Comms**: `internal-comms`.
+  - **Utilities**: `cowork-mcp-config-assistant`.
+- **Skill Templates**: All migrated skills are now available as offline-compatible templates in the `src-tauri/resources/skill-templates` directory.
+- **Brand Neutralization**: All skills have been updated to be model-agnostic, removing dependencies on specific AI providers.
+
 ## [0.2.1] - 2026-02-07
 
 ### Added
