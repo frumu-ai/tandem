@@ -123,6 +123,10 @@ impl CircuitBreaker {
 /// Session creation request
 #[derive(Debug, Serialize)]
 pub struct CreateSessionRequest {
+    /// Optional parent session ID. When set, OpenCode treats this session as a child and it
+    /// will not be returned when listing only root sessions.
+    #[serde(rename = "parentID", skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1039,16 +1043,36 @@ impl SidecarManager {
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
         self.check_circuit_breaker().await?;
 
-        let url = format!("{}/session", self.base_url().await?);
+        // Prefer root sessions only, to avoid flooding the UI with internal child sessions
+        // created by orchestration and other features. If the sidecar doesn't support the
+        // `roots` param, fall back to the unfiltered endpoint.
+        let base_url = self.base_url().await?;
 
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to list sessions: {}", e)))?;
+        let try_roots = async {
+            let url = format!("{}/session", base_url);
+            let response = self
+                .http_client
+                .get(&url)
+                .query(&[("roots", "true")])
+                .send()
+                .await
+                .map_err(|e| TandemError::Sidecar(format!("Failed to list sessions: {}", e)))?;
+            self.handle_response(response).await
+        }
+        .await;
 
-        self.handle_response(response).await
+        match try_roots {
+            Ok(sessions) => Ok(sessions),
+            Err(e) => {
+                tracing::warn!("Failed to list root sessions (falling back): {}", e);
+                let url = format!("{}/session", base_url);
+                let response =
+                    self.http_client.get(&url).send().await.map_err(|e| {
+                        TandemError::Sidecar(format!("Failed to list sessions: {}", e))
+                    })?;
+                self.handle_response(response).await
+            }
+        }
     }
 
     /// Delete a session

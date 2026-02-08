@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-02-08
+
+### Fixed
+
+- **Orchestration Session Spam**: Orchestration no longer creates endless new root chat sessions during execution.
+  - Sub-agent/task sessions are now created as child sessions (so they don't flood the main session list).
+  - Session listing now prefers root sessions only, with a fallback for older sidecars.
+
 ## [0.2.2] - 2026-02-08
 
 ### Added

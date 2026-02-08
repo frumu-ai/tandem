@@ -793,6 +793,7 @@ impl OrchestratorEngine {
         ]);
 
         let request = CreateSessionRequest {
+            parent_id: Some(run_session_id),
             title: Some(format!(
                 "Orchestrator Task {}: {}",
                 task.id,

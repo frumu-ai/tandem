@@ -1,3 +1,17 @@
+# Tandem v0.2.3 Release Notes
+
+## Highlights
+
+- **Orchestration Session Spam Fix**: Orchestration Mode no longer creates an endless stream of new root chat sessions while running tasks. Internal task/resume sessions are now treated as child sessions and the session list prefers root sessions only.
+
+## Complete Feature List
+
+### Orchestration
+
+- Prevent internal orchestration task/resume sessions from flooding the main session history.
+
+---
+
 # Tandem v0.2.2 Release Notes
 
 ## Highlights

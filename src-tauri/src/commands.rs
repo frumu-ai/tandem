@@ -1131,6 +1131,7 @@ pub async fn create_session(
     };
 
     let request = CreateSessionRequest {
+        parent_id: None,
         title,
         model: model.or(default_model),
         provider: provider.or(default_provider),
@@ -1692,6 +1693,7 @@ pub async fn rewind_to_message(
     let new_session = state
         .sidecar
         .create_session(CreateSessionRequest {
+            parent_id: None,
             title: Some(format!("Rewind from {}", session_id)),
             model: default_model,
             provider: default_provider,
@@ -4109,6 +4111,7 @@ pub async fn start_plan_session(
     let session = state
         .sidecar
         .create_session(CreateSessionRequest {
+            parent_id: None,
             title: Some(goal.clone().unwrap_or_else(|| "Plan Mode".to_string())),
             model: default_model,
             provider: default_provider,
@@ -4318,6 +4321,7 @@ pub async fn orchestrator_create_run(
 
     // Create a NEW session specifically for the orchestrator
     let session_request = CreateSessionRequest {
+        parent_id: None,
         title: Some(format!(
             "Orchestrator: {}",
             &objective[..objective.len().min(50)]
@@ -4541,8 +4545,10 @@ pub async fn orchestrator_set_resume_model(
         ));
     }
 
+    let parent_id = engine.get_base_session_id().await;
     let normalized_provider = normalize_provider_id_for_sidecar(Some(provider.clone()));
     let request = CreateSessionRequest {
+        parent_id: Some(parent_id),
         title: Some(format!(
             "Orchestrator Resume: {}",
             &snapshot.objective[..snapshot.objective.len().min(50)]

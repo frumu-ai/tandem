@@ -112,6 +112,15 @@ export function SessionSidebar({
 
     // Map chat sessions
     sessions.forEach((s) => {
+      // Hide internal orchestration child/root sessions from the chat list.
+      // Orchestration runs have their own sidebar items, and task/resume sessions
+      // should not clutter the user's chat history.
+      if (
+        s.title?.startsWith("Orchestrator Task ") ||
+        s.title?.startsWith("Orchestrator Resume:")
+      ) {
+        return;
+      }
       items.push({
         id: s.id,
         type: "chat",
