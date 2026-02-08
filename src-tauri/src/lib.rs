@@ -222,7 +222,19 @@ pub fn run() {
             app.manage(vault_state);
 
             // Initialize application state (providers, workspace, sidecar)
-            let app_state = state::AppState::new();
+            let mut app_state = state::AppState::new();
+
+            // Initialize MemoryManager (Vector DB)
+            let memory_db_path = app_data_dir.join("memory.sqlite");
+            match tauri::async_runtime::block_on(memory::MemoryManager::new(&memory_db_path)) {
+                Ok(manager) => {
+                    tracing::info!("Memory manager initialized at {:?}", memory_db_path);
+                    app_state.memory_manager = Some(std::sync::Arc::new(manager));
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize memory manager: {}", e);
+                }
+            }
 
             // Load saved settings from store
             let store = app.store("settings.json").expect("Failed to create store");
@@ -488,6 +500,9 @@ pub fn run() {
             commands::orchestrator_list_runs,
             commands::orchestrator_load_run,
             commands::orchestrator_restart_run,
+            // Memory Management
+            commands::get_memory_stats,
+            commands::index_workspace_command,
         ]);
 
     // Add desktop-only plugins

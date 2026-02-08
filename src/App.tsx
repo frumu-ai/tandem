@@ -181,18 +181,22 @@ function App() {
       (state.providers_config.anthropic?.enabled && state.providers_config.anthropic?.has_key) ||
       (state.providers_config.openai?.enabled && state.providers_config.openai?.has_key) ||
       state.providers_config.opencode_zen?.enabled ||
-      (state.providers_config.ollama?.enabled && state.providers_config.ollama?.has_key));
+      (state.providers_config.ollama?.enabled && state.providers_config.ollama?.has_key) ||
+      // Custom providers (e.g. LM Studio / OpenAI-compatible endpoints) often don't require a key.
+      (state.providers_config.custom?.some((c) => c.enabled && !!c.endpoint?.trim()) ?? false));
 
   const activeProviderInfo = useMemo(() => {
     const config = state?.providers_config;
     if (!config) return null;
 
+    const enabledCustom = (config.custom ?? []).find((c) => c.enabled);
     const candidates = [
       { id: "openrouter", label: "OpenRouter", config: config.openrouter },
       { id: "opencode_zen", label: "OpenCode Zen", config: config.opencode_zen },
       { id: "anthropic", label: "Anthropic", config: config.anthropic },
       { id: "openai", label: "OpenAI", config: config.openai },
       { id: "ollama", label: "Ollama", config: config.ollama },
+      ...(enabledCustom ? [{ id: "custom", label: "Custom", config: enabledCustom }] : []),
     ];
 
     const preferred =

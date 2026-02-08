@@ -29,6 +29,8 @@ Inspired by early AI coworking research previews, but open source and provider-a
 
 **📖 Open Source**: MIT licensed. Review the code, contribute features, or fork it for your needs.
 
+**🛠️ Modern Stack**: Built with **Rust**, **Tauri**, **React**, and **sqlite-vec** — designed for high performance and low memory footprint on consumer hardware.
+
 ## Developer Superpowers for Everyone
 
 In 2024, AI coding tools like Cursor transformed how developers work - letting them interact with entire codebases, automate complex tasks, and review changes before they happen.
@@ -166,6 +168,20 @@ Tandem uses Tauri's secure updater. If you are building the app for yourself, yo
 3. Update the `pubkey` in `src-tauri/tauri.conf.json` with your new public key.
 
 For more details, see the [Tauri signing documentation](https://tauri.app/v1/guides/distribution/updater/#signing-updates).
+
+### macOS install troubleshooting
+
+If a macOS user downloads the `.dmg` from GitHub Releases and macOS says the app is **"damaged"** or **"corrupted"**, this is usually Gatekeeper rejecting an app bundle/DMG that is **not Developer ID signed and notarized**.
+
+Things to check:
+
+1. Download the correct DMG for the Mac:
+   - Apple Silicon (M1/M2/M3): `aarch64-apple-darwin` / `arm64`
+   - Intel: `x86_64-apple-darwin` / `x64`
+2. Try opening via Finder:
+   - Right click the app -> `Open` (or `System Settings -> Privacy & Security` -> `Open Anyway`)
+
+For distribution to non-technical users, the real fix is to ship macOS artifacts that are **signed + notarized**. The release workflow (`.github/workflows/release.yml`) supports this once the Apple signing/notarization secrets are configured.
 
 ```bash
 # Output locations:

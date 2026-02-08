@@ -795,6 +795,37 @@ export async function installSkillTemplate(
 }
 
 // ============================================================================
+// Memory Management
+// ============================================================================
+
+export interface MemoryStats {
+  total_chunks: number;
+  session_chunks: number;
+  project_chunks: number;
+  global_chunks: number;
+  total_bytes: number;
+  session_bytes: number;
+  project_bytes: number;
+  global_bytes: number;
+  file_size: number;
+  last_cleanup: string | null;
+}
+
+export async function getMemoryStats(): Promise<MemoryStats> {
+  return invoke<MemoryStats>("get_memory_stats");
+}
+
+export interface IndexingStats {
+  files_processed: number;
+  chunks_created: number;
+  errors: number;
+}
+
+export async function indexWorkspace(projectId: string): Promise<IndexingStats> {
+  return invoke<IndexingStats>("index_workspace_command", { projectId });
+}
+
+// ============================================================================
 // OpenCode Config (Plugins + MCP)
 // ============================================================================
 

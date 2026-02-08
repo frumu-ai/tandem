@@ -3,6 +3,8 @@
 
 use crate::error::{Result, TandemError};
 use crate::keystore::{validate_api_key, validate_key_type, ApiKeyType, SecureKeyStore};
+use crate::memory::indexer::{index_workspace, IndexingStats};
+use crate::memory::types::MemoryStats;
 use crate::orchestrator::{
     engine::OrchestratorEngine,
     policy::{PolicyConfig, PolicyEngine},
@@ -152,6 +154,44 @@ pub async fn create_vault(
     });
 
     Ok(())
+}
+
+// ============================================================================
+// Memory Management
+// ============================================================================
+
+/// Get statistics about the vector database memory usage
+#[tauri::command]
+pub async fn get_memory_stats(state: State<'_, AppState>) -> Result<MemoryStats> {
+    if let Some(manager) = &state.memory_manager {
+        manager
+            .get_stats()
+            .await
+            .map_err(|e| TandemError::Memory(e.to_string()))
+    } else {
+        Err(TandemError::Memory(
+            "Memory manager not initialized".to_string(),
+        ))
+    }
+}
+
+/// Index the current workspace
+#[tauri::command]
+pub async fn index_workspace_command(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<IndexingStats> {
+    if let Some(manager) = &state.memory_manager {
+        let workspace_path = state
+            .get_workspace_path()
+            .ok_or_else(|| TandemError::IoError("No workspace selected".to_string()))?;
+        index_workspace(&app, &workspace_path, &project_id, manager).await
+    } else {
+        Err(TandemError::Memory(
+            "Memory manager not initialized".to_string(),
+        ))
+    }
 }
 
 /// Unlock an existing vault with a PIN

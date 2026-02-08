@@ -15,7 +15,11 @@ fn resolve_templates_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .resource_dir()
         .map_err(|e| format!("Failed to get resource directory: {}", e))?;
 
-    let candidates = vec![resource_dir.join("skill-templates")];
+    let candidates = vec![
+        // Production bundles (we include `resources/**` in tauri.conf.json).
+        resource_dir.join("resources").join("skill-templates"),
+        resource_dir.join("skill-templates"),
+    ];
 
     let templates_dir = candidates
         .iter()

@@ -165,6 +165,48 @@ jobs:
         with:
           args: --target ${{ matrix.target }}
 
+      - name: Verify macOS DMG (Gatekeeper)
+        if: matrix.platform == 'macos-latest'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DMG=""
+          for p in \
+            "src-tauri/target/${{ matrix.target }}/release/bundle/dmg" \
+            "src-tauri/target/release/bundle/dmg" \
+          ; do
+            if [ -d "$p" ]; then
+              DMG="$(ls -1 "$p"/*.dmg 2>/dev/null | head -n 1 || true)"
+              if [ -n "$DMG" ]; then break; fi
+            fi
+          done
+          if [ -z "$DMG" ]; then
+            DMG="$(find src-tauri/target -path "*/bundle/dmg/*.dmg" -maxdepth 6 -print 2>/dev/null | head -n 1 || true)"
+          fi
+          if [ -z "$DMG" ]; then
+            echo "No DMG found."
+            exit 1
+          fi
+          echo "DMG: $DMG"
+
+          MOUNT="$RUNNER_TEMP/tandem-dmg-mount"
+          mkdir -p "$MOUNT"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG"
+          APP="$(find "$MOUNT" -maxdepth 2 -name "*.app" -print | head -n 1 || true)"
+          if [ -z "$APP" ]; then
+            echo "No .app found in mounted DMG."
+            hdiutil detach "$MOUNT" || true
+            exit 1
+          fi
+          echo "App: $APP"
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          spctl -a -vvv --type execute "$APP"
+
+          hdiutil detach "$MOUNT"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

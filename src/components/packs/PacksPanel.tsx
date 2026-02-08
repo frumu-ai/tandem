@@ -95,7 +95,8 @@ export function PacksPanel({
       await installSkillTemplate(templateId, skillLocation);
       // Installing a skill is "silent success"; users can see it under Extensions -> Skills.
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to install starter skill");
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "Failed to install starter skill");
     } finally {
       setInstallingTemplateId(null);
     }
@@ -117,7 +118,8 @@ export function PacksPanel({
       const result = await installPack(packId, destination);
       await onOpenInstalledPack?.(result.installed_path);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to install pack");
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "Failed to install pack");
     } finally {
       setInstallingId(null);
     }

@@ -53,6 +53,9 @@ pub enum TandemError {
 
     #[error("Orchestrator error: {0}")]
     Orchestrator(String),
+
+    #[error("Memory error: {0}")]
+    Memory(String),
 }
 
 // Allow conversion from String to TandemError
