@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Vector DB Stats (Settings)**: Added a Memory section in Settings to view vector database stats and manually index the current workspace.
+- **macOS Release Verification**: Release/CI now includes Gatekeeper checks (`codesign`, `spctl`, `stapler validate`) for produced DMGs (informational unless Apple signing secrets are configured).
+
+### Fixed
+
+- **Starter Pack Installs (Windows/macOS/Linux)**: Fixed pack/template resolution in packaged builds so Starter Packs and Starter Skills can be installed correctly from bundled resources.
+- **Onboarding For Custom Providers**: Custom providers (e.g. LM Studio / OpenAI-compatible endpoints) are now treated as “configured”, preventing onboarding from forcing users back to Settings.
+- **Pack Install Errors**: Pack install failures now surface the underlying error message in the UI.
+
 ## [0.2.3] - 2026-02-08
 
 ### Fixed

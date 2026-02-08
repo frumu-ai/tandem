@@ -4,6 +4,7 @@
 pub mod chunking;
 pub mod db;
 pub mod embeddings;
+pub mod indexer;
 pub mod manager;
 pub mod types;
 

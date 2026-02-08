@@ -106,18 +106,6 @@ pub fn list_packs() -> Vec<PackMeta> {
                 "nextflow".to_string(),
             ],
         },
-        PackMeta {
-            id: "bio-informatics-pack".to_string(),
-            title: "Bio-Informatics".to_string(),
-            description: "Pipelines for instrument data conversion and scVI analysis".to_string(),
-            complexity: "Advanced".to_string(),
-            time_estimate: "30-45 min".to_string(),
-            tags: vec![
-                "science".to_string(),
-                "biology".to_string(),
-                "python".to_string(),
-            ],
-        },
     ]
 }
 
@@ -159,12 +147,23 @@ fn resolve_pack_sources(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
         .map_err(|e| format!("Failed to get resource directory: {}", e))?;
 
     let packs_candidates = vec![
+        // Production bundles (we include `resources/**` in tauri.conf.json).
+        resource_dir.join("resources").join("packs"),
         resource_dir.join("packs"),
+        resource_dir
+            .join("resources")
+            .join("workspace-packs")
+            .join("packs"),
         resource_dir.join("workspace-packs").join("packs"),
     ];
 
     let docs_candidates = vec![
+        resource_dir.join("resources").join("pack-docs"),
         resource_dir.join("pack-docs"),
+        resource_dir
+            .join("resources")
+            .join("workspace-packs")
+            .join("pack-docs"),
         resource_dir.join("workspace-packs").join("pack-docs"),
     ];
 

@@ -1,3 +1,35 @@
+# Tandem v0.2.4 Release Notes (Unreleased)
+
+## Highlights
+
+- **Starter Pack Installs Fixed**: Starter Packs and Starter Skills now install correctly from packaged builds (bundled resource path resolution).
+- **Custom Provider Onboarding**: Custom endpoints (e.g. LM Studio / OpenAI-compatible) are treated as configured, so onboarding no longer forces you back to Settings.
+- **Vector DB Stats**: New Settings panel to track vector DB size/chunks and manually index your workspace (with progress).
+- **macOS Release Hardening**: Release workflow now supports optional signing/notarization inputs and runs Gatekeeper verification in CI.
+
+## Complete Feature List
+
+### Starter Packs & Skills
+
+- Fix bundled pack/template discovery in production builds so installs work reliably.
+- Show more actionable pack install errors in the UI.
+
+### Onboarding
+
+- Treat enabled Custom providers with an endpoint as “configured” to avoid onboarding loops.
+
+### Memory
+
+- Add a Vector DB stats card in Settings.
+- Add manual “Index Files” action with progress events and indexing summary.
+
+### Release / CI
+
+- Add Gatekeeper verification of produced macOS DMGs (`codesign`, `spctl`, `stapler validate`).
+- Add optional Apple signing/notarization inputs to the GitHub release workflow.
+
+---
+
 # Tandem v0.2.3 Release Notes
 
 ## Highlights

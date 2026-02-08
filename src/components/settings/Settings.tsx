@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
+import { MemoryStats } from "./MemoryStats";
 
 import { useUpdater } from "@/hooks/useUpdater";
 import {
@@ -851,6 +852,9 @@ export function Settings({
             </div>
           )}
         </div>
+
+        {/* Memory Stats */}
+        <MemoryStats />
 
         {/* Security Info */}
         <Card variant="glass">

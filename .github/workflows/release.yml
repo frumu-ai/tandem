@@ -105,7 +105,102 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: Build and upload
+      # If Apple signing/notarization secrets are not configured, macOS builds will still
+      # succeed, but Gatekeeper may report the downloaded app/dmg as "damaged" or "corrupted".
+      - name: Prepare App Store Connect API key (optional, for notarization)
+        if: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY != '' }}
+        id: asc_api_key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/apple-notary"
+          KEY_PATH="$RUNNER_TEMP/apple-notary/AuthKey_${{ secrets.APPLE_API_KEY }}.p8"
+          echo "${{ secrets.APPLE_API_KEY_P8 }}" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "key_path=$KEY_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Build and upload (macOS)
+        if: ${{ matrix.platform == 'macos-latest' }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS codesigning (Developer ID)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Notarization (preferred: App Store Connect API key)
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ steps.asc_api_key.outputs.key_path }}
+          # Notarization (fallback: Apple ID + app-specific password)
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --target ${{ matrix.target }}
+          updaterJsonPreferNsis: true
+
+      - name: Verify macOS DMG (Gatekeeper)
+        if: ${{ matrix.platform == 'macos-latest' }}
+        # If we are not signing/notarizing yet, this will likely fail spctl; don't fail the whole release.
+        continue-on-error: ${{ secrets.APPLE_CERTIFICATE == '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Locating DMG..."
+          DMG=""
+          for p in \
+            "src-tauri/target/${{ matrix.target }}/release/bundle/dmg" \
+            "src-tauri/target/release/bundle/dmg" \
+          ; do
+            if [ -d "$p" ]; then
+              DMG="$(ls -1 "$p"/*.dmg 2>/dev/null | head -n 1 || true)"
+              if [ -n "$DMG" ]; then break; fi
+            fi
+          done
+          if [ -z "$DMG" ]; then
+            DMG="$(find src-tauri/target -path "*/bundle/dmg/*.dmg" -maxdepth 6 -print 2>/dev/null | head -n 1 || true)"
+          fi
+          if [ -z "$DMG" ]; then
+            echo "No DMG found under src-tauri/target/**/bundle/dmg."
+            exit 1
+          fi
+          echo "DMG: $DMG"
+
+          MOUNT="$RUNNER_TEMP/tandem-dmg-mount"
+          mkdir -p "$MOUNT"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG"
+          APP="$(find "$MOUNT" -maxdepth 2 -name "*.app" -print | head -n 1 || true)"
+          if [ -z "$APP" ]; then
+            echo "No .app found in mounted DMG."
+            hdiutil detach "$MOUNT" || true
+            exit 1
+          fi
+          echo "App: $APP"
+
+          echo "codesign verify..."
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          echo "codesign details..."
+          codesign -dv --verbose=4 "$APP" 2>&1 | head -n 120
+
+          echo "spctl Gatekeeper assessment..."
+          spctl -a -vvv --type execute "$APP"
+
+          echo "xattr (quarantine) ..."
+          xattr -lr "$APP" 2>/dev/null | head -n 120 || true
+
+          echo "stapler validate (will fail if not notarized)..."
+          stapler validate "$APP"
+
+          hdiutil detach "$MOUNT"
+
+      - name: Build and upload (non-macOS)
+        if: ${{ matrix.platform != 'macos-latest' }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
