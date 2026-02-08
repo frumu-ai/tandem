@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Settings } from "@/components/settings";
 import { About } from "@/components/about";
 import { Chat } from "@/components/chat";
+import { Extensions } from "@/components/extensions";
 import { SidecarDownloader } from "@/components/sidecar";
 import { SessionSidebar, type SessionInfo, type Project } from "@/components/sidebar";
 import { TaskSidebar } from "@/components/tasks/TaskSidebar";
@@ -52,9 +53,10 @@ import {
   Files,
   Palette,
   Sparkles,
+  Blocks,
 } from "lucide-react";
 
-type View = "chat" | "settings" | "about" | "packs" | "onboarding" | "sidecar-setup";
+type View = "chat" | "extensions" | "settings" | "about" | "packs" | "onboarding" | "sidecar-setup";
 
 // Hide the HTML splash screen once React is ready and vault is unlocked
 function hideSplashScreen() {
@@ -91,7 +93,10 @@ function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [draftMessage, setDraftMessage] = useState<string | null>(null);
   const [settingsInitialSection, setSettingsInitialSection] = useState<
-    "providers" | "projects" | "skills" | null
+    "providers" | "projects" | null
+  >(null);
+  const [extensionsInitialTab, setExtensionsInitialTab] = useState<
+    "skills" | "plugins" | "integrations" | null
   >(null);
   const [postAddProjectView, setPostAddProjectView] = useState<View | null>(null);
   // Initialize currentSessionId from localStorage to persist state across reloads/rebuilds
@@ -213,7 +218,8 @@ function App() {
         : (!state?.has_workspace || !hasConfiguredProvider) &&
             view !== "settings" &&
             view !== "about" &&
-            view !== "packs"
+            view !== "packs" &&
+            view !== "extensions"
           ? "onboarding"
           : view;
 
@@ -549,6 +555,8 @@ function App() {
   const handleOpenInstalledPack = async (installedPath: string) => {
     setDraftMessage("Open `START_HERE.md` and follow it step-by-step.");
     setPostAddProjectView("chat");
+    setSidebarTab("sessions");
+    setSidebarOpen(true);
     await beginAddProject(installedPath);
   };
 
@@ -745,6 +753,17 @@ function App() {
               <Sparkles className="h-5 w-5" />
             </button>
             <button
+              onClick={() => setView("extensions")}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                effectiveView === "extensions"
+                  ? "bg-primary/20 text-primary"
+                  : "text-text-muted hover:bg-surface-elevated hover:text-text"
+              }`}
+              title="Extensions"
+            >
+              <Blocks className="h-5 w-5" />
+            </button>
+            <button
               onClick={() => setView("settings")}
               className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
                 effectiveView === "settings"
@@ -934,8 +953,8 @@ function App() {
             activeProjectPath={activeProject?.path || state?.workspace_path || undefined}
             onOpenInstalledPack={handleOpenInstalledPack}
             onOpenSkills={() => {
-              setSettingsInitialSection("skills");
-              setView("settings");
+              setExtensionsInitialTab("skills");
+              setView("extensions");
             }}
           />
         ) : (
@@ -979,6 +998,10 @@ function App() {
                   activeModelLabel={activeProviderInfo?.modelLabel || undefined}
                   onOpenSettings={() => setView("settings")}
                   onOpenPacks={() => setView("packs")}
+                  onOpenExtensions={(tab) => {
+                    setExtensionsInitialTab(tab ?? "skills");
+                    setView("extensions");
+                  }}
                   onProviderChange={refreshAppState}
                   draftMessage={draftMessage ?? undefined}
                   onDraftMessageConsumed={() => setDraftMessage(null)}
@@ -1021,6 +1044,22 @@ function App() {
                       onProviderChange={refreshAppState}
                       initialSection={settingsInitialSection ?? undefined}
                       onInitialSectionConsumed={() => setSettingsInitialSection(null)}
+                    />
+                  </motion.div>
+                )}
+                {effectiveView === "extensions" && (
+                  <motion.div
+                    key="extensions"
+                    className="absolute inset-0 bg-background"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.8, ease: "easeOut" }}
+                  >
+                    <Extensions
+                      workspacePath={activeProject?.path || state?.workspace_path || null}
+                      initialTab={extensionsInitialTab ?? undefined}
+                      onInitialTabConsumed={() => setExtensionsInitialTab(null)}
                     />
                   </motion.div>
                 )}

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   ArrowRight,
@@ -29,6 +30,7 @@ export function OnboardingWizard({
   onBrowsePacks,
   onSkip,
 }: OnboardingWizardProps) {
+  const [showPackInfo, setShowPackInfo] = useState(false);
   return (
     <motion.div
       className="flex h-full w-full flex-col items-center justify-center p-8"
@@ -137,6 +139,27 @@ export function OnboardingWizard({
                   <Button onClick={onBrowsePacks}>
                     Browse Packs <ArrowRight className="ml-2 h-4 w-4" />
                   </Button>
+                </div>
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowPackInfo((v) => !v)}
+                    className="text-xs text-text-subtle hover:text-text underline underline-offset-4"
+                  >
+                    {showPackInfo ? "Hide pack details" : "What are packs?"}
+                  </button>
+                  {showPackInfo && (
+                    <div className="mt-2 rounded-lg border border-border bg-surface-elevated p-3 text-xs text-text-muted">
+                      <p>
+                        Packs are one-click, guided folders with sample inputs, prompts, and docs.
+                        After install, look for START_HERE.md in the folder.
+                      </p>
+                      <p className="mt-2">
+                        Tip: Use Advanced during install to pick or create a clean folder. Avoid
+                        default cloud-synced locations if you prefer local storage.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

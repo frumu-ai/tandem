@@ -715,23 +715,21 @@ impl SidecarManager {
             cmd.env("OPENCODE_DIR", workspace);
         }
 
-        // Ensure OpenCode config exists in user's config directory
-        // This enables local Ollama provider support for all users
-        if let Some(config_dir) = dirs::config_dir() {
-            let opencode_config_dir = config_dir.join("opencode");
-            let config_path = opencode_config_dir.join("config.json");
+        // Ensure OpenCode config exists and is updated with dynamic Ollama models.
+        //
+        // IMPORTANT: Do not overwrite the entire config file; preserve unknown fields so
+        // MCP/plugin settings (and any user settings) survive sidecar restarts.
+        match crate::opencode_config::global_config_path() {
+            Ok(config_path) => {
+                // Make sure OpenCode actually loads the file we're managing, even if its
+                // defaults change across versions/platforms.
+                cmd.env("OPENCODE_CONFIG", &config_path);
 
-            // We update the config every time it starts to ensure new Ollama models are picked up
-            // Create the directory if needed
-            if let Err(e) = std::fs::create_dir_all(&opencode_config_dir) {
-                tracing::warn!("Failed to create OpenCode config directory: {}", e);
-            } else {
                 // Discover local Ollama models dynamically
-                let mut ollama_models_json = String::from("{}");
+                let mut models_map = serde_json::Map::new();
                 if let Ok(output) = Command::new("ollama").arg("list").output() {
                     if output.status.success() {
                         let stdout = String::from_utf8_lossy(&output.stdout);
-                        let mut models_map = serde_json::Map::new();
                         for line in stdout.lines().skip(1) {
                             let parts: Vec<&str> = line.split_whitespace().collect();
                             if !parts.is_empty() {
@@ -747,40 +745,25 @@ impl SidecarManager {
                                 );
                             }
                         }
-                        if let Ok(json) =
-                            serde_json::to_string(&serde_json::Value::Object(models_map))
-                        {
-                            ollama_models_json = json;
-                        }
                     }
                 }
 
-                // Write the dynamic config
-                let ollama_config = format!(
-                    r#"{{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {{
-    "ollama": {{
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Ollama (Local)",
-      "options": {{
-        "baseURL": "http://localhost:11434/v1"
-      }},
-      "models": {}
-    }}
-  }}
-}}"#,
-                    ollama_models_json
-                );
+                let models = serde_json::Value::Object(models_map);
 
-                if let Err(e) = std::fs::write(&config_path, ollama_config) {
-                    tracing::warn!("Failed to write OpenCode config: {}", e);
+                if let Err(e) = crate::opencode_config::update_config_at(&config_path, |cfg| {
+                    crate::opencode_config::set_provider_ollama_models(cfg, models);
+                    Ok(())
+                }) {
+                    tracing::warn!("Failed to update OpenCode config {:?}: {}", config_path, e);
                 } else {
                     tracing::info!(
-                        "Updated dynamic OpenCode config with Ollama models at: {:?}",
+                        "Updated OpenCode config with Ollama models at: {:?}",
                         config_path
                     );
                 }
+            }
+            Err(e) => {
+                tracing::warn!("Could not determine OpenCode config path: {}", e);
             }
         }
 

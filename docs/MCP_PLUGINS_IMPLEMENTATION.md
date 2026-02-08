@@ -16,17 +16,18 @@ Instead, Tandem should:
 - expose **configuration** (global + per-project/workspace) via a first-class UI (Extensions)
 - add a small Rust **config manager** that can safely read/update OpenCode config files
 - add best-effort status UX:
-  - for HTTP MCP servers: reachability probe only
+  - for HTTP MCP servers: protocol-correct MCP `initialize` probe (POST), validate JSON-RPC response
   - for stdio MCP servers: show "Not tested" unless/until OpenCode exposes status via its API
 
-Crucially: Tandem currently writes an OpenCode config file on sidecar start. That logic must be changed to **merge** (not overwrite) or else any MCP/plugin settings we add will be lost.
+Crucially: Tandem updates OpenCode config on sidecar start to keep Ollama models fresh. That logic must **merge** (not overwrite) or else MCP/plugin settings will be lost on every start.
 
 ## Current Repo Reality (Confirmed In Code)
 
 - Tandem runs OpenCode as a **sidecar** (`src-tauri/src/sidecar.rs`) and sets `OPENCODE_DIR` to the active workspace.
-- On sidecar start, Tandem writes a JSON config file at:
-  - `dirs::config_dir()/opencode/config.json` (see `src-tauri/src/sidecar.rs`)
-  - The current write replaces the entire file contents with a minimal config that includes only the Ollama provider.
+- On sidecar start, Tandem updates an OpenCode JSON config file and merges dynamic Ollama models:
+  - path is resolved by `src-tauri/src/opencode_config.rs` (default is `dirs::config_dir()/opencode/config.json`)
+  - OpenCode is forced to load this file by setting `OPENCODE_CONFIG` when spawning the sidecar (`src-tauri/src/sidecar.rs`)
+  - only `provider.ollama.models` (and required Ollama provider metadata) is updated; unknown fields are preserved
 - Skills are already treated as OpenCode-compatible:
   - project skills: `<workspace>/.opencode/skill/`
   - global skills: the repo currently uses multiple notions of "global" (see `src-tauri/src/skills.rs`), so we must unify this as part of MCP/plugins work.
@@ -83,11 +84,11 @@ This avoids breaking existing installs while we converge on the correct OpenCode
 
 ### OpenCode "Project/Workspace" Location
 
-Because Tandem already uses `.opencode/` for plans and skills, the plan should treat the workspace config as:
+Tandem should treat the workspace config as:
 
-- `<workspace>/.opencode/config.json`
+- `<workspace>/opencode.json` (or `opencode.jsonc` if it already exists)
 
-If OpenCode actually expects a different workspace config file name, this is the single thing to validate during implementation; the rest of the plan remains the same.
+This matches OpenCode's documented config search behavior and keeps workspace config user-visible in the project root.
 
 ## Config Manager (Rust) Requirements
 
@@ -107,9 +108,9 @@ Add a shared module, e.g. `src-tauri/src/opencode_config.rs`, that supports:
 
 ### Critical Refactor: Stop Overwriting Config On Sidecar Start
 
-Today, `src-tauri/src/sidecar.rs` writes a whole config file each launch (to inject/update Ollama models).
+Previously, `src-tauri/src/sidecar.rs` wrote a whole config file each launch (to inject/update Ollama models).
 
-This must change to:
+This must be implemented as:
 
 - read existing config (if any)
 - merge or update only `provider.ollama.models` (and any required provider metadata)
@@ -123,7 +124,17 @@ We intentionally keep schema scope small and preserve everything else.
 
 ### Plugins
 
-We store a list of plugins in whatever OpenCode expects (to be confirmed during implementation).
+OpenCode expects:
+
+- `plugin`: an array of plugin identifier strings
+
+Example:
+
+```json
+{
+  "plugin": ["@acme/opencode-plugin-foo", "@acme/opencode-plugin-bar"]
+}
+```
 
 Tandem manages:
 
@@ -132,17 +143,48 @@ Tandem manages:
 
 ### MCP Servers
 
-We manage a mapping of MCP server configs keyed by name (again: field names to be confirmed during implementation).
+OpenCode expects:
+
+- `mcp`: an object mapping server name -> server config
+
+Remote (HTTP) servers:
+
+```json
+{
+  "mcp": {
+    "my-remote": {
+      "type": "remote",
+      "url": "https://example.com/mcp",
+      "headers": ["Authorization: Bearer $TOKEN"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Local (stdio) servers:
+
+```json
+{
+  "mcp": {
+    "my-local": {
+      "type": "local",
+      "command": ["npx", "@modelcontextprotocol/server-git"],
+      "environment": { "TOKEN": "$TOKEN" },
+      "enabled": true
+    }
+  }
+}
+```
 
 Tandem manages:
 
 - HTTP servers:
   - `url`
-  - optional headers/auth reference (do not store secrets in plaintext)
+  - optional `headers` (array of strings, one per header line)
 - stdio servers:
-  - `command`
-  - `args`
-  - optional env var references
+  - `command` (string array; first token is the command, remaining are args)
+  - optional `environment` (string map)
 
 Secrets:
 
@@ -171,9 +213,9 @@ UI:
 
 Backend (Tauri commands, names TBD):
 
-- `list_plugins(scope)`
-- `add_plugin(scope, name)`
-- `remove_plugin(scope, name)`
+- `opencode_list_plugins(scope)`
+- `opencode_add_plugin(scope, name)`
+- `opencode_remove_plugin(scope, name)`
 
 ### Phase 3: Integrations (MCP) Tab
 
@@ -188,12 +230,18 @@ UI:
 
 Backend (Tauri commands, names TBD):
 
-- `list_mcp_servers(scope)`
-- `add_mcp_server(scope, config)`
-- `remove_mcp_server(scope, name)`
-- `test_mcp_connection(scope, name)`:
-  - HTTP: HEAD/GET probe with short timeout
+- `opencode_list_mcp_servers(scope)`
+- `opencode_add_mcp_server(scope, name, config)`
+- `opencode_remove_mcp_server(scope, name)`
+- `opencode_test_mcp_connection(scope, name)`:
+  - HTTP: protocol-correct MCP `initialize` (JSON-RPC POST) with a short timeout
   - stdio: return "not_supported" unless/until OpenCode exposes a real health/status API
+
+Troubleshooting (HTTP MCP):
+
+- 405: reachable endpoint, but wrong method or wrong transport for that URL
+- 406: some servers require `Accept: application/json, text/event-stream` for MCP Streamable HTTP
+- 410: endpoint deprecated or removed (DeepWiki deprecated `/sse`; use `/mcp`)
 
 ### UI Details (Concrete Components/Styles)
 

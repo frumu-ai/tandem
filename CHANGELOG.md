@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Utilities**: `cowork-mcp-config-assistant`.
 - **Skill Templates**: All migrated skills are now available as offline-compatible templates in the `src-tauri/resources/skill-templates` directory.
 - **Brand Neutralization**: All skills have been updated to be model-agnostic, removing dependencies on specific AI providers.
+- **Extensions**: New top-level Extensions area with tabs for Skills, Plugins, and Integrations (MCP).
+- **MCP Integrations UI**: Add/remove remote HTTP and local stdio MCP servers with scope support (Global vs Folder).
+- **MCP Presets**: Added popular remote presets (including Context7 and DeepWiki) for quick setup.
+- **Skills Search**: Added a search box to filter both Starter skills and Installed skills.
+- **New Skill Template**: `youtube-scriptwriter` starter skill template.
+
+### Improved
+
+- **MCP Test Connection**: Test now performs a protocol-correct MCP `initialize` POST and validates JSON-RPC (including SSE responses) instead of using HEAD/GET.
+- **MCP Status UX**: More accurate status mapping and actionable error messages (auth required, wrong URL, incompatible transport, deprecated endpoint).
+
+### Fixed
+
+- MCP connection tests no longer report "Connected" for non-2xx HTTP responses like 405/410.
 
 ## [0.2.1] - 2026-02-07
 

@@ -12,13 +12,10 @@ import {
   Trash2,
   Plus,
   Info,
-  Sparkles,
-  RefreshCw,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { ProviderCard } from "./ProviderCard";
 import { ThemePicker } from "./ThemePicker";
-import { SkillsPanel } from "@/components/skills";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
@@ -38,13 +35,9 @@ import {
   checkGitStatus,
   initializeGitRepo,
   checkSidecarStatus,
-  stopSidecar,
-  startSidecar,
-  listSkills,
   type ProvidersConfig,
   type UserProject,
   type SidecarStatus,
-  type SkillInfo,
 } from "@/lib/tauri";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -52,7 +45,7 @@ interface SettingsProps {
   onClose?: () => void;
   onProjectChange?: () => void;
   onProviderChange?: () => void; // Called when API keys are added/removed
-  initialSection?: "providers" | "projects" | "skills";
+  initialSection?: "providers" | "projects";
   onInitialSectionConsumed?: () => void;
 }
 
@@ -80,13 +73,7 @@ export function Settings({
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [projectsExpanded, setProjectsExpanded] = useState(false);
 
-  // Skills state
-  const [skills, setSkills] = useState<SkillInfo[]>([]);
-  const [skillsExpanded, setSkillsExpanded] = useState(false);
-  const [restartingSidecar, setRestartingSidecar] = useState(false);
-
   const projectsSectionRef = useRef<HTMLDivElement>(null);
-  const skillsSectionRef = useRef<HTMLDivElement>(null);
   const providersSectionRef = useRef<HTMLDivElement>(null);
 
   // Version info
@@ -116,14 +103,9 @@ export function Settings({
     if (!initialSection) return;
 
     if (initialSection === "projects") setProjectsExpanded(true);
-    if (initialSection === "skills") setSkillsExpanded(true);
 
     const target =
-      initialSection === "projects"
-        ? projectsSectionRef.current
-        : initialSection === "skills"
-          ? skillsSectionRef.current
-          : providersSectionRef.current;
+      initialSection === "projects" ? projectsSectionRef.current : providersSectionRef.current;
 
     // Wait a tick so accordions have time to open.
     setTimeout(() => target?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
@@ -133,15 +115,13 @@ export function Settings({
 
   const loadSettings = async () => {
     try {
-      const [config, userProjects, activeProj, skillsList] = await Promise.all([
+      const [config, userProjects, activeProj] = await Promise.all([
         getProvidersConfig(),
         getUserProjects(),
         getActiveProject(),
-        listSkills(),
       ]);
       setProviders(config);
       setProjects(userProjects);
-      setSkills(skillsList);
 
       // Load custom provider if exists
       if (config.custom && config.custom.length > 0) {
@@ -711,80 +691,6 @@ export function Settings({
           </CardContent>
         </Card>
 
-        {/* Capabilities Section (Skills) */}
-        <div ref={skillsSectionRef} />
-        <Card>
-          <CardHeader>
-            <div className="flex items-start gap-3">
-              <Sparkles className="mt-0.5 h-5 w-5 text-accent" />
-              <div className="flex-1">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <CardTitle>Capabilities (Skills)</CardTitle>
-                    <CardDescription>
-                      Add starter capabilities or paste advanced SKILL.md. Skills are automatically
-                      discovered and used when relevant.
-                    </CardDescription>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSkillsExpanded((v) => !v)}
-                    className="rounded-md p-1 text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
-                    aria-expanded={skillsExpanded}
-                    title={skillsExpanded ? "Collapse skills" : "Expand skills"}
-                  >
-                    {skillsExpanded ? (
-                      <ChevronDown className="h-5 w-5" />
-                    ) : (
-                      <ChevronRight className="h-5 w-5" />
-                    )}
-                  </button>
-                </div>
-
-                {!skillsExpanded && (
-                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-subtle">
-                    <span>
-                      {skills.length} skill{skills.length === 1 ? "" : "s"} installed
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </CardHeader>
-          <AnimatePresence initial={false}>
-            {skillsExpanded && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2 }}
-              >
-                <CardContent>
-                  <SkillsPanel
-                    skills={skills}
-                    onRefresh={async () => {
-                      const skillsList = await listSkills();
-                      setSkills(skillsList);
-                    }}
-                    projectPath={activeProject?.path}
-                    onRestartSidecar={async () => {
-                      setRestartingSidecar(true);
-                      try {
-                        await stopSidecar();
-                        await new Promise((resolve) => setTimeout(resolve, 500));
-                        await startSidecar();
-                        await new Promise((resolve) => setTimeout(resolve, 1000)); // Brief delay to show success
-                      } finally {
-                        setRestartingSidecar(false);
-                      }
-                    }}
-                  />
-                </CardContent>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </Card>
-
         {/* LLM Providers Section */}
         <div ref={providersSectionRef} />
         <div className="space-y-4">
@@ -971,63 +877,6 @@ export function Settings({
         gitInstalled={gitStatus?.git_installed ?? false}
         folderPath={pendingProjectPath ?? ""}
       />
-
-      {/* Engine Restart Overlay */}
-      <AnimatePresence>
-        {restartingSidecar && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 backdrop-blur-sm"
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              className="flex flex-col items-center gap-6"
-            >
-              <div className="relative h-16 w-16">
-                <motion.div
-                  className="absolute inset-0 rounded-2xl bg-primary/10"
-                  animate={{ scale: [1, 1.05, 1] }}
-                  transition={{ duration: 1, repeat: Infinity }}
-                />
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <motion.div
-                    animate={{ rotate: 360 }}
-                    transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                  >
-                    <RefreshCw className="h-8 w-8 text-primary" />
-                  </motion.div>
-                </div>
-              </div>
-              <div className="text-center">
-                <h3 className="text-lg font-semibold text-text mb-1">Restarting AI Engine</h3>
-                <p className="text-sm text-text-muted">Loading new skill...</p>
-              </div>
-              {/* Animated progress bars */}
-              <div className="flex gap-1">
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <motion.div
-                    key={i}
-                    className="h-1.5 w-6 rounded-full bg-primary/30"
-                    animate={{
-                      opacity: [0.3, 1, 0.3],
-                      scaleX: [1, 1.2, 1],
-                    }}
-                    transition={{
-                      duration: 1.5,
-                      repeat: Infinity,
-                      delay: i * 0.2,
-                    }}
-                  />
-                ))}
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </motion.div>
   );
 }
