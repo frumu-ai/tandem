@@ -78,6 +78,8 @@ export function ModelSelector({
             return "OpenCode Zen";
           case "ollama":
             return "Ollama";
+          case "poe":
+            return "Poe";
           default:
             return id.charAt(0).toUpperCase() + id.slice(1);
         }
@@ -123,6 +125,7 @@ export function ModelSelector({
               if (pid === "openrouter") return config.openrouter;
               if (pid === "opencode_zen") return config.opencode_zen;
               if (pid === "ollama") return config.ollama;
+              if (pid === "poe") return config.poe;
               return undefined;
             };
 
@@ -151,6 +154,7 @@ export function ModelSelector({
               if (pid === "openrouter") return config.openrouter;
               if (pid === "opencode_zen") return config.opencode_zen;
               if (pid === "ollama") return config.ollama;
+              if (pid === "poe") return config.poe;
               return undefined;
             };
 
@@ -269,9 +273,8 @@ export function ModelSelector({
                             onModelSelect(model.id, group.providerId);
                             setIsOpen(false);
                           }}
-                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-elevated ${
-                            currentModel === model.id ? "bg-primary/10 text-primary" : "text-text"
-                          }`}
+                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-elevated ${currentModel === model.id ? "bg-primary/10 text-primary" : "text-text"
+                            }`}
                         >
                           <span className="truncate">{model.name}</span>
                           {currentModel === model.id && <Check className="h-3 w-3" />}

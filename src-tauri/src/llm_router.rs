@@ -17,6 +17,7 @@ pub enum Provider {
     Anthropic,
     OpenAI,
     Ollama,
+    Poe,
     Custom,
 }
 
@@ -28,6 +29,7 @@ impl Provider {
             "anthropic" => Some(Provider::Anthropic),
             "openai" => Some(Provider::OpenAI),
             "ollama" => Some(Provider::Ollama),
+            "poe" => Some(Provider::Poe),
             "custom" => Some(Provider::Custom),
             _ => None,
         }
@@ -111,6 +113,9 @@ impl LLMRouter {
         if self.config.ollama.default && self.config.ollama.enabled {
             return Some(Provider::Ollama);
         }
+        if self.config.poe.default && self.config.poe.enabled {
+            return Some(Provider::Poe);
+        }
 
         // Fallback to first enabled provider
         if self.config.opencode_zen.enabled {
@@ -127,6 +132,9 @@ impl LLMRouter {
         }
         if self.config.ollama.enabled {
             return Some(Provider::Ollama);
+        }
+        if self.config.poe.enabled {
+            return Some(Provider::Poe);
         }
 
         None
@@ -170,6 +178,13 @@ impl LLMRouter {
                     None
                 }
             }
+            Provider::Poe => {
+                if self.config.poe.enabled {
+                    Some(self.config.poe.endpoint.clone())
+                } else {
+                    None
+                }
+            }
             Provider::Custom => {
                 // Return first enabled custom provider
                 self.config.custom.first().map(|c| c.endpoint.clone())
@@ -185,6 +200,7 @@ impl LLMRouter {
             Provider::Anthropic => self.config.anthropic.model.clone(),
             Provider::OpenAI => self.config.openai.model.clone(),
             Provider::Ollama => self.config.ollama.model.clone(),
+            Provider::Poe => self.config.poe.model.clone(),
             Provider::Custom => self.config.custom.first().and_then(|c| c.model.clone()),
         }
     }
@@ -196,7 +212,7 @@ impl LLMRouter {
         request: &LLMRequest,
     ) -> Result<serde_json::Value> {
         match provider {
-            Provider::OpenRouter | Provider::OpenAI | Provider::OpenCodeZen => {
+            Provider::OpenRouter | Provider::OpenAI | Provider::OpenCodeZen | Provider::Poe => {
                 // OpenAI-compatible format
                 Ok(serde_json::json!({
                     "model": request.model.clone().unwrap_or_else(||
@@ -277,6 +293,7 @@ impl LLMRouter {
             Provider::Anthropic => "/v1/messages",
             Provider::OpenAI => "/v1/chat/completions",
             Provider::Ollama => "/api/chat",
+            Provider::Poe => "/v1/chat/completions",
             Provider::Custom => "/v1/chat/completions", // Default to OpenAI-compatible
         }
     }
@@ -304,6 +321,9 @@ impl LLMRouter {
             Provider::Ollama => {
                 // Ollama typically doesn't need auth for local usage
             }
+            Provider::Poe => {
+                headers.push(("Authorization".to_string(), format!("Bearer {}", api_key)));
+            }
             Provider::Custom => {
                 headers.push(("Authorization".to_string(), format!("Bearer {}", api_key)));
             }
@@ -319,7 +339,7 @@ impl LLMRouter {
         response: &serde_json::Value,
     ) -> Result<LLMResponse> {
         match provider {
-            Provider::OpenRouter | Provider::OpenAI | Provider::OpenCodeZen => {
+            Provider::OpenRouter | Provider::OpenAI | Provider::OpenCodeZen | Provider::Poe => {
                 let content = response["choices"][0]["message"]["content"]
                     .as_str()
                     .unwrap_or("")
@@ -434,6 +454,13 @@ mod tests {
                 enabled: false,
                 default: false,
                 endpoint: "https://api.opencode.ai/v1".to_string(),
+                model: None,
+                has_key: false,
+            },
+            poe: ProviderConfig {
+                enabled: false,
+                default: false,
+                endpoint: "https://api.poe.com/v1".to_string(),
                 model: None,
                 has_key: false,
             },

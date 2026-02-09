@@ -47,6 +47,8 @@ pub struct ProvidersConfig {
     pub openai: ProviderConfig,
     #[serde(default = "default_ollama")]
     pub ollama: ProviderConfig,
+    #[serde(default = "default_poe")]
+    pub poe: ProviderConfig,
     #[serde(default)]
     pub custom: Vec<ProviderConfig>,
     /// If set, overrides the default provider/model selection for outgoing messages.
@@ -105,6 +107,16 @@ fn default_ollama() -> ProviderConfig {
     }
 }
 
+fn default_poe() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://api.poe.com/v1".to_string(),
+        model: None,
+        has_key: false,
+    }
+}
+
 impl Default for ProvidersConfig {
     fn default() -> Self {
         Self {
@@ -113,6 +125,7 @@ impl Default for ProvidersConfig {
             anthropic: default_anthropic(),
             openai: default_openai(),
             ollama: default_ollama(),
+            poe: default_poe(),
             custom: Vec::new(),
             selected_model: None,
         }

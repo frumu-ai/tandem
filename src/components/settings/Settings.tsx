@@ -152,38 +152,43 @@ export function Settings({
     // When enabling a provider, disable all others
     const updated = enabled
       ? {
-          openrouter: {
-            ...providers.openrouter,
-            enabled: provider === "openrouter",
-            default: provider === "openrouter",
-          },
-          opencode_zen: {
-            ...providers.opencode_zen,
-            enabled: provider === "opencode_zen",
-            default: provider === "opencode_zen",
-          },
-          anthropic: {
-            ...providers.anthropic,
-            enabled: provider === "anthropic",
-            default: provider === "anthropic",
-          },
-          openai: {
-            ...providers.openai,
-            enabled: provider === "openai",
-            default: provider === "openai",
-          },
-          ollama: {
-            ...providers.ollama,
-            enabled: provider === "ollama",
-            default: provider === "ollama",
-          },
-          custom: providers.custom,
-          selected_model: providers.selected_model ?? null,
-        }
+        openrouter: {
+          ...providers.openrouter,
+          enabled: provider === "openrouter",
+          default: provider === "openrouter",
+        },
+        opencode_zen: {
+          ...providers.opencode_zen,
+          enabled: provider === "opencode_zen",
+          default: provider === "opencode_zen",
+        },
+        anthropic: {
+          ...providers.anthropic,
+          enabled: provider === "anthropic",
+          default: provider === "anthropic",
+        },
+        openai: {
+          ...providers.openai,
+          enabled: provider === "openai",
+          default: provider === "openai",
+        },
+        ollama: {
+          ...providers.ollama,
+          enabled: provider === "ollama",
+          default: provider === "ollama",
+        },
+        poe: {
+          ...providers.poe,
+          enabled: provider === "poe",
+          default: provider === "poe",
+        },
+        custom: providers.custom,
+        selected_model: providers.selected_model ?? null,
+      }
       : {
-          ...providers,
-          [provider]: { ...providers[provider], enabled: false, default: false },
-        };
+        ...providers,
+        [provider]: { ...providers[provider], enabled: false, default: false },
+      };
 
     setProviders(updated);
     await setProvidersConfig(updated);
@@ -200,6 +205,7 @@ export function Settings({
       anthropic: { ...providers.anthropic, default: provider === "anthropic" },
       openai: { ...providers.openai, default: provider === "openai" },
       ollama: { ...providers.ollama, default: provider === "ollama" },
+      poe: { ...providers.poe, default: provider === "poe" },
       custom: providers.custom,
       selected_model: providers.selected_model ?? null,
     };
@@ -343,6 +349,7 @@ export function Settings({
       anthropic: { ...providers.anthropic, enabled: false, default: false },
       openai: { ...providers.openai, enabled: false, default: false },
       ollama: { ...providers.ollama, enabled: false, default: false },
+      poe: { ...providers.poe, enabled: false, default: false },
       custom: [
         {
           enabled: customEnabled,
@@ -379,6 +386,7 @@ export function Settings({
         anthropic: { ...providers.anthropic, enabled: false, default: false },
         openai: { ...providers.openai, enabled: false, default: false },
         ollama: { ...providers.ollama, enabled: false, default: false },
+        poe: { ...providers.poe, enabled: false, default: false },
         custom: [
           {
             enabled: true,
@@ -785,6 +793,21 @@ export function Settings({
                 onSetDefault={() => handleSetDefault("ollama")}
                 onKeyChange={onProviderChange}
                 docsUrl="https://ollama.ai"
+              />
+
+              <ProviderCard
+                id="poe"
+                name="Poe"
+                description="Access models via Poe's API"
+                endpoint="https://api.poe.com/v1"
+                model={providers.poe.model}
+                isDefault={providers.poe.default}
+                enabled={providers.poe.enabled}
+                onEnabledChange={(enabled) => handleProviderChange("poe", enabled)}
+                onModelChange={(model) => handleModelChange("poe", model)}
+                onSetDefault={() => handleSetDefault("poe")}
+                onKeyChange={onProviderChange}
+                docsUrl="https://poe.com/api"
               />
 
               {/* Custom Provider Section */}
