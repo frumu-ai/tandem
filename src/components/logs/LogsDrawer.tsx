@@ -126,6 +126,7 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
   const [lines, setLines] = useState<LineItem[]>([]);
   const [dropped, setDropped] = useState(0);
   const [streamId, setStreamId] = useState<string | null>(null);
+  const [selectedLine, setSelectedLine] = useState<LineItem | null>(null);
 
   const streamIdRef = useRef<string | null>(null);
   const nextLineIdRef = useRef(1);
@@ -314,42 +315,60 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
     const p = item.parsed;
 
     return (
-      <div
-        style={style}
-        className={cn(
-          "group flex items-center gap-2 px-3",
-          index % 2 === 0 ? "bg-surface/20" : "bg-surface/0",
-          "hover:bg-surface-elevated/60"
-        )}
-        title={item.raw}
-      >
-        <span
+      <div style={style} className="px-0" title={item.raw}>
+        <button
+          type="button"
+          onClick={() => setSelectedLine(item)}
           className={cn(
-            "shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-medium tracking-wide",
-            levelBadgeClasses(p.level)
+            "group flex w-max min-w-full items-center gap-2 px-3 text-left",
+            index % 2 === 0 ? "bg-surface/20" : "bg-surface/0",
+            "hover:bg-surface-elevated/60"
           )}
+          title="Click to preview/copy the full line"
         >
-          {formatLevel(p.level)}
-        </span>
-
-        {p.ts && (
-          <span className="shrink-0 font-mono text-[11px] text-text-subtle tabular-nums">
-            {p.ts}
+          <span
+            className={cn(
+              "shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-medium tracking-wide",
+              levelBadgeClasses(p.level)
+            )}
+          >
+            {formatLevel(p.level)}
           </span>
-        )}
 
-        {p.target && (
-          <span className="shrink-0 max-w-[220px] truncate font-mono text-[11px] text-text-muted">
-            {p.target}
+          {p.ts && (
+            <span className="shrink-0 font-mono text-[11px] text-text-subtle tabular-nums">
+              {p.ts}
+            </span>
+          )}
+
+          {p.target && (
+            <span className="shrink-0 font-mono text-[11px] text-text-muted">{p.target}</span>
+          )}
+
+          <span className="font-mono text-[12px] text-text whitespace-pre">
+            {p.msg || item.raw}
           </span>
-        )}
-
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-text">
-          {p.msg || item.raw}
-        </span>
+        </button>
       </div>
     );
   };
+
+  const copyText = useCallback(async (text: string) => {
+    const value = text.replace(/\r?\n$/, "");
+    try {
+      await globalThis.navigator?.clipboard?.writeText(value);
+    } catch {
+      // Best-effort fallback for older webviews.
+      const ta = globalThis.document.createElement("textarea");
+      ta.value = value;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      globalThis.document.body.appendChild(ta);
+      ta.select();
+      globalThis.document.execCommand("copy");
+      globalThis.document.body.removeChild(ta);
+    }
+  }, []);
 
   return (
     <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-[560px] border-l border-border bg-surface shadow-xl">
@@ -429,12 +448,29 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
                   pendingRawLinesRef.current = [];
                   setLines([]);
                   setDropped(0);
+                  setSelectedLine(null);
                 }}
                 className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text-subtle transition-colors hover:text-text"
                 title="Clear view"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 Clear
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  copyText(
+                    visibleLines
+                      .slice(-200)
+                      .map((l) => l.raw.replace(/\r?\n$/, ""))
+                      .join("\n")
+                  )
+                }
+                className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text-subtle transition-colors hover:text-text"
+                title="Copy the last 200 lines (from the current filtered view)"
+              >
+                Copy last 200
               </button>
             </div>
 
@@ -521,7 +557,8 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
               rowCount={visibleLines.length}
               rowHeight={22}
               rowProps={{ items: visibleLines }}
-              style={{ height: listHeight, width: "100%" }}
+              // Allow horizontal scrolling for long log lines.
+              style={{ height: listHeight, width: "100%", overflowX: "auto", overflowY: "auto" }}
               onScroll={(e) => {
                 const el = e.currentTarget as HTMLDivElement;
                 // "At bottom" tolerance so tiny pixel rounding doesn't flap.
@@ -560,19 +597,42 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
         <div className="border-t border-border px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs text-text-subtle">
-              Tip: click Pause to freeze the view, then search and filter.
+              Tip: scroll up to pause following; use “Jump to bottom to follow” to resume.
             </div>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                pendingRawLinesRef.current = [];
-                setLines([]);
-                setDropped(0);
-              }}
-              className="h-8 px-3 text-xs"
-            >
-              Clear
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => (selectedLine ? copyText(selectedLine.raw) : undefined)}
+                className="h-8 px-3 text-xs"
+                disabled={!selectedLine}
+                title={selectedLine ? "Copy selected line" : "Click a line above to select it"}
+              >
+                Copy line
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  pendingRawLinesRef.current = [];
+                  setLines([]);
+                  setDropped(0);
+                  setSelectedLine(null);
+                }}
+                className="h-8 px-3 text-xs"
+              >
+                Clear
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-2 rounded-lg border border-border bg-surface-elevated px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+              {selectedLine
+                ? "Selected line (full text)"
+                : "Click a line to preview/copy full text"}
+            </div>
+            <div className="mt-1 max-h-24 overflow-auto whitespace-pre font-mono text-[11px] text-text">
+              {selectedLine?.raw?.replace(/\r?\n$/, "") ?? ""}
+            </div>
           </div>
         </div>
       </div>

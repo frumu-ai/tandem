@@ -852,40 +852,55 @@ impl OrchestratorEngine {
 
         tracing::info!("Agent call with prompt length: {}", prompt.len());
 
-        // Best-effort: fetch the session to determine its configured provider/model. Even if the
-        // session was created with a model/provider, OpenCode may still require an explicit model
-        // spec per prompt, so we include it when available.
-        let model_spec = match self.sidecar.get_session(session_id).await {
-            Ok(session) => match (session.provider.clone(), session.model.clone()) {
-                (Some(provider_id), Some(model_id))
-                    if !provider_id.trim().is_empty() && !model_id.trim().is_empty() =>
-                {
-                    tracing::info!(
-                        "Orchestrator agent call using session model: provider={} model={}",
-                        provider_id,
-                        model_id
-                    );
-                    Some(ModelSpec {
-                        provider_id,
-                        model_id,
-                    })
-                }
-                _ => {
+        // Prefer the model/provider persisted on the run. (Some OpenCode builds don't populate
+        // legacy `session.model/provider` in GET /session responses.)
+        let (run_model, run_provider) = self.get_run_model_provider().await;
+        let model_spec = match (run_provider.clone(), run_model.clone()) {
+            (Some(provider_id), Some(model_id))
+                if !provider_id.trim().is_empty() && !model_id.trim().is_empty() =>
+            {
+                tracing::info!(
+                    "Orchestrator agent call using run model: provider={} model={}",
+                    provider_id,
+                    model_id
+                );
+                Some(ModelSpec {
+                    provider_id,
+                    model_id,
+                })
+            }
+            _ => match self.sidecar.get_session(session_id).await {
+                Ok(session) => match (session.provider.clone(), session.model.clone()) {
+                    (Some(provider_id), Some(model_id))
+                        if !provider_id.trim().is_empty() && !model_id.trim().is_empty() =>
+                    {
+                        tracing::info!(
+                            "Orchestrator agent call using session model: provider={} model={}",
+                            provider_id,
+                            model_id
+                        );
+                        Some(ModelSpec {
+                            provider_id,
+                            model_id,
+                        })
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "Orchestrator session {} has no provider/model set; sending without explicit model spec",
+                            session_id
+                        );
+                        None
+                    }
+                },
+                Err(e) => {
                     tracing::warn!(
-                        "Orchestrator session {} has no provider/model set; sending without explicit model spec",
-                        session_id
+                        "Failed to fetch orchestrator session {} for model spec: {}",
+                        session_id,
+                        e
                     );
                     None
                 }
             },
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to fetch orchestrator session {} for model spec: {}",
-                    session_id,
-                    e
-                );
-                None
-            }
         };
 
         // Subscribe to events FIRST to avoid race condition
@@ -1384,6 +1399,17 @@ impl OrchestratorEngine {
 
     async fn get_run_id(&self) -> String {
         self.run_id.clone()
+    }
+
+    pub async fn get_run_model_provider(&self) -> (Option<String>, Option<String>) {
+        let run = self.run.read().await;
+        (run.model.clone(), run.provider.clone())
+    }
+
+    pub async fn set_run_model_provider(&self, model: Option<String>, provider: Option<String>) {
+        let mut run = self.run.write().await;
+        run.model = model;
+        run.provider = provider;
     }
 
     async fn save_state(&self) -> Result<()> {

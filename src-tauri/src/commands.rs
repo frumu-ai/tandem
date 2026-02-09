@@ -4797,8 +4797,9 @@ pub async fn orchestrator_create_run(
             "Orchestrator: {}",
             &objective[..objective.len().min(50)]
         )),
-        model: final_model,
-        provider: final_provider,
+        // Clone so we can also persist the selection onto the Run object below.
+        model: final_model.clone(),
+        provider: final_provider.clone(),
         permission: Some(orchestrator_permission_rules()),
     };
 
@@ -4834,7 +4835,11 @@ pub async fn orchestrator_create_run(
     }
 
     // Create the run object
-    let run = Run::new(run_id.clone(), session_id, objective, config);
+    let mut run = Run::new(run_id.clone(), session_id, objective, config);
+    // Persist model/provider selection into the run so the orchestrator can always send explicit
+    // model specs even if the sidecar session object doesn't echo them back.
+    run.model = final_model.clone();
+    run.provider = final_provider.clone();
 
     // Initialize dependencies
     let workspace_path = state
@@ -4980,6 +4985,17 @@ pub async fn orchestrator_get_run_model(
             .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
     };
 
+    // Prefer the model/provider persisted on the run. Some OpenCode builds don't populate
+    // legacy session.model/provider in GET /session responses.
+    let (run_model, run_provider) = engine.get_run_model_provider().await;
+    if run_model.is_some() || run_provider.is_some() {
+        return Ok(OrchestratorModelSelection {
+            model: run_model,
+            provider: run_provider,
+        });
+    }
+
+    // Fallback: ask sidecar for the session.
     let session_id = engine.get_base_session_id().await;
     let session = state.sidecar.get_session(&session_id).await?;
 
@@ -5034,6 +5050,9 @@ pub async fn orchestrator_set_resume_model(
     engine
         .set_base_session_for_resume(session.id.clone())
         .await?;
+    engine
+        .set_run_model_provider(Some(model.clone()), normalized_provider.clone())
+        .await;
 
     Ok(OrchestratorModelSelection {
         model: session.model.or(Some(model)),
