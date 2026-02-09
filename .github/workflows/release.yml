@@ -149,6 +149,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          retryAttempts: 3
           args: --target ${{ matrix.target }}
           updaterJsonPreferNsis: true
 
@@ -173,6 +174,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          retryAttempts: 3
           args: --target ${{ matrix.target }}
           updaterJsonPreferNsis: true
 
@@ -251,6 +253,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          retryAttempts: 3
           args: --target ${{ matrix.target }}
           updaterJsonPreferNsis: true
 
