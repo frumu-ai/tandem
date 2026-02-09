@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **On-Demand Logs Viewer**: Add a right-side Logs drawer that can tail Tandem app log files (from the app data `logs/` directory) and show OpenCode sidecar stdout/stderr (captured into a bounded in-memory ring buffer). Streaming only runs while the drawer is open/active to avoid baseline performance cost.
+- **Poe Provider**: Add Poe as an OpenAI-compatible provider option (endpoint + `POE_API_KEY`). Thanks [@CamNoob](https://github.com/CamNoob).
 
 ### Fixed
 
