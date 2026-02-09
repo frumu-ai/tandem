@@ -281,7 +281,6 @@ jobs:
     runs-on: ubuntu-latest
     # This workflow creates/publishes the release via GITHUB_TOKEN, which does not
     # trigger other workflows that listen on `release` events. Notify from here instead.
-    if: ${{ secrets.WEBHOOK_URL != '' }}
     steps:
       - name: Post release to Discord
         uses: actions/github-script@v7
@@ -290,6 +289,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         with:
           script: |
+            const core = require('@actions/core');
             const releaseId = process.env.RELEASE_ID;
             const webhook = process.env.DISCORD_WEBHOOK_URL;
             if (!releaseId || !webhook) {
