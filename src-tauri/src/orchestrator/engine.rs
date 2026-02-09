@@ -163,6 +163,11 @@ impl OrchestratorEngine {
                     "Run is not awaiting approval, paused, or executing".to_string(),
                 ));
             }
+            if run.tasks.is_empty() {
+                return Err(TandemError::InvalidOperation(
+                    "Cannot execute: plan has no tasks (generate a plan first)".to_string(),
+                ));
+            }
         }
 
         // Update status to Executing if not already
@@ -259,6 +264,11 @@ impl OrchestratorEngine {
 
         // Convert to Task objects
         let tasks: Vec<Task> = parsed_tasks.into_iter().map(Task::from).collect();
+        if tasks.is_empty() {
+            return Err(TandemError::ParseError(
+                "Planner produced an empty task list".to_string(),
+            ));
+        }
 
         // Validate task graph
         TaskScheduler::validate(&tasks).map_err(|e| TandemError::ValidationError(e.to_string()))?;
@@ -298,6 +308,15 @@ impl OrchestratorEngine {
 
     /// Run the main execution loop
     async fn run_execution_loop(&self) -> Result<()> {
+        {
+            let run = self.run.read().await;
+            if run.tasks.is_empty() {
+                let reason = "Cannot execute: run has no tasks (generate a plan first)";
+                let _ = self.handle_failure(reason).await;
+                return Err(TandemError::InvalidOperation(reason.to_string()));
+            }
+        }
+
         let mut join_set: JoinSet<Result<()>> = JoinSet::new();
         loop {
             {
@@ -1530,28 +1549,47 @@ impl OrchestratorEngine {
             *pause = false;
         }
 
+        // If there is no plan (or an older version allowed an empty plan), treat "restart" as
+        // "replan" so we don't immediately flip to "completed" with nothing executed.
+        let needs_plan = { self.run.read().await.tasks.is_empty() };
+        if needs_plan {
+            self.run_planning_phase().await?;
+            return Ok(());
+        }
+
         let upgraded_limits = {
             let mut run = self.run.write().await;
             let upgraded = Self::upgrade_legacy_limits(&mut run);
+            let was_completed = run.status == RunStatus::Completed;
             run.status = RunStatus::Executing;
             run.error_message = None;
             run.ended_at = None;
 
-            // Reset non-terminal tasks so a retry can run end-to-end.
+            // Reset tasks so a retry can run end-to-end.
+            // If the run already completed, "restart" means rerun the full plan.
+            let rerun_all = was_completed;
             for task in run.tasks.iter_mut() {
-                if task.state == TaskState::Failed
+                if rerun_all
+                    || task.state == TaskState::Failed
                     || task.state == TaskState::InProgress
                     || task.state == TaskState::Blocked
                 {
                     task.state = TaskState::Pending;
                     task.retry_count = 0;
                     task.error_message = None;
+                    // Force a fresh task session so we don't reuse stale context.
+                    task.session_id = None;
                 }
             }
             upgraded
         };
         if upgraded_limits {
             self.update_budget_limits().await;
+        }
+
+        {
+            let mut sessions = self.task_sessions.write().await;
+            sessions.clear();
         }
 
         self.budget_tracker.write().await.set_active(true);

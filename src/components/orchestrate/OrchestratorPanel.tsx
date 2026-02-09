@@ -728,7 +728,9 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
                         ? "Resume Run continues this cancelled run from remaining work."
                         : isFailed || showRetryFailedInline
                           ? "Retry Failed Tasks reruns failed tasks and unfinished work."
-                          : "Restart Run retries failed or in-progress tasks."}{" "}
+                          : isCompleted
+                            ? "Restart Run reruns the full plan from the beginning."
+                            : "Restart Run retries failed or in-progress tasks."}{" "}
                       Start Fresh Run clears this run from view.
                     </p>
                   </div>
