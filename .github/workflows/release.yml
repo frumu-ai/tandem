@@ -274,3 +274,59 @@ jobs:
               release_id: process.env.RELEASE_ID,
               draft: false
             });
+
+  notify-discord:
+    name: Notify Discord
+    needs: [create-release, publish-release]
+    runs-on: ubuntu-latest
+    # This workflow creates/publishes the release via GITHUB_TOKEN, which does not
+    # trigger other workflows that listen on `release` events. Notify from here instead.
+    if: ${{ secrets.WEBHOOK_URL != '' }}
+    steps:
+      - name: Post release to Discord
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        with:
+          script: |
+            const releaseId = process.env.RELEASE_ID;
+            const webhook = process.env.DISCORD_WEBHOOK_URL;
+            if (!releaseId || !webhook) {
+              core.warning('Missing RELEASE_ID or DISCORD_WEBHOOK_URL; skipping Discord notification.');
+              return;
+            }
+
+            const { data: release } = await github.rest.repos.getRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number(releaseId),
+            });
+
+            // Discord limits: content <= 2000 chars; embed description <= 4096 chars.
+            const truncate = (s, n) => (s && s.length > n ? `${s.slice(0, n - 3)}...` : (s || ''));
+            const description = truncate(release.body, 4000);
+
+            const payload = {
+              content: '||@everyone||',
+              embeds: [
+                {
+                  title: release.name || release.tag_name,
+                  url: release.html_url,
+                  description,
+                  color: 2105893,
+                  footer: { text: 'Changelog' },
+                },
+              ],
+            };
+
+            const resp = await fetch(webhook, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+
+            if (!resp.ok) {
+              const text = await resp.text().catch(() => '');
+              core.setFailed(`Discord webhook failed: ${resp.status} ${resp.statusText} ${text}`.trim());
+            }
