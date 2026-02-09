@@ -12,11 +12,13 @@ import {
   AlertCircle,
   Loader2,
   Sparkles,
+  ScrollText,
 } from "lucide-react";
 import { Button } from "@/components/ui";
 import { BudgetMeter } from "./BudgetMeter";
 import { TaskBoard } from "./TaskBoard";
 import { ModelSelector } from "@/components/chat/ModelSelector";
+import { LogsDrawer } from "@/components/logs";
 import { DEFAULT_ORCHESTRATOR_CONFIG } from "./types";
 import type { OrchestratorConfig, RunSnapshot, Run, Task, OrchestratorEvent } from "./types";
 
@@ -41,6 +43,7 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
   const [isLoading, setIsLoading] = useState(false);
   const [isReadOnly, setIsReadOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showLogsDrawer, setShowLogsDrawer] = useState(false);
 
   // Objective input for creating a new run
   const [objective, setObjective] = useState("");
@@ -453,12 +456,23 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
               </div>
             )}
           </div>
-          <button
-            onClick={onClose}
-            className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowLogsDrawer(true)}
+              className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
+              title="Open logs"
+            >
+              <ScrollText className="h-4 w-4" />
+            </button>
+            <button
+              onClick={onClose}
+              className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
+              title="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -815,6 +829,9 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Logs Drawer */}
+      {showLogsDrawer && <LogsDrawer onClose={() => setShowLogsDrawer(false)} />}
     </div>
   );
 }
