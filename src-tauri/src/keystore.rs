@@ -18,6 +18,7 @@ pub enum ApiKeyType {
     OpenCodeZen,
     Anthropic,
     OpenAI,
+    Poe,
     Custom(String),
 }
 
@@ -28,6 +29,7 @@ impl ApiKeyType {
             ApiKeyType::OpenCodeZen => "opencode_zen_api_key".to_string(),
             ApiKeyType::Anthropic => "anthropic_key".to_string(),
             ApiKeyType::OpenAI => "openai_key".to_string(),
+            ApiKeyType::Poe => "poe_api_key".to_string(),
             ApiKeyType::Custom(name) => format!("custom_{}", name),
         }
     }
@@ -38,6 +40,7 @@ impl ApiKeyType {
             "opencode_zen" | "opencodezen" => ApiKeyType::OpenCodeZen,
             "anthropic" => ApiKeyType::Anthropic,
             "openai" => ApiKeyType::OpenAI,
+            "poe" => ApiKeyType::Poe,
             other => ApiKeyType::Custom(other.to_string()),
         }
     }
@@ -203,6 +206,7 @@ mod tests {
             ApiKeyType::Anthropic
         ));
         assert!(matches!(ApiKeyType::from_str("openai"), ApiKeyType::OpenAI));
+        assert!(matches!(ApiKeyType::from_str("poe"), ApiKeyType::Poe));
 
         if let ApiKeyType::Custom(name) = ApiKeyType::from_str("my_provider") {
             assert_eq!(name, "my_provider");
