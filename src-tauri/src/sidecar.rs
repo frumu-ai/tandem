@@ -2,12 +2,14 @@
 // Handles spawning, lifecycle, and communication with the OpenCode sidecar process
 
 use crate::error::{Result, TandemError};
+use crate::logs::LogRingBuffer;
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 
@@ -726,6 +728,8 @@ pub struct SidecarManager {
     stream_client: Client,
     /// Environment variables to pass to OpenCode
     env_vars: RwLock<HashMap<String, String>>,
+    /// Always-drained stdout/stderr lines from the sidecar (bounded ring buffer).
+    log_buffer: Arc<LogRingBuffer>,
 }
 
 impl SidecarManager {
@@ -752,7 +756,28 @@ impl SidecarManager {
             http_client,
             stream_client,
             env_vars: RwLock::new(HashMap::new()),
+            log_buffer: Arc::new(LogRingBuffer::new(2000)),
         }
+    }
+
+    pub fn sidecar_logs_snapshot(&self, last_n: usize) -> (Vec<(u64, String)>, u64) {
+        let lines = self
+            .log_buffer
+            .snapshot(last_n)
+            .into_iter()
+            .map(|l| (l.seq, l.text))
+            .collect::<Vec<_>>();
+        (lines, self.log_buffer.dropped_total())
+    }
+
+    pub fn sidecar_logs_since(&self, seq: u64) -> (Vec<(u64, String)>, u64) {
+        let lines = self
+            .log_buffer
+            .since(seq)
+            .into_iter()
+            .map(|l| (l.seq, l.text))
+            .collect::<Vec<_>>();
+        (lines, self.log_buffer.dropped_total())
     }
 
     /// Get the current sidecar state
@@ -925,9 +950,36 @@ impl SidecarManager {
             .stderr(Stdio::piped());
 
         // Spawn the process
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| TandemError::Sidecar(format!("Failed to spawn sidecar: {}", e)))?;
+
+        // IMPORTANT: Always drain stdout/stderr when we pipe them. If we don't, the sidecar can
+        // deadlock when its stdio buffers fill up. We keep a bounded in-memory ring buffer so this
+        // remains low overhead but always safe.
+        {
+            use std::io::{BufRead, BufReader};
+            let log_buf = self.log_buffer.clone();
+
+            if let Some(stdout) = child.stdout.take() {
+                let log_buf = log_buf.clone();
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stdout);
+                    for line in reader.lines().flatten() {
+                        log_buf.push(format!("STDOUT {line}"));
+                    }
+                });
+            }
+
+            if let Some(stderr) = child.stderr.take() {
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stderr);
+                    for line in reader.lines().flatten() {
+                        log_buf.push(format!("STDERR {line}"));
+                    }
+                });
+            }
+        }
 
         // On Windows, put the sidecar into a Job Object configured to kill child processes when
         // the job handle is closed. This prevents orphaned sidecars during `tauri dev` rebuilds
@@ -2137,7 +2189,21 @@ fn parse_sse_event(buffer: &mut String) -> Option<StreamEvent> {
 fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
     let props = &event.properties;
 
-    match event.event_type.as_str() {
+    let event_type = event.event_type.trim();
+
+    // OpenCode emits periodic keep-alive noise. Treat all `server.*` events as ignorable.
+    // This avoids log spam and prevents "unhandled event" warnings from drowning real issues.
+    if event_type.starts_with("server.") {
+        return None;
+    }
+
+    match event_type {
+        // Ignore noisy server-level events. Treating them as "unhandled" spams logs and can keep
+        // UI streaming loops alive forever even when the session is stuck.
+        // Diffs can be very large and are emitted frequently; the app doesn't currently render them.
+        "session.diff" => None,
+        // We currently only need `question.asked` to render the UI. This is an ack.
+        "question.replied" => None,
         "message.part.updated" => {
             // Extract part info
             let part = props.get("part")?;
@@ -2293,14 +2359,18 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                         .unwrap_or(serde_json::Value::Null);
 
                     match state {
-                        "pending" | "running" => Some(StreamEvent::ToolStart {
+                        // OpenCode has used multiple spellings across builds.
+                        "pending" | "running" | "in_progress" => Some(StreamEvent::ToolStart {
                             session_id,
                             message_id,
                             part_id,
                             tool,
                             args,
                         }),
-                        "completed" | "failed" | "error" => {
+                        // Treat any terminal-ish status as a tool end, otherwise the UI can get stuck
+                        // showing a "pending tool" forever (e.g. when a tool is cancelled/denied).
+                        "completed" | "failed" | "error" | "cancelled" | "canceled" | "denied"
+                        | "rejected" | "aborted" | "skipped" | "timeout" | "timed_out" => {
                             let result = state_value
                                 .and_then(|s| s.get("output"))
                                 .cloned()
@@ -2314,6 +2384,14 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                                         .and_then(|e| e.as_str())
                                         .map(|s| s.to_string())
                                 });
+                            let error = error.or_else(|| {
+                                // Some terminal states don't include a structured error payload.
+                                if state != "completed" {
+                                    Some(state.to_string())
+                                } else {
+                                    None
+                                }
+                            });
                             Some(StreamEvent::ToolEnd {
                                 session_id,
                                 message_id,
@@ -2552,13 +2630,13 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
         }
         _ => {
             // Return as raw event for other types
-            tracing::warn!(
+            tracing::debug!(
                 "Unhandled event type: {} - data: {:?}",
-                event.event_type,
+                event_type,
                 event.properties
             );
             Some(StreamEvent::Raw {
-                event_type: event.event_type,
+                event_type: event_type.to_string(),
                 data: event.properties,
             })
         }

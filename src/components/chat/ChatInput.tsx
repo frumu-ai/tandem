@@ -41,6 +41,8 @@ interface ChatInputProps {
   onLoopToggle?: (enabled: boolean) => void;
   loopStatus?: any; // Imported type would be better but keeping it simple for now to correspond with ContextToolbar
   onLoopPanelOpen?: () => void;
+  // Logs viewer
+  onLogsOpen?: () => void;
 }
 
 export function ChatInput({
@@ -67,6 +69,7 @@ export function ChatInput({
   onLoopToggle,
   loopStatus,
   onLoopPanelOpen,
+  onLogsOpen,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
@@ -578,6 +581,7 @@ export function ChatInput({
           onLoopToggle={onLoopToggle}
           loopStatus={loopStatus}
           onLoopPanelOpen={onLoopPanelOpen}
+          onLogsOpen={onLogsOpen}
         />
       </div>
     </motion.div>

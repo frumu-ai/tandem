@@ -52,6 +52,7 @@ import {
   type RalphStateSnapshot,
 } from "@/lib/tauri";
 import { RalphPanel } from "@/components/ralph";
+import { LogsDrawer } from "@/components/logs";
 
 interface ChatProps {
   workspacePath: string | null;
@@ -120,6 +121,7 @@ export function Chat({
   // Ralph Loop State
   const [loopEnabled, setLoopEnabled] = useState(false);
   const [showRalphPanel, setShowRalphPanel] = useState(false);
+  const [showLogsDrawer, setShowLogsDrawer] = useState(false);
   const [ralphStatusSnapshot, setRalphStatusSnapshot] = useState<RalphStateSnapshot | undefined>(
     undefined
   );
@@ -2048,6 +2050,7 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
               onLoopToggle={handleLoopToggle}
               loopStatus={ralphStatusSnapshot}
               onLoopPanelOpen={() => setShowRalphPanel(true)}
+              onLogsOpen={() => setShowLogsDrawer(true)}
               onModelSelect={async (modelId, providerIdRaw) => {
                 // Update the global provider config to switch to this model
                 try {
@@ -2219,6 +2222,9 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
       {showRalphPanel && ralphStatusSnapshot && (
         <RalphPanel runId={ralphStatusSnapshot.run_id} onClose={() => setShowRalphPanel(false)} />
       )}
+
+      {/* Logs Drawer */}
+      {showLogsDrawer && <LogsDrawer onClose={() => setShowLogsDrawer(false)} />}
     </div>
   );
 }

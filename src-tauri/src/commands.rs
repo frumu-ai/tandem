@@ -3,6 +3,7 @@
 
 use crate::error::{Result, TandemError};
 use crate::keystore::{validate_api_key, validate_key_type, ApiKeyType, SecureKeyStore};
+use crate::logs::{self, LogFileInfo};
 use crate::memory::indexer::{index_workspace, IndexingStats};
 use crate::memory::types::{ClearFileIndexResult, MemoryStats, ProjectMemoryStats};
 use crate::orchestrator::{
@@ -21,10 +22,12 @@ use crate::tool_proxy::{FileSnapshot, JournalEntry, OperationStatus, UndoAction}
 use crate::vault::{self, EncryptedVaultKey, VaultStatus};
 use crate::VaultState;
 use futures::StreamExt;
+use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_store::StoreExt;
 use uuid::Uuid;
@@ -1008,7 +1011,8 @@ pub fn populate_provider_keys(app: &AppHandle, config: &mut ProvidersConfig) {
         // For local models, we might consider them "having a key" or check connection
         config.ollama.has_key = true; // Local inference is always 'authed'
     } else {
-        tracing::warn!("[populate_provider_keys] Keystore not available (vault locked?)");
+        // Expected when the vault is locked; `get_app_state` calls this frequently.
+        tracing::debug!("[populate_provider_keys] Keystore not available (vault locked?)");
         // Keystore not initialized (vault locked)
         config.openrouter.has_key = false;
         config.opencode_zen.has_key = false;
@@ -1485,137 +1489,189 @@ pub async fn send_message_streaming(
     // Process the stream and emit events to frontend
     tokio::spawn(async move {
         futures::pin_mut!(stream);
+        use std::collections::HashMap;
+        use std::time::{Duration, Instant};
 
         // Safety limit: 100k characters (approx 25k tokens) to prevent infinite loops
         const MAX_RESPONSE_CHARS: usize = 100_000;
 
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(event) => {
-                    // Filter events for our session
-                    let is_our_session = match &event {
-                        StreamEvent::Content {
-                            session_id,
-                            content,
-                            ..
-                        } => {
-                            if session_id == &target_session_id
-                                && content.len() > MAX_RESPONSE_CHARS
-                            {
-                                tracing::warn!(
-                                    "Response exceeded safety limit ({} chars), cancelling session {}",
-                                    MAX_RESPONSE_CHARS,
-                                    target_session_id
-                                );
-                                let _ = sidecar_manager.cancel_generation(&target_session_id).await;
-                                let _ = app.emit(
-                                    "sidecar_event",
-                                    &StreamEvent::SessionError {
-                                        session_id: target_session_id.clone(),
-                                        error: format!(
-                                            "Response stopped: exceeded safety limit of {} characters.",
-                                            MAX_RESPONSE_CHARS
-                                        ),
-                                    },
-                                );
-                                break;
-                            }
-                            session_id == &target_session_id
-                        }
-                        StreamEvent::ToolStart { session_id, .. } => {
-                            session_id == &target_session_id
-                        }
-                        StreamEvent::ToolEnd { session_id, .. } => session_id == &target_session_id,
-                        StreamEvent::SessionStatus { session_id, .. } => {
-                            session_id == &target_session_id
-                        }
-                        StreamEvent::SessionIdle { session_id } => session_id == &target_session_id,
-                        StreamEvent::SessionError { session_id, .. } => {
-                            session_id == &target_session_id
-                        }
-                        StreamEvent::PermissionAsked { session_id, .. } => {
-                            session_id == &target_session_id
-                        }
-                        StreamEvent::QuestionAsked { session_id, .. } => {
-                            session_id == &target_session_id
-                        }
-                        StreamEvent::FileEdited { session_id, .. } => {
-                            session_id == &target_session_id
-                        }
-                        StreamEvent::TodoUpdated { session_id, .. } => {
-                            session_id == &target_session_id
-                        }
-                        StreamEvent::Raw { .. } => true, // Include raw events for debugging
-                    };
+        // Track pending tools so we can fail-fast instead of spinning forever when a tool never finishes.
+        let mut pending_tools: HashMap<String, (String, Instant)> = HashMap::new();
+        let tool_timeout = Duration::from_secs(120);
+        let idle_timeout = Duration::from_secs(10 * 60);
+        let mut last_progress = Instant::now();
 
-                    if is_our_session {
-                        // Log event for debugging - summarize large payloads
-                        match &event {
-                            StreamEvent::Content { content, delta, .. } => {
-                                tracing::info!(
-                                    "[StreamEvent] Emitting Content: len={}, delta={}",
-                                    content.len(),
-                                    delta.as_ref().map(|d| d.len()).unwrap_or(0)
-                                );
-                            }
-                            StreamEvent::ToolStart { tool, .. } => {
-                                tracing::info!("[StreamEvent] Emitting ToolStart: tool={}", tool);
-                            }
-                            StreamEvent::ToolEnd { tool, error, .. } => {
-                                tracing::info!(
-                                    "[StreamEvent] Emitting ToolEnd: tool={}, success={}",
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    // Timeout if a tool has been pending too long.
+                    if let Some((part_id, (tool, _started))) = pending_tools
+                        .iter()
+                        .find(|(_, (_, started))| started.elapsed() > tool_timeout)
+                    {
+                        tracing::warn!(
+                            "Tool '{}' (part_id={}) exceeded timeout of {:?}, cancelling session {}",
+                            tool,
+                            part_id,
+                            tool_timeout,
+                            target_session_id
+                        );
+                        let _ = sidecar_manager.cancel_generation(&target_session_id).await;
+                        let _ = app.emit(
+                            "sidecar_event",
+                            StreamEvent::SessionError {
+                                session_id: target_session_id.clone(),
+                                error: format!(
+                                    "Tool '{}' did not complete after {:?}. Cancelled the request to prevent a stuck session.",
                                     tool,
-                                    error.is_none()
-                                );
-                            }
-                            StreamEvent::Raw { event_type, data } => {
-                                let data_str = data.to_string();
-                                tracing::info!(
-                                    "[StreamEvent] Emitting Raw: type={}, len={}",
-                                    event_type,
-                                    data_str.len()
-                                );
-                            }
-                            _ => {
-                                tracing::info!(
-                                    "[StreamEvent] Emitting to frontend: type={:?}",
-                                    event
-                                );
+                                    tool_timeout
+                                ),
+                            },
+                        );
+                        break;
+                    }
+
+                    // Also protect against total inactivity. (We ignore heartbeats in the parser.)
+                    if pending_tools.is_empty() && last_progress.elapsed() > idle_timeout {
+                        tracing::warn!(
+                            "Session {} exceeded inactivity timeout of {:?}; cancelling generation",
+                            target_session_id,
+                            idle_timeout
+                        );
+                        let _ = sidecar_manager.cancel_generation(&target_session_id).await;
+                        let _ = app.emit(
+                            "sidecar_event",
+                            StreamEvent::SessionError {
+                                session_id: target_session_id.clone(),
+                                error: format!(
+                                    "No response progress for {:?}. Cancelled to avoid an indefinite hang.",
+                                    idle_timeout
+                                ),
+                            },
+                        );
+                        break;
+                    }
+                }
+
+                maybe = stream.next() => {
+                    let Some(result) = maybe else { break };
+                    match result {
+                        Ok(event) => {
+                            // Filter events for our session
+                            let is_our_session = match &event {
+                                StreamEvent::Content { session_id, content, .. } => {
+                                    if session_id == &target_session_id && content.len() > MAX_RESPONSE_CHARS {
+                                        tracing::warn!(
+                                            "Response exceeded safety limit ({} chars), cancelling session {}",
+                                            MAX_RESPONSE_CHARS,
+                                            target_session_id
+                                        );
+                                        let _ = sidecar_manager.cancel_generation(&target_session_id).await;
+                                        let _ = app.emit(
+                                            "sidecar_event",
+                                            &StreamEvent::SessionError {
+                                                session_id: target_session_id.clone(),
+                                                error: format!(
+                                                    "Response stopped: exceeded safety limit of {} characters.",
+                                                    MAX_RESPONSE_CHARS
+                                                ),
+                                            },
+                                        );
+                                        break;
+                                    }
+                                    session_id == &target_session_id
+                                }
+                                StreamEvent::ToolStart { session_id, .. } => session_id == &target_session_id,
+                                StreamEvent::ToolEnd { session_id, .. } => session_id == &target_session_id,
+                                StreamEvent::SessionStatus { session_id, .. } => session_id == &target_session_id,
+                                StreamEvent::SessionIdle { session_id } => session_id == &target_session_id,
+                                StreamEvent::SessionError { session_id, .. } => session_id == &target_session_id,
+                                StreamEvent::PermissionAsked { session_id, .. } => session_id == &target_session_id,
+                                StreamEvent::QuestionAsked { session_id, .. } => session_id == &target_session_id,
+                                StreamEvent::FileEdited { session_id, .. } => session_id == &target_session_id,
+                                StreamEvent::TodoUpdated { session_id, .. } => session_id == &target_session_id,
+                                // Don't forward raw event spam to the UI.
+                                StreamEvent::Raw { .. } => false,
+                            };
+
+                            if is_our_session {
+                                last_progress = Instant::now();
+
+                                // Maintain a best-effort pending tool table.
+                                match &event {
+                                    StreamEvent::ToolStart { part_id, tool, .. } => {
+                                        pending_tools.insert(part_id.clone(), (tool.clone(), Instant::now()));
+                                    }
+                                    StreamEvent::ToolEnd { part_id, .. } => {
+                                        pending_tools.remove(part_id);
+                                    }
+                                    _ => {}
+                                }
+
+                                // Log event for debugging - summarize large payloads
+                                match &event {
+                                    StreamEvent::Content { content, delta, .. } => {
+                                        tracing::info!(
+                                            "[StreamEvent] Emitting Content: len={}, delta={}",
+                                            content.len(),
+                                            delta.as_ref().map(|d| d.len()).unwrap_or(0)
+                                        );
+                                    }
+                                    StreamEvent::ToolStart { tool, .. } => {
+                                        tracing::info!("[StreamEvent] Emitting ToolStart: tool={}", tool);
+                                    }
+                                    StreamEvent::ToolEnd { tool, error, .. } => {
+                                        tracing::info!(
+                                            "[StreamEvent] Emitting ToolEnd: tool={}, success={}",
+                                            tool,
+                                            error.is_none()
+                                        );
+                                    }
+                                    _ => {
+                                        tracing::info!(
+                                            "[StreamEvent] Emitting to frontend: type={:?}",
+                                            event
+                                        );
+                                    }
+                                }
+
+                                // Emit the event to the frontend
+                                if let Err(e) = app.emit("sidecar_event", &event) {
+                                    tracing::error!("Failed to emit sidecar event: {}", e);
+                                    break;
+                                }
+
+                                // Stop streaming for terminal session events (prevents spinner hangs).
+                                if matches!(event, StreamEvent::SessionIdle { .. } | StreamEvent::SessionError { .. }) {
+                                    break;
+                                }
                             }
                         }
+                        Err(e) => {
+                            let err_msg = e.to_string();
+                            tracing::warn!("[StreamEvent] Stream error: {}", err_msg);
 
-                        // Emit the event to the frontend
-                        if let Err(e) = app.emit("sidecar_event", &event) {
-                            tracing::error!("Failed to emit sidecar event: {}", e);
-                            break;
-                        }
+                            // If it's a common timeout error, provide a more user-friendly message
+                            let friendly_error = if err_msg.contains("error decoding response body") {
+                                "Connection to AI engine timed out. The AI might be taking too long to respond.".to_string()
+                            } else {
+                                format!("Stream error: {}", err_msg)
+                            };
 
-                        // Check if this is the done event
-                        if matches!(event, StreamEvent::SessionIdle { .. }) {
+                            // Emit error event
+                            let _ = app.emit(
+                                "sidecar_event",
+                                StreamEvent::SessionError {
+                                    session_id: target_session_id.clone(),
+                                    error: friendly_error,
+                                },
+                            );
                             break;
                         }
                     }
-                }
-                Err(e) => {
-                    let err_msg = e.to_string();
-                    tracing::warn!("[StreamEvent] Stream error: {}", err_msg);
-
-                    // If it's a common timeout error, provide a more user-friendly message
-                    let friendly_error = if err_msg.contains("error decoding response body") {
-                        "Connection to AI engine timed out. The AI might be taking too long to respond.".to_string()
-                    } else {
-                        format!("Stream error: {}", err_msg)
-                    };
-
-                    // Emit error event
-                    let _ = app.emit(
-                        "sidecar_event",
-                        StreamEvent::SessionError {
-                            session_id: target_session_id.clone(),
-                            error: friendly_error,
-                        },
-                    );
-                    break;
                 }
             }
         }
@@ -1644,6 +1700,241 @@ pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelInfo>> {
 #[tauri::command]
 pub async fn list_providers_from_sidecar(state: State<'_, AppState>) -> Result<Vec<ProviderInfo>> {
     state.sidecar.list_providers().await
+}
+
+// ============================================================================
+// Logs (on-demand streaming)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LogStreamBatch {
+    pub stream_id: String,
+    pub source: String, // "tandem" | "sidecar"
+    pub lines: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<u64>,
+    pub ts_ms: u64,
+}
+
+#[tauri::command]
+pub async fn list_app_log_files(app: AppHandle) -> Result<Vec<LogFileInfo>> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| TandemError::InvalidConfig(format!("Failed to get app data dir: {}", e)))?;
+    let logs_dir = app_data_dir.join("logs");
+    logs::list_log_files(&logs_dir)
+}
+
+#[tauri::command]
+pub async fn start_log_stream(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    window_label: String,
+    source: String,
+    file_name: Option<String>,
+    tail_lines: Option<u32>,
+) -> Result<String> {
+    let window = app
+        .get_webview_window(&window_label)
+        .ok_or_else(|| TandemError::InvalidConfig(format!("Window not found: {}", window_label)))?;
+
+    let stream_id = format!("log_{}", Uuid::new_v4());
+    let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+
+    state
+        .active_log_streams
+        .lock()
+        .await
+        .insert(stream_id.clone(), stop_tx);
+
+    let tail_lines = tail_lines.unwrap_or(500).clamp(10, 5000) as usize;
+
+    let stream_id_clone = stream_id.clone();
+    let source_clone = source.clone();
+    let sidecar = state.sidecar.clone();
+    let active_map = state.active_log_streams.clone();
+
+    tokio::spawn(async move {
+        let source_kind = source_clone.clone();
+        let stream_id_for_emit = stream_id_clone.clone();
+        let source_for_emit = source_clone.clone();
+        let window_for_emit = window.clone();
+
+        let send_batch = |lines: Vec<String>, dropped: Option<u64>| {
+            let window = window_for_emit.clone();
+            let stream_id = stream_id_for_emit.clone();
+            let source = source_for_emit.clone();
+            async move {
+                if lines.is_empty() {
+                    return;
+                }
+                let payload = LogStreamBatch {
+                    stream_id,
+                    source,
+                    lines,
+                    dropped,
+                    ts_ms: logs::now_ms(),
+                };
+                let _ = window.emit("log_stream_event", payload);
+            }
+        };
+
+        match source_kind.as_str() {
+            "sidecar" => {
+                let (snap, dropped_total) = sidecar.sidecar_logs_snapshot(tail_lines);
+                let mut last_seq = 0u64;
+                let mut out = Vec::new();
+                for (seq, text) in snap {
+                    last_seq = last_seq.max(seq);
+                    out.push(text);
+                }
+                send_batch(out, Some(dropped_total)).await;
+
+                let mut tick = tokio::time::interval(Duration::from_millis(200));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = &mut stop_rx => break,
+                        _ = tick.tick() => {
+                            let (lines, dropped_total) = sidecar.sidecar_logs_since(last_seq);
+                            let mut out = Vec::new();
+                            for (seq, text) in lines {
+                                last_seq = last_seq.max(seq);
+                                out.push(text);
+                            }
+                            for chunk in out.chunks(200) {
+                                send_batch(chunk.to_vec(), Some(dropped_total)).await;
+                            }
+                        }
+                    }
+                }
+            }
+            "tandem" => {
+                let app_data_dir = match app.path().app_data_dir() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let _ = send_batch(
+                            vec![format!("ERROR Failed to resolve app data dir: {e}")],
+                            None,
+                        )
+                        .await;
+                        let _ = active_map.lock().await.remove(&stream_id_clone);
+                        return;
+                    }
+                };
+                let logs_dir = app_data_dir.join("logs");
+
+                let file_name = match file_name {
+                    Some(n) => match logs::sanitize_log_file_name(&n) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let _ = send_batch(vec![format!("ERROR {e}")], None).await;
+                            let _ = active_map.lock().await.remove(&stream_id_clone);
+                            return;
+                        }
+                    },
+                    None => {
+                        let _ =
+                            send_batch(vec!["ERROR Missing log file name".to_string()], None).await;
+                        let _ = active_map.lock().await.remove(&stream_id_clone);
+                        return;
+                    }
+                };
+
+                let path = logs::join_logs_dir(&logs_dir, &file_name);
+                let (initial, mut offset) = match logs::tail_file(&path, tail_lines, 256 * 1024) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ =
+                            send_batch(vec![format!("ERROR Failed to open log: {e}")], None).await;
+                        let _ = active_map.lock().await.remove(&stream_id_clone);
+                        return;
+                    }
+                };
+                send_batch(initial, None).await;
+
+                let mut partial = String::new();
+                let mut tick = tokio::time::interval(Duration::from_millis(200));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                loop {
+                    tokio::select! {
+                        _ = &mut stop_rx => break,
+                        _ = tick.tick() => {
+                            use std::io::{Read, Seek, SeekFrom};
+                            let mut f = match std::fs::File::open(&path) {
+                                Ok(f) => f,
+                                Err(_) => continue,
+                            };
+                            let meta = match f.metadata() {
+                                Ok(m) => m,
+                                Err(_) => continue,
+                            };
+                            let len = meta.len();
+                            if len < offset {
+                                offset = 0;
+                                partial.clear();
+                            }
+                            if f.seek(SeekFrom::Start(offset)).is_err() {
+                                continue;
+                            }
+                            let mut buf = Vec::new();
+                            if f.read_to_end(&mut buf).is_err() {
+                                continue;
+                            }
+                            offset = len;
+                            if buf.is_empty() {
+                                continue;
+                            }
+                            partial.push_str(&String::from_utf8_lossy(&buf));
+
+                            // Avoid borrowing issues by processing an owned copy of the buffer.
+                            let data = std::mem::take(&mut partial);
+                            let bytes = data.as_bytes();
+                            let mut lines = Vec::new();
+                            let mut start = 0usize;
+                            for (i, b) in bytes.iter().enumerate() {
+                                if *b == b'\n' {
+                                    let mut slice = &data[start..i];
+                                    if slice.ends_with('\r') {
+                                        slice = &slice[..slice.len().saturating_sub(1)];
+                                    }
+                                    if !slice.is_empty() {
+                                        lines.push(slice.to_string());
+                                    }
+                                    start = i + 1;
+                                }
+                            }
+                            // Remainder (no trailing newline yet)
+                            if start < data.len() {
+                                partial = data[start..].to_string();
+                            }
+                            for chunk in lines.chunks(200) {
+                                send_batch(chunk.to_vec(), None).await;
+                            }
+                        }
+                    }
+                }
+            }
+            other => {
+                let _ = send_batch(vec![format!("ERROR Unknown log source: {other}")], None).await;
+            }
+        }
+
+        // Best-effort cleanup
+        active_map.lock().await.remove(&stream_id_clone);
+    });
+
+    Ok(stream_id)
+}
+
+#[tauri::command]
+pub async fn stop_log_stream(state: State<'_, AppState>, stream_id: String) -> Result<()> {
+    if let Some(tx) = state.active_log_streams.lock().await.remove(&stream_id) {
+        let _ = tx.send(());
+    }
+    Ok(())
 }
 
 /// List models installed locally via Ollama

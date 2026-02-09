@@ -3,7 +3,7 @@ import { ToolCategoryPicker } from "./ToolCategoryPicker";
 import { ModelSelector } from "./ModelSelector";
 import { LoopToggle, LoopStatusChip } from "@/components/ralph";
 import type { RalphStateSnapshot } from "@/components/ralph";
-import { ShieldCheck, ShieldOff } from "lucide-react";
+import { ScrollText, ShieldCheck, ShieldOff } from "lucide-react";
 
 interface ContextToolbarProps {
   // Agent
@@ -27,6 +27,8 @@ interface ContextToolbarProps {
   onLoopToggle?: (enabled: boolean) => void;
   loopStatus?: RalphStateSnapshot;
   onLoopPanelOpen?: () => void;
+  // Logs viewer
+  onLogsOpen?: () => void;
 }
 
 export function ContextToolbar({
@@ -45,6 +47,7 @@ export function ContextToolbar({
   onLoopToggle,
   loopStatus,
   onLoopPanelOpen,
+  onLogsOpen,
 }: ContextToolbarProps) {
   // We can remove the old providerSummary logic or keep it as fallback?
   // Actually, we'll replace the static display with ModelSelector entirely if onModelSelect is present.
@@ -152,6 +155,23 @@ export function ContextToolbar({
             />
           </>
         )}
+
+      {/* Logs button (on-demand diagnostics) */}
+      {onLogsOpen && (
+        <>
+          <div className="h-4 w-px bg-border" />
+          <button
+            type="button"
+            onClick={onLogsOpen}
+            disabled={disabled}
+            className="flex items-center gap-1 rounded-md border border-border bg-surface-elevated px-2 py-1 text-[10px] text-text-subtle transition-colors hover:bg-surface hover:text-text disabled:opacity-50"
+            title="Open logs (on-demand)"
+          >
+            <ScrollText className="h-3 w-3" />
+            <span>Logs</span>
+          </button>
+        </>
+      )}
 
       {/* Spacer to push hints right */}
       <div className="flex-1" />

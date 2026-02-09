@@ -859,107 +859,113 @@ impl OrchestratorEngine {
         let mut first_tool_part_id: Option<String> = None;
         let mut first_tool_finished = false;
 
-        // Add a timeout to prevent hanging forever
+        // Add a hard timeout to prevent hanging forever (even if the sidecar only sends heartbeats).
         let timeout = tokio::time::Duration::from_secs(120);
-        let start = std::time::Instant::now();
-
-        while let Some(result) = stream.next().await {
-            // Check timeout
-            if start.elapsed() > timeout {
-                tracing::warn!("Agent call timed out after {:?}", timeout);
-                break;
-            }
-
-            match result {
-                Ok(event) => match &event {
-                    StreamEvent::Content {
-                        session_id: sid,
-                        delta,
-                        content: full_content,
-                        ..
-                    } => {
-                        if sid == session_id {
-                            // Prefer delta if available, otherwise use full content
-                            if let Some(text) = delta {
-                                content.push_str(text);
-                                tracing::debug!("Got content delta: {} chars", text.len());
-                            } else if !full_content.is_empty() && content.is_empty() {
-                                content = full_content.clone();
-                                tracing::debug!("Got full content: {} chars", full_content.len());
+        let consume = async {
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => match &event {
+                        StreamEvent::Content {
+                            session_id: sid,
+                            delta,
+                            content: full_content,
+                            ..
+                        } => {
+                            if sid == session_id {
+                                // Prefer delta if available, otherwise use full content
+                                if let Some(text) = delta {
+                                    content.push_str(text);
+                                    tracing::debug!("Got content delta: {} chars", text.len());
+                                } else if !full_content.is_empty() && content.is_empty() {
+                                    content = full_content.clone();
+                                    tracing::debug!(
+                                        "Got full content: {} chars",
+                                        full_content.len()
+                                    );
+                                }
                             }
                         }
-                    }
-                    StreamEvent::SessionIdle { session_id: sid } => {
-                        if sid == session_id {
-                            tracing::info!("Session {} is idle, response complete", session_id);
-                            break;
-                        }
-                    }
-                    StreamEvent::ToolStart {
-                        session_id: sid,
-                        part_id,
-                        tool,
-                        ..
-                    } => {
-                        if sid == session_id && first_tool_part_id.is_none() {
-                            first_tool_part_id = Some(part_id.clone());
-                            if let Some(task_id) = task_id {
-                                self.emit_task_trace(
-                                    task_id,
-                                    Some(session_id),
-                                    "FIRST_TOOL_CALL",
-                                    Some(tool.clone()),
-                                );
+                        StreamEvent::SessionIdle { session_id: sid } => {
+                            if sid == session_id {
+                                tracing::info!("Session {} is idle, response complete", session_id);
+                                break;
                             }
                         }
-                    }
-                    StreamEvent::ToolEnd {
-                        session_id: sid,
-                        part_id,
-                        tool,
-                        error,
-                        ..
-                    } => {
-                        if sid == session_id
-                            && !first_tool_finished
-                            && first_tool_part_id.as_deref() == Some(part_id)
-                        {
-                            first_tool_finished = true;
-                            if let Some(task_id) = task_id {
-                                let detail = match error.as_ref() {
-                                    Some(e) => Some(format!("{}:{}", tool, e)),
-                                    None => Some(tool.clone()),
-                                };
-                                self.emit_task_trace(
-                                    task_id,
-                                    Some(session_id),
-                                    "TOOL_CALL_FINISHED",
-                                    detail,
-                                );
+                        StreamEvent::ToolStart {
+                            session_id: sid,
+                            part_id,
+                            tool,
+                            ..
+                        } => {
+                            if sid == session_id && first_tool_part_id.is_none() {
+                                first_tool_part_id = Some(part_id.clone());
+                                if let Some(task_id) = task_id {
+                                    self.emit_task_trace(
+                                        task_id,
+                                        Some(session_id),
+                                        "FIRST_TOOL_CALL",
+                                        Some(tool.clone()),
+                                    );
+                                }
                             }
                         }
-                    }
-                    StreamEvent::SessionError {
-                        session_id: sid,
-                        error,
-                    } => {
-                        if sid == session_id {
-                            tracing::error!("Session {} error: {}", session_id, error);
-                            errors.push(error.clone());
-                            break;
+                        StreamEvent::ToolEnd {
+                            session_id: sid,
+                            part_id,
+                            tool,
+                            error,
+                            ..
+                        } => {
+                            if sid == session_id
+                                && !first_tool_finished
+                                && first_tool_part_id.as_deref() == Some(part_id)
+                            {
+                                first_tool_finished = true;
+                                if let Some(task_id) = task_id {
+                                    let detail = match error.as_ref() {
+                                        Some(e) => Some(format!("{}:{}", tool, e)),
+                                        None => Some(tool.clone()),
+                                    };
+                                    self.emit_task_trace(
+                                        task_id,
+                                        Some(session_id),
+                                        "TOOL_CALL_FINISHED",
+                                        detail,
+                                    );
+                                }
+                            }
                         }
+                        StreamEvent::SessionError {
+                            session_id: sid,
+                            error,
+                        } => {
+                            if sid == session_id {
+                                tracing::error!("Session {} error: {}", session_id, error);
+                                errors.push(error.clone());
+                                break;
+                            }
+                        }
+                        StreamEvent::Raw { event_type, data } => {
+                            tracing::debug!(
+                                "Raw event for orchestrator: {} - {:?}",
+                                event_type,
+                                data
+                            );
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        tracing::warn!("Stream error in orchestrator: {}", e);
+                        errors.push(e.to_string());
+                        break;
                     }
-                    StreamEvent::Raw { event_type, data } => {
-                        tracing::debug!("Raw event for orchestrator: {} - {:?}", event_type, data);
-                    }
-                    _ => {}
-                },
-                Err(e) => {
-                    tracing::warn!("Stream error in orchestrator: {}", e);
-                    errors.push(e.to_string());
-                    break;
                 }
             }
+        };
+
+        if tokio::time::timeout(timeout, consume).await.is_err() {
+            tracing::warn!("Agent call timed out after {:?}", timeout);
+            errors.push(format!("Timed out after {:?}", timeout));
         }
 
         if !errors.is_empty() {

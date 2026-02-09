@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10] - Unreleased
+
+### Added
+
+- **On-Demand Logs Viewer**: Add a right-side Logs drawer that can tail Tandem app log files (from the app data `logs/` directory) and show OpenCode sidecar stdout/stderr (captured into a bounded in-memory ring buffer). Streaming only runs while the drawer is open/active to avoid baseline performance cost.
+
+### Fixed
+
+- **OpenCode Session Hangs**: Prevent sessions from getting stuck indefinitely when a tool invocation never reaches a terminal state by recognizing more terminal tool statuses, ignoring heartbeat/diff noise in the stream, and fail-fast cancelling with a surfaced error after a timeout.
+- **Sidecar StdIO Deadlock Risk**: Always drain the OpenCode sidecar stdout/stderr pipes so the sidecar cannot block if it emits high-volume output.
+- **Log Noise Reduction**: Ignore OpenCode `server.*` SSE heartbeat events (and downgrade other unknown SSE events) to prevent log spam during long-running sessions.
+- **Vault Locked Log Spam**: Avoid warning-level logs when the keystore isn't available because the vault is locked (expected state).
+
 ## [0.2.9] - Unreleased
 
 ### Added
@@ -354,7 +367,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.2.8...HEAD
 [0.1.13]: https://github.com/frumu-ai/tandem/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/frumu-ai/tandem/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/frumu-ai/tandem/compare/v0.1.10...v0.1.11

@@ -779,6 +779,54 @@ export function onSidecarEvent(callback: (event: StreamEvent) => void): Promise<
 }
 
 // ============================================================================
+// Log Streaming (On-Demand Diagnostics)
+// ============================================================================
+
+export type LogSource = "tandem" | "sidecar";
+
+export interface LogFileInfo {
+  name: string;
+  size: number;
+  modified_ms: number;
+}
+
+export interface LogStreamBatch {
+  stream_id: string;
+  source: LogSource;
+  lines: string[];
+  dropped?: number;
+  ts_ms?: number;
+}
+
+export async function listAppLogFiles(): Promise<LogFileInfo[]> {
+  return invoke("list_app_log_files");
+}
+
+export async function startLogStream(args: {
+  windowLabel?: string;
+  source: LogSource;
+  fileName?: string;
+  tailLines?: number;
+}): Promise<string> {
+  return invoke("start_log_stream", {
+    windowLabel: args.windowLabel ?? "main",
+    source: args.source,
+    fileName: args.fileName,
+    tailLines: args.tailLines,
+  });
+}
+
+export async function stopLogStream(streamId: string): Promise<void> {
+  return invoke("stop_log_stream", { streamId });
+}
+
+export function onLogStreamEvent(callback: (batch: LogStreamBatch) => void): Promise<UnlistenFn> {
+  return listen<LogStreamBatch>("log_stream_event", (event) => {
+    callback(event.payload);
+  });
+}
+
+// ============================================================================
 // Skills Management
 // ============================================================================
 

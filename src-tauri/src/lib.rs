@@ -6,6 +6,7 @@ mod error;
 mod file_watcher;
 mod keystore;
 mod llm_router;
+mod logs;
 mod memory;
 mod opencode_config;
 pub mod orchestrator;
@@ -418,6 +419,10 @@ pub fn run() {
             commands::list_running_ollama_models,
             commands::stop_ollama_model,
             commands::run_ollama_model,
+            // Logs (on-demand)
+            commands::list_app_log_files,
+            commands::start_log_stream,
+            commands::stop_log_stream,
             // File operation undo
             commands::can_undo_file_change,
             commands::undo_last_file_change,

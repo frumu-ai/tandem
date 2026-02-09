@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 
 /// Selected model (provider + model id) for the OpenCode sidecar.
 ///
@@ -234,6 +234,9 @@ pub struct AppState {
     /// Active orchestrator engines (run_id -> engine)
     pub orchestrator_engines:
         RwLock<std::collections::HashMap<String, Arc<crate::orchestrator::OrchestratorEngine>>>,
+    /// Active log streaming tasks (stream_id -> stop signal sender)
+    pub active_log_streams:
+        Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>>,
 }
 
 impl AppState {
@@ -267,6 +270,7 @@ impl AppState {
             memory_manager: None,
             ralph_manager: Arc::new(crate::ralph::RalphLoopManager::new()),
             orchestrator_engines: RwLock::new(std::collections::HashMap::new()),
+            active_log_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
