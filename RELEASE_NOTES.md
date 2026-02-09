@@ -2,6 +2,10 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.2.8 (2026-02-09)
+
+- Support multiple custom OpenCode providers by name: Tandem now lets you select arbitrary providers from the sidecar catalog (not just the built-in list) and persists the selection for routing.
+
 ## v0.2.7 (2026-02-08)
 
 - Fix OpenCode config writes so existing `opencode.json` is not deleted if replacement fails (Windows-safe).
