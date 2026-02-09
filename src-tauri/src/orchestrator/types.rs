@@ -106,6 +106,12 @@ pub struct Run {
     pub run_id: String,
     /// Session ID for sidecar communication
     pub session_id: String,
+    /// Provider for this run's model (sidecar provider ID, e.g. "openrouter", "opencode")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model for this run (provider-specific model ID)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// User's objective
     pub objective: String,
     /// Run configuration
@@ -136,6 +142,8 @@ impl Run {
         Self {
             run_id,
             session_id,
+            provider: None,
+            model: None,
             objective,
             config: config.clone(),
             status: RunStatus::Idle,

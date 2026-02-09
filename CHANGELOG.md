@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OpenCode Session Hangs**: Prevent sessions from getting stuck indefinitely when a tool invocation never reaches a terminal state by recognizing more terminal tool statuses, ignoring heartbeat/diff noise in the stream, and fail-fast cancelling with a surfaced error after a timeout.
 - **Sidecar StdIO Deadlock Risk**: Always drain the OpenCode sidecar stdout/stderr pipes so the sidecar cannot block if it emits high-volume output.
 - **Log Noise Reduction**: Ignore OpenCode `server.*` heartbeat SSE events (and downgrade other unknown SSE events) to prevent log spam during long-running sessions.
+- **Orchestrator Model Routing**: Persist the selected provider/model on orchestrator runs and prefer it when sending prompts so runs don't start with an "unknown" model or send messages without an explicit model spec.
 - **Vault Locked Log Spam**: Avoid warning-level logs when the keystore isn't available because the vault is locked (expected state).
+- **Logs Viewer Copy/Scroll**: Make long log lines easy to inspect and share (horizontal scroll + selected-line preview + copy helpers).
 - **Release Pipeline Resilience**: Retry GitHub Release asset uploads to reduce flakes during transient GitHub errors.
 
 ## [0.2.10] - 2026-02-09 (Failed Release)
