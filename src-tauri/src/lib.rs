@@ -509,6 +509,7 @@ pub fn run() {
             commands::orchestrator_list_runs,
             commands::orchestrator_load_run,
             commands::orchestrator_restart_run,
+            commands::orchestrator_delete_run,
             // Memory Management
             commands::get_memory_stats,
             commands::get_memory_settings,

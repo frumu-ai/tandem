@@ -607,7 +607,7 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
                 disabled={!selectedLine}
                 title={selectedLine ? "Copy selected line" : "Click a line above to select it"}
               >
-                Copy line
+                Copy
               </Button>
               <Button
                 variant="secondary"

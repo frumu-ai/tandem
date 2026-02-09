@@ -25,6 +25,7 @@ import {
   listSessions,
   listProjects,
   deleteSession,
+  deleteOrchestratorRun,
   getVaultStatus,
   getUserProjects,
   getActiveProject,
@@ -667,6 +668,30 @@ function App() {
     }
   };
 
+  const handleDeleteOrchestratorRun = async (runId: string) => {
+    console.log("[App] Deleting orchestrator run:", runId);
+    const run = orchestratorRuns.find((r) => r.run_id === runId);
+    try {
+      await deleteOrchestratorRun(runId);
+      setOrchestratorRuns((prev) => prev.filter((r) => r.run_id !== runId));
+
+      // Remove the corresponding sidecar session from local state so it doesn't reappear as a chat
+      // item until the next history refresh.
+      if (run?.session_id) {
+        setSessions((prev) => prev.filter((s) => s.id !== run.session_id));
+        if (currentSessionId === run.session_id) {
+          setCurrentSessionId(null);
+        }
+      }
+
+      if (currentOrchestratorRunId === runId) {
+        setCurrentOrchestratorRunId(null);
+      }
+    } catch (e) {
+      console.error("Failed to delete orchestrator run:", e);
+    }
+  };
+
   const handleExecutePendingTasks = () => {
     // Switch to immediate mode and trigger execution in Chat
     setUsePlanMode(false);
@@ -973,6 +998,7 @@ function App() {
                     onNewChat={handleNewChat}
                     onOpenPacks={() => setView("packs")}
                     onDeleteSession={handleDeleteSession}
+                    onDeleteRun={handleDeleteOrchestratorRun}
                     isLoading={historyLoading}
                     userProjects={userProjects}
                     activeProject={activeProject}

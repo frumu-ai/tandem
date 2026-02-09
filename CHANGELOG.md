@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Orchestrator Model Routing**: Persist the selected provider/model on orchestrator runs and prefer it when sending prompts so runs don't start with an "unknown" model or send messages without an explicit model spec.
 - **Orchestrator Restart/Retries**: Prevent "restart" from instantly reporting success without doing any work (guard against empty plans; allow restarting completed runs to rerun the full plan).
 - **Logs Viewer Copy/Scroll**: Make long log lines easy to inspect and share (horizontal scroll + selected-line preview + copy helpers).
+- **Orchestrator Run Deletion**: Allow deleting orchestrator runs from the Sessions sidebar (removes the run from disk and deletes its backing OpenCode session).
+- **Release to Discord**: Ensure Discord notifications fire for automated releases by posting from the release workflow (instead of relying on `release: published`, which doesn't trigger when publishing via `GITHUB_TOKEN`).
 
 ## [0.2.11] - 2026-02-09
 

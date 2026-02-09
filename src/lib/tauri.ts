@@ -55,7 +55,14 @@ export interface UserProject {
 }
 
 // API Key types
-export type ApiKeyType = "openrouter" | "opencode_zen" | "anthropic" | "openai" | "ollama" | "poe" | string;
+export type ApiKeyType =
+  | "openrouter"
+  | "opencode_zen"
+  | "anthropic"
+  | "openai"
+  | "ollama"
+  | "poe"
+  | string;
 
 // ============================================================================
 // Sidecar Types
@@ -210,50 +217,50 @@ export interface ProviderInfo {
 export type StreamEvent =
   | { type: "content"; session_id: string; message_id: string; content: string; delta?: string }
   | {
-    type: "tool_start";
-    session_id: string;
-    message_id: string;
-    part_id: string;
-    tool: string;
-    args: Record<string, unknown>;
-  }
+      type: "tool_start";
+      session_id: string;
+      message_id: string;
+      part_id: string;
+      tool: string;
+      args: Record<string, unknown>;
+    }
   | {
-    type: "tool_end";
-    session_id: string;
-    message_id: string;
-    part_id: string;
-    tool: string;
-    result?: unknown;
-    error?: string;
-  }
+      type: "tool_end";
+      session_id: string;
+      message_id: string;
+      part_id: string;
+      tool: string;
+      result?: unknown;
+      error?: string;
+    }
   | { type: "session_status"; session_id: string; status: string }
   | { type: "session_idle"; session_id: string }
   | { type: "session_error"; session_id: string; error: string }
   | {
-    type: "permission_asked";
-    session_id: string;
-    request_id: string;
-    tool?: string;
-    args?: Record<string, unknown>;
-  }
+      type: "permission_asked";
+      session_id: string;
+      request_id: string;
+      tool?: string;
+      args?: Record<string, unknown>;
+    }
   | {
-    type: "question_asked";
-    session_id: string;
-    request_id: string;
-    questions: QuestionInfo[];
-    tool_call_id?: string;
-    tool_message_id?: string;
-  }
+      type: "question_asked";
+      session_id: string;
+      request_id: string;
+      questions: QuestionInfo[];
+      tool_call_id?: string;
+      tool_message_id?: string;
+    }
   | {
-    type: "todo_updated";
-    session_id: string;
-    todos: TodoItem[];
-  }
+      type: "todo_updated";
+      session_id: string;
+      todos: TodoItem[];
+    }
   | {
-    type: "file_edited";
-    session_id: string;
-    file_path: string;
-  }
+      type: "file_edited";
+      session_id: string;
+      file_path: string;
+    }
   | { type: "raw"; event_type: string; data: unknown };
 
 // ============================================================================
@@ -436,6 +443,10 @@ export async function listSessions(): Promise<Session[]> {
 
 export async function deleteSession(sessionId: string): Promise<void> {
   return invoke("delete_session", { sessionId });
+}
+
+export async function deleteOrchestratorRun(runId: string): Promise<void> {
+  return invoke("orchestrator_delete_run", { runId });
 }
 
 export async function getCurrentSessionId(): Promise<string | null> {

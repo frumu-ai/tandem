@@ -5376,3 +5376,29 @@ pub async fn orchestrator_restart_run(state: State<'_, AppState>, run_id: String
 
     Ok(())
 }
+
+/// Delete an orchestrator run (and its backing sidecar session)
+#[tauri::command]
+pub async fn orchestrator_delete_run(state: State<'_, AppState>, run_id: String) -> Result<()> {
+    let workspace_path = state
+        .get_workspace_path()
+        .ok_or_else(|| TandemError::NotFound("No workspace configured".to_string()))?;
+
+    let store = OrchestratorStore::new(&workspace_path)?;
+    let run = store.load_run(&run_id)?;
+
+    // Stop any in-memory engine first so it doesn't keep writing to disk while we delete.
+    if let Some(engine) = {
+        let mut engines = state.orchestrator_engines.write().unwrap();
+        engines.remove(&run_id)
+    } {
+        let _ = engine.cancel_and_finalize().await;
+    }
+
+    // Delete the root orchestrator session (child task/resume sessions were created as children and
+    // won't show up in the user's main session list; they will become unreachable without the root).
+    let _ = state.sidecar.delete_session(&run.session_id).await;
+
+    store.delete_run(&run_id)?;
+    Ok(())
+}

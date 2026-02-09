@@ -72,6 +72,7 @@ interface SessionSidebarProps {
   onNewChat: () => void;
   onOpenPacks?: () => void;
   onDeleteSession: (sessionId: string) => void;
+  onDeleteRun?: (runId: string) => void;
   isLoading?: boolean;
   // Project switcher props
   userProjects?: UserProject[];
@@ -95,6 +96,7 @@ export function SessionSidebar({
   onNewChat,
   onOpenPacks,
   onDeleteSession,
+  onDeleteRun,
   isLoading,
   userProjects = [],
   activeProject,
@@ -302,15 +304,18 @@ export function SessionSidebar({
 
   const handleDelete = (item: DisplayItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (item.type === "chat") {
-      setSessionToDelete(item);
-    }
-    // TODO: Handle delete for orchestrator runs if needed
+    setSessionToDelete(item);
   };
 
   const confirmDelete = () => {
-    if (sessionToDelete && sessionToDelete.type === "chat") {
+    if (!sessionToDelete) return;
+    if (sessionToDelete.type === "chat") {
       onDeleteSession(sessionToDelete.id);
+      setSessionToDelete(null);
+      return;
+    }
+    if (sessionToDelete.type === "orchestrator") {
+      onDeleteRun?.(sessionToDelete.id);
       setSessionToDelete(null);
     }
   };
@@ -514,16 +519,17 @@ export function SessionSidebar({
                                   )}
                                 </div>
                               </div>
-                              {/* Delete button (only for chats currently) */}
-                              {item.type === "chat" && (
-                                <button
-                                  onClick={(e) => handleDelete(item, e)}
-                                  className="rounded p-1 text-text-muted opacity-0 transition-colors hover:bg-surface hover:text-error group-hover:opacity-100"
-                                  title="Delete chat"
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                </button>
-                              )}
+                              {/* Delete button */}
+                              <button
+                                onClick={(e) => handleDelete(item, e)}
+                                className={cn(
+                                  "rounded p-1 text-text-muted opacity-0 transition-colors hover:bg-surface hover:text-error group-hover:opacity-100",
+                                  item.type === "orchestrator" && !onDeleteRun ? "hidden" : ""
+                                )}
+                                title={item.type === "chat" ? "Delete chat" : "Delete run"}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
                             </div>
                           ))}
                         </motion.div>
@@ -540,8 +546,8 @@ export function SessionSidebar({
       {/* Delete Confirmation Dialog */}
       <ConfirmDialog
         isOpen={sessionToDelete !== null}
-        title="Delete Chat"
-        message={`Are you sure you want to delete "${sessionToDelete?.title || "this chat"}"? This action cannot be undone.`}
+        title={sessionToDelete?.type === "orchestrator" ? "Delete Run" : "Delete Chat"}
+        message={`Are you sure you want to delete "${sessionToDelete?.title || (sessionToDelete?.type === "orchestrator" ? "this run" : "this chat")}"? This action cannot be undone.`}
         confirmText="Delete"
         cancelText="Cancel"
         variant="danger"
