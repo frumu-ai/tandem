@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+      - "*.*.*"
 
 permissions:
   contents: write
@@ -279,10 +280,21 @@ jobs:
     name: Notify Discord
     needs: [create-release, publish-release]
     runs-on: ubuntu-latest
-    # This workflow creates/publishes the release via GITHUB_TOKEN, which does not
-    # trigger other workflows that listen on `release` events. Notify from here instead.
     steps:
+      - name: Check Discord webhook
+        id: discord_webhook
+        shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: |
+          if [ -n "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Post release to Discord
+        if: ${{ steps.discord_webhook.outputs.configured == 'true' }}
         uses: actions/github-script@v7
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
