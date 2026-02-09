@@ -981,8 +981,10 @@ pub fn populate_provider_keys(app: &AppHandle, config: &mut ProvidersConfig) {
         let opencode_zen_key = ApiKeyType::OpenCodeZen.to_key_name();
         let anthropic_key = ApiKeyType::Anthropic.to_key_name();
         let openai_key = ApiKeyType::OpenAI.to_key_name();
+        let poe_key = ApiKeyType::Poe.to_key_name();
 
         tracing::info!("[populate_provider_keys] Checking for keys:");
+        // ... (skipping some logs for brevity if I could, but better to match exactly)
         tracing::info!(
             "  OpenRouter key '{}': {}",
             openrouter_key,
@@ -1003,11 +1005,17 @@ pub fn populate_provider_keys(app: &AppHandle, config: &mut ProvidersConfig) {
             openai_key,
             keystore.has(&openai_key)
         );
+        tracing::info!(
+            "  Poe key '{}': {}",
+            poe_key,
+            keystore.has(&poe_key)
+        );
 
         config.openrouter.has_key = keystore.has(&openrouter_key);
         config.opencode_zen.has_key = keystore.has(&opencode_zen_key);
         config.anthropic.has_key = keystore.has(&anthropic_key);
         config.openai.has_key = keystore.has(&openai_key);
+        config.poe.has_key = keystore.has(&poe_key);
         // For local models, we might consider them "having a key" or check connection
         config.ollama.has_key = true; // Local inference is always 'authed'
     } else {
@@ -1018,6 +1026,7 @@ pub fn populate_provider_keys(app: &AppHandle, config: &mut ProvidersConfig) {
         config.opencode_zen.has_key = false;
         config.anthropic.has_key = false;
         config.openai.has_key = false;
+        config.poe.has_key = false;
         config.ollama.has_key = true; // Local is fine
     }
 }

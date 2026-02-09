@@ -137,6 +137,7 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
         (keystore::ApiKeyType::OpenCodeZen, "OPENCODE_ZEN_API_KEY"),
         (keystore::ApiKeyType::Anthropic, "ANTHROPIC_API_KEY"),
         (keystore::ApiKeyType::OpenAI, "OPENAI_API_KEY"),
+        (keystore::ApiKeyType::Poe, "POE_API_KEY"),
     ];
 
     for (key_type, env_var) in mappings {
