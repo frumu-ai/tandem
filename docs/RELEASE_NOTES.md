@@ -1,3 +1,12 @@
+# Tandem v0.2.8 Release Notes
+
+## Highlights
+
+- **Multi Custom Providers (OpenCode)**: Select any provider from the OpenCode sidecar catalog, including user-defined providers by name in `.opencode/config.json`.
+- **Model Selection Routing**: Persist the selected `provider_id` + `model_id` and prefer it when sending messages, so switching to non-standard providers actually takes effect.
+
+---
+
 # Tandem v0.2.7 Release Notes
 
 ## Highlights

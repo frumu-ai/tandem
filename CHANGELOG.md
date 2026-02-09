@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-02-09
+
+### Added
+
+- **Multi Custom Providers (OpenCode)**: Support selecting any provider from the OpenCode sidecar catalog (including user-defined providers by name in `.opencode/config.json`), not just the built-in set.
+
+### Fixed
+
+- **Model Selection Routing**: Persist the selected `provider_id` + `model_id` and prefer it when sending messages, so switching to non-standard providers actually takes effect.
+
 ## [0.2.7] - 2026-02-08
 
 ### Fixed
