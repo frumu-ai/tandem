@@ -605,7 +605,7 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
 
                 <Button
                   onClick={handleCreateRun}
-                  disabled={isLoading || !objective.trim()}
+                  disabled={isLoading || !objective.trim() || !selectedModel || !selectedProvider}
                   className="w-full"
                 >
                   {isLoading ? (
@@ -615,6 +615,13 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
                   )}
                   Start Orchestration
                 </Button>
+
+                {!selectedModel || !selectedProvider ? (
+                  <p className="text-xs text-text-subtle">
+                    Select a model to start. Orchestrator uses the last selected model/provider by
+                    default.
+                  </p>
+                ) : null}
               </motion.div>
             ) : snapshot ? (
               <motion.div

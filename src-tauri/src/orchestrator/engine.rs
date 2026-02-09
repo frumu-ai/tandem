@@ -840,7 +840,7 @@ impl OrchestratorEngine {
         session_id: &str,
         prompt: &str,
     ) -> Result<String> {
-        use crate::sidecar::{SendMessageRequest, StreamEvent};
+        use crate::sidecar::{ModelSpec, SendMessageRequest, StreamEvent};
         use futures::StreamExt;
 
         let _llm_permit = self
@@ -852,12 +852,49 @@ impl OrchestratorEngine {
 
         tracing::info!("Agent call with prompt length: {}", prompt.len());
 
+        // Best-effort: fetch the session to determine its configured provider/model. Even if the
+        // session was created with a model/provider, OpenCode may still require an explicit model
+        // spec per prompt, so we include it when available.
+        let model_spec = match self.sidecar.get_session(session_id).await {
+            Ok(session) => match (session.provider.clone(), session.model.clone()) {
+                (Some(provider_id), Some(model_id))
+                    if !provider_id.trim().is_empty() && !model_id.trim().is_empty() =>
+                {
+                    tracing::info!(
+                        "Orchestrator agent call using session model: provider={} model={}",
+                        provider_id,
+                        model_id
+                    );
+                    Some(ModelSpec {
+                        provider_id,
+                        model_id,
+                    })
+                }
+                _ => {
+                    tracing::warn!(
+                        "Orchestrator session {} has no provider/model set; sending without explicit model spec",
+                        session_id
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch orchestrator session {} for model spec: {}",
+                    session_id,
+                    e
+                );
+                None
+            }
+        };
+
         // Subscribe to events FIRST to avoid race condition
         let stream = self.sidecar.subscribe_events().await?;
         futures::pin_mut!(stream);
 
         // Then send message to sidecar
-        let request = SendMessageRequest::text(prompt.to_string());
+        let mut request = SendMessageRequest::text(prompt.to_string());
+        request.model = model_spec;
         self.sidecar.send_message(session_id, request).await?;
 
         let mut content = String::new();
@@ -870,7 +907,19 @@ impl OrchestratorEngine {
         // Keep this reasonably high so we don't fail healthy runs, but still fail-fast for true hangs.
         let timeout = tokio::time::Duration::from_secs(300);
         let consume = async {
-            while let Some(result) = stream.next().await {
+            // `stream.next().await` can block forever if the SSE stream goes silent; wrap in a
+            // shorter timeout so we can fail with a useful error.
+            let per_event_timeout = tokio::time::Duration::from_secs(60);
+            loop {
+                let next = tokio::time::timeout(per_event_timeout, stream.next()).await;
+                let result = match next {
+                    Ok(Some(r)) => r,
+                    Ok(None) => break,
+                    Err(_) => {
+                        errors.push("No SSE events received for 60s".to_string());
+                        break;
+                    }
+                };
                 match result {
                     Ok(event) => match &event {
                         StreamEvent::Content {
