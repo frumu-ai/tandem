@@ -220,6 +220,49 @@ When you add a new skill template:
 4. If you added `requires`, confirm the runtime pills render on the starter skill card.
 5. Watch logs for warnings like "Skipping invalid skill template ... Failed to parse frontmatter".
 
+## Adding Themes (Developer Guide)
+
+Themes are CSS variable palettes applied at runtime. The theme id is stored in user settings and applied to `document.documentElement`.
+
+### 1) Add the Theme ID
+
+Update the union in `src/types/theme.ts` with a new id (kebab-case with underscores, matching existing ids).
+
+### 2) Add the Theme Definition
+
+Add a new entry to `THEMES` in `src/lib/themes.ts`:
+
+- id, name, description
+- cssVars for all required tokens (colors, glass, fonts)
+
+Use an existing theme as a template to ensure full coverage.
+
+### 3) Light Theme Support (If Applicable)
+
+If your theme is light, update `src/index.css` to opt into a light color scheme:
+
+```
+html[data-theme="your_theme_id"] {
+  color-scheme: light;
+}
+```
+
+### 4) Verify in the UI
+
+1. Run the app: `pnpm tauri dev`
+2. Open Settings -> Theme
+3. Select your new theme and confirm it updates:
+   - Background, surface, text, borders
+   - Glass surfaces and hover states
+   - Contrast and accessibility
+
+### 5) Validation Checklist
+
+- Theme appears in the Theme picker list
+- All UI tokens render (no fallback colors)
+- No unreadable text or low-contrast buttons
+- Light themes set `color-scheme: light`
+
 ## Key Principles
 
 1. **Security First** - All changes must maintain our zero-trust model
