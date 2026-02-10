@@ -16,6 +16,7 @@ import {
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   readDirectory,
+  onSidecarEvent,
   startFileTreeWatcher,
   stopFileTreeWatcher,
   type FileEntry,
@@ -183,6 +184,56 @@ export function FileBrowser({ rootPath, onFileSelect, selectedPath }: FileBrowse
       if (unlisten) unlisten();
       // Best-effort stop; if another view starts it immediately, that's fine.
       void stopFileTreeWatcher();
+    };
+  }, [rootPath, refreshTree]);
+
+  // Refresh on file-writing tool events from the sidecar (AI-created files).
+  // This is a reliable fallback even if OS filesystem notifications are flaky.
+  useEffect(() => {
+    if (!rootPath) return;
+
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+
+    const isFileTool = (tool: string) =>
+      tool === "write" ||
+      tool === "write_file" ||
+      tool === "create_file" ||
+      tool === "delete" ||
+      tool === "delete_file";
+
+    const scheduleRefresh = () => {
+      if (refreshTimerRef.current) {
+        globalThis.clearTimeout(refreshTimerRef.current);
+      }
+      refreshTimerRef.current = globalThis.setTimeout(() => {
+        if (disposed) return;
+        void refreshTree(rootPath);
+      }, 150);
+    };
+
+    const start = async () => {
+      try {
+        unlisten = await onSidecarEvent((event) => {
+          if (event.type === "file_edited") {
+            scheduleRefresh();
+            return;
+          }
+          if (event.type === "tool_end" && isFileTool(event.tool)) {
+            scheduleRefresh();
+            return;
+          }
+        });
+      } catch (e) {
+        console.warn("[FileBrowser] Failed to listen for sidecar file events:", e);
+      }
+    };
+
+    void start();
+
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
     };
   }, [rootPath, refreshTree]);
 
