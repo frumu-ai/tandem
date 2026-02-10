@@ -20,6 +20,7 @@ mod sidecar_manager;
 mod skill_templates;
 mod skills;
 mod state;
+mod tool_policy;
 mod tool_proxy;
 mod vault;
 

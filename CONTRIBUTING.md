@@ -63,6 +63,34 @@ docs: update README installation steps
 refactor: extract tool proxy into separate module
 ```
 
+## Python Packs Standard
+
+Some Starter Packs include Python templates. To keep installs safe and reproducible, Tandem enforces a workspace-scoped venv at `.opencode/.venv`.
+
+Guidelines:
+
+- Do not recommend global `pip install ...` in pack docs.
+- For packs that include Python templates:
+  - Prefer shipping a `requirements.txt` when dependencies are stable and modest.
+  - Document install/run commands using the workspace venv.
+- Keep dependencies minimal. Avoid pinning unless necessary. If pinning is required, explain why in the PR description.
+
+Venv-safe commands to document:
+
+### Windows
+
+```bash
+cd "<workspace>"
+.opencode\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### macOS / Linux
+
+```bash
+cd "<workspace>"
+.opencode/.venv/bin/python3 -m pip install -r requirements.txt
+```
+
 ### Code Style
 
 **TypeScript/React:**

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Message, type MessageProps } from "./Message";
 import { ChatInput, type FileAttachment } from "./ChatInput";
 import {
@@ -133,6 +134,24 @@ export function Chat({
   useEffect(() => {
     onGeneratingChange?.(isGenerating);
   }, [isGenerating, onGeneratingChange]);
+
+  // If Python is blocked due to missing workspace venv, pop the wizard automatically.
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    listen<{ reason: string; workspace_path: string | null }>("python-setup-required", (event) => {
+      console.warn("[PythonWizard] setup required:", event.payload?.reason);
+      setShowPythonWizard(true);
+    })
+      .then((u) => {
+        unlisten = u;
+      })
+      .catch((e) => {
+        console.error("[PythonWizard] failed to attach listener:", e);
+      });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
   const [sidecarStatus, setSidecarStatus] = useState<SidecarState>("stopped");
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);

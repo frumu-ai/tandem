@@ -90,6 +90,7 @@ pub fn list_packs() -> Vec<PackMeta> {
                 "finance".to_string(),
                 "analysis".to_string(),
                 "reporting".to_string(),
+                "python".to_string(),
             ],
         },
         PackMeta {
@@ -318,6 +319,19 @@ pub fn install_pack(
                 "Failed to copy PROMPTS.md {:?} -> {:?}: {}",
                 prompts_source,
                 prompts_dest,
+                e
+            );
+        }
+    }
+
+    let contributing_source = pack_docs_root.join(pack_id).join("CONTRIBUTING.md");
+    if contributing_source.exists() {
+        let contributing_dest = install_dir.join("CONTRIBUTING.md");
+        if let Err(e) = fs::copy(&contributing_source, &contributing_dest) {
+            tracing::warn!(
+                "Failed to copy CONTRIBUTING.md {:?} -> {:?}: {}",
+                contributing_source,
+                contributing_dest,
                 e
             );
         }

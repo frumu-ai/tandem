@@ -19,6 +19,7 @@ use crate::sidecar::{
 };
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
+use crate::tool_policy;
 use crate::tool_proxy::{FileSnapshot, JournalEntry, OperationStatus, UndoAction};
 use crate::vault::{self, EncryptedVaultKey, VaultStatus};
 use crate::VaultState;
@@ -2673,6 +2674,7 @@ pub fn snapshot_file_for_message(
 /// Approve a pending tool execution
 #[tauri::command]
 pub async fn approve_tool(
+    app: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     tool_call_id: String,
@@ -2690,33 +2692,28 @@ pub async fn approve_tool(
     // Strict Python venv enforcement for AI terminal-like tools.
     // Goal: prevent global pip installs and python runs outside `.opencode/.venv`.
     if let (Some(tool_name), Some(args_val)) = (tool.clone(), args.clone()) {
-        let is_terminal_tool = matches!(
-            tool_name.as_str(),
-            "bash" | "shell" | "run_command" | "terminal" | "cmd"
-        );
+        let ws = state
+            .get_workspace_path()
+            .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
 
-        if is_terminal_tool {
-            let command = args_val
-                .get("command")
-                .and_then(|v| v.as_str())
-                .or_else(|| args_val.get("cmd").and_then(|v| v.as_str()))
-                .or_else(|| args_val.get("script").and_then(|v| v.as_str()));
+        if let Some(msg) = tool_policy::python_policy_violation(&ws, tool_name.as_str(), &args_val)
+        {
+            // Best-effort: notify UI to open the wizard immediately.
+            let _ = app.emit(
+                "python-setup-required",
+                serde_json::json!({
+                    "reason": msg,
+                    "workspace_path": ws.to_string_lossy().to_string()
+                }),
+            );
 
-            if let Some(command) = command {
-                let ws = state
-                    .get_workspace_path()
-                    .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
-
-                if let Some(msg) = python_env::check_terminal_command_policy(&ws, command) {
-                    tracing::info!(
-                        "[python_policy] Denying terminal command (tool={}): {}",
-                        tool_name,
-                        command.replace('\n', " ")
-                    );
-                    let _ = state.sidecar.deny_tool(&session_id, &tool_call_id).await;
-                    return Err(TandemError::PermissionDenied(msg));
-                }
-            }
+            tracing::info!(
+                "[python_policy] Denying terminal tool (tool={}): args={}",
+                tool_name,
+                args_val
+            );
+            let _ = state.sidecar.deny_tool(&session_id, &tool_call_id).await;
+            return Err(TandemError::PermissionDenied(msg));
         }
     }
 
@@ -2896,6 +2893,7 @@ pub async fn reject_question(state: State<'_, AppState>, request_id: String) -> 
 /// Stage a tool operation for batch execution
 #[tauri::command]
 pub async fn stage_tool_operation(
+    app: AppHandle,
     state: State<'_, AppState>,
     request_id: String,
     session_id: String,
@@ -2923,6 +2921,21 @@ pub async fn stage_tool_operation(
 
     // If auto-approved, execute immediately instead of staging
     if should_auto_approve {
+        // Defense in depth: ensure any terminal tool can't bypass python policy via auto-approve.
+        let ws = state
+            .get_workspace_path()
+            .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+        if let Some(msg) = tool_policy::python_policy_violation(&ws, tool.as_str(), &args) {
+            let _ = app.emit(
+                "python-setup-required",
+                serde_json::json!({
+                    "reason": msg,
+                    "workspace_path": ws.to_string_lossy().to_string()
+                }),
+            );
+            return Err(TandemError::PermissionDenied(msg));
+        }
+
         if let Some(path) = path_str.as_ref() {
             tracing::info!("Auto-approving plan file operation: {} on {}", tool, path);
         }
@@ -3057,11 +3070,37 @@ pub fn get_staged_operations(
 
 /// Execute all staged operations in sequence
 #[tauri::command]
-pub async fn execute_staged_plan(state: State<'_, AppState>) -> Result<Vec<String>> {
+pub async fn execute_staged_plan(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>> {
     let operations = state.staging_store.get_all();
     let mut executed_ids = Vec::new();
 
     tracing::info!("Executing staged plan with {} operations", operations.len());
+
+    // Preflight: enforce strict python policy across all staged operations before approving any.
+    let ws = state
+        .get_workspace_path()
+        .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+    for op in &operations {
+        if let Some(msg) = tool_policy::python_policy_violation(&ws, op.tool.as_str(), &op.args) {
+            tracing::info!(
+                "[python_policy] Blocking staged plan execution due to terminal op {} ({})",
+                op.id,
+                op.tool
+            );
+            // Best-effort: notify UI to open the wizard immediately.
+            let _ = app.emit(
+                "python-setup-required",
+                serde_json::json!({
+                    "reason": msg,
+                    "workspace_path": ws.to_string_lossy().to_string()
+                }),
+            );
+            return Err(TandemError::PermissionDenied(msg));
+        }
+    }
 
     for op in operations {
         tracing::info!("Executing staged operation: {} ({})", op.id, op.tool);
@@ -3366,6 +3405,35 @@ You can create rich, interactive HTML files that render directly in Tandem's pre
                         "structure": "Single file, self-contained"
                     }),
                     example: "Use the `write` tool to create `quarterly_report.html` with Tailwind and Chart.js code.".to_string(),
+                });
+            }
+            "python" => {
+                guidance.push(ToolGuidance {
+                    category: "python".to_string(),
+                    instructions: r#"# Workspace Python (Venv-Only)
+
+Tandem enforces a workspace-scoped Python virtual environment at `.opencode/.venv`.
+
+## Rules (STRICT)
+
+1. Do NOT run `python`, `python3`, `py`, or `pip install` directly.
+2. If you need Python packages, instruct the user to open **Python Setup (Workspace Venv)** and click **Create venv in workspace**.
+3. Only run Python via the workspace venv interpreter, e.g.:
+   - Windows: `.opencode\.venv\Scripts\python.exe ...`
+   - macOS/Linux: `.opencode/.venv/bin/python3 ...`
+4. Install dependencies using:
+   - `-m pip install -r requirements.txt` (preferred) or `-m pip install <pkgs>`
+
+## If the venv is missing
+
+Explain that Tandem will block Python until the venv exists, and the wizard may open automatically when a blocked command is attempted.
+"#.to_string(),
+                    json_schema: serde_json::json!({
+                        "venv_root": ".opencode/.venv",
+                        "allowed_python": "workspace venv interpreter only",
+                        "install": "venv python -m pip install -r requirements.txt"
+                    }),
+                    example: "Use `.opencode/.venv/bin/python3 -m pip install -r requirements.txt` then run `.opencode/.venv/bin/python3 script.py`.".to_string(),
                 });
             }
             "research" => {
