@@ -1,3 +1,16 @@
+# Tandem v0.2.14 Release Notes
+
+## Highlights
+
+- **Theme Background Art Pass**: Cosmic Glass (starfield + galaxy glow), Pink Pony (thick arcing rainbow), and Zen Dusk (minimalist ink + sage haze).
+- **Custom Background Image Overlay**: Choose a background image (copied into app data) and overlay it on top of the active theme, with an opacity slider in Settings.
+- **Settings/About/Extensions Restored**: Fix a regression where Settings/About/Extensions views would not appear.
+- **Document Text Extraction (Rust)**: PDF/DOCX/PPTX/XLSX (and more) can now be extracted to plain text for preview and for attaching to skills/chats, without requiring Python.
+- **Python Venv Wizard + Safety Enforcement**: In-app wizard creates `.opencode/.venv` per workspace and installs dependencies into it; AI tool calls are blocked from running global `pip install` or `python` outside the venv.
+- **Startup Session Restore Fix**: Restored sessions now open reliably on startup (no need to reselect a session).
+
+---
+
 # Tandem v0.2.13 Release Notes
 
 ## Highlights
@@ -7,8 +20,6 @@
 - **Skills UX Improvements**: Clearer install/manage experience (runtime note, installed-skill counts, and better discoverability of deletion).
 - **Packs Page Cleanup**: Packs page now shows packs only (no starter skills section) and surfaces the runtime note at the top.
 - **Diagnostics Polishing**: Logs viewer improvements (fullscreen + copy feedback) and fix invalid bundled skill template frontmatter so templates aren’t skipped.
-- **Document Text Extraction (Rust)**: PDF/DOCX/PPTX/XLSX (and more) can now be extracted to plain text for preview and for attaching to skills/chats, without requiring Python.
-- **Python Venv Wizard + Safety Enforcement**: A new in-app wizard creates `.opencode/.venv` per workspace and installs requirements into it; AI tool calls are blocked from running global `pip install` or `python` outside the venv.
 - **Dev Quality of Life**: In `tauri dev`, starter skill templates are loaded from `src-tauri/resources/skill-templates/` so newly added templates appear immediately.
 
 ---

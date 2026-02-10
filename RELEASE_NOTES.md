@@ -2,21 +2,26 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.2.13 (Unreleased)
+## v0.2.14 (Unreleased)
 
 - Themes: Cosmic Glass now has a denser starfield + galaxy glow background.
 - Themes: Pink Pony now features a thick, arcing rainbow background.
 - Themes: Zen Dusk now uses a minimalist ink + sage haze background.
+- Backgrounds: Add an optional custom background image overlay (copied into app data) with an opacity slider in Settings.
 - UI: Gradient theme backgrounds now render consistently across main views and overlays (fixes occasional overlay "shine through").
 - Sessions: Fix restored sessions appearing selected but not opening until reselecting the folder (defer history load until the sidecar is running; allow re-clicking the selected session to reload).
+- Files: Add Rust-based text extraction for common document formats (PDF, DOCX, PPTX, XLSX/XLS/ODS/XLSB, RTF) via `read_file_text`, so these attachments can be previewed and included as usable text in skills/chats without requiring Python.
+- Python: Add a workspace-scoped venv wizard (creates `.opencode/.venv` and installs requirements into it) and enforce venv-only python/pip usage for AI tool calls to prevent global installs.
+- Navigation: Restore Settings/About/Extensions views after a regression where they would not appear.
+- Packs: Style runtime requirement pills consistently.
+
+## v0.2.13 (2026-02-10)
+
 - Skills: Add two new bundled starter skills: `brainstorming` and `development-estimation`.
 - Skills: Show runtime requirement pills on starter skill cards via optional `requires: [...]` YAML frontmatter.
 - Skills: Improve Skills install/manage UX (runtime note, clearer installed-skill counts, and jump-to-installed).
 - Packs: Packs page now shows packs only (remove starter skills section) and moves the runtime note to the top.
 - Diagnostics: Improve Logs viewer UX (fullscreen + copy feedback); fix an invalid bundled skill template frontmatter that was being skipped.
-- Files: Folder entries no longer show `NaN`/`undefined` sizes in the file browser (directory size display removed).
-- Files: Add Rust-based text extraction for common document formats (PDF, DOCX, PPTX, XLSX/XLS/ODS/XLSB, RTF) via `read_file_text`, so these attachments can be previewed and included as usable text in skills/chats without requiring Python.
-- Python: Add a workspace-scoped venv wizard (creates `.opencode/.venv` and installs requirements into it) and enforce venv-only python/pip usage for AI tool calls to prevent global installs.
 - Dev: In `tauri dev`, load starter skill templates from `src-tauri/resources/skill-templates/` so newly added templates appear immediately.
 - Docs: Add a developer guide for adding skills in `CONTRIBUTING.md`.
 

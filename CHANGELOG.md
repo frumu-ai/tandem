@@ -7,29 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.13] - Unreleased
+## [0.2.14] - Unreleased
 
 ### Added
 
 - **Themes: Background Art Pass**: Add richer background art for Cosmic Glass (starfield + galaxy glow), Pink Pony (thick arcing rainbow), and Zen Dusk (minimalist ink + sage haze).
 - **Theme Background Support**: Add an `app-background` utility class so gradient theme backgrounds render correctly throughout the app (not just as a solid `background-color`).
-- **Skill Templates: New Starter Skills**: Add two new bundled starter skills: `brainstorming` and `development-estimation`.
-- **Skill Templates: Runtime Pills**: Starter skill cards now show optional runtime hints (e.g. Python/Node/Bash) via `requires: [...]` YAML frontmatter.
-- **Skills UI: Installed Skill Discoverability**: Add clearer install/manage UX (runtime note, counts for folder vs global installs, and a jump-to-installed action).
+- **Custom Background Image Overlay**: Allow users to choose a background image (copied into app data) and overlay it on top of the active theme, with an opacity slider in Settings.
 - **File Text Extraction (Rust)**: Add best-effort, cross-platform text extraction for common document formats (PDF, DOCX, PPTX, XLSX/XLS/ODS/XLSB, RTF) via the `read_file_text` command so attachments can be used by skills without requiring Python.
 - **Python Workspace Venv Wizard**: Add a cross-platform in-app Python setup wizard to create a workspace-scoped venv at `.opencode/.venv` and install dependencies into it (never global).
+- **Docs: Theme Contribution Guide**: Add guidance for creating and iterating on theme backgrounds.
 
 ### Fixed
 
-- **Gradient Themes in Main Views**: Fix theme gradients not appearing in main app surfaces by avoiding Tailwind `bg-background` (background-color) for gradient-based theme backgrounds.
-- **Overlay Shine-Through**: Fix Settings/overlays occasionally appearing translucent when `bg-background/..` was applied to gradient themes.
+- **Settings/About/Extensions Navigation**: Restore Settings/About/Extensions panels after a regression where these views would not appear.
+- **Overlay Layering**: Ensure theme/background layers render consistently across main views (chat + settings) without unintended translucency.
 - **Startup Session Restore**: Fix restored sessions appearing selected but not opening until reselecting the folder (defer history load until the sidecar is running; allow re-clicking the selected session to reload).
+
+### Changed
+
+- **Packs UI**: Style runtime requirement pills consistently.
+
+## [0.2.13] - 2026-02-10
+
+### Added
+
+- **Skill Templates: New Starter Skills**: Add two new bundled starter skills: `brainstorming` and `development-estimation`.
+- **Skill Templates: Runtime Pills**: Starter skill cards now show optional runtime hints (e.g. Python/Node/Bash) via `requires: [...]` YAML frontmatter.
+- **Skills UI: Installed Skill Discoverability**: Add clearer install/manage UX (runtime note, counts for folder vs global installs, and a jump-to-installed action).
+
+### Fixed
+
 - **Dev Skill Template Discovery**: In `tauri dev`, load starter skill templates from `src-tauri/resources/skill-templates/` so newly added templates appear immediately (avoids stale `target/**/resources/**` copies).
 - **Logs Viewer UX**: Improve log viewer usability (fullscreen mode, and copy feedback).
 - **Skill Template Parsing**: Fix invalid bundled skill template frontmatter (missing `name`) so it is not skipped.
-- **File Browser**: Hide directory sizes in the file tree to avoid showing `NaN`/`undefined` for folders (directory sizes are not computed).
-- **File Attachments (Docs/PDFs)**: When attaching common document types, extract and embed plain text into the message instead of treating them as opaque binary blobs.
-- **Python Tool Safety**: Block AI attempts to run `pip install` or `python` outside the workspace venv to prevent global package installs.
 
 ### Changed
 
@@ -413,7 +424,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.2.13...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.2.14...HEAD
+[0.2.14]: https://github.com/frumu-ai/tandem/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/frumu-ai/tandem/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/frumu-ai/tandem/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/frumu-ai/tandem/compare/v0.2.10...v0.2.11
