@@ -2,7 +2,11 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.2.15 (Unreleased)
+## v0.2.16 (Unreleased)
+
+- Updates: Fix the in-app update prompt layout being constrained/squished due to theme background layering CSS.
+
+## v0.2.15 (2026-02-10)
 
 - Backgrounds: Fix custom background images failing to load in some packaged builds by falling back to an in-memory `data:` URL when the `asset:` URL fails.
 
