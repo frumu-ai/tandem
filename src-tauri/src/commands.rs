@@ -1520,42 +1520,41 @@ pub async fn create_session(
         resolve_default_provider_and_model(&config)
     };
 
-    let permission = if allow_all_tools.unwrap_or(false) {
-        Some(vec![crate::sidecar::PermissionRule {
-            permission: "*".to_string(),
+    // IMPORTANT:
+    // We intentionally do NOT send `permission="*"` allow to OpenCode.
+    // Even when the UI toggle "Allow all tools" is enabled, the frontend auto-approves
+    // permission prompts, and we still want the approve/deny hook to run so Tandem can
+    // enforce safety policy (e.g. Python venv-only installs).
+    //
+    // Default safe tools allowed even if "Allow all" is off.
+    let _allow_all = allow_all_tools.unwrap_or(false);
+    let permission = Some(vec![
+        crate::sidecar::PermissionRule {
+            permission: "ls".to_string(),
             pattern: "*".to_string(),
             action: "allow".to_string(),
-        }])
-    } else {
-        // Default safe tools allowed even if "Allow all" is off
-        Some(vec![
-            crate::sidecar::PermissionRule {
-                permission: "ls".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            crate::sidecar::PermissionRule {
-                permission: "read".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            crate::sidecar::PermissionRule {
-                permission: "todowrite".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            crate::sidecar::PermissionRule {
-                permission: "websearch".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            crate::sidecar::PermissionRule {
-                permission: "webfetch".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-        ])
-    };
+        },
+        crate::sidecar::PermissionRule {
+            permission: "read".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+        crate::sidecar::PermissionRule {
+            permission: "todowrite".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+        crate::sidecar::PermissionRule {
+            permission: "websearch".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+        crate::sidecar::PermissionRule {
+            permission: "webfetch".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        },
+    ]);
 
     let request = CreateSessionRequest {
         parent_id: None,
@@ -2647,7 +2646,13 @@ pub async fn approve_tool(
         );
 
         if is_terminal_tool {
-            if let Some(command) = args_val.get("command").and_then(|v| v.as_str()) {
+            let command = args_val
+                .get("command")
+                .and_then(|v| v.as_str())
+                .or_else(|| args_val.get("cmd").and_then(|v| v.as_str()))
+                .or_else(|| args_val.get("script").and_then(|v| v.as_str()));
+
+            if let Some(command) = command {
                 let ws = state
                     .get_workspace_path()
                     .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
@@ -3351,31 +3356,6 @@ Use this capability for finding information, verifying facts, or gathering data 
             "spreadsheets" => {
                 // Future: Table/CSV guidance
                 tracing::debug!("Spreadsheets tool category not yet implemented");
-            }
-            "terminal" => {
-                guidance.push(ToolGuidance {
-                    category: "terminal".to_string(),
-                    instructions: r#"# Terminal / Shell Safety (Python + pip)
-
-You may run shell commands, but **never install Python packages globally**.
-
-## Rules (STRICT)
-1. **Never** run `pip install ...` or `python -m pip install ...` outside a workspace venv.
-2. Use the workspace venv at: `.opencode/.venv`
-3. Always invoke pip via the venv interpreter:
-   - Create venv: `python -m venv .opencode/.venv`
-   - Install: `".opencode/.venv/Scripts/python.exe" -m pip install -r requirements.txt` (Windows)
-   - Install: `".opencode/.venv/bin/python3" -m pip install -r requirements.txt` (macOS/Linux)
-
-If the venv doesn't exist yet, instruct the user to use Tandem's **Python setup wizard** (Packs/Skills page), or create the venv with `python -m venv .opencode/.venv`.
-"#.to_string(),
-                    json_schema: serde_json::json!({
-                        "venv_root": ".opencode/.venv",
-                        "install_style": "venv-only",
-                        "blocked": ["global pip installs", "python outside venv"]
-                    }),
-                    example: "Install dependencies safely: `.opencode/.venv/bin/python3 -m pip install -r requirements.txt`".to_string(),
-                });
             }
             _ => {
                 tracing::debug!("Unknown tool category: {}", category);
