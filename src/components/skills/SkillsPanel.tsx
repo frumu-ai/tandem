@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { SkillCard } from "./SkillCard";
@@ -28,6 +28,7 @@ export function SkillsPanel({
   const [query, setQuery] = useState("");
   const [content, setContent] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const installedRef = useRef<HTMLDivElement | null>(null);
 
   // Default to global if no project path available
   const [location, setLocation] = useState<SkillLocation>(projectPath ? "project" : "global");
@@ -131,6 +132,9 @@ Instructions for the AI...
     });
   }, [skills, queryLower]);
 
+  const allProjectSkills = skills.filter((s) => s.location === "project");
+  const allGlobalSkills = skills.filter((s) => s.location === "global");
+
   const projectSkills = filteredSkills.filter((s) => s.location === "project");
   const globalSkills = filteredSkills.filter((s) => s.location === "global");
 
@@ -183,6 +187,16 @@ Instructions for the AI...
         </label>
       </div>
 
+      {/* Runtime note */}
+      <div className="rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
+        <p className="font-medium text-text">Runtime note</p>
+        <p className="mt-1">
+          Some skills and packs may ask Tandem to run local tools (Python, Node, bash, etc.). Tandem
+          does not bundle these runtimes. Installing a skill does not run anything by itself; a
+          runtime is only needed if a skill instructs the agent to execute commands.
+        </p>
+      </div>
+
       {/* Search */}
       <div className="max-w-md">
         <Input
@@ -190,6 +204,28 @@ Instructions for the AI...
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search skills (youtube, writing, data...)"
         />
+      </div>
+
+      {/* Installed skills summary */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface-elevated/50 p-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-text">Installed skills</p>
+          <p className="mt-0.5 text-xs text-text-muted">
+            Folder: {allProjectSkills.length} • Global: {allGlobalSkills.length} • Delete with the
+            trash icon.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() =>
+            installedRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+          }
+          disabled={skills.length === 0}
+          className="h-8"
+        >
+          Jump to installed
+        </Button>
       </div>
 
       {/* Starter templates */}
@@ -269,7 +305,7 @@ Instructions for the AI...
       </div>
 
       {/* Installed skills */}
-      <div className="space-y-3">
+      <div ref={installedRef} className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium text-text">
             Installed skills
@@ -281,9 +317,15 @@ Instructions for the AI...
           <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
             <p className="text-sm text-text-muted">
               {skills.length === 0
-                ? "No skills detected in `.opencode/skill/`."
+                ? "No installed skills detected (folder or global)."
                 : "No installed skills match your search."}
             </p>
+            {skills.length === 0 && (
+              <p className="mt-2 text-xs text-text-subtle">
+                Install a starter skill above, or paste a SKILL.md in Advanced. You can remove
+                skills later with the trash icon.
+              </p>
+            )}
           </div>
         ) : (
           <div className="space-y-3">

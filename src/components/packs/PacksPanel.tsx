@@ -305,6 +305,16 @@ export function PacksPanel({
             </div>
           </div>
 
+          <div className="rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
+            <p className="font-medium text-text">Runtime note</p>
+            <p className="mt-1">
+              Some skills and packs may ask Tandem to run local tools (Python, Node, bash, etc.).
+              Tandem does not bundle these runtimes. Use{" "}
+              <span className="text-text">Manage Skills</span> to view what’s installed and delete
+              skills (trash icon) if needed.
+            </p>
+          </div>
+
           {templatesLoading ? (
             <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
               Loading starter skills...
