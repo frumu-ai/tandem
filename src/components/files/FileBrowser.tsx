@@ -14,6 +14,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   readDirectory,
   startFileTreeWatcher,
@@ -139,7 +140,8 @@ export function FileBrowser({ rootPath, onFileSelect, selectedPath }: FileBrowse
 
     const start = async () => {
       try {
-        await startFileTreeWatcher(rootPath);
+        const label = getCurrentWebviewWindow().label;
+        await startFileTreeWatcher(label, rootPath);
       } catch (e) {
         console.warn("[FileBrowser] Failed to start watcher:", e);
       }

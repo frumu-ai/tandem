@@ -823,8 +823,8 @@ export interface FileTreeChangedPayload {
   paths: string[];
 }
 
-export async function startFileTreeWatcher(rootPath: string): Promise<void> {
-  return invoke("start_file_tree_watcher", { rootPath });
+export async function startFileTreeWatcher(windowLabel: string, rootPath: string): Promise<void> {
+  return invoke("start_file_tree_watcher", { windowLabel, rootPath });
 }
 
 export async function stopFileTreeWatcher(): Promise<void> {

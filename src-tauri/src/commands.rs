@@ -1510,8 +1510,13 @@ pub async fn get_sidecar_status(state: State<'_, AppState>) -> Result<SidecarSta
 pub fn start_file_tree_watcher(
     app: AppHandle,
     state: State<'_, AppState>,
+    window_label: String,
     root_path: String,
 ) -> Result<()> {
+    let window = app
+        .get_webview_window(&window_label)
+        .ok_or_else(|| TandemError::InvalidConfig(format!("Window not found: {}", window_label)))?;
+
     let root = PathBuf::from(&root_path);
     if !state.is_path_allowed(&root) {
         return Err(TandemError::PermissionDenied(format!(
@@ -1526,7 +1531,7 @@ pub fn start_file_tree_watcher(
         )));
     }
 
-    let watcher = crate::file_watcher::FileTreeWatcher::new(&root, app)
+    let watcher = crate::file_watcher::FileTreeWatcher::new(&root, app, window)
         .map_err(|e| TandemError::InvalidConfig(format!("Failed to start file watcher: {}", e)))?;
 
     let mut guard = state

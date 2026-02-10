@@ -2,7 +2,7 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, WebviewWindow};
 
 /// Watches the `.opencode/plans/` directory for file changes and emits events to the frontend
 pub struct PlanWatcher {
@@ -68,7 +68,7 @@ pub struct FileTreeWatcher {
 }
 
 impl FileTreeWatcher {
-    pub fn new(root: &Path, app: AppHandle) -> Result<Self, notify::Error> {
+    pub fn new(root: &Path, app: AppHandle, window: WebviewWindow) -> Result<Self, notify::Error> {
         let (tx, rx): (
             std::sync::mpsc::Sender<Result<Event, notify::Error>>,
             Receiver<Result<Event, notify::Error>>,
@@ -78,6 +78,7 @@ impl FileTreeWatcher {
         watcher.watch(root, RecursiveMode::Recursive)?;
 
         let app_clone = app.clone();
+        let window_clone = window.clone();
         let root_str = root.to_string_lossy().to_string();
         std::thread::spawn(move || {
             use std::collections::HashSet;
@@ -126,8 +127,11 @@ impl FileTreeWatcher {
                     "paths": pending.into_iter().collect::<Vec<_>>(),
                 });
 
-                if let Err(e) = app_clone.emit("file-tree-changed", payload) {
-                    tracing::error!("[FileTreeWatcher] Failed to emit event: {}", e);
+                // Emit directly to the active window; AppHandle::emit can be missed depending on scope.
+                if let Err(e) = window_clone.emit("file-tree-changed", payload.clone()) {
+                    tracing::error!("[FileTreeWatcher] Failed to emit window event: {}", e);
+                    // Fallback attempt: app-wide emit for older listeners (best-effort).
+                    let _ = app_clone.emit("file-tree-changed", payload);
                 }
             }
         });
