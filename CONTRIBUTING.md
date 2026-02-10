@@ -108,13 +108,19 @@ cargo test       # Run tests
 ```
 tandem/
 ├── src/                    # React frontend
+│   ├── assets/             # Static assets
 │   ├── components/         # UI components
-│   │   ├── ui/            # Base components (Button, Input, etc.)
-│   │   ├── chat/          # Chat interface
-│   │   ├── settings/      # Settings panel
-│   │   └── permissions/   # Permission dialogs
-│   ├── hooks/             # React hooks
-│   └── lib/               # Utilities and Tauri bindings
+│   │   ├── ui/             # Base components (Button, Input, etc.)
+│   │   ├── chat/           # Chat interface
+│   │   ├── settings/       # Settings panel
+│   │   ├── permissions/    # Permission dialogs
+│   │   ├── orchestrate/    # Multi-agent orchestration UI
+│   │   ├── ralph/          # Ralph loop UI
+│   │   └── skills/         # Skills management UI
+│   ├── contexts/           # React contexts and providers
+│   ├── hooks/              # React hooks
+│   ├── lib/                # Utilities and Tauri bindings
+│   └── types/              # Shared TypeScript types
 ├── src-tauri/             # Rust backend
 │   ├── src/
 │   │   ├── commands.rs    # Tauri IPC commands
@@ -122,6 +128,13 @@ tandem/
 │   │   ├── tool_proxy.rs  # File operation proxy
 │   │   ├── llm_router.rs  # Provider routing
 │   │   └── keystore.rs    # Secure storage
+│   │   ├── memory/         # Vector memory and retrieval
+│   │   ├── orchestrator/   # Multi-agent orchestration logic
+│   │   ├── packs.rs        # Workspace pack handling
+│   │   ├── presentation/   # PPTX export pipeline
+│   │   ├── ralph/          # Ralph loop implementation
+│   │   ├── skill_templates.rs # Skill template library
+│   │   └── skills.rs       # Skills registry and loader
 │   └── capabilities/      # Permission configuration
 └── scripts/               # Build scripts
 ```
@@ -141,6 +154,8 @@ tandem/
 - **Testing** - Increase test coverage
 - **Performance** - Optimize speed and resource usage
 - **Accessibility** - Make Tandem usable by everyone
+- **Orchestration & Skills** - Improve multi-agent flows and skill templates
+- **Memory & Artifacts** - Enhance vector memory, reports, and presentation outputs
 
 ## Questions?
 
