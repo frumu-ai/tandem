@@ -5,15 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/utils";
-import {
-  installPack,
-  installSkillTemplate,
-  listPacks,
-  listSkillTemplates,
-  type PackMeta,
-  type SkillLocation,
-  type SkillTemplateInfo,
-} from "@/lib/tauri";
+import { installPack, listPacks, type PackMeta } from "@/lib/tauri";
 
 interface PacksPanelProps {
   activeProjectPath?: string;
@@ -22,40 +14,17 @@ interface PacksPanelProps {
 }
 
 export function PacksPanel({
-  activeProjectPath,
+  activeProjectPath: _activeProjectPath,
   onOpenInstalledPack,
   onOpenSkills,
 }: PacksPanelProps) {
-  const runtimePillClass = (runtime: string) => {
-    switch (runtime.toLowerCase()) {
-      case "python":
-        return "border-yellow-500/20 bg-yellow-500/10 text-yellow-500";
-      case "node":
-        return "border-emerald-500/20 bg-emerald-500/10 text-emerald-200";
-      case "bash":
-        return "border-sky-500/20 bg-sky-500/10 text-sky-200";
-      default:
-        return "border-border bg-surface text-text-subtle";
-    }
-  };
-
   const [packs, setPacks] = useState<PackMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
-  // Starter skills (templates)
-  const [templates, setTemplates] = useState<SkillTemplateInfo[]>([]);
-  const [templatesLoading, setTemplatesLoading] = useState(false);
-  const [installingTemplateId, setInstallingTemplateId] = useState<string | null>(null);
   const [showPackInfo, setShowPackInfo] = useState(false);
-  const [skillLocation, setSkillLocation] = useState<SkillLocation>(
-    activeProjectPath ? "project" : "global"
-  );
-  const projectName = activeProjectPath
-    ? activeProjectPath.split(/[\\/]/).pop() || "Active Folder"
-    : null;
 
   useEffect(() => {
     (async () => {
@@ -71,25 +40,6 @@ export function PacksPanel({
     })();
   }, []);
 
-  useEffect(() => {
-    if (!activeProjectPath && skillLocation === "project") {
-      setSkillLocation("global");
-    }
-  }, [activeProjectPath, skillLocation]);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        setTemplatesLoading(true);
-        setTemplates(await listSkillTemplates());
-      } catch (e) {
-        console.warn("Failed to load starter skills:", e);
-      } finally {
-        setTemplatesLoading(false);
-      }
-    })();
-  }, []);
-
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return packs;
@@ -100,20 +50,6 @@ export function PacksPanel({
       return haystack.includes(q);
     });
   }, [packs, query]);
-
-  const handleInstallTemplate = async (templateId: string) => {
-    try {
-      setInstallingTemplateId(templateId);
-      setError(null);
-      await installSkillTemplate(templateId, skillLocation);
-      // Installing a skill is "silent success"; users can see it under Extensions -> Skills.
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg || "Failed to install starter skill");
-    } finally {
-      setInstallingTemplateId(null);
-    }
-  };
 
   const handleInstall = async (packId: string) => {
     try {
@@ -201,6 +137,27 @@ export function PacksPanel({
           </div>
         </motion.div>
 
+        <div className="mb-6 rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
+          <p className="font-medium text-text">Runtime note</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-text-subtle">Some packs may require:</span>
+            <span className="rounded-full border border-yellow-500/20 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-500">
+              Python
+            </span>
+            <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-200">
+              Node
+            </span>
+            <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-xs text-sky-200">
+              Bash
+            </span>
+          </div>
+          <p className="mt-1">
+            Packs can include scripts and local tooling. Tandem does not bundle these runtimes. If a
+            pack asks you to run a tool you don’t have, install it locally or choose a different
+            pack.
+          </p>
+        </div>
+
         {error && (
           <div className="mb-6 rounded-lg border border-error/20 bg-error/10 p-3 text-sm text-error">
             {error}
@@ -270,127 +227,6 @@ export function PacksPanel({
             })}
           </div>
         )}
-
-        <div className="mt-10 space-y-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-text terminal-text">Starter skills</h2>
-              <p className="text-sm text-text-muted">
-                Add a few offline “capabilities” that help Tandem help you.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {activeProjectPath ? (
-                <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-2 text-xs text-text-muted">
-                  <span>Install to:</span>
-                  <button
-                    type="button"
-                    onClick={() => setSkillLocation("project")}
-                    className={cn(
-                      "rounded-md px-2 py-1 transition-colors",
-                      skillLocation === "project"
-                        ? "bg-primary/20 text-primary"
-                        : "hover:bg-surface"
-                    )}
-                  >
-                    Folder ({projectName})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSkillLocation("global")}
-                    className={cn(
-                      "rounded-md px-2 py-1 transition-colors",
-                      skillLocation === "global" ? "bg-primary/20 text-primary" : "hover:bg-surface"
-                    )}
-                  >
-                    Global
-                  </button>
-                </div>
-              ) : (
-                <div className="text-xs text-text-subtle">Install to: Global</div>
-              )}
-
-              {onOpenSkills && (
-                <Button variant="secondary" size="sm" onClick={onOpenSkills} className="h-8">
-                  Manage Skills
-                </Button>
-              )}
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
-            <p className="font-medium text-text">Runtime note</p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <span className="text-[11px] text-text-subtle">May require:</span>
-              <span className="rounded-full border border-yellow-500/20 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-500">
-                Python
-              </span>
-              <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-200">
-                Node
-              </span>
-              <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-xs text-sky-200">
-                Bash
-              </span>
-            </div>
-            <p className="mt-1">
-              Some skills and packs may ask Tandem to run local tools (Python, Node, bash, etc.).
-              Tandem does not bundle these runtimes. Use{" "}
-              <span className="text-text">Manage Skills</span> to view what’s installed and delete
-              skills (trash icon) if needed.
-            </p>
-          </div>
-
-          {templatesLoading ? (
-            <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
-              Loading starter skills...
-            </div>
-          ) : templates.length === 0 ? (
-            <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
-              No starter skills found.
-            </div>
-          ) : (
-            <div className="grid gap-4 md:grid-cols-2">
-              {templates.map((t) => (
-                <div
-                  key={t.id}
-                  className="glass border-glass relative ring-1 ring-white/5 p-5 pb-12"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-text">{t.name}</p>
-                      <p className="mt-1 text-xs text-text-muted">{t.description}</p>
-                    </div>
-                    <Button
-                      size="sm"
-                      onClick={() => handleInstallTemplate(t.id)}
-                      disabled={!!installingTemplateId}
-                    >
-                      {installingTemplateId === t.id ? "Installing..." : "Install"}
-                    </Button>
-                  </div>
-
-                  {t.requires && t.requires.length > 0 && (
-                    <div className="absolute bottom-4 right-4 flex flex-wrap items-center justify-end gap-1">
-                      {t.requires.slice(0, 3).map((r) => (
-                        <span
-                          key={r}
-                          className={`rounded-full border px-2 py-0.5 text-[10px] ${runtimePillClass(r)}`}
-                          title={`May require: ${r}`}
-                        >
-                          {r}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <p className="text-xs text-text-subtle">
-            Tip: "Advanced: paste SKILL.md" is still available in Extensions {"->"} Skills.
-          </p>
-        </div>
       </div>
     </div>
   );
