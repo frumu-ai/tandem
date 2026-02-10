@@ -11,6 +11,10 @@ import { UpdaterProvider } from "@/hooks/useUpdater";
 import { MemoryIndexingProvider } from "@/contexts/MemoryIndexingContext";
 import { DEFAULT_THEME_ID, getThemeById } from "@/lib/themes";
 import type { ThemeId } from "@/types/theme";
+import {
+  applyCustomBackgroundFromMirror,
+  readCustomBackgroundMirror,
+} from "@/lib/customBackground";
 
 // Apply theme ASAP (before React renders) so pre-app UI and initial paint match user preference.
 (() => {
@@ -22,6 +26,9 @@ import type { ThemeId } from "@/types/theme";
       document.documentElement.style.setProperty(name, value);
     }
     document.documentElement.dataset.theme = theme.id;
+
+    // Apply custom background ASAP (best-effort; may be reconciled from backend after mount).
+    applyCustomBackgroundFromMirror(readCustomBackgroundMirror());
   } catch {
     // ignore (e.g. storage disabled)
   }

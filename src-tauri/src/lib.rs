@@ -393,6 +393,11 @@ pub fn run() {
             // Theme / appearance
             commands::get_user_theme,
             commands::set_user_theme,
+            commands::get_custom_background,
+            commands::set_custom_background_image,
+            commands::set_custom_background_image_bytes,
+            commands::set_custom_background_settings,
+            commands::clear_custom_background_image,
             // Provider configuration
             commands::get_providers_config,
             commands::set_providers_config,

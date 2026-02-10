@@ -49,6 +49,15 @@ html {
   color-scheme: dark;
 }
 
+/* Custom background image (optional user setting) */
+:root {
+  --custom-bg-image: none;
+  --custom-bg-opacity: 0;
+  --custom-bg-size: cover;
+  --custom-bg-position: center;
+  --custom-bg-repeat: no-repeat;
+}
+
 /* Light theme support */
 html[data-theme="porcelain"] {
   color-scheme: light;
@@ -66,6 +75,27 @@ body {
    Tailwind's `bg-background` maps to `background-color`, which can't accept gradients. */
 .app-background {
   background: var(--color-background);
+  position: relative;
+  isolation: isolate;
+}
+
+.app-background::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--custom-bg-image);
+  background-size: var(--custom-bg-size);
+  background-position: var(--custom-bg-position);
+  background-repeat: var(--custom-bg-repeat);
+  opacity: var(--custom-bg-opacity);
+  filter: saturate(1.02) contrast(1.02);
+}
+
+.app-background > * {
+  position: relative;
+  z-index: 1;
 }
 
 /* Scrollbar styling */
