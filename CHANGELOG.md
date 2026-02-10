@@ -7,16 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.17] - Unreleased
+## [0.2.18] - Unreleased
+
+### Known Issues
+
+- **Files Auto-Refresh (WIP)**: The Files tree does not reliably refresh when tools/AI create new files in the workspace. Deeper investigation needed; workaround is to navigate away and back to Files.
+
+## [0.2.17] - 2026-02-10
 
 ### Fixed
 
 - **Custom Background Opacity Slider (Packaged Builds)**: Fix opacity changes causing the background image to flash or disappear in bundled builds by keeping the resolved image URL stable and updating only opacity.
 - **Background Layering**: Render the custom background image as a dedicated fixed layer so it consistently appears across views without impacting overlay layout.
-
-### Known Issues
-
-- **Files Auto-Refresh (WIP)**: The Files tree does not reliably refresh when tools/AI create new files in the workspace. Deeper investigation needed; workaround is to navigate away and back to Files.
 
 ## [0.2.16] - 2026-02-10
 
@@ -447,7 +449,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.2.17...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.2.18...HEAD
+[0.2.18]: https://github.com/frumu-ai/tandem/compare/v0.2.17...v0.2.18
 [0.2.17]: https://github.com/frumu-ai/tandem/compare/v0.2.16...v0.2.17
 [0.2.16]: https://github.com/frumu-ai/tandem/compare/v0.2.15...v0.2.16
 [0.2.15]: https://github.com/frumu-ai/tandem/compare/v0.2.14...v0.2.15

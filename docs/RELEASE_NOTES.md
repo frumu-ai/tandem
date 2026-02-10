@@ -1,13 +1,21 @@
+# Tandem v0.2.18 Release Notes
+
+## Highlights
+
+- _In progress._
+
+## Work In Progress / Known Issues
+
+- **Files Auto-Refresh (WIP)**: The Files tree does not reliably refresh when tools/AI create new files in the workspace. Deeper investigation needed; workaround is to navigate away and back to Files.
+
+---
+
 # Tandem v0.2.17 Release Notes
 
 ## Highlights
 
 - **Custom Background Opacity Slider Fix**: Fix opacity changes causing the background image to flash or disappear in bundled builds by keeping the resolved image URL stable and updating only opacity.
 - **Reliable Background Layering**: Render the custom background image as a dedicated fixed layer for consistent stacking across views.
-
-## Work In Progress / Known Issues
-
-- **Files Auto-Refresh (WIP)**: We attempted to auto-refresh the Files tree when tools/AI create new files, but it is still unreliable and needs deeper investigation. For now, you may need to switch away and back to Files to see new items.
 
 ---
 
