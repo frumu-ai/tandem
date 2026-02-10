@@ -1,4 +1,5 @@
 ---
+name: finance-journal-entry
 description: Prepare journal entries with proper debits, credits, and supporting detail
 ---
 

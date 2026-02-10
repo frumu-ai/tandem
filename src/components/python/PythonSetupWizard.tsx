@@ -9,6 +9,7 @@ import {
   pythonCreateVenv,
   pythonGetStatus,
   pythonInstallRequirements,
+  readDirectory,
   type PythonInstallResult,
   type PythonStatus,
 } from "@/lib/tauri";
@@ -93,11 +94,45 @@ export function PythonSetupWizard({ onClose }: { onClose: () => void }) {
       setError(null);
       setInstallLog(null);
 
-      const selection = await open({
-        title: "Select requirements.txt (must be inside the workspace)",
-        multiple: false,
-        directory: false,
-      });
+      const ws = status?.workspace_path;
+      if (!ws) {
+        setError("No workspace selected.");
+        return;
+      }
+      const sep = ws.includes("\\") ? "\\" : "/";
+
+      // Try to auto-detect a requirements file in the workspace root.
+      // This keeps the UX simple for the common case (`requirements.txt` in the project).
+      let selection: string | null = null;
+      try {
+        const entries = await readDirectory(ws);
+        const reqCandidates = entries
+          .filter((e) => !e.is_directory)
+          .filter((e) => /^requirements.*\.(txt|in)$/i.test(e.name))
+          .sort((a, b) => {
+            // Prefer the canonical `requirements.txt` if it exists.
+            const aIsCanonical = a.name.toLowerCase() === "requirements.txt";
+            const bIsCanonical = b.name.toLowerCase() === "requirements.txt";
+            if (aIsCanonical !== bIsCanonical) return aIsCanonical ? -1 : 1;
+            return a.name.localeCompare(b.name);
+          });
+        selection = reqCandidates[0]?.path ?? null;
+      } catch {
+        // If directory listing fails for any reason, fall back to the file picker.
+        selection = null;
+      }
+
+      if (!selection) {
+        const picked = await open({
+          title: "Select a requirements file (must be inside the workspace)",
+          multiple: false,
+          directory: false,
+          defaultPath: `${ws}${ws.endsWith("\\") || ws.endsWith("/") ? "" : sep}requirements.txt`,
+          filters: [{ name: "Python requirements", extensions: ["txt", "in"] }],
+        });
+        if (!picked || typeof picked !== "string") return;
+        selection = picked;
+      }
       if (!selection || typeof selection !== "string") return;
 
       const result = await pythonInstallRequirements(selection);
@@ -108,7 +143,7 @@ export function PythonSetupWizard({ onClose }: { onClose: () => void }) {
     } finally {
       setBusy(null);
     }
-  }, [refresh]);
+  }, [refresh, status?.workspace_path]);
 
   const installInstructions = useMemo(() => {
     const ws = status?.workspace_path ?? "<your-workspace>";

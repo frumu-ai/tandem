@@ -1,4 +1,5 @@
 ---
+name: finance-reconciliation
 description: Reconcile GL balances to subledger, bank, or third-party balances
 ---
 

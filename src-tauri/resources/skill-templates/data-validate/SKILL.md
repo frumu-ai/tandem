@@ -1,4 +1,5 @@
 ---
+name: data-validate
 description: QA an analysis before sharing -- methodology, accuracy, and bias checks
 ---
 

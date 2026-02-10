@@ -1,4 +1,5 @@
 ---
+name: data-explore-data
 description: Profile and explore a dataset to understand its shape, quality, and patterns
 ---
 

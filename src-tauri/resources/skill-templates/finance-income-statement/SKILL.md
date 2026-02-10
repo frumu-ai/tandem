@@ -1,4 +1,5 @@
 ---
+name: finance-income-statement
 description: Generate an income statement with period-over-period comparison and variance analysis
 ---
 

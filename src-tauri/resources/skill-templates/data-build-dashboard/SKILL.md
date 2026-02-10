@@ -1,4 +1,5 @@
 ---
+name: data-build-dashboard
 description: Build an interactive HTML dashboard with charts, filters, and tables
 ---
 

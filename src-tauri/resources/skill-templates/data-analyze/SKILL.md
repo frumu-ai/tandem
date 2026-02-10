@@ -1,4 +1,5 @@
 ---
+name: data-analyze
 description: Answer data questions -- from quick lookups to full analyses
 ---
 

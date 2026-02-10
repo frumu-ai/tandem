@@ -1,4 +1,5 @@
 ---
+name: finance-sox-testing
 description: Generate SOX sample selections, testing workpapers, and control assessments
 ---
 

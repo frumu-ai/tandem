@@ -1,4 +1,5 @@
 ---
+name: data-write-query
 description: Write optimized SQL for your dialect with best practices
 ---
 
