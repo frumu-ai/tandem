@@ -867,6 +867,7 @@ export interface SkillTemplateInfo {
   id: string;
   name: string;
   description: string;
+  requires?: string[];
 }
 
 export async function listSkillTemplates(): Promise<SkillTemplateInfo[]> {

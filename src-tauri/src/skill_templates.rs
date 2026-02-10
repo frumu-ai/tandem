@@ -7,6 +7,8 @@ pub struct SkillTemplateInfo {
     pub id: String,
     pub name: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub requires: Vec<String>,
 }
 
 fn resolve_templates_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -70,7 +72,7 @@ pub fn list_skill_templates(app: &AppHandle) -> Result<Vec<SkillTemplateInfo>, S
         let content = fs::read_to_string(&skill_file)
             .map_err(|e| format!("Failed to read {:?}: {}", skill_file, e))?;
 
-        let (name, description, _body) = match crate::skills::parse_skill_content(&content) {
+        let (name, description, requires) = match crate::skills::parse_skill_frontmatter(&content) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("Skipping invalid skill template {:?}: {}", skill_file, e);
@@ -82,6 +84,7 @@ pub fn list_skill_templates(app: &AppHandle) -> Result<Vec<SkillTemplateInfo>, S
             id,
             name,
             description,
+            requires,
         });
     }
 

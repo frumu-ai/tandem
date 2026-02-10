@@ -1,6 +1,7 @@
 ---
 name: cowork-mcp-config-assistant
 description: Configure Model Context Protocol (MCP) servers and customize Tandem skills for your organization.
+requires: [python, node]
 ---
 
 # MCP Configuration & Skill Customization

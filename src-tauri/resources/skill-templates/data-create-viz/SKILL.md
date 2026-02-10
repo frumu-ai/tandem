@@ -1,5 +1,7 @@
 ---
+name: data-create-viz
 description: Create publication-quality visualizations with Python
+requires: [python]
 ---
 
 # Create Visualizations

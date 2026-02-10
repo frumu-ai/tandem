@@ -1,6 +1,7 @@
 ---
 name: bio-single-cell
 description: Deep learning for single-cell analysis using scvi-tools and scverse ecosystem. This skill should be used when users need (1) data integration and batch correction with scVI/scANVI, (2) ATAC-seq analysis with PeakVI, (3) CITE-seq multi-modal analysis with totalVI, (4) multiome RNA+ATAC analysis with MultiVI, (5) spatial transcriptomics deconvolution with DestVI, (6) label transfer and reference mapping, (7) RNA velocity with veloVI, or (8) QC analysis of single-cell RNA-seq data. Triggers include scVI, scANVI, totalVI, QC, quality control, batch correction, integration, multi-modal.
+requires: [python, bash]
 ---
 
 # scvi-tools Deep Learning & QC Skill

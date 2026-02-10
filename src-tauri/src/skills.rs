@@ -25,6 +25,9 @@ pub struct SkillInfo {
 struct SkillFrontmatter {
     name: String,
     description: String,
+    /// Optional runtime/tool hints for UI (e.g. `python`, `node`, `bash`).
+    #[serde(default)]
+    requires: Option<Vec<String>>,
     #[serde(default)]
     license: Option<String>,
     #[serde(default)]
@@ -63,6 +66,86 @@ pub fn validate_skill_name(name: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Parse SKILL.md content to extract frontmatter fields.
+///
+/// `requires` is an optional list of runtime/tool hints (e.g. `python`, `node`, `bash`).
+pub fn parse_skill_frontmatter(content: &str) -> Result<(String, String, Vec<String>), String> {
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Find frontmatter boundaries
+    let mut frontmatter_start = None;
+    let mut frontmatter_end = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim() == "---" {
+            if frontmatter_start.is_none() {
+                frontmatter_start = Some(i);
+            } else if frontmatter_end.is_none() {
+                frontmatter_end = Some(i);
+                break;
+            }
+        }
+    }
+
+    let (start, end) = match (frontmatter_start, frontmatter_end) {
+        (Some(s), Some(e)) if s < e => (s, e),
+        _ => {
+            return Err(
+                "Invalid SKILL.md format: missing or malformed frontmatter (---...---)".to_string(),
+            )
+        }
+    };
+
+    // Extract frontmatter YAML
+    let frontmatter_lines = &lines[start + 1..end];
+    let mut frontmatter_yaml = frontmatter_lines.join("\n");
+
+    // Fix common YAML issues: if description is not quoted and contains colons, quote it
+    if let Some(desc_start) = frontmatter_yaml.find("description:") {
+        let desc_line_start = desc_start + "description:".len();
+        if let Some(desc_value_start) =
+            frontmatter_yaml[desc_line_start..].find(|c: char| !c.is_whitespace())
+        {
+            let desc_value_pos = desc_line_start + desc_value_start;
+            let desc_char = frontmatter_yaml.chars().nth(desc_value_pos).unwrap_or(' ');
+
+            if desc_char != '"' && desc_char != '\'' {
+                let end_of_line = frontmatter_yaml[desc_value_pos..]
+                    .find('\n')
+                    .unwrap_or(frontmatter_yaml.len() - desc_value_pos);
+                let desc_value = &frontmatter_yaml[desc_value_pos..desc_value_pos + end_of_line];
+
+                if desc_value.contains(':') {
+                    let quoted_desc = format!("\"{}\"", desc_value.trim());
+                    frontmatter_yaml = format!(
+                        "{}description: {}{}",
+                        &frontmatter_yaml[..desc_start],
+                        quoted_desc,
+                        &frontmatter_yaml[desc_value_pos + end_of_line..]
+                    );
+                }
+            }
+        }
+    }
+
+    let frontmatter: SkillFrontmatter = serde_yaml::from_str(&frontmatter_yaml).map_err(|e| {
+        tracing::error!("YAML parsing error: {}", e);
+        tracing::error!("Attempted to parse:\n{}", frontmatter_yaml);
+        format!(
+            "Failed to parse frontmatter: {}. YAML frontmatter:\n{}",
+            e, frontmatter_yaml
+        )
+    })?;
+
+    validate_skill_name(&frontmatter.name)?;
+
+    Ok((
+        frontmatter.name,
+        frontmatter.description,
+        frontmatter.requires.unwrap_or_default(),
+    ))
 }
 
 /// Parse SKILL.md content to extract frontmatter and body

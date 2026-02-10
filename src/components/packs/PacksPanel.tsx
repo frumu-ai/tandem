@@ -26,6 +26,19 @@ export function PacksPanel({
   onOpenInstalledPack,
   onOpenSkills,
 }: PacksPanelProps) {
+  const runtimePillClass = (runtime: string) => {
+    switch (runtime.toLowerCase()) {
+      case "python":
+        return "border-yellow-500/20 bg-yellow-500/10 text-yellow-500";
+      case "node":
+        return "border-emerald-500/20 bg-emerald-500/10 text-emerald-200";
+      case "bash":
+        return "border-sky-500/20 bg-sky-500/10 text-sky-200";
+      default:
+        return "border-border bg-surface text-text-subtle";
+    }
+  };
+
   const [packs, setPacks] = useState<PackMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [installingId, setInstallingId] = useState<string | null>(null);
@@ -338,7 +351,10 @@ export function PacksPanel({
           ) : (
             <div className="grid gap-4 md:grid-cols-2">
               {templates.map((t) => (
-                <div key={t.id} className="glass border-glass ring-1 ring-white/5 p-5">
+                <div
+                  key={t.id}
+                  className="glass border-glass relative ring-1 ring-white/5 p-5 pb-12"
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold text-text">{t.name}</p>
@@ -352,6 +368,20 @@ export function PacksPanel({
                       {installingTemplateId === t.id ? "Installing..." : "Install"}
                     </Button>
                   </div>
+
+                  {t.requires && t.requires.length > 0 && (
+                    <div className="absolute bottom-4 right-4 flex flex-wrap items-center justify-end gap-1">
+                      {t.requires.slice(0, 3).map((r) => (
+                        <span
+                          key={r}
+                          className={`rounded-full border px-2 py-0.5 text-[10px] ${runtimePillClass(r)}`}
+                          title={`May require: ${r}`}
+                        >
+                          {r}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
