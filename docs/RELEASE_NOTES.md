@@ -8,6 +8,7 @@
 - **Packs Page Cleanup**: Packs page now shows packs only (no starter skills section) and surfaces the runtime note at the top.
 - **Diagnostics Polishing**: Logs viewer improvements (fullscreen + copy feedback) and fix invalid bundled skill template frontmatter so templates aren’t skipped.
 - **Document Text Extraction (Rust)**: PDF/DOCX/PPTX/XLSX (and more) can now be extracted to plain text for preview and for attaching to skills/chats, without requiring Python.
+- **Python Venv Wizard + Safety Enforcement**: A new in-app wizard creates `.opencode/.venv` per workspace and installs requirements into it; AI tool calls are blocked from running global `pip install` or `python` outside the venv.
 - **Dev Quality of Life**: In `tauri dev`, starter skill templates are loaded from `src-tauri/resources/skill-templates/` so newly added templates appear immediately.
 
 ---

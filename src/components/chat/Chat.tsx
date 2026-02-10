@@ -53,6 +53,7 @@ import {
 } from "@/lib/tauri";
 import { RalphPanel } from "@/components/ralph";
 import { LogsDrawer } from "@/components/logs";
+import { PythonSetupWizard } from "@/components/python";
 
 interface ChatProps {
   workspacePath: string | null;
@@ -122,6 +123,7 @@ export function Chat({
   const [loopEnabled, setLoopEnabled] = useState(false);
   const [showRalphPanel, setShowRalphPanel] = useState(false);
   const [showLogsDrawer, setShowLogsDrawer] = useState(false);
+  const [showPythonWizard, setShowPythonWizard] = useState(false);
   const [ralphStatusSnapshot, setRalphStatusSnapshot] = useState<RalphStateSnapshot | undefined>(
     undefined
   );
@@ -1168,7 +1170,14 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
                 tool: event.tool || undefined,
                 args: (event.args as Record<string, unknown>) || undefined,
                 messageId: currentMsgId || undefined,
-              }).catch(console.error);
+              }).catch((e) => {
+                console.error("[Permission] Auto-approve failed:", e);
+                const msg = e instanceof Error ? e.message : String(e);
+                setError(msg);
+                if (msg.toLowerCase().includes("python")) {
+                  setShowPythonWizard(true);
+                }
+              });
             } else {
               // Immediate mode: show permission toast as before
               const permissionRequest: PermissionRequest = {
@@ -1855,6 +1864,14 @@ ${g.example}
         <div className="flex items-center gap-2 bg-error/10 px-4 py-2 text-sm text-error">
           <AlertCircle className="h-4 w-4" />
           {error}
+          {error.toLowerCase().includes("python") && (
+            <button
+              onClick={() => setShowPythonWizard(true)}
+              className="ml-2 rounded-md border border-error/30 bg-error/5 px-2 py-1 text-xs text-error hover:bg-error/10"
+            >
+              Open Python setup
+            </button>
+          )}
           <button onClick={() => setError(null)} className="ml-auto text-error/70 hover:text-error">
             ×
           </button>
@@ -2225,6 +2242,7 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
 
       {/* Logs Drawer */}
       {showLogsDrawer && <LogsDrawer onClose={() => setShowLogsDrawer(false)} />}
+      {showPythonWizard && <PythonSetupWizard onClose={() => setShowPythonWizard(false)} />}
     </div>
   );
 }

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Skill Templates: Runtime Pills**: Starter skill cards now show optional runtime hints (e.g. Python/Node/Bash) via `requires: [...]` YAML frontmatter.
 - **Skills UI: Installed Skill Discoverability**: Add clearer install/manage UX (runtime note, counts for folder vs global installs, and a jump-to-installed action).
 - **File Text Extraction (Rust)**: Add best-effort, cross-platform text extraction for common document formats (PDF, DOCX, PPTX, XLSX/XLS/ODS/XLSB, RTF) via the `read_file_text` command so attachments can be used by skills without requiring Python.
+- **Python Workspace Venv Wizard**: Add a cross-platform in-app Python setup wizard to create a workspace-scoped venv at `.opencode/.venv` and install dependencies into it (never global).
 
 ### Fixed
 
@@ -23,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Skill Template Parsing**: Fix invalid bundled skill template frontmatter (missing `name`) so it is not skipped.
 - **File Browser**: Hide directory sizes in the file tree to avoid showing `NaN`/`undefined` for folders (directory sizes are not computed).
 - **File Attachments (Docs/PDFs)**: When attaching common document types, extract and embed plain text into the message instead of treating them as opaque binary blobs.
+- **Python Tool Safety**: Block AI attempts to run `pip install` or `python` outside the workspace venv to prevent global package installs.
 
 ### Changed
 

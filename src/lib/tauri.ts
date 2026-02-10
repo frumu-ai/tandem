@@ -775,6 +775,49 @@ export async function readBinaryFile(path: string, maxSize?: number): Promise<st
 }
 
 // ============================================================================
+// Python Environment (Workspace Venv Wizard)
+// ============================================================================
+
+export interface PythonCandidate {
+  kind: "py" | "python" | "python3" | string;
+  version: string;
+  command: string[];
+}
+
+export interface PythonStatus {
+  found: boolean;
+  candidates: PythonCandidate[];
+  workspace_path?: string | null;
+  venv_root?: string | null;
+  venv_python?: string | null;
+  venv_exists: boolean;
+  config_path?: string | null;
+}
+
+export interface PythonInstallResult {
+  ok: boolean;
+  exit_code?: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export async function pythonGetStatus(): Promise<PythonStatus> {
+  return invoke("python_get_status");
+}
+
+export async function pythonCreateVenv(
+  selected?: "py" | "python" | "python3"
+): Promise<PythonStatus> {
+  return invoke("python_create_venv", { selected });
+}
+
+export async function pythonInstallRequirements(
+  requirementsPath: string
+): Promise<PythonInstallResult> {
+  return invoke("python_install_requirements", { requirementsPath });
+}
+
+// ============================================================================
 // Tool Definitions (for conditional tool injection)
 // ============================================================================
 

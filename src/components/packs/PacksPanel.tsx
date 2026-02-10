@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/utils";
 import { installPack, listPacks, type PackMeta } from "@/lib/tauri";
+import { PythonSetupWizard } from "@/components/python";
 
 interface PacksPanelProps {
   activeProjectPath?: string;
@@ -25,6 +26,7 @@ export function PacksPanel({
   const [query, setQuery] = useState("");
 
   const [showPackInfo, setShowPackInfo] = useState(false);
+  const [showPythonWizard, setShowPythonWizard] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -138,7 +140,17 @@ export function PacksPanel({
         </motion.div>
 
         <div className="mb-6 rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
-          <p className="font-medium text-text">Runtime note</p>
+          <div className="flex items-center justify-between gap-3">
+            <p className="font-medium text-text">Runtime note</p>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setShowPythonWizard(true)}
+              className="h-7 px-2 text-[11px]"
+            >
+              Set up Python (venv)
+            </Button>
+          </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className="text-[11px] text-text-subtle">Some packs may require:</span>
             <span className="rounded-full border border-yellow-500/20 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-500">
@@ -228,6 +240,7 @@ export function PacksPanel({
           </div>
         )}
       </div>
+      {showPythonWizard && <PythonSetupWizard onClose={() => setShowPythonWizard(false)} />}
     </div>
   );
 }

@@ -11,6 +11,7 @@ import {
   type SkillTemplateInfo,
 } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { PythonSetupWizard } from "@/components/python";
 
 interface SkillsPanelProps {
   skills: SkillInfo[];
@@ -52,6 +53,7 @@ export function SkillsPanel({
   const [templates, setTemplates] = useState<SkillTemplateInfo[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [installingTemplateId, setInstallingTemplateId] = useState<string | null>(null);
+  const [showPythonWizard, setShowPythonWizard] = useState(false);
 
   // Extract project name from path for display
   const projectName = projectPath ? projectPath.split(/[\\/]/).pop() || "Active Folder" : null;
@@ -202,7 +204,17 @@ Instructions for the AI...
 
       {/* Runtime note */}
       <div className="rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
-        <p className="font-medium text-text">Runtime note</p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="font-medium text-text">Runtime note</p>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setShowPythonWizard(true)}
+            className="h-7 px-2 text-[11px]"
+          >
+            Set up Python (venv)
+          </Button>
+        </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <span className="text-[11px] text-text-subtle">May require:</span>
           <span className="rounded-full border border-yellow-500/20 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-500">
@@ -221,6 +233,7 @@ Instructions for the AI...
           runtime is only needed if a skill instructs the agent to execute commands.
         </p>
       </div>
+      {showPythonWizard && <PythonSetupWizard onClose={() => setShowPythonWizard(false)} />}
 
       {/* Search */}
       <div className="max-w-md">

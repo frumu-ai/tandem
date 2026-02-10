@@ -3086,6 +3086,31 @@ Use this capability for finding information, verifying facts, or gathering data 
                 // Future: Table/CSV guidance
                 tracing::debug!("Spreadsheets tool category not yet implemented");
             }
+            "terminal" => {
+                guidance.push(ToolGuidance {
+                    category: "terminal".to_string(),
+                    instructions: r#"# Terminal / Shell Safety (Python + pip)
+
+You may run shell commands, but **never install Python packages globally**.
+
+## Rules (STRICT)
+1. **Never** run `pip install ...` or `python -m pip install ...` outside a workspace venv.
+2. Use the workspace venv at: `.opencode/.venv`
+3. Always invoke pip via the venv interpreter:
+   - Create venv: `python -m venv .opencode/.venv`
+   - Install: `".opencode/.venv/Scripts/python.exe" -m pip install -r requirements.txt` (Windows)
+   - Install: `".opencode/.venv/bin/python3" -m pip install -r requirements.txt` (macOS/Linux)
+
+If the venv doesn't exist yet, instruct the user to use Tandem's **Python setup wizard** (Packs/Skills page), or create the venv with `python -m venv .opencode/.venv`.
+"#.to_string(),
+                    json_schema: serde_json::json!({
+                        "venv_root": ".opencode/.venv",
+                        "install_style": "venv-only",
+                        "blocked": ["global pip installs", "python outside venv"]
+                    }),
+                    example: "Install dependencies safely: `.opencode/.venv/bin/python3 -m pip install -r requirements.txt`".to_string(),
+                });
+            }
             _ => {
                 tracing::debug!("Unknown tool category: {}", category);
             }
