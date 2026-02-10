@@ -2,7 +2,11 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.2.14 (Unreleased)
+## v0.2.15 (Unreleased)
+
+- Backgrounds: Fix custom background images failing to load in some packaged builds by falling back to an in-memory `data:` URL when the `asset:` URL fails.
+
+## v0.2.14 (2026-02-10)
 
 - Themes: Cosmic Glass now has a denser starfield + galaxy glow background.
 - Themes: Pink Pony now features a thick, arcing rainbow background.

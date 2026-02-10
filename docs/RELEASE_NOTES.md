@@ -1,3 +1,11 @@
+# Tandem v0.2.15 Release Notes
+
+## Highlights
+
+- **Custom Background Loading Fix**: Fix custom background images failing to load after updating in some packaged builds by falling back to an in-memory `data:` URL when the `asset:` URL fails.
+
+---
+
 # Tandem v0.2.14 Release Notes
 
 ## Highlights
