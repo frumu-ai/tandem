@@ -6,6 +6,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 - Backgrounds: Fix opacity slider flashing/disappearing in some packaged builds by keeping the resolved image URL stable and updating only opacity.
 - Backgrounds: Render custom background image as a dedicated fixed layer for more reliable stacking across views.
+- Files (WIP): Attempted auto-refresh of the Files tree when tools/AI create new files, but it is still unreliable and needs deeper investigation. For now, you may need to switch away and back to Files to see new items.
 
 ## v0.2.16 (2026-02-10)
 

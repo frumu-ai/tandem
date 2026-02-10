@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Custom Background Opacity Slider (Packaged Builds)**: Fix opacity changes causing the background image to flash or disappear in bundled builds by keeping the resolved image URL stable and updating only opacity.
 - **Background Layering**: Render the custom background image as a dedicated fixed layer so it consistently appears across views without impacting overlay layout.
 
+### Known Issues
+
+- **Files Auto-Refresh (WIP)**: The Files tree does not reliably refresh when tools/AI create new files in the workspace. Deeper investigation needed; workaround is to navigate away and back to Files.
+
 ## [0.2.16] - 2026-02-10
 
 ### Fixed
