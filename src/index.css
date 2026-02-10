@@ -56,10 +56,16 @@ html[data-theme="porcelain"] {
 
 body {
   font-family: var(--font-sans);
-  background-color: var(--color-background);
+  background: var(--color-background);
   color: var(--color-text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Use this when you want the theme background to render even for gradient themes.
+   Tailwind's `bg-background` maps to `background-color`, which can't accept gradients. */
+.app-background {
+  background: var(--color-background);
 }
 
 /* Scrollbar styling */

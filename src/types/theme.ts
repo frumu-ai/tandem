@@ -4,7 +4,10 @@ export type ThemeId =
   | "emerald_night"
   | "hello_bunny"
   | "porcelain"
-  | "neon_riot";
+  | "neon_riot"
+  | "cosmic_glass"
+  | "pink_pony"
+  | "zen_dusk";
 
 export type CssVarName =
   | "--color-background"

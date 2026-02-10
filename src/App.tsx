@@ -815,7 +815,7 @@ function App() {
   };
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className="flex h-screen app-background">
       {/* Icon Sidebar */}
       {effectiveView !== "onboarding" && effectiveView !== "sidecar-setup" && (
         <motion.aside
@@ -1039,7 +1039,7 @@ function App() {
         {effectiveView === "sidecar-setup" ? (
           <motion.div
             key="sidecar-setup"
-            className="flex h-full w-full items-center justify-center bg-background"
+            className="flex h-full w-full items-center justify-center app-background"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -1151,7 +1151,7 @@ function App() {
                 {effectiveView === "settings" && (
                   <motion.div
                     key="settings"
-                    className="absolute inset-0 bg-background"
+                    className="absolute inset-0 app-background"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
@@ -1169,7 +1169,7 @@ function App() {
                 {effectiveView === "extensions" && (
                   <motion.div
                     key="extensions"
-                    className="absolute inset-0 bg-background"
+                    className="absolute inset-0 app-background"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
@@ -1185,7 +1185,7 @@ function App() {
                 {effectiveView === "about" && (
                   <motion.div
                     key="about"
-                    className="absolute inset-0 bg-background"
+                    className="absolute inset-0 app-background"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}

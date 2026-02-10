@@ -4,6 +4,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## v0.2.13 (Unreleased)
 
+- Themes: Cosmic Glass now has a denser starfield + galaxy glow background.
+- Themes: Pink Pony now features a thick, arcing rainbow background.
+- Themes: Zen Dusk now uses a minimalist ink + sage haze background.
+- UI: Gradient theme backgrounds now render consistently across main views and overlays (fixes occasional overlay "shine through").
 - Skills: Add two new bundled starter skills: `brainstorming` and `development-estimation`.
 - Skills: Show runtime requirement pills on starter skill cards via optional `requires: [...]` YAML frontmatter.
 - Skills: Improve Skills install/manage UX (runtime note, clearer installed-skill counts, and jump-to-installed).

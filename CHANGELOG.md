@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Themes: Background Art Pass**: Add richer background art for Cosmic Glass (starfield + galaxy glow), Pink Pony (thick arcing rainbow), and Zen Dusk (minimalist ink + sage haze).
+- **Theme Background Support**: Add an `app-background` utility class so gradient theme backgrounds render correctly throughout the app (not just as a solid `background-color`).
 - **Skill Templates: New Starter Skills**: Add two new bundled starter skills: `brainstorming` and `development-estimation`.
 - **Skill Templates: Runtime Pills**: Starter skill cards now show optional runtime hints (e.g. Python/Node/Bash) via `requires: [...]` YAML frontmatter.
 - **Skills UI: Installed Skill Discoverability**: Add clearer install/manage UX (runtime note, counts for folder vs global installs, and a jump-to-installed action).
@@ -19,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Gradient Themes in Main Views**: Fix theme gradients not appearing in main app surfaces by avoiding Tailwind `bg-background` (background-color) for gradient-based theme backgrounds.
+- **Overlay Shine-Through**: Fix Settings/overlays occasionally appearing translucent when `bg-background/..` was applied to gradient themes.
 - **Dev Skill Template Discovery**: In `tauri dev`, load starter skill templates from `src-tauri/resources/skill-templates/` so newly added templates appear immediately (avoids stale `target/**/resources/**` copies).
 - **Logs Viewer UX**: Improve log viewer usability (fullscreen mode, and copy feedback).
 - **Skill Template Parsing**: Fix invalid bundled skill template frontmatter (missing `name`) so it is not skipped.

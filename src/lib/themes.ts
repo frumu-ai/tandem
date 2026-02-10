@@ -215,6 +215,111 @@ export const THEMES: ThemeDefinition[] = [
         '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
     },
   },
+  {
+    id: "cosmic_glass",
+    name: "Cosmic Glass",
+    description: "Funky deep-space glow with transparent nebula glass panels.",
+    cssVars: {
+      "--color-background":
+        "radial-gradient(circle at 8% 14%, rgba(255, 255, 255, 0.75) 0 1px, transparent 2px), radial-gradient(circle at 16% 44%, rgba(255, 255, 255, 0.45) 0 1px, transparent 2px), radial-gradient(circle at 22% 72%, rgba(255, 255, 255, 0.35) 0 1px, transparent 2px), radial-gradient(circle at 28% 18%, rgba(255, 255, 255, 0.55) 0 1px, transparent 2px), radial-gradient(circle at 34% 56%, rgba(255, 255, 255, 0.30) 0 1px, transparent 2px), radial-gradient(circle at 42% 28%, rgba(255, 255, 255, 0.40) 0 1px, transparent 2px), radial-gradient(circle at 48% 78%, rgba(255, 255, 255, 0.28) 0 1px, transparent 2px), radial-gradient(circle at 56% 16%, rgba(255, 255, 255, 0.55) 0 1px, transparent 2px), radial-gradient(circle at 62% 46%, rgba(255, 255, 255, 0.34) 0 1px, transparent 2px), radial-gradient(circle at 70% 24%, rgba(255, 255, 255, 0.62) 0 1px, transparent 2px), radial-gradient(circle at 78% 58%, rgba(255, 255, 255, 0.32) 0 1px, transparent 2px), radial-gradient(circle at 86% 22%, rgba(255, 255, 255, 0.42) 0 1px, transparent 2px), radial-gradient(circle at 90% 74%, rgba(255, 255, 255, 0.28) 0 1px, transparent 2px), radial-gradient(circle at 12% 86%, rgba(255, 255, 255, 0.22) 0 1px, transparent 2px), radial-gradient(circle at 92% 10%, rgba(255, 255, 255, 0.22) 0 1px, transparent 2px), radial-gradient(circle at 65% 26%, rgba(255, 255, 255, 0.14) 0, transparent 36%), radial-gradient(ellipse 80% 56% at 65% 26%, rgba(124, 92, 255, 0.24) 0, transparent 58%), radial-gradient(ellipse 64% 44% at 58% 32%, rgba(255, 122, 217, 0.16) 0, transparent 62%), radial-gradient(ellipse 66% 46% at 74% 22%, rgba(59, 228, 192, 0.10) 0, transparent 62%), #03020F",
+      "--color-surface": "rgba(9, 6, 28, 0.72)",
+      "--color-surface-elevated": "rgba(18, 12, 40, 0.82)",
+      "--color-border": "rgba(120, 105, 255, 0.22)",
+      "--color-border-subtle": "rgba(120, 105, 255, 0.12)",
+
+      "--color-primary": "#7C5CFF",
+      "--color-primary-hover": "#6A40FF",
+      "--color-primary-muted": "#4C2ED8",
+
+      "--color-secondary": "#FF7AD9",
+      "--color-secondary-hover": "#FF4FC3",
+
+      "--color-success": "#3BE4C0",
+      "--color-warning": "#F9D86B",
+      "--color-error": "#FF5C7A",
+
+      "--color-text": "#F3F0FF",
+      "--color-text-muted": "rgba(243, 240, 255, 0.74)",
+      "--color-text-subtle": "rgba(243, 240, 255, 0.52)",
+
+      "--color-glass": "rgba(14, 10, 40, 0.48)",
+      "--color-glass-border": "rgba(255, 255, 255, 0.16)",
+
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono":
+        '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+    },
+  },
+  {
+    id: "pink_pony",
+    name: "Pink Pony",
+    description: "Super girly Barbie-core glow with candy pinks and dreamy pastels.",
+    cssVars: {
+      "--color-background":
+        "radial-gradient(120% 90% at 50% 125%, transparent 0 48%, rgba(255, 255, 255, 0.12) 48% 49%, rgba(255, 82, 136, 0.86) 49% 52%, rgba(255, 160, 104, 0.82) 52% 55%, rgba(255, 235, 140, 0.78) 55% 58%, rgba(140, 255, 208, 0.74) 58% 61%, rgba(122, 221, 255, 0.74) 61% 64%, rgba(174, 171, 255, 0.74) 64% 67%, rgba(238, 182, 255, 0.70) 67% 70%, transparent 70% 100%), radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.10) 0, transparent 55%), radial-gradient(circle at 80% 18%, rgba(255, 255, 255, 0.08) 0, transparent 58%), linear-gradient(135deg, #FF5FA2 0%, #FF8AD6 28%, #FFD166 52%, #9BF6FF 76%, #BDB2FF 100%)",
+      "--color-surface": "rgba(64, 16, 42, 0.82)",
+      "--color-surface-elevated": "rgba(86, 20, 56, 0.88)",
+      "--color-border": "rgba(255, 158, 204, 0.28)",
+      "--color-border-subtle": "rgba(255, 158, 204, 0.14)",
+
+      "--color-primary": "#FF5FB1",
+      "--color-primary-hover": "#FF3B9A",
+      "--color-primary-muted": "#D91E7D",
+
+      "--color-secondary": "#FFB3E6",
+      "--color-secondary-hover": "#FF8DD6",
+
+      "--color-success": "#58E5C1",
+      "--color-warning": "#FFD166",
+      "--color-error": "#FF5C8A",
+
+      "--color-text": "#FFF1FA",
+      "--color-text-muted": "rgba(255, 241, 250, 0.74)",
+      "--color-text-subtle": "rgba(255, 241, 250, 0.52)",
+
+      "--color-glass": "rgba(255, 105, 180, 0.18)",
+      "--color-glass-border": "rgba(255, 255, 255, 0.22)",
+
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono":
+        '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+    },
+  },
+  {
+    id: "zen_dusk",
+    name: "Zen Dusk",
+    description: "Low-contrast calm dark mode with muted sage and soft ink tones.",
+    cssVars: {
+      "--color-background":
+        "radial-gradient(circle at 18% 12%, rgba(124, 200, 164, 0.10) 0, transparent 42%), radial-gradient(circle at 78% 32%, rgba(159, 184, 176, 0.07) 0, transparent 46%), radial-gradient(140% 110% at 50% 120%, rgba(0, 0, 0, 0.40) 0, transparent 58%), linear-gradient(145deg, #0B1110 0%, #0C1412 52%, #08100F 100%)",
+      "--color-surface": "#101716",
+      "--color-surface-elevated": "#141D1C",
+      "--color-border": "rgba(226, 232, 240, 0.12)",
+      "--color-border-subtle": "rgba(226, 232, 240, 0.06)",
+
+      "--color-primary": "#7CC8A4",
+      "--color-primary-hover": "#6AB690",
+      "--color-primary-muted": "#559B7B",
+
+      "--color-secondary": "#9FB8B0",
+      "--color-secondary-hover": "#8AA59C",
+
+      "--color-success": "#5EC79B",
+      "--color-warning": "#E6C17B",
+      "--color-error": "#E38B8B",
+
+      "--color-text": "#E6EFEA",
+      "--color-text-muted": "rgba(230, 239, 234, 0.72)",
+      "--color-text-subtle": "rgba(230, 239, 234, 0.50)",
+
+      "--color-glass": "rgba(20, 28, 26, 0.72)",
+      "--color-glass-border": "rgba(255, 255, 255, 0.08)",
+
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono":
+        '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+    },
+  },
 ];
 
 export function getThemeById(id: ThemeId): ThemeDefinition {
