@@ -83,7 +83,7 @@ body {
   content: "";
   position: absolute;
   inset: 0;
-  z-index: 0;
+  z-index: -1;
   pointer-events: none;
   background-image: var(--custom-bg-image);
   background-size: var(--custom-bg-size);
@@ -91,11 +91,6 @@ body {
   background-repeat: var(--custom-bg-repeat);
   opacity: var(--custom-bg-opacity);
   filter: saturate(1.02) contrast(1.02);
-}
-
-.app-background > * {
-  position: relative;
-  z-index: 1;
 }
 
 /* Scrollbar styling */
