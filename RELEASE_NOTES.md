@@ -2,9 +2,14 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.2.18 (Unreleased)
+## v0.2.18 (2026-02-10)
 
 - Files (WIP): Attempted auto-refresh of the Files tree when tools/AI create new files, but it is still unreliable and needs deeper investigation. For now, you may need to switch away and back to Files to see new items.
+- Files: File preview now supports a dock mount + fullscreen toggle.
+- Python: Enforce venv-only python/pip usage across tool approval and staged/batch execution paths.
+- Python: When Python is blocked by venv policy, Tandem auto-opens the Python Setup (Workspace Venv) wizard.
+- Packs (Python): Add `requirements.txt` and update START_HERE docs to install dependencies into the workspace venv (no global `pip install`).
+- Dev: Add a "Python Packs Standard" to `CONTRIBUTING.md` and ship pack-level `CONTRIBUTING.md` where relevant.
 
 ## v0.2.17 (2026-02-10)
 
