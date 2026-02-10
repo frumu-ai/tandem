@@ -1,3 +1,12 @@
+# Tandem v0.2.17 Release Notes
+
+## Highlights
+
+- **Custom Background Opacity Slider Fix**: Fix opacity changes causing the background image to flash or disappear in bundled builds by keeping the resolved image URL stable and updating only opacity.
+- **Reliable Background Layering**: Render the custom background image as a dedicated fixed layer for consistent stacking across views.
+
+---
+
 # Tandem v0.2.16 Release Notes
 
 ## Highlights
