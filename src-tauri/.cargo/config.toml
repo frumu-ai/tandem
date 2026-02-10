@@ -1,0 +1,4 @@
+[target.x86_64-pc-windows-msvc]
+# Prefer FASTLINK on Windows to reduce PDB link pressure (helps avoid LNK1318 on large projects).
+rustflags = ["-C", "link-arg=/DEBUG:FASTLINK"]
+

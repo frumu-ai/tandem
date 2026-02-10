@@ -1158,7 +1158,7 @@ function App() {
                 {effectiveView === "settings" && (
                   <motion.div
                     key="settings"
-                    className="absolute inset-0 app-background"
+                    className="absolute inset-0 z-30 app-background"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
@@ -1176,7 +1176,7 @@ function App() {
                 {effectiveView === "extensions" && (
                   <motion.div
                     key="extensions"
-                    className="absolute inset-0 app-background"
+                    className="absolute inset-0 z-30 app-background"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
@@ -1192,7 +1192,7 @@ function App() {
                 {effectiveView === "about" && (
                   <motion.div
                     key="about"
-                    className="absolute inset-0 app-background"
+                    className="absolute inset-0 z-30 app-background"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
