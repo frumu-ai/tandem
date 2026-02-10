@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.18] - Unreleased
+## [0.2.18] - 2026-02-10
+
+### Added
+
+- **Python**: Auto-open the Python Setup (Workspace Venv) wizard when Python is blocked by venv-only policy enforcement (helps LLM-triggered Python attempts recover quickly).
+- **Python**: Extend venv-only enforcement to staged/batch execution (preflight staged operations before approving any tool calls).
+- **Python**: Add a shared policy helper + tests for consistent enforcement across approval paths.
+- **Packs (Python)**: Add `requirements.txt` to the Data Visualization and Finance Analysis packs; update their docs to install via the workspace venv.
+- **Packs**: Install pack-level `CONTRIBUTING.md` when present (copied alongside `START_HERE.md`).
+- **Files**: Add a dock mount + fullscreen toggle for file previews.
+
+### Fixed
+
+- **Skills/Templates**: Fix bundled starter skill templates with missing YAML frontmatter fields so they no longer get skipped on startup.
+- **Python**: Improve the requirements install UX by defaulting to the workspace and auto-detecting `requirements*.txt` when present.
 
 ### Known Issues
 

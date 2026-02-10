@@ -2,11 +2,31 @@
 
 ## Highlights
 
-- _In progress._
+- **Workspace Python venv enforcement**: Venv-only python/pip policy now applies consistently, including staged/batch execution, and the Python Setup wizard auto-opens when Python is blocked.
+- **Python pack hygiene**: Python packs ship `requirements.txt` and venv-first docs (no more encouraging global `pip install`).
+- **Better file previews**: File preview supports a dock mount + fullscreen toggle.
 
 ## Work In Progress / Known Issues
 
 - **Files Auto-Refresh (WIP)**: The Files tree does not reliably refresh when tools/AI create new files in the workspace. Deeper investigation needed; workaround is to navigate away and back to Files.
+
+## Complete Feature List
+
+### Python
+
+- Enforce venv-only python/pip usage across approval flows and staged/batch execution.
+- Auto-open the Python Setup (Workspace Venv) wizard when Python is blocked by policy.
+- Add a shared policy helper + tests for consistent enforcement across tool approval paths.
+
+### Packs
+
+- Data Visualization + Finance Analysis packs ship `requirements.txt`.
+- Pack docs are venv-first (install via `.opencode/.venv`).
+- Packs can include a pack-level `CONTRIBUTING.md` which is installed alongside `START_HERE.md`.
+
+### Files
+
+- File preview supports a dock mount + fullscreen toggle.
 
 ---
 
