@@ -139,6 +139,87 @@ tandem/
 └── scripts/               # Build scripts
 ```
 
+## Adding Skills (Developer Guide)
+
+Tandem supports "skills" in two ways:
+
+1. **Skill templates (starter skills)**: bundled with the app, listed in the UI as quick-install options.
+2. **Installed skills**: user-installed skills (folder-scoped or global) that Tandem discovers at runtime.
+
+This section explains how to add or update both safely.
+
+### 1) Skill Templates (Bundled Starter Skills)
+
+Skill templates live at:
+
+- `src-tauri/resources/skill-templates/<skill-id>/SKILL.md`
+
+These templates are listed via the Tauri command `skills_list_templates` (see `src-tauri/src/commands.rs`) which reads from `src-tauri/resources/skill-templates/` (see `src-tauri/src/skill_templates.rs`).
+
+#### Create A New Skill Template
+
+1. Create a new folder:
+   - `src-tauri/resources/skill-templates/<skill-id>/`
+2. Add a `SKILL.md` with YAML frontmatter and a body.
+
+**Required YAML frontmatter fields**
+
+```yaml
+---
+name: my-skill
+description: What this skill does (short, user-facing)
+---
+```
+
+**Optional YAML frontmatter fields**
+
+```yaml
+---
+name: my-skill
+description: What this skill does
+requires: [python, node, bash] # Optional. Used only for UI "runtime" pills.
+license: Optional. Human-readable or pointer to a LICENSE file.
+compatibility: Optional. Notes like "Node 18+" etc.
+metadata:
+  author: Your Name
+  category: writing
+---
+```
+
+Notes:
+
+- `name` must follow OpenCode rules (enforced in `src-tauri/src/skills.rs`): `^[a-z0-9]+(-[a-z0-9]+)*$` and 1-64 chars.
+- `requires` is only a hint shown in the starter skill cards (bottom-right pills). It does not enforce anything.
+- Tandem does not bundle Python/Node/etc. If you add `requires`, make sure the instructions remain useful for users who may not have that runtime installed.
+
+#### Skill Template Content Guidelines
+
+- Keep the first few paragraphs action-oriented: what it does, when to use it, what it produces.
+- Prefer checklists and step-by-step workflows.
+- Avoid requiring access to arbitrary filesystem paths outside what Tandem typically operates on.
+- If you reference scripts inside a pack, be explicit about where they live and how to run them.
+
+### 2) Installed Skills (User-Installed)
+
+Installed skills are discovered from:
+
+- **Folder**: `<workspace>/.opencode/skill/<skill-id>/SKILL.md`
+- **Global**: `~/.config/opencode/skills/<skill-id>/SKILL.md`
+
+The UI for importing/deleting lives under Extensions -> Skills, and the backend commands are:
+
+- `list_skills` / `import_skill` / `delete_skill` in `src-tauri/src/commands.rs`
+
+### Validation / QA Checklist
+
+When you add a new skill template:
+
+1. Run the app: `pnpm tauri dev`
+2. Go to Extensions -> Skills and confirm the starter skill appears and installs correctly.
+3. Confirm the Installed skills list updates after install (folder/global as expected).
+4. If you added `requires`, confirm the runtime pills render on the starter skill card.
+5. Watch logs for warnings like "Skipping invalid skill template ... Failed to parse frontmatter".
+
 ## Key Principles
 
 1. **Security First** - All changes must maintain our zero-trust model
