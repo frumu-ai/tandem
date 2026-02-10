@@ -48,7 +48,7 @@ We take security seriously. If you discover a security vulnerability, please rep
 ### How to Report
 
 1. **DO NOT** create a public GitHub issue for security vulnerabilities
-2. Email security concerns to: [info@frumu.ai] (replace with actual email)
+2. Email security concerns to: [info@frumu.ai]
 3. Include:
    - Description of the vulnerability
    - Steps to reproduce

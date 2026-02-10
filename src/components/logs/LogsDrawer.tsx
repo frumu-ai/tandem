@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { List, type RowComponentProps, useListCallbackRef } from "react-window";
-import { FileText, Pause, Play, ScrollText, Search, Trash2, X } from "lucide-react";
+import {
+  FileText,
+  Pause,
+  Play,
+  ScrollText,
+  Search,
+  Trash2,
+  X,
+  Maximize2,
+  Minimize2,
+} from "lucide-react";
 import { Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import {
@@ -127,11 +137,14 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
   const [dropped, setDropped] = useState(0);
   const [streamId, setStreamId] = useState<string | null>(null);
   const [selectedLine, setSelectedLine] = useState<LineItem | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const streamIdRef = useRef<string | null>(null);
   const nextLineIdRef = useRef(1);
   const pendingRawLinesRef = useRef<string[]>([]);
   const [listApi, setListApi] = useListCallbackRef(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   const { ref: listContainerRef, height: listHeight } = useMeasuredHeight();
 
@@ -353,25 +366,47 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
     );
   };
 
-  const copyText = useCallback(async (text: string) => {
-    const value = text.replace(/\r?\n$/, "");
-    try {
-      await globalThis.navigator?.clipboard?.writeText(value);
-    } catch {
-      // Best-effort fallback for older webviews.
-      const ta = globalThis.document.createElement("textarea");
-      ta.value = value;
-      ta.style.position = "fixed";
-      ta.style.left = "-9999px";
-      globalThis.document.body.appendChild(ta);
-      ta.select();
-      globalThis.document.execCommand("copy");
-      globalThis.document.body.removeChild(ta);
+  const showToast = useCallback((msg: string) => {
+    if (toastTimerRef.current) {
+      globalThis.clearTimeout(toastTimerRef.current);
     }
+    setToastMsg(msg);
+    toastTimerRef.current = globalThis.setTimeout(() => setToastMsg(null), 1400);
   }, []);
 
+  const copyText = useCallback(
+    async (text: string, toastLabel: string = "Copied to clipboard") => {
+      const value = text.replace(/\r?\n$/, "");
+      try {
+        const write = globalThis.navigator?.clipboard?.writeText;
+        if (typeof write !== "function") {
+          throw new Error("Clipboard API not available");
+        }
+        await write.call(globalThis.navigator!.clipboard, value);
+        showToast(toastLabel);
+      } catch {
+        // Best-effort fallback for older webviews.
+        const ta = globalThis.document.createElement("textarea");
+        ta.value = value;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        globalThis.document.body.appendChild(ta);
+        ta.select();
+        globalThis.document.execCommand("copy");
+        globalThis.document.body.removeChild(ta);
+        showToast(toastLabel);
+      }
+    },
+    [showToast]
+  );
+
   return (
-    <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-[560px] border-l border-border bg-surface shadow-xl">
+    <div
+      className={cn(
+        "fixed z-50 border-border bg-surface shadow-xl",
+        expanded ? "inset-0" : "inset-y-0 right-0 w-full sm:w-[560px] border-l"
+      )}
+    >
       <div className="flex h-full flex-col">
         {/* Header */}
         <div className="border-b border-border px-4 py-3">
@@ -386,13 +421,22 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
               </div>
             </div>
 
-            <button
-              onClick={onClose}
-              className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
-              title="Close"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setExpanded((e) => !e)}
+                className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
+                title={expanded ? "Dock logs drawer" : "Expand logs to full screen"}
+              >
+                {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </button>
+              <button
+                onClick={onClose}
+                className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
 
           {/* Tabs + controls */}
@@ -464,7 +508,8 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
                     visibleLines
                       .slice(-200)
                       .map((l) => l.raw.replace(/\r?\n$/, ""))
-                      .join("\n")
+                      .join("\n"),
+                    "Copied last 200 lines"
                   )
                 }
                 className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text-subtle transition-colors hover:text-text"
@@ -591,35 +636,33 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
               </button>
             </div>
           )}
+
+          {toastMsg && (
+            <div className="pointer-events-none absolute bottom-4 right-4">
+              <div className="rounded-lg border border-border bg-surface-elevated/95 px-3 py-2 text-xs text-text shadow-lg shadow-black/30 backdrop-blur-sm">
+                {toastMsg}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
         <div className="border-t border-border px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs text-text-subtle">
-              Tip: scroll up to pause following; use “Jump to bottom to follow” to resume.
+              Tip: scroll up to pause following; use "Jump to bottom to follow" to resume.
             </div>
             <div className="flex items-center gap-2">
               <Button
                 variant="secondary"
-                onClick={() => (selectedLine ? copyText(selectedLine.raw) : undefined)}
+                onClick={() =>
+                  selectedLine ? copyText(selectedLine.raw, "Copied line") : undefined
+                }
                 className="h-8 px-3 text-xs"
                 disabled={!selectedLine}
                 title={selectedLine ? "Copy selected line" : "Click a line above to select it"}
               >
                 Copy
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  pendingRawLinesRef.current = [];
-                  setLines([]);
-                  setDropped(0);
-                  setSelectedLine(null);
-                }}
-                className="h-8 px-3 text-xs"
-              >
-                Clear
               </Button>
             </div>
           </div>
@@ -630,8 +673,10 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
                 ? "Selected line (full text)"
                 : "Click a line to preview/copy full text"}
             </div>
-            <div className="mt-1 max-h-24 overflow-auto whitespace-pre font-mono text-[11px] text-text">
-              {selectedLine?.raw?.replace(/\r?\n$/, "") ?? ""}
+            <div className="mt-2 rounded-md border border-border bg-surface px-2 py-2">
+              <div className="max-h-28 overflow-auto whitespace-pre font-mono text-[12px] leading-relaxed text-text pb-2">
+                {selectedLine?.raw?.replace(/\r?\n$/, "") ?? ""}
+              </div>
             </div>
           </div>
         </div>

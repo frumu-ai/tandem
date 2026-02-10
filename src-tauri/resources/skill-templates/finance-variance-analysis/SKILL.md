@@ -1,4 +1,5 @@
 ---
+name: finance-variance-analysis
 description: Decompose variances into drivers with narrative explanations and waterfall analysis
 ---
 

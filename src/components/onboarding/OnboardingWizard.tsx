@@ -137,7 +137,8 @@ export function OnboardingWizard({
                     </p>
                   </div>
                   <Button onClick={onBrowsePacks}>
-                    Browse Packs <ArrowRight className="ml-2 h-4 w-4" />
+                    Browse
+                    <ArrowRight className="ml-2 h-4 w-4" />
                   </Button>
                 </div>
                 <div className="mt-3">

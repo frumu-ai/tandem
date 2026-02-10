@@ -301,7 +301,6 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         with:
           script: |
-            const core = require('@actions/core');
             const releaseId = process.env.RELEASE_ID;
             const webhook = process.env.DISCORD_WEBHOOK_URL;
             if (!releaseId || !webhook) {
