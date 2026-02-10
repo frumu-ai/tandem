@@ -1079,6 +1079,59 @@ function App() {
               setView("extensions");
             }}
           />
+        ) : effectiveView === "settings" ? (
+          <motion.div
+            key="settings"
+            className="h-full w-full app-background"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+          >
+            <Settings
+              onClose={handleSettingsClose}
+              onProjectChange={loadUserProjects}
+              onProviderChange={refreshAppState}
+              initialSection={settingsInitialSection ?? undefined}
+              onInitialSectionConsumed={() => setSettingsInitialSection(null)}
+            />
+          </motion.div>
+        ) : effectiveView === "extensions" ? (
+          <motion.div
+            key="extensions"
+            className="h-full w-full app-background"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+          >
+            <Extensions
+              workspacePath={activeProject?.path || state?.workspace_path || null}
+              initialTab={extensionsInitialTab ?? undefined}
+              onInitialTabConsumed={() => setExtensionsInitialTab(null)}
+              onClose={() => setView("chat")}
+            />
+          </motion.div>
+        ) : effectiveView === "about" ? (
+          <motion.div
+            key="about"
+            className="h-full w-full app-background relative"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+          >
+            <div className="absolute right-4 top-4 z-10">
+              <button
+                type="button"
+                onClick={() => setView("chat")}
+                className="rounded-lg border border-border bg-surface/70 px-3 py-2 text-sm text-text transition-colors hover:bg-surface-elevated"
+              >
+                Close
+              </button>
+            </div>
+            <About />
+          </motion.div>
         ) : (
           <>
             {/* Chat Area */}
@@ -1154,54 +1207,6 @@ function App() {
                   }}
                 />
               )}
-              <AnimatePresence>
-                {effectiveView === "settings" && (
-                  <motion.div
-                    key="settings"
-                    className="absolute inset-0 z-30 app-background"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.8, ease: "easeOut" }}
-                  >
-                    <Settings
-                      onClose={handleSettingsClose}
-                      onProjectChange={loadUserProjects}
-                      onProviderChange={refreshAppState}
-                      initialSection={settingsInitialSection ?? undefined}
-                      onInitialSectionConsumed={() => setSettingsInitialSection(null)}
-                    />
-                  </motion.div>
-                )}
-                {effectiveView === "extensions" && (
-                  <motion.div
-                    key="extensions"
-                    className="absolute inset-0 z-30 app-background"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.8, ease: "easeOut" }}
-                  >
-                    <Extensions
-                      workspacePath={activeProject?.path || state?.workspace_path || null}
-                      initialTab={extensionsInitialTab ?? undefined}
-                      onInitialTabConsumed={() => setExtensionsInitialTab(null)}
-                    />
-                  </motion.div>
-                )}
-                {effectiveView === "about" && (
-                  <motion.div
-                    key="about"
-                    className="absolute inset-0 z-30 app-background"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.8, ease: "easeOut" }}
-                  >
-                    <About />
-                  </motion.div>
-                )}
-              </AnimatePresence>
             </div>
 
             {/* File Preview Panel */}

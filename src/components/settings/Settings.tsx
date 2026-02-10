@@ -7,7 +7,6 @@ import {
   Cpu,
   Palette,
   Image as ImageIcon,
-  Upload,
   ChevronDown,
   ChevronRight,
   Check,
@@ -42,7 +41,6 @@ import {
   removeProject,
   setActiveProject,
   setCustomBackgroundImage,
-  setCustomBackgroundImageBytes,
   setCustomBackgroundSettings,
   storeApiKey,
   checkGitStatus,
@@ -98,7 +96,6 @@ export function Settings({
   const [customBg, setCustomBg] = useState<CustomBackgroundInfo | null>(null);
   const [customBgLoading, setCustomBgLoading] = useState(false);
   const [customBgError, setCustomBgError] = useState<string | null>(null);
-  const [isBgDragging, setIsBgDragging] = useState(false);
   const bgSaveTimerRef = useRef<number | null>(null);
 
   // Custom provider state
@@ -827,63 +824,6 @@ export function Settings({
               )}
 
               <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div
-                  className={`relative overflow-hidden rounded-lg border border-dashed p-4 text-center transition-colors ${
-                    isBgDragging
-                      ? "border-primary bg-primary/10"
-                      : "border-border bg-surface/30 hover:bg-surface/40"
-                  }`}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setIsBgDragging(true);
-                  }}
-                  onDragLeave={(e) => {
-                    e.preventDefault();
-                    setIsBgDragging(false);
-                  }}
-                  onDrop={async (e) => {
-                    e.preventDefault();
-                    setIsBgDragging(false);
-                    setCustomBgError(null);
-
-                    const file = e.dataTransfer?.files?.[0];
-                    if (!file) return;
-
-                    try {
-                      setCustomBgLoading(true);
-                      const buf = await file.arrayBuffer();
-                      const bytes = new Uint8Array(buf);
-
-                      let info: CustomBackgroundInfo;
-                      try {
-                        info = await setCustomBackgroundImageBytes(file.name, bytes);
-                      } catch {
-                        // Fallback for environments that don't support Uint8Array in invoke payloads.
-                        info = await setCustomBackgroundImageBytes(file.name, Array.from(bytes));
-                      }
-
-                      setCustomBg(info);
-                      applyCustomBackground(info);
-                      mirrorCustomBackgroundToLocalStorage(info);
-                    } catch (err) {
-                      console.error("Failed to set custom background from drop:", err);
-                      setCustomBgError(
-                        typeof err === "string"
-                          ? err
-                          : err instanceof Error
-                            ? err.message
-                            : "Failed to set background image."
-                      );
-                    } finally {
-                      setCustomBgLoading(false);
-                    }
-                  }}
-                >
-                  <Upload className="mx-auto h-5 w-5 text-text-muted" />
-                  <p className="mt-2 text-sm font-medium text-text">Drag and drop an image</p>
-                  <p className="mt-1 text-[11px] text-text-subtle">PNG, JPG, or WebP up to 20MB</p>
-                </div>
-
                 <div className="rounded-lg border border-border bg-surface/30 p-3">
                   <p className="text-xs font-medium text-text-muted">Preview</p>
                   <div className="mt-2 aspect-video overflow-hidden rounded-md border border-border bg-surface">
