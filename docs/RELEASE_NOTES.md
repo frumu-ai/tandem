@@ -1,3 +1,11 @@
+# Tandem v0.2.16 Release Notes
+
+## Highlights
+
+- **Update Prompt Layout Fix**: Fix the in-app update prompt becoming constrained/squished due to theme background layering CSS.
+
+---
+
 # Tandem v0.2.15 Release Notes
 
 ## Highlights
