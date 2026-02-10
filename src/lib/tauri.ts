@@ -379,6 +379,46 @@ export async function setUserTheme(themeId: string): Promise<void> {
   return invoke("set_user_theme", { themeId });
 }
 
+export type CustomBackgroundFit = "cover" | "contain" | "tile";
+
+export interface CustomBackgroundSettings {
+  enabled: boolean;
+  file_name: string | null;
+  fit: CustomBackgroundFit;
+  opacity: number; // 0..1
+}
+
+export interface CustomBackgroundInfo {
+  settings: CustomBackgroundSettings;
+  file_path: string | null;
+}
+
+export async function getCustomBackground(): Promise<CustomBackgroundInfo> {
+  return invoke("get_custom_background");
+}
+
+export async function setCustomBackgroundImage(sourcePath: string): Promise<CustomBackgroundInfo> {
+  return invoke("set_custom_background_image", { sourcePath });
+}
+
+export async function setCustomBackgroundImageBytes(
+  fileName: string,
+  bytes: number[] | Uint8Array
+): Promise<CustomBackgroundInfo> {
+  // Tauri supports Uint8Array, but number[] works everywhere.
+  return invoke("set_custom_background_image_bytes", { fileName, bytes });
+}
+
+export async function setCustomBackgroundSettings(
+  settings: CustomBackgroundSettings
+): Promise<void> {
+  return invoke("set_custom_background_settings", { settings });
+}
+
+export async function clearCustomBackgroundImage(): Promise<void> {
+  return invoke("clear_custom_background_image");
+}
+
 // ============================================================================
 // Provider Configuration
 // ============================================================================

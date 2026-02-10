@@ -6,6 +6,8 @@ import {
   Shield,
   Cpu,
   Palette,
+  Image as ImageIcon,
+  Upload,
   ChevronDown,
   ChevronRight,
   Check,
@@ -14,6 +16,7 @@ import {
   Info,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { ProviderCard } from "./ProviderCard";
 import { ThemePicker } from "./ThemePicker";
 import { Button } from "@/components/ui/Button";
@@ -25,6 +28,12 @@ import { MemoryStats } from "./MemoryStats";
 
 import { useUpdater } from "@/hooks/useUpdater";
 import {
+  applyCustomBackground,
+  mirrorCustomBackgroundToLocalStorage,
+} from "@/lib/customBackground";
+import {
+  clearCustomBackgroundImage,
+  getCustomBackground,
   getProvidersConfig,
   setProvidersConfig,
   getUserProjects,
@@ -32,11 +41,15 @@ import {
   addProject,
   removeProject,
   setActiveProject,
+  setCustomBackgroundImage,
+  setCustomBackgroundImageBytes,
+  setCustomBackgroundSettings,
   storeApiKey,
   checkGitStatus,
   initializeGitRepo,
   checkSidecarStatus,
   type ProvidersConfig,
+  type CustomBackgroundInfo,
   type UserProject,
   type SidecarStatus,
 } from "@/lib/tauri";
@@ -81,6 +94,13 @@ export function Settings({
   const [appVersion, setAppVersion] = useState<string>("");
   const [sidecarStatus, setSidecarStatus] = useState<SidecarStatus | null>(null);
 
+  // Custom background image (global)
+  const [customBg, setCustomBg] = useState<CustomBackgroundInfo | null>(null);
+  const [customBgLoading, setCustomBgLoading] = useState(false);
+  const [customBgError, setCustomBgError] = useState<string | null>(null);
+  const [isBgDragging, setIsBgDragging] = useState(false);
+  const bgSaveTimerRef = useRef<number | null>(null);
+
   // Custom provider state
   const [customEndpoint, setCustomEndpoint] = useState("");
   const [customModel, setCustomModel] = useState("");
@@ -96,9 +116,36 @@ export function Settings({
 
   useEffect(() => {
     loadSettings();
+    void loadCustomBackground();
     getVersion().then(setAppVersion);
     checkSidecarStatus().then(setSidecarStatus).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (bgSaveTimerRef.current) {
+        globalThis.clearTimeout(bgSaveTimerRef.current);
+        bgSaveTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  async function loadCustomBackground() {
+    try {
+      setCustomBgLoading(true);
+      setCustomBgError(null);
+      const info = await getCustomBackground();
+      setCustomBg(info);
+      applyCustomBackground(info);
+      mirrorCustomBackgroundToLocalStorage(info);
+    } catch (err) {
+      console.error("Failed to load custom background:", err);
+      setCustomBgError("Failed to load custom background settings.");
+      setCustomBg(null);
+    } finally {
+      setCustomBgLoading(false);
+    }
+  }
 
   useEffect(() => {
     if (!initialSection) return;
@@ -152,43 +199,43 @@ export function Settings({
     // When enabling a provider, disable all others
     const updated = enabled
       ? {
-        openrouter: {
-          ...providers.openrouter,
-          enabled: provider === "openrouter",
-          default: provider === "openrouter",
-        },
-        opencode_zen: {
-          ...providers.opencode_zen,
-          enabled: provider === "opencode_zen",
-          default: provider === "opencode_zen",
-        },
-        anthropic: {
-          ...providers.anthropic,
-          enabled: provider === "anthropic",
-          default: provider === "anthropic",
-        },
-        openai: {
-          ...providers.openai,
-          enabled: provider === "openai",
-          default: provider === "openai",
-        },
-        ollama: {
-          ...providers.ollama,
-          enabled: provider === "ollama",
-          default: provider === "ollama",
-        },
-        poe: {
-          ...providers.poe,
-          enabled: provider === "poe",
-          default: provider === "poe",
-        },
-        custom: providers.custom,
-        selected_model: providers.selected_model ?? null,
-      }
+          openrouter: {
+            ...providers.openrouter,
+            enabled: provider === "openrouter",
+            default: provider === "openrouter",
+          },
+          opencode_zen: {
+            ...providers.opencode_zen,
+            enabled: provider === "opencode_zen",
+            default: provider === "opencode_zen",
+          },
+          anthropic: {
+            ...providers.anthropic,
+            enabled: provider === "anthropic",
+            default: provider === "anthropic",
+          },
+          openai: {
+            ...providers.openai,
+            enabled: provider === "openai",
+            default: provider === "openai",
+          },
+          ollama: {
+            ...providers.ollama,
+            enabled: provider === "ollama",
+            default: provider === "ollama",
+          },
+          poe: {
+            ...providers.poe,
+            enabled: provider === "poe",
+            default: provider === "poe",
+          },
+          custom: providers.custom,
+          selected_model: providers.selected_model ?? null,
+        }
       : {
-        ...providers,
-        [provider]: { ...providers[provider], enabled: false, default: false },
-      };
+          ...providers,
+          [provider]: { ...providers[provider], enabled: false, default: false },
+        };
 
     setProviders(updated);
     await setProvidersConfig(updated);
@@ -701,6 +748,209 @@ export function Settings({
           </CardHeader>
           <CardContent>
             <ThemePicker variant="compact" />
+
+            <div className="mt-4 rounded-xl border border-border bg-surface-elevated/30 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-surface">
+                    <ImageIcon className="h-4 w-4 text-text-muted" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-text">Background image (optional)</p>
+                    <p className="mt-0.5 text-xs text-text-muted">
+                      Overlay a personal image on top of your theme background.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={customBgLoading}
+                    onClick={async () => {
+                      try {
+                        setCustomBgError(null);
+                        const picked = await open({
+                          multiple: false,
+                          filters: [
+                            {
+                              name: "Images",
+                              extensions: ["png", "jpg", "jpeg", "webp"],
+                            },
+                          ],
+                        });
+                        if (!picked || typeof picked !== "string") return;
+
+                        const info = await setCustomBackgroundImage(picked);
+                        setCustomBg(info);
+                        applyCustomBackground(info);
+                        mirrorCustomBackgroundToLocalStorage(info);
+                      } catch (err) {
+                        console.error("Failed to set custom background:", err);
+                        setCustomBgError(
+                          typeof err === "string"
+                            ? err
+                            : err instanceof Error
+                              ? err.message
+                              : "Failed to set background image."
+                        );
+                      }
+                    }}
+                  >
+                    Choose…
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!customBg?.file_path || customBgLoading}
+                    onClick={async () => {
+                      try {
+                        setCustomBgError(null);
+                        await clearCustomBackgroundImage();
+                        await loadCustomBackground();
+                      } catch (err) {
+                        console.error("Failed to clear custom background:", err);
+                        setCustomBgError("Failed to clear background image.");
+                      }
+                    }}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+
+              {customBgError && (
+                <p className="mt-3 text-xs text-error" role="alert">
+                  {customBgError}
+                </p>
+              )}
+
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div
+                  className={`relative overflow-hidden rounded-lg border border-dashed p-4 text-center transition-colors ${
+                    isBgDragging
+                      ? "border-primary bg-primary/10"
+                      : "border-border bg-surface/30 hover:bg-surface/40"
+                  }`}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsBgDragging(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    setIsBgDragging(false);
+                  }}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    setIsBgDragging(false);
+                    setCustomBgError(null);
+
+                    const file = e.dataTransfer?.files?.[0];
+                    if (!file) return;
+
+                    try {
+                      setCustomBgLoading(true);
+                      const buf = await file.arrayBuffer();
+                      const bytes = new Uint8Array(buf);
+
+                      let info: CustomBackgroundInfo;
+                      try {
+                        info = await setCustomBackgroundImageBytes(file.name, bytes);
+                      } catch {
+                        // Fallback for environments that don't support Uint8Array in invoke payloads.
+                        info = await setCustomBackgroundImageBytes(file.name, Array.from(bytes));
+                      }
+
+                      setCustomBg(info);
+                      applyCustomBackground(info);
+                      mirrorCustomBackgroundToLocalStorage(info);
+                    } catch (err) {
+                      console.error("Failed to set custom background from drop:", err);
+                      setCustomBgError(
+                        typeof err === "string"
+                          ? err
+                          : err instanceof Error
+                            ? err.message
+                            : "Failed to set background image."
+                      );
+                    } finally {
+                      setCustomBgLoading(false);
+                    }
+                  }}
+                >
+                  <Upload className="mx-auto h-5 w-5 text-text-muted" />
+                  <p className="mt-2 text-sm font-medium text-text">Drag and drop an image</p>
+                  <p className="mt-1 text-[11px] text-text-subtle">PNG, JPG, or WebP up to 20MB</p>
+                </div>
+
+                <div className="rounded-lg border border-border bg-surface/30 p-3">
+                  <p className="text-xs font-medium text-text-muted">Preview</p>
+                  <div className="mt-2 aspect-video overflow-hidden rounded-md border border-border bg-surface">
+                    {customBg?.file_path ? (
+                      <img
+                        src={convertFileSrc(customBg.file_path)}
+                        alt="Custom background preview"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-xs text-text-subtle">
+                        No image selected
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-xs font-medium text-text-muted" htmlFor="bg-opacity">
+                    Opacity
+                  </label>
+                  <span className="text-xs text-text-subtle">
+                    {Math.round(((customBg?.settings.opacity ?? 0.3) as number) * 100)}%
+                  </span>
+                </div>
+
+                <input
+                  id="bg-opacity"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={Math.round(((customBg?.settings.opacity ?? 0.3) as number) * 100)}
+                  disabled={!customBg?.file_path}
+                  className="mt-2 w-full accent-primary disabled:opacity-50"
+                  onChange={(e) => {
+                    if (!customBg) return;
+                    const nextOpacity = Number(e.target.value) / 100;
+                    const next: CustomBackgroundInfo = {
+                      ...customBg,
+                      settings: {
+                        ...customBg.settings,
+                        enabled: true,
+                        opacity: nextOpacity,
+                      },
+                    };
+
+                    setCustomBg(next);
+                    applyCustomBackground(next);
+                    mirrorCustomBackgroundToLocalStorage(next);
+
+                    if (bgSaveTimerRef.current) {
+                      globalThis.clearTimeout(bgSaveTimerRef.current);
+                    }
+                    bgSaveTimerRef.current = globalThis.setTimeout(async () => {
+                      try {
+                        await setCustomBackgroundSettings(next.settings);
+                      } catch (err) {
+                        console.error("Failed to persist custom background settings:", err);
+                      }
+                    }, 200);
+                  }}
+                />
+              </div>
+            </div>
           </CardContent>
         </Card>
 

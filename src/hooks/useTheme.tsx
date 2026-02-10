@@ -1,7 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ThemeDefinition, ThemeId } from "@/types/theme";
 import { DEFAULT_THEME_ID, THEMES, cycleThemeId, getThemeById } from "@/lib/themes";
-import { getUserTheme, setUserTheme } from "@/lib/tauri";
+import { getCustomBackground, getUserTheme, setUserTheme } from "@/lib/tauri";
+import {
+  applyCustomBackground,
+  mirrorCustomBackgroundToLocalStorage,
+  CUSTOM_BG_STORAGE_KEY,
+} from "@/lib/customBackground";
 
 const THEME_STORAGE_KEY = "tandem.themeId";
 
@@ -53,6 +58,32 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
         }
       } finally {
         if (!cancelled) setIsLoaded(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Load persisted custom background (best-effort; supports web dev as well)
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const info = await getCustomBackground();
+        if (cancelled) return;
+        applyCustomBackground(info);
+        mirrorCustomBackgroundToLocalStorage(info);
+      } catch {
+        if (cancelled) return;
+        applyCustomBackground(null);
+        try {
+          localStorage.removeItem(CUSTOM_BG_STORAGE_KEY);
+        } catch {
+          // ignore storage failures
+        }
       }
     })();
 
