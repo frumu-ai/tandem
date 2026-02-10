@@ -6,6 +6,7 @@ use crate::tool_proxy::{OperationJournal, StagingStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex as StdMutex;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{Mutex, Semaphore};
 
@@ -250,6 +251,8 @@ pub struct AppState {
     /// Active log streaming tasks (stream_id -> stop signal sender)
     pub active_log_streams:
         Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>>,
+    /// File tree watcher for the Files view (kept alive while active).
+    pub file_tree_watcher: Arc<StdMutex<Option<crate::file_watcher::FileTreeWatcher>>>,
 }
 
 impl AppState {
@@ -284,6 +287,7 @@ impl AppState {
             ralph_manager: Arc::new(crate::ralph::RalphLoopManager::new()),
             orchestrator_engines: RwLock::new(std::collections::HashMap::new()),
             active_log_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            file_tree_watcher: Arc::new(StdMutex::new(None)),
         }
     }
 

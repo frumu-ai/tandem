@@ -815,6 +815,23 @@ export async function readBinaryFile(path: string, maxSize?: number): Promise<st
 }
 
 // ============================================================================
+// Files View: File Tree Watcher (auto-refresh)
+// ============================================================================
+
+export interface FileTreeChangedPayload {
+  root: string;
+  paths: string[];
+}
+
+export async function startFileTreeWatcher(rootPath: string): Promise<void> {
+  return invoke("start_file_tree_watcher", { rootPath });
+}
+
+export async function stopFileTreeWatcher(): Promise<void> {
+  return invoke("stop_file_tree_watcher");
+}
+
+// ============================================================================
 // Python Environment (Workspace Venv Wizard)
 // ============================================================================
 

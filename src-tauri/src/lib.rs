@@ -470,6 +470,9 @@ pub fn run() {
             commands::read_file_content,
             commands::read_file_text,
             commands::read_binary_file,
+            // File tree watcher (Files view)
+            commands::start_file_tree_watcher,
+            commands::stop_file_tree_watcher,
             // Python environment (workspace venv)
             commands::python_get_status,
             commands::python_create_venv,

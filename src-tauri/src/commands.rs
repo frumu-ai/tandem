@@ -1503,6 +1503,51 @@ pub async fn get_sidecar_status(state: State<'_, AppState>) -> Result<SidecarSta
 }
 
 // ============================================================================
+// File Tree Watcher (Files view auto-refresh)
+// ============================================================================
+
+#[tauri::command]
+pub fn start_file_tree_watcher(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    root_path: String,
+) -> Result<()> {
+    let root = PathBuf::from(&root_path);
+    if !state.is_path_allowed(&root) {
+        return Err(TandemError::PermissionDenied(format!(
+            "Watcher root is outside allowed workspace: {}",
+            root_path
+        )));
+    }
+    if !root.exists() || !root.is_dir() {
+        return Err(TandemError::InvalidConfig(format!(
+            "Watcher root is not a directory: {}",
+            root_path
+        )));
+    }
+
+    let watcher = crate::file_watcher::FileTreeWatcher::new(&root, app)
+        .map_err(|e| TandemError::InvalidConfig(format!("Failed to start file watcher: {}", e)))?;
+
+    let mut guard = state
+        .file_tree_watcher
+        .lock()
+        .map_err(|_| TandemError::InvalidOperation("Watcher lock poisoned".to_string()))?;
+    *guard = Some(watcher);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_file_tree_watcher(state: State<'_, AppState>) -> Result<()> {
+    let mut guard = state
+        .file_tree_watcher
+        .lock()
+        .map_err(|_| TandemError::InvalidOperation("Watcher lock poisoned".to_string()))?;
+    *guard = None;
+    Ok(())
+}
+
+// ============================================================================
 // Session Management
 // ============================================================================
 

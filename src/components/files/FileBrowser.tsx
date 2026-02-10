@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Folder,
@@ -13,7 +13,14 @@ import {
   ChevronDown,
   Loader2,
 } from "lucide-react";
-import { readDirectory, type FileEntry } from "@/lib/tauri";
+import { listen } from "@tauri-apps/api/event";
+import {
+  readDirectory,
+  startFileTreeWatcher,
+  stopFileTreeWatcher,
+  type FileEntry,
+  type FileTreeChangedPayload,
+} from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 interface FileBrowserProps {
@@ -30,9 +37,11 @@ interface TreeNode extends FileEntry {
 
 export function FileBrowser({ rootPath, onFileSelect, selectedPath }: FileBrowserProps) {
   const [tree, setTree] = useState<TreeNode[]>([]);
+  const treeRef = useRef<TreeNode[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const refreshTimerRef = useRef<number | null>(null);
 
   // Load root directory
   const loadDirectory = useCallback(async (path: string) => {
@@ -59,6 +68,100 @@ export function FileBrowser({ rootPath, onFileSelect, selectedPath }: FileBrowse
       loadDirectory(rootPath);
     }
   }, [rootPath, loadDirectory]);
+
+  useEffect(() => {
+    treeRef.current = tree;
+  }, [tree]);
+
+  const refreshTree = useCallback(async (path: string) => {
+    // Rebuild the tree, refreshing any expanded folders, so new files appear without losing context.
+    const build = async (dirPath: string, prevChildren?: TreeNode[]): Promise<TreeNode[]> => {
+      const entries = await readDirectory(dirPath);
+      const prevByPath = new Map((prevChildren ?? []).map((n) => [n.path, n]));
+
+      const nodes: TreeNode[] = [];
+      for (const entry of entries) {
+        const prev = prevByPath.get(entry.path);
+        const isExpanded = prev?.isExpanded ?? false;
+        const node: TreeNode = {
+          ...entry,
+          children: entry.is_directory ? [] : undefined,
+          isExpanded,
+          isLoading: false,
+        };
+
+        if (entry.is_directory && isExpanded) {
+          try {
+            node.children = await build(entry.path, prev?.children);
+          } catch {
+            // If a directory becomes unreadable, keep existing children.
+            node.children = prev?.children ?? [];
+          }
+        }
+
+        nodes.push(node);
+      }
+      return nodes;
+    };
+
+    try {
+      const next = await build(path, treeRef.current);
+      setTree(next);
+    } catch (e) {
+      console.warn("[FileBrowser] Failed to refresh tree:", e);
+    }
+  }, []);
+
+  // Watch for filesystem changes while the Files view is mounted.
+  useEffect(() => {
+    if (!rootPath) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    const scheduleRefresh = () => {
+      if (refreshTimerRef.current) {
+        globalThis.clearTimeout(refreshTimerRef.current);
+      }
+      refreshTimerRef.current = globalThis.setTimeout(() => {
+        if (disposed) return;
+        void refreshTree(rootPath);
+      }, 200);
+    };
+
+    const start = async () => {
+      try {
+        await startFileTreeWatcher(rootPath);
+      } catch (e) {
+        console.warn("[FileBrowser] Failed to start watcher:", e);
+      }
+
+      try {
+        const un = await listen<FileTreeChangedPayload>("file-tree-changed", (event) => {
+          const payload = event.payload;
+          if (!payload?.root) return;
+          // Only react to our active root
+          if (payload.root !== rootPath) return;
+          scheduleRefresh();
+        });
+        unlisten = un;
+      } catch (e) {
+        console.warn("[FileBrowser] Failed to listen for file-tree-changed:", e);
+      }
+    };
+
+    void start();
+
+    return () => {
+      disposed = true;
+      if (refreshTimerRef.current) {
+        globalThis.clearTimeout(refreshTimerRef.current);
+      }
+      if (unlisten) unlisten();
+      // Best-effort stop; if another view starts it immediately, that's fine.
+      void stopFileTreeWatcher();
+    };
+  }, [rootPath, refreshTree]);
 
   // Load children for a directory
   const loadChildren = async (node: TreeNode, path: string[]): Promise<TreeNode[]> => {
