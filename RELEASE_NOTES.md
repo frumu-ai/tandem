@@ -9,6 +9,8 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Skills: Improve Skills install/manage UX (runtime note, clearer installed-skill counts, and jump-to-installed).
 - Packs: Packs page now shows packs only (remove starter skills section) and moves the runtime note to the top.
 - Diagnostics: Improve Logs viewer UX (fullscreen + copy feedback); fix an invalid bundled skill template frontmatter that was being skipped.
+- Files: Folder entries no longer show `NaN`/`undefined` sizes in the file browser (directory size display removed).
+- Files: Add Rust-based text extraction for common document formats (PDF, DOCX, PPTX, XLSX/XLS/ODS/XLSB, RTF) via `read_file_text`, so these attachments can be previewed and included as usable text in skills/chats without requiring Python.
 - Dev: In `tauri dev`, load starter skill templates from `src-tauri/resources/skill-templates/` so newly added templates appear immediately.
 - Docs: Add a developer guide for adding skills in `CONTRIBUTING.md`.
 

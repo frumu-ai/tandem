@@ -12,6 +12,7 @@ use crate::orchestrator::{
     store::OrchestratorStore,
     types::{Budget, OrchestratorConfig, Run, RunSnapshot, RunStatus, RunSummary, Task, TaskState},
 };
+use crate::python_env;
 use crate::sidecar::{
     CreateSessionRequest, FilePartInput, ModelInfo, ModelSpec, Project, ProviderInfo,
     SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent, TodoItem,
@@ -2371,6 +2372,33 @@ pub async fn approve_tool(
         args
     );
 
+    // Strict Python venv enforcement for AI terminal-like tools.
+    // Goal: prevent global pip installs and python runs outside `.opencode/.venv`.
+    if let (Some(tool_name), Some(args_val)) = (tool.clone(), args.clone()) {
+        let is_terminal_tool = matches!(
+            tool_name.as_str(),
+            "bash" | "shell" | "run_command" | "terminal" | "cmd"
+        );
+
+        if is_terminal_tool {
+            if let Some(command) = args_val.get("command").and_then(|v| v.as_str()) {
+                let ws = state
+                    .get_workspace_path()
+                    .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+
+                if let Some(msg) = python_env::check_terminal_command_policy(&ws, command) {
+                    tracing::info!(
+                        "[python_policy] Denying terminal command (tool={}): {}",
+                        tool_name,
+                        command.replace('\n', " ")
+                    );
+                    let _ = state.sidecar.deny_tool(&session_id, &tool_call_id).await;
+                    return Err(TandemError::PermissionDenied(msg));
+                }
+            }
+        }
+    }
+
     // Capture a snapshot BEFORE allowing the tool to run, so we can undo file changes later.
     // We only snapshot direct file tools (write/delete). Shell commands and reads are too broad.
     // Note: OpenCode's tool names are "write", "delete", "read", "bash", "list", "search", etc.
@@ -3697,6 +3725,82 @@ pub fn read_binary_file(
 
     let bytes = fs::read(&file_path).map_err(TandemError::Io)?;
     Ok(STANDARD.encode(&bytes))
+}
+
+/// Read a file as text, with best-effort extraction for common document formats.
+///
+/// Supported extraction (pure Rust):
+/// - PDF: `.pdf`
+/// - Word: `.docx`
+/// - PowerPoint: `.pptx`
+/// - Excel: `.xlsx`, `.xls`, `.ods`, `.xlsb`
+/// - Rich Text: `.rtf`
+///
+/// All other file types fall back to UTF-8 text reading.
+#[tauri::command]
+pub async fn read_file_text(
+    _state: State<'_, AppState>,
+    path: String,
+    max_size: Option<u64>,
+    max_chars: Option<usize>,
+) -> Result<String> {
+    let file_path = PathBuf::from(&path);
+
+    let mut limits = crate::document_text::ExtractLimits::default();
+    if let Some(max_size) = max_size {
+        limits.max_file_bytes = max_size;
+    }
+    if let Some(max_chars) = max_chars {
+        limits.max_output_chars = max_chars;
+    }
+
+    crate::document_text::extract_file_text(&file_path, limits)
+}
+
+// ============================================================================
+// Python Environment (Workspace Venv Wizard)
+// ============================================================================
+
+#[tauri::command]
+pub async fn python_get_status(state: State<'_, AppState>) -> Result<python_env::PythonStatus> {
+    let ws = state.get_workspace_path();
+    Ok(python_env::get_status(ws.as_deref()))
+}
+
+#[tauri::command]
+pub async fn python_create_venv(
+    state: State<'_, AppState>,
+    selected: Option<String>,
+) -> Result<python_env::PythonStatus> {
+    let ws = state
+        .get_workspace_path()
+        .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+
+    tokio::task::spawn_blocking(move || python_env::create_venv(&ws, selected))
+        .await
+        .map_err(|e| TandemError::InvalidConfig(format!("Failed to create venv: {}", e)))?
+}
+
+#[tauri::command]
+pub async fn python_install_requirements(
+    state: State<'_, AppState>,
+    requirements_path: String,
+) -> Result<python_env::PythonInstallResult> {
+    let ws = state
+        .get_workspace_path()
+        .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+
+    let req_path = PathBuf::from(&requirements_path);
+    if !state.is_path_allowed(&req_path) {
+        return Err(TandemError::PermissionDenied(format!(
+            "Requirements path is outside the allowed workspace: {}",
+            requirements_path
+        )));
+    }
+
+    tokio::task::spawn_blocking(move || python_env::install_requirements(&ws, &req_path))
+        .await
+        .map_err(|e| TandemError::InvalidConfig(format!("Failed to install requirements: {}", e)))?
 }
 
 // ============================================================================

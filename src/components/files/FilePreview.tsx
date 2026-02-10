@@ -18,7 +18,13 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { readFileContent, readBinaryFile, type FileEntry, logFrontendError } from "@/lib/tauri";
+import {
+  readFileContent,
+  readFileText,
+  readBinaryFile,
+  type FileEntry,
+  logFrontendError,
+} from "@/lib/tauri";
 import { PresentationPreview } from "./PresentationPreview";
 import { HtmlPreview } from "./HtmlPreview";
 // import { cn } from "@/lib/utils"; // Unused
@@ -81,6 +87,17 @@ const TEXT_EXTENSIONS = new Set([
   "conf",
 ]);
 
+const EXTRACTABLE_DOC_EXTENSIONS = new Set([
+  "pdf",
+  "docx",
+  "pptx",
+  "xlsx",
+  "xls",
+  "ods",
+  "xlsb",
+  "rtf",
+]);
+
 function getPreviewType(file: FileEntry): PreviewType {
   // Check for presentation files first (full filename match)
   if (file.name.endsWith(".tandem.ppt.json")) return "presentation";
@@ -94,6 +111,7 @@ function getPreviewType(file: FileEntry): PreviewType {
   if (IMAGE_EXTENSIONS.has(ext)) return "image";
   if (CODE_EXTENSIONS.has(ext)) return "code";
   if (TEXT_EXTENSIONS.has(ext)) return "text";
+  if (EXTRACTABLE_DOC_EXTENSIONS.has(ext)) return "text";
   return "binary";
 }
 
@@ -217,7 +235,11 @@ export function FilePreview({ file, onClose, onAddToChat }: FilePreviewProps) {
       try {
         setIsLoading(true);
         setError(null);
-        const fileContent = await readFileContent(file.path);
+        const ext = file.extension?.toLowerCase();
+        const fileContent =
+          ext && EXTRACTABLE_DOC_EXTENSIONS.has(ext)
+            ? await readFileText(file.path, 25 * 1024 * 1024, 200_000)
+            : await readFileContent(file.path);
         setContent(fileContent);
       } catch (err) {
         console.error("Failed to load file content:", err);

@@ -2,6 +2,7 @@
 // This is the main library entry point for the Tauri application
 
 mod commands;
+mod document_text;
 mod error;
 mod file_watcher;
 mod keystore;
@@ -12,6 +13,7 @@ mod opencode_config;
 pub mod orchestrator;
 mod packs;
 mod presentation;
+mod python_env;
 mod ralph;
 mod sidecar;
 mod sidecar_manager;
@@ -461,7 +463,12 @@ pub fn run() {
             // File browser
             commands::read_directory,
             commands::read_file_content,
+            commands::read_file_text,
             commands::read_binary_file,
+            // Python environment (workspace venv)
+            commands::python_get_status,
+            commands::python_create_venv,
+            commands::python_install_requirements,
             // Skills management
             commands::list_skills,
             commands::list_skills,

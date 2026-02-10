@@ -35,6 +35,7 @@ import {
   getMemorySettings,
   getProjectMemoryStats,
   readFileContent,
+  readFileText,
   readBinaryFile,
   checkGitStatus,
   initializeGitRepo,
@@ -714,10 +715,20 @@ function App() {
 
       // Helper to detect binary files (images and PDFs)
       const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"]);
-      const PDF_EXTENSIONS = new Set(["pdf"]);
+      const EXTRACTABLE_EXTENSIONS = new Set([
+        "pdf",
+        "docx",
+        "pptx",
+        "xlsx",
+        "xls",
+        "ods",
+        "xlsb",
+        "rtf",
+      ]);
       const isImage = file.extension && IMAGE_EXTENSIONS.has(file.extension.toLowerCase());
-      const isPdf = file.extension && PDF_EXTENSIONS.has(file.extension.toLowerCase());
-      const isBinary = isImage || isPdf;
+      const extLower = file.extension?.toLowerCase();
+      const isExtractable = !!extLower && EXTRACTABLE_EXTENSIONS.has(extLower);
+      const isBinary = isImage; // PDFs/docs are handled via Rust text extraction when possible
 
       // Use standard MIME types
       const getMimeType = (ext: string | undefined): string => {
@@ -773,8 +784,11 @@ function App() {
         // Estimate size from base64 (base64 is ~33% larger than original)
         size = Math.floor((base64Content.length * 3) / 4);
       } else {
-        // Read text file content
-        const content = await readFileContent(file.path, 1024 * 1024); // 1MB limit
+        // Read text-like content. For common document formats (PDF/DOCX/XLSX/etc),
+        // extract plain text on the Rust side so the AI can actually use it.
+        const content = isExtractable
+          ? await readFileText(file.path, 25 * 1024 * 1024, 200_000)
+          : await readFileContent(file.path, 1024 * 1024); // 1MB limit
         // Encode text content to base64 using browser's btoa
 
         base64Content = window.btoa(unescape(encodeURIComponent(content)));

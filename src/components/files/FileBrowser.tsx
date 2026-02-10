@@ -197,7 +197,7 @@ export function FileBrowser({ rootPath, onFileSelect, selectedPath }: FileBrowse
           )}
           <Icon className={cn("h-4 w-4 flex-shrink-0", node.is_directory && "text-primary")} />
           <span className="truncate flex-1">{node.name}</span>
-          {node.size !== undefined && (
+          {!node.is_directory && typeof node.size === "number" && Number.isFinite(node.size) && (
             <span className="text-xs text-text-muted flex-shrink-0">
               {formatFileSize(node.size)}
             </span>

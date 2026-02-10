@@ -746,11 +746,28 @@ export async function getStagedCount(): Promise<number> {
 // ============================================================================
 
 export async function readDirectory(path: string): Promise<FileEntry[]> {
-  return invoke("read_directory", { path });
+  const entries = await invoke<FileEntry[]>("read_directory", { path });
+
+  // Tauri/serde serializes Rust `Option<T>` as `null` when `None`.
+  // Normalize `null` to `undefined` so UI checks like `typeof size === "number"` behave predictably.
+  return entries.map((e) => {
+    const raw = e as unknown as { size?: unknown; extension?: unknown };
+    const size = typeof raw.size === "number" ? raw.size : undefined;
+    const extension = typeof raw.extension === "string" ? raw.extension : undefined;
+    return { ...e, size, extension };
+  });
 }
 
 export async function readFileContent(path: string, maxSize?: number): Promise<string> {
   return invoke("read_file_content", { path, maxSize });
+}
+
+export async function readFileText(
+  path: string,
+  maxSize?: number,
+  maxChars?: number
+): Promise<string> {
+  return invoke("read_file_text", { path, maxSize, maxChars });
 }
 
 export async function readBinaryFile(path: string, maxSize?: number): Promise<string> {
