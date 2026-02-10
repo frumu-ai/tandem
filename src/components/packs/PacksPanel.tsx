@@ -19,6 +19,19 @@ export function PacksPanel({
   onOpenInstalledPack,
   onOpenSkills,
 }: PacksPanelProps) {
+  const runtimePillClass = (runtime: string) => {
+    switch (runtime.toLowerCase()) {
+      case "python":
+        return "border-yellow-500/20 bg-yellow-500/10 text-yellow-500";
+      case "node":
+        return "border-emerald-500/20 bg-emerald-500/10 text-emerald-200";
+      case "bash":
+        return "border-sky-500/20 bg-sky-500/10 text-sky-200";
+      default:
+        return "border-border bg-surface-elevated text-text-subtle";
+    }
+  };
+
   const [packs, setPacks] = useState<PackMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [installingId, setInstallingId] = useState<string | null>(null);
@@ -153,13 +166,19 @@ export function PacksPanel({
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className="text-[11px] text-text-subtle">Some packs may require:</span>
-            <span className="rounded-full border border-yellow-500/20 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-500">
+            <span
+              className={cn("rounded-full border px-2 py-0.5 text-xs", runtimePillClass("python"))}
+            >
               Python
             </span>
-            <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-200">
+            <span
+              className={cn("rounded-full border px-2 py-0.5 text-xs", runtimePillClass("node"))}
+            >
               Node
             </span>
-            <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-xs text-sky-200">
+            <span
+              className={cn("rounded-full border px-2 py-0.5 text-xs", runtimePillClass("bash"))}
+            >
               Bash
             </span>
           </div>
@@ -222,13 +241,7 @@ export function PacksPanel({
                         {pack.time_estimate}
                       </span>
                       {(pack.tags ?? []).slice(0, 4).map((t) => (
-                        <span
-                          key={t}
-                          className={cn(
-                            "rounded-full px-2 py-1",
-                            "bg-surface-elevated text-text-subtle"
-                          )}
-                        >
+                        <span key={t} className={cn("rounded-full px-2 py-1", runtimePillClass(t))}>
                           {t}
                         </span>
                       ))}
