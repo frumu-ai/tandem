@@ -307,6 +307,18 @@ export function PacksPanel({
 
           <div className="rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
             <p className="font-medium text-text">Runtime note</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className="text-[11px] text-text-subtle">May require:</span>
+              <span className="rounded-full border border-yellow-500/20 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-500">
+                Python
+              </span>
+              <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-200">
+                Node
+              </span>
+              <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-xs text-sky-200">
+                Bash
+              </span>
+            </div>
             <p className="mt-1">
               Some skills and packs may ask Tandem to run local tools (Python, Node, bash, etc.).
               Tandem does not bundle these runtimes. Use{" "}
