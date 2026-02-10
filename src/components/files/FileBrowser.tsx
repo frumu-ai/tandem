@@ -13,7 +13,6 @@ import {
   ChevronDown,
   Loader2,
 } from "lucide-react";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   readDirectory,
@@ -140,14 +139,18 @@ export function FileBrowser({ rootPath, onFileSelect, selectedPath }: FileBrowse
 
     const start = async () => {
       try {
-        const label = getCurrentWebviewWindow().label;
+        const webview = getCurrentWebviewWindow();
+        const label = webview.label;
         await startFileTreeWatcher(label, rootPath);
       } catch (e) {
         console.warn("[FileBrowser] Failed to start watcher:", e);
       }
 
       try {
-        const un = await listen<FileTreeChangedPayload>("file-tree-changed", (event) => {
+        // Use the webview-specific listener so we catch events emitted from Rust using
+        // WebviewWindow/AppHandle emit variants across Tauri v2 target semantics.
+        const webview = getCurrentWebviewWindow();
+        const un = await webview.listen<FileTreeChangedPayload>("file-tree-changed", (event) => {
           const payload = event.payload;
           if (!payload?.root) return;
           // Only react to our active root (normalized, tolerant for Windows path formatting).
