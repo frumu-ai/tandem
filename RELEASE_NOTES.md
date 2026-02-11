@@ -10,6 +10,15 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Sidecar updates: Improved version comparison with semantic version parsing to avoid incorrect prompts caused by string comparison.
 - UI/Status: Added compatibility-aware sidecar status fields (`latestOverallVersion`, `compatibilityMessage`) and improved overlay messaging when latest overall and latest compatible differ.
 - **Console & Chat UI Fixes**: Resolved an issue where the Console tab would lose history when switching views or restarting the drawer. Also fixed the "Jump to latest" button positioning to ensure it stays pinned to the bottom of the chat.
+- **Streaming Architecture Uplift**: Added a global stream hub with a single long-lived sidecar subscription and fanout to chat, orchestrator, and Ralph.
+- **Event Envelope v2**: Added additive `sidecar_event_v2` envelopes (`event_id`, `correlation_id`, `ts_ms`, `session_id`, `source`, `payload`) while preserving legacy `sidecar_event`.
+- **Stream Health Visibility**: Added explicit stream health signaling (`healthy`, `degraded`, `recovering`) and surfaced status in chat.
+- **Duplicate/Race Reduction**: Refactored `send_message_streaming` to send-only and moved event relay responsibility to the global stream hub.
+- **Reliable Frontend Reconciliation**: Added frontend stream dedupe keyed by `event_id` and wired missing `memory_retrieval` event handling.
+- **Busy-Agent Queue UX**: Added message queue support while generation is active (enqueue on Enter + queue preview with send-next/send-all/remove).
+- **Process Summary UX**: Upgraded assistant tool-call summary cards with compact process status, step counts, running/pending/failed counts, and duration.
+- **Skills Lifecycle Upgrade**: Added import preview + apply flow for SKILL.md/zip packs with deterministic conflict policies (`skip`, `overwrite`, `rename`).
+- **Skills Metadata Expansion**: Surfaced richer skill metadata (`version`, `author`, `tags`, `requires`, `compatibility`, `triggers`) and better invalid-skill parse feedback.
 
 ## v0.2.19 (2026-02-11)
 

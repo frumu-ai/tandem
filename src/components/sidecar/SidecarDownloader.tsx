@@ -16,7 +16,9 @@ interface SidecarStatus {
   installed: boolean;
   version: string | null;
   latestVersion: string | null;
+  latestOverallVersion?: string | null;
   updateAvailable: boolean;
+  compatibilityMessage?: string | null;
   binaryPath: string | null;
 }
 
@@ -71,7 +73,9 @@ export function SidecarDownloader({
         installed: false,
         version: null,
         latestVersion: null,
+        latestOverallVersion: null,
         updateAvailable: false,
+        compatibilityMessage: null,
         binaryPath: null,
       });
     }
@@ -147,8 +151,9 @@ export function SidecarDownloader({
       ? "OpenCode Update Available"
       : "OpenCode AI Engine Required";
 
-  const description =
-    status?.updateAvailable && status?.version
+  const description = status?.compatibilityMessage
+    ? status.compatibilityMessage
+    : status?.updateAvailable && status?.version
       ? `OpenCode ${status.latestVersion} is available. You have ${status.version}.`
       : "Tandem requires the OpenCode AI engine. This is a one-time download (~50MB).";
 

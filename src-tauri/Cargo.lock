@@ -5627,7 +5627,7 @@ dependencies = [
 
 [[package]]
 name = "tandem"
-version = "0.2.19"
+version = "0.2.20"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5649,6 +5649,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

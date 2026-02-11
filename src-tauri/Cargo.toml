@@ -1,6 +1,6 @@
 [package]
 name = "tandem"
-version = "0.2.19"
+version = "0.2.20"
 description = "A local-first, zero-trust AI workspace application"
 authors = ["Tandem Contributors"]
 edition = "2021"
@@ -51,6 +51,7 @@ serde_yaml = "0.9"
 notify = "6.1"
 regex = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
+semver = "1"
 
 # Memory context dependencies
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }

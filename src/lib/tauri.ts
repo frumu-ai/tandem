@@ -73,9 +73,11 @@ export type SidecarState = "stopped" | "starting" | "running" | "stopping" | "fa
 export interface SidecarStatus {
   installed: boolean;
   version: string | null;
-  last_update_check: string | null;
-  update_available: boolean;
-  remote_version: string | null;
+  latestVersion: string | null;
+  latestOverallVersion: string | null;
+  updateAvailable: boolean;
+  compatibilityMessage: string | null;
+  binaryPath: string | null;
 }
 
 export interface SessionTime {

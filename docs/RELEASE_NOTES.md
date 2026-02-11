@@ -1,3 +1,54 @@
+# Tandem v0.2.20 Release Notes
+
+## Highlights
+
+- **Stream reliability foundation**: Tandem now uses a single global stream hub with one long-lived sidecar subscription, then fans events out internally to chat, orchestrator, and Ralph.
+- **Modern event envelopes (backward compatible)**: Added additive `sidecar_event_v2` metadata envelopes (`event_id`, `correlation_id`, `ts_ms`, `session_id`, `source`, `payload`) while keeping legacy `sidecar_event`.
+- **Smoother busy-chat UX**: Enter while generation is active now queues messages (FIFO) with queue controls to send next/all or remove items.
+- **Skills import lifecycle upgrade**: Added SKILL.md/zip import preview and apply workflows with conflict policy control (`skip`, `overwrite`, `rename`) and richer metadata surfacing.
+
+## Complete Feature List
+
+### Streams + Reliability
+
+- Added `stream_hub` as the centralized event substrate for app runtime streaming.
+- Refactored `send_message_streaming` to send-only; stream relay now comes from shared hub.
+- Migrated orchestrator and Ralph event consumption off independent sidecar subscriptions onto hub fanout.
+- Added stream health signaling (`healthy`, `degraded`, `recovering`) and surfaced it in chat.
+- Added frontend deterministic event dedupe keyed by `event_id` from v2 envelopes.
+
+### Chat UX
+
+- Added queue IPC + UI integration:
+  - `queue_message`
+  - `queue_list`
+  - `queue_remove`
+  - `queue_send_next`
+  - `queue_send_all`
+- Queue behavior is FIFO and supports enqueueing while the assistant is currently generating.
+- Added inline queue preview controls in chat.
+- Added missing `memory_retrieval` stream handling path in chat.
+- Improved inline process/tool summary cards with compact status and counts.
+
+### Skills Lifecycle
+
+- Added backend APIs:
+  - `skills_import_preview(fileOrPath, location, namespace?, conflictPolicy)`
+  - `skills_import(fileOrPath, location, namespace?, conflictPolicy)`
+- Added zip-pack SKILL discovery and preview summary before apply.
+- Added deterministic conflict handling policies: `skip`, `overwrite`, `rename`.
+- Added namespaced import-path support for better organization.
+- Expanded surfaced skill metadata:
+  - `version`
+  - `author`
+  - `tags`
+  - `requires`
+  - `compatibility`
+  - `triggers`
+- Improved invalid-skill parse feedback in installed skills UX.
+
+---
+
 # Tandem v0.2.19 Release Notes
 
 ## Highlights

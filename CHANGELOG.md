@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Sidecar Update Compatibility Metadata**: Sidecar status now exposes `latestOverallVersion` and `compatibilityMessage` so the UI can clearly explain when newest overall and newest compatible releases differ.
+- **Global Stream Hub**: Added a single long-lived sidecar stream substrate (`stream_hub`) that fans out events to chat, orchestrator, and Ralph, reducing duplicate subscriptions and race-prone stream wiring.
+- **Event Envelope v2 (Additive)**: Added `sidecar_event_v2` with envelope metadata (`event_id`, `correlation_id`, `ts_ms`, `session_id`, `source`, `payload`) while keeping legacy `sidecar_event` for compatibility.
+- **Stream Health Signaling**: Added explicit stream health events (`healthy`, `degraded`, `recovering`) emitted from the backend and surfaced in chat UI.
+- **Chat Message Queue IPC**: Added queue APIs for busy-agent workflows: `queue_message`, `queue_list`, `queue_remove`, `queue_send_next`, `queue_send_all`.
+- **Skills Import Preview + Conflict Policies**: Added `skills_import_preview` and `skills_import` with deterministic conflict strategies: `skip`, `overwrite`, `rename`.
+- **Skills Pack/Zip Import Support**: Added multi-skill zip import parsing (`SKILL.md` discovery) with pre-apply preview summary.
+- **Richer Skill Metadata Surface**: Expanded skill metadata handling to include `version`, `author`, `tags`, `requires`, `compatibility`, and `triggers`.
 
 ### Fixed
 
@@ -22,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sidecar Update Messaging**: Improved update overlay messaging to surface compatibility context instead of always presenting newest-tag text.
 - **Console History Persistence**: Fixed historical tool executions not loading in the Console tab by correctly parsing persisted `type: "tool"` messages (which differ from live streaming format) and simplifying part-ID resolution.
 - **Chat Jump Button**: Fixed "Jump to latest" button floating in the middle of the view by positioning it as an absolute overlay at the bottom of the message area, independent of scroll content height.
+- **Streaming Subscription Duplication**: Eliminated per-request stream subscription in `send_message_streaming`; message streaming now uses shared stream bus events, reducing duplicate event emission risks.
+- **Memory Retrieval Event Handling in Chat**: Wired frontend handling for `memory_retrieval` stream events so retrieval telemetry is now visible in the active chat flow.
+- **Orchestrator/Ralph Stream Contention**: Migrated orchestrator and Ralph loop event consumption to stream-hub fanout instead of opening independent sidecar event feeds.
+- **Chat Event Duplication Under Load**: Added deterministic frontend dedupe keyed by `event_id` for v2 stream envelopes.
+
+### Changed
+
+- **Streaming Architecture**: Shifted Tandem to a hub-first streaming model with additive v2 envelopes and backward-compatible legacy event emission during migration.
+- **Chat UX During Generation**: Pressing Enter while generation is active now queues messages (FIFO) with inline queue controls for send-next/send-all/remove.
+- **Tool Activity Presentation**: Updated inline assistant tool summary to show compact process-oriented status (step count, running/pending/failed counts, duration) with detail drill-down retained.
 
 ## [0.2.19] - 2026-02-11
 
