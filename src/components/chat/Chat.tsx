@@ -2218,136 +2218,163 @@ ${g.example}
           )}
         >
           {/* Messages */}
-          <div
-            ref={messagesContainerRef}
-            className="relative flex-1 overflow-y-auto overflow-x-hidden pb-48"
-          >
-            {isLoadingHistory ? (
-              <motion.div
-                className="flex h-full items-center justify-center"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-              >
-                <div className="flex flex-col items-center gap-3">
-                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                  <p className="text-sm text-text-muted">Loading chat history...</p>
-                </div>
-              </motion.div>
-            ) : messages.length === 0 && !isGenerating ? (
-              <EmptyState
-                needsConnection={needsConnection}
-                isConnecting={isConnecting}
-                onConnect={connectSidecar}
-                workspacePath={workspacePath}
-                onSendMessage={handleSend}
-                hasConfiguredProvider={hasConfiguredProvider}
-                onOpenSettings={onOpenSettings}
-                onOpenPacks={onOpenPacks}
-                onOpenExtensions={onOpenExtensions}
-              />
-            ) : (
-              <div
-                style={{
-                  height: `${rowVirtualizer.getTotalSize()}px`,
-                  width: "100%",
-                  position: "relative",
-                }}
-              >
-                {rowVirtualizer.getVirtualItems().map((virtualItem) => {
-                  const message = messages[virtualItem.index];
-                  const isLastMessage = virtualItem.index === messages.length - 1;
-                  const isAssistant = message.role === "assistant";
-                  const showActionButtons =
-                    usePlanMode &&
-                    isLastMessage &&
-                    isAssistant &&
-                    !isGenerating &&
-                    !hasPendingQuestionOverlay;
+          <div className="relative flex-1 overflow-hidden">
+            <div
+              ref={messagesContainerRef}
+              className="h-full w-full overflow-y-auto overflow-x-hidden pb-48"
+            >
+              {isLoadingHistory ? (
+                <motion.div
+                  className="flex h-full items-center justify-center"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                >
+                  <div className="flex flex-col items-center gap-3">
+                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                    <p className="text-sm text-text-muted">Loading chat history...</p>
+                  </div>
+                </motion.div>
+              ) : messages.length === 0 && !isGenerating ? (
+                <EmptyState
+                  needsConnection={needsConnection}
+                  isConnecting={isConnecting}
+                  onConnect={connectSidecar}
+                  workspacePath={workspacePath}
+                  onSendMessage={handleSend}
+                  hasConfiguredProvider={hasConfiguredProvider}
+                  onOpenSettings={onOpenSettings}
+                  onOpenPacks={onOpenPacks}
+                  onOpenExtensions={onOpenExtensions}
+                />
+              ) : (
+                <div
+                  style={{
+                    height: `${rowVirtualizer.getTotalSize()}px`,
+                    width: "100%",
+                    position: "relative",
+                  }}
+                >
+                  {rowVirtualizer.getVirtualItems().map((virtualItem) => {
+                    const message = messages[virtualItem.index];
+                    const isLastMessage = virtualItem.index === messages.length - 1;
+                    const isAssistant = message.role === "assistant";
+                    const showActionButtons =
+                      usePlanMode &&
+                      isLastMessage &&
+                      isAssistant &&
+                      !isGenerating &&
+                      !hasPendingQuestionOverlay;
 
-                  // Use content length in key ONLY for streaming messages to force re-renders
-                  const isActivelyStreaming = isGenerating && isLastMessage && isAssistant;
-                  return (
-                    <div
-                      key={virtualItem.key}
-                      data-index={virtualItem.index}
-                      ref={rowVirtualizer.measureElement}
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        transform: `translateY(${virtualItem.start}px)`,
-                      }}
-                    >
-                      <Message
-                        key={message.id}
-                        {...message}
-                        isStreaming={isActivelyStreaming}
-                        renderMode={isActivelyStreaming ? "streaming-lite" : "full"}
-                        disableMountAnimation
-                        onEdit={handleEdit}
-                        onRewind={handleRewind}
-                        onRegenerate={handleRegenerate}
-                        onCopy={handleCopy}
-                        onUndo={isGitRepository ? handleUndo : undefined}
-                        onFileOpen={onFileOpen}
-                        onOpenQuestionToolCall={handleOpenQuestionToolCall}
-                        isQuestionToolCallPending={isQuestionToolCallPending}
-                      />
-                      {showActionButtons && (
-                        <div className="ml-14 mb-4">
-                          <PlanActionButtons
-                            onImplement={() => {
-                              // Switch to immediate mode for execution
-                              setUsePlanMode(false);
-                              handleSend("Please implement this plan now.");
-                            }}
-                            onRework={(feedback) => {
-                              handleSend(`Please rework the plan with this feedback: ${feedback}
-
-After making the changes, present the updated plan in full (including the complete JSON structure) so I can review it before implementation.`);
-                            }}
-                            onCancel={() => {
-                              clearStaging();
-                              handleSend(
-                                "Let's try a different approach. Cancel the current plan."
-                              );
-                            }}
-                            onViewTasks={onToggleTaskSidebar}
-                            disabled={isGenerating}
-                            pendingTasks={pendingTasks}
-                            onExecuteTasks={() => {
-                              // Execute pending tasks with their specific content
-                              if (pendingTasks && pendingTasks.length > 0) {
-                                console.log(
-                                  "[ExecuteTasks] Switching to Immediate mode for task execution"
-                                );
+                    // Use content length in key ONLY for streaming messages to force re-renders
+                    const isActivelyStreaming = isGenerating && isLastMessage && isAssistant;
+                    return (
+                      <div
+                        key={virtualItem.key}
+                        data-index={virtualItem.index}
+                        ref={rowVirtualizer.measureElement}
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          width: "100%",
+                          transform: `translateY(${virtualItem.start}px)`,
+                        }}
+                      >
+                        <Message
+                          key={message.id}
+                          {...message}
+                          isStreaming={isActivelyStreaming}
+                          renderMode={isActivelyStreaming ? "streaming-lite" : "full"}
+                          disableMountAnimation
+                          onEdit={handleEdit}
+                          onRewind={handleRewind}
+                          onRegenerate={handleRegenerate}
+                          onCopy={handleCopy}
+                          onUndo={isGitRepository ? handleUndo : undefined}
+                          onFileOpen={onFileOpen}
+                          onOpenQuestionToolCall={handleOpenQuestionToolCall}
+                          isQuestionToolCallPending={isQuestionToolCallPending}
+                        />
+                        {showActionButtons && (
+                          <div className="ml-14 mb-4">
+                            <PlanActionButtons
+                              onImplement={() => {
                                 // Switch to immediate mode for execution
                                 setUsePlanMode(false);
+                                handleSend("Please implement this plan now.");
+                              }}
+                              onRework={(feedback) => {
+                                handleSend(`Please rework the plan with this feedback: ${feedback}
 
-                                const taskList = pendingTasks
-                                  .map((t, i) => `${i + 1}. ${t.content}`)
-                                  .join("\n");
-                                const message = `EXECUTION MODE: Please implement the following approved tasks now. Create the files and write the content directly.
+After making the changes, present the updated plan in full (including the complete JSON structure) so I can review it before implementation.`);
+                              }}
+                              onCancel={() => {
+                                clearStaging();
+                                handleSend(
+                                  "Let's try a different approach. Cancel the current plan."
+                                );
+                              }}
+                              onViewTasks={onToggleTaskSidebar}
+                              disabled={isGenerating}
+                              pendingTasks={pendingTasks}
+                              onExecuteTasks={() => {
+                                // Execute pending tasks with their specific content
+                                if (pendingTasks && pendingTasks.length > 0) {
+                                  console.log(
+                                    "[ExecuteTasks] Switching to Immediate mode for task execution"
+                                  );
+                                  // Switch to immediate mode for execution
+                                  setUsePlanMode(false);
+
+                                  const taskList = pendingTasks
+                                    .map((t, i) => `${i + 1}. ${t.content}`)
+                                    .join("\n");
+                                  const message = `EXECUTION MODE: Please implement the following approved tasks now. Create the files and write the content directly.
 
 ${taskList}
 
 Start with task #1 and execute each one. Use the 'write' tool to create files immediately. IMPORTANT: As you finish each task, you MUST use the 'todowrite' tool to mark it as "completed".`;
-                                // Force immediate mode for this specific message
-                                handleSend(message, undefined, "immediate");
-                              }
-                            }}
-                          />
-                        </div>
-                      )}
+                                  // Force immediate mode for this specific message
+                                  handleSend(message, undefined, "immediate");
+                                }
+                              }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Streaming indicator */}
+              {isGenerating && (
+                <motion.div
+                  className="glass border-glass rounded-2xl shadow-lg shadow-black/20 ring-1 ring-white/5 px-4 py-6 flex gap-4"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-secondary to-primary text-white shadow-[0_0_12px_rgba(59,130,246,0.45)]">
+                    <Sparkles className="h-4 w-4 animate-pulse" />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="inline-block h-3 w-1.5 bg-primary animate-pulse" />
+                    <span className="terminal-text text-text-muted">Processing</span>
+                    <div className="flex gap-1">
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.3s]" />
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.15s]" />
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle" />
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                  </div>
+                </motion.div>
+              )}
+
+              <div ref={messagesEndRef} />
+            </div>
 
             {showJumpToLatest && (
-              <div className="pointer-events-none sticky bottom-28 z-20 flex justify-center px-5">
+              <div className="absolute bottom-4 left-0 right-0 z-20 flex justify-center px-5 pointer-events-none">
                 <button
                   type="button"
                   className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-primary/40 bg-surface-elevated/95 px-4 py-2 text-xs font-medium text-primary shadow-lg shadow-black/25 transition hover:border-primary/70 hover:bg-surface-elevated animate-pulse"
@@ -2362,31 +2389,6 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                 </button>
               </div>
             )}
-
-            {/* Streaming indicator */}
-            {isGenerating && (
-              <motion.div
-                className="glass border-glass rounded-2xl shadow-lg shadow-black/20 ring-1 ring-white/5 px-4 py-6 flex gap-4"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.2 }}
-              >
-                <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-secondary to-primary text-white shadow-[0_0_12px_rgba(59,130,246,0.45)]">
-                  <Sparkles className="h-4 w-4 animate-pulse" />
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="inline-block h-3 w-1.5 bg-primary animate-pulse" />
-                  <span className="terminal-text text-text-muted">Processing</span>
-                  <div className="flex gap-1">
-                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.3s]" />
-                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.15s]" />
-                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle" />
-                  </div>
-                </div>
-              </motion.div>
-            )}
-
-            <div ref={messagesEndRef} />
           </div>
 
           {/* Input or Configuration Prompt */}
