@@ -256,29 +256,29 @@ export const THEMES: ThemeDefinition[] = [
     description: "Super girly Barbie-core glow with candy pinks and dreamy pastels.",
     cssVars: {
       "--color-background":
-        "radial-gradient(120% 90% at 50% 125%, transparent 0 48%, rgba(255, 255, 255, 0.12) 48% 49%, rgba(255, 82, 136, 0.86) 49% 52%, rgba(255, 160, 104, 0.82) 52% 55%, rgba(255, 235, 140, 0.78) 55% 58%, rgba(140, 255, 208, 0.74) 58% 61%, rgba(122, 221, 255, 0.74) 61% 64%, rgba(174, 171, 255, 0.74) 64% 67%, rgba(238, 182, 255, 0.70) 67% 70%, transparent 70% 100%), radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.10) 0, transparent 55%), radial-gradient(circle at 80% 18%, rgba(255, 255, 255, 0.08) 0, transparent 58%), linear-gradient(135deg, #FF5FA2 0%, #FF8AD6 28%, #FFD166 52%, #9BF6FF 76%, #BDB2FF 100%)",
-      "--color-surface": "rgba(64, 16, 42, 0.82)",
-      "--color-surface-elevated": "rgba(86, 20, 56, 0.88)",
-      "--color-border": "rgba(255, 158, 204, 0.28)",
-      "--color-border-subtle": "rgba(255, 158, 204, 0.14)",
+        "linear-gradient(rgba(36, 8, 24, 0.56), rgba(36, 8, 24, 0.56)), radial-gradient(120% 90% at 50% 125%, transparent 0 48%, rgba(255, 255, 255, 0.10) 48% 49%, rgba(255, 82, 136, 0.82) 49% 52%, rgba(255, 160, 104, 0.78) 52% 55%, rgba(255, 235, 140, 0.74) 55% 58%, rgba(140, 255, 208, 0.70) 58% 61%, rgba(122, 221, 255, 0.70) 61% 64%, rgba(174, 171, 255, 0.70) 64% 67%, rgba(238, 182, 255, 0.66) 67% 70%, transparent 70% 100%), radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.08) 0, transparent 55%), radial-gradient(circle at 80% 18%, rgba(255, 255, 255, 0.07) 0, transparent 58%), linear-gradient(135deg, #F7549B 0%, #F47FCD 28%, #F2C15A 52%, #79CFE2 76%, #A899E8 100%)",
+      "--color-surface": "rgba(56, 12, 38, 0.94)",
+      "--color-surface-elevated": "rgba(72, 16, 48, 0.96)",
+      "--color-border": "rgba(255, 184, 217, 0.36)",
+      "--color-border-subtle": "rgba(255, 184, 217, 0.22)",
 
       "--color-primary": "#FF5FB1",
       "--color-primary-hover": "#FF3B9A",
       "--color-primary-muted": "#D91E7D",
 
-      "--color-secondary": "#FFB3E6",
-      "--color-secondary-hover": "#FF8DD6",
+      "--color-secondary": "#FFB8E6",
+      "--color-secondary-hover": "#FF98D8",
 
       "--color-success": "#58E5C1",
       "--color-warning": "#FFD166",
       "--color-error": "#FF5C8A",
 
-      "--color-text": "#FFF1FA",
-      "--color-text-muted": "rgba(255, 241, 250, 0.74)",
-      "--color-text-subtle": "rgba(255, 241, 250, 0.52)",
+      "--color-text": "#FFF7FC",
+      "--color-text-muted": "rgba(255, 247, 252, 0.86)",
+      "--color-text-subtle": "rgba(255, 247, 252, 0.68)",
 
-      "--color-glass": "rgba(255, 105, 180, 0.18)",
-      "--color-glass-border": "rgba(255, 255, 255, 0.22)",
+      "--color-glass": "rgba(74, 17, 50, 0.78)",
+      "--color-glass-border": "rgba(255, 220, 238, 0.30)",
 
       "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
       "--font-mono":

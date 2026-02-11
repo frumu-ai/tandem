@@ -597,6 +597,19 @@ pub enum StreamEvent {
         tool_call_id: Option<String>,
         tool_message_id: Option<String>,
     },
+    /// Local memory retrieval telemetry for prompt-context injection.
+    MemoryRetrieval {
+        session_id: String,
+        used: bool,
+        chunks_total: usize,
+        session_chunks: usize,
+        history_chunks: usize,
+        project_fact_chunks: usize,
+        latency_ms: u128,
+        query_hash: String,
+        score_min: Option<f64>,
+        score_max: Option<f64>,
+    },
 }
 
 /// A single multiple-choice option for a question prompt.
@@ -718,6 +731,8 @@ pub struct TodoItem {
 pub struct SidecarManager {
     config: RwLock<SidecarConfig>,
     state: RwLock<SidecarState>,
+    /// Serializes start/stop lifecycle transitions to prevent duplicate spawns.
+    lifecycle_lock: Mutex<()>,
     process: Mutex<Option<Child>>,
     #[cfg(windows)]
     windows_job: Mutex<Option<WindowsJobHandle>>,
@@ -749,6 +764,7 @@ impl SidecarManager {
             circuit_breaker: Mutex::new(CircuitBreaker::new(config.clone())),
             config: RwLock::new(config),
             state: RwLock::new(SidecarState::Stopped),
+            lifecycle_lock: Mutex::new(()),
             process: Mutex::new(None),
             #[cfg(windows)]
             windows_job: Mutex::new(None),
@@ -819,6 +835,8 @@ impl SidecarManager {
 
     /// Start the sidecar process
     pub async fn start(&self, sidecar_path: &str) -> Result<()> {
+        let _lifecycle_guard = self.lifecycle_lock.lock().await;
+
         {
             let state = self.state.read().await;
             if *state == SidecarState::Running {
@@ -1040,6 +1058,8 @@ impl SidecarManager {
 
     /// Stop the sidecar process
     pub async fn stop(&self) -> Result<()> {
+        let _lifecycle_guard = self.lifecycle_lock.lock().await;
+
         {
             let state = self.state.read().await;
             if *state == SidecarState::Stopped {
@@ -2784,5 +2804,32 @@ mod tests {
             }
             other => panic!("Unexpected event: {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_memory_retrieval_event_serialization_tag() {
+        let event = StreamEvent::MemoryRetrieval {
+            session_id: "ses_123".to_string(),
+            used: true,
+            chunks_total: 5,
+            session_chunks: 1,
+            history_chunks: 2,
+            project_fact_chunks: 2,
+            latency_ms: 33,
+            query_hash: "abc123def456".to_string(),
+            score_min: Some(0.1),
+            score_max: Some(0.8),
+        };
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(
+            value.get("type").and_then(|v| v.as_str()),
+            Some("memory_retrieval")
+        );
+        assert_eq!(
+            value.get("session_id").and_then(|v| v.as_str()),
+            Some("ses_123")
+        );
+        assert_eq!(value.get("chunks_total").and_then(|v| v.as_u64()), Some(5));
     }
 }

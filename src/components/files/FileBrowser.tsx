@@ -42,7 +42,7 @@ export function FileBrowser({ rootPath, onFileSelect, selectedPath }: FileBrowse
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const refreshTimerRef = useRef<number | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
 
   // Load root directory
   const loadDirectory = useCallback(async (path: string) => {

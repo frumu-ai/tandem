@@ -15,7 +15,10 @@ importers:
         version: 5.2.5
       "@tailwindcss/vite":
         specifier: ^4.1.18
-        version: 4.1.18(vite@7.3.1(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))
+        version: 4.1.18(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))
+      "@tanstack/react-virtual":
+        specifier: ^3.13.18
+        version: 3.13.18(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       "@tauri-apps/api":
         specifier: ^2
         version: 2.9.1
@@ -80,6 +83,9 @@ importers:
       "@tauri-apps/cli":
         specifier: ^2
         version: 2.9.6
+      "@types/node":
+        specifier: ^25.2.3
+        version: 25.2.3
       "@types/react":
         specifier: ^19.1.8
         version: 19.2.8
@@ -97,7 +103,7 @@ importers:
         version: 8.53.1(eslint@9.39.2(jiti@2.6.1))(typescript@5.8.3)
       "@vitejs/plugin-react":
         specifier: ^4.6.0
-        version: 4.7.0(vite@7.3.1(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))
+        version: 4.7.0(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))
       eslint:
         specifier: ^9.39.2
         version: 9.39.2(jiti@2.6.1)
@@ -118,7 +124,7 @@ importers:
         version: 5.8.3
       vite:
         specifier: ^7.0.4
-        version: 7.3.1(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2)
+        version: 7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2)
 
 packages:
   "@babel/code-frame@7.28.6":
@@ -1039,6 +1045,21 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7
 
+  "@tanstack/react-virtual@3.13.18":
+    resolution:
+      {
+        integrity: sha512-dZkhyfahpvlaV0rIKnvQiVoWPyURppl6w4m9IwMDpuIjcJ1sD9YGWrt0wISvgU7ewACXx2Ct46WPgI6qAD4v6A==,
+      }
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  "@tanstack/virtual-core@3.13.18":
+    resolution:
+      {
+        integrity: sha512-Mx86Hqu1k39icq2Zusq+Ey2J6dDWTjDvEv43PJtRCoEYTLyfaPnxIQ6iy7YAOK0NV/qOEmZQ/uCufrppZxTgcg==,
+      }
+
   "@tauri-apps/api@2.9.1":
     resolution:
       {
@@ -1252,6 +1273,12 @@ packages:
     resolution:
       {
         integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==,
+      }
+
+  "@types/node@25.2.3":
+    resolution:
+      {
+        integrity: sha512-m0jEgYlYz+mDJZ2+F4v8D1AyQb+QzsNqRuI7xg1VQX/KlKS0qT9r1Mo16yo5F/MtifXFgaofIFsdFMox2SxIbQ==,
       }
 
   "@types/parse-json@4.0.2":
@@ -3309,6 +3336,12 @@ packages:
     engines: { node: ">=14.17" }
     hasBin: true
 
+  undici-types@7.16.0:
+    resolution:
+      {
+        integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==,
+      }
+
   unified@11.0.5:
     resolution:
       {
@@ -3951,12 +3984,20 @@ snapshots:
       "@tailwindcss/oxide-win32-arm64-msvc": 4.1.18
       "@tailwindcss/oxide-win32-x64-msvc": 4.1.18
 
-  "@tailwindcss/vite@4.1.18(vite@7.3.1(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))":
+  "@tailwindcss/vite@4.1.18(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))":
     dependencies:
       "@tailwindcss/node": 4.1.18
       "@tailwindcss/oxide": 4.1.18
       tailwindcss: 4.1.18
-      vite: 7.3.1(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2)
+      vite: 7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2)
+
+  "@tanstack/react-virtual@3.13.18(react-dom@19.2.3(react@19.2.3))(react@19.2.3)":
+    dependencies:
+      "@tanstack/virtual-core": 3.13.18
+      react: 19.2.3
+      react-dom: 19.2.3(react@19.2.3)
+
+  "@tanstack/virtual-core@3.13.18": {}
 
   "@tauri-apps/api@2.9.1": {}
 
@@ -4074,6 +4115,10 @@ snapshots:
 
   "@types/ms@2.1.0": {}
 
+  "@types/node@25.2.3":
+    dependencies:
+      undici-types: 7.16.0
+
   "@types/parse-json@4.0.2": {}
 
   "@types/prismjs@1.26.5": {}
@@ -4187,7 +4232,7 @@ snapshots:
 
   "@ungap/structured-clone@1.3.0": {}
 
-  "@vitejs/plugin-react@4.7.0(vite@7.3.1(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))":
+  "@vitejs/plugin-react@4.7.0(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2))":
     dependencies:
       "@babel/core": 7.28.6
       "@babel/plugin-transform-react-jsx-self": 7.27.1(@babel/core@7.28.6)
@@ -4195,7 +4240,7 @@ snapshots:
       "@rolldown/pluginutils": 1.0.0-beta.27
       "@types/babel__core": 7.20.5
       react-refresh: 0.17.0
-      vite: 7.3.1(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2)
+      vite: 7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2)
     transitivePeerDependencies:
       - supports-color
 
@@ -5482,6 +5527,8 @@ snapshots:
 
   typescript@5.8.3: {}
 
+  undici-types@7.16.0: {}
+
   unified@11.0.5:
     dependencies:
       "@types/unist": 3.0.3
@@ -5535,7 +5582,7 @@ snapshots:
       "@types/unist": 3.0.3
       vfile-message: 4.0.3
 
-  vite@7.3.1(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2):
+  vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(yaml@2.8.2):
     dependencies:
       esbuild: 0.27.2
       fdir: 6.5.0(picomatch@4.0.3)
@@ -5544,6 +5591,7 @@ snapshots:
       rollup: 4.55.2
       tinyglobby: 0.2.15
     optionalDependencies:
+      "@types/node": 25.2.3
       fsevents: 2.3.3
       jiti: 2.6.1
       lightningcss: 1.30.2

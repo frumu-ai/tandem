@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.19] - 2026-02-11
+
+### Added
+
+- **Memory Retrieval Telemetry**: Chat requests now run memory retrieval before sending prompts, emit a `memory_retrieval` stream event, and include balanced telemetry (usage, chunk counts, latency, score range, short query hash) without logging raw query text or chunk contents.
+- **Chat Memory Badge**: Assistant responses now show a memory capsule with a brain icon and retrieval status (used/not used, chunks, latency) for verifiable retrieval visibility per response.
+- **Console Tab (Logs Drawer)**: Added a dedicated Console tab for tool-execution events and approvals in the Logs drawer workflow.
+
+### Fixed
+
+- **Memory Retrieval Coverage**: Wired retrieval context injection into both `send_message` and `send_message_streaming` so normal chat requests can actually use indexed vector memory.
+- **Sidecar Duplicate Spawn Race**: Prevented duplicate OpenCode/Bun sidecar launches by serializing sidecar start/stop lifecycle transitions with a lifecycle lock.
+- **Logs Drawer Fullscreen Height**: Fixed logs panel sizing so height is fully dynamic in fullscreen instead of staying at the smaller constrained height.
+- **Logs Redundancy**: Removed the redundant OpenCode sidecar log tab from the logs viewer and consolidated command activity under the Console tab.
+- **Pink Pony Readability**: Tuned Pink Pony theme contrast, surface opacity, borders, and text colors to improve legibility on bright backgrounds.
+
+### Changed
+
+- **Memory Log Signal**: Memory retrieval logging now uses a distinct `tandem.memory` target and a brain marker for easier scanning in logs.
+- **Production Frontend Build**: Production Vite builds now drop `console.*` and `debugger` statements.
+
 ## [0.2.18] - 2026-02-10
 
 ### Added
@@ -463,7 +484,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.2.18...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.2.19...HEAD
+[0.2.19]: https://github.com/frumu-ai/tandem/compare/v0.2.18...v0.2.19
 [0.2.18]: https://github.com/frumu-ai/tandem/compare/v0.2.17...v0.2.18
 [0.2.17]: https://github.com/frumu-ai/tandem/compare/v0.2.16...v0.2.17
 [0.2.16]: https://github.com/frumu-ai/tandem/compare/v0.2.15...v0.2.16

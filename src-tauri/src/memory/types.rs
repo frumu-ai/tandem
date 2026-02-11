@@ -135,6 +135,18 @@ pub struct MemoryContext {
     pub total_tokens: i64,
 }
 
+/// Metadata describing how memory retrieval executed for a single query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryRetrievalMeta {
+    pub used: bool,
+    pub chunks_total: usize,
+    pub session_chunks: usize,
+    pub history_chunks: usize,
+    pub project_fact_chunks: usize,
+    pub score_min: Option<f64>,
+    pub score_max: Option<f64>,
+}
+
 impl MemoryContext {
     /// Format the context for injection into a prompt
     pub fn format_for_injection(&self) -> String {

@@ -261,6 +261,19 @@ export type StreamEvent =
       session_id: string;
       file_path: string;
     }
+  | {
+      type: "memory_retrieval";
+      session_id: string;
+      used: boolean;
+      chunks_total: number;
+      session_chunks: number;
+      history_chunks: number;
+      project_fact_chunks: number;
+      latency_ms: number;
+      query_hash: string;
+      score_min?: number;
+      score_max?: number;
+    }
   | { type: "raw"; event_type: string; data: unknown };
 
 // ============================================================================
