@@ -6,6 +6,7 @@
 - **Faster provider targeting from keyboard**: Search now supports `provider:<id-or-name>` (for example `provider:openrouter sonnet`).
 - **Clearer visibility rules**: Added in-context helper copy ("Showing configured providers + local") so provider filtering behavior is explicit.
 - **Better empty-state feedback**: No-result messages now explain when the active provider filter has no matching models.
+- **Readable fullscreen file previews**: Fullscreen file preview now uses a stronger surface backdrop so document text stays legible across transparent/gradient themes.
 
 ## Complete Feature List
 
@@ -15,6 +16,10 @@
 - Kept existing provider visibility policy (configured providers + local defaults) and surfaced that behavior in the dropdown header.
 - Added resilient filter behavior so provider selection resets to `All` if a previously selected provider disappears after model reload.
 - Improved no-result messaging to include provider context when filtering within a specific provider.
+
+### Files
+
+- Increased fullscreen file preview backdrop opacity/contrast so file text remains readable instead of blending with theme background layers.
 
 ### Search
 

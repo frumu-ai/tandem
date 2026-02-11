@@ -9,6 +9,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Model selector clarity: Added inline context text ("Showing configured providers + local") so hidden-provider behavior is explicit.
 - Model selector reliability: Provider filter now safely resets to `All` if the selected provider disappears after catalog refresh.
 - Empty states: Model dropdown now reports provider-specific no-match states (for example "No models found for OpenRouter").
+- Files: Fixed fullscreen file preview readability by using a stronger, opaque surface backdrop so text no longer blends into transparent/gradient themes.
 
 ## v0.2.20 (2026-02-11)
 
