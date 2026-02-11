@@ -722,6 +722,14 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
   isQuestionToolCallPending?: (args: { messageId: string; toolCallId: string }) => boolean;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [nowMs, setNowMs] = useState<number>(() => new Date().getTime());
+
+  useEffect(() => {
+    const id = globalThis.setInterval(() => {
+      setNowMs(new Date().getTime());
+    }, 1000);
+    return () => globalThis.clearInterval(id);
+  }, []);
 
   const runningCount = useMemo(
     () => toolCalls.filter((t) => t.status === "running").length,
@@ -735,8 +743,11 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
     () => toolCalls.filter((t) => t.status === "pending").length,
     [toolCalls]
   );
-  const failedCount = useMemo(() => toolCalls.filter((t) => t.status === "failed").length, [toolCalls]);
-  const durationSec = Math.max(1, Math.round((Date.now() - messageTimestamp.getTime()) / 1000));
+  const failedCount = useMemo(
+    () => toolCalls.filter((t) => t.status === "failed").length,
+    [toolCalls]
+  );
+  const durationSec = Math.max(1, Math.round((nowMs - messageTimestamp.getTime()) / 1000));
 
   // Group by tool type for summary
   const summary = useMemo(() => {

@@ -959,95 +959,88 @@ impl OrchestratorEngine {
                     }
                 };
                 match &event {
-                        StreamEvent::Content {
-                            session_id: sid,
-                            delta,
-                            content: full_content,
-                            ..
-                        } => {
-                            if sid == session_id {
-                                // Prefer delta if available, otherwise use full content
-                                if let Some(text) = delta {
-                                    content.push_str(text);
-                                    tracing::debug!("Got content delta: {} chars", text.len());
-                                } else if !full_content.is_empty() && content.is_empty() {
-                                    content = full_content.clone();
-                                    tracing::debug!(
-                                        "Got full content: {} chars",
-                                        full_content.len()
-                                    );
-                                }
+                    StreamEvent::Content {
+                        session_id: sid,
+                        delta,
+                        content: full_content,
+                        ..
+                    } => {
+                        if sid == session_id {
+                            // Prefer delta if available, otherwise use full content
+                            if let Some(text) = delta {
+                                content.push_str(text);
+                                tracing::debug!("Got content delta: {} chars", text.len());
+                            } else if !full_content.is_empty() && content.is_empty() {
+                                content = full_content.clone();
+                                tracing::debug!("Got full content: {} chars", full_content.len());
                             }
                         }
-                        StreamEvent::SessionIdle { session_id: sid } => {
-                            if sid == session_id {
-                                tracing::info!("Session {} is idle, response complete", session_id);
-                                break;
-                            }
-                        }
-                        StreamEvent::ToolStart {
-                            session_id: sid,
-                            part_id,
-                            tool,
-                            ..
-                        } => {
-                            if sid == session_id && first_tool_part_id.is_none() {
-                                first_tool_part_id = Some(part_id.clone());
-                                if let Some(task_id) = task_id {
-                                    self.emit_task_trace(
-                                        task_id,
-                                        Some(session_id),
-                                        "FIRST_TOOL_CALL",
-                                        Some(tool.clone()),
-                                    );
-                                }
-                            }
-                        }
-                        StreamEvent::ToolEnd {
-                            session_id: sid,
-                            part_id,
-                            tool,
-                            error,
-                            ..
-                        } => {
-                            if sid == session_id
-                                && !first_tool_finished
-                                && first_tool_part_id.as_deref() == Some(part_id)
-                            {
-                                first_tool_finished = true;
-                                if let Some(task_id) = task_id {
-                                    let detail = match error.as_ref() {
-                                        Some(e) => Some(format!("{}:{}", tool, e)),
-                                        None => Some(tool.clone()),
-                                    };
-                                    self.emit_task_trace(
-                                        task_id,
-                                        Some(session_id),
-                                        "TOOL_CALL_FINISHED",
-                                        detail,
-                                    );
-                                }
-                            }
-                        }
-                        StreamEvent::SessionError {
-                            session_id: sid,
-                            error,
-                        } => {
-                            if sid == session_id {
-                                tracing::error!("Session {} error: {}", session_id, error);
-                                errors.push(error.clone());
-                                break;
-                            }
-                        }
-                        StreamEvent::Raw { event_type, data } => {
-                            tracing::debug!(
-                                "Raw event for orchestrator: {} - {:?}",
-                                event_type,
-                                data
-                            );
-                        }
-                        _ => {}
                     }
+                    StreamEvent::SessionIdle { session_id: sid } => {
+                        if sid == session_id {
+                            tracing::info!("Session {} is idle, response complete", session_id);
+                            break;
+                        }
+                    }
+                    StreamEvent::ToolStart {
+                        session_id: sid,
+                        part_id,
+                        tool,
+                        ..
+                    } => {
+                        if sid == session_id && first_tool_part_id.is_none() {
+                            first_tool_part_id = Some(part_id.clone());
+                            if let Some(task_id) = task_id {
+                                self.emit_task_trace(
+                                    task_id,
+                                    Some(session_id),
+                                    "FIRST_TOOL_CALL",
+                                    Some(tool.clone()),
+                                );
+                            }
+                        }
+                    }
+                    StreamEvent::ToolEnd {
+                        session_id: sid,
+                        part_id,
+                        tool,
+                        error,
+                        ..
+                    } => {
+                        if sid == session_id
+                            && !first_tool_finished
+                            && first_tool_part_id.as_deref() == Some(part_id)
+                        {
+                            first_tool_finished = true;
+                            if let Some(task_id) = task_id {
+                                let detail = match error.as_ref() {
+                                    Some(e) => Some(format!("{}:{}", tool, e)),
+                                    None => Some(tool.clone()),
+                                };
+                                self.emit_task_trace(
+                                    task_id,
+                                    Some(session_id),
+                                    "TOOL_CALL_FINISHED",
+                                    detail,
+                                );
+                            }
+                        }
+                    }
+                    StreamEvent::SessionError {
+                        session_id: sid,
+                        error,
+                    } => {
+                        if sid == session_id {
+                            tracing::error!("Session {} error: {}", session_id, error);
+                            errors.push(error.clone());
+                            break;
+                        }
+                    }
+                    StreamEvent::Raw { event_type, data } => {
+                        tracing::debug!("Raw event for orchestrator: {} - {:?}", event_type, data);
+                    }
+                    _ => {}
+                }
             }
         };
 

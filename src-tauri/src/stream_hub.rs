@@ -80,24 +80,27 @@ impl StreamHub {
             let tool_timeout = Duration::from_secs(120);
             let idle_timeout = Duration::from_secs(10 * 60);
 
-            let emit_health = |status: StreamHealthStatus, app: &AppHandle, tx: &broadcast::Sender<StreamEventEnvelopeV2>| {
-                let raw = StreamEvent::Raw {
-                    event_type: "system.stream_health".to_string(),
-                    data: serde_json::json!({
-                        "status": status,
-                    }),
+            let emit_health =
+                |status: StreamHealthStatus,
+                 app: &AppHandle,
+                 tx: &broadcast::Sender<StreamEventEnvelopeV2>| {
+                    let raw = StreamEvent::Raw {
+                        event_type: "system.stream_health".to_string(),
+                        data: serde_json::json!({
+                            "status": status,
+                        }),
+                    };
+                    let env = StreamEventEnvelopeV2 {
+                        event_id: Uuid::new_v4().to_string(),
+                        correlation_id: format!("health-{}", Uuid::new_v4()),
+                        ts_ms: crate::logs::now_ms(),
+                        session_id: None,
+                        source: StreamEventSource::System,
+                        payload: raw,
+                    };
+                    let _ = app.emit("sidecar_event_v2", &env);
+                    let _ = tx.send(env);
                 };
-                let env = StreamEventEnvelopeV2 {
-                    event_id: Uuid::new_v4().to_string(),
-                    correlation_id: format!("health-{}", Uuid::new_v4()),
-                    ts_ms: crate::logs::now_ms(),
-                    session_id: None,
-                    source: StreamEventSource::System,
-                    payload: raw,
-                };
-                let _ = app.emit("sidecar_event_v2", &env);
-                let _ = tx.send(env);
-            };
 
             emit_health(StreamHealthStatus::Recovering, &app, &tx);
 

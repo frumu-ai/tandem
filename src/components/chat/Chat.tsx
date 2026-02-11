@@ -1474,7 +1474,6 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
       stageOperation,
       usePlanMode,
       allowAllTools,
-      handleApprovePermission,
       scheduleAssistantFlush,
     ]
   );
@@ -1785,6 +1784,7 @@ ${g.example}
       enabledToolCategories,
       stagedOperations.length,
       allowAllTools,
+      showStatusBanner,
     ]
   );
 
@@ -1901,7 +1901,7 @@ ${g.example}
         if (status.status === "running" || status.status === "paused") {
           setLoopEnabled(true);
         }
-      } catch (e) {
+      } catch (_e) {
         // Silent fail for polling
       }
     };
@@ -1915,7 +1915,7 @@ ${g.example}
     }
 
     return () => clearInterval(intervalId);
-  }, [loopEnabled, ralphStatusSnapshot?.status, ralphStatusSnapshot?.run_id]);
+  }, [loopEnabled, ralphStatusSnapshot]);
 
   const handleLoopToggle = (enabled: boolean) => {
     setLoopEnabled(enabled);

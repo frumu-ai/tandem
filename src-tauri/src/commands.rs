@@ -1934,16 +1934,8 @@ pub async fn send_message(
     content: String,
     attachments: Option<Vec<FileAttachmentInput>>,
 ) -> Result<()> {
-    send_message_streaming_internal(
-        &app,
-        &state,
-        session_id,
-        content,
-        attachments,
-        None,
-        false,
-    )
-    .await
+    send_message_streaming_internal(&app, &state, session_id, content, attachments, None, false)
+        .await
 }
 
 /// Send a message and subscribe to events for the response
@@ -1957,7 +1949,8 @@ pub async fn send_message_streaming(
     attachments: Option<Vec<FileAttachmentInput>>,
     agent: Option<String>,
 ) -> Result<()> {
-    send_message_streaming_internal(&app, &state, session_id, content, attachments, agent, true).await
+    send_message_streaming_internal(&app, &state, session_id, content, attachments, agent, true)
+        .await
 }
 
 async fn send_message_streaming_internal(
@@ -4532,7 +4525,10 @@ fn load_skill_candidates(file_or_path: &str) -> Result<Vec<SkillCandidate>> {
                 }
                 let mut content = String::new();
                 entry.read_to_string(&mut content).map_err(|e| {
-                    TandemError::InvalidConfig(format!("Non-UTF8 SKILL.md in zip entry {}: {}", name, e))
+                    TandemError::InvalidConfig(format!(
+                        "Non-UTF8 SKILL.md in zip entry {}: {}",
+                        name, e
+                    ))
                 })?;
                 out.push(SkillCandidate {
                     source: name,
@@ -4582,12 +4578,12 @@ pub fn skills_import_preview(
                 if conflict {
                     conflicts += 1;
                 }
-                let resolved_name = if conflict && matches!(conflict_policy, SkillsConflictPolicy::Rename)
-                {
-                    resolve_conflict_name(&base_dir, &name)
-                } else {
-                    name.clone()
-                };
+                let resolved_name =
+                    if conflict && matches!(conflict_policy, SkillsConflictPolicy::Rename) {
+                        resolve_conflict_name(&base_dir, &name)
+                    } else {
+                        name.clone()
+                    };
                 let action = if !conflict {
                     "create".to_string()
                 } else {

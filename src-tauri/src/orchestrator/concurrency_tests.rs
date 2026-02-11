@@ -165,7 +165,15 @@ fn build_engine(run: Run, workspace_path: PathBuf) -> OrchestratorEngine {
     let sidecar = Arc::new(SidecarManager::new(SidecarConfig::default()));
     let stream_hub = Arc::new(StreamHub::new());
 
-    OrchestratorEngine::new(run, policy, store, sidecar, stream_hub, workspace_path, event_tx)
+    OrchestratorEngine::new(
+        run,
+        policy,
+        store,
+        sidecar,
+        stream_hub,
+        workspace_path,
+        event_tx,
+    )
 }
 
 #[tokio::test]
