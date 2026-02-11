@@ -1,6 +1,7 @@
 // Sidecar binary management - version tracking, downloads, updates
 use crate::error::{Result, TandemError};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -10,6 +11,14 @@ use tauri_plugin_store::StoreExt;
 const OPENCODE_REPO: &str = "anomalyco/opencode";
 const GITHUB_API: &str = "https://api.github.com";
 const MIN_BINARY_SIZE: u64 = 100 * 1024; // 100KB minimum
+const REQUIRED_TANDEM_CLI_ASSETS: &[&str] = &[
+    "opencode-windows-x64.zip",
+    "opencode-darwin-x64.zip",
+    "opencode-darwin-arm64.zip",
+    "opencode-linux-x64.tar.gz",
+    "opencode-linux-arm64.tar.gz",
+];
+const SKIPPED_RELEASE_TAGS: &[&str] = &["v1.1.59"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidecarStatus {
@@ -50,6 +59,12 @@ struct GitHubAsset {
     name: String,
     browser_download_url: String,
     size: u64,
+}
+
+struct EligibleRelease<'a> {
+    release: &'a GitHubRelease,
+    skipped_count: usize,
+    first_skip_reason: Option<String>,
 }
 
 /// Get the sidecar binary path for the current platform
@@ -189,16 +204,7 @@ pub async fn check_sidecar_status(app: &AppHandle) -> Result<SidecarStatus> {
     // Fetch latest version from GitHub
     let latest_version = fetch_latest_version().await.ok();
 
-    let update_available = match (&version, &latest_version) {
-        (Some(current), Some(latest)) => {
-            // Simple version comparison (strip 'v' prefix if present)
-            let current_clean = current.trim_start_matches('v');
-            let latest_clean = latest.trim_start_matches('v');
-            current_clean != latest_clean
-        }
-        (None, Some(_)) => true, // Not installed, update available
-        _ => false,
-    };
+    let update_available = should_offer_update(version.as_deref(), latest_version.as_deref());
 
     Ok(SidecarStatus {
         installed,
@@ -212,8 +218,15 @@ pub async fn check_sidecar_status(app: &AppHandle) -> Result<SidecarStatus> {
 /// Fetch the latest release version from GitHub
 async fn fetch_latest_version() -> Result<String> {
     let client = reqwest::Client::new();
-    let url = format!("{}/repos/{}/releases", GITHUB_API, OPENCODE_REPO);
+    let releases = fetch_releases(&client).await?;
+    let selected = select_latest_eligible_release(&releases)?;
 
+    log_release_selection("sidecar_version_check", &selected);
+    Ok(selected.release.tag_name.clone())
+}
+
+async fn fetch_releases(client: &reqwest::Client) -> Result<Vec<GitHubRelease>> {
+    let url = format!("{}/repos/{}/releases", GITHUB_API, OPENCODE_REPO);
     let mut request = client.get(&url).header("User-Agent", "Tandem-App");
 
     // Add GitHub token if available (for CI or power users)
@@ -227,10 +240,8 @@ async fn fetch_latest_version() -> Result<String> {
         .await
         .map_err(|e| TandemError::Sidecar(format!("Failed to fetch releases: {}", e)))?;
 
-    // Check status code
     let status = response.status();
     if !status.is_success() {
-        // Handle rate limiting with a user-friendly message
         if status.as_u16() == 403 {
             return Err(TandemError::Sidecar(
                 "GitHub rate limit reached. Please wait a few minutes and try again.".to_string(),
@@ -244,18 +255,16 @@ async fn fetch_latest_version() -> Result<String> {
 
         tracing::error!("GitHub API error {}: {}", status, error_text);
         return Err(TandemError::Sidecar(format!(
-            "Unable to check for updates (error {}). Please try again later.",
+            "Unable to fetch releases (error {}). Please try again later.",
             status.as_u16()
         )));
     }
 
-    // Get response text for debugging
     let text = response
         .text()
         .await
         .map_err(|e| TandemError::Sidecar(format!("Failed to read response: {}", e)))?;
 
-    // Try to parse as JSON
     let releases: Vec<GitHubRelease> = serde_json::from_str(&text).map_err(|e| {
         tracing::error!("Failed to parse GitHub releases response: {}", e);
         tracing::debug!(
@@ -265,20 +274,143 @@ async fn fetch_latest_version() -> Result<String> {
         TandemError::Sidecar(format!("Failed to parse releases: {}", e))
     })?;
 
-    // Find the latest non-draft, non-prerelease with our asset
-    let asset_name = get_asset_name();
+    Ok(releases)
+}
+
+fn select_latest_eligible_release<'a>(
+    releases: &'a [GitHubRelease],
+) -> Result<EligibleRelease<'a>> {
+    let mut skipped_count = 0usize;
+    let mut first_skip_reason: Option<String> = None;
+
     for release in releases {
-        if release.draft || release.prerelease {
+        if let Some(reason) = release_ineligible_reason(release) {
+            tracing::debug!(
+                tag = %release.tag_name,
+                reason = %reason,
+                "Skipping OpenCode release during eligibility filtering"
+            );
+            skipped_count += 1;
+            if first_skip_reason.is_none() {
+                first_skip_reason = Some(format!("{} ({})", release.tag_name, reason));
+            }
             continue;
         }
-        if release.assets.iter().any(|a| a.name == asset_name) {
-            return Ok(release.tag_name);
+
+        return Ok(EligibleRelease {
+            release,
+            skipped_count,
+            first_skip_reason,
+        });
+    }
+
+    let reason = first_skip_reason.unwrap_or_else(|| "no releases returned".to_string());
+    Err(TandemError::Sidecar(format!(
+        "No eligible OpenCode release found. First skip reason: {}",
+        reason
+    )))
+}
+
+fn release_ineligible_reason(release: &GitHubRelease) -> Option<String> {
+    if release.draft {
+        return Some("draft release".to_string());
+    }
+
+    if release.prerelease {
+        return Some("prerelease".to_string());
+    }
+
+    if is_tag_skipped(&release.tag_name) {
+        return Some("manually skipped tag".to_string());
+    }
+
+    let missing_assets = missing_required_assets(release);
+    if !missing_assets.is_empty() {
+        return Some(format!(
+            "missing required Tandem CLI assets: {}",
+            missing_assets.join(", ")
+        ));
+    }
+
+    None
+}
+
+fn missing_required_assets(release: &GitHubRelease) -> Vec<&'static str> {
+    REQUIRED_TANDEM_CLI_ASSETS
+        .iter()
+        .copied()
+        .filter(|required| !release.assets.iter().any(|asset| asset.name == *required))
+        .collect()
+}
+
+fn is_tag_skipped(tag: &str) -> bool {
+    let normalized = normalize_version_label(tag);
+    SKIPPED_RELEASE_TAGS
+        .iter()
+        .any(|skipped| normalize_version_label(skipped) == normalized)
+}
+
+fn log_release_selection(context: &str, selected: &EligibleRelease<'_>) {
+    tracing::info!(
+        context = context,
+        selected_tag = %selected.release.tag_name,
+        skipped_count = selected.skipped_count,
+        first_skip_reason = selected.first_skip_reason.as_deref().unwrap_or("none"),
+        "Selected eligible OpenCode release"
+    );
+}
+
+fn should_offer_update(installed_version: Option<&str>, latest_version: Option<&str>) -> bool {
+    match (installed_version, latest_version) {
+        (Some(current), Some(latest)) => is_version_newer(latest, current),
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
+fn is_version_newer(candidate: &str, current: &str) -> bool {
+    compare_versions(candidate, current) == Ordering::Greater
+}
+
+fn compare_versions(left: &str, right: &str) -> Ordering {
+    let left_parts = parse_version_parts(left);
+    let right_parts = parse_version_parts(right);
+    let max_len = left_parts.len().max(right_parts.len());
+
+    for i in 0..max_len {
+        let left_part = *left_parts.get(i).unwrap_or(&0);
+        let right_part = *right_parts.get(i).unwrap_or(&0);
+        match left_part.cmp(&right_part) {
+            Ordering::Equal => {}
+            ordering => return ordering,
         }
     }
 
-    Err(TandemError::Sidecar(
-        "No suitable release found".to_string(),
-    ))
+    Ordering::Equal
+}
+
+fn parse_version_parts(version: &str) -> Vec<u64> {
+    let normalized = normalize_version_label(version);
+    if normalized.is_empty() {
+        return vec![0];
+    }
+
+    normalized
+        .split('.')
+        .map(parse_version_segment)
+        .collect::<Vec<_>>()
+}
+
+fn parse_version_segment(segment: &str) -> u64 {
+    let digits: String = segment
+        .chars()
+        .take_while(|char| char.is_ascii_digit())
+        .collect();
+    digits.parse::<u64>().unwrap_or(0)
+}
+
+fn normalize_version_label(version: &str) -> &str {
+    version.trim_start_matches(|c| c == 'v' || c == 'V')
 }
 
 /// Download the sidecar binary
@@ -312,80 +444,30 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
 
     emit_state("downloading", None);
 
-    // Fetch releases to find the download URL
     let client = reqwest::Client::new();
-    let url = format!("{}/repos/{}/releases", GITHUB_API, OPENCODE_REPO);
-
-    let mut request = client.get(&url).header("User-Agent", "Tandem-App");
-
-    // Add GitHub token if available (for CI or power users)
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        tracing::debug!("Using GITHUB_TOKEN for authenticated API request");
-        request = request.header("Authorization", format!("Bearer {}", token));
-    }
-
-    let response = request.send().await.map_err(|e| {
-        emit_state("error", Some(&e.to_string()));
-        TandemError::Sidecar(format!("Failed to fetch releases: {}", e))
-    })?;
-
-    // Check status code
-    let status = response.status();
-    if !status.is_success() {
-        // Handle rate limiting with a user-friendly message
-        if status.as_u16() == 403 {
-            let error_msg =
-                "GitHub rate limit reached. Please wait a few minutes and try again.".to_string();
-            emit_state("error", Some(&error_msg));
-            return Err(TandemError::Sidecar(error_msg));
-        }
-
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Failed to read error response".to_string());
-
-        tracing::error!("GitHub API error {}: {}", status, error_text);
-        let error_msg = format!(
-            "Unable to download (error {}). Please try again later.",
-            status.as_u16()
-        );
+    let releases = fetch_releases(&client).await.map_err(|e| {
+        let error_msg = e.to_string();
         emit_state("error", Some(&error_msg));
-        return Err(TandemError::Sidecar(error_msg));
-    }
-
-    // Get response text for debugging
-    let text = response.text().await.map_err(|e| {
-        let error_msg = format!("Failed to read response: {}", e);
-        emit_state("error", Some(&error_msg));
-        TandemError::Sidecar(error_msg)
+        e
     })?;
-
-    // Try to parse as JSON
-    let releases: Vec<GitHubRelease> = serde_json::from_str(&text).map_err(|e| {
-        tracing::error!("Failed to parse GitHub releases response: {}", e);
-        tracing::debug!(
-            "Response text (first 500 chars): {}",
-            &text[..text.len().min(500)]
-        );
-        let error_msg = format!("Failed to parse releases: {}", e);
+    let selected = select_latest_eligible_release(&releases).map_err(|e| {
+        let error_msg = e.to_string();
         emit_state("error", Some(&error_msg));
-        TandemError::Sidecar(error_msg)
+        e
     })?;
+    log_release_selection("sidecar_download", &selected);
 
-    // Find the release with our asset
+    let release = selected.release;
     let asset_name = get_asset_name();
-    let (release, asset) = releases
+    let asset = release
+        .assets
         .iter()
-        .filter(|r| !r.draft && !r.prerelease)
-        .find_map(|r| {
-            r.assets
-                .iter()
-                .find(|a| a.name == asset_name)
-                .map(|a| (r, a))
-        })
+        .find(|asset| asset.name == asset_name)
         .ok_or_else(|| {
-            let err = format!("No release found with asset: {}", asset_name);
+            let err = format!(
+                "Selected release {} is missing platform asset {}",
+                release.tag_name, asset_name
+            );
             emit_state("error", Some(&err));
             TandemError::Sidecar(err)
         })?;
@@ -676,5 +758,116 @@ fn format_speed(bytes_per_sec: f64) -> String {
         format!("{:.0} KB/s", bytes_per_sec / 1_000.0)
     } else {
         format!("{:.0} B/s", bytes_per_sec)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_release(tag: &str, draft: bool, prerelease: bool, assets: &[&str]) -> GitHubRelease {
+        GitHubRelease {
+            tag_name: tag.to_string(),
+            draft,
+            prerelease,
+            assets: assets
+                .iter()
+                .map(|name| GitHubAsset {
+                    name: (*name).to_string(),
+                    browser_download_url: format!("https://example.com/{}", name),
+                    size: 123,
+                })
+                .collect(),
+        }
+    }
+
+    fn all_required_assets() -> Vec<&'static str> {
+        REQUIRED_TANDEM_CLI_ASSETS.to_vec()
+    }
+
+    #[test]
+    fn select_latest_eligible_release_prefers_newest_valid_release() {
+        let releases = vec![
+            make_release("v1.1.58", false, false, &all_required_assets()),
+            make_release("v1.1.57", false, false, &all_required_assets()),
+        ];
+        let selected = select_latest_eligible_release(&releases).unwrap();
+        assert_eq!(selected.release.tag_name, "v1.1.58");
+    }
+
+    #[test]
+    fn select_latest_eligible_release_skips_missing_required_assets() {
+        let mut missing_one = all_required_assets();
+        missing_one.pop();
+
+        let releases = vec![
+            make_release("v1.1.58", false, false, &missing_one),
+            make_release("v1.1.57", false, false, &all_required_assets()),
+        ];
+        let selected = select_latest_eligible_release(&releases).unwrap();
+        assert_eq!(selected.release.tag_name, "v1.1.57");
+    }
+
+    #[test]
+    fn select_latest_eligible_release_skips_manual_skip_tag() {
+        let releases = vec![
+            make_release("v1.1.59", false, false, &all_required_assets()),
+            make_release("v1.1.58", false, false, &all_required_assets()),
+        ];
+        let selected = select_latest_eligible_release(&releases).unwrap();
+        assert_eq!(selected.release.tag_name, "v1.1.58");
+        assert!(selected.skipped_count >= 1);
+    }
+
+    #[test]
+    fn select_latest_eligible_release_rejects_desktop_only_release() {
+        let desktop_only = vec![
+            "opencode-desktop-windows-x64.exe",
+            "opencode-desktop-darwin-x64.dmg",
+            "opencode-desktop-linux-amd64.deb",
+        ];
+        let releases = vec![
+            make_release("v1.1.58", false, false, &desktop_only),
+            make_release("v1.1.57", false, false, &all_required_assets()),
+        ];
+        let selected = select_latest_eligible_release(&releases).unwrap();
+        assert_eq!(selected.release.tag_name, "v1.1.57");
+    }
+
+    #[test]
+    fn select_latest_eligible_release_rejects_draft_and_prerelease() {
+        let releases = vec![
+            make_release("v1.1.60", true, false, &all_required_assets()),
+            make_release("v1.1.59", false, true, &all_required_assets()),
+            make_release("v1.1.58", false, false, &all_required_assets()),
+        ];
+        let selected = select_latest_eligible_release(&releases).unwrap();
+        assert_eq!(selected.release.tag_name, "v1.1.58");
+    }
+
+    #[test]
+    fn select_latest_eligible_release_errors_when_none_eligible() {
+        let releases = vec![
+            make_release("v1.1.59", false, false, &all_required_assets()),
+            make_release("v1.1.58", true, false, &all_required_assets()),
+        ];
+        assert!(select_latest_eligible_release(&releases).is_err());
+    }
+
+    #[test]
+    fn version_comparison_identifies_newer_release() {
+        assert!(is_version_newer("1.1.58", "1.1.57"));
+    }
+
+    #[test]
+    fn version_comparison_treats_v_prefix_as_equal() {
+        assert!(!is_version_newer("v1.1.58", "1.1.58"));
+        assert_eq!(compare_versions("v1.1.58", "1.1.58"), Ordering::Equal);
+    }
+
+    #[test]
+    fn version_comparison_prevents_downgrade_prompt() {
+        assert!(!is_version_newer("1.1.58", "1.1.59"));
+        assert!(!should_offer_update(Some("1.1.59"), Some("1.1.58")));
     }
 }
