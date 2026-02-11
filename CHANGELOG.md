@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.20] - 2026-02-11
+
+### Added
+
+- **Sidecar Update Compatibility Metadata**: Sidecar status now exposes `latestOverallVersion` and `compatibilityMessage` so the UI can clearly explain when newest overall and newest compatible releases differ.
+
+### Fixed
+
+- **OpenCode Sidecar Release Discovery**: Sidecar update checks now query GitHub Releases with pagination (`per_page=20`, multi-page) instead of relying on a single latest path.
+- **Update Target Selection**: Sidecar updater now selects the newest compatible release for the current platform/architecture by filtering assets from release metadata and skipping drafts (and prereleases unless beta channel is enabled).
+- **Rate Limit Resilience**: Added conditional GitHub requests (`If-None-Match`, `If-Modified-Since`), local release-cache reuse, and check debouncing to reduce API pressure and improve reliability when offline/rate-limited.
+- **Version Comparison Correctness**: Updater now uses semantic version comparison (with fallback parsing) to prevent incorrect update prompts from string-based version checks.
+- **Sidecar Update Messaging**: Improved update overlay messaging to surface compatibility context instead of always presenting newest-tag text.
+- **Console History Persistence**: Fixed historical tool executions not loading in the Console tab by correctly parsing persisted `type: "tool"` messages (which differ from live streaming format) and simplifying part-ID resolution.
+- **Chat Jump Button**: Fixed "Jump to latest" button floating in the middle of the view by positioning it as an absolute overlay at the bottom of the message area, independent of scroll content height.
+
 ## [0.2.19] - 2026-02-11
 
 ### Added

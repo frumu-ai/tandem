@@ -2,6 +2,15 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.2.20 (2026-02-11)
+
+- Sidecar updates: Switched OpenCode release discovery to paginated GitHub Releases metadata (`per_page=20` + additional pages), avoiding fragile single-endpoint latest behavior.
+- Sidecar updates: Selects the newest compatible release for the current platform/arch by filtering release assets, skipping drafts, and excluding prereleases unless beta channel is enabled.
+- Sidecar updates: Added API-efficiency protections (ETag/Last-Modified conditional requests, local cache reuse, and debounce window) to reduce rate-limit pressure and improve resilience.
+- Sidecar updates: Improved version comparison with semantic version parsing to avoid incorrect prompts caused by string comparison.
+- UI/Status: Added compatibility-aware sidecar status fields (`latestOverallVersion`, `compatibilityMessage`) and improved overlay messaging when latest overall and latest compatible differ.
+- **Console & Chat UI Fixes**: Resolved an issue where the Console tab would lose history when switching views or restarting the drawer. Also fixed the "Jump to latest" button positioning to ensure it stays pinned to the bottom of the chat.
+
 ## v0.2.19 (2026-02-11)
 
 - Memory: Chat now runs vector retrieval in both standard and streaming send paths, injects `<memory_context>` when relevant, and emits verifiable retrieval telemetry events.
