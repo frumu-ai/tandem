@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Fullscreen File Preview Readability**: Increased fullscreen preview opacity and backdrop strength so file content remains readable on highly transparent/gradient themes (e.g. Pink Pony) instead of blending into the app background.
-
 ## [0.2.21] - 2026-02-11
 
 ### Added
@@ -27,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Provider-Scoped Empty State**: Empty states in model selection now explain when no matches exist for the active provider filter.
+- **Fullscreen File Preview Readability**: Increased fullscreen preview opacity and backdrop strength so file content remains readable on highly transparent/gradient themes (e.g. Pink Pony) instead of blending into the app background.
 
 ## [0.2.20] - 2026-02-11
 
