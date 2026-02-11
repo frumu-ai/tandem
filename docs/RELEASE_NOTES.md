@@ -1,3 +1,30 @@
+# Tandem v0.2.21 Release Notes
+
+## Highlights
+
+- **Provider filtering that scales**: The model selector now uses a compact provider dropdown (`All` + visible providers) instead of horizontal scrolling chips.
+- **Faster provider targeting from keyboard**: Search now supports `provider:<id-or-name>` (for example `provider:openrouter sonnet`).
+- **Clearer visibility rules**: Added in-context helper copy ("Showing configured providers + local") so provider filtering behavior is explicit.
+- **Better empty-state feedback**: No-result messages now explain when the active provider filter has no matching models.
+
+## Complete Feature List
+
+### Model Selector UX
+
+- Replaced horizontal provider chip rail with a full-width provider dropdown to improve usability with many providers.
+- Kept existing provider visibility policy (configured providers + local defaults) and surfaced that behavior in the dropdown header.
+- Added resilient filter behavior so provider selection resets to `All` if a previously selected provider disappears after model reload.
+- Improved no-result messaging to include provider context when filtering within a specific provider.
+
+### Search
+
+- Added provider token parsing in model search:
+  - `provider:openrouter`
+  - `provider:OpenCodeZen`
+- Provider token filtering composes with existing model name/id search text.
+
+---
+
 # Tandem v0.2.20 Release Notes
 
 ## Highlights

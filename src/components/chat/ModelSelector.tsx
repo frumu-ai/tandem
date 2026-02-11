@@ -27,6 +27,7 @@ export function ModelSelector({
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [groupedModels, setGroupedModels] = useState<GroupedModel[]>([]);
+  const [selectedProviderFilter, setSelectedProviderFilter] = useState<"all" | string>("all");
   const [loading, setLoading] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -49,6 +50,15 @@ export function ModelSelector({
       loadModels();
     }
   }, [isOpen]);
+
+  // Keep filter valid when provider list changes.
+  useEffect(() => {
+    if (selectedProviderFilter === "all") return;
+    const stillExists = groupedModels.some((group) => group.providerId === selectedProviderFilter);
+    if (!stillExists) {
+      setSelectedProviderFilter("all");
+    }
+  }, [groupedModels, selectedProviderFilter]);
 
   const loadModels = async () => {
     setLoading(true);
@@ -181,16 +191,43 @@ export function ModelSelector({
     }
   };
 
+  const providerQueryMatch = search.match(/(?:^|\s)provider:([^\s]+)/i);
+  const providerQueryValue = providerQueryMatch?.[1]?.trim().toLowerCase();
+  const textSearch = search.replace(/(?:^|\s)provider:[^\s]+/gi, " ").trim();
+
+  const resolvedProviderFromSearch =
+    providerQueryValue &&
+    groupedModels.find(
+      (group) =>
+        group.providerId.toLowerCase() === providerQueryValue ||
+        group.providerName.toLowerCase() === providerQueryValue
+    )?.providerId;
+
+  const activeProviderFilter = resolvedProviderFromSearch || selectedProviderFilter;
+  const isProviderForcedBySearch = Boolean(resolvedProviderFromSearch);
+
+  const providerChips = [
+    { id: "all", label: "All" },
+    ...groupedModels.map((group) => ({ id: group.providerId, label: group.providerName })),
+  ];
+
   const filteredGroups = groupedModels
+    .filter((group) => activeProviderFilter === "all" || group.providerId === activeProviderFilter)
     .map((group) => ({
       ...group,
       models: group.models.filter(
         (m) =>
-          m.name.toLowerCase().includes(search.toLowerCase()) ||
-          m.id.toLowerCase().includes(search.toLowerCase())
+          m.name.toLowerCase().includes(textSearch.toLowerCase()) ||
+          m.id.toLowerCase().includes(textSearch.toLowerCase())
       ),
     }))
     .filter((g) => g.models.length > 0);
+
+  const activeProviderName =
+    activeProviderFilter === "all"
+      ? "All Providers"
+      : groupedModels.find((group) => group.providerId === activeProviderFilter)?.providerName ||
+        activeProviderFilter;
 
   // Find current model display name
   const currentModelDisplay = (() => {
@@ -252,13 +289,40 @@ export function ModelSelector({
                   className="w-full rounded-lg bg-surface border border-border px-8 py-1.5 text-xs text-text placeholder:text-text-subtle focus:border-primary focus:outline-none"
                 />
               </div>
+              <div className="mt-2 text-[10px] text-text-subtle">
+                Showing configured providers + local
+              </div>
+              <div className="mt-2">
+                <div className="mb-1 text-[10px] text-text-subtle">Provider</div>
+                <select
+                  value={activeProviderFilter}
+                  onChange={(e) => setSelectedProviderFilter(e.target.value)}
+                  disabled={isProviderForcedBySearch}
+                  className="w-full rounded-lg bg-surface border border-border px-2 py-1.5 text-xs text-text focus:border-primary focus:outline-none disabled:opacity-60"
+                >
+                  {providerChips.map((chip) => (
+                    <option key={chip.id} value={chip.id}>
+                      {chip.label}
+                    </option>
+                  ))}
+                </select>
+                {isProviderForcedBySearch && (
+                  <div className="mt-1 text-[10px] text-text-subtle">
+                    Provider locked by search token. Remove <code>provider:</code> to change.
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="max-h-[300px] overflow-y-auto p-1">
               {loading ? (
                 <div className="py-8 text-center text-xs text-text-subtle">Loading models...</div>
               ) : filteredGroups.length === 0 ? (
-                <div className="py-8 text-center text-xs text-text-subtle">No models found</div>
+                <div className="py-8 text-center text-xs text-text-subtle">
+                  {activeProviderFilter === "all"
+                    ? "No models found"
+                    : `No models found for ${activeProviderName}`}
+                </div>
               ) : (
                 <div className="space-y-1">
                   {filteredGroups.map((group) => (
@@ -273,8 +337,9 @@ export function ModelSelector({
                             onModelSelect(model.id, group.providerId);
                             setIsOpen(false);
                           }}
-                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-elevated ${currentModel === model.id ? "bg-primary/10 text-primary" : "text-text"
-                            }`}
+                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-elevated ${
+                            currentModel === model.id ? "bg-primary/10 text-primary" : "text-text"
+                          }`}
                         >
                           <span className="truncate">{model.name}</span>
                           {currentModel === model.id && <Check className="h-3 w-3" />}

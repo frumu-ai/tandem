@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.21] - 2026-02-11
+
+### Added
+
+- **Model Selector Provider Filter**: Added an explicit provider selector inside the chat model dropdown (`All` + visible providers) so users can narrow large catalogs without horizontal scrolling.
+- **Provider-Aware Search Token**: Added `provider:<id-or-name>` support in model search (for example `provider:openrouter sonnet`) to quickly scope results from the keyboard.
+
+### Changed
+
+- **Model Selector UX**: Replaced horizontal provider chips with a compact full-width provider dropdown for better scalability with many providers.
+- **Model Selector Clarity**: Added helper copy ("Showing configured providers + local") to explain why some providers are hidden by default.
+- **Provider Filter Behavior**: Provider filters now reset safely to `All` when a previously selected provider is no longer available after model reload.
+
+### Fixed
+
+- **Provider-Scoped Empty State**: Empty states in model selection now explain when no matches exist for the active provider filter.
+
 ## [0.2.20] - 2026-02-11
 
 ### Added

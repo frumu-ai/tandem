@@ -2,6 +2,14 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.2.21 (2026-02-11)
+
+- Model selector UX: Replaced horizontal provider chips with a compact provider dropdown (`All` + visible providers) to scale cleanly when many providers are available.
+- Model selector search: Added provider-aware query syntax via `provider:<id-or-name>` (for example `provider:openrouter sonnet`) while keeping normal model name/id search.
+- Model selector clarity: Added inline context text ("Showing configured providers + local") so hidden-provider behavior is explicit.
+- Model selector reliability: Provider filter now safely resets to `All` if the selected provider disappears after catalog refresh.
+- Empty states: Model dropdown now reports provider-specific no-match states (for example "No models found for OpenRouter").
+
 ## v0.2.20 (2026-02-11)
 
 - Sidecar updates: Switched OpenCode release discovery to paginated GitHub Releases metadata (`per_page=20` + additional pages), avoiding fragile single-endpoint latest behavior.
