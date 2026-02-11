@@ -2,6 +2,12 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.2.22 (2026-02-11)
+
+- Orchestrator: Fixed a cross-project state bug where opening Orchestrator could load an old completed run from another project.
+- Orchestrator: Switching projects (or adding/activating a project) now clears stale orchestrator run selection so each workspace starts clean.
+- Orchestrator: Auto-selection now resumes only active runs (`planning`, `awaiting_approval`, `executing`, `paused`) and no longer auto-opens terminal history (`completed`, `failed`, `cancelled`).
+
 ## v0.2.21 (2026-02-11)
 
 - Model selector UX: Replaced horizontal provider chips with a compact provider dropdown (`All` + visible providers) to scale cleanly when many providers are available.

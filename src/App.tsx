@@ -192,19 +192,33 @@ function App() {
     return () => clearInterval(interval);
   }, [activeProject]); // Re-fetch when project changes
 
-  // If panel opens with no explicit run selected, pick the most recent active run
+  // If panel opens with no explicit run selected, resume only active runs.
+  // Do not auto-open completed/failed/cancelled history; let users start fresh by default.
   useEffect(() => {
     if (!orchestratorOpen || currentOrchestratorRunId) return;
     invoke<RunSummary[]>("orchestrator_list_runs")
       .then((runs) => {
         if (!runs || runs.length === 0) return;
-        // Prefer Executing/Paused, otherwise most recent by updated_at
-        const preferred =
-          runs.find((r) => r.status === "executing" || r.status === "paused") ?? runs[0];
+        const preferred = runs.find((r) =>
+          ["planning", "awaiting_approval", "executing", "paused"].includes(r.status)
+        );
+        if (!preferred) return;
         setCurrentOrchestratorRunId(preferred.run_id);
       })
       .catch(console.error);
   }, [orchestratorOpen, currentOrchestratorRunId]);
+
+  // When the active project changes, clear stale orchestrator selection that does not
+  // belong to the newly active workspace.
+  useEffect(() => {
+    if (!currentOrchestratorRunId) return;
+    const existsInActiveWorkspace = orchestratorRuns.some(
+      (run) => run.run_id === currentOrchestratorRunId
+    );
+    if (!existsInActiveWorkspace) {
+      setCurrentOrchestratorRunId(null);
+    }
+  }, [activeProject?.id, orchestratorRuns, currentOrchestratorRunId]);
 
   // Todos for task sidebar
   const todosData = useTodos(currentSessionId);
@@ -466,6 +480,8 @@ function App() {
 
     // Clear current session FIRST to reset the chat view
     setCurrentSessionId(null);
+    setCurrentOrchestratorRunId(null);
+    setOrchestratorOpen(false);
 
     try {
       await setActiveProject(projectId);
@@ -541,6 +557,8 @@ function App() {
   const handleAddProject = async () => {
     // Clear current session FIRST to reset the chat view
     setCurrentSessionId(null);
+    setCurrentOrchestratorRunId(null);
+    setOrchestratorOpen(false);
     setError(null);
 
     try {
@@ -562,6 +580,8 @@ function App() {
     setError(null);
     try {
       setProjectSwitcherLoading(true);
+      setCurrentOrchestratorRunId(null);
+      setOrchestratorOpen(false);
       const project = await addProject(path);
       await setActiveProject(project.id);
 

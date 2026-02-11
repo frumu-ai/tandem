@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.22] - 2026-02-11
+
+### Fixed
+
+- **Orchestrator Run Isolation by Project**: Prevented Orchestrator mode from reusing a stale run across projects by clearing selected run state when switching/adding projects and scoping run selection to the active workspace.
+- **Orchestrator Auto-Resume Behavior**: Opening Orchestrator with no explicit run now auto-resumes only active runs (`planning`, `awaiting_approval`, `executing`, `paused`) instead of reopening terminal/completed history by default.
+
 ## [0.2.21] - 2026-02-11
 
 ### Added

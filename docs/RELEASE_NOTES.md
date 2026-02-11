@@ -1,3 +1,29 @@
+# Tandem v0.2.22 Release Notes
+
+## Highlights
+
+- **Project-scoped orchestrator context**: Fixed Orchestrator mode reopening a stale run from a different project/workspace.
+- **Clean project switching behavior**: Switching or adding projects now clears stale orchestrator run selection so each workspace starts from the correct context.
+- **Safer default resume logic**: Opening Orchestrator with no explicit run now auto-resumes only active runs and does not auto-open completed/terminal history.
+
+## Complete Feature List
+
+### Orchestrator
+
+- Clear `currentOrchestratorRunId` and close stale orchestrator panel state during project switch/add flows so previous-workspace run IDs are not carried forward.
+- When entering Orchestrator without an explicit run selection, only auto-select runs in active states:
+  - `planning`
+  - `awaiting_approval`
+  - `executing`
+  - `paused`
+- Avoid auto-selecting terminal/history states by default:
+  - `completed`
+  - `failed`
+  - `cancelled`
+- Added a guard to reset the selected run if it is not present in the active workspace run list.
+
+---
+
 # Tandem v0.2.21 Release Notes
 
 ## Highlights
