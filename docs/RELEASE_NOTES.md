@@ -1,3 +1,48 @@
+# Tandem v0.2.19 Release Notes
+
+## Highlights
+
+- **Verifiable memory retrieval**: Chat now executes vector retrieval before prompt send, emits telemetry, and shows a per-response memory badge in chat.
+- **Cleaner diagnostics UX**: Logs drawer now separates Tandem logs and Console activity, and fullscreen log height scales dynamically.
+- **Sidecar lifecycle hardening**: Start/stop transitions are serialized to prevent duplicate OpenCode/Bun process spawns.
+- **Pink Pony readability pass**: Theme contrast/surface opacity tuned for better legibility against bright gradients.
+
+## Complete Feature List
+
+### Memory + Chat
+
+- Run memory retrieval in both send paths (`send_message`, `send_message_streaming`) before forwarding to sidecar.
+- Emit `memory_retrieval` stream events with:
+  - `used`
+  - `chunks_total`
+  - `session_chunks`
+  - `history_chunks`
+  - `project_fact_chunks`
+  - `latency_ms`
+  - `query_hash` (short SHA-256 prefix)
+  - `score_min` / `score_max`
+- Inject formatted `<memory_context>` above user content only when retrieval returns context.
+- Show assistant-side memory capsule with a brain icon:
+  - `Memory: X chunks (Yms)` when used
+  - `Memory: not used` when skipped or empty
+
+### Logging + Console
+
+- Route memory telemetry through a distinct `tandem.memory` logging target for easier log filtering/scanning.
+- Keep telemetry privacy-safe (no raw user query text, no chunk content/body logging).
+- Remove redundant OC sidecar tab from the log viewer and use Console tab for command/tool activity.
+- Fix log drawer fullscreen sizing so list height re-measures on resize and tab/expand changes.
+
+### Sidecar Reliability
+
+- Add sidecar lifecycle serialization lock to prevent concurrent start/stop races that could spawn duplicate OpenCode/Bun processes.
+
+### Themes
+
+- Improve Pink Pony readability with higher-contrast text, stronger surface opacity, and clearer borders/glass values.
+
+---
+
 # Tandem v0.2.18 Release Notes
 
 ## Highlights

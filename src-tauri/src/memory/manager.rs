@@ -5,8 +5,8 @@ use crate::memory::chunking::{chunk_text_semantic, ChunkingConfig, Tokenizer};
 use crate::memory::db::MemoryDatabase;
 use crate::memory::embeddings::EmbeddingService;
 use crate::memory::types::{
-    CleanupLogEntry, MemoryChunk, MemoryConfig, MemoryContext, MemoryResult, MemorySearchResult,
-    MemoryStats, MemoryTier, StoreMessageRequest,
+    CleanupLogEntry, MemoryChunk, MemoryConfig, MemoryContext, MemoryResult, MemoryRetrievalMeta,
+    MemorySearchResult, MemoryStats, MemoryTier, StoreMessageRequest,
 };
 use chrono::Utc;
 use std::path::Path;
@@ -167,6 +167,20 @@ impl MemoryManager {
         session_id: Option<&str>,
         token_budget: Option<i64>,
     ) -> MemoryResult<MemoryContext> {
+        let (context, _) = self
+            .retrieve_context_with_meta(query, project_id, session_id, token_budget)
+            .await?;
+        Ok(context)
+    }
+
+    /// Retrieve context plus retrieval metadata for observability.
+    pub async fn retrieve_context_with_meta(
+        &self,
+        query: &str,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        token_budget: Option<i64>,
+    ) -> MemoryResult<(MemoryContext, MemoryRetrievalMeta)> {
         let budget = token_budget.unwrap_or(5000);
 
         // Get recent session chunks
@@ -180,6 +194,19 @@ impl MemoryManager {
         let search_results = self
             .search(query, None, project_id, session_id, Some(10))
             .await?;
+
+        let mut score_min: Option<f64> = None;
+        let mut score_max: Option<f64> = None;
+        for result in &search_results {
+            score_min = Some(match score_min {
+                Some(current) => current.min(result.similarity),
+                None => result.similarity,
+            });
+            score_max = Some(match score_max {
+                Some(current) => current.max(result.similarity),
+                None => result.similarity,
+            });
+        }
 
         let mut relevant_history = Vec::new();
         let mut project_facts = Vec::new();
@@ -213,12 +240,26 @@ impl MemoryManager {
             total_tokens = budget;
         }
 
-        Ok(MemoryContext {
+        let context = MemoryContext {
             current_session,
             relevant_history,
             project_facts,
             total_tokens,
-        })
+        };
+        let chunks_total = context.current_session.len()
+            + context.relevant_history.len()
+            + context.project_facts.len();
+        let meta = MemoryRetrievalMeta {
+            used: chunks_total > 0,
+            chunks_total,
+            session_chunks: context.current_session.len(),
+            history_chunks: context.relevant_history.len(),
+            project_fact_chunks: context.project_facts.len(),
+            score_min,
+            score_max,
+        };
+
+        Ok((context, meta))
     }
 
     /// Trim context to fit within token budget
@@ -458,6 +499,41 @@ mod tests {
             .unwrap();
 
         assert!(!context.project_facts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_retrieve_context_with_meta() {
+        let (manager, _temp) = setup_test_manager().await;
+
+        let request = StoreMessageRequest {
+            content: "The backend uses Rust and sqlite-vec for retrieval.".to_string(),
+            tier: MemoryTier::Project,
+            session_id: None,
+            project_id: Some("project-1".to_string()),
+            source: "assistant_response".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: None,
+            metadata: None,
+        };
+        manager.store_message(request).await.unwrap();
+
+        let (context, meta) = manager
+            .retrieve_context_with_meta("What does the backend use?", Some("project-1"), None, None)
+            .await
+            .unwrap();
+
+        assert!(meta.chunks_total > 0);
+        assert!(meta.used);
+        assert_eq!(
+            meta.chunks_total,
+            context.current_session.len()
+                + context.relevant_history.len()
+                + context.project_facts.len()
+        );
+        assert!(meta.score_min.is_some());
+        assert!(meta.score_max.is_some());
     }
 
     #[tokio::test]

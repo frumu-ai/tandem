@@ -6,11 +6,13 @@ import {
   Play,
   ScrollText,
   Search,
+  Terminal,
   Trash2,
   X,
   Maximize2,
   Minimize2,
 } from "lucide-react";
+import { ConsoleTab } from "./ConsoleTab";
 import { Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import {
@@ -19,7 +21,6 @@ import {
   startLogStream,
   stopLogStream,
   type LogFileInfo,
-  type LogSource,
 } from "@/lib/tauri";
 
 const MAX_RENDER_LINES = 5000;
@@ -104,16 +105,28 @@ function useMeasuredHeight() {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    const measure = () => {
+      const h = el.getBoundingClientRect().height;
+      if (Number.isFinite(h) && h > 0) setHeight(h);
+    };
+    measure();
 
     // ResizeObserver is supported in modern Chromium/WebKit; Tauri ships a modern runtime.
     const RO = globalThis.ResizeObserver;
-    if (!RO) return;
-    const ro = new RO((entries) => {
-      const h = entries[0]?.contentRect?.height;
-      if (typeof h === "number" && h > 0) setHeight(h);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
+    let ro: { observe: (target: unknown) => void; disconnect: () => void } | null = null;
+    if (RO) {
+      ro = new RO((entries) => {
+        const h = entries[0]?.contentRect?.height;
+        if (typeof h === "number" && h > 0) setHeight(h);
+      });
+      ro.observe(el);
+    }
+    const onResize = () => measure();
+    globalThis.addEventListener("resize", onResize);
+    return () => {
+      ro?.disconnect();
+      globalThis.removeEventListener("resize", onResize);
+    };
   }, []);
 
   return { ref, height };
@@ -125,8 +138,14 @@ function pickNewest(files: LogFileInfo[]): string | null {
   return sorted[0]?.name ?? null;
 }
 
-export function LogsDrawer({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<LogSource>("tandem");
+export function LogsDrawer({
+  onClose,
+  sessionId,
+}: {
+  onClose: () => void;
+  sessionId?: string | null;
+}) {
+  const [tab, setTab] = useState<"tandem" | "console">("tandem");
   const [files, setFiles] = useState<LogFileInfo[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
@@ -144,7 +163,7 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
   const nextLineIdRef = useRef(1);
   const pendingRawLinesRef = useRef<string[]>([]);
   const [listApi, setListApi] = useListCallbackRef(null);
-  const toastTimerRef = useRef<number | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
 
   const { ref: listContainerRef, height: listHeight } = useMeasuredHeight();
 
@@ -221,7 +240,7 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
   }, []);
 
   const startCurrentStream = useCallback(
-    async (next: { source: LogSource; fileName?: string }) => {
+    async (next: { source: "tandem"; fileName?: string }) => {
       await stopCurrentStream();
       setDropped(0);
 
@@ -271,11 +290,6 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
         return;
       }
 
-      if (tab === "sidecar") {
-        void startCurrentStream({ source: "sidecar" });
-        return;
-      }
-
       // Tandem file logs
       if (selectedFile) {
         void startCurrentStream({ source: "tandem", fileName: selectedFile });
@@ -317,9 +331,8 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
 
   const headerSubtitle = useMemo(() => {
     if (paused) return "Paused";
-    if (tab === "sidecar") return "Sidecar stdout/stderr (live)";
     return selectedFile ? `Tandem logs: ${selectedFile}` : "Tandem logs";
-  }, [paused, tab, selectedFile]);
+  }, [paused, selectedFile]);
 
   type RowProps = { items: LineItem[] };
 
@@ -403,11 +416,11 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
   return (
     <div
       className={cn(
-        "fixed z-50 border-border bg-surface shadow-xl",
+        "fixed z-50 border-border bg-surface shadow-xl h-dvh",
         expanded ? "inset-0" : "inset-y-0 right-0 w-full sm:w-[560px] border-l"
       )}
     >
-      <div className="flex h-full flex-col">
+      <div className="flex h-full min-h-0 flex-col">
         {/* Header */}
         <div className="border-b border-border px-4 py-3">
           <div className="flex items-center justify-between">
@@ -457,229 +470,247 @@ export function LogsDrawer({ onClose }: { onClose: () => void }) {
               </button>
               <button
                 type="button"
-                onClick={() => setTab("sidecar")}
+                onClick={() => setTab("console")}
                 className={cn(
                   "inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition-colors",
-                  tab === "sidecar"
+                  tab === "console"
                     ? "border-primary/40 bg-primary/10 text-text"
                     : "border-border bg-surface-elevated text-text-subtle hover:text-text"
                 )}
               >
-                <span className="terminal-text text-[10px] text-primary/90">OC</span>
-                Sidecar
+                <Terminal className="h-3.5 w-3.5" />
+                Console
               </button>
 
               <div className="flex-1" />
 
-              <button
-                type="button"
-                onClick={() => setPaused((p) => !p)}
-                className={cn(
-                  "inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition-colors",
-                  paused
-                    ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
-                    : "border-border bg-surface-elevated text-text-subtle hover:text-text"
-                )}
-                title={paused ? "Resume streaming" : "Pause streaming"}
-              >
-                {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-                {paused ? "Resume" : "Pause"}
-              </button>
+              {tab !== "console" && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setPaused((p) => !p)}
+                    className={cn(
+                      "inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition-colors",
+                      paused
+                        ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
+                        : "border-border bg-surface-elevated text-text-subtle hover:text-text"
+                    )}
+                    title={paused ? "Resume streaming" : "Pause streaming"}
+                  >
+                    {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+                    {paused ? "Resume" : "Pause"}
+                  </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  pendingRawLinesRef.current = [];
-                  setLines([]);
-                  setDropped(0);
-                  setSelectedLine(null);
-                }}
-                className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text-subtle transition-colors hover:text-text"
-                title="Clear view"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                Clear
-              </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      pendingRawLinesRef.current = [];
+                      setLines([]);
+                      setDropped(0);
+                      setSelectedLine(null);
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text-subtle transition-colors hover:text-text"
+                    title="Clear view"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Clear
+                  </button>
 
-              <button
-                type="button"
-                onClick={() =>
-                  copyText(
-                    visibleLines
-                      .slice(-200)
-                      .map((l) => l.raw.replace(/\r?\n$/, ""))
-                      .join("\n"),
-                    "Copied last 200 lines"
-                  )
-                }
-                className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text-subtle transition-colors hover:text-text"
-                title="Copy the last 200 lines (from the current filtered view)"
-              >
-                Copy last 200
-              </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      copyText(
+                        visibleLines
+                          .slice(-200)
+                          .map((l) => l.raw.replace(/\r?\n$/, ""))
+                          .join("\n"),
+                        "Copied last 200 lines"
+                      )
+                    }
+                    className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text-subtle transition-colors hover:text-text"
+                    title="Copy the last 200 lines (from the current filtered view)"
+                  >
+                    Copy last 200
+                  </button>
+                </>
+              )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              {tab === "tandem" && (
+            {tab !== "console" && (
+              <div className="flex flex-wrap items-center gap-2">
+                {tab === "tandem" && (
+                  <label className="flex items-center gap-2 text-xs text-text-subtle">
+                    <span className="hidden sm:inline">File</span>
+                    <select
+                      className="rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
+                      value={selectedFile ?? ""}
+                      onChange={(e) => setSelectedFile(e.target.value || null)}
+                      disabled={files.length === 0}
+                      title={selectedFile ?? "Select a log file"}
+                    >
+                      {files.length === 0 && <option value="">No logs found</option>}
+                      {files
+                        .slice()
+                        .sort((a, b) => b.modified_ms - a.modified_ms)
+                        .map((f) => (
+                          <option key={f.name} value={f.name}>
+                            {f.name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                )}
+
+                <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-2 py-1">
+                  <Search className="h-3.5 w-3.5 text-text-subtle" />
+                  <input
+                    value={search}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setSearch(next);
+                      if (next.trim() !== "") setFollow(false);
+                    }}
+                    className="w-[220px] bg-transparent text-xs text-text placeholder:text-text-subtle outline-none"
+                    placeholder="Search logs..."
+                  />
+                </div>
+
                 <label className="flex items-center gap-2 text-xs text-text-subtle">
-                  <span className="hidden sm:inline">File</span>
+                  <span className="hidden sm:inline">Level</span>
                   <select
                     className="rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
-                    value={selectedFile ?? ""}
-                    onChange={(e) => setSelectedFile(e.target.value || null)}
-                    disabled={files.length === 0}
-                    title={selectedFile ?? "Select a log file"}
+                    value={levelFilter}
+                    onChange={(e) => setLevelFilter(e.target.value as LevelFilter)}
                   >
-                    {files.length === 0 && <option value="">No logs found</option>}
-                    {files
-                      .slice()
-                      .sort((a, b) => b.modified_ms - a.modified_ms)
-                      .map((f) => (
-                        <option key={f.name} value={f.name}>
-                          {f.name}
-                        </option>
-                      ))}
+                    <option value="ALL">All</option>
+                    <option value="ERROR">Error</option>
+                    <option value="WARN">Warn</option>
+                    <option value="INFO">Info</option>
+                    <option value="DEBUG">Debug</option>
+                    <option value="TRACE">Trace</option>
+                    <option value="STDERR">Stderr</option>
+                    <option value="STDOUT">Stdout</option>
                   </select>
                 </label>
+
+                <div className="flex-1" />
+
+                <div className="text-xs text-text-subtle">
+                  <span className="font-mono tabular-nums">{visibleLines.length}</span> lines
+                  {dropped > 0 && (
+                    <span className="ml-2 rounded-md border border-border bg-surface-elevated px-2 py-0.5 text-[10px] text-text-muted">
+                      dropped {dropped}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {tab === "console" ? (
+          <ConsoleTab sessionId={sessionId} />
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col">
+            {/* List */}
+            <div ref={listContainerRef} className="relative min-h-0 flex-1 overflow-hidden">
+              {visibleLines.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-sm text-text-subtle">
+                  {paused ? "Paused" : "Waiting for logs..."}
+                </div>
+              ) : (
+                <List
+                  listRef={setListApi}
+                  rowComponent={Row}
+                  rowCount={visibleLines.length}
+                  rowHeight={22}
+                  rowProps={{ items: visibleLines }}
+                  // Allow horizontal scrolling for long log lines.
+                  style={{
+                    height: listHeight,
+                    width: "100%",
+                    overflowX: "auto",
+                    overflowY: "auto",
+                  }}
+                  onScroll={(e) => {
+                    const el = e.currentTarget as HTMLDivElement;
+                    // "At bottom" tolerance so tiny pixel rounding doesn't flap.
+                    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+                    if (atBottom) {
+                      if (!follow) setFollow(true);
+                    } else {
+                      if (follow) setFollow(false);
+                    }
+                  }}
+                />
               )}
 
-              <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-2 py-1">
-                <Search className="h-3.5 w-3.5 text-text-subtle" />
-                <input
-                  value={search}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setSearch(next);
-                    if (next.trim() !== "") setFollow(false);
-                  }}
-                  className="w-[220px] bg-transparent text-xs text-text placeholder:text-text-subtle outline-none"
-                  placeholder="Search logs..."
-                />
+              {!paused && visibleLines.length > 0 && !follow && (
+                <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFollow(true);
+                      listApi?.scrollToRow({
+                        index: visibleLines.length - 1,
+                        align: "end",
+                        behavior: "instant",
+                      });
+                    }}
+                    className="pointer-events-auto rounded-full border border-border bg-surface-elevated/90 px-3 py-1 text-[10px] text-text-subtle shadow-lg shadow-black/30 backdrop-blur-sm hover:text-text"
+                    title="Jump to bottom and resume following"
+                  >
+                    Jump to bottom to follow
+                  </button>
+                </div>
+              )}
+
+              {toastMsg && (
+                <div className="pointer-events-none absolute bottom-4 right-4">
+                  <div className="rounded-lg border border-border bg-surface-elevated/95 px-3 py-2 text-xs text-text shadow-lg shadow-black/30 backdrop-blur-sm">
+                    {toastMsg}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="border-t border-border px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-text-subtle">
+                  Tip: scroll up to pause following; use &quot;Jump to bottom to follow&quot; to
+                  resume.
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    onClick={() =>
+                      selectedLine ? copyText(selectedLine.raw, "Copied line") : undefined
+                    }
+                    className="h-8 px-3 text-xs"
+                    disabled={!selectedLine}
+                    title={selectedLine ? "Copy selected line" : "Click a line above to select it"}
+                  >
+                    Copy
+                  </Button>
+                </div>
               </div>
 
-              <label className="flex items-center gap-2 text-xs text-text-subtle">
-                <span className="hidden sm:inline">Level</span>
-                <select
-                  className="rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
-                  value={levelFilter}
-                  onChange={(e) => setLevelFilter(e.target.value as LevelFilter)}
-                >
-                  <option value="ALL">All</option>
-                  <option value="ERROR">Error</option>
-                  <option value="WARN">Warn</option>
-                  <option value="INFO">Info</option>
-                  <option value="DEBUG">Debug</option>
-                  <option value="TRACE">Trace</option>
-                  <option value="STDERR">Stderr</option>
-                  <option value="STDOUT">Stdout</option>
-                </select>
-              </label>
-
-              <div className="flex-1" />
-
-              <div className="text-xs text-text-subtle">
-                <span className="font-mono tabular-nums">{visibleLines.length}</span> lines
-                {dropped > 0 && (
-                  <span className="ml-2 rounded-md border border-border bg-surface-elevated px-2 py-0.5 text-[10px] text-text-muted">
-                    dropped {dropped}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* List */}
-        <div ref={listContainerRef} className="relative flex-1 overflow-hidden">
-          {visibleLines.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-text-subtle">
-              {paused ? "Paused" : "Waiting for logs..."}
-            </div>
-          ) : (
-            <List
-              listRef={setListApi}
-              rowComponent={Row}
-              rowCount={visibleLines.length}
-              rowHeight={22}
-              rowProps={{ items: visibleLines }}
-              // Allow horizontal scrolling for long log lines.
-              style={{ height: listHeight, width: "100%", overflowX: "auto", overflowY: "auto" }}
-              onScroll={(e) => {
-                const el = e.currentTarget as HTMLDivElement;
-                // "At bottom" tolerance so tiny pixel rounding doesn't flap.
-                const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
-                if (atBottom) {
-                  if (!follow) setFollow(true);
-                } else {
-                  if (follow) setFollow(false);
-                }
-              }}
-            />
-          )}
-
-          {!paused && visibleLines.length > 0 && !follow && (
-            <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2">
-              <button
-                type="button"
-                onClick={() => {
-                  setFollow(true);
-                  listApi?.scrollToRow({
-                    index: visibleLines.length - 1,
-                    align: "end",
-                    behavior: "instant",
-                  });
-                }}
-                className="pointer-events-auto rounded-full border border-border bg-surface-elevated/90 px-3 py-1 text-[10px] text-text-subtle shadow-lg shadow-black/30 backdrop-blur-sm hover:text-text"
-                title="Jump to bottom and resume following"
-              >
-                Jump to bottom to follow
-              </button>
-            </div>
-          )}
-
-          {toastMsg && (
-            <div className="pointer-events-none absolute bottom-4 right-4">
-              <div className="rounded-lg border border-border bg-surface-elevated/95 px-3 py-2 text-xs text-text shadow-lg shadow-black/30 backdrop-blur-sm">
-                {toastMsg}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="border-t border-border px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-xs text-text-subtle">
-              Tip: scroll up to pause following; use "Jump to bottom to follow" to resume.
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                onClick={() =>
-                  selectedLine ? copyText(selectedLine.raw, "Copied line") : undefined
-                }
-                className="h-8 px-3 text-xs"
-                disabled={!selectedLine}
-                title={selectedLine ? "Copy selected line" : "Click a line above to select it"}
-              >
-                Copy
-              </Button>
-            </div>
-          </div>
-
-          <div className="mt-2 rounded-lg border border-border bg-surface-elevated px-3 py-2">
-            <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-              {selectedLine
-                ? "Selected line (full text)"
-                : "Click a line to preview/copy full text"}
-            </div>
-            <div className="mt-2 rounded-md border border-border bg-surface px-2 py-2">
-              <div className="max-h-28 overflow-auto whitespace-pre font-mono text-[12px] leading-relaxed text-text pb-2">
-                {selectedLine?.raw?.replace(/\r?\n$/, "") ?? ""}
+              <div className="mt-2 rounded-lg border border-border bg-surface-elevated px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                  {selectedLine
+                    ? "Selected line (full text)"
+                    : "Click a line to preview/copy full text"}
+                </div>
+                <div className="mt-2 rounded-md border border-border bg-surface px-2 py-2">
+                  <div className="max-h-28 overflow-auto whitespace-pre font-mono text-[12px] leading-relaxed text-text pb-2">
+                    {selectedLine?.raw?.replace(/\r?\n$/, "") ?? ""}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

@@ -20,6 +20,7 @@ import {
   X,
   ExternalLink,
   ChevronDown,
+  Brain,
 } from "lucide-react";
 import React, { useState, ReactNode } from "react";
 
@@ -46,6 +47,11 @@ export interface MessageProps {
   onFileOpen?: (filePath: string) => void;
   onOpenQuestionToolCall?: (args: { messageId: string; toolCallId: string }) => void;
   isQuestionToolCallPending?: (args: { messageId: string; toolCallId: string }) => boolean;
+  memoryRetrieval?: {
+    used: boolean;
+    chunks_total: number;
+    latency_ms: number;
+  } | null;
 }
 
 export interface ToolCall {
@@ -145,6 +151,7 @@ export function Message({
   onFileOpen,
   onOpenQuestionToolCall,
   isQuestionToolCallPending,
+  memoryRetrieval,
 }: MessageProps) {
   const isUser = role === "user";
   const isSystem = role === "system";
@@ -216,6 +223,21 @@ export function Message({
             <span className="flex items-center gap-2 text-xs text-primary font-mono">
               <span className="inline-block h-3 w-1.5 bg-primary animate-pulse" />
               Processing
+            </span>
+          )}
+          {!isUser && !isSystem && memoryRetrieval && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 text-[11px] rounded-md px-2 py-0.5 border",
+                memoryRetrieval.used
+                  ? "bg-primary/15 border-primary/40 text-primary"
+                  : "bg-warning/15 border-warning/40 text-warning"
+              )}
+            >
+              <Brain className="h-3 w-3" />
+              {memoryRetrieval.used
+                ? `Memory: ${memoryRetrieval.chunks_total} chunks (${memoryRetrieval.latency_ms}ms)`
+                : "Memory: not used"}
             </span>
           )}
         </div>
@@ -370,7 +392,16 @@ export function Message({
                       </a>
                     );
                   },
-                  code({ className, children, inline, ...props }: any) {
+                  code({
+                    className,
+                    children,
+                    inline,
+                    ...props
+                  }: {
+                    className?: string;
+                    children?: ReactNode;
+                    inline?: boolean;
+                  } & React.HTMLAttributes<HTMLElement>) {
                     const match = /language-(\w+)/.exec(className || "");
                     if (match) {
                       return (
@@ -572,7 +603,7 @@ function CollapsedToolCalls({
   );
 }
 
-function ToolCallCard({
+const ToolCallCard = React.memo(function ToolCallCard({
   id,
   tool,
   args,
@@ -732,4 +763,4 @@ function ToolCallCard({
       )}
     </motion.div>
   );
-}
+});

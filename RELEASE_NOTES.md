@@ -2,6 +2,16 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.2.19 (2026-02-11)
+
+- Memory: Chat now runs vector retrieval in both standard and streaming send paths, injects `<memory_context>` when relevant, and emits verifiable retrieval telemetry events.
+- Memory: Assistant responses now include a colored memory capsule with a brain icon (`used/not used`, chunk count, latency) so retrieval usage is visible per response.
+- Logs: Memory retrieval logs now use a distinct `tandem.memory` signal with structured fields (status, chunk tier counts, latency, score range, short query hash) and no raw prompt/chunk content.
+- Logs/Console: Reworked Logs drawer tabs to focus on Tandem logs + Console activity (removed redundant OC sidecar tab in this view).
+- UI: Logs drawer fullscreen now uses dynamic height correctly instead of staying constrained to the initial panel height.
+- Stability: Sidecar lifecycle start/stop is serialized to prevent duplicate OpenCode/Bun instances from race conditions.
+- Theme: Improved Pink Pony readability by increasing contrast and reducing problematic translucency.
+
 ## v0.2.18 (2026-02-10)
 
 - Files (WIP): Attempted auto-refresh of the Files tree when tools/AI create new files, but it is still unreliable and needs deeper investigation. For now, you may need to switch away and back to Files to see new items.

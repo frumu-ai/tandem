@@ -5,7 +5,9 @@ use crate::error::{Result, TandemError};
 use crate::keystore::{validate_api_key, validate_key_type, ApiKeyType, SecureKeyStore};
 use crate::logs::{self, LogFileInfo};
 use crate::memory::indexer::{index_workspace, IndexingStats};
-use crate::memory::types::{ClearFileIndexResult, MemoryStats, ProjectMemoryStats};
+use crate::memory::types::{
+    ClearFileIndexResult, MemoryRetrievalMeta, MemoryStats, ProjectMemoryStats,
+};
 use crate::orchestrator::{
     engine::OrchestratorEngine,
     policy::{PolicyConfig, PolicyEngine},
@@ -25,11 +27,12 @@ use crate::vault::{self, EncryptedVaultKey, VaultStatus};
 use crate::VaultState;
 use futures::StreamExt;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_store::StoreExt;
 use uuid::Uuid;
@@ -1694,15 +1697,178 @@ pub struct FileAttachmentInput {
     pub url: String,
 }
 
+fn default_memory_retrieval_meta() -> MemoryRetrievalMeta {
+    MemoryRetrievalMeta {
+        used: false,
+        chunks_total: 0,
+        session_chunks: 0,
+        history_chunks: 0,
+        project_fact_chunks: 0,
+        score_min: None,
+        score_max: None,
+    }
+}
+
+fn should_skip_memory_retrieval(prompt: &str) -> bool {
+    let trimmed = prompt.trim();
+    trimmed.is_empty() || trimmed.starts_with('/')
+}
+
+fn short_query_hash(query: &str) -> String {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return "none".to_string();
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(trimmed.as_bytes());
+    let full = format!("{:x}", hasher.finalize());
+    full.chars().take(12).collect()
+}
+
+fn build_message_content_with_memory_context(original: &str, memory_context: &str) -> String {
+    if memory_context.trim().is_empty() {
+        return original.to_string();
+    }
+    if original.is_empty() {
+        return memory_context.to_string();
+    }
+    format!("{}\n\n{}", memory_context, original)
+}
+
+fn memory_retrieval_event(
+    session_id: &str,
+    meta: &MemoryRetrievalMeta,
+    latency_ms: u128,
+    query_hash: String,
+) -> StreamEvent {
+    StreamEvent::MemoryRetrieval {
+        session_id: session_id.to_string(),
+        used: meta.used,
+        chunks_total: meta.chunks_total,
+        session_chunks: meta.session_chunks,
+        history_chunks: meta.history_chunks,
+        project_fact_chunks: meta.project_fact_chunks,
+        latency_ms,
+        query_hash,
+        score_min: meta.score_min,
+        score_max: meta.score_max,
+    }
+}
+
+async fn prepare_prompt_with_memory_context(
+    state: &AppState,
+    session_id: &str,
+    content: &str,
+) -> (String, StreamEvent) {
+    let query_hash = short_query_hash(content);
+
+    if should_skip_memory_retrieval(content) {
+        let meta = default_memory_retrieval_meta();
+        tracing::info!(
+            target: "tandem.memory",
+            "🧠 memory_retrieval status=skipped used={} chunks_total={} session_chunks={} history_chunks={} project_fact_chunks={} latency_ms={} query_hash={} score_min={:?} score_max={:?}",
+            meta.used,
+            meta.chunks_total,
+            meta.session_chunks,
+            meta.history_chunks,
+            meta.project_fact_chunks,
+            0u128,
+            query_hash,
+            meta.score_min,
+            meta.score_max
+        );
+        return (
+            content.to_string(),
+            memory_retrieval_event(session_id, &meta, 0, query_hash),
+        );
+    }
+
+    let Some(manager) = &state.memory_manager else {
+        let meta = default_memory_retrieval_meta();
+        tracing::info!(
+            target: "tandem.memory",
+            "🧠 memory_retrieval status=unavailable used={} chunks_total={} session_chunks={} history_chunks={} project_fact_chunks={} latency_ms={} query_hash={} score_min={:?} score_max={:?}",
+            meta.used,
+            meta.chunks_total,
+            meta.session_chunks,
+            meta.history_chunks,
+            meta.project_fact_chunks,
+            0u128,
+            query_hash,
+            meta.score_min,
+            meta.score_max
+        );
+        return (
+            content.to_string(),
+            memory_retrieval_event(session_id, &meta, 0, query_hash),
+        );
+    };
+
+    let active_project_id = state.active_project_id.read().unwrap().clone();
+    let started = Instant::now();
+    let (final_content, meta, latency_ms) = match manager
+        .retrieve_context_with_meta(
+            content,
+            active_project_id.as_deref(),
+            Some(session_id),
+            None,
+        )
+        .await
+    {
+        Ok((context, meta)) => {
+            let context_text = context.format_for_injection();
+            let merged = build_message_content_with_memory_context(content, &context_text);
+            (merged, meta, started.elapsed().as_millis())
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "tandem.memory",
+                "🧠 memory_retrieval status=error session_id={} error={}",
+                session_id,
+                e
+            );
+            (
+                content.to_string(),
+                default_memory_retrieval_meta(),
+                started.elapsed().as_millis(),
+            )
+        }
+    };
+
+    tracing::info!(
+        target: "tandem.memory",
+        "🧠 memory_retrieval status=ok used={} chunks_total={} session_chunks={} history_chunks={} project_fact_chunks={} latency_ms={} query_hash={} score_min={:?} score_max={:?}",
+        meta.used,
+        meta.chunks_total,
+        meta.session_chunks,
+        meta.history_chunks,
+        meta.project_fact_chunks,
+        latency_ms,
+        query_hash,
+        meta.score_min,
+        meta.score_max
+    );
+
+    (
+        final_content,
+        memory_retrieval_event(session_id, &meta, latency_ms, query_hash),
+    )
+}
+
 /// Send a message to a session (async, starts generation)
 /// The actual response comes via the event stream
 #[tauri::command]
 pub async fn send_message(
+    app: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     content: String,
     attachments: Option<Vec<FileAttachmentInput>>,
 ) -> Result<()> {
+    let (prepared_content, retrieval_event) =
+        prepare_prompt_with_memory_context(&state, &session_id, &content).await;
+    let _ = app.emit("sidecar_event", &retrieval_event);
+
     let mut request = if let Some(files) = attachments {
         let file_parts: Vec<FilePartInput> = files
             .into_iter()
@@ -1713,9 +1879,9 @@ pub async fn send_message(
                 url: f.url,
             })
             .collect();
-        SendMessageRequest::with_attachments(content, file_parts)
+        SendMessageRequest::with_attachments(prepared_content, file_parts)
     } else {
-        SendMessageRequest::text(content)
+        SendMessageRequest::text(prepared_content)
     };
 
     let model_spec = {
@@ -1763,6 +1929,9 @@ pub async fn send_message_streaming(
     // IMPORTANT: Subscribe to events BEFORE sending the message
     // This ensures we don't miss any events that OpenCode sends
     let stream = state.sidecar.subscribe_events().await?;
+    let (prepared_content, retrieval_event) =
+        prepare_prompt_with_memory_context(&state, &session_id, &content).await;
+    let _ = app.emit("sidecar_event", &retrieval_event);
 
     // Now send the prompt
     let mut request = if let Some(files) = attachments {
@@ -1775,9 +1944,9 @@ pub async fn send_message_streaming(
                 url: f.url,
             })
             .collect();
-        SendMessageRequest::with_attachments(content, file_parts)
+        SendMessageRequest::with_attachments(prepared_content, file_parts)
     } else {
-        SendMessageRequest::text(content)
+        SendMessageRequest::text(prepared_content)
     };
 
     let model_spec = {
@@ -1925,6 +2094,7 @@ pub async fn send_message_streaming(
                                 StreamEvent::QuestionAsked { session_id, .. } => session_id == &target_session_id,
                                 StreamEvent::FileEdited { session_id, .. } => session_id == &target_session_id,
                                 StreamEvent::TodoUpdated { session_id, .. } => session_id == &target_session_id,
+                                StreamEvent::MemoryRetrieval { session_id, .. } => session_id == &target_session_id,
                                 // Don't forward raw event spam to the UI.
                                 StreamEvent::Raw { .. } => false,
                             };
@@ -5894,4 +6064,72 @@ pub async fn orchestrator_delete_run(state: State<'_, AppState>, run_id: String)
 
     store.delete_run(&run_id)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_should_skip_memory_retrieval_for_commands_and_empty() {
+        assert!(should_skip_memory_retrieval("/undo"));
+        assert!(should_skip_memory_retrieval("   /status"));
+        assert!(should_skip_memory_retrieval(""));
+        assert!(should_skip_memory_retrieval("   "));
+        assert!(!should_skip_memory_retrieval("How does indexing work?"));
+    }
+
+    #[test]
+    fn test_build_message_content_with_memory_context() {
+        let merged = build_message_content_with_memory_context(
+            "User question",
+            "<memory_context>\n- fact\n</memory_context>",
+        );
+        assert!(merged.starts_with("<memory_context>"));
+        assert!(merged.ends_with("User question"));
+
+        let unchanged = build_message_content_with_memory_context("User question", "");
+        assert_eq!(unchanged, "User question");
+    }
+
+    #[test]
+    fn test_memory_retrieval_event_shape() {
+        let meta = MemoryRetrievalMeta {
+            used: true,
+            chunks_total: 7,
+            session_chunks: 2,
+            history_chunks: 1,
+            project_fact_chunks: 4,
+            score_min: Some(0.2),
+            score_max: Some(0.9),
+        };
+        let event = memory_retrieval_event("session-1", &meta, 42, "abcdef123456".to_string());
+
+        match event {
+            StreamEvent::MemoryRetrieval {
+                session_id,
+                used,
+                chunks_total,
+                session_chunks,
+                history_chunks,
+                project_fact_chunks,
+                latency_ms,
+                query_hash,
+                score_min,
+                score_max,
+            } => {
+                assert_eq!(session_id, "session-1");
+                assert!(used);
+                assert_eq!(chunks_total, 7);
+                assert_eq!(session_chunks, 2);
+                assert_eq!(history_chunks, 1);
+                assert_eq!(project_fact_chunks, 4);
+                assert_eq!(latency_ms, 42);
+                assert_eq!(query_hash, "abcdef123456");
+                assert_eq!(score_min, Some(0.2));
+                assert_eq!(score_max, Some(0.9));
+            }
+            other => panic!("Unexpected event variant: {:?}", other),
+        }
+    }
 }

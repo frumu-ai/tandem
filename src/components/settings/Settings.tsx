@@ -99,7 +99,7 @@ export function Settings({
   const [customBgLoading, setCustomBgLoading] = useState(false);
   const [customBgError, setCustomBgError] = useState<string | null>(null);
   const [customBgPreviewSrc, setCustomBgPreviewSrc] = useState<string | null>(null);
-  const bgSaveTimerRef = useRef<number | null>(null);
+  const bgSaveTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
   const bgPreviewFallbackRanRef = useRef(false);
 
   // Custom provider state
