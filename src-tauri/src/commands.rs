@@ -21,14 +21,15 @@ use crate::sidecar::{
 };
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
+use crate::stream_hub::{StreamEventEnvelopeV2, StreamEventSource};
 use crate::tool_policy;
 use crate::tool_proxy::{FileSnapshot, JournalEntry, OperationStatus, UndoAction};
 use crate::vault::{self, EncryptedVaultKey, VaultStatus};
 use crate::VaultState;
-use futures::StreamExt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -1454,6 +1455,10 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
         .sidecar
         .start(sidecar_path.to_string_lossy().as_ref())
         .await?;
+    state
+        .stream_hub
+        .start(app.clone(), state.sidecar.clone())
+        .await?;
 
     // Log provider availability for debugging
     match state.sidecar.list_providers().await {
@@ -1497,6 +1502,7 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
 /// Stop the OpenCode sidecar
 #[tauri::command]
 pub async fn stop_sidecar(state: State<'_, AppState>) -> Result<()> {
+    state.stream_hub.stop().await;
     state.sidecar.stop().await
 }
 
@@ -1755,6 +1761,69 @@ fn memory_retrieval_event(
     }
 }
 
+fn attachment_inputs_to_queued(
+    attachments: Option<Vec<FileAttachmentInput>>,
+) -> Vec<crate::state::QueuedAttachment> {
+    attachments
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| crate::state::QueuedAttachment {
+            mime: a.mime,
+            filename: a.filename,
+            url: a.url,
+        })
+        .collect()
+}
+
+fn queued_to_attachment_inputs(
+    attachments: Vec<crate::state::QueuedAttachment>,
+) -> Option<Vec<FileAttachmentInput>> {
+    if attachments.is_empty() {
+        return None;
+    }
+    Some(
+        attachments
+            .into_iter()
+            .map(|a| FileAttachmentInput {
+                mime: a.mime,
+                filename: a.filename,
+                url: a.url,
+            })
+            .collect(),
+    )
+}
+
+fn emit_stream_event_pair(
+    app: &AppHandle,
+    event: &StreamEvent,
+    source: StreamEventSource,
+    correlation_id: String,
+) {
+    let _ = app.emit("sidecar_event", event);
+    let envelope = StreamEventEnvelopeV2 {
+        event_id: Uuid::new_v4().to_string(),
+        correlation_id,
+        ts_ms: logs::now_ms(),
+        session_id: match event {
+            StreamEvent::Content { session_id, .. }
+            | StreamEvent::ToolStart { session_id, .. }
+            | StreamEvent::ToolEnd { session_id, .. }
+            | StreamEvent::SessionStatus { session_id, .. }
+            | StreamEvent::SessionIdle { session_id }
+            | StreamEvent::SessionError { session_id, .. }
+            | StreamEvent::PermissionAsked { session_id, .. }
+            | StreamEvent::QuestionAsked { session_id, .. }
+            | StreamEvent::TodoUpdated { session_id, .. }
+            | StreamEvent::FileEdited { session_id, .. }
+            | StreamEvent::MemoryRetrieval { session_id, .. } => Some(session_id.clone()),
+            StreamEvent::Raw { .. } => None,
+        },
+        source,
+        payload: event.clone(),
+    };
+    let _ = app.emit("sidecar_event_v2", envelope);
+}
+
 async fn prepare_prompt_with_memory_context(
     state: &AppState,
     session_id: &str,
@@ -1865,54 +1934,16 @@ pub async fn send_message(
     content: String,
     attachments: Option<Vec<FileAttachmentInput>>,
 ) -> Result<()> {
-    let (prepared_content, retrieval_event) =
-        prepare_prompt_with_memory_context(&state, &session_id, &content).await;
-    let _ = app.emit("sidecar_event", &retrieval_event);
-
-    let mut request = if let Some(files) = attachments {
-        let file_parts: Vec<FilePartInput> = files
-            .into_iter()
-            .map(|f| FilePartInput {
-                part_type: "file".to_string(),
-                mime: f.mime,
-                filename: f.filename,
-                url: f.url,
-            })
-            .collect();
-        SendMessageRequest::with_attachments(prepared_content, file_parts)
-    } else {
-        SendMessageRequest::text(prepared_content)
-    };
-
-    let model_spec = {
-        let config = state.providers_config.read().unwrap();
-        let resolved = resolve_default_model_spec(&config);
-        if let Some(spec) = &resolved {
-            tracing::debug!(
-                "Resolved model spec: provider={} model={} (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
-                spec.provider_id,
-                spec.model_id,
-                config.openrouter.enabled,
-                config.openrouter.default,
-                config.openrouter.has_key,
-                config.ollama.enabled,
-                config.ollama.default
-            );
-        } else {
-            tracing::debug!(
-                "No model spec resolved (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
-                config.openrouter.enabled,
-                config.openrouter.default,
-                config.openrouter.has_key,
-                config.ollama.enabled,
-                config.ollama.default
-            );
-        }
-        resolved
-    };
-    request.model = model_spec;
-
-    state.sidecar.send_message(&session_id, request).await
+    send_message_streaming_internal(
+        &app,
+        &state,
+        session_id,
+        content,
+        attachments,
+        None,
+        false,
+    )
+    .await
 }
 
 /// Send a message and subscribe to events for the response
@@ -1926,14 +1957,27 @@ pub async fn send_message_streaming(
     attachments: Option<Vec<FileAttachmentInput>>,
     agent: Option<String>,
 ) -> Result<()> {
-    // IMPORTANT: Subscribe to events BEFORE sending the message
-    // This ensures we don't miss any events that OpenCode sends
-    let stream = state.sidecar.subscribe_events().await?;
-    let (prepared_content, retrieval_event) =
-        prepare_prompt_with_memory_context(&state, &session_id, &content).await;
-    let _ = app.emit("sidecar_event", &retrieval_event);
+    send_message_streaming_internal(&app, &state, session_id, content, attachments, agent, true).await
+}
 
-    // Now send the prompt
+async fn send_message_streaming_internal(
+    app: &AppHandle,
+    state: &AppState,
+    session_id: String,
+    content: String,
+    attachments: Option<Vec<FileAttachmentInput>>,
+    agent: Option<String>,
+    streaming_label: bool,
+) -> Result<()> {
+    let (prepared_content, retrieval_event) =
+        prepare_prompt_with_memory_context(state, &session_id, &content).await;
+    emit_stream_event_pair(
+        app,
+        &retrieval_event,
+        StreamEventSource::Memory,
+        format!("{}:memory:{}", session_id, Uuid::new_v4()),
+    );
+
     let mut request = if let Some(files) = attachments {
         let file_parts: Vec<FilePartInput> = files
             .into_iter()
@@ -1954,7 +1998,8 @@ pub async fn send_message_streaming(
         let resolved = resolve_default_model_spec(&config);
         if let Some(spec) = &resolved {
             tracing::debug!(
-                "Resolved model spec (streaming): provider={} model={} (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
+                "Resolved model spec ({}): provider={} model={} (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
+                if streaming_label { "streaming" } else { "standard" },
                 spec.provider_id,
                 spec.model_id,
                 config.openrouter.enabled,
@@ -1977,209 +2022,146 @@ pub async fn send_message_streaming(
     };
     request.model = model_spec;
 
-    // Set agent if specified
     if let Some(agent_name) = agent {
         request.agent = Some(agent_name);
     }
 
-    state.sidecar.send_message(&session_id, request).await?;
+    state.sidecar.send_message(&session_id, request).await
+}
 
-    let target_session_id = session_id.clone();
-    let sidecar_manager = state.sidecar.clone();
+#[derive(Debug, Clone, Serialize)]
+pub struct QueuedMessageView {
+    pub id: String,
+    pub content: String,
+    pub attachments: Vec<crate::state::QueuedAttachment>,
+    pub created_at_ms: u64,
+}
 
-    // Process the stream and emit events to frontend
-    tokio::spawn(async move {
-        futures::pin_mut!(stream);
-        use std::collections::HashMap;
-        use std::time::{Duration, Instant};
+#[tauri::command]
+pub async fn queue_message(
+    state: State<'_, AppState>,
+    session_id: String,
+    content: String,
+    attachments: Option<Vec<FileAttachmentInput>>,
+) -> Result<QueuedMessageView> {
+    if session_id.trim().is_empty() {
+        return Err(TandemError::InvalidConfig(
+            "session_id cannot be empty".to_string(),
+        ));
+    }
+    let item = crate::state::QueuedMessage {
+        id: Uuid::new_v4().to_string(),
+        content,
+        attachments: attachment_inputs_to_queued(attachments),
+        created_at_ms: logs::now_ms(),
+    };
+    let mut guard = state.message_queue.lock().await;
+    let queue = guard.entry(session_id).or_insert_with(Vec::new);
+    queue.push(item.clone());
 
-        // Safety limit: 100k characters (approx 25k tokens) to prevent infinite loops
-        const MAX_RESPONSE_CHARS: usize = 100_000;
+    Ok(QueuedMessageView {
+        id: item.id,
+        content: item.content,
+        attachments: item.attachments,
+        created_at_ms: item.created_at_ms,
+    })
+}
 
-        // Track pending tools so we can fail-fast instead of spinning forever when a tool never finishes.
-        let mut pending_tools: HashMap<String, (String, Instant)> = HashMap::new();
-        let tool_timeout = Duration::from_secs(120);
-        let idle_timeout = Duration::from_secs(10 * 60);
-        let mut last_progress = Instant::now();
+#[tauri::command]
+pub async fn queue_list(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<QueuedMessageView>> {
+    let guard = state.message_queue.lock().await;
+    let items = guard.get(&session_id).cloned().unwrap_or_default();
+    Ok(items
+        .into_iter()
+        .map(|m| QueuedMessageView {
+            id: m.id,
+            content: m.content,
+            attachments: m.attachments,
+            created_at_ms: m.created_at_ms,
+        })
+        .collect())
+}
 
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+#[tauri::command]
+pub async fn queue_remove(
+    state: State<'_, AppState>,
+    session_id: String,
+    item_id: String,
+) -> Result<bool> {
+    let mut guard = state.message_queue.lock().await;
+    let Some(queue) = guard.get_mut(&session_id) else {
+        return Ok(false);
+    };
+    let original_len = queue.len();
+    queue.retain(|q| q.id != item_id);
+    Ok(queue.len() != original_len)
+}
 
-        loop {
-            tokio::select! {
-                _ = tick.tick() => {
-                    // Timeout if a tool has been pending too long.
-                    if let Some((part_id, (tool, _started))) = pending_tools
-                        .iter()
-                        .find(|(_, (_, started))| started.elapsed() > tool_timeout)
-                    {
-                        tracing::warn!(
-                            "Tool '{}' (part_id={}) exceeded timeout of {:?}, cancelling session {}",
-                            tool,
-                            part_id,
-                            tool_timeout,
-                            target_session_id
-                        );
-                        let _ = sidecar_manager.cancel_generation(&target_session_id).await;
-                        let _ = app.emit(
-                            "sidecar_event",
-                            StreamEvent::SessionError {
-                                session_id: target_session_id.clone(),
-                                error: format!(
-                                    "Tool '{}' did not complete after {:?}. Cancelled the request to prevent a stuck session.",
-                                    tool,
-                                    tool_timeout
-                                ),
-                            },
-                        );
-                        break;
-                    }
+#[tauri::command]
+pub async fn queue_send_next(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<bool> {
+    queue_send_next_internal(&app, &state, &session_id).await
+}
 
-                    // Also protect against total inactivity. (We ignore heartbeats in the parser.)
-                    if pending_tools.is_empty() && last_progress.elapsed() > idle_timeout {
-                        tracing::warn!(
-                            "Session {} exceeded inactivity timeout of {:?}; cancelling generation",
-                            target_session_id,
-                            idle_timeout
-                        );
-                        let _ = sidecar_manager.cancel_generation(&target_session_id).await;
-                        let _ = app.emit(
-                            "sidecar_event",
-                            StreamEvent::SessionError {
-                                session_id: target_session_id.clone(),
-                                error: format!(
-                                    "No response progress for {:?}. Cancelled to avoid an indefinite hang.",
-                                    idle_timeout
-                                ),
-                            },
-                        );
-                        break;
-                    }
-                }
-
-                maybe = stream.next() => {
-                    let Some(result) = maybe else { break };
-                    match result {
-                        Ok(event) => {
-                            // Filter events for our session
-                            let is_our_session = match &event {
-                                StreamEvent::Content { session_id, content, .. } => {
-                                    if session_id == &target_session_id && content.len() > MAX_RESPONSE_CHARS {
-                                        tracing::warn!(
-                                            "Response exceeded safety limit ({} chars), cancelling session {}",
-                                            MAX_RESPONSE_CHARS,
-                                            target_session_id
-                                        );
-                                        let _ = sidecar_manager.cancel_generation(&target_session_id).await;
-                                        let _ = app.emit(
-                                            "sidecar_event",
-                                            &StreamEvent::SessionError {
-                                                session_id: target_session_id.clone(),
-                                                error: format!(
-                                                    "Response stopped: exceeded safety limit of {} characters.",
-                                                    MAX_RESPONSE_CHARS
-                                                ),
-                                            },
-                                        );
-                                        break;
-                                    }
-                                    session_id == &target_session_id
-                                }
-                                StreamEvent::ToolStart { session_id, .. } => session_id == &target_session_id,
-                                StreamEvent::ToolEnd { session_id, .. } => session_id == &target_session_id,
-                                StreamEvent::SessionStatus { session_id, .. } => session_id == &target_session_id,
-                                StreamEvent::SessionIdle { session_id } => session_id == &target_session_id,
-                                StreamEvent::SessionError { session_id, .. } => session_id == &target_session_id,
-                                StreamEvent::PermissionAsked { session_id, .. } => session_id == &target_session_id,
-                                StreamEvent::QuestionAsked { session_id, .. } => session_id == &target_session_id,
-                                StreamEvent::FileEdited { session_id, .. } => session_id == &target_session_id,
-                                StreamEvent::TodoUpdated { session_id, .. } => session_id == &target_session_id,
-                                StreamEvent::MemoryRetrieval { session_id, .. } => session_id == &target_session_id,
-                                // Don't forward raw event spam to the UI.
-                                StreamEvent::Raw { .. } => false,
-                            };
-
-                            if is_our_session {
-                                last_progress = Instant::now();
-
-                                // Maintain a best-effort pending tool table.
-                                match &event {
-                                    StreamEvent::ToolStart { part_id, tool, .. } => {
-                                        pending_tools.insert(part_id.clone(), (tool.clone(), Instant::now()));
-                                    }
-                                    StreamEvent::ToolEnd { part_id, .. } => {
-                                        pending_tools.remove(part_id);
-                                    }
-                                    _ => {}
-                                }
-
-                                // Log event for debugging - summarize large payloads
-                                match &event {
-                                    StreamEvent::Content { content, delta, .. } => {
-                                        tracing::info!(
-                                            "[StreamEvent] Emitting Content: len={}, delta={}",
-                                            content.len(),
-                                            delta.as_ref().map(|d| d.len()).unwrap_or(0)
-                                        );
-                                    }
-                                    StreamEvent::ToolStart { tool, .. } => {
-                                        tracing::info!("[StreamEvent] Emitting ToolStart: tool={}", tool);
-                                    }
-                                    StreamEvent::ToolEnd { tool, error, .. } => {
-                                        tracing::info!(
-                                            "[StreamEvent] Emitting ToolEnd: tool={}, success={}",
-                                            tool,
-                                            error.is_none()
-                                        );
-                                    }
-                                    _ => {
-                                        tracing::info!(
-                                            "[StreamEvent] Emitting to frontend: type={:?}",
-                                            event
-                                        );
-                                    }
-                                }
-
-                                // Emit the event to the frontend
-                                if let Err(e) = app.emit("sidecar_event", &event) {
-                                    tracing::error!("Failed to emit sidecar event: {}", e);
-                                    break;
-                                }
-
-                                // Stop streaming for terminal session events (prevents spinner hangs).
-                                if matches!(event, StreamEvent::SessionIdle { .. } | StreamEvent::SessionError { .. }) {
-                                    break;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let err_msg = e.to_string();
-                            tracing::warn!("[StreamEvent] Stream error: {}", err_msg);
-
-                            // If it's a common timeout error, provide a more user-friendly message
-                            let friendly_error = if err_msg.contains("error decoding response body") {
-                                "Connection to AI engine timed out. The AI might be taking too long to respond.".to_string()
-                            } else {
-                                format!("Stream error: {}", err_msg)
-                            };
-
-                            // Emit error event
-                            let _ = app.emit(
-                                "sidecar_event",
-                                StreamEvent::SessionError {
-                                    session_id: target_session_id.clone(),
-                                    error: friendly_error,
-                                },
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
+#[tauri::command]
+pub async fn queue_send_all(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<u32> {
+    let mut sent = 0u32;
+    loop {
+        let has_more = queue_send_next_internal(&app, &state, &session_id).await?;
+        if !has_more {
+            break;
         }
-    });
+        sent += 1;
+    }
+    Ok(sent)
+}
 
-    Ok(())
+async fn queue_send_next_internal(
+    app: &AppHandle,
+    state: &AppState,
+    session_id: &str,
+) -> Result<bool> {
+    let next = {
+        let mut guard = state.message_queue.lock().await;
+        let Some(queue) = guard.get_mut(session_id) else {
+            return Ok(false);
+        };
+        if queue.is_empty() {
+            return Ok(false);
+        }
+        queue.remove(0)
+    };
+
+    let attachments = queued_to_attachment_inputs(next.attachments.clone());
+    let send_res = send_message_streaming_internal(
+        app,
+        state,
+        session_id.to_string(),
+        next.content.clone(),
+        attachments,
+        None,
+        true,
+    )
+    .await;
+
+    if let Err(e) = send_res {
+        let mut guard = state.message_queue.lock().await;
+        let queue = guard.entry(session_id.to_string()).or_insert_with(Vec::new);
+        queue.insert(0, next);
+        return Err(e);
+    }
+
+    Ok(true)
 }
 
 /// Cancel ongoing generation
@@ -4372,7 +4354,8 @@ fn import_skill_from_content(
     location: crate::skills::SkillLocation,
 ) -> Result<crate::skills::SkillInfo> {
     // Parse content to get name
-    let (name, description, _body) = crate::skills::parse_skill_content(content)?;
+    let (name, description, _body, metadata) =
+        crate::skills::parse_skill_content_with_metadata(content)?;
 
     // Determine target directory
     let target_dir = match location {
@@ -4403,6 +4386,333 @@ fn import_skill_from_content(
         description,
         location,
         path: target_dir.to_string_lossy().to_string(),
+        version: metadata.version,
+        author: metadata.author,
+        tags: metadata.tags,
+        requires: metadata.requires,
+        compatibility: metadata.compatibility,
+        triggers: metadata.triggers,
+        parse_error: None,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillsConflictPolicy {
+    Skip,
+    Overwrite,
+    Rename,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillsImportPreviewItem {
+    pub source: String,
+    pub valid: bool,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub conflict: bool,
+    pub action: String,
+    pub target_path: Option<String>,
+    pub error: Option<String>,
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub tags: Vec<String>,
+    pub requires: Vec<String>,
+    pub compatibility: Option<String>,
+    pub triggers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillsImportPreview {
+    pub items: Vec<SkillsImportPreviewItem>,
+    pub total: usize,
+    pub valid: usize,
+    pub invalid: usize,
+    pub conflicts: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillsImportResult {
+    pub imported: Vec<crate::skills::SkillInfo>,
+    pub skipped: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SkillCandidate {
+    source: String,
+    content: String,
+}
+
+fn normalize_namespace(namespace: Option<String>) -> Option<String> {
+    namespace.and_then(|ns| {
+        let clean = ns.trim().replace('\\', "/");
+        let parts: Vec<String> = clean
+            .split('/')
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty() && *p != "." && *p != "..")
+            .map(|p| {
+                p.chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                            c
+                        } else {
+                            '-'
+                        }
+                    })
+                    .collect::<String>()
+            })
+            .collect();
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("/"))
+        }
+    })
+}
+
+fn skill_base_dir(
+    state: &State<'_, AppState>,
+    location: crate::skills::SkillLocation,
+    namespace: Option<&str>,
+) -> Result<PathBuf> {
+    let mut base = match location {
+        crate::skills::SkillLocation::Project => {
+            let ws = state.workspace_path.read().unwrap();
+            let workspace = ws
+                .as_ref()
+                .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+            workspace.join(".opencode").join("skill")
+        }
+        crate::skills::SkillLocation::Global => {
+            let config_dir = dirs::config_dir()
+                .ok_or_else(|| TandemError::InvalidConfig("No config directory".to_string()))?;
+            config_dir.join("opencode").join("skills")
+        }
+    };
+    if let Some(ns) = namespace {
+        for segment in ns.split('/') {
+            base.push(segment);
+        }
+    }
+    Ok(base)
+}
+
+fn resolve_conflict_name(base: &PathBuf, name: &str) -> String {
+    if !base.join(name).exists() {
+        return name.to_string();
+    }
+    for i in 2..=10_000 {
+        let candidate = format!("{}-{}", name, i);
+        if !base.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    format!("{}-{}", name, Uuid::new_v4().simple())
+}
+
+fn load_skill_candidates(file_or_path: &str) -> Result<Vec<SkillCandidate>> {
+    let path = PathBuf::from(file_or_path);
+    if path.exists() {
+        if path.extension().and_then(|e| e.to_str()) == Some("zip") {
+            let file = fs::File::open(&path).map_err(TandemError::Io)?;
+            let mut zip = zip::ZipArchive::new(file)
+                .map_err(|e| TandemError::InvalidConfig(format!("Invalid zip archive: {}", e)))?;
+            let mut out = Vec::new();
+            for i in 0..zip.len() {
+                let mut entry = zip.by_index(i).map_err(|e| {
+                    TandemError::InvalidConfig(format!("Failed to read zip entry: {}", e))
+                })?;
+                if entry.is_dir() {
+                    continue;
+                }
+                let name = entry.name().replace('\\', "/");
+                if !name.to_ascii_lowercase().ends_with("skill.md") {
+                    continue;
+                }
+                let mut content = String::new();
+                entry.read_to_string(&mut content).map_err(|e| {
+                    TandemError::InvalidConfig(format!("Non-UTF8 SKILL.md in zip entry {}: {}", name, e))
+                })?;
+                out.push(SkillCandidate {
+                    source: name,
+                    content,
+                });
+            }
+            if out.is_empty() {
+                return Err(TandemError::InvalidConfig(
+                    "No SKILL.md files found in zip".to_string(),
+                ));
+            }
+            return Ok(out);
+        }
+        let content = fs::read_to_string(&path).map_err(TandemError::Io)?;
+        return Ok(vec![SkillCandidate {
+            source: path.to_string_lossy().to_string(),
+            content,
+        }]);
+    }
+
+    Ok(vec![SkillCandidate {
+        source: "inline".to_string(),
+        content: file_or_path.to_string(),
+    }])
+}
+
+#[tauri::command]
+pub fn skills_import_preview(
+    state: State<'_, AppState>,
+    file_or_path: String,
+    location: crate::skills::SkillLocation,
+    namespace: Option<String>,
+    conflict_policy: SkillsConflictPolicy,
+) -> Result<SkillsImportPreview> {
+    let namespace = normalize_namespace(namespace);
+    let base_dir = skill_base_dir(&state, location.clone(), namespace.as_deref())?;
+    let candidates = load_skill_candidates(&file_or_path)?;
+    let mut items = Vec::new();
+    let mut valid = 0usize;
+    let mut invalid = 0usize;
+    let mut conflicts = 0usize;
+
+    for c in candidates {
+        match crate::skills::parse_skill_content_with_metadata(&c.content) {
+            Ok((name, description, _, metadata)) => {
+                let conflict = base_dir.join(&name).exists();
+                if conflict {
+                    conflicts += 1;
+                }
+                let resolved_name = if conflict && matches!(conflict_policy, SkillsConflictPolicy::Rename)
+                {
+                    resolve_conflict_name(&base_dir, &name)
+                } else {
+                    name.clone()
+                };
+                let action = if !conflict {
+                    "create".to_string()
+                } else {
+                    match conflict_policy {
+                        SkillsConflictPolicy::Skip => "skip".to_string(),
+                        SkillsConflictPolicy::Overwrite => "overwrite".to_string(),
+                        SkillsConflictPolicy::Rename => "rename".to_string(),
+                    }
+                };
+                items.push(SkillsImportPreviewItem {
+                    source: c.source,
+                    valid: true,
+                    name: Some(resolved_name.clone()),
+                    description: Some(description),
+                    conflict,
+                    action,
+                    target_path: Some(base_dir.join(&resolved_name).to_string_lossy().to_string()),
+                    error: None,
+                    version: metadata.version,
+                    author: metadata.author,
+                    tags: metadata.tags,
+                    requires: metadata.requires,
+                    compatibility: metadata.compatibility,
+                    triggers: metadata.triggers,
+                });
+                valid += 1;
+            }
+            Err(e) => {
+                items.push(SkillsImportPreviewItem {
+                    source: c.source,
+                    valid: false,
+                    name: None,
+                    description: None,
+                    conflict: false,
+                    action: "invalid".to_string(),
+                    target_path: None,
+                    error: Some(e),
+                    version: None,
+                    author: None,
+                    tags: Vec::new(),
+                    requires: Vec::new(),
+                    compatibility: None,
+                    triggers: Vec::new(),
+                });
+                invalid += 1;
+            }
+        }
+    }
+
+    Ok(SkillsImportPreview {
+        total: items.len(),
+        valid,
+        invalid,
+        conflicts,
+        items,
+    })
+}
+
+#[tauri::command]
+pub fn skills_import(
+    state: State<'_, AppState>,
+    file_or_path: String,
+    location: crate::skills::SkillLocation,
+    namespace: Option<String>,
+    conflict_policy: SkillsConflictPolicy,
+) -> Result<SkillsImportResult> {
+    let namespace = normalize_namespace(namespace);
+    let base_dir = skill_base_dir(&state, location.clone(), namespace.as_deref())?;
+    fs::create_dir_all(&base_dir).map_err(TandemError::Io)?;
+    let candidates = load_skill_candidates(&file_or_path)?;
+
+    let mut imported = Vec::new();
+    let mut skipped = Vec::new();
+    let mut errors = Vec::new();
+
+    for c in candidates {
+        let parsed = crate::skills::parse_skill_content_with_metadata(&c.content);
+        let (name, description, _body, metadata) = match parsed {
+            Ok(v) => v,
+            Err(e) => {
+                errors.push(format!("{}: {}", c.source, e));
+                continue;
+            }
+        };
+
+        let existing = base_dir.join(&name);
+        let final_name = if existing.exists() {
+            match conflict_policy {
+                SkillsConflictPolicy::Skip => {
+                    skipped.push(name.clone());
+                    continue;
+                }
+                SkillsConflictPolicy::Overwrite => name.clone(),
+                SkillsConflictPolicy::Rename => resolve_conflict_name(&base_dir, &name),
+            }
+        } else {
+            name.clone()
+        };
+
+        let target_dir = base_dir.join(&final_name);
+        if target_dir.exists() {
+            fs::remove_dir_all(&target_dir).map_err(TandemError::Io)?;
+        }
+        fs::create_dir_all(&target_dir).map_err(TandemError::Io)?;
+        fs::write(target_dir.join("SKILL.md"), &c.content).map_err(TandemError::Io)?;
+
+        imported.push(crate::skills::SkillInfo {
+            name: final_name,
+            description,
+            location: location.clone(),
+            path: target_dir.to_string_lossy().to_string(),
+            version: metadata.version,
+            author: metadata.author,
+            tags: metadata.tags,
+            requires: metadata.requires,
+            compatibility: metadata.compatibility,
+            triggers: metadata.triggers,
+            parse_error: None,
+        });
+    }
+
+    Ok(SkillsImportResult {
+        imported,
+        skipped,
+        errors,
     })
 }
 
@@ -5309,6 +5619,7 @@ pub async fn ralph_start(
             config,
             workspace_path,
             state.sidecar.clone(),
+            state.stream_hub.clone(),
         )
         .await?;
 
@@ -5522,6 +5833,7 @@ pub async fn orchestrator_create_run(
         policy,
         store,
         state.sidecar.clone(),
+        state.stream_hub.clone(),
         workspace_path,
         event_tx,
     ));
@@ -5965,6 +6277,7 @@ pub async fn orchestrator_load_run(
         policy,
         store,
         state.sidecar.clone(),
+        state.stream_hub.clone(),
         workspace_path,
         event_tx,
     ));

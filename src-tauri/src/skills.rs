@@ -19,12 +19,32 @@ pub struct SkillInfo {
     pub description: String,
     pub location: SkillLocation,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub requires: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    #[serde(default)]
+    pub triggers: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SkillFrontmatter {
     name: String,
     description: String,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
     /// Optional runtime/tool hints for UI (e.g. `python`, `node`, `bash`).
     #[serde(default)]
     requires: Option<Vec<String>>,
@@ -33,7 +53,19 @@ struct SkillFrontmatter {
     #[serde(default)]
     compatibility: Option<String>,
     #[serde(default)]
+    triggers: Option<Vec<String>>,
+    #[serde(default)]
     metadata: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SkillMetadata {
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub tags: Vec<String>,
+    pub requires: Vec<String>,
+    pub compatibility: Option<String>,
+    pub triggers: Vec<String>,
 }
 
 /// Validate skill name per OpenCode spec: ^[a-z0-9]+(-[a-z0-9]+)*$
@@ -150,6 +182,14 @@ pub fn parse_skill_frontmatter(content: &str) -> Result<(String, String, Vec<Str
 
 /// Parse SKILL.md content to extract frontmatter and body
 pub fn parse_skill_content(content: &str) -> Result<(String, String, String), String> {
+    let (name, description, body, _) = parse_skill_content_with_metadata(content)?;
+    Ok((name, description, body))
+}
+
+/// Parse SKILL.md content to extract frontmatter, body, and metadata
+pub fn parse_skill_content_with_metadata(
+    content: &str,
+) -> Result<(String, String, String, SkillMetadata), String> {
     let lines: Vec<&str> = content.lines().collect();
 
     // Find frontmatter boundaries
@@ -231,7 +271,16 @@ pub fn parse_skill_content(content: &str) -> Result<(String, String, String), St
         String::new()
     };
 
-    Ok((frontmatter.name, frontmatter.description, body))
+    let metadata = SkillMetadata {
+        version: frontmatter.version,
+        author: frontmatter.author,
+        tags: frontmatter.tags.unwrap_or_default(),
+        requires: frontmatter.requires.unwrap_or_default(),
+        compatibility: frontmatter.compatibility,
+        triggers: frontmatter.triggers.unwrap_or_default(),
+    };
+
+    Ok((frontmatter.name, frontmatter.description, body, metadata))
 }
 
 /// Get skill directories for discovery
@@ -283,8 +332,8 @@ pub fn discover_skills(workspace: Option<&str>) -> Vec<SkillInfo> {
 
                             if skill_file.exists() {
                                 if let Ok(content) = fs::read_to_string(&skill_file) {
-                                    if let Ok((name, description, _)) =
-                                        parse_skill_content(&content)
+                                    if let Ok((name, description, _, metadata)) =
+                                        parse_skill_content_with_metadata(&content)
                                     {
                                         tracing::info!("  ✓ Found skill: {}", name);
                                         skills.push(SkillInfo {
@@ -292,6 +341,13 @@ pub fn discover_skills(workspace: Option<&str>) -> Vec<SkillInfo> {
                                             description,
                                             location: location.clone(),
                                             path: entry.path().to_string_lossy().to_string(),
+                                            version: metadata.version,
+                                            author: metadata.author,
+                                            tags: metadata.tags,
+                                            requires: metadata.requires,
+                                            compatibility: metadata.compatibility,
+                                            triggers: metadata.triggers,
+                                            parse_error: None,
                                         });
                                     } else {
                                         tracing::warn!(

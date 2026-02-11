@@ -20,6 +20,7 @@ mod sidecar_manager;
 mod skill_templates;
 mod skills;
 mod state;
+mod stream_hub;
 mod tool_policy;
 mod tool_proxy;
 mod vault;
@@ -420,6 +421,11 @@ pub fn run() {
             // Message handling
             commands::send_message,
             commands::send_message_streaming,
+            commands::queue_message,
+            commands::queue_list,
+            commands::queue_remove,
+            commands::queue_send_next,
+            commands::queue_send_all,
             commands::cancel_generation,
             // Model & provider info
             commands::list_models,
@@ -482,6 +488,8 @@ pub fn run() {
             commands::list_skills,
             commands::list_skills,
             commands::import_skill,
+            commands::skills_import_preview,
+            commands::skills_import,
             commands::delete_skill,
             commands::skills_list_templates,
             commands::skills_install_template,

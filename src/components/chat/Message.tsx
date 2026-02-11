@@ -669,6 +669,7 @@ function MessageComponent({
             <CollapsedToolCalls
               toolCalls={toolCalls}
               parentMessageId={id}
+              messageTimestamp={timestamp}
               onOpenQuestionToolCall={onOpenQuestionToolCall}
               isQuestionToolCallPending={isQuestionToolCallPending}
             />
@@ -710,11 +711,13 @@ function MessageComponent({
 const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
   toolCalls,
   parentMessageId,
+  messageTimestamp,
   onOpenQuestionToolCall,
   isQuestionToolCallPending,
 }: {
   toolCalls: ToolCall[];
   parentMessageId: string;
+  messageTimestamp: Date;
   onOpenQuestionToolCall?: (args: { messageId: string; toolCallId: string }) => void;
   isQuestionToolCallPending?: (args: { messageId: string; toolCallId: string }) => boolean;
 }) {
@@ -732,6 +735,8 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
     () => toolCalls.filter((t) => t.status === "pending").length,
     [toolCalls]
   );
+  const failedCount = useMemo(() => toolCalls.filter((t) => t.status === "failed").length, [toolCalls]);
+  const durationSec = Math.max(1, Math.round((Date.now() - messageTimestamp.getTime()) / 1000));
 
   // Group by tool type for summary
   const summary = useMemo(() => {
@@ -763,8 +768,11 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
       >
         <div className="flex items-center gap-2 text-text-muted">
           <Terminal className="h-4 w-4" />
+          <span className="rounded border border-border bg-surface px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-subtle">
+            {runningCount > 0 ? "running" : failedCount > 0 ? "issues" : "complete"}
+          </span>
           <span className="text-xs font-medium">
-            {toolCalls.length} tool {toolCalls.length === 1 ? "call" : "calls"}
+            {toolCalls.length} step{toolCalls.length === 1 ? "" : "s"}
           </span>
         </div>
 
@@ -778,6 +786,8 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
         )}
 
         {pendingCount > 0 && <span className="text-xs text-warning">{pendingCount} pending</span>}
+        {failedCount > 0 && <span className="text-xs text-error">{failedCount} failed</span>}
+        <span className="text-xs text-text-subtle">{durationSec}s</span>
 
         {completedCount === toolCalls.length && (
           <span className="text-xs text-success">✓ all complete</span>

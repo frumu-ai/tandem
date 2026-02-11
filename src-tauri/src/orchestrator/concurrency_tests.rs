@@ -4,6 +4,7 @@ use crate::orchestrator::policy::{PolicyConfig, PolicyEngine};
 use crate::orchestrator::store::OrchestratorStore;
 use crate::orchestrator::types::{OrchestratorConfig, Run, RunStatus, Task, TaskState};
 use crate::sidecar::{SidecarConfig, SidecarManager};
+use crate::stream_hub::StreamHub;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -44,6 +45,7 @@ async fn executes_multiple_tasks_concurrently() {
 
     let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let sidecar = Arc::new(SidecarManager::new(SidecarConfig::default()));
+    let stream_hub = Arc::new(StreamHub::new());
 
     let current_running = Arc::new(AtomicUsize::new(0));
     let max_running = Arc::new(AtomicUsize::new(0));
@@ -54,6 +56,7 @@ async fn executes_multiple_tasks_concurrently() {
         policy,
         store,
         sidecar,
+        stream_hub,
         workspace_path.clone(),
         event_tx,
     )
@@ -160,8 +163,9 @@ fn build_engine(run: Run, workspace_path: PathBuf) -> OrchestratorEngine {
 
     let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let sidecar = Arc::new(SidecarManager::new(SidecarConfig::default()));
+    let stream_hub = Arc::new(StreamHub::new());
 
-    OrchestratorEngine::new(run, policy, store, sidecar, workspace_path, event_tx)
+    OrchestratorEngine::new(run, policy, store, sidecar, stream_hub, workspace_path, event_tx)
 }
 
 #[tokio::test]

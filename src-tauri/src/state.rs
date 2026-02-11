@@ -2,9 +2,10 @@
 use crate::memory::MemoryManager;
 use crate::orchestrator::PathLockManager;
 use crate::sidecar::{SidecarConfig, SidecarManager};
+use crate::stream_hub::StreamHub;
 use crate::tool_proxy::{OperationJournal, StagingStore};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
 use std::sync::{Arc, RwLock};
@@ -193,6 +194,24 @@ pub struct PermissionRule {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// A queued outbound chat message for later send.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuedAttachment {
+    pub mime: String,
+    pub filename: Option<String>,
+    pub url: String,
+}
+
+/// A queued outbound chat message for later send.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuedMessage {
+    pub id: String,
+    pub content: String,
+    #[serde(default)]
+    pub attachments: Vec<QueuedAttachment>,
+    pub created_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PermissionType {
     Read,
@@ -233,6 +252,8 @@ pub struct AppState {
     pub providers_config: RwLock<ProvidersConfig>,
     /// Sidecar manager for OpenCode
     pub sidecar: Arc<SidecarManager>,
+    /// Global stream hub (single sidecar event subscription + fanout).
+    pub stream_hub: Arc<StreamHub>,
     /// Current chat session ID
     pub current_session_id: RwLock<Option<String>>,
     /// Operation journal for file undo
@@ -253,6 +274,8 @@ pub struct AppState {
         Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>>,
     /// File tree watcher for the Files view (kept alive while active).
     pub file_tree_watcher: Arc<StdMutex<Option<crate::file_watcher::FileTreeWatcher>>>,
+    /// Per-session queued messages (FIFO).
+    pub message_queue: Arc<Mutex<HashMap<String, Vec<QueuedMessage>>>>,
 }
 
 impl AppState {
@@ -278,6 +301,7 @@ impl AppState {
             permission_rules: RwLock::new(Vec::new()),
             providers_config: RwLock::new(ProvidersConfig::default()),
             sidecar: Arc::new(SidecarManager::new(SidecarConfig::default())),
+            stream_hub: Arc::new(StreamHub::new()),
             current_session_id: RwLock::new(None),
             operation_journal: Arc::new(OperationJournal::new(100)),
             staging_store: Arc::new(StagingStore::new()),
@@ -288,6 +312,7 @@ impl AppState {
             orchestrator_engines: RwLock::new(std::collections::HashMap::new()),
             active_log_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
             file_tree_watcher: Arc::new(StdMutex::new(None)),
+            message_queue: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

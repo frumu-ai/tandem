@@ -276,6 +276,17 @@ export type StreamEvent =
     }
   | { type: "raw"; event_type: string; data: unknown };
 
+export type StreamEventSource = "sidecar" | "memory" | "system";
+
+export interface StreamEventEnvelopeV2 {
+  event_id: string;
+  correlation_id: string;
+  ts_ms: number;
+  session_id?: string | null;
+  source: StreamEventSource;
+  payload: StreamEvent;
+}
+
 // ============================================================================
 // Vault (PIN) Commands
 // ============================================================================
@@ -560,6 +571,43 @@ export async function sendMessageStreaming(
   agent?: string
 ): Promise<void> {
   return invoke("send_message_streaming", { sessionId, content, attachments, agent });
+}
+
+export interface QueuedAttachment {
+  mime: string;
+  filename?: string;
+  url: string;
+}
+
+export interface QueuedMessage {
+  id: string;
+  content: string;
+  attachments: QueuedAttachment[];
+  created_at_ms: number;
+}
+
+export async function queueMessage(
+  sessionId: string,
+  content: string,
+  attachments?: FileAttachmentInput[]
+): Promise<QueuedMessage> {
+  return invoke("queue_message", { sessionId, content, attachments });
+}
+
+export async function queueList(sessionId: string): Promise<QueuedMessage[]> {
+  return invoke("queue_list", { sessionId });
+}
+
+export async function queueRemove(sessionId: string, itemId: string): Promise<boolean> {
+  return invoke("queue_remove", { sessionId, itemId });
+}
+
+export async function queueSendNext(sessionId: string): Promise<boolean> {
+  return invoke("queue_send_next", { sessionId });
+}
+
+export async function queueSendAll(sessionId: string): Promise<number> {
+  return invoke("queue_send_all", { sessionId });
 }
 
 export async function cancelGeneration(sessionId: string): Promise<void> {
@@ -920,6 +968,14 @@ export function onSidecarEvent(callback: (event: StreamEvent) => void): Promise<
   });
 }
 
+export function onSidecarEventV2(
+  callback: (event: StreamEventEnvelopeV2) => void
+): Promise<UnlistenFn> {
+  return listen<StreamEventEnvelopeV2>("sidecar_event_v2", (event) => {
+    callback(event.payload);
+  });
+}
+
 // ============================================================================
 // Log Streaming (On-Demand Diagnostics)
 // ============================================================================
@@ -977,6 +1033,13 @@ export interface SkillInfo {
   description: string;
   location: "project" | "global";
   path: string;
+  version?: string;
+  author?: string;
+  tags: string[];
+  requires: string[];
+  compatibility?: string;
+  triggers: string[];
+  parse_error?: string;
 }
 
 export type SkillLocation = "project" | "global";
@@ -987,6 +1050,57 @@ export async function listSkills(): Promise<SkillInfo[]> {
 
 export async function importSkill(content: string, location: SkillLocation): Promise<SkillInfo> {
   return invoke<SkillInfo>("import_skill", { content, location });
+}
+
+export type SkillsConflictPolicy = "skip" | "overwrite" | "rename";
+
+export interface SkillsImportPreviewItem {
+  source: string;
+  valid: boolean;
+  name?: string;
+  description?: string;
+  conflict: boolean;
+  action: string;
+  target_path?: string;
+  error?: string;
+  version?: string;
+  author?: string;
+  tags: string[];
+  requires: string[];
+  compatibility?: string;
+  triggers: string[];
+}
+
+export interface SkillsImportPreview {
+  items: SkillsImportPreviewItem[];
+  total: number;
+  valid: number;
+  invalid: number;
+  conflicts: number;
+}
+
+export interface SkillsImportResult {
+  imported: SkillInfo[];
+  skipped: string[];
+  errors: string[];
+}
+
+export async function skillsImportPreview(
+  fileOrPath: string,
+  location: SkillLocation,
+  namespace?: string,
+  conflictPolicy: SkillsConflictPolicy = "skip"
+): Promise<SkillsImportPreview> {
+  return invoke("skills_import_preview", { fileOrPath, location, namespace, conflictPolicy });
+}
+
+export async function skillsImport(
+  fileOrPath: string,
+  location: SkillLocation,
+  namespace?: string,
+  conflictPolicy: SkillsConflictPolicy = "skip"
+): Promise<SkillsImportResult> {
+  return invoke("skills_import", { fileOrPath, location, namespace, conflictPolicy });
 }
 
 export async function deleteSkill(name: string, location: SkillLocation): Promise<void> {

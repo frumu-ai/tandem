@@ -29,12 +29,42 @@ export function SkillCard({ skill, onDelete }: SkillCardProps) {
     <div className="flex items-center justify-between rounded-lg border border-border bg-surface-elevated p-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="text-lg">{skill.location === "project" ? "📦" : "🌍"}</span>
           <span className="font-medium text-text">{skill.name}</span>
         </div>
         <p className="text-sm text-text-muted">{skill.description}</p>
+        {skill.parse_error && (
+          <p className="mt-1 text-xs text-error">Invalid skill metadata: {skill.parse_error}</p>
+        )}
+        <div className="mt-2 flex flex-wrap gap-1">
+          {skill.version && (
+            <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-subtle">
+              v{skill.version}
+            </span>
+          )}
+          {skill.author && (
+            <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-subtle">
+              {skill.author}
+            </span>
+          )}
+          {skill.requires?.slice(0, 3).map((req) => (
+            <span
+              key={req}
+              className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+            >
+              {req}
+            </span>
+          ))}
+          {skill.tags?.slice(0, 2).map((tag) => (
+            <span
+              key={tag}
+              className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-subtle"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
         <p className="text-xs text-text-subtle font-mono">
-          📍 {skill.location === "project" ? "Folder" : "Global"} • {skill.path}
+          {skill.location === "project" ? "Folder" : "Global"} - {skill.path}
         </p>
       </div>
       <div className="flex items-center gap-2">

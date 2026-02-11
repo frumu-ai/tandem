@@ -32,7 +32,11 @@ import {
   createSession,
   sendMessageStreaming,
   cancelGeneration,
-  onSidecarEvent,
+  onSidecarEventV2,
+  queueMessage,
+  queueList,
+  queueRemove,
+  queueSendNext,
   approveTool,
   denyTool,
   listQuestions,
@@ -46,6 +50,8 @@ import {
   setProvidersConfig,
   type ProvidersConfig,
   type StreamEvent,
+  type StreamEventEnvelopeV2,
+  type QueuedMessage,
   type SidecarState,
   type TodoItem,
   type QuestionRequestEvent,
@@ -162,6 +168,10 @@ export function Chat({
     []
   );
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+  const [streamHealth, setStreamHealth] = useState<"healthy" | "degraded" | "recovering">(
+    "recovering"
+  );
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   // const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isGitRepository, setIsGitRepository] = useState(false);
@@ -187,6 +197,8 @@ export function Chat({
   const messagesRef = useRef<MessageProps[]>([]);
   const currentAssistantMessageRef = useRef<string>("");
   const currentAssistantMessageIdRef = useRef<string | null>(null);
+  const seenEventIdsRef = useRef<Set<string>>(new Set());
+  const queueDrainRef = useRef(false);
   const assistantFlushFrameRef = useRef<number | null>(null);
   const generationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -256,6 +268,19 @@ export function Chat({
     setPendingQuestionRequests([]);
     pendingQuestionToolCallIdsRef.current = new Set();
     pendingQuestionToolMessageIdsRef.current = new Set();
+    seenEventIdsRef.current = new Set();
+  }, [currentSessionId]);
+
+  useEffect(() => {
+    if (!currentSessionId) {
+      setQueuedMessages([]);
+      return;
+    }
+    queueList(currentSessionId)
+      .then(setQueuedMessages)
+      .catch((e) => {
+        console.warn("Failed to load queue:", e);
+      });
   }, [currentSessionId]);
 
   // Fetch already-pending question requests so the current session
@@ -1101,10 +1126,10 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               const newToolCalls = lastMessage.toolCalls.map((tc) =>
                 tc.id === event.part_id
                   ? {
-                      ...tc,
-                      result: event.error || String(event.result || ""),
-                      status: (event.error ? "failed" : "completed") as "failed" | "completed",
-                    }
+                    ...tc,
+                    result: event.error || String(event.result || ""),
+                    status: (event.error ? "failed" : "completed") as "failed" | "completed",
+                  }
                   : tc
               );
               return [...prev.slice(0, -1), { ...lastMessage, toolCalls: newToolCalls }];
@@ -1118,6 +1143,30 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           // Could update UI to show session status
           console.log("Session status:", event.status);
           break;
+
+        case "memory_retrieval": {
+          if (!currentSessionId || event.session_id !== currentSessionId) {
+            break;
+          }
+          setMessages((prev) => {
+            const lastMessage = prev[prev.length - 1];
+            if (!lastMessage || lastMessage.role !== "assistant") {
+              return prev;
+            }
+            return [
+              ...prev.slice(0, -1),
+              {
+                ...lastMessage,
+                memoryRetrieval: {
+                  used: event.used,
+                  chunks_total: event.chunks_total,
+                  latency_ms: event.latency_ms,
+                },
+              },
+            ];
+          });
+          break;
+        }
 
         case "session_idle": {
           console.log("[StreamEvent] Session idle - completing generation");
@@ -1200,6 +1249,24 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
           // Force re-render after a longer delay to ensure React has batched all updates
           setTimeout(() => forceUpdate({}), 200);
+
+          if (queueDrainRef.current && currentSessionIdRef.current) {
+            void (async () => {
+              try {
+                const hasNext = await queueSendNext(currentSessionIdRef.current as string);
+                const refreshed = await queueList(currentSessionIdRef.current as string);
+                setQueuedMessages(refreshed);
+                if (!hasNext || refreshed.length === 0) {
+                  queueDrainRef.current = false;
+                } else {
+                  setIsGenerating(true);
+                }
+              } catch (e) {
+                queueDrainRef.current = false;
+                console.warn("Queue send-all stopped due to error:", e);
+              }
+            })();
+          }
           break;
         }
 
@@ -1368,6 +1435,14 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           // Try to extract useful activity info from raw events
           const data = event.data as Record<string, unknown>;
 
+          if (event.event_type === "system.stream_health") {
+            const status = data?.status;
+            if (status === "healthy" || status === "degraded" || status === "recovering") {
+              setStreamHealth(status);
+            }
+            break;
+          }
+
           // NOTE: We intentionally DON'T handle message.removed events here
           // because it causes issues with OpenCode auto-generating responses
           // when the conversation ends on a user message. We handle message
@@ -1409,8 +1484,20 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
     let unlistenFn: (() => void) | null = null;
 
     const setupListener = async () => {
-      unlistenFn = await onSidecarEvent((event: StreamEvent) => {
-        handleStreamEvent(event);
+      unlistenFn = await onSidecarEventV2((envelope: StreamEventEnvelopeV2) => {
+        if (!envelope?.event_id) {
+          handleStreamEvent(envelope.payload);
+          return;
+        }
+        if (seenEventIdsRef.current.has(envelope.event_id)) {
+          return;
+        }
+        seenEventIdsRef.current.add(envelope.event_id);
+        if (seenEventIdsRef.current.size > 5000) {
+          const ids = Array.from(seenEventIdsRef.current).slice(-2000);
+          seenEventIdsRef.current = new Set(ids);
+        }
+        handleStreamEvent(envelope.payload);
       });
     };
 
@@ -1474,6 +1561,27 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           setError(`Failed to create session: ${e}`);
           return;
         }
+      }
+
+      if (isGeneratingRef.current) {
+        try {
+          await queueMessage(
+            sessionId,
+            content,
+            attachments?.map((a) => ({
+              mime: a.mime,
+              filename: a.name,
+              url: a.url,
+            }))
+          );
+          const refreshed = await queueList(sessionId);
+          setQueuedMessages(refreshed);
+          showStatusBanner("Message queued");
+        } catch (e) {
+          const errorMessage = e instanceof Error ? e.message : String(e);
+          setError(`Failed to queue message: ${errorMessage}`);
+        }
+        return;
       }
 
       // Select agent
@@ -1694,6 +1802,37 @@ ${g.example}
       generationTimeoutRef.current = null;
     }
   };
+
+  const handleQueueRemove = useCallback(
+    async (itemId: string) => {
+      if (!currentSessionId) return;
+      await queueRemove(currentSessionId, itemId);
+      setQueuedMessages(await queueList(currentSessionId));
+    },
+    [currentSessionId]
+  );
+
+  const handleQueueSendNext = useCallback(async () => {
+    if (!currentSessionId) return;
+    queueDrainRef.current = false;
+    const sent = await queueSendNext(currentSessionId);
+    if (sent) {
+      setQueuedMessages(await queueList(currentSessionId));
+      setIsGenerating(true);
+    }
+  }, [currentSessionId]);
+
+  const handleQueueSendAll = useCallback(async () => {
+    if (!currentSessionId) return;
+    queueDrainRef.current = true;
+    const sent = await queueSendNext(currentSessionId);
+    if (sent) {
+      setQueuedMessages(await queueList(currentSessionId));
+      setIsGenerating(true);
+    } else {
+      queueDrainRef.current = false;
+    }
+  }, [currentSessionId]);
 
   const handleUndo = useCallback(
     async (_messageId: string) => {
@@ -1986,13 +2125,12 @@ ${g.example}
 
           <div className="flex items-center gap-2">
             <div
-              className={`h-2 w-2 rounded-full ${
-                sidecarStatus === "running"
+              className={`h-2 w-2 rounded-full ${sidecarStatus === "running"
                   ? "bg-primary"
                   : sidecarStatus === "starting"
                     ? "bg-warning animate-pulse"
                     : "bg-text-subtle"
-              }`}
+                }`}
             />
             <span className="text-xs text-text-muted">
               {sidecarStatus === "running"
@@ -2002,6 +2140,20 @@ ${g.example}
                   : "Disconnected"}
             </span>
           </div>
+          {sidecarStatus === "running" && (
+            <span
+              className={cn(
+                "rounded border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                streamHealth === "healthy"
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                  : streamHealth === "degraded"
+                    ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                    : "border-sky-500/30 bg-sky-500/10 text-sky-300"
+              )}
+            >
+              stream {streamHealth}
+            </span>
+          )}
         </div>
       </header>
 
@@ -2256,111 +2408,147 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
               </div>
             </div>
           ) : (
-            <ChatInput
-              onSend={handleSend}
-              onStop={handleStop}
-              isGenerating={isGenerating}
-              disabled={!workspacePath}
-              placeholder={
-                workspacePath
-                  ? needsConnection
-                    ? "Type to connect and start chatting..."
-                    : "Ask Tandem anything..."
-                  : "Select a folder to start chatting"
-              }
-              draftMessage={draftMessage}
-              onDraftMessageConsumed={onDraftMessageConsumed}
-              selectedAgent={selectedAgent}
-              onAgentChange={onAgentChange}
-              externalAttachment={fileToAttach}
-              onExternalAttachmentProcessed={onFileAttached}
-              enabledToolCategories={enabledToolCategories}
-              onToolCategoriesChange={setEnabledToolCategories}
-              allowAllTools={allowAllTools}
-              onAllowAllToolsChange={setAllowAllTools}
-              allowAllToolsLocked={false}
-              activeProviderLabel={activeProviderLabel}
-              activeModelLabel={activeModelLabel}
-              loopEnabled={loopEnabled}
-              onLoopToggle={handleLoopToggle}
-              loopStatus={ralphStatusSnapshot}
-              onLoopPanelOpen={() => setShowRalphPanel(true)}
-              onLogsOpen={() => setShowLogsDrawer(true)}
-              onModelSelect={async (modelId, providerIdRaw) => {
-                // Update the global provider config to switch to this model
-                try {
-                  // Normalize provider ID (sidecar uses 'opencode', tandem use 'opencode_zen')
-                  const providerId = providerIdRaw === "opencode" ? "opencode_zen" : providerIdRaw;
-                  const providerIdForSidecar =
-                    providerId === "opencode_zen" ? "opencode" : providerId;
+            <>
+              {queuedMessages.length > 0 && (
+                <div className="border-t border-border bg-surface/70 px-4 py-3">
+                  <div className="mx-auto flex w-full max-w-5xl items-start justify-between gap-3 rounded-lg border border-border bg-surface-elevated p-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-text">Queued messages ({queuedMessages.length})</p>
+                      <div className="mt-1 space-y-1">
+                        {queuedMessages.slice(0, 3).map((q) => (
+                          <div key={q.id} className="flex items-center gap-2 text-xs text-text-muted">
+                            <span className="truncate">{q.content || "(attachment only)"}</span>
+                            <button
+                              type="button"
+                              className="text-text-subtle hover:text-error"
+                              onClick={() => handleQueueRemove(q.id)}
+                            >
+                              remove
+                            </button>
+                          </div>
+                        ))}
+                        {queuedMessages.length > 3 && (
+                          <p className="text-[11px] text-text-subtle">+{queuedMessages.length - 3} more</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <Button size="sm" variant="secondary" onClick={handleQueueSendNext}>
+                        Send next
+                      </Button>
+                      <Button size="sm" onClick={handleQueueSendAll}>
+                        Send all
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <ChatInput
+                onSend={handleSend}
+                onStop={handleStop}
+                isGenerating={isGenerating}
+                disabled={!workspacePath}
+                placeholder={
+                  workspacePath
+                    ? needsConnection
+                      ? "Type to connect and start chatting..."
+                      : "Ask Tandem anything..."
+                    : "Select a folder to start chatting"
+                }
+                draftMessage={draftMessage}
+                onDraftMessageConsumed={onDraftMessageConsumed}
+                selectedAgent={selectedAgent}
+                onAgentChange={onAgentChange}
+                externalAttachment={fileToAttach}
+                onExternalAttachmentProcessed={onFileAttached}
+                enabledToolCategories={enabledToolCategories}
+                onToolCategoriesChange={setEnabledToolCategories}
+                allowAllTools={allowAllTools}
+                onAllowAllToolsChange={setAllowAllTools}
+                allowAllToolsLocked={false}
+                activeProviderLabel={activeProviderLabel}
+                activeModelLabel={activeModelLabel}
+                loopEnabled={loopEnabled}
+                onLoopToggle={handleLoopToggle}
+                loopStatus={ralphStatusSnapshot}
+                onLoopPanelOpen={() => setShowRalphPanel(true)}
+                onLogsOpen={() => setShowLogsDrawer(true)}
+                onModelSelect={async (modelId, providerIdRaw) => {
+                  // Update the global provider config to switch to this model
+                  try {
+                    // Normalize provider ID (sidecar uses 'opencode', tandem use 'opencode_zen')
+                    const providerId = providerIdRaw === "opencode" ? "opencode_zen" : providerIdRaw;
+                    const providerIdForSidecar =
+                      providerId === "opencode_zen" ? "opencode" : providerId;
 
-                  const config = await getProvidersConfig();
+                    const config = await getProvidersConfig();
 
-                  // Determine which top-level provider to use
-                  const knownProviders = [
-                    "openai",
-                    "anthropic",
-                    "openrouter",
-                    "opencode_zen",
-                    "ollama",
-                  ];
-                  const isKnownTopLevel = knownProviders.includes(providerId);
+                    // Determine which top-level provider to use
+                    const knownProviders = [
+                      "openai",
+                      "anthropic",
+                      "openrouter",
+                      "opencode_zen",
+                      "ollama",
+                    ];
+                    const isKnownTopLevel = knownProviders.includes(providerId);
 
-                  // Always persist the selected model (provider+model) so the backend can route
-                  // to arbitrary OpenCode providers (including user-defined ones).
-                  let updated: ProvidersConfig = {
-                    ...config,
-                    selected_model: { provider_id: providerIdForSidecar, model_id: modelId },
-                  };
-
-                  if (isKnownTopLevel) {
-                    // For known providers, keep the existing behavior: enable one, disable others.
-                    updated = {
-                      ...updated,
-                      openrouter: {
-                        ...config.openrouter,
-                        enabled: providerId === "openrouter",
-                        default: providerId === "openrouter",
-                      },
-                      opencode_zen: {
-                        ...config.opencode_zen,
-                        enabled: providerId === "opencode_zen",
-                        default: providerId === "opencode_zen",
-                      },
-                      anthropic: {
-                        ...config.anthropic,
-                        enabled: providerId === "anthropic",
-                        default: providerId === "anthropic",
-                      },
-                      openai: {
-                        ...config.openai,
-                        enabled: providerId === "openai",
-                        default: providerId === "openai",
-                      },
-                      ollama: {
-                        ...config.ollama,
-                        enabled: providerId === "ollama",
-                        default: providerId === "ollama",
-                      },
-                      custom: config.custom,
+                    // Always persist the selected model (provider+model) so the backend can route
+                    // to arbitrary OpenCode providers (including user-defined ones).
+                    let updated: ProvidersConfig = {
+                      ...config,
+                      selected_model: { provider_id: providerIdForSidecar, model_id: modelId },
                     };
 
-                    // Update model for known providers (for display + defaults)
-                    if (providerId === "opencode_zen") updated.opencode_zen.model = modelId;
-                    if (providerId === "openrouter") updated.openrouter.model = modelId;
-                    if (providerId === "anthropic") updated.anthropic.model = modelId;
-                    if (providerId === "openai") updated.openai.model = modelId;
-                    if (providerId === "ollama") updated.ollama.model = modelId;
-                  }
+                    if (isKnownTopLevel) {
+                      // For known providers, keep the existing behavior: enable one, disable others.
+                      updated = {
+                        ...updated,
+                        openrouter: {
+                          ...config.openrouter,
+                          enabled: providerId === "openrouter",
+                          default: providerId === "openrouter",
+                        },
+                        opencode_zen: {
+                          ...config.opencode_zen,
+                          enabled: providerId === "opencode_zen",
+                          default: providerId === "opencode_zen",
+                        },
+                        anthropic: {
+                          ...config.anthropic,
+                          enabled: providerId === "anthropic",
+                          default: providerId === "anthropic",
+                        },
+                        openai: {
+                          ...config.openai,
+                          enabled: providerId === "openai",
+                          default: providerId === "openai",
+                        },
+                        ollama: {
+                          ...config.ollama,
+                          enabled: providerId === "ollama",
+                          default: providerId === "ollama",
+                        },
+                        custom: config.custom,
+                      };
 
-                  await setProvidersConfig(updated);
-                  // Trigger refresh in parent to update labels
-                  onProviderChange?.();
-                } catch (e) {
-                  console.error("Failed to update model selection:", e);
-                }
-              }}
-            />
+                      // Update model for known providers (for display + defaults)
+                      if (providerId === "opencode_zen") updated.opencode_zen.model = modelId;
+                      if (providerId === "openrouter") updated.openrouter.model = modelId;
+                      if (providerId === "anthropic") updated.anthropic.model = modelId;
+                      if (providerId === "openai") updated.openai.model = modelId;
+                      if (providerId === "ollama") updated.ollama.model = modelId;
+                    }
+
+                    await setProvidersConfig(updated);
+                    // Trigger refresh in parent to update labels
+                    onProviderChange?.();
+                  } catch (e) {
+                    console.error("Failed to update model selection:", e);
+                  }
+                }}
+              />
+            </>
           )}
 
           {/* Permission requests - only show in immediate mode */}
@@ -2462,7 +2650,9 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
       )}
 
       {/* Logs Drawer */}
-      {showLogsDrawer && <LogsDrawer onClose={() => setShowLogsDrawer(false)} />}
+      {showLogsDrawer && (
+        <LogsDrawer onClose={() => setShowLogsDrawer(false)} sessionId={currentSessionId} />
+      )}
       {showPythonWizard && <PythonSetupWizard onClose={() => setShowPythonWizard(false)} />}
     </div>
   );

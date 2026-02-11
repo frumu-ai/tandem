@@ -8,7 +8,7 @@ use crate::ralph::types::{
     IterationRecord, RalphConfig, RalphRunStatus, RalphState, RalphStateSnapshot,
 };
 use crate::sidecar::{SendMessageRequest, SidecarManager, StreamEvent};
-use futures::StreamExt;
+use crate::stream_hub::StreamHub;
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -38,6 +38,7 @@ impl RalphLoopManager {
         config: RalphConfig,
         workspace_path: PathBuf,
         sidecar: Arc<SidecarManager>,
+        stream_hub: Arc<StreamHub>,
     ) -> Result<String> {
         let run_id = format!(
             "ralph_{}",
@@ -61,6 +62,7 @@ impl RalphLoopManager {
             config,
             storage,
             sidecar,
+            stream_hub,
             workspace_path,
         ));
 
@@ -193,6 +195,7 @@ pub struct RalphRunHandle {
     config: RalphConfig,
     storage: RalphStorage,
     sidecar: Arc<SidecarManager>,
+    stream_hub: Arc<StreamHub>,
     workspace_path: PathBuf,
     pub state: RwLock<RalphState>,
     cancel_token: CancellationToken,
@@ -210,6 +213,7 @@ impl RalphRunHandle {
         config: RalphConfig,
         storage: RalphStorage,
         sidecar: Arc<SidecarManager>,
+        stream_hub: Arc<StreamHub>,
         workspace_path: PathBuf,
     ) -> Self {
         let state = RalphState::new(
@@ -226,6 +230,7 @@ impl RalphRunHandle {
             config,
             storage,
             sidecar,
+            stream_hub,
             workspace_path,
             state: RwLock::new(state),
             cancel_token: CancellationToken::new(),
@@ -445,59 +450,60 @@ impl RalphRunHandle {
 
     /// Wait for iteration completion via SSE events
     async fn wait_for_completion(&self) -> Result<(String, HashMap<String, u32>, Vec<String>)> {
-        let stream = self.sidecar.subscribe_events().await?;
-        futures::pin_mut!(stream);
+        let mut stream = self.stream_hub.subscribe();
 
         let mut content = String::new();
         let mut tools_used: HashMap<String, u32> = HashMap::new();
         let mut errors: Vec<String> = Vec::new();
 
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(event) => match &event {
-                    StreamEvent::Content {
-                        session_id, delta, ..
-                    } => {
-                        if session_id == &self.session_id {
-                            if let Some(text) = delta {
-                                content.push_str(text);
+        loop {
+            match stream.recv().await {
+                Ok(env) => {
+                    let event = env.payload;
+                    match &event {
+                        StreamEvent::Content {
+                            session_id, delta, ..
+                        } => {
+                            if session_id == &self.session_id {
+                                if let Some(text) = delta {
+                                    content.push_str(text);
+                                }
                             }
                         }
-                    }
-                    StreamEvent::ToolStart {
-                        session_id, tool, ..
-                    } => {
-                        if session_id == &self.session_id {
-                            *tools_used.entry(tool.clone()).or_insert(0) += 1;
-                        }
-                    }
-                    StreamEvent::ToolEnd {
-                        session_id, error, ..
-                    } => {
-                        if session_id == &self.session_id {
-                            if let Some(err) = error {
-                                errors.push(err.clone());
+                        StreamEvent::ToolStart {
+                            session_id, tool, ..
+                        } => {
+                            if session_id == &self.session_id {
+                                *tools_used.entry(tool.clone()).or_insert(0) += 1;
                             }
                         }
-                    }
-                    StreamEvent::SessionIdle { session_id } => {
-                        if session_id == &self.session_id {
-                            break;
+                        StreamEvent::ToolEnd {
+                            session_id, error, ..
+                        } => {
+                            if session_id == &self.session_id {
+                                if let Some(err) = error {
+                                    errors.push(err.clone());
+                                }
+                            }
                         }
-                    }
-                    StreamEvent::SessionError { session_id, error } => {
-                        if session_id == &self.session_id {
-                            errors.push(error.clone());
-                            break;
+                        StreamEvent::SessionIdle { session_id } => {
+                            if session_id == &self.session_id {
+                                break;
+                            }
                         }
+                        StreamEvent::SessionError { session_id, error } => {
+                            if session_id == &self.session_id {
+                                errors.push(error.clone());
+                                break;
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                },
-                Err(e) => {
-                    tracing::warn!("Stream error in Ralph loop: {}", e);
-                    errors.push(e.to_string());
-                    break;
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!("Ralph stream lagged by {} events", skipped);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
 

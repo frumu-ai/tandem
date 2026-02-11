@@ -12,6 +12,7 @@ use crate::orchestrator::{
     types::*,
 };
 use crate::sidecar::SidecarManager;
+use crate::stream_hub::StreamHub;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -37,6 +38,8 @@ pub struct OrchestratorEngine {
     store: Arc<OrchestratorStore>,
     /// Sidecar manager for sub-agent calls
     sidecar: Arc<SidecarManager>,
+    /// Shared stream hub receiver source
+    stream_hub: Arc<StreamHub>,
     /// Workspace path
     workspace_path: PathBuf,
     /// Cancellation token
@@ -84,6 +87,7 @@ impl OrchestratorEngine {
         policy: PolicyEngine,
         store: OrchestratorStore,
         sidecar: Arc<SidecarManager>,
+        stream_hub: Arc<StreamHub>,
         workspace_path: PathBuf,
         event_tx: mpsc::UnboundedSender<OrchestratorEvent>,
     ) -> Self {
@@ -104,6 +108,7 @@ impl OrchestratorEngine {
             policy: Arc::new(policy),
             store: Arc::new(store),
             sidecar,
+            stream_hub,
             workspace_path,
             cancel_token: Arc::new(StdMutex::new(CancellationToken::new())),
             pause_signal,
@@ -860,7 +865,6 @@ impl OrchestratorEngine {
         prompt: &str,
     ) -> Result<String> {
         use crate::sidecar::{ModelSpec, SendMessageRequest, StreamEvent};
-        use futures::StreamExt;
 
         let _llm_permit = self
             .llm_semaphore
@@ -922,9 +926,7 @@ impl OrchestratorEngine {
             },
         };
 
-        // Subscribe to events FIRST to avoid race condition
-        let stream = self.sidecar.subscribe_events().await?;
-        futures::pin_mut!(stream);
+        let mut stream = self.stream_hub.subscribe();
 
         // Then send message to sidecar
         let mut request = SendMessageRequest::text(prompt.to_string());
@@ -941,21 +943,22 @@ impl OrchestratorEngine {
         // Keep this reasonably high so we don't fail healthy runs, but still fail-fast for true hangs.
         let timeout = tokio::time::Duration::from_secs(300);
         let consume = async {
-            // `stream.next().await` can block forever if the SSE stream goes silent; wrap in a
-            // shorter timeout so we can fail with a useful error.
             let per_event_timeout = tokio::time::Duration::from_secs(60);
             loop {
-                let next = tokio::time::timeout(per_event_timeout, stream.next()).await;
-                let result = match next {
-                    Ok(Some(r)) => r,
-                    Ok(None) => break,
+                let next = tokio::time::timeout(per_event_timeout, stream.recv()).await;
+                let event = match next {
+                    Ok(Ok(env)) => env.payload,
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
+                        tracing::warn!("Orchestrator stream lagged by {} events", skipped);
+                        continue;
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
                     Err(_) => {
                         errors.push("No SSE events received for 60s".to_string());
                         break;
                     }
                 };
-                match result {
-                    Ok(event) => match &event {
+                match &event {
                         StreamEvent::Content {
                             session_id: sid,
                             delta,
@@ -1044,13 +1047,7 @@ impl OrchestratorEngine {
                             );
                         }
                         _ => {}
-                    },
-                    Err(e) => {
-                        tracing::warn!("Stream error in orchestrator: {}", e);
-                        errors.push(e.to_string());
-                        break;
                     }
-                }
             }
         };
 

@@ -6,11 +6,16 @@ import {
   importSkill,
   installSkillTemplate,
   listSkillTemplates,
+  skillsImport,
+  skillsImportPreview,
+  type SkillsConflictPolicy,
+  type SkillsImportPreview,
   type SkillInfo,
   type SkillLocation,
   type SkillTemplateInfo,
 } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { PythonSetupWizard } from "@/components/python";
 
 interface SkillsPanelProps {
@@ -54,6 +59,11 @@ export function SkillsPanel({
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [installingTemplateId, setInstallingTemplateId] = useState<string | null>(null);
   const [showPythonWizard, setShowPythonWizard] = useState(false);
+  const [importPath, setImportPath] = useState("");
+  const [importNamespace, setImportNamespace] = useState("");
+  const [conflictPolicy, setConflictPolicy] = useState<SkillsConflictPolicy>("skip");
+  const [importPreview, setImportPreview] = useState<SkillsImportPreview | null>(null);
+  const [importingPack, setImportingPack] = useState(false);
 
   // Extract project name from path for display
   const projectName = projectPath ? projectPath.split(/[\\/]/).pop() || "Active Folder" : null;
@@ -126,6 +136,68 @@ Instructions for the AI...
       setError(err instanceof Error ? err.message : "Failed to install starter skill");
     } finally {
       setInstallingTemplateId(null);
+    }
+  };
+
+  const handleChooseImportPath = async () => {
+    try {
+      const picked = await openDialog({
+        title: "Select SKILL.md or zip",
+        multiple: false,
+        filters: [
+          { name: "Skill Files", extensions: ["md", "zip"] },
+          { name: "All Files", extensions: ["*"] },
+        ],
+      });
+      if (typeof picked === "string") {
+        setImportPath(picked);
+      }
+    } catch (e) {
+      console.error("Failed to select import file:", e);
+    }
+  };
+
+  const handlePreviewImport = async () => {
+    if (!importPath.trim()) {
+      setError("Choose a SKILL.md or zip file first.");
+      return;
+    }
+    try {
+      setError(null);
+      const preview = await skillsImportPreview(
+        importPath,
+        location,
+        importNamespace.trim() || undefined,
+        conflictPolicy
+      );
+      setImportPreview(preview);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to preview import");
+      setImportPreview(null);
+    }
+  };
+
+  const handleApplyImport = async () => {
+    if (!importPath.trim()) return;
+    try {
+      setImportingPack(true);
+      setError(null);
+      const result = await skillsImport(
+        importPath,
+        location,
+        importNamespace.trim() || undefined,
+        conflictPolicy
+      );
+      if (result.errors.length > 0) {
+        setError(`Imported with errors: ${result.errors.slice(0, 2).join(" | ")}`);
+      }
+      await onRefresh();
+      if (onRestartSidecar) await onRestartSidecar();
+      setImportPreview(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to import skill pack");
+    } finally {
+      setImportingPack(false);
     }
   };
 
@@ -353,6 +425,70 @@ Instructions for the AI...
               </Button>
               <Button onClick={handleSave} disabled={!content.trim() || saving}>
                 {saving ? "Saving..." : "Save"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-3 rounded-lg border border-border bg-surface-elevated/50 p-4">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium text-text">Import from file/zip</p>
+          <span className="text-xs text-text-subtle">Preview before apply</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Input
+            value={importPath}
+            onChange={(e) => setImportPath(e.target.value)}
+            placeholder="Path to SKILL.md or skills.zip"
+          />
+          <Button variant="secondary" onClick={handleChooseImportPath}>
+            Browse
+          </Button>
+        </div>
+        <div className="grid gap-2 md:grid-cols-3">
+          <Input
+            value={importNamespace}
+            onChange={(e) => setImportNamespace(e.target.value)}
+            placeholder="Namespace (optional)"
+          />
+          <select
+            value={conflictPolicy}
+            onChange={(e) => setConflictPolicy(e.target.value as SkillsConflictPolicy)}
+            className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-text"
+          >
+            <option value="skip">Skip conflicts</option>
+            <option value="overwrite">Overwrite conflicts</option>
+            <option value="rename">Rename conflicts</option>
+          </select>
+          <Button onClick={handlePreviewImport}>Preview import</Button>
+        </div>
+
+        {importPreview && (
+          <div className="rounded border border-border bg-surface p-3 text-sm">
+            <p className="text-text">
+              {importPreview.valid} valid / {importPreview.invalid} invalid / {importPreview.conflicts}{" "}
+              conflicts
+            </p>
+            <div className="mt-2 space-y-1 text-xs">
+              {importPreview.items.slice(0, 8).map((item, idx) => (
+                <div key={`${item.source}-${idx}`} className="flex items-center gap-2">
+                  <span
+                    className={
+                      item.valid ? "text-success" : "text-error"
+                    }
+                  >
+                    {item.valid ? "OK" : "ERR"}
+                  </span>
+                  <span className="truncate text-text-muted">{item.source}</span>
+                  {item.name && <span className="text-text">→ {item.name}</span>}
+                  <span className="text-text-subtle">({item.action})</span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3">
+              <Button onClick={handleApplyImport} disabled={importingPack}>
+                {importingPack ? "Importing..." : "Apply import"}
               </Button>
             </div>
           </div>
