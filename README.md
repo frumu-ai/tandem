@@ -2,10 +2,11 @@
   <img src=".github/assets/logo.png" alt="Tandem Logo" width="500">
   
   <p>
+    <a href="https://tandem.frumu.ai/"><img src="https://img.shields.io/website?url=https%3A%2F%2Ftandem.frumu.ai%2F&label=tandem.frumu.ai&logo=firefox" alt="Website"></a>
     <a href="https://github.com/frumu-ai/tandem/actions/workflows/ci.yml"><img src="https://github.com/frumu-ai/tandem/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="https://github.com/frumu-ai/tandem/actions/workflows/release.yml"><img src="https://github.com/frumu-ai/tandem/actions/workflows/release.yml/badge.svg" alt="Release"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-    <a href="https://github.com/sponsors/frumu-ai"><img src="https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA" alt="Sponsor"></a>
+    <a href="https://github.com/sponsors/frumu-ai"><img src="https://img.shields.io/badge/sponsor-30363D?logo=GitHub-Sponsors&logoColor=#EA4AAA" alt="Sponsor"></a>
   </p>
 </div>
 
