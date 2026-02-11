@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Message, type MessageProps } from "./Message";
 import { ChatInput, type FileAttachment } from "./ChatInput";
@@ -384,15 +385,26 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
   const previousMessageCountRef = useRef(0);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
+  const rowVirtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => messagesContainerRef.current,
+    estimateSize: () => 100,
+    overscan: 5,
+  });
+
   // Helper function to scroll to bottom
-  const scrollToBottom = useCallback((smooth = false) => {
-    window.requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({
-        behavior: smooth ? "smooth" : "auto",
-        block: "end",
-      });
-    });
-  }, []);
+  const scrollToBottom = useCallback(
+    (smooth = false) => {
+      // With virtualization, we scroll to the last index
+      if (messages.length > 0) {
+        rowVirtualizer.scrollToIndex(messages.length - 1, {
+          align: "end",
+          behavior: smooth ? "smooth" : "auto",
+        });
+      }
+    },
+    [messages.length, rowVirtualizer]
+  );
 
   // Scroll when message count increases (new message added)
   useEffect(() => {
@@ -1937,33 +1949,40 @@ ${g.example}
             ref={messagesContainerRef}
             className="flex-1 overflow-y-auto overflow-x-hidden pb-48"
           >
-            <AnimatePresence>
-              {isLoadingHistory ? (
-                <motion.div
-                  className="flex h-full items-center justify-center"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                >
-                  <div className="flex flex-col items-center gap-3">
-                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                    <p className="text-sm text-text-muted">Loading chat history...</p>
-                  </div>
-                </motion.div>
-              ) : messages.length === 0 && !isGenerating ? (
-                <EmptyState
-                  needsConnection={needsConnection}
-                  isConnecting={isConnecting}
-                  onConnect={connectSidecar}
-                  workspacePath={workspacePath}
-                  onSendMessage={handleSend}
-                  hasConfiguredProvider={hasConfiguredProvider}
-                  onOpenSettings={onOpenSettings}
-                  onOpenPacks={onOpenPacks}
-                  onOpenExtensions={onOpenExtensions}
-                />
-              ) : (
-                messages.map((message, index) => {
-                  const isLastMessage = index === messages.length - 1;
+            {isLoadingHistory ? (
+              <motion.div
+                className="flex h-full items-center justify-center"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+              >
+                <div className="flex flex-col items-center gap-3">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                  <p className="text-sm text-text-muted">Loading chat history...</p>
+                </div>
+              </motion.div>
+            ) : messages.length === 0 && !isGenerating ? (
+              <EmptyState
+                needsConnection={needsConnection}
+                isConnecting={isConnecting}
+                onConnect={connectSidecar}
+                workspacePath={workspacePath}
+                onSendMessage={handleSend}
+                hasConfiguredProvider={hasConfiguredProvider}
+                onOpenSettings={onOpenSettings}
+                onOpenPacks={onOpenPacks}
+                onOpenExtensions={onOpenExtensions}
+              />
+            ) : (
+              <div
+                style={{
+                  height: `${rowVirtualizer.getTotalSize()}px`,
+                  width: "100%",
+                  position: "relative",
+                }}
+              >
+                {rowVirtualizer.getVirtualItems().map((virtualItem) => {
+                  const message = messages[virtualItem.index];
+                  const isLastMessage = virtualItem.index === messages.length - 1;
                   const isAssistant = message.role === "assistant";
                   const showActionButtons =
                     usePlanMode && isLastMessage && isAssistant && !isGenerating;
@@ -1971,7 +1990,18 @@ ${g.example}
                   // Use content length in key ONLY for streaming messages to force re-renders
                   const isActivelyStreaming = isGenerating && isLastMessage && isAssistant;
                   return (
-                    <div key={message.id}>
+                    <div
+                      key={virtualItem.key}
+                      data-index={virtualItem.index}
+                      ref={rowVirtualizer.measureElement}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualItem.start}px)`,
+                      }}
+                    >
                       <Message
                         key={message.id}
                         {...message}
@@ -2033,9 +2063,9 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                       )}
                     </div>
                   );
-                })
-              )}
-            </AnimatePresence>
+                })}
+              </div>
+            )}
 
             {/* Streaming indicator */}
             {isGenerating && (

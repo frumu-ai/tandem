@@ -6,6 +6,7 @@
 - **Cleaner diagnostics UX**: Logs drawer now separates Tandem logs and Console activity, and fullscreen log height scales dynamically.
 - **Sidecar lifecycle hardening**: Start/stop transitions are serialized to prevent duplicate OpenCode/Bun process spawns.
 - **Pink Pony readability pass**: Theme contrast/surface opacity tuned for better legibility against bright gradients.
+- **Chat Performance**: Long chat sessions now render smoothly thanks to new list virtualization and optimization.
 
 ## Complete Feature List
 
@@ -40,6 +41,12 @@
 ### Themes
 
 - Improve Pink Pony readability with higher-contrast text, stronger surface opacity, and clearer borders/glass values.
+
+### Performance
+
+- **Chat Virtualization**: Implemented list virtualization for the chat interface, ensuring O(1) rendering performance regardless of message history length.
+- **Component Memoization**: Optimized message rendering to prevent unnecessary re-renders during typing and streaming.
+- **Build Reliability**: Fixed strict TypeScript errors in the Logs Drawer to ensure clean production builds.
 
 ---
 

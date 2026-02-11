@@ -113,7 +113,7 @@ function useMeasuredHeight() {
 
     // ResizeObserver is supported in modern Chromium/WebKit; Tauri ships a modern runtime.
     const RO = globalThis.ResizeObserver;
-    let ro: { observe: (target: unknown) => void; disconnect: () => void } | null = null;
+    let ro: { observe: (target: any) => void; disconnect: () => void } | null = null;
     if (RO) {
       ro = new RO((entries) => {
         const h = entries[0]?.contentRect?.height;

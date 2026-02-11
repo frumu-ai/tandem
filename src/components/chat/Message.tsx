@@ -1,6 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
-import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -135,7 +134,9 @@ function FilePathParser({
   return <>{parts.length > 0 ? parts : text}</>;
 }
 
-export function Message({
+export const Message = React.memo(MessageComponent);
+
+function MessageComponent({
   id,
   role,
   content,
@@ -159,6 +160,113 @@ export function Message({
   const [isEditing, setIsEditing] = useState(false);
   const [editedContent, setEditedContent] = useState(content);
   const [copied, setCopied] = useState(false);
+
+  // Memoize markdown components to prevent re-creation on every render
+  const markdownComponents = React.useMemo(
+    () => ({
+      a({ href, children, ...props }: any) {
+        // Treat markdown links to local files as "open in file browser"
+        // instead of navigating the SPA (which refreshes the app).
+        if (href && FILE_PATH_EXACT.test(href)) {
+          const normalizedHref = normalizeFilePath(href);
+          return (
+            <button
+              onClick={() => onFileOpen?.(normalizedHref)}
+              className="inline-flex items-center gap-1 text-primary hover:text-primary/80 hover:underline transition-colors font-mono text-sm"
+              title={`Open ${normalizedHref}`}
+              type="button"
+            >
+              <ExternalLink className="h-3 w-3" />
+              {children}
+            </button>
+          );
+        }
+
+        // Normal URL: keep as link (open in new tab/window).
+        return (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary hover:underline"
+            {...props}
+          >
+            {children}
+          </a>
+        );
+      },
+      code({ className, children, inline, ...props }: any) {
+        const match = /language-(\w+)/.exec(className || "");
+        if (match) {
+          return (
+            <div className="overflow-hidden rounded-lg border border-white/10 bg-surface/60">
+              <div className="flex items-center gap-2 border-b border-white/10 bg-surface-elevated/70 px-3 py-2">
+                <span className="h-2 w-2 rounded-full bg-error/80" />
+                <span className="h-2 w-2 rounded-full bg-warning/80" />
+                <span className="h-2 w-2 rounded-full bg-success/80" />
+                <span className="ml-2 text-[0.65rem] uppercase tracking-widest text-text-subtle terminal-text">
+                  code
+                </span>
+              </div>
+              <SyntaxHighlighter
+                style={oneDark}
+                language={match[1]}
+                PreTag="div"
+                customStyle={{ margin: 0, background: "transparent", padding: "1rem" }}
+              >
+                {String(children).replace(/\n$/, "")}
+              </SyntaxHighlighter>
+            </div>
+          );
+        }
+        const inlineText = String(children).trim();
+        if (inline && FILE_PATH_EXACT.test(inlineText)) {
+          const normalizedInline = normalizeFilePath(inlineText);
+          return (
+            <button
+              onClick={() => onFileOpen?.(normalizedInline)}
+              className="inline-flex items-center gap-1 text-primary hover:text-primary/80 hover:underline transition-colors font-mono text-sm"
+              title={`Open ${normalizedInline}`}
+              type="button"
+            >
+              <ExternalLink className="h-3 w-3" />
+              {inlineText}
+            </button>
+          );
+        }
+        return (
+          <code className={className} {...props}>
+            {children}
+          </code>
+        );
+      },
+      // Custom paragraph renderer to parse file paths in text
+      p: ({ children }: any) => (
+        <p>
+          {React.Children.map(children, (child, index) =>
+            typeof child === "string" ? (
+              <FilePathParser key={index} text={child} onFileOpen={onFileOpen} />
+            ) : (
+              child
+            )
+          )}
+        </p>
+      ),
+      // Custom list item renderer to parse file paths
+      li: ({ children }: any) => (
+        <li>
+          {React.Children.map(children, (child, index) =>
+            typeof child === "string" ? (
+              <FilePathParser key={index} text={child} onFileOpen={onFileOpen} />
+            ) : (
+              child
+            )
+          )}
+        </li>
+      ),
+    }),
+    [onFileOpen]
+  );
 
   const handleCopy = () => {
     onCopy?.(content);
@@ -357,122 +465,7 @@ export function Message({
           </div>
         ) : (
           <div className="prose-custom">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={
-                {
-                  a({ href, children, ...props }) {
-                    // Treat markdown links to local files as "open in file browser"
-                    // instead of navigating the SPA (which refreshes the app).
-                    if (href && FILE_PATH_EXACT.test(href)) {
-                      const normalizedHref = normalizeFilePath(href);
-                      return (
-                        <button
-                          onClick={() => onFileOpen?.(normalizedHref)}
-                          className="inline-flex items-center gap-1 text-primary hover:text-primary/80 hover:underline transition-colors font-mono text-sm"
-                          title={`Open ${normalizedHref}`}
-                          type="button"
-                        >
-                          <ExternalLink className="h-3 w-3" />
-                          {children}
-                        </button>
-                      );
-                    }
-
-                    // Normal URL: keep as link (open in new tab/window).
-                    return (
-                      <a
-                        href={href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary hover:underline"
-                        {...props}
-                      >
-                        {children}
-                      </a>
-                    );
-                  },
-                  code({
-                    className,
-                    children,
-                    inline,
-                    ...props
-                  }: {
-                    className?: string;
-                    children?: ReactNode;
-                    inline?: boolean;
-                  } & React.HTMLAttributes<HTMLElement>) {
-                    const match = /language-(\w+)/.exec(className || "");
-                    if (match) {
-                      return (
-                        <div className="overflow-hidden rounded-lg border border-white/10 bg-surface/60">
-                          <div className="flex items-center gap-2 border-b border-white/10 bg-surface-elevated/70 px-3 py-2">
-                            <span className="h-2 w-2 rounded-full bg-error/80" />
-                            <span className="h-2 w-2 rounded-full bg-warning/80" />
-                            <span className="h-2 w-2 rounded-full bg-success/80" />
-                            <span className="ml-2 text-[0.65rem] uppercase tracking-widest text-text-subtle terminal-text">
-                              code
-                            </span>
-                          </div>
-                          <SyntaxHighlighter
-                            style={oneDark}
-                            language={match[1]}
-                            PreTag="div"
-                            customStyle={{ margin: 0, background: "transparent", padding: "1rem" }}
-                          >
-                            {String(children).replace(/\n$/, "")}
-                          </SyntaxHighlighter>
-                        </div>
-                      );
-                    }
-                    const inlineText = String(children).trim();
-                    if (inline && FILE_PATH_EXACT.test(inlineText)) {
-                      const normalizedInline = normalizeFilePath(inlineText);
-                      return (
-                        <button
-                          onClick={() => onFileOpen?.(normalizedInline)}
-                          className="inline-flex items-center gap-1 text-primary hover:text-primary/80 hover:underline transition-colors font-mono text-sm"
-                          title={`Open ${normalizedInline}`}
-                          type="button"
-                        >
-                          <ExternalLink className="h-3 w-3" />
-                          {inlineText}
-                        </button>
-                      );
-                    }
-                    return (
-                      <code className={className} {...props}>
-                        {children}
-                      </code>
-                    );
-                  },
-                  // Custom paragraph renderer to parse file paths in text
-                  p: ({ children }) => (
-                    <p>
-                      {React.Children.map(children, (child, index) =>
-                        typeof child === "string" ? (
-                          <FilePathParser key={index} text={child} onFileOpen={onFileOpen} />
-                        ) : (
-                          child
-                        )
-                      )}
-                    </p>
-                  ),
-                  // Custom list item renderer to parse file paths
-                  li: ({ children }) => (
-                    <li>
-                      {React.Children.map(children, (child, index) =>
-                        typeof child === "string" ? (
-                          <FilePathParser key={index} text={child} onFileOpen={onFileOpen} />
-                        ) : (
-                          child
-                        )
-                      )}
-                    </li>
-                  ),
-                } as Components
-              }
-            >
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
               {content}
             </ReactMarkdown>
           </div>
@@ -507,7 +500,7 @@ export function Message({
 }
 
 // Collapsed tool calls for Plan Mode - shows summary with expand toggle
-function CollapsedToolCalls({
+const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
   toolCalls,
   parentMessageId,
   onOpenQuestionToolCall,
@@ -601,7 +594,7 @@ function CollapsedToolCalls({
       </AnimatePresence>
     </motion.div>
   );
-}
+});
 
 const ToolCallCard = React.memo(function ToolCallCard({
   id,

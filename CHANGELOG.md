@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Logs Drawer Fullscreen Height**: Fixed logs panel sizing so height is fully dynamic in fullscreen instead of staying at the smaller constrained height.
 - **Logs Redundancy**: Removed the redundant OpenCode sidecar log tab from the logs viewer and consolidated command activity under the Console tab.
 - **Pink Pony Readability**: Tuned Pink Pony theme contrast, surface opacity, borders, and text colors to improve legibility on bright backgrounds.
+- **Chat Performance**: Significantly improved rendering performance for long chat sessions by implementing list virtualization and component memoization.
+- **Production Build**: Fixed a TypeScript error in the Logs Drawer component (`ResizeObserver` type mismatch) that was blocking production builds.
 
 ### Changed
 
