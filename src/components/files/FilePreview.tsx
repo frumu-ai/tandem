@@ -432,7 +432,9 @@ export function FilePreview({ file, dockEl, onClose, onAddToChat }: FilePreviewP
     <div
       className={cn(
         // If we're fullscreen, escape any parent layout/transforms by pinning to the viewport.
-        expanded ? "fixed inset-0 z-50 bg-background shadow-xl" : "h-full",
+        expanded
+          ? "fixed inset-0 z-50 bg-surface-elevated/95 backdrop-blur-xl shadow-2xl"
+          : "h-full",
         // Docked mode visually matches the rest of the app layout.
         expanded || previewType === "presentation" ? "" : "border-l border-border"
       )}
@@ -450,7 +452,10 @@ export function FilePreview({ file, dockEl, onClose, onAddToChat }: FilePreviewP
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 20 }}
           transition={{ duration: 0.2 }}
-          className="flex h-full flex-col bg-background"
+          className={cn(
+            "flex h-full flex-col",
+            expanded ? "bg-surface-elevated/95" : "bg-background"
+          )}
         >
           {/* Header */}
           <div className="flex items-center justify-between border-b border-border bg-surface px-4 py-3">
@@ -500,7 +505,9 @@ export function FilePreview({ file, dockEl, onClose, onAddToChat }: FilePreviewP
           </div>
 
           {/* Content */}
-          <div className="flex-1 overflow-hidden">{renderPreview()}</div>
+          <div className={cn("flex-1 overflow-hidden", expanded ? "bg-surface" : "")}>
+            {renderPreview()}
+          </div>
         </motion.div>
       )}
     </div>
