@@ -1,6 +1,6 @@
 ---
 name: marketing-competitive-analysis
-description: Research competitors and compare positioning, messaging, content strategy, and market presence. Use when analyzing a competitor, building battlecards, identifying content gaps, comparing feature messaging, or preparing competitive positioning recommendations.
+description: Legacy fallback for broad competitor intelligence. Prefer competitor-alternatives for conversion-focused comparison and alternative page execution. Use this template when a wide market landscape brief is explicitly requested.
 ---
 
 # Competitive Analysis Skill
@@ -25,13 +25,13 @@ Gather intelligence from these categories of sources:
 
 #### Secondary Sources (Third-Party)
 
-- **Review sites**: G2, Capterra, TrustRadius, Product Hunt — customer sentiment themes
-- **Analyst reports**: Gartner, Forrester, IDC — market positioning and category placement
-- **News coverage**: TechCrunch, industry publications — funding, partnerships, narrative
+- **Review sites**: G2, Capterra, TrustRadius, Product Hunt â€” customer sentiment themes
+- **Analyst reports**: Gartner, Forrester, IDC â€” market positioning and category placement
+- **News coverage**: TechCrunch, industry publications â€” funding, partnerships, narrative
 - **Social listening**: mentions, sentiment, share of voice across social platforms
 - **SEO tools**: keyword rankings, organic traffic estimates, content gaps
 - **Financial filings**: revenue, growth rate, investment areas (for public companies)
-- **Community forums**: Reddit, Discourse, industry Slack communities — user sentiment
+- **Community forums**: Reddit, Discourse, industry Slack communities â€” user sentiment
 
 ### Research Process
 

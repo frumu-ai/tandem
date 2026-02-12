@@ -1,6 +1,6 @@
 ---
 name: marketing-research-posting-plan
-description: Research-driven marketing strategy and ready-to-post distribution plan for any product/project/creator. Requires web research when available and outputs a complete file set under scripts/marketing/<slug>/.
+description: Legacy fallback for heavy research-plus-posting file packs. Prefer content-strategy, social-content, and seo-audit for day-to-day planning and execution. Use this only when a full research dossier and posting package is explicitly required.
 ---
 
 # Research-Driven Marketing Strategy + Posting Plan
