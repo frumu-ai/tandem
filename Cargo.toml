@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "src-tauri",
+    "engine",
+    "crates/tandem-types", "crates/tandem-wire", "crates/tandem-core", "crates/tandem-providers", "crates/tandem-tools", "crates/tandem-server", "crates/tandem-runtime",
+]
+resolver = "2"
+

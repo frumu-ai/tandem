@@ -5011,13 +5011,13 @@ pub fn skills_install_template(
 #[tauri::command]
 pub fn opencode_list_plugins(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
 ) -> Result<Vec<String>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
-    let path = crate::opencode_config::get_config_path(scope, ws)?;
+    let path = crate::tandem_config::get_config_path(scope, ws)?;
 
-    let cfg = crate::opencode_config::read_config(&path)?;
+    let cfg = crate::tandem_config::read_config(&path)?;
     let plugins = cfg
         .get("plugin")
         .and_then(|v| v.as_array())
@@ -5035,14 +5035,14 @@ pub fn opencode_list_plugins(
 #[tauri::command]
 pub fn opencode_add_plugin(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
     name: String,
 ) -> Result<Vec<String>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
 
-    let updated = crate::opencode_config::update_config(scope, ws, |cfg| {
-        crate::opencode_config::ensure_schema(cfg);
+    let updated = crate::tandem_config::update_config(scope, ws, |cfg| {
+        crate::tandem_config::ensure_schema(cfg);
 
         let root = cfg.as_object_mut().ok_or_else(|| {
             TandemError::InvalidConfig("OpenCode config must be an object".into())
@@ -5080,13 +5080,13 @@ pub fn opencode_add_plugin(
 #[tauri::command]
 pub fn opencode_remove_plugin(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
     name: String,
 ) -> Result<Vec<String>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
 
-    let updated = crate::opencode_config::update_config(scope, ws, |cfg| {
+    let updated = crate::tandem_config::update_config(scope, ws, |cfg| {
         let root = cfg.as_object_mut().ok_or_else(|| {
             TandemError::InvalidConfig("OpenCode config must be an object".into())
         })?;
@@ -5119,13 +5119,13 @@ pub struct OpencodeMcpServerEntry {
 #[tauri::command]
 pub fn opencode_list_mcp_servers(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
 ) -> Result<Vec<OpencodeMcpServerEntry>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
-    let path = crate::opencode_config::get_config_path(scope, ws)?;
+    let path = crate::tandem_config::get_config_path(scope, ws)?;
 
-    let cfg = crate::opencode_config::read_config(&path)?;
+    let cfg = crate::tandem_config::read_config(&path)?;
     let mut out: Vec<OpencodeMcpServerEntry> = Vec::new();
 
     if let Some(mcp) = cfg.get("mcp").and_then(|v| v.as_object()) {
@@ -5145,15 +5145,15 @@ pub fn opencode_list_mcp_servers(
 #[tauri::command]
 pub fn opencode_add_mcp_server(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
     name: String,
     config: serde_json::Value,
 ) -> Result<Vec<OpencodeMcpServerEntry>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
 
-    crate::opencode_config::update_config(scope, ws, |cfg| {
-        crate::opencode_config::ensure_schema(cfg);
+    crate::tandem_config::update_config(scope, ws, |cfg| {
+        crate::tandem_config::ensure_schema(cfg);
 
         let root = cfg.as_object_mut().ok_or_else(|| {
             TandemError::InvalidConfig("OpenCode config must be an object".into())
@@ -5176,13 +5176,13 @@ pub fn opencode_add_mcp_server(
 #[tauri::command]
 pub fn opencode_remove_mcp_server(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
     name: String,
 ) -> Result<Vec<OpencodeMcpServerEntry>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
 
-    crate::opencode_config::update_config(scope, ws, |cfg| {
+    crate::tandem_config::update_config(scope, ws, |cfg| {
         let root = cfg.as_object_mut().ok_or_else(|| {
             TandemError::InvalidConfig("OpenCode config must be an object".into())
         })?;
@@ -5211,7 +5211,7 @@ pub struct OpencodeMcpTestResult {
 #[tauri::command]
 pub async fn opencode_test_mcp_connection(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
     name: String,
 ) -> Result<OpencodeMcpTestResult> {
     use futures::StreamExt;
@@ -5220,8 +5220,8 @@ pub async fn opencode_test_mcp_connection(
 
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
-    let path = crate::opencode_config::get_config_path(scope, ws)?;
-    let cfg = crate::opencode_config::read_config(&path)?;
+    let path = crate::tandem_config::get_config_path(scope, ws)?;
+    let cfg = crate::tandem_config::read_config(&path)?;
 
     let server = match cfg
         .get("mcp")

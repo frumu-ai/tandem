@@ -898,7 +898,7 @@ impl SidecarManager {
         //
         // IMPORTANT: Do not overwrite the entire config file; preserve unknown fields so
         // MCP/plugin settings (and any user settings) survive sidecar restarts.
-        match crate::opencode_config::global_config_path() {
+        match crate::tandem_config::global_config_path() {
             Ok(config_path) => {
                 // Make sure OpenCode actually loads the file we're managing, even if its
                 // defaults change across versions/platforms.
@@ -929,8 +929,8 @@ impl SidecarManager {
 
                 let models = serde_json::Value::Object(models_map);
 
-                if let Err(e) = crate::opencode_config::update_config_at(&config_path, |cfg| {
-                    crate::opencode_config::set_provider_ollama_models(cfg, models);
+                if let Err(e) = crate::tandem_config::update_config_at(&config_path, |cfg| {
+                    crate::tandem_config::set_provider_ollama_models(cfg, models);
                     Ok(())
                 }) {
                     tracing::warn!("Failed to update OpenCode config {:?}: {}", config_path, e);

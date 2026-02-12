@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 
-const OPENCODE_REPO: &str = "anomalyco/opencode";
+const ENGINE_REPO: &str = "frumu-ai/tandem-engine";
 const GITHUB_API: &str = "https://api.github.com";
 const MIN_BINARY_SIZE: u64 = 100 * 1024; // 100KB minimum
 const SKIPPED_RELEASE_TAGS: &[&str] = &[];
@@ -139,37 +139,37 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
 /// Get the binary name for the current platform
 fn get_binary_name() -> &'static str {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return "opencode-x86_64-pc-windows-msvc.exe";
+    return "tandem-engine.exe";
 
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "opencode-x86_64-apple-darwin";
+    return "tandem-engine";
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return "opencode-aarch64-apple-darwin";
+    return "tandem-engine";
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return "opencode-x86_64-unknown-linux-gnu";
+    return "tandem-engine";
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    return "opencode-aarch64-unknown-linux-gnu";
+    return "tandem-engine";
 }
 
 /// Get the asset name for the current platform
 fn get_asset_name() -> &'static str {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return "opencode-windows-x64.zip";
+    return "tandem-engine-windows-x64.zip";
 
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "opencode-darwin-x64.zip";
+    return "tandem-engine-darwin-x64.zip";
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return "opencode-darwin-arm64.zip";
+    return "tandem-engine-darwin-arm64.zip";
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return "opencode-linux-x64.tar.gz";
+    return "tandem-engine-linux-x64.tar.gz";
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    return "opencode-linux-arm64.tar.gz";
+    return "tandem-engine-linux-arm64.tar.gz";
 }
 
 /// Get the installed version from the store
@@ -303,7 +303,7 @@ async fn fetch_releases(
         let age = now - cache.fetched_at_unix;
         if !force_refresh && age < RELEASE_CHECK_INTERVAL_SECS {
             tracing::debug!(
-                "Using cached OpenCode releases (age={}s, freshness={}s)",
+                "Using cached tandem-engine releases (age={}s, freshness={}s)",
                 age,
                 RELEASE_CHECK_INTERVAL_SECS
             );
@@ -428,7 +428,7 @@ async fn fetch_releases(
 fn build_release_request(client: &reqwest::Client, page: usize) -> reqwest::RequestBuilder {
     let url = format!(
         "{}/repos/{}/releases?per_page={}&page={}",
-        GITHUB_API, OPENCODE_REPO, RELEASES_PER_PAGE, page
+        GITHUB_API, ENGINE_REPO, RELEASES_PER_PAGE, page
     );
     let mut request = client
         .get(url)
@@ -470,7 +470,7 @@ fn select_latest_compatible_release<'a>(
             tracing::debug!(
                 tag = %release.tag_name,
                 reason = %reason,
-                "Skipping OpenCode release during eligibility filtering"
+                "Skipping tandem-engine release during eligibility filtering"
             );
             skipped_count += 1;
             if first_skip_reason.is_none() {
@@ -488,7 +488,7 @@ fn select_latest_compatible_release<'a>(
 
     let reason = first_skip_reason.unwrap_or_else(|| "no releases returned".to_string());
     Err(TandemError::Sidecar(format!(
-        "No compatible OpenCode release found. First skip reason: {}",
+        "No compatible tandem-engine release found. First skip reason: {}",
         reason
     )))
 }
@@ -547,7 +547,7 @@ fn log_release_selection(context: &str, selected: &CompatibleRelease<'_>) {
         selected_tag = %selected.release.tag_name,
         skipped_count = selected.skipped_count,
         first_skip_reason = selected.first_skip_reason.as_deref().unwrap_or("none"),
-        "Selected eligible OpenCode release"
+        "Selected eligible tandem-engine release"
     );
 }
 
@@ -613,7 +613,7 @@ fn normalize_version_label(version: &str) -> &str {
 }
 
 fn asset_name_matches_current_target(asset_name: &str) -> bool {
-    if !asset_name.starts_with("opencode-") || asset_name.starts_with("opencode-desktop-") {
+    if !asset_name.starts_with("tandem-engine-") {
         return false;
     }
 
@@ -754,7 +754,11 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     let download_url = asset.browser_download_url.clone();
     let total_size = asset.size;
 
-    tracing::info!("Downloading OpenCode {} from {}", version, download_url);
+    tracing::info!(
+        "Downloading tandem-engine {} from {}",
+        version,
+        download_url
+    );
 
     // Download to AppData (writable), not resources (read-only)
     let app_data_dir = app
@@ -827,9 +831,9 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     emit_state("installing", None);
 
     let extracted_name = if cfg!(windows) {
-        "opencode.exe"
+        "tandem-engine.exe"
     } else {
-        "opencode"
+        "tandem-engine"
     };
     let extracted_path = binaries_dir.join(extracted_name);
 
@@ -844,11 +848,13 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
             {
                 use std::process::Command as StdCommand;
 
-                tracing::info!("Running taskkill to ensure all OpenCode processes are terminated");
+                tracing::info!(
+                    "Running taskkill to ensure all tandem-engine processes are terminated"
+                );
 
-                // Kill any opencode.exe processes by name
+                // Kill any tandem-engine.exe processes by name
                 let mut cmd = StdCommand::new("taskkill");
-                cmd.args(["/F", "/IM", "opencode.exe"]);
+                cmd.args(["/F", "/IM", "tandem-engine.exe"]);
 
                 // Hide console window on Windows
                 #[cfg(target_os = "windows")]
@@ -872,7 +878,7 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
 
                 // Also try killing any process with the executable name in its path
                 let mut cmd2 = StdCommand::new("taskkill");
-                cmd2.args(["/F", "/FI", "IMAGENAME eq opencode*"]);
+                cmd2.args(["/F", "/FI", "IMAGENAME eq tandem-engine*"]);
 
                 // Hide console window on Windows
                 #[cfg(target_os = "windows")]
@@ -979,7 +985,7 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
 
     emit_state("complete", None);
 
-    tracing::info!("OpenCode {} installed successfully", version);
+    tracing::info!("tandem-engine {} installed successfully", version);
 
     Ok(())
 }
@@ -1076,12 +1082,7 @@ mod tests {
     #[test]
     fn select_latest_compatible_release_skips_missing_required_assets() {
         let releases = vec![
-            make_release(
-                "v1.1.58",
-                false,
-                false,
-                &["opencode-desktop-windows-x64.exe"],
-            ),
+            make_release("v1.1.58", false, false, &["tandem-desktop-windows-x64.exe"]),
             make_release("v1.1.57", false, false, &current_platform_assets()),
         ];
         let selected = select_latest_compatible_release(&releases, false).unwrap();
@@ -1098,9 +1099,9 @@ mod tests {
     #[test]
     fn select_latest_compatible_release_rejects_desktop_only_release() {
         let desktop_only = vec![
-            "opencode-desktop-windows-x64.exe",
-            "opencode-desktop-darwin-x64.dmg",
-            "opencode-desktop-linux-amd64.deb",
+            "tandem-desktop-windows-x64.exe",
+            "tandem-desktop-darwin-x64.dmg",
+            "tandem-desktop-linux-amd64.deb",
         ];
         let releases = vec![
             make_release("v1.1.58", false, false, &desktop_only),
@@ -1124,12 +1125,7 @@ mod tests {
     #[test]
     fn select_latest_compatible_release_errors_when_none_eligible() {
         let releases = vec![
-            make_release(
-                "v1.1.59",
-                false,
-                false,
-                &["opencode-desktop-windows-x64.exe"],
-            ),
+            make_release("v1.1.59", false, false, &["tandem-desktop-windows-x64.exe"]),
             make_release("v1.1.58", true, false, &current_platform_assets()),
         ];
         assert!(select_latest_compatible_release(&releases, false).is_err());
@@ -1138,12 +1134,7 @@ mod tests {
     #[test]
     fn release_discovery_reports_incompatible_latest() {
         let releases = vec![
-            make_release(
-                "v1.1.59",
-                false,
-                false,
-                &["opencode-desktop-windows-x64.exe"],
-            ),
+            make_release("v1.1.59", false, false, &["tandem-desktop-windows-x64.exe"]),
             make_release("v1.1.58", false, false, &current_platform_assets()),
         ];
         let discovery = build_release_discovery(&releases, false);

@@ -1,8 +1,7 @@
-//! OpenCode configuration helpers.
+//! Tandem engine configuration helpers.
 //!
-//! Tandem uses OpenCode as a sidecar engine. To support MCP servers and plugins
-//! without re-implementing runtime behavior, we manage OpenCode config files in
-//! a round-trip-safe way (preserve unknown fields) with atomic-ish writes.
+//! Manages global and project config in a round-trip-safe way and keeps
+//! compatibility with legacy OpenCode config locations.
 
 use crate::error::{Result, TandemError};
 use serde::{Deserialize, Serialize};
@@ -13,29 +12,32 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum OpenCodeConfigScope {
+pub enum TandemConfigScope {
     Global,
     Project,
 }
 
 pub fn global_config_path() -> Result<PathBuf> {
-    // Prefer an existing file to avoid splitting config across multiple locations.
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    // 1) Current Tandem path (legacy).
     if let Some(config_dir) = dirs::config_dir() {
-        candidates.push(config_dir.join("opencode").join("config.json"));
+        candidates.push(config_dir.join("tandem").join("config.json"));
+        candidates.push(config_dir.join("tandem").join("config.jsonc"));
     }
 
-    // 2) OpenCode docs commonly refer to ~/.config/opencode/opencode.json(.c).
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".config").join("tandem").join("config.json"));
+        candidates.push(home.join(".config").join("tandem").join("config.jsonc"));
+    }
+
+    // Legacy OpenCode fallbacks for migration compatibility.
+    if let Some(config_dir) = dirs::config_dir() {
+        candidates.push(config_dir.join("opencode").join("config.json"));
+        candidates.push(config_dir.join("opencode").join("opencode.json"));
+    }
     if let Some(home) = dirs::home_dir() {
         candidates.push(home.join(".config").join("opencode").join("opencode.json"));
         candidates.push(home.join(".config").join("opencode").join("opencode.jsonc"));
-    }
-
-    // 3) Additional reasonable fallback.
-    if let Some(config_dir) = dirs::config_dir() {
-        candidates.push(config_dir.join("opencode").join("opencode.json"));
     }
 
     for p in &candidates {
@@ -44,40 +46,41 @@ pub fn global_config_path() -> Result<PathBuf> {
         }
     }
 
-    // No existing config: default to the legacy path so existing sidecar behavior
-    // stays consistent, and because it's in the OS config directory.
     if let Some(config_dir) = dirs::config_dir() {
-        return Ok(config_dir.join("opencode").join("config.json"));
+        return Ok(config_dir.join("tandem").join("config.json"));
     }
-
-    // Last resort: ~/.config/opencode/opencode.json
     if let Some(home) = dirs::home_dir() {
-        return Ok(home.join(".config").join("opencode").join("opencode.json"));
+        return Ok(home.join(".config").join("tandem").join("config.json"));
     }
 
     Err(TandemError::InvalidConfig(
-        "Could not determine OpenCode global config path".to_string(),
+        "Could not determine Tandem global config path".to_string(),
     ))
 }
 
 pub fn project_config_path(workspace: &Path) -> PathBuf {
-    // OpenCode supports `opencode.json`/`opencode.jsonc` in the project root.
-    // We pick the first existing, otherwise default to opencode.json.
-    let json = workspace.join("opencode.json");
-    let jsonc = workspace.join("opencode.jsonc");
-    if json.exists() {
-        json
-    } else if jsonc.exists() {
-        jsonc
+    let tandem_json = workspace.join(".tandem").join("config.json");
+    let tandem_jsonc = workspace.join(".tandem").join("config.jsonc");
+    let legacy_json = workspace.join("opencode.json");
+    let legacy_jsonc = workspace.join("opencode.jsonc");
+
+    if tandem_json.exists() {
+        tandem_json
+    } else if tandem_jsonc.exists() {
+        tandem_jsonc
+    } else if legacy_json.exists() {
+        legacy_json
+    } else if legacy_jsonc.exists() {
+        legacy_jsonc
     } else {
-        json
+        tandem_json
     }
 }
 
-pub fn get_config_path(scope: OpenCodeConfigScope, workspace: Option<&Path>) -> Result<PathBuf> {
+pub fn get_config_path(scope: TandemConfigScope, workspace: Option<&Path>) -> Result<PathBuf> {
     match scope {
-        OpenCodeConfigScope::Global => global_config_path(),
-        OpenCodeConfigScope::Project => {
+        TandemConfigScope::Global => global_config_path(),
+        TandemConfigScope::Project => {
             let ws = workspace.ok_or_else(|| {
                 TandemError::InvalidConfig("No active workspace for project config".to_string())
             })?;
@@ -92,30 +95,21 @@ pub fn read_config(path: &Path) -> Result<Value> {
     }
 
     let raw = fs::read_to_string(path).map_err(TandemError::Io)?;
-
-    // Support basic JSONC by stripping comments when needed.
-    // If stripping isn't necessary, serde_json will still parse fine.
     let stripped = strip_jsonc_comments(&raw);
-
     let mut v: Value = serde_json::from_str(&stripped).map_err(TandemError::Serialization)?;
     if !v.is_object() {
-        // We only operate on object configs; normalize to object to avoid panics elsewhere.
         v = Value::Object(Map::new());
     }
     Ok(v)
 }
 
 pub fn write_config_atomic(path: &Path, value: &Value) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        TandemError::InvalidConfig(format!("Invalid OpenCode config path: {:?}", path))
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| TandemError::InvalidConfig(format!("Invalid config path: {:?}", path)))?;
     fs::create_dir_all(parent).map_err(TandemError::Io)?;
 
     let json = serde_json::to_string_pretty(value).map_err(TandemError::Serialization)?;
-
-    // Write to a temp file in the same directory then rename into place.
-    // This is atomic on Unix; on Windows rename semantics may vary but is still
-    // the best available without platform-specific APIs.
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -126,45 +120,33 @@ pub fn write_config_atomic(path: &Path, value: &Value) -> Result<()> {
         let mut f = fs::File::create(&tmp_path).map_err(TandemError::Io)?;
         f.write_all(json.as_bytes()).map_err(TandemError::Io)?;
         f.write_all(b"\n").map_err(TandemError::Io)?;
-        f.sync_all().ok(); // best-effort
+        f.sync_all().ok();
     }
 
-    // First try a direct rename into place.
-    // On Unix this will replace an existing file atomically.
     if fs::rename(&tmp_path, path).is_ok() {
         return Ok(());
     }
 
-    // Windows doesn't allow renaming over an existing destination. Our previous implementation
-    // removed the destination first, but that can permanently delete a user's config if the
-    // subsequent rename fails (e.g. file locked by another process). Instead, we keep a backup
-    // and only replace when we can do so safely.
     let backup_path = parent.join(format!(".{}.bak", file_name));
-
-    // Remove a stale backup if it exists; best-effort.
     if backup_path.exists() {
         let _ = fs::remove_file(&backup_path);
     }
 
     if path.exists() {
-        // If we can't move the existing file out of the way, bail without touching it.
         fs::rename(path, &backup_path).map_err(TandemError::Io)?;
     }
 
     match fs::rename(&tmp_path, path) {
         Ok(_) => {
-            // Success: cleanup backup best-effort.
             if backup_path.exists() {
                 let _ = fs::remove_file(&backup_path);
             }
             Ok(())
         }
         Err(e) => {
-            // Restore backup if we moved it aside.
             if backup_path.exists() && !path.exists() {
                 let _ = fs::rename(&backup_path, path);
             }
-            // Cleanup temp best-effort.
             let _ = fs::remove_file(&tmp_path);
             Err(TandemError::Io(e))
         }
@@ -182,7 +164,7 @@ where
 }
 
 pub fn update_config<F>(
-    scope: OpenCodeConfigScope,
+    scope: TandemConfigScope,
     workspace: Option<&Path>,
     mutator: F,
 ) -> Result<Value>
@@ -194,29 +176,25 @@ where
 }
 
 pub fn ensure_schema(cfg: &mut Value) {
-    let obj = match cfg.as_object_mut() {
-        Some(o) => o,
-        None => return,
+    let Some(obj) = cfg.as_object_mut() else {
+        return;
     };
     obj.entry("$schema".to_string())
-        .or_insert_with(|| Value::String("https://opencode.ai/config.json".to_string()));
+        .or_insert_with(|| Value::String("https://tandem.frumu.ai/config.json".to_string()));
 }
 
 pub fn set_provider_ollama_models(cfg: &mut Value, models: Value) {
     ensure_schema(cfg);
-
-    let root = cfg.as_object_mut().unwrap();
+    let root = cfg.as_object_mut().expect("config must be object");
     let provider = root
         .entry("provider".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
-
-    let provider_obj = provider.as_object_mut().unwrap();
+    let provider_obj = provider.as_object_mut().expect("provider must be object");
     let ollama = provider_obj
         .entry("ollama".to_string())
         .or_insert_with(|| Value::Object(default_ollama_provider()));
 
     if let Some(ollama_obj) = ollama.as_object_mut() {
-        // Only fill defaults if missing; preserve user overrides.
         ollama_obj
             .entry("npm".to_string())
             .or_insert_with(|| Value::String("@ai-sdk/openai-compatible".to_string()));
@@ -232,11 +210,6 @@ pub fn set_provider_ollama_models(cfg: &mut Value, models: Value) {
             Value::Object(opt)
         });
         ollama_obj.insert("models".to_string(), models);
-    } else {
-        // If it's not an object for some reason, replace it.
-        let mut o = default_ollama_provider();
-        o.insert("models".to_string(), models);
-        provider_obj.insert("ollama".to_string(), Value::Object(o));
     }
 }
 
@@ -259,13 +232,9 @@ fn default_ollama_provider() -> Map<String, Value> {
     o
 }
 
-/// Strip `//` and `/* */` comments from a JSONC string.
-///
-/// This is a minimal implementation intended to handle common JSONC configs.
 fn strip_jsonc_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
-
     let mut in_string = false;
     let mut escape = false;
 
@@ -291,9 +260,8 @@ fn strip_jsonc_comments(input: &str) -> String {
         if c == '/' {
             match chars.peek().copied() {
                 Some('/') => {
-                    // Line comment: consume until newline (preserve newline).
                     let _ = chars.next();
-                    while let Some(nc) = chars.next() {
+                    for nc in chars.by_ref() {
                         if nc == '\n' {
                             out.push('\n');
                             break;
@@ -302,10 +270,9 @@ fn strip_jsonc_comments(input: &str) -> String {
                     continue;
                 }
                 Some('*') => {
-                    // Block comment: consume until closing */
                     let _ = chars.next();
                     let mut prev = '\0';
-                    while let Some(nc) = chars.next() {
+                    for nc in chars.by_ref() {
                         if prev == '*' && nc == '/' {
                             break;
                         }

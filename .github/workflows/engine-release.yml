@@ -1,0 +1,95 @@
+name: Engine Release
+
+on:
+  push:
+    tags:
+      - "engine-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-engine:
+    name: ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            artifact: tandem-engine-windows-x64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: zip
+            artifact: tandem-engine-darwin-x64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: zip
+            artifact: tandem-engine-darwin-arm64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            artifact: tandem-engine-linux-x64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            artifact: tandem-engine-linux-arm64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux ARM64 linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release -p tandem-engine --target ${{ matrix.target }}
+
+      - name: Package zip (Windows)
+        if: matrix.archive == 'zip' && startsWith(matrix.target, 'x86_64-pc-windows')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "dist/tandem-engine.exe" -Force
+          Compress-Archive -Path "dist/*" -DestinationPath "${{ matrix.artifact }}.zip" -Force
+
+      - name: Package zip (macOS)
+        if: matrix.archive == 'zip' && !startsWith(matrix.target, 'x86_64-pc-windows')
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/tandem-engine" dist/
+          cd dist
+          zip -r "../${{ matrix.artifact }}.zip" *
+
+      - name: Package tar.gz (Linux)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/tandem-engine" dist/
+          tar -czf "${{ matrix.artifact }}.tar.gz" -C dist tandem-engine
+
+      - name: Upload release zip asset
+        if: matrix.archive == 'zip'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}.zip
+
+      - name: Upload release tarball asset
+        if: matrix.archive == 'tar.gz'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}.tar.gz

@@ -67,3 +67,9 @@ logs.txt
 
 # OpenCode workspace runtime (may be generated when the engine starts)
 .opencode/
+
+# Local engine/runtime smoke-test artifacts
+.tandem/
+.tandem-*/
+runtime-proof/
+engine/.tandem/

@@ -1,0 +1,26 @@
+[package]
+name = "tandem-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+ignore = "0.4"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tandem-core = { path = "../tandem-core" }
+tandem-providers = { path = "../tandem-providers" }
+tandem-runtime = { path = "../tandem-runtime" }
+tandem-tools = { path = "../tandem-tools" }
+tandem-types = { path = "../tandem-types" }
+tandem-wire = { path = "../tandem-wire" }
+
+[dev-dependencies]
+tower = "0.5"
+uuid = { version = "1", features = ["v4"] }
