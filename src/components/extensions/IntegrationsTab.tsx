@@ -87,7 +87,7 @@ export function IntegrationsTab({ workspacePath }: IntegrationsTabProps) {
       const list = await opencodeListMcpServers(nextScope);
       setServers(list);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load integrations");
+      setError(e instanceof Error ? e.message : "Failed to load MCP servers");
       setServers([]);
     } finally {
       setLoading(false);
@@ -239,7 +239,7 @@ export function IntegrationsTab({ workspacePath }: IntegrationsTabProps) {
       <div className="flex items-center justify-between gap-4">
         <div>
           <p className="text-sm font-medium text-text">Scope</p>
-          <p className="text-xs text-text-subtle">Choose where integrations are configured</p>
+          <p className="text-xs text-text-subtle">Choose where MCP servers are configured</p>
         </div>
         <div className="flex rounded-lg border border-border bg-surface overflow-hidden">
           <button
@@ -276,7 +276,7 @@ export function IntegrationsTab({ workspacePath }: IntegrationsTabProps) {
         <CardHeader>
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1">
-              <CardTitle>Configured integrations</CardTitle>
+              <CardTitle>Configured MCP servers</CardTitle>
               <CardDescription>
                 These settings are written to OpenCode config. Remote HTTP servers are tested by
                 sending a real MCP <span className="font-mono">initialize</span> request (Streamable
@@ -295,12 +295,12 @@ export function IntegrationsTab({ workspacePath }: IntegrationsTabProps) {
         <CardContent className="space-y-3">
           {loading ? (
             <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
-              Loading integrations...
+              Loading MCP servers...
             </div>
           ) : servers.length === 0 ? (
             <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
               <Link2 className="mx-auto mb-2 h-8 w-8 text-text-subtle" />
-              <p className="text-sm text-text-muted">No integrations configured.</p>
+              <p className="text-sm text-text-muted">No MCP servers configured.</p>
               <p className="text-xs text-text-subtle">Add a remote or local MCP server below.</p>
             </div>
           ) : (

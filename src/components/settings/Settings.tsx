@@ -1090,6 +1090,7 @@ export function Settings({
         </div>
 
         {/* Memory Stats */}
+        {/* Memory Stats */}
         <MemoryStats />
 
         {/* Security Info */}

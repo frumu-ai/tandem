@@ -215,6 +215,22 @@ export interface ProviderInfo {
   configured: boolean;
 }
 
+export type ModeBase = "immediate" | "plan" | "orchestrate" | "coder" | "ask" | "explore";
+export type ModeSource = "builtin" | "user" | "project";
+export type ModeScope = "user" | "project";
+
+export interface ModeDefinition {
+  id: string;
+  label: string;
+  base_mode: ModeBase;
+  icon?: string;
+  system_prompt_append?: string;
+  allowed_tools?: string[];
+  edit_globs?: string[];
+  auto_approve?: boolean;
+  source?: ModeSource;
+}
+
 // Stream event types from OpenCode (matches Rust StreamEvent enum)
 export type StreamEvent =
   | { type: "content"; session_id: string; message_id: string; content: string; delta?: string }
@@ -489,13 +505,15 @@ export async function createSession(
   title?: string,
   model?: string,
   provider?: string,
-  allowAllTools?: boolean
+  allowAllTools?: boolean,
+  modeId?: string
 ): Promise<Session> {
   return invoke("create_session", {
     title,
     model,
     provider,
     allow_all_tools: allowAllTools,
+    mode_id: modeId,
   });
 }
 
@@ -570,9 +588,36 @@ export async function sendMessageStreaming(
   sessionId: string,
   content: string,
   attachments?: FileAttachmentInput[],
-  agent?: string
+  agent?: string,
+  modeId?: string
 ): Promise<void> {
-  return invoke("send_message_streaming", { sessionId, content, attachments, agent });
+  return invoke("send_message_streaming", {
+    sessionId,
+    content,
+    attachments,
+    agent,
+    mode_id: modeId,
+  });
+}
+
+export async function listModes(): Promise<ModeDefinition[]> {
+  return invoke("list_modes");
+}
+
+export async function upsertMode(scope: ModeScope, mode: ModeDefinition): Promise<void> {
+  return invoke("upsert_mode", { scope, mode });
+}
+
+export async function deleteMode(scope: ModeScope, id: string): Promise<void> {
+  return invoke("delete_mode", { scope, id });
+}
+
+export async function importModes(scope: ModeScope, json: string): Promise<void> {
+  return invoke("import_modes", { scope, json });
+}
+
+export async function exportModes(scope: ModeScope): Promise<string> {
+  return invoke("export_modes", { scope });
 }
 
 export interface QueuedAttachment {

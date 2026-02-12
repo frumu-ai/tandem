@@ -105,7 +105,7 @@ function App() {
     "providers" | "projects" | null
   >(null);
   const [extensionsInitialTab, setExtensionsInitialTab] = useState<
-    "skills" | "plugins" | "integrations" | null
+    "skills" | "plugins" | "mcp" | "modes" | null
   >(null);
   const [postAddProjectView, setPostAddProjectView] = useState<View | null>(null);
   // Initialize currentSessionId from localStorage to persist state across reloads/rebuilds
@@ -803,6 +803,14 @@ function App() {
     await beginAddProject(installedPath);
   };
 
+  const handleStartModeBuilderChat = (seedPrompt: string) => {
+    setDraftMessage(seedPrompt);
+    setExtensionsInitialTab("modes");
+    setView("chat");
+    setSidebarTab("sessions");
+    setSidebarOpen(true);
+  };
+
   const handleSettingsClose = async () => {
     setView("chat");
     // Reload everything when settings closes (in case projects were modified)
@@ -1310,6 +1318,7 @@ function App() {
                 initialTab={extensionsInitialTab ?? undefined}
                 onInitialTabConsumed={() => setExtensionsInitialTab(null)}
                 onClose={() => setView("chat")}
+                onStartModeBuilderChat={handleStartModeBuilderChat}
               />
             </motion.div>
           ) : effectiveView === "about" ? (

@@ -6,14 +6,16 @@ import { Button } from "@/components/ui/Button";
 import { SkillsTab } from "./SkillsTab";
 import { PluginsTab } from "./PluginsTab";
 import { IntegrationsTab } from "./IntegrationsTab";
+import { ModesTab } from "./ModesTab";
 
-export type ExtensionsTabId = "skills" | "plugins" | "integrations";
+export type ExtensionsTabId = "skills" | "plugins" | "mcp" | "modes";
 
 interface ExtensionsProps {
   workspacePath?: string | null;
   onClose?: () => void;
   initialTab?: ExtensionsTabId;
   onInitialTabConsumed?: () => void;
+  onStartModeBuilderChat?: (seedPrompt: string) => void;
 }
 
 export function Extensions({
@@ -21,6 +23,7 @@ export function Extensions({
   onClose,
   initialTab,
   onInitialTabConsumed,
+  onStartModeBuilderChat,
 }: ExtensionsProps) {
   const [activeTab, setActiveTab] = useState<ExtensionsTabId>(() => initialTab ?? "skills");
 
@@ -45,7 +48,7 @@ export function Extensions({
             </div>
             <div>
               <h1 className="text-2xl font-bold text-text">Extensions</h1>
-              <p className="text-text-muted">Manage skills, plugins, and MCP integrations</p>
+              <p className="text-text-muted">Manage skills, plugins, MCP, and advanced modes</p>
             </div>
           </div>
           {onClose && (
@@ -84,15 +87,27 @@ export function Extensions({
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab("integrations")}
+              onClick={() => setActiveTab("mcp")}
               className={cn(
                 "flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center",
-                activeTab === "integrations"
+                activeTab === "mcp"
                   ? "border-b-2 border-primary text-primary"
                   : "text-text-muted hover:text-text hover:bg-surface-elevated"
               )}
             >
-              Integrations (MCP)
+              MCP
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("modes")}
+              className={cn(
+                "flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center",
+                activeTab === "modes"
+                  ? "border-b-2 border-primary text-primary"
+                  : "text-text-muted hover:text-text hover:bg-surface-elevated"
+              )}
+            >
+              Modes
             </button>
           </div>
 
@@ -101,8 +116,13 @@ export function Extensions({
               <SkillsTab workspacePath={workspacePath ?? null} />
             ) : activeTab === "plugins" ? (
               <PluginsTab workspacePath={workspacePath ?? null} />
-            ) : (
+            ) : activeTab === "mcp" ? (
               <IntegrationsTab workspacePath={workspacePath ?? null} />
+            ) : (
+              <ModesTab
+                workspacePath={workspacePath ?? null}
+                onStartModeBuilderChat={onStartModeBuilderChat}
+              />
             )}
           </div>
         </div>

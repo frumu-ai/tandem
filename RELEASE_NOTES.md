@@ -4,7 +4,16 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## v0.2.24 (2026-02-12)
 
-- Updates: Fix version metadata mismatches by syncing `tauri.conf.json`, `package.json`, and `Cargo.toml` so auto-updates detect new releases correctly.
+- Modes: Added full custom modes MVP across backend + frontend with server-side enforcement and safe fallbacks.
+- Modes UI: Added `Extensions -> Modes` with two views:
+  - Guided Builder (recommended)
+  - Advanced Editor
+- Guided Builder: Added step-by-step mode creation for non-technical users, including preview-before-apply.
+- AI Assist: Added optional AI-assisted mode creation flow with a bundled `mode-builder` skill template and paste-and-parse JSON preview.
+- Mode Icons: Added icon selection for custom modes and icon rendering in the chat mode selector.
+- Mode Selector: Switched to dynamic mode list (built-in + custom) with compact custom-mode descriptions.
+- Memory: Auto-index on project load now defaults to enabled (`true`) for new settings state.
+- Updates: Fixed version metadata mismatches by syncing `tauri.conf.json`, `package.json`, and `Cargo.toml` so auto-updates detect new releases correctly.
 
 ## v0.2.22 (2026-02-11)
 

@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.24] - 2026-02-12
 
+### Added
+
+- **Custom Modes (Phased MVP Complete)**: Added end-to-end custom mode support with backend-authoritative enforcement, including mode listing, create/update/delete, import/export, deterministic precedence (`builtin < user < project`), and safe fallback behavior.
+- **Guided Mode Builder**: Added a non-technical, step-by-step mode creation wizard in `Extensions -> Modes`.
+- **Mode Management in Extensions**: Added a dedicated `Modes` area under `Extensions` with `Guided Builder` and `Advanced Editor` views.
+- **AI-Assisted Mode Builder**: Added optional AI assist flow in Guided Builder with:
+  - `Start AI Builder Chat`
+  - paste-and-parse JSON preview before apply
+  - new bundled skill template: `mode-builder`
+- **Mode Icons**: Added selectable mode icons that render in chat mode selector UI.
+
+### Changed
+
+- **Chat Mode Selector**: Mode selector now loads built-in + custom modes dynamically and uses compact descriptions for custom entries.
+- **Memory Indexing Default**: `auto_index_on_project_load` now defaults to `true` for new users/devices.
+
 ### Fixed
 
 - **Version Metadata Sync**: Updated `tauri.conf.json`, `package.json`, and `Cargo.toml` so auto-updates detect new releases correctly.

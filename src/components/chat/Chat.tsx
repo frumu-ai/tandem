@@ -87,7 +87,7 @@ interface ChatProps {
   onOpenSettings?: () => void;
   onProviderChange?: () => void;
   onOpenPacks?: () => void;
-  onOpenExtensions?: (tab?: "skills" | "plugins" | "integrations") => void;
+  onOpenExtensions?: (tab?: "skills" | "plugins" | "mcp" | "modes") => void;
   draftMessage?: string;
   onDraftMessageConsumed?: () => void;
   activeOrchestrationCount?: number;
@@ -187,12 +187,13 @@ export function Chat({
   // Support both new agent prop and legacy usePlanMode
   const selectedAgent =
     propSelectedAgent !== undefined ? propSelectedAgent : propUsePlanMode ? "plan" : undefined;
+  const selectedModeId = selectedAgent === "general" ? "ask" : selectedAgent;
   const onAgentChange =
     propOnAgentChange ||
     ((agent: string | undefined) => {
       onPlanModeChange?.(agent === "plan");
     });
-  const usePlanMode = selectedAgent === "plan";
+  const usePlanMode = selectedModeId === "plan";
   const hasPendingQuestionOverlay = pendingQuestionRequests.length > 0;
   const setUsePlanMode = (enabled: boolean) => {
     onAgentChange(enabled ? "plan" : undefined);
@@ -1551,11 +1552,30 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
         }
       }
 
+      const effectiveModeId =
+        forceMode === "immediate"
+          ? "immediate"
+          : forceMode === "plan"
+            ? "plan"
+            : selectedModeId || "immediate";
+      const legacyAgent =
+        effectiveModeId === "immediate"
+          ? undefined
+          : effectiveModeId === "ask"
+            ? "general"
+            : effectiveModeId;
+
       // Create session if needed
       let sessionId = currentSessionId;
       if (!sessionId) {
         try {
-          const session = await createSession(undefined, undefined, undefined, allowAllTools);
+          const session = await createSession(
+            undefined,
+            undefined,
+            undefined,
+            allowAllTools,
+            effectiveModeId
+          );
           sessionId = session.id;
           setCurrentSessionId(session.id);
           currentSessionIdRef.current = session.id; // Update ref synchronously before events arrive
@@ -1586,11 +1606,6 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
         }
         return;
       }
-
-      // Select agent
-      // Override agent if forceMode is specified (ensures OpenCode uses correct mode)
-      const agentToUse =
-        forceMode === "immediate" ? undefined : forceMode === "plan" ? "plan" : selectedAgent;
 
       // Inject tool guidance if tool categories are enabled
       let finalContent = content;
@@ -1749,7 +1764,8 @@ ${g.example}
           sessionId,
           messageContent,
           attachmentsToSend.length > 0 ? attachmentsToSend : undefined,
-          agentToUse
+          legacyAgent,
+          effectiveModeId
         );
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
@@ -1784,7 +1800,7 @@ ${g.example}
       setIsGenerating,
       setMessages,
       usePlanMode,
-      selectedAgent,
+      selectedModeId,
       enabledToolCategories,
       stagedOperations.length,
       allowAllTools,
@@ -2499,7 +2515,7 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                 }
                 draftMessage={draftMessage}
                 onDraftMessageConsumed={onDraftMessageConsumed}
-                selectedAgent={selectedAgent}
+                selectedAgent={selectedModeId}
                 onAgentChange={onAgentChange}
                 externalAttachment={fileToAttach}
                 onExternalAttachmentProcessed={onFileAttached}
@@ -2652,7 +2668,8 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                       currentSessionId,
                       confirmMessage,
                       undefined,
-                      usePlanMode ? "plan" : undefined
+                      usePlanMode ? "plan" : undefined,
+                      usePlanMode ? "plan" : "immediate"
                     );
                   } catch (err) {
                     console.error("[ExecutionPlan] Failed to send confirmation:", err);
@@ -2710,7 +2727,7 @@ interface EmptyStateProps {
   hasConfiguredProvider: boolean;
   onOpenSettings?: () => void;
   onOpenPacks?: () => void;
-  onOpenExtensions?: (tab?: "skills" | "plugins" | "integrations") => void;
+  onOpenExtensions?: (tab?: "skills" | "plugins" | "mcp" | "modes") => void;
 }
 
 type SuggestionPrompt = {
@@ -2722,7 +2739,7 @@ type SuggestionPrompt = {
 type SuggestionAction = {
   title: string;
   description: string;
-  action: "openPacks" | "openIntegrations";
+  action: "openPacks" | "openMcp" | "openModes";
 };
 
 type Suggestion = SuggestionPrompt | SuggestionAction;
@@ -2787,9 +2804,14 @@ function EmptyState({
     }
     if (onOpenExtensions) {
       pinned.push({
-        title: "Set up integrations (MCP)",
+        title: "Set up MCP",
         description: "Add tool servers and test connectivity",
-        action: "openIntegrations",
+        action: "openMcp",
+      });
+      pinned.push({
+        title: "Create custom modes",
+        description: "Define advanced mode profiles and restrictions",
+        action: "openModes",
       });
     }
     return [...pinned, ...shuffled].slice(0, 4);
@@ -2804,8 +2826,12 @@ function EmptyState({
       onOpenPacks?.();
       return;
     }
-    if (suggestion.action === "openIntegrations") {
-      onOpenExtensions?.("integrations");
+    if (suggestion.action === "openMcp") {
+      onOpenExtensions?.("mcp");
+      return;
+    }
+    if (suggestion.action === "openModes") {
+      onOpenExtensions?.("modes");
     }
   };
 

@@ -2,6 +2,12 @@
 
 ## Highlights
 
+- **Custom Modes MVP (complete)**: Added backend-authoritative custom modes plus full frontend management in `Extensions -> Modes`.
+- **Guided Builder + Advanced Editor**: Added a beginner-friendly guided wizard and a power-user manual editor with import/export.
+- **AI-Assisted Mode Creation**: Added optional AI assist with a bundled `mode-builder` skill template and paste/parse preview-before-apply flow.
+- **Mode Icons**: Added icon selection for custom modes and icon rendering in chat mode selector.
+- **Mode Selector Refresh**: Chat mode selector now loads built-in + custom modes dynamically with cleaner compact labels.
+- **Indexing Default On**: Auto-index on project load now defaults to enabled for new settings state.
 - **Update detection fix**: Synced version metadata across `tauri.conf.json`, `package.json`, and `Cargo.toml` so auto-updates detect new releases correctly.
 
 ## Complete Feature List
@@ -9,6 +15,19 @@
 ### Updates
 
 - Align version numbers across app metadata to prevent false "up to date" status in the updater.
+
+### Modes
+
+- Added complete custom mode management APIs and backend enforcement path.
+- Added deterministic precedence merge: `builtin < user < project`.
+- Added safe fallback behavior for missing/invalid selected modes.
+- Added mode CRUD + import/export UI in Advanced Editor.
+- Added Guided Builder with preset-based configuration and preview-before-apply.
+- Added optional AI Assist:
+  - start AI builder chat from Modes UI
+  - parse a pasted JSON result
+  - preview and apply only after explicit user action
+- Added custom mode icon support in both creation flows and chat selector rendering.
 
 ---
 

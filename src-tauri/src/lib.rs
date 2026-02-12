@@ -9,6 +9,7 @@ mod keystore;
 mod llm_router;
 mod logs;
 mod memory;
+mod modes;
 mod opencode_config;
 pub mod orchestrator;
 mod packs;
@@ -414,6 +415,11 @@ pub fn run() {
             commands::delete_session,
             commands::get_current_session_id,
             commands::set_current_session_id,
+            commands::list_modes,
+            commands::upsert_mode,
+            commands::delete_mode,
+            commands::import_modes,
+            commands::export_modes,
             // Project & history
             commands::list_projects,
             commands::get_session_messages,

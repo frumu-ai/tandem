@@ -256,6 +256,8 @@ pub struct AppState {
     pub stream_hub: Arc<StreamHub>,
     /// Current chat session ID
     pub current_session_id: RwLock<Option<String>>,
+    /// Effective mode selection per session (resolved with precedence and defaults).
+    pub session_modes: RwLock<HashMap<String, crate::modes::ResolvedMode>>,
     /// Operation journal for file undo
     pub operation_journal: Arc<OperationJournal>,
     /// Staging store for execution planning
@@ -303,6 +305,7 @@ impl AppState {
             sidecar: Arc::new(SidecarManager::new(SidecarConfig::default())),
             stream_hub: Arc::new(StreamHub::new()),
             current_session_id: RwLock::new(None),
+            session_modes: RwLock::new(HashMap::new()),
             operation_journal: Arc::new(OperationJournal::new(100)),
             staging_store: Arc::new(StagingStore::new()),
             fs_write_semaphore: Arc::new(Semaphore::new(1)),

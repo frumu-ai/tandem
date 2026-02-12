@@ -5627,7 +5627,7 @@ dependencies = [
 
 [[package]]
 name = "tandem"
-version = "0.2.22"
+version = "0.2.24"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5639,6 +5639,7 @@ dependencies = [
  "dirs 5.0.1",
  "flate2",
  "futures",
+ "globset",
  "ignore",
  "notify",
  "once_cell",

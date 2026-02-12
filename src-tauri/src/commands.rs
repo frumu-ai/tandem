@@ -8,6 +8,7 @@ use crate::memory::indexer::{index_workspace, IndexingStats};
 use crate::memory::types::{
     ClearFileIndexResult, MemoryRetrievalMeta, MemoryStats, ProjectMemoryStats,
 };
+use crate::modes::{ModeDefinition, ModeResolution, ModeScope, ResolvedMode};
 use crate::orchestrator::{
     engine::OrchestratorEngine,
     policy::{PolicyConfig, PolicyEngine},
@@ -192,7 +193,7 @@ pub struct MemorySettings {
 #[tauri::command]
 pub fn get_memory_settings(app: AppHandle) -> MemorySettings {
     let mut settings = MemorySettings {
-        auto_index_on_project_load: false,
+        auto_index_on_project_load: true,
     };
 
     if let Ok(store) = app.store("settings.json") {
@@ -420,6 +421,30 @@ fn resolve_default_provider_and_model(
     }
 
     (None, None)
+}
+
+fn resolve_effective_mode(
+    app: &AppHandle,
+    state: &AppState,
+    mode_id: Option<&str>,
+    legacy_agent: Option<&str>,
+) -> Result<ModeResolution> {
+    crate::modes::resolve_mode_for_request(
+        app,
+        state.get_workspace_path().as_deref(),
+        mode_id,
+        legacy_agent,
+    )
+}
+
+fn set_session_mode(state: &AppState, session_id: &str, mode: ResolvedMode) {
+    let mut guard = state.session_modes.write().unwrap();
+    guard.insert(session_id.to_string(), mode);
+}
+
+fn get_session_mode(state: &AppState, session_id: &str) -> Option<ResolvedMode> {
+    let guard = state.session_modes.read().unwrap();
+    guard.get(session_id).cloned()
 }
 
 fn env_var_for_key(key_type: &ApiKeyType) -> Option<&'static str> {
@@ -1566,14 +1591,60 @@ pub fn stop_file_tree_watcher(state: State<'_, AppState>) -> Result<()> {
 // Session Management
 // ============================================================================
 
+#[tauri::command]
+pub fn list_modes(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<ResolvedMode>> {
+    crate::modes::list_modes(&app, state.get_workspace_path().as_deref())
+}
+
+#[tauri::command]
+pub fn upsert_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    scope: ModeScope,
+    mode: ModeDefinition,
+) -> Result<()> {
+    crate::modes::upsert_mode(&app, state.get_workspace_path().as_deref(), scope, mode)
+}
+
+#[tauri::command]
+pub fn delete_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    scope: ModeScope,
+    id: String,
+) -> Result<()> {
+    crate::modes::delete_mode(&app, state.get_workspace_path().as_deref(), scope, &id)
+}
+
+#[tauri::command]
+pub fn import_modes(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    scope: ModeScope,
+    json: String,
+) -> Result<()> {
+    crate::modes::import_modes(&app, state.get_workspace_path().as_deref(), scope, &json)
+}
+
+#[tauri::command]
+pub fn export_modes(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    scope: ModeScope,
+) -> Result<String> {
+    crate::modes::export_modes(&app, state.get_workspace_path().as_deref(), scope)
+}
+
 /// Create a new chat session
 #[tauri::command]
 pub async fn create_session(
+    app: AppHandle,
     state: State<'_, AppState>,
     title: Option<String>,
     model: Option<String>,
     provider: Option<String>,
     allow_all_tools: Option<bool>,
+    mode_id: Option<String>,
 ) -> Result<Session> {
     let (default_provider, default_model) = {
         let config = state.providers_config.read().unwrap();
@@ -1584,37 +1655,18 @@ pub async fn create_session(
     // We intentionally do NOT send `permission="*"` allow to OpenCode.
     // Even when the UI toggle "Allow all tools" is enabled, the frontend auto-approves
     // permission prompts, and we still want the approve/deny hook to run so Tandem can
-    // enforce safety policy (e.g. Python venv-only installs).
-    //
-    // Default safe tools allowed even if "Allow all" is off.
+    // enforce safety policy.
     let _allow_all = allow_all_tools.unwrap_or(false);
-    let permission = Some(vec![
-        crate::sidecar::PermissionRule {
-            permission: "ls".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "read".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "todowrite".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "websearch".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "webfetch".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-    ]);
+    let mode_resolution = resolve_effective_mode(&app, &state, mode_id.as_deref(), None)?;
+    if let Some(reason) = mode_resolution.fallback_reason.as_ref() {
+        tracing::warn!("[create_session] {}", reason);
+    }
+    let permissions = crate::modes::build_permission_rules(&mode_resolution.mode);
+    let permission = if permissions.is_empty() {
+        None
+    } else {
+        Some(permissions)
+    };
 
     let request = CreateSessionRequest {
         parent_id: None,
@@ -1625,6 +1677,7 @@ pub async fn create_session(
     };
 
     let session = state.sidecar.create_session(request).await?;
+    set_session_mode(&state, &session.id, mode_resolution.mode);
 
     // Store as current session
     {
@@ -1650,7 +1703,10 @@ pub async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
 /// Delete a session
 #[tauri::command]
 pub async fn delete_session(state: State<'_, AppState>, session_id: String) -> Result<()> {
-    state.sidecar.delete_session(&session_id).await
+    state.sidecar.delete_session(&session_id).await?;
+    let mut modes = state.session_modes.write().unwrap();
+    modes.remove(&session_id);
+    Ok(())
 }
 
 /// List all projects
@@ -1934,8 +1990,17 @@ pub async fn send_message(
     content: String,
     attachments: Option<Vec<FileAttachmentInput>>,
 ) -> Result<()> {
-    send_message_streaming_internal(&app, &state, session_id, content, attachments, None, false)
-        .await
+    send_message_streaming_internal(
+        &app,
+        &state,
+        session_id,
+        content,
+        attachments,
+        None,
+        None,
+        false,
+    )
+    .await
 }
 
 /// Send a message and subscribe to events for the response
@@ -1948,9 +2013,19 @@ pub async fn send_message_streaming(
     content: String,
     attachments: Option<Vec<FileAttachmentInput>>,
     agent: Option<String>,
+    mode_id: Option<String>,
 ) -> Result<()> {
-    send_message_streaming_internal(&app, &state, session_id, content, attachments, agent, true)
-        .await
+    send_message_streaming_internal(
+        &app,
+        &state,
+        session_id,
+        content,
+        attachments,
+        agent,
+        mode_id,
+        true,
+    )
+    .await
 }
 
 async fn send_message_streaming_internal(
@@ -1960,10 +2035,26 @@ async fn send_message_streaming_internal(
     content: String,
     attachments: Option<Vec<FileAttachmentInput>>,
     agent: Option<String>,
+    mode_id: Option<String>,
     streaming_label: bool,
 ) -> Result<()> {
+    let mode_resolution = resolve_effective_mode(app, state, mode_id.as_deref(), agent.as_deref())?;
+    if let Some(reason) = mode_resolution.fallback_reason.as_ref() {
+        tracing::warn!("[send_message_streaming] {}", reason);
+    }
+    set_session_mode(state, &session_id, mode_resolution.mode.clone());
+
+    let base_prompt = if let Some(extra) = mode_resolution.mode.system_prompt_append.as_deref() {
+        format!(
+            "[Mode instructions]\n{}\n\n[User request]\n{}",
+            extra, content
+        )
+    } else {
+        content
+    };
+
     let (prepared_content, retrieval_event) =
-        prepare_prompt_with_memory_context(state, &session_id, &content).await;
+        prepare_prompt_with_memory_context(state, &session_id, &base_prompt).await;
     emit_stream_event_pair(
         app,
         &retrieval_event,
@@ -2015,7 +2106,7 @@ async fn send_message_streaming_internal(
     };
     request.model = model_spec;
 
-    if let Some(agent_name) = agent {
+    if let Some(agent_name) = mode_resolution.mode.sidecar_agent() {
         request.agent = Some(agent_name);
     }
 
@@ -2142,6 +2233,7 @@ async fn queue_send_next_internal(
         session_id.to_string(),
         next.content.clone(),
         attachments,
+        None,
         None,
         true,
     )
@@ -2816,6 +2908,26 @@ pub fn snapshot_file_for_message(
 // Tool Approval
 // ============================================================================
 
+fn effective_session_mode(state: &AppState, session_id: &str) -> ResolvedMode {
+    if let Some(mode) = get_session_mode(state, session_id) {
+        return mode;
+    }
+    crate::modes::built_in_modes()
+        .into_iter()
+        .find(|m| m.id == "immediate")
+        .unwrap_or(ResolvedMode {
+            id: "immediate".to_string(),
+            label: "Immediate".to_string(),
+            base_mode: crate::modes::ModeBase::Immediate,
+            icon: None,
+            system_prompt_append: None,
+            allowed_tools: None,
+            edit_globs: None,
+            auto_approve: None,
+            source: crate::modes::ModeSource::Builtin,
+        })
+}
+
 /// Approve a pending tool execution
 #[tauri::command]
 pub async fn approve_tool(
@@ -2833,6 +2945,19 @@ pub async fn approve_tool(
         message_id,
         args
     );
+
+    if let (Some(tool_name), Some(args_val)) = (tool.clone(), args.clone()) {
+        let mode = effective_session_mode(&state, &session_id);
+        if let Err(e) = crate::modes::mode_allows_tool_execution(
+            &mode,
+            state.get_workspace_path().as_deref(),
+            &tool_name,
+            &args_val,
+        ) {
+            let _ = state.sidecar.deny_tool(&session_id, &tool_call_id).await;
+            return Err(e);
+        }
+    }
 
     // Strict Python venv enforcement for AI terminal-like tools.
     // Goal: prevent global pip installs and python runs outside `.opencode/.venv`.
@@ -3064,6 +3189,17 @@ pub async fn stage_tool_operation(
         false
     };
 
+    let mode = effective_session_mode(&state, &session_id);
+    if let Err(e) = crate::modes::mode_allows_tool_execution(
+        &mode,
+        state.get_workspace_path().as_deref(),
+        &tool,
+        &args,
+    ) {
+        let _ = state.sidecar.deny_tool(&session_id, &request_id).await;
+        return Err(e);
+    }
+
     // If auto-approved, execute immediately instead of staging
     if should_auto_approve {
         // Defense in depth: ensure any terminal tool can't bypass python policy via auto-approve.
@@ -3229,6 +3365,17 @@ pub async fn execute_staged_plan(
         .get_workspace_path()
         .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
     for op in &operations {
+        let mode = effective_session_mode(&state, &op.session_id);
+        if let Err(e) =
+            crate::modes::mode_allows_tool_execution(&mode, Some(ws.as_path()), &op.tool, &op.args)
+        {
+            let _ = state
+                .sidecar
+                .deny_tool(&op.session_id, &op.request_id)
+                .await;
+            return Err(e);
+        }
+
         if let Some(msg) = tool_policy::python_policy_violation(&ws, op.tool.as_str(), &op.args) {
             tracing::info!(
                 "[python_policy] Blocking staged plan execution due to terminal op {} ({})",
