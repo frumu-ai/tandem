@@ -31,6 +31,32 @@ export function SkillsPanel({
   projectPath,
   onRestartSidecar,
 }: SkillsPanelProps) {
+  const canonicalMarketingTemplateIds = useMemo(
+    () =>
+      new Set([
+        "product-marketing-context",
+        "content-strategy",
+        "seo-audit",
+        "social-content",
+        "copywriting",
+        "copy-editing",
+        "email-sequence",
+        "competitor-alternatives",
+        "launch-strategy",
+      ]),
+    []
+  );
+  const legacyMarketingTemplateIds = useMemo(
+    () =>
+      new Set([
+        "marketing-content-creation",
+        "marketing-campaign-planning",
+        "marketing-brand-voice",
+        "marketing-competitive-analysis",
+        "marketing-research-posting-plan",
+      ]),
+    []
+  );
   const runtimePillClass = (runtime: string) => {
     switch (runtime.toLowerCase()) {
       case "python":
@@ -204,12 +230,30 @@ Instructions for the AI...
   const queryLower = query.trim().toLowerCase();
 
   const filteredTemplates = useMemo(() => {
-    if (!queryLower) return templates;
-    return templates.filter((t) => {
+    const filtered = templates.filter((t) => {
+      if (!queryLower) return true;
       const hay = `${t.name} ${t.description}`.toLowerCase();
       return hay.includes(queryLower);
     });
-  }, [templates, queryLower]);
+    const marketingIntent =
+      !queryLower ||
+      /(marketing|seo|social|linkedin|twitter|x |email|drip|copy|launch|competitor|alternative|content)/.test(
+        queryLower
+      );
+    if (!marketingIntent) return filtered;
+
+    const rank = (id: string) => {
+      if (canonicalMarketingTemplateIds.has(id)) return 0;
+      if (legacyMarketingTemplateIds.has(id)) return 2;
+      return 1;
+    };
+
+    return [...filtered].sort((a, b) => {
+      const r = rank(a.id) - rank(b.id);
+      if (r !== 0) return r;
+      return a.name.localeCompare(b.name);
+    });
+  }, [templates, queryLower, canonicalMarketingTemplateIds, legacyMarketingTemplateIds]);
 
   const filteredSkills = useMemo(() => {
     if (!queryLower) return skills;
@@ -467,17 +511,13 @@ Instructions for the AI...
         {importPreview && (
           <div className="rounded border border-border bg-surface p-3 text-sm">
             <p className="text-text">
-              {importPreview.valid} valid / {importPreview.invalid} invalid / {importPreview.conflicts}{" "}
-              conflicts
+              {importPreview.valid} valid / {importPreview.invalid} invalid /{" "}
+              {importPreview.conflicts} conflicts
             </p>
             <div className="mt-2 space-y-1 text-xs">
               {importPreview.items.slice(0, 8).map((item, idx) => (
                 <div key={`${item.source}-${idx}`} className="flex items-center gap-2">
-                  <span
-                    className={
-                      item.valid ? "text-success" : "text-error"
-                    }
-                  >
+                  <span className={item.valid ? "text-success" : "text-error"}>
                     {item.valid ? "OK" : "ERR"}
                   </span>
                   <span className="truncate text-text-muted">{item.source}</span>
@@ -546,6 +586,17 @@ Instructions for the AI...
         <p className="text-text-muted">
           Tandem automatically uses installed skills when relevant - no selection needed.
         </p>
+        <div className="rounded border border-border bg-surface p-3 text-xs text-text-muted">
+          <p className="font-medium text-text">Marketing recommendation (canonical first)</p>
+          <p className="mt-1">
+            Prefer: product-marketing-context, content-strategy, seo-audit, social-content,
+            copywriting, copy-editing, email-sequence, competitor-alternatives, launch-strategy.
+          </p>
+          <p className="mt-1">
+            Legacy marketing templates remain available as fallback, but should not be your default
+            route.
+          </p>
+        </div>
         <div className="text-text-muted">
           <p className="font-medium">Find skills to copy:</p>
           <ul className="ml-4 mt-1 list-disc space-y-1 text-xs">

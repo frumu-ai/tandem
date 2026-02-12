@@ -52,6 +52,18 @@ fn resolve_templates_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(templates_dir)
 }
 
+pub fn get_skill_template_dir(app: &AppHandle, template_id: &str) -> Result<PathBuf, String> {
+    let templates_dir = resolve_templates_dir(app)?;
+    let template_dir = templates_dir.join(template_id);
+    let skill_file = template_dir.join("SKILL.md");
+
+    if !template_dir.exists() || !template_dir.is_dir() || !skill_file.exists() {
+        return Err(format!("Skill template not found: {}", template_id));
+    }
+
+    Ok(template_dir)
+}
+
 pub fn list_skill_templates(app: &AppHandle) -> Result<Vec<SkillTemplateInfo>, String> {
     let templates_dir = resolve_templates_dir(app)?;
     let entries = fs::read_dir(&templates_dir)
@@ -96,11 +108,8 @@ pub fn list_skill_templates(app: &AppHandle) -> Result<Vec<SkillTemplateInfo>, S
 }
 
 pub fn read_skill_template_content(app: &AppHandle, template_id: &str) -> Result<String, String> {
-    let templates_dir = resolve_templates_dir(app)?;
-    let skill_file = templates_dir.join(template_id).join("SKILL.md");
-    if !skill_file.exists() {
-        return Err(format!("Skill template not found: {}", template_id));
-    }
+    let template_dir = get_skill_template_dir(app, template_id)?;
+    let skill_file = template_dir.join("SKILL.md");
 
     fs::read_to_string(&skill_file).map_err(|e| format!("Failed to read {:?}: {}", skill_file, e))
 }

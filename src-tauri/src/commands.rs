@@ -31,7 +31,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -4536,6 +4536,26 @@ fn import_skill_from_content(
     })
 }
 
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).map_err(TandemError::Io)?;
+    let entries = fs::read_dir(src).map_err(TandemError::Io)?;
+
+    for entry_res in entries {
+        let entry = entry_res.map_err(TandemError::Io)?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let file_type = entry.file_type().map_err(TandemError::Io)?;
+
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&src_path, &dst_path).map_err(TandemError::Io)?;
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillsConflictPolicy {
@@ -4933,9 +4953,54 @@ pub fn skills_install_template(
     template_id: String,
     location: crate::skills::SkillLocation,
 ) -> Result<crate::skills::SkillInfo> {
-    let content = crate::skill_templates::read_skill_template_content(&app, &template_id)
+    let template_dir = crate::skill_templates::get_skill_template_dir(&app, &template_id)
         .map_err(TandemError::InvalidConfig)?;
-    import_skill_from_content(&state, &content, location)
+    let skill_file = template_dir.join("SKILL.md");
+    let content = fs::read_to_string(&skill_file).map_err(TandemError::Io)?;
+
+    let (name, description, _body, metadata) =
+        crate::skills::parse_skill_content_with_metadata(&content)?;
+
+    let target_dir = match location {
+        crate::skills::SkillLocation::Project => {
+            let ws = state.workspace_path.read().unwrap();
+            let workspace = ws
+                .as_ref()
+                .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
+            workspace.join(".opencode").join("skill").join(&name)
+        }
+        crate::skills::SkillLocation::Global => {
+            let config_dir = dirs::config_dir()
+                .ok_or_else(|| TandemError::InvalidConfig("No config directory".to_string()))?;
+            config_dir.join("opencode").join("skills").join(&name)
+        }
+    };
+
+    if target_dir.exists() {
+        fs::remove_dir_all(&target_dir).map_err(TandemError::Io)?;
+    }
+    copy_dir_recursive(&template_dir, &target_dir)?;
+
+    tracing::info!(
+        "Installed skill template '{}' as '{}' to {:?}",
+        template_id,
+        name,
+        location
+    );
+
+    Ok(crate::skills::SkillInfo {
+        name,
+        description,
+        location,
+        path: target_dir.to_string_lossy().to_string(),
+        version: metadata.version,
+        author: metadata.author,
+        tags: metadata.tags,
+        requires: metadata.requires,
+        compatibility: metadata.compatibility,
+        triggers: metadata.triggers,
+        parse_error: None,
+    })
 }
 
 // ============================================================================

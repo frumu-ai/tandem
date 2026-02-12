@@ -2,7 +2,11 @@
 name: mode-builder
 description: Create Tandem custom modes through guided questions, then output one valid mode JSON object for preview and apply.
 version: 1.0.0
-tags: tandem, modes, configuration, onboarding
+tags:
+  - tandem
+  - modes
+  - configuration
+  - onboarding
 compatibility: opencode
 ---
 

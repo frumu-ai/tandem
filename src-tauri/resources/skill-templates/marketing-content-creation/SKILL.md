@@ -1,6 +1,6 @@
 ---
 name: marketing-content-creation
-description: Draft marketing content across channels — blog posts, social media, email newsletters, landing pages, press releases, and case studies. Use when writing any marketing content, when you need channel-specific formatting, SEO-optimized copy, headline options, or calls to action.
+description: Legacy fallback for broad marketing content requests. Prefer canonical skills for routine execution: copywriting, copy-editing, social-content, and email-sequence. Use only when a single broad multi-channel fallback is explicitly requested.
 ---
 
 # Content Creation Skill
@@ -11,44 +11,44 @@ Guidelines and frameworks for creating effective marketing content across channe
 
 ### Blog Post Structure
 
-1.  **Headline** — clear, benefit-driven, includes primary keyword (aim for 60 characters or less for SEO)
-2.  **Introduction** (100-150 words) — hook the reader with a question, statistic, bold claim, or relatable scenario.
-3.  **Body sections** (3-5 sections) — each with a descriptive subheading (H2). Use H3 for subsections.
-4.  **Conclusion** (75-100 words) — summarize key takeaways, reinforce the main message, include a call to action.
-5.  **Meta description** — under 160 characters, includes primary keyword, compels the click.
+1.  **Headline** â€” clear, benefit-driven, includes primary keyword (aim for 60 characters or less for SEO)
+2.  **Introduction** (100-150 words) â€” hook the reader with a question, statistic, bold claim, or relatable scenario.
+3.  **Body sections** (3-5 sections) â€” each with a descriptive subheading (H2). Use H3 for subsections.
+4.  **Conclusion** (75-100 words) â€” summarize key takeaways, reinforce the main message, include a call to action.
+5.  **Meta description** â€” under 160 characters, includes primary keyword, compels the click.
 
 ### Social Media Post Structure
 
-- **Hook** — first line grabs attention (question, bold statement, number)
-- **Body** — 2-4 concise points or a short narrative
-- **CTA** — what should the reader do next (comment, click, share, tag)
-- **Hashtags** — 3-5 relevant hashtags (platform-dependent)
+- **Hook** â€” first line grabs attention (question, bold statement, number)
+- **Body** â€” 2-4 concise points or a short narrative
+- **CTA** â€” what should the reader do next (comment, click, share, tag)
+- **Hashtags** â€” 3-5 relevant hashtags (platform-dependent)
 
 ### Email Newsletter Structure
 
-- **Subject line** — under 50 characters, creates curiosity or states clear value
-- **Preview text** — complements the subject line
-- **Body sections** — 2-3 content blocks, each scannable
-- **Primary CTA** — one clear action per email
-- **Footer** — unsubscribe link, company info, social links
+- **Subject line** â€” under 50 characters, creates curiosity or states clear value
+- **Preview text** â€” complements the subject line
+- **Body sections** â€” 2-3 content blocks, each scannable
+- **Primary CTA** â€” one clear action per email
+- **Footer** â€” unsubscribe link, company info, social links
 
 ### Landing Page Structure
 
-- **Headline** — primary benefit in under 10 words
-- **Subheadline** — elaborates on the headline with supporting context
-- **Hero section** — headline, subheadline, primary CTA, supporting image or video
-- **Value propositions** — 3-4 benefit-driven sections with icons or images
-- **Social proof** — testimonials, logos, stats, case study snippets
-- **Final CTA** — repeat the primary call to action
+- **Headline** â€” primary benefit in under 10 words
+- **Subheadline** â€” elaborates on the headline with supporting context
+- **Hero section** â€” headline, subheadline, primary CTA, supporting image or video
+- **Value propositions** â€” 3-4 benefit-driven sections with icons or images
+- **Social proof** â€” testimonials, logos, stats, case study snippets
+- **Final CTA** â€” repeat the primary call to action
 
 ### Case Study Structure
 
-- **Title** — "[Customer] achieves [result] with [product]"
-- **Snapshot** — customer name, industry, key result
-- **Challenge** — what problem the customer faced
-- **Solution** — what was implemented and how
-- **Results** — quantified outcomes with specific metrics
-- **CTA** — learn more, get a demo, read more case studies
+- **Title** â€” "[Customer] achieves [result] with [product]"
+- **Snapshot** â€” customer name, industry, key result
+- **Challenge** â€” what problem the customer faced
+- **Solution** â€” what was implemented and how
+- **Results** â€” quantified outcomes with specific metrics
+- **CTA** â€” learn more, get a demo, read more case studies
 
 ## Writing Best Practices by Channel
 
@@ -71,14 +71,14 @@ Guidelines and frameworks for creating effective marketing content across channe
 
 - Subject lines that create urgency, curiosity, or state clear value
 - Personalize where possible (name, company)
-- One primary CTA per email — make it visually distinct
+- One primary CTA per email â€” make it visually distinct
 - Keep body copy scannable: bold key phrases, short paragraphs
 - Mobile-first: most email is read on mobile
 
 ### Web (Landing Pages, Product Pages)
 
 - Lead with benefits, not features
-- Use "you" language — speak to the reader directly
+- Use "you" language â€” speak to the reader directly
 - Every section should answer "so what?" from the reader's perspective
 - Reduce friction: fewer form fields, clear next steps
 
@@ -88,7 +88,7 @@ Guidelines and frameworks for creating effective marketing content across channe
 
 - Identify one primary keyword and 2-3 secondary keywords per piece
 - Use the primary keyword in: headline, first paragraph, one subheading, meta description, URL slug
-- Do not keyword-stuff — write for humans first
+- Do not keyword-stuff â€” write for humans first
 
 ### On-Page SEO Checklist
 

@@ -1,6 +1,6 @@
 ---
 name: marketing-campaign-planning
-description: Plan marketing campaigns with frameworks for objectives, audience targeting, channel selection, and budget allocation. Use when starting a new campaign, defining campaign goals, selecting marketing channels, or creating a campaign timeline.
+description: Legacy fallback for high-level campaign PM structure. Prefer launch-strategy for launch execution and canonical Core 9 skills for channel work. Use this template when a generic campaign framework is explicitly needed.
 ---
 
 # Campaign Planning Skill

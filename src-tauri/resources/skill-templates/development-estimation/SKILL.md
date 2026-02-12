@@ -2,7 +2,13 @@
 name: development-estimation
 description: Use when estimating time, effort, cost, or complexity for features, projects, refactors, and bug backlogs. Produces defensible estimates via triage, decomposition, risk handling, and confidence intervals, with clear assumptions and validation steps.
 version: 1.1.0
-tags: estimation, planning, scope, bugs, project-review, delivery
+tags:
+  - estimation
+  - planning
+  - scope
+  - bugs
+  - project-review
+  - delivery
 owner: engineering
 last_updated: 2026-02-10
 ---

@@ -1,6 +1,6 @@
 ---
 name: marketing-brand-voice
-description: Apply and enforce brand voice, style guide, and messaging pillars across content. Use when reviewing content for brand consistency, documenting a brand voice, adapting tone for different audiences, or checking terminology and style guide compliance.
+description: Legacy fallback for brand governance and style policy work. Prefer copywriting and copy-editing for operational production tasks. Use when documenting or auditing voice rules, not as the default drafting workflow.
 ---
 
 # Brand Voice Skill
@@ -83,7 +83,7 @@ Example:
 
 - **We are**: friendly, clear, jargon-free, welcoming to beginners and experts alike
 - **We are not**: dumbed-down, overly casual, or lacking substance
-- **This sounds like**: "Here's how to get started — it takes about five minutes."
+- **This sounds like**: "Here's how to get started â€” it takes about five minutes."
 - **This does NOT sound like**: "Yo! This is super easy, even a noob can do it lol."
 
 ## Tone Adaptation Across Channels and Contexts
