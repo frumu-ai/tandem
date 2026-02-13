@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Result<()> {
-    let tick_rate = Duration::from_millis(250);
+    let tick_rate = Duration::from_millis(80);
     let mut last_tick = Instant::now();
 
     loop {
@@ -61,6 +61,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyho
                 if key.kind == KeyEventKind::Press {
                     if let Some(action) = app.handle_key_event(key) {
                         if action == app::Action::Quit {
+                            app.shutdown().await;
                             return Ok(());
                         }
                         app.update(action).await?;
@@ -75,6 +76,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyho
         }
 
         if app.should_quit {
+            app.shutdown().await;
             return Ok(());
         }
     }

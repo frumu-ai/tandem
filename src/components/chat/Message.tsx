@@ -236,6 +236,7 @@ export interface MessageProps {
   onOpenQuestionToolCall?: (args: { messageId: string; toolCallId: string }) => void;
   isQuestionToolCallPending?: (args: { messageId: string; toolCallId: string }) => boolean;
   memoryRetrieval?: {
+    status?: "not_attempted" | "attempted_no_hits" | "retrieved_used" | "error_fallback";
     used: boolean;
     chunks_total: number;
     latency_ms: number;
@@ -534,9 +535,13 @@ function MessageComponent({
               )}
             >
               <Brain className="h-3 w-3" />
-              {memoryRetrieval.used
+              {memoryRetrieval.status === "retrieved_used" || memoryRetrieval.used
                 ? `Memory: ${memoryRetrieval.chunks_total} chunks (${memoryRetrieval.latency_ms}ms)`
-                : "Memory: not used"}
+                : memoryRetrieval.status === "error_fallback"
+                  ? "Memory: fallback"
+                  : memoryRetrieval.status === "attempted_no_hits"
+                    ? "Memory: no hits"
+                    : "Memory: not attempted"}
             </span>
           )}
         </div>

@@ -4,6 +4,7 @@ use aes_gcm::{
 };
 use anyhow::{anyhow, Context, Result};
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -26,6 +27,57 @@ pub struct EncryptedVaultKey {
 }
 
 impl EncryptedVaultKey {
+    /// Create a new encrypted vault key from PIN and random master key.
+    pub fn create(pin: &str) -> Result<(Self, Vec<u8>)> {
+        validate_pin_format(pin)?;
+
+        let mut master_key = vec![0u8; 32];
+        OsRng.fill_bytes(&mut master_key);
+
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let password_hash = argon2
+            .hash_password(pin.as_bytes(), &salt)
+            .map_err(|e| anyhow!("Failed to hash PIN: {}", e))?;
+
+        let hash_output = password_hash
+            .hash
+            .ok_or_else(|| anyhow!("No hash output"))?;
+        let derived_key: [u8; 32] = hash_output
+            .as_bytes()
+            .try_into()
+            .map_err(|_| anyhow!("Invalid key length"))?;
+
+        let mut nonce_bytes = [0u8; 12];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let cipher = Aes256Gcm::new_from_slice(&derived_key)
+            .map_err(|e| anyhow!("Failed to create cipher: {}", e))?;
+        let encrypted = cipher
+            .encrypt(nonce, master_key.as_slice())
+            .map_err(|e| anyhow!("Failed to encrypt master key: {}", e))?;
+
+        let vault_key = EncryptedVaultKey {
+            version: 1,
+            salt: salt.to_string(),
+            nonce: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, nonce_bytes),
+            encrypted_key: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                &encrypted,
+            ),
+        };
+
+        Ok((vault_key, master_key))
+    }
+
+    /// Persist vault key to disk.
+    pub fn save(&self, path: &PathBuf) -> Result<()> {
+        let json = serde_json::to_string_pretty(self).context("Failed to serialize vault key")?;
+        std::fs::write(path, json).context(format!("Failed to write vault key to {:?}", path))?;
+        Ok(())
+    }
+
     /// Decrypt the master key using a PIN
     pub fn decrypt(&self, pin: &str) -> Result<Vec<u8>> {
         use base64::Engine;

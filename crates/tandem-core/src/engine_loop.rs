@@ -1,6 +1,7 @@
 use futures::StreamExt;
 use serde_json::{json, Map, Number, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk};
 use tandem_tools::ToolRegistry;
 use tandem_types::{
@@ -13,6 +14,7 @@ use crate::{
     AgentDefinition, AgentRegistry, CancellationRegistry, EventBus, PermissionAction,
     PermissionManager, PluginRegistry, Storage,
 };
+use tokio::sync::RwLock;
 
 #[derive(Clone)]
 pub struct EngineLoop {
@@ -24,6 +26,7 @@ pub struct EngineLoop {
     permissions: PermissionManager,
     tools: ToolRegistry,
     cancellations: CancellationRegistry,
+    workspace_overrides: std::sync::Arc<RwLock<HashMap<String, u64>>>,
 }
 
 impl EngineLoop {
@@ -46,7 +49,25 @@ impl EngineLoop {
             permissions,
             tools,
             cancellations,
+            workspace_overrides: std::sync::Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    pub async fn grant_workspace_override_for_session(
+        &self,
+        session_id: &str,
+        ttl_seconds: u64,
+    ) -> u64 {
+        let expires_at = chrono::Utc::now()
+            .timestamp_millis()
+            .max(0)
+            .saturating_add((ttl_seconds as i64).saturating_mul(1000))
+            as u64;
+        self.workspace_overrides
+            .write()
+            .await
+            .insert(session_id.to_string(), expires_at);
+        expires_at
     }
 
     pub async fn run_prompt_async(
@@ -282,6 +303,20 @@ impl EngineLoop {
         cancel: CancellationToken,
     ) -> anyhow::Result<Option<String>> {
         let tool = normalize_tool_name(&tool);
+        if let Some(violation) = self
+            .workspace_sandbox_violation(session_id, &tool, &args)
+            .await
+        {
+            let mut blocked_part =
+                WireMessagePart::tool_result(session_id, message_id, tool.clone(), json!(null));
+            blocked_part.state = Some("failed".to_string());
+            blocked_part.error = Some(violation.clone());
+            self.event_bus.publish(EngineEvent::new(
+                "message.part.updated",
+                json!({"part": blocked_part}),
+            ));
+            return Ok(Some(violation));
+        }
         let rule = self
             .plugins
             .permission_override(&tool)
@@ -375,6 +410,42 @@ impl EngineLoop {
             16_000,
         )))
     }
+
+    async fn workspace_sandbox_violation(
+        &self,
+        session_id: &str,
+        tool: &str,
+        args: &Value,
+    ) -> Option<String> {
+        if self.workspace_override_active(session_id).await {
+            return None;
+        }
+        let session = self.storage.get_session(session_id).await?;
+        let workspace = session
+            .workspace_root
+            .or_else(|| crate::normalize_workspace_path(&session.directory))?;
+        let workspace_path = PathBuf::from(&workspace);
+        let candidate_paths = extract_tool_candidate_paths(tool, args);
+        if candidate_paths.is_empty() {
+            return None;
+        }
+        let outside = candidate_paths
+            .iter()
+            .find(|path| !crate::is_within_workspace_root(Path::new(path), &workspace_path))?;
+        Some(format!(
+            "Sandbox blocked `{tool}` path `{outside}` (workspace root: `{workspace}`)"
+        ))
+    }
+
+    async fn workspace_override_active(&self, session_id: &str) -> bool {
+        let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        let mut overrides = self.workspace_overrides.write().await;
+        overrides.retain(|_, expires_at| *expires_at > now);
+        overrides
+            .get(session_id)
+            .map(|expires_at| *expires_at > now)
+            .unwrap_or(false)
+    }
 }
 
 fn truncate_text(input: &str, max_len: usize) -> String {
@@ -391,6 +462,26 @@ fn normalize_tool_name(name: &str) -> String {
         "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
         other => other.to_string(),
     }
+}
+
+fn extract_tool_candidate_paths(tool: &str, args: &Value) -> Vec<String> {
+    let Some(obj) = args.as_object() else {
+        return Vec::new();
+    };
+    let keys: &[&str] = match tool {
+        "read" | "write" | "edit" | "grep" | "codesearch" => &["path", "filePath", "cwd"],
+        "glob" => &["pattern"],
+        "lsp" => &["filePath", "path"],
+        "bash" => &["cwd"],
+        "apply_patch" => &[],
+        _ => &["path", "cwd"],
+    };
+    keys.iter()
+        .filter_map(|key| obj.get(*key))
+        .filter_map(|value| value.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn agent_can_use_tool(agent: &AgentDefinition, tool_name: &str) -> bool {

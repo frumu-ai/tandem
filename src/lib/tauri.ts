@@ -149,6 +149,112 @@ export interface StorageStatus {
   migration_timestamp_ms?: number | null;
 }
 
+export interface StorageMigrationSource {
+  id: string;
+  path: string;
+  exists: boolean;
+}
+
+export interface StorageMigrationStatus {
+  canonical_root: string;
+  migration_report_exists: boolean;
+  storage_version_exists: boolean;
+  migration_reason?: string | null;
+  migration_timestamp_ms?: number | null;
+  migration_needed: boolean;
+  sources_detected: StorageMigrationSource[];
+}
+
+export interface StorageMigrationOptions {
+  dryRun?: boolean;
+  force?: boolean;
+  includeWorkspaceScan?: boolean;
+}
+
+export interface StorageMigrationProgressEvent {
+  phase: string;
+  phase_percent: number;
+  overall_percent: number;
+  sessions_imported: number;
+  sessions_repaired: number;
+  messages_recovered: number;
+  parts_recovered: number;
+  conflicts_merged: number;
+  copied_count: number;
+  skipped_count: number;
+  error_count: number;
+}
+
+export interface StorageMigrationRunResult {
+  status: "success" | "partial" | "failed";
+  started_at_ms: number;
+  ended_at_ms: number;
+  duration_ms: number;
+  sources_detected: StorageMigrationSource[];
+  copied: string[];
+  skipped: string[];
+  errors: string[];
+  sessions_imported: number;
+  sessions_repaired: number;
+  messages_recovered: number;
+  parts_recovered: number;
+  conflicts_merged: number;
+  tool_rows_upserted: number;
+  report_path: string;
+  reason: string;
+  dry_run: boolean;
+}
+
+export interface ToolHistoryBackfillResult {
+  sessions_scanned: number;
+  tool_rows_upserted: number;
+}
+
+export interface ToolHistoryBackfillStatus {
+  tool_rows_total: number;
+  sessions_with_tool_rows: number;
+}
+
+export interface SidecarCircuitSnapshot {
+  state: "closed" | "open" | "half_open" | string;
+  failure_count: number;
+  last_failure_age_ms?: number;
+}
+
+export interface SidecarRuntimeSnapshot {
+  state: SidecarState;
+  shared_mode: boolean;
+  owns_process: boolean;
+  port?: number;
+  pid?: number;
+  binary_path?: string;
+  circuit: SidecarCircuitSnapshot;
+}
+
+export interface StreamRuntimeSnapshot {
+  running: boolean;
+  health: "healthy" | "degraded" | "recovering";
+  health_reason?: string;
+  sequence: number;
+  last_event_ts_ms?: number;
+  last_health_change_ts_ms: number;
+}
+
+export interface RuntimeDiagnostics {
+  sidecar: SidecarRuntimeSnapshot;
+  stream: StreamRuntimeSnapshot;
+  lease_count: number;
+}
+
+export interface EngineLeaseInfo {
+  lease_id: string;
+  client_id: string;
+  client_type: string;
+  acquired_at_ms: number;
+  last_renewed_at_ms: number;
+  ttl_ms: number;
+}
+
 export interface ToolExecutionRow {
   id: string;
   session_id: string;
@@ -304,6 +410,7 @@ export type StreamEvent =
   | {
       type: "memory_retrieval";
       session_id: string;
+      status?: "not_attempted" | "attempted_no_hits" | "retrieved_used" | "error_fallback";
       used: boolean;
       chunks_total: number;
       session_chunks: number;
@@ -363,6 +470,24 @@ export async function getAppState(): Promise<AppStateInfo> {
 
 export async function getStorageStatus(): Promise<StorageStatus> {
   return invoke("get_storage_status");
+}
+
+export async function getStorageMigrationStatus(): Promise<StorageMigrationStatus> {
+  return invoke("get_storage_migration_status");
+}
+
+export async function runStorageMigration(
+  options?: StorageMigrationOptions
+): Promise<StorageMigrationRunResult> {
+  return invoke("run_storage_migration", { options });
+}
+
+export async function runToolHistoryBackfill(): Promise<ToolHistoryBackfillResult> {
+  return invoke("run_tool_history_backfill");
+}
+
+export async function getToolHistoryBackfillStatus(): Promise<ToolHistoryBackfillStatus> {
+  return invoke("get_tool_history_backfill_status");
 }
 
 export async function setWorkspacePath(path: string): Promise<void> {
@@ -513,6 +638,26 @@ export async function stopSidecar(): Promise<void> {
 
 export async function getSidecarStatus(): Promise<SidecarState> {
   return invoke("get_sidecar_status");
+}
+
+export async function getRuntimeDiagnostics(): Promise<RuntimeDiagnostics> {
+  return invoke("get_runtime_diagnostics");
+}
+
+export async function engineAcquireLease(
+  clientId: string,
+  clientType: string,
+  ttlMs?: number
+): Promise<EngineLeaseInfo> {
+  return invoke("engine_acquire_lease", { clientId, clientType, ttlMs });
+}
+
+export async function engineRenewLease(leaseId: string): Promise<boolean> {
+  return invoke("engine_renew_lease", { leaseId });
+}
+
+export async function engineReleaseLease(leaseId: string): Promise<boolean> {
+  return invoke("engine_release_lease", { leaseId });
 }
 
 export async function checkSidecarStatus(): Promise<SidecarStatus> {
@@ -1101,6 +1246,22 @@ export async function stopLogStream(streamId: string): Promise<void> {
 
 export function onLogStreamEvent(callback: (batch: LogStreamBatch) => void): Promise<UnlistenFn> {
   return listen<LogStreamBatch>("log_stream_event", (event) => {
+    callback(event.payload);
+  });
+}
+
+export function onStorageMigrationProgress(
+  callback: (event: StorageMigrationProgressEvent) => void
+): Promise<UnlistenFn> {
+  return listen<StorageMigrationProgressEvent>("storage-migration-progress", (event) => {
+    callback(event.payload);
+  });
+}
+
+export function onStorageMigrationComplete(
+  callback: (result: StorageMigrationRunResult) => void
+): Promise<UnlistenFn> {
+  return listen<StorageMigrationRunResult>("storage-migration-complete", (event) => {
     callback(event.payload);
   });
 }

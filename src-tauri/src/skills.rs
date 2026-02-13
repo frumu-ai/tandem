@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use tandem_core::resolve_shared_paths;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -287,16 +288,25 @@ pub fn parse_skill_content_with_metadata(
 pub fn get_skill_dirs(workspace: Option<&str>) -> Vec<(PathBuf, SkillLocation)> {
     let mut dirs = Vec::new();
 
-    // Project skills (.opencode/skill/)
+    // Project skills (canonical `.tandem/skill/`, with legacy `.opencode/skill/` read support).
     if let Some(ws) = workspace {
-        let project_dir = PathBuf::from(ws).join(".opencode").join("skill");
-        dirs.push((project_dir, SkillLocation::Project));
+        let workspace_path = PathBuf::from(ws);
+        dirs.push((
+            workspace_path.join(".tandem").join("skill"),
+            SkillLocation::Project,
+        ));
+        dirs.push((
+            workspace_path.join(".opencode").join("skill"),
+            SkillLocation::Project,
+        ));
     }
 
-    // Global skills (~/.config/opencode/skills/)
-    if let Some(config_dir) = dirs::config_dir() {
-        let global_dir = config_dir.join("opencode").join("skills");
+    // Global skills (canonical Tandem path first, legacy OpenCode path read-only fallback).
+    if let Some(global_dir) = get_global_skills_dir() {
         dirs.push((global_dir, SkillLocation::Global));
+    }
+    if let Some(legacy_dir) = get_legacy_global_skills_dir() {
+        dirs.push((legacy_dir, SkillLocation::Global));
     }
 
     dirs
@@ -374,13 +384,19 @@ pub fn discover_skills(workspace: Option<&str>) -> Vec<SkillInfo> {
     skills
 }
 
-/// Get the global skills directory path
-/// OpenCode uses ~/.config/opencode/ on all platforms (including Windows)
+/// Get the canonical global skills directory path.
 pub fn get_global_skills_dir() -> Option<PathBuf> {
+    resolve_shared_paths()
+        .ok()
+        .map(|p| p.canonical_root.join("skills"))
+}
+
+/// Legacy OpenCode global skills directory path (read-only compatibility).
+pub fn get_legacy_global_skills_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|d| d.join(".config").join("opencode").join("skills"))
 }
 
-/// Sync bundled skills to the global OpenCode config directory
+/// Sync bundled skills to the canonical global Tandem skills directory
 /// This ensures that Tandem's built-in skills (like the Plan agent) are always up-to-date
 pub fn sync_bundled_skills(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
     use tauri::Manager;
@@ -500,13 +516,14 @@ pub fn sync_bundled_skills(app: &tauri::AppHandle) -> Result<Vec<String>, String
     Ok(synced_skills)
 }
 
-/// Get the global tools directory path
-/// OpenCode uses ~/.config/opencode/ on all platforms (including Windows)
+/// Get the canonical global tools directory path.
 pub fn get_global_tools_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|d| d.join(".config").join("opencode").join("tools"))
+    resolve_shared_paths()
+        .ok()
+        .map(|p| p.canonical_root.join("tools"))
 }
 
-/// Sync bundled tools to the global OpenCode config directory
+/// Sync bundled tools to the canonical global Tandem tools directory.
 pub fn sync_bundled_tools(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
     use tauri::Manager;
 

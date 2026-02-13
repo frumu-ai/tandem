@@ -13,6 +13,9 @@ import {
   Trash2,
   Plus,
   Info,
+  Database,
+  RefreshCw,
+  FileText,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { ProviderCard } from "./ProviderCard";
@@ -48,10 +51,14 @@ import {
   checkGitStatus,
   initializeGitRepo,
   checkSidecarStatus,
+  getStorageMigrationStatus,
+  runStorageMigration,
   type ProvidersConfig,
   type CustomBackgroundInfo,
   type UserProject,
   type SidecarStatus,
+  type StorageMigrationStatus,
+  type StorageMigrationRunResult,
 } from "@/lib/tauri";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -114,6 +121,11 @@ export function Settings({
   const [gitStatus, setGitStatus] = useState<{ git_installed: boolean; is_repo: boolean } | null>(
     null
   );
+  const [migrationStatus, setMigrationStatus] = useState<StorageMigrationStatus | null>(null);
+  const [migrationLastResult, setMigrationLastResult] = useState<StorageMigrationRunResult | null>(
+    null
+  );
+  const [migrationRunning, setMigrationRunning] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -191,10 +203,28 @@ export function Settings({
       if (activeProj) {
         setActiveProjectId(activeProj.id);
       }
+      const storageMigrationStatus = await getStorageMigrationStatus();
+      setMigrationStatus(storageMigrationStatus);
     } catch (err) {
       console.error("Failed to load settings:", err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRunMigration = async (dryRun = false) => {
+    try {
+      setMigrationRunning(true);
+      const result = await runStorageMigration({ dryRun, includeWorkspaceScan: true, force: true });
+      setMigrationLastResult(result);
+      const status = await getStorageMigrationStatus();
+      setMigrationStatus(status);
+      onProjectChange?.();
+      onProviderChange?.();
+    } catch (err) {
+      console.error("Failed to run migration:", err);
+    } finally {
+      setMigrationRunning(false);
     }
   };
 
@@ -580,6 +610,73 @@ export function Settings({
                       : "Downloading..."}
                   </span>
                 </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <Database className="h-5 w-5 text-primary" />
+                <div>
+                  <CardTitle>Data Migration</CardTitle>
+                  <CardDescription>
+                    Import legacy OpenCode and older Tandem data into canonical storage.
+                  </CardDescription>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void handleRunMigration(true)}
+                  disabled={migrationRunning}
+                >
+                  <FileText className="mr-1 h-4 w-4" />
+                  Dry Run
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => void handleRunMigration(false)}
+                  disabled={migrationRunning}
+                >
+                  <RefreshCw className={`mr-1 h-4 w-4 ${migrationRunning ? "animate-spin" : ""}`} />
+                  Run Migration Again
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
+              <div>Canonical root: {migrationStatus?.canonical_root ?? "Unknown"}</div>
+              <div>Last reason: {migrationStatus?.migration_reason ?? "n/a"}</div>
+              <div>
+                Last run:{" "}
+                {migrationStatus?.migration_timestamp_ms
+                  ? new Date(migrationStatus.migration_timestamp_ms).toLocaleString()
+                  : "never"}
+              </div>
+              <div>
+                Sources detected:{" "}
+                {migrationStatus?.sources_detected.filter((s) => s.exists).length ?? 0}
+              </div>
+            </div>
+            {migrationLastResult && (
+              <div className="rounded-lg border border-border bg-surface p-3 text-xs text-text-muted">
+                <div>Status: {migrationLastResult.status}</div>
+                <div>
+                  Repaired sessions: {migrationLastResult.sessions_repaired}, recovered messages:{" "}
+                  {migrationLastResult.messages_recovered}
+                </div>
+                <div>
+                  Copied: {migrationLastResult.copied.length}, skipped:{" "}
+                  {migrationLastResult.skipped.length}, errors: {migrationLastResult.errors.length}
+                </div>
+                {!!migrationLastResult.report_path && (
+                  <div className="truncate">Report: {migrationLastResult.report_path}</div>
+                )}
               </div>
             )}
           </CardContent>

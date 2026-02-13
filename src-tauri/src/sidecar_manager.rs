@@ -20,11 +20,11 @@ const MAX_RELEASE_PAGES: usize = 5;
 const RELEASE_CHECK_INTERVAL_SECS: i64 = 6 * 60 * 60;
 const RELEASE_CACHE_FILE: &str = "sidecar_release_cache.json";
 
-fn shared_app_data_dir(app: &AppHandle) -> Option<PathBuf> {
+fn shared_app_data_dir(_app: &AppHandle) -> Option<PathBuf> {
     resolve_shared_paths()
         .map(|p| p.canonical_root)
         .ok()
-        .or_else(|| app.path().app_data_dir().ok())
+        .or_else(|| dirs::data_dir().map(|d| d.join("tandem")))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use tandem_core::resolve_shared_paths;
-use tauri::{AppHandle, Manager};
+use tandem_types::{MessagePart, Session};
+use tauri::AppHandle;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolExecutionRow {
@@ -21,6 +22,12 @@ pub struct ToolExecutionRow {
     pub ended_at_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolHistoryBackfillStats {
+    pub sessions_scanned: u64,
+    pub tool_rows_upserted: u64,
+}
+
 fn to_memory_error(context: &str, err: impl std::fmt::Display) -> TandemError {
     TandemError::Memory(format!("{}: {}", context, err))
 }
@@ -33,15 +40,22 @@ fn now_ms_i64() -> Result<i64> {
     to_i64(crate::logs::now_ms())
 }
 
-fn app_memory_db_path(app: &AppHandle) -> Result<PathBuf> {
+fn app_memory_db_path(_app: &AppHandle) -> Result<PathBuf> {
     let app_data_dir = match resolve_shared_paths() {
         Ok(paths) => paths.canonical_root,
-        Err(_) => app.path().app_data_dir().map_err(|e| {
-            TandemError::InvalidConfig(format!("Failed to get app data dir: {}", e))
+        Err(e) => dirs::data_dir().map(|d| d.join("tandem")).ok_or_else(|| {
+            TandemError::InvalidConfig(format!(
+                "Failed to resolve canonical shared app data dir: {}",
+                e
+            ))
         })?,
     };
     std::fs::create_dir_all(&app_data_dir)?;
     Ok(app_data_dir.join("memory.sqlite"))
+}
+
+pub fn app_memory_db_path_for_commands(app: &AppHandle) -> Result<PathBuf> {
+    app_memory_db_path(app)
 }
 
 fn open_conn(app: &AppHandle) -> Result<Connection> {
@@ -255,4 +269,96 @@ pub fn list_tool_executions(
     }
 
     Ok(rows_out)
+}
+
+pub fn backfill_tool_executions_from_sessions(
+    app: &AppHandle,
+    sessions: &[Session],
+) -> Result<ToolHistoryBackfillStats> {
+    let mut stats = ToolHistoryBackfillStats::default();
+    let mut conn = open_conn(app)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| to_memory_error("start backfill transaction", e))?;
+    let now_ms = now_ms_i64()?;
+
+    for session in sessions {
+        stats.sessions_scanned += 1;
+        for message in &session.messages {
+            let created_ms =
+                u64::try_from(message.created_at.timestamp_millis()).unwrap_or_default();
+            let created_ms_i64 = to_i64(created_ms)?;
+            let mut ordinal: u64 = 0;
+            for part in &message.parts {
+                let MessagePart::ToolInvocation {
+                    tool,
+                    args,
+                    result,
+                    error,
+                } = part
+                else {
+                    continue;
+                };
+                ordinal = ordinal.saturating_add(1);
+                let id = format!("{}:{}:{}:{}", session.id, message.id, tool, ordinal);
+                let status = if error.is_some() {
+                    "failed"
+                } else if result.is_some() {
+                    "completed"
+                } else {
+                    "running"
+                };
+                let args_json = to_json_text(args);
+                let result_json = result.as_ref().and_then(to_json_text);
+                let ended_at = if status == "running" {
+                    None
+                } else {
+                    Some(created_ms_i64)
+                };
+
+                tx.execute(
+                    r#"
+                    INSERT INTO tool_executions (
+                        id, session_id, message_id, tool, status, args_json,
+                        result_json, error_text, started_at_ms, ended_at_ms, updated_at_ms
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                    ON CONFLICT(id) DO UPDATE SET
+                        session_id = excluded.session_id,
+                        message_id = excluded.message_id,
+                        tool = excluded.tool,
+                        status = CASE
+                            WHEN tool_executions.status = 'completed' THEN 'completed'
+                            WHEN tool_executions.status = 'failed' THEN 'failed'
+                            ELSE excluded.status
+                        END,
+                        args_json = COALESCE(tool_executions.args_json, excluded.args_json),
+                        result_json = COALESCE(tool_executions.result_json, excluded.result_json),
+                        error_text = COALESCE(tool_executions.error_text, excluded.error_text),
+                        started_at_ms = COALESCE(tool_executions.started_at_ms, excluded.started_at_ms),
+                        ended_at_ms = COALESCE(tool_executions.ended_at_ms, excluded.ended_at_ms),
+                        updated_at_ms = excluded.updated_at_ms
+                    "#,
+                    params![
+                        id,
+                        session.id,
+                        message.id,
+                        tool,
+                        status,
+                        args_json,
+                        result_json,
+                        error.clone(),
+                        created_ms_i64,
+                        ended_at,
+                        now_ms
+                    ],
+                )
+                .map_err(|e| to_memory_error("backfill tool row", e))?;
+                stats.tool_rows_upserted = stats.tool_rows_upserted.saturating_add(1);
+            }
+        }
+    }
+
+    tx.commit()
+        .map_err(|e| to_memory_error("commit backfill transaction", e))?;
+    Ok(stats)
 }

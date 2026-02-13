@@ -6,13 +6,15 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Widget},
 };
 
-const RAIN_GREEN: Color = Color::Rgb(46, 255, 106);
-const RAIN_GREEN_DIM: Color = Color::Rgb(28, 194, 75);
-const RAIN_GREEN_HI: Color = Color::Rgb(98, 255, 148);
-const RAIN_DARK: Color = Color::Rgb(10, 14, 10);
+const RAIN_GREEN: Color = Color::Rgb(20, 210, 90);
+const RAIN_GREEN_DIM: Color = Color::Rgb(10, 120, 50);
+const RAIN_GREEN_HI: Color = Color::Rgb(90, 255, 140);
+const RAIN_DARK: Color = Color::Rgb(2, 10, 4);
 const LOGO_FG: Color = RAIN_GREEN_HI;
+const HEAD_COLOR: Color = Color::Rgb(220, 255, 235);
 
-const CHAR_POOL: &str = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ@#$%&*";
+const CHAR_POOL: &str =
+    "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜｦﾝ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ@#$%&*";
 
 // "TANDEM" in ANSI Shadow font
 const LOGO_LINES: [&str; 6] = [
@@ -70,8 +72,8 @@ impl MatrixEffect {
     }
 
     fn random_len<R: Rng>(rng: &mut R, height: u16) -> usize {
-        let min_len = 8usize;
-        let max_len = (height as usize).saturating_sub(4).clamp(12, 30);
+        let min_len = 10usize;
+        let max_len = (height as usize).saturating_sub(4).clamp(14, 36);
         if max_len <= min_len {
             min_len
         } else {
@@ -83,7 +85,7 @@ impl MatrixEffect {
         let len = Self::random_len(rng, height);
         let chars: Vec<char> = (0..len)
             .map(|_| {
-                if rng.gen_bool(0.08) {
+                if rng.gen_bool(0.03) {
                     ' '
                 } else {
                     Self::random_char(rng, pool)
@@ -94,7 +96,7 @@ impl MatrixEffect {
         Drop {
             x,
             y: rng.gen_range(-(height as f32 * 2.0)..0.0),
-            speed: rng.gen_range(0.45..1.25),
+            speed: rng.gen_range(0.8..2.2),
             chars,
             len,
         }
@@ -110,7 +112,7 @@ impl MatrixEffect {
             return;
         }
 
-        let target = ((width as f32) * 0.6).round() as usize;
+        let target = ((width as f32) * 0.9).round() as usize;
         let mut occupied = vec![false; width as usize];
         for drop in &self.drops {
             let x = drop.x as usize;
@@ -119,15 +121,19 @@ impl MatrixEffect {
             }
         }
 
-        if self.drops.len() < target && rng.gen_bool(0.6) {
+        if self.drops.len() < target && rng.gen_bool(0.85) {
             let available: Vec<u16> = occupied
                 .iter()
                 .enumerate()
                 .filter_map(|(i, taken)| if !*taken { Some(i as u16) } else { None })
                 .collect();
-            if let Some(&x) = available.get(rng.gen_range(0..available.len())) {
-                self.drops
-                    .push(Self::create_drop(x, height, &mut rng, &self.char_pool));
+            if !available.is_empty() {
+                let count = (available.len() as f32 * 0.25).ceil() as usize;
+                for _ in 0..count.min(3) {
+                    let x = available[rng.gen_range(0..available.len())];
+                    self.drops
+                        .push(Self::create_drop(x, height, &mut rng, &self.char_pool));
+                }
             }
         }
 
@@ -139,11 +145,11 @@ impl MatrixEffect {
             }
 
             // Randomly change characters
-            if rng.gen_bool(0.35) && !drop.chars.is_empty() {
+            if rng.gen_bool(0.45) && !drop.chars.is_empty() {
                 drop.chars[0] = Self::random_char(&mut rng, &self.char_pool);
             }
-            if rng.gen_bool(0.12) {
-                let updates = rng.gen_range(1..=2);
+            if rng.gen_bool(0.18) {
+                let updates = rng.gen_range(1..=3);
                 for _ in 0..updates {
                     let idx = rng.gen_range(0..drop.len);
                     drop.chars[idx] = if rng.gen_bool(0.06) {
@@ -239,7 +245,59 @@ impl MatrixEffect {
         }
     }
 
+    fn logo_layout(area: Rect) -> (Rect, Option<Rect>) {
+        let logo_width = LOGO_LINES[0].chars().count() as u16;
+        let logo_height = LOGO_LINES.len() as u16;
+        let center_x = area.x + area.width / 2;
+        let center_y = area.y + area.height / 2;
+        let start_x = center_x.saturating_sub(logo_width / 2);
+        let start_y = center_y.saturating_sub(logo_height / 2);
+        let box_padding_x = 6;
+        let box_padding_y = 2;
+        let box_area = Rect {
+            x: start_x.saturating_sub(box_padding_x),
+            y: start_y.saturating_sub(box_padding_y),
+            width: logo_width + (box_padding_x * 2),
+            height: logo_height + (box_padding_y * 2),
+        };
+
+        let instr = "Press <ENTER> to Start";
+        let instr_x = center_x.saturating_sub(instr.len() as u16 / 2);
+        let instr_y = box_area.y + box_area.height + 1;
+        let instr_area = if instr_y < area.height {
+            Some(Rect {
+                x: instr_x,
+                y: instr_y,
+                width: instr.len() as u16,
+                height: 1,
+            })
+        } else {
+            None
+        };
+
+        (box_area, instr_area)
+    }
+
+    fn color_for_offset(&self, index: usize, len: usize) -> Color {
+        if index == 0 {
+            return HEAD_COLOR;
+        }
+        let denom = (len.saturating_sub(1)).max(1) as f32;
+        let t = 1.0 - (index as f32 / denom);
+        let t = t * t;
+        let g = (18.0 + 170.0 * t).round() as u8;
+        let r = (4.0 + 16.0 * t).round() as u8;
+        let b = (4.0 + 16.0 * t).round() as u8;
+        Color::Rgb(r, g, b)
+    }
+
     fn render_in_area(&self, area: Rect, buf: &mut Buffer, show_logo: bool) {
+        let (logo_area, instr_area) = if show_logo {
+            Self::logo_layout(area)
+        } else {
+            (Rect::default(), None)
+        };
+
         for y in area.y..area.y + area.height {
             for x in area.x..area.x + area.width {
                 buf.get_mut(x, y).set_bg(RAIN_DARK).set_char(' ');
@@ -257,12 +315,20 @@ impl MatrixEffect {
                 if y >= 0 && y < area.height as i32 {
                     let y = y as u16;
 
-                    let color = if i == 0 {
-                        Color::White
-                    } else if i < 3 {
-                        RAIN_GREEN_HI
-                    } else if i < 8 {
-                        RAIN_GREEN
+                    if show_logo {
+                        let in_logo = x >= logo_area.x
+                            && x < logo_area.x + logo_area.width
+                            && y >= logo_area.y
+                            && y < logo_area.y + logo_area.height;
+                        let in_instr =
+                            instr_area.map_or(false, |r| x >= r.x && x < r.x + r.width && y == r.y);
+                        if in_logo || in_instr {
+                            continue;
+                        }
+                    }
+
+                    let color = if i < drop.len {
+                        self.color_for_offset(i, drop.len)
                     } else {
                         RAIN_GREEN_DIM
                     };

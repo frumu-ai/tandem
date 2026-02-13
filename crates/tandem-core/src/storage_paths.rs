@@ -21,6 +21,46 @@ pub struct SharedPaths {
     pub migration_report_path: PathBuf,
 }
 
+pub fn normalize_workspace_path(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let as_path = PathBuf::from(trimmed);
+    let absolute = if as_path.is_absolute() {
+        as_path
+    } else {
+        std::env::current_dir().ok()?.join(as_path)
+    };
+    let normalized = if absolute.exists() {
+        absolute.canonicalize().ok()?
+    } else {
+        absolute
+    };
+    Some(normalized.to_string_lossy().to_string())
+}
+
+pub fn is_within_workspace_root(path: &Path, workspace_root: &Path) -> bool {
+    let candidate = if path.exists() {
+        path.canonicalize().ok()
+    } else if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        std::env::current_dir().ok().map(|cwd| cwd.join(path))
+    };
+    let Some(candidate) = candidate else {
+        return false;
+    };
+    let root = if workspace_root.exists() {
+        workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf())
+    } else {
+        workspace_root.to_path_buf()
+    };
+    candidate.starts_with(root)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MigrationResult {
     pub performed: bool,
@@ -69,14 +109,8 @@ pub fn migrate_legacy_storage_if_needed(paths: &SharedPaths) -> anyhow::Result<M
         timestamp_ms: now_ms(),
     };
 
-    if !paths.legacy_root.exists() {
-        result.reason = "legacy_not_found".to_string();
-        persist_storage_marker(paths)?;
-        persist_migration_report(paths, &result)?;
-        return Ok(result);
-    }
-
     let canonical_empty = is_dir_effectively_empty(&paths.canonical_root)?;
+    let mut source_found = false;
 
     let file_artifacts = [
         "vault.key",
@@ -89,40 +123,64 @@ pub fn migrate_legacy_storage_if_needed(paths: &SharedPaths) -> anyhow::Result<M
     ];
     let dir_artifacts = ["data", "state", "storage", "binaries", "logs"];
 
-    for name in file_artifacts {
-        let src = paths.legacy_root.join(name);
-        if !src.exists() {
-            continue;
+    if paths.legacy_root.exists() {
+        source_found = true;
+        for name in file_artifacts {
+            let src = paths.legacy_root.join(name);
+            if !src.exists() {
+                continue;
+            }
+            let dst = paths.canonical_root.join(name);
+            match copy_file_guarded(&src, &dst) {
+                Ok(true) => result.copied.push(name.to_string()),
+                Ok(false) => result.skipped.push(name.to_string()),
+                Err(err) => result.errors.push(format!("{}: {}", name, err)),
+            }
         }
-        let dst = paths.canonical_root.join(name);
-        match copy_file_guarded(&src, &dst) {
-            Ok(true) => result.copied.push(name.to_string()),
-            Ok(false) => result.skipped.push(name.to_string()),
-            Err(err) => result.errors.push(format!("{}: {}", name, err)),
+
+        for name in dir_artifacts {
+            let src = paths.legacy_root.join(name);
+            if !src.is_dir() {
+                continue;
+            }
+            let dst = paths.canonical_root.join(name);
+            match copy_dir_guarded(&src, &dst) {
+                Ok((copied, skipped)) => {
+                    for entry in copied {
+                        result.copied.push(format!("{}/{}", name, entry));
+                    }
+                    for entry in skipped {
+                        result.skipped.push(format!("{}/{}", name, entry));
+                    }
+                }
+                Err(err) => result.errors.push(format!("{}: {}", name, err)),
+            }
         }
     }
 
-    for name in dir_artifacts {
-        let src = paths.legacy_root.join(name);
-        if !src.is_dir() {
-            continue;
-        }
-        let dst = paths.canonical_root.join(name);
-        match copy_dir_guarded(&src, &dst) {
-            Ok((copied, skipped)) => {
-                for entry in copied {
-                    result.copied.push(format!("{}/{}", name, entry));
+    if let Some(opencode_root) = resolve_opencode_legacy_root() {
+        let src_storage = opencode_root.join("storage");
+        if src_storage.is_dir() {
+            source_found = true;
+            let dst_storage = paths.engine_state_dir.join("storage");
+            match copy_dir_guarded(&src_storage, &dst_storage) {
+                Ok((copied, skipped)) => {
+                    for entry in copied {
+                        result.copied.push(format!("opencode/storage/{}", entry));
+                    }
+                    for entry in skipped {
+                        result.skipped.push(format!("opencode/storage/{}", entry));
+                    }
                 }
-                for entry in skipped {
-                    result.skipped.push(format!("{}/{}", name, entry));
-                }
+                Err(err) => result.errors.push(format!("opencode/storage: {}", err)),
             }
-            Err(err) => result.errors.push(format!("{}: {}", name, err)),
         }
     }
 
     result.performed = !result.copied.is_empty();
-    result.reason = if result.performed && canonical_empty {
+    result.reason = if !source_found {
+        "legacy_not_found".to_string()
+    } else if result.performed && canonical_empty {
         "migration_copied_into_empty_canonical".to_string()
     } else if result.performed {
         "migration_backfilled_missing_artifacts".to_string()
@@ -228,6 +286,26 @@ fn should_skip_copy(src: &Path, dst: &Path) -> anyhow::Result<bool> {
     Ok(dst_time >= src_time)
 }
 
+fn resolve_opencode_legacy_root() -> Option<PathBuf> {
+    if let Ok(override_dir) = std::env::var("TANDEM_OPENCODE_LEGACY_DIR") {
+        let path = PathBuf::from(override_dir);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    let mut candidates = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".local").join("share").join("opencode"));
+    }
+    if let Some(local) = dirs::data_local_dir() {
+        candidates.push(local.join("opencode"));
+    }
+    if let Some(data) = dirs::data_dir() {
+        candidates.push(data.join("opencode"));
+    }
+    candidates.into_iter().find(|path| path.exists())
+}
+
 fn now_ms() -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(dur) => dur.as_millis() as u64,
@@ -300,5 +378,47 @@ mod tests {
         assert_eq!(report.reason, "migration_backfilled_missing_artifacts");
         assert!(paths.vault_key_path.exists());
         assert!(paths.keystore_path.exists());
+    }
+
+    #[test]
+    fn migration_copies_opencode_storage_into_engine_state_storage() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let opencode_root = temp.path().join("opencode");
+        let src_storage = opencode_root.join("storage").join("session").join("global");
+        fs::create_dir_all(&src_storage).expect("opencode storage");
+        fs::write(src_storage.join("ses_abc.json"), r#"{"id":"ses_abc"}"#).expect("write");
+
+        let legacy = temp.path().join("legacy-missing");
+        let canonical = temp.path().join("canonical");
+        fs::create_dir_all(&canonical).expect("canonical");
+
+        std::env::set_var(
+            "TANDEM_OPENCODE_LEGACY_DIR",
+            opencode_root.to_string_lossy().to_string(),
+        );
+        let paths = SharedPaths {
+            canonical_root: canonical.clone(),
+            legacy_root: legacy,
+            engine_state_dir: canonical.join("data"),
+            config_path: canonical.join("config.json"),
+            keystore_path: canonical.join("tandem.keystore"),
+            vault_key_path: canonical.join("vault.key"),
+            memory_db_path: canonical.join("memory.sqlite"),
+            sidecar_release_cache_path: canonical.join("sidecar_release_cache.json"),
+            logs_dir: canonical.join("logs"),
+            storage_version_path: canonical.join("storage_version.json"),
+            migration_report_path: canonical.join("migration_report.json"),
+        };
+
+        let report = migrate_legacy_storage_if_needed(&paths).expect("migrate");
+        assert!(report.performed);
+        assert!(paths
+            .engine_state_dir
+            .join("storage")
+            .join("session")
+            .join("global")
+            .join("ses_abc.json")
+            .exists());
+        std::env::remove_var("TANDEM_OPENCODE_LEGACY_DIR");
     }
 }

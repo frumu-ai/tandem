@@ -14,6 +14,7 @@ import { OrchestratorPanel } from "@/components/orchestrate/OrchestratorPanel";
 import { type RunSummary } from "@/components/orchestrate/types";
 import { PacksPanel } from "@/components/packs";
 import { AppUpdateOverlay } from "@/components/updates/AppUpdateOverlay";
+import { StorageMigrationOverlay } from "@/components/migration/StorageMigrationOverlay";
 import { useAppState } from "@/hooks/useAppState";
 import { useTheme } from "@/hooks/useTheme";
 import { useTodos } from "@/hooks/useTodos";
@@ -21,6 +22,7 @@ import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
 import { useMemoryIndexing } from "@/contexts/MemoryIndexingContext";
+import { resolveSessionDirectory, sessionBelongsToWorkspace } from "@/lib/sessionScope";
 import {
   listSessions,
   listProjects,
@@ -41,6 +43,12 @@ import {
   initializeGitRepo,
   onSidecarEvent,
   onSidecarEventV2,
+  getStorageMigrationStatus,
+  onStorageMigrationComplete,
+  onStorageMigrationProgress,
+  runStorageMigration,
+  type StorageMigrationProgressEvent,
+  type StorageMigrationRunResult,
   type Session,
   type StreamEventEnvelopeV2,
   type VaultStatus,
@@ -62,6 +70,7 @@ import {
   Palette,
   Sparkles,
   Blocks,
+  Loader2,
 } from "lucide-react";
 
 type View = "chat" | "extensions" | "settings" | "about" | "packs" | "onboarding" | "sidecar-setup";
@@ -116,6 +125,8 @@ function App() {
     return null;
   });
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyOverlayOpen, setHistoryOverlayOpen] = useState(false);
+  const historyOverlayDelayRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
   const [executePendingTrigger, setExecutePendingTrigger] = useState(0);
   const [isExecutingTasks, setIsExecutingTasks] = useState(false);
@@ -143,6 +154,13 @@ function App() {
   const [activeProject, setActiveProjectState] = useState<UserProject | null>(null);
   const [projectSwitcherLoading, setProjectSwitcherLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [migrationOverlayOpen, setMigrationOverlayOpen] = useState(false);
+  const [migrationRunning, setMigrationRunning] = useState(false);
+  const [migrationProgress, setMigrationProgress] = useState<StorageMigrationProgressEvent | null>(
+    null
+  );
+  const [migrationResult, setMigrationResult] = useState<StorageMigrationRunResult | null>(null);
+  const migrationCheckedRef = useRef(false);
 
   // Auto-index workspace files when a project becomes active (if enabled in settings).
   useEffect(() => {
@@ -531,6 +549,13 @@ function App() {
   // Load sessions and projects when sidecar is ready
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
+    if (historyOverlayDelayRef.current) {
+      globalThis.clearTimeout(historyOverlayDelayRef.current);
+      historyOverlayDelayRef.current = null;
+    }
+    historyOverlayDelayRef.current = globalThis.setTimeout(() => {
+      setHistoryOverlayOpen(true);
+    }, 300);
     try {
       // On initial app load, "sidecarReady" can be true before the engine is actually running.
       // If we query too early, the list calls fail and the UI stays empty until a manual refresh.
@@ -538,31 +563,139 @@ function App() {
       if (status !== "running") return;
 
       const [sessionsData, projectsData] = await Promise.all([listSessions(), listProjects()]);
+      const activeWorkspacePath = activeProject?.path || state?.workspace_path || null;
 
       // Convert Session to SessionInfo format
       const sessionInfos: SessionInfo[] = sessionsData.map((s: Session) => ({
         id: s.id,
         slug: s.slug,
         version: s.version,
-        projectID: s.projectID || "",
-        directory: s.directory || "",
+        projectID: s.projectID || activeProject?.id || "",
+        directory: resolveSessionDirectory(s.directory, activeWorkspacePath),
         title: s.title || "New Chat",
         time: s.time || { created: Date.now(), updated: Date.now() },
         summary: s.summary,
       }));
+
+      const matchedToWorkspace = sessionInfos.filter((session) =>
+        sessionBelongsToWorkspace(session, activeWorkspacePath)
+      ).length;
+      console.info(
+        "[SessionScope] Loaded sessions:",
+        sessionInfos.length,
+        "workspace matches:",
+        matchedToWorkspace,
+        "workspace:",
+        activeWorkspacePath ?? "(none)"
+      );
 
       setSessions(sessionInfos);
       setProjects(projectsData);
     } catch (e) {
       console.error("Failed to load history:", e);
     } finally {
+      if (historyOverlayDelayRef.current) {
+        globalThis.clearTimeout(historyOverlayDelayRef.current);
+        historyOverlayDelayRef.current = null;
+      }
+      setHistoryOverlayOpen(false);
       setHistoryLoading(false);
     }
+  }, [activeProject?.id, activeProject?.path, state?.workspace_path]);
+
+  useEffect(() => {
+    return () => {
+      if (historyOverlayDelayRef.current) {
+        globalThis.clearTimeout(historyOverlayDelayRef.current);
+        historyOverlayDelayRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
     loadHistory();
   }, [loadHistory]);
+
+  const runMigration = useCallback(
+    async (force = false) => {
+      setMigrationOverlayOpen(true);
+      setMigrationRunning(true);
+      setMigrationProgress(null);
+      setMigrationResult(null);
+
+      let unlistenProgress: (() => void) | null = null;
+      let unlistenComplete: (() => void) | null = null;
+      try {
+        unlistenProgress = await onStorageMigrationProgress((event) => {
+          setMigrationProgress(event);
+        });
+        unlistenComplete = await onStorageMigrationComplete((result) => {
+          setMigrationResult(result);
+        });
+        const result = await runStorageMigration({
+          force,
+          includeWorkspaceScan: true,
+          dryRun: false,
+        });
+        setMigrationResult(result);
+        await refreshAppState();
+        await loadHistory();
+      } catch (e) {
+        console.error("Migration run failed:", e);
+        setMigrationResult({
+          status: "failed",
+          started_at_ms: Date.now(),
+          ended_at_ms: Date.now(),
+          duration_ms: 0,
+          sources_detected: [],
+          copied: [],
+          skipped: [],
+          errors: [e instanceof Error ? e.message : String(e)],
+          sessions_imported: 0,
+          sessions_repaired: 0,
+          messages_recovered: 0,
+          parts_recovered: 0,
+          conflicts_merged: 0,
+          tool_rows_upserted: 0,
+          report_path: "",
+          reason: "migration_failed",
+          dry_run: false,
+        });
+      } finally {
+        setMigrationRunning(false);
+        try {
+          unlistenProgress?.();
+          unlistenComplete?.();
+        } catch {
+          // ignore unlisten errors
+        }
+      }
+    },
+    [loadHistory, refreshAppState]
+  );
+
+  useEffect(() => {
+    if (loading || !vaultUnlocked || migrationCheckedRef.current) {
+      return;
+    }
+    migrationCheckedRef.current = true;
+    let cancelled = false;
+    const checkAndRun = async () => {
+      try {
+        const status = await getStorageMigrationStatus();
+        if (cancelled) return;
+        if (status.migration_needed) {
+          await runMigration(false);
+        }
+      } catch (e) {
+        console.warn("Storage migration status check failed:", e);
+      }
+    };
+    void checkAndRun();
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, vaultUnlocked, runMigration]);
 
   // Load user projects
   const loadUserProjects = useCallback(async () => {
@@ -1193,27 +1326,9 @@ function App() {
                     <SessionSidebar
                       isOpen={true}
                       onToggle={() => setSidebarOpen(!sidebarOpen)}
-                      sessions={sessions.filter((session) => {
-                        // Only show sessions from the active project
-                        if (!activeProject) return true;
-                        if (!session.directory) return false;
-
-                        // Normalize paths for comparison: lowercase, standard slashes, remove trailing slash
-                        const normSession = session.directory
-                          .toLowerCase()
-                          .replace(/\\/g, "/")
-                          .replace(/\/$/, "");
-                        const normProject = activeProject.path
-                          .toLowerCase()
-                          .replace(/\\/g, "/")
-                          .replace(/\/$/, "");
-
-                        // Check if session directory starts with or contains the project path
-                        // We check both ways to handle nested workspaces or root mismatches
-                        return (
-                          normSession.includes(normProject) || normProject.includes(normSession)
-                        );
-                      })}
+                      sessions={sessions.filter((session) =>
+                        sessionBelongsToWorkspace(session, activeProject?.path || null)
+                      )}
                       runs={orchestratorRuns}
                       projects={projects}
                       currentSessionId={currentSessionId}
@@ -1470,6 +1585,63 @@ function App() {
           )}
         </main>
         <AppUpdateOverlay />
+        <StorageMigrationOverlay
+          open={migrationOverlayOpen}
+          running={migrationRunning}
+          progress={migrationProgress}
+          result={migrationResult}
+          onContinue={() => setMigrationOverlayOpen(false)}
+          onRetry={() => void runMigration(true)}
+          onViewDetails={() => {
+            if (!migrationResult) return;
+            const details = [
+              `Status: ${migrationResult.status}`,
+              `Reason: ${migrationResult.reason}`,
+              `Copied: ${migrationResult.copied.length}`,
+              `Skipped: ${migrationResult.skipped.length}`,
+              `Errors: ${migrationResult.errors.length}`,
+              `Report: ${migrationResult.report_path || "n/a"}`,
+            ].join("\n");
+            window.alert(details);
+          }}
+        />
+        <AnimatePresence>
+          {historyOverlayOpen && !migrationOverlayOpen && (
+            <motion.div
+              className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 backdrop-blur-sm"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <motion.div
+                className="w-[min(560px,90vw)] rounded-2xl border border-primary/25 bg-surface-elevated/95 p-6 shadow-2xl"
+                initial={{ scale: 0.97, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.98, opacity: 0 }}
+              >
+                <div className="mb-3 flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary/30 bg-primary/10">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-semibold text-text">Syncing Workspace History</h3>
+                    <p className="text-sm text-text-muted">
+                      Loading sessions, project context, and recent activity.
+                    </p>
+                  </div>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-surface">
+                  <motion.div
+                    className="h-full bg-gradient-to-r from-primary via-secondary to-primary"
+                    initial={{ x: "-35%", width: "35%" }}
+                    animate={{ x: "130%" }}
+                    transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
+                  />
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

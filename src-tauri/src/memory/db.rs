@@ -41,6 +41,7 @@ impl MemoryDatabase {
 
         // Initialize schema
         db.init_schema().await?;
+        db.validate_vector_tables().await?;
 
         Ok(db)
     }
@@ -247,6 +248,21 @@ impl MemoryDatabase {
             [],
         )?;
 
+        Ok(())
+    }
+
+    /// Validate that sqlite-vec tables are readable.
+    /// This catches legacy/corrupted vector blobs early so startup can recover.
+    async fn validate_vector_tables(&self) -> MemoryResult<()> {
+        let conn = self.conn.lock().await;
+        for table in [
+            "session_memory_vectors",
+            "project_memory_vectors",
+            "global_memory_vectors",
+        ] {
+            let sql = format!("SELECT COUNT(*) FROM {}", table);
+            let _: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
+        }
         Ok(())
     }
 

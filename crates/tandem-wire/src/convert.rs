@@ -38,6 +38,12 @@ impl From<Session> for WireSession {
             version: value.version,
             project_id: value.project_id,
             directory: Some(value.directory),
+            workspace_root: value.workspace_root,
+            origin_workspace_root: value.origin_workspace_root,
+            attached_from_workspace: value.attached_from_workspace,
+            attached_to_workspace: value.attached_to_workspace,
+            attach_timestamp_ms: value.attach_timestamp_ms,
+            attach_reason: value.attach_reason,
             title: value.title,
             time: Some(WireSessionTime {
                 created: to_epoch_seconds(value.time.created),

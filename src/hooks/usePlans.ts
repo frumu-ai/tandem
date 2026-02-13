@@ -21,7 +21,8 @@ interface UsePlansReturn {
 
 /**
  * Hook to manage plan files in the workspace
- * Watches .opencode/plans/ directory and provides plan state
+ * Watches workspace plan directories (.tandem/plans canonical, .opencode/plans legacy-read)
+ * and provides plan state.
  */
 export function usePlans(workspacePath: string | null): UsePlansReturn {
   const [plans, setPlans] = useState<Plan[]>([]);

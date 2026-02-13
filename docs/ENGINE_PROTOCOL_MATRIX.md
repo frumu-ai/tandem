@@ -2,29 +2,37 @@
 
 Status legend: `implemented`, `partial`, `drift`
 
-Last updated: 2026-02-13 (JSON-first planner/validator + storage standardization pass)
+Last updated: 2026-02-13 (engine-backed workspace-first session scope + explicit attach + sandbox override)
 
 ## 1) Frontend <-> Tauri Commands
 
-| Boundary                                     | Canonical contract                           | Status      | Notes                                                                                      |
-| -------------------------------------------- | -------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------ |
-| Plans panel -> `list_plans`                  | Returns plan metadata from `.opencode/plans` | implemented | Command registered in `src-tauri/src/lib.rs` invoke handler.                               |
-| Plan content -> `read_plan_content`          | Returns full plan markdown by path           | implemented | Command registered and wired to `commands.rs`.                                             |
-| Mode permissions -> `build_permission_rules` | Rule names align with runtime tool names     | partial     | Alias support present for `todowrite` + `todo_write`; broader alias policy still evolving. |
+| Boundary                                                                             | Canonical contract                                                                       | Status      | Notes                                                                                      |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------ |
+| Storage migration wizard -> `get_storage_migration_status` / `run_storage_migration` | Startup + settings-triggered migration control                                           | implemented | Auto-run at startup after vault unlock; manual rerun from Settings.                        |
+| Plans panel -> `list_plans`                                                          | Returns plan metadata from `.tandem/plans` (plus legacy `.opencode/plans` read fallback) | implemented | Command registered in `src-tauri/src/lib.rs` invoke handler.                               |
+| Plan content -> `read_plan_content`                                                  | Returns full plan markdown by path                                                       | implemented | Command registered and wired to `commands.rs`.                                             |
+| Mode permissions -> `build_permission_rules`                                         | Rule names align with runtime tool names                                                 | partial     | Alias support present for `todowrite` + `todo_write`; broader alias policy still evolving. |
+| Sessions sidebar scope                                                               | Show sessions for active workspace only                                                  | implemented | Canonical path matcher resolves `.`/missing directory against active workspace context.    |
 
 ## 2) Tauri <-> Sidecar HTTP
 
-| Endpoint        | Canonical request/response shape                       | Status      | Notes                                                                              |
-| --------------- | ------------------------------------------------------ | ----------- | ---------------------------------------------------------------------------------- |
-| `GET /project`  | Array of project directories                           | partial     | Tolerated in adapter; additional variant fixtures still useful.                    |
-| `GET /session`  | Array of wire sessions                                 | partial     | Parser supports core shape; nested/legacy variants still observed.                 |
-| `POST /session` | Accepts `model.provider_id/model_id` and camel aliases | implemented | Added serde aliases + HTTP test coverage.                                          |
-| `GET /provider` | `{ all, connected, default }` with provider models map | partial     | Primary path works; fallback behavior and remote expansion still under refinement. |
+| Endpoint                                       | Canonical request/response shape                       | Status      | Notes                                                                               |
+| ---------------------------------------------- | ------------------------------------------------------ | ----------- | ----------------------------------------------------------------------------------- |
+| `GET /project`                                 | Array of project directories                           | partial     | Tolerated in adapter; additional variant fixtures still useful.                     |
+| `GET /session`                                 | Array of wire sessions                                 | partial     | Parser supports core shape; nested/legacy variants still observed.                  |
+| `GET /session?scope=workspace&workspace=<abs>` | Workspace-first scoped list (engine-enforced)          | implemented | Default Desktop/Tauri flow now uses scoped listing; no silent global fallback path. |
+| `GET /session?scope=global`                    | Explicit cross-workspace list                          | implemented | Reserved for advanced/debug flows only.                                             |
+| `POST /session`                                | Accepts `model.provider_id/model_id` and camel aliases | implemented | Added serde aliases + HTTP test coverage.                                           |
+| `POST /session/{id}/attach`                    | Explicit cross-workspace attach with audit fields      | implemented | Persists attach metadata (`attachedFrom/To`, reason, timestamp, origin root).       |
+| `POST /session/{id}/workspace/override`        | Temporary sandbox override (TTL, session-scoped)       | implemented | Emits `session.workspace_override.granted`; default remains strict sandbox deny.    |
+| `GET /provider`                                | `{ all, connected, default }` with provider models map | partial     | Primary path works; fallback behavior and remote expansion still under refinement.  |
 
 ## 3) Sidecar SSE -> Tauri `StreamEvent`
 
 | Event                                 | Canonical payload                                                      | Status      | Notes                                                                          |
 | ------------------------------------- | ---------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------ |
+| `storage-migration-progress`          | phase, percent, copied/skipped/errors, recovered counters              | implemented | Drives blocking startup migration overlay progress bar and counters.           |
+| `storage-migration-complete`          | status, duration, copied/skipped/errors, repair totals                 | implemented | Drives completion summary + retry/details actions.                             |
 | `message.part.updated` text           | `part.sessionID`, `part.messageID`, `part.type=text`, optional `delta` | implemented | Delta/no-delta assistant handling present.                                     |
 | `message.part.updated` tool start/end | Consistent tool lifecycle with stable `id/state/tool`                  | partial     | Added structured-state tests; additional telemetry for dropped events pending. |
 | `todo.updated`                        | `sessionID`, normalized todo items (`id/content/status`)               | implemented | Parser tolerant to malformed entries; emits normalized set.                    |
@@ -39,6 +47,44 @@ Last updated: 2026-02-13 (JSON-first planner/validator + storage standardization
 | Tasks panel   | `todo.updated` drives pending/done UI state                         | implemented | Plan fallback emits synthetic todo tool lifecycle + todo update.                                |
 
 ## 5) Canonical Event Examples
+
+### `GET /session` (workspace scope)
+
+```http
+GET /session?scope=workspace&workspace=C:\Users\evang\work\frumu
+```
+
+```json
+[
+  {
+    "id": "ses_123",
+    "title": "Chat",
+    "directory": "C:\\Users\\evang\\work\\frumu",
+    "workspaceRoot": "C:\\Users\\evang\\work\\frumu"
+  }
+]
+```
+
+### `POST /session/{id}/attach`
+
+```json
+{
+  "target_workspace": "C:\\Users\\evang\\work\\tandem",
+  "reason_tag": "manual_attach"
+}
+```
+
+```json
+{
+  "id": "ses_123",
+  "workspaceRoot": "C:\\Users\\evang\\work\\tandem",
+  "originWorkspaceRoot": "C:\\Users\\evang\\work\\frumu",
+  "attachedFromWorkspace": "C:\\Users\\evang\\work\\frumu",
+  "attachedToWorkspace": "C:\\Users\\evang\\work\\tandem",
+  "attachTimestampMs": 1770940000000,
+  "attachReason": "manual_attach"
+}
+```
 
 ### `message.part.updated` (text)
 
@@ -238,6 +284,15 @@ Validation rules in strict mode:
 | Sidecar state dir    | Tauri always passes explicit `--state-dir` to sidecar     | implemented | Prevents state drift caused by implicit cwd defaults.                   |
 | Tool history DB path | Console history + live rows use canonical `memory.sqlite` | implemented | `tool_history.rs` now resolves DB path from shared storage root.        |
 | Storage diagnostics  | UI/TUI-readable storage status command                    | implemented | `get_storage_status` command returns roots + marker/report status.      |
+
+## 10) Workspace Namespace Contract
+
+| Boundary              | Canonical contract                                                    | Status      | Notes                                                                                                 |
+| --------------------- | --------------------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| Workspace plans       | Write to `.tandem/plans`; read `.tandem/plans` then `.opencode/plans` | implemented | `start_plan_session` writes canonical paths; `list_plans` and watcher include legacy-read fallback.   |
+| Workspace skills      | Write to `.tandem/skill`; read `.tandem/skill` then `.opencode/skill` | implemented | Project skill install/import/template flows now target `.tandem/skill`.                               |
+| Python workspace venv | Canonical `.tandem/.venv` with legacy `.opencode/.venv` compatibility | implemented | Policy checks and status resolve canonical first; legacy venv still accepted during migration window. |
+| Starter packs default | Install into `<workspace>/workspace-packs` when workspace is active   | implemented | Falls back to previous global default only when no active workspace exists.                           |
 
 ## 9) Authoritative State Sources (Web + TUI)
 

@@ -5930,6 +5930,7 @@ dependencies = [
  "sha2",
  "sqlite-vec",
  "tandem-core",
+ "tandem-types",
  "tar",
  "tauri",
  "tauri-build",

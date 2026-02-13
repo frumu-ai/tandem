@@ -119,6 +119,24 @@ pub enum CircuitState {
     HalfOpen, // Testing recovery
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SidecarCircuitSnapshot {
+    pub state: String,
+    pub failure_count: u32,
+    pub last_failure_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SidecarRuntimeSnapshot {
+    pub state: SidecarState,
+    pub shared_mode: bool,
+    pub owns_process: bool,
+    pub port: Option<u16>,
+    pub pid: Option<u32>,
+    pub binary_path: Option<String>,
+    pub circuit: SidecarCircuitSnapshot,
+}
+
 /// Configuration for the sidecar manager
 #[derive(Debug, Clone)]
 pub struct SidecarConfig {
@@ -136,17 +154,20 @@ pub struct SidecarConfig {
     pub heartbeat_interval: Duration,
     /// Workspace path for OpenCode
     pub workspace_path: Option<PathBuf>,
+    /// Shared mode allows Desktop and TUI/CLI to attach to a single local engine instance.
+    pub shared_mode: bool,
 }
 
 impl Default for SidecarConfig {
     fn default() -> Self {
         Self {
-            port: 0, // Auto-assign
+            port: 3000,
             max_failures: 3,
             cooldown_duration: Duration::from_secs(30),
             operation_timeout: Duration::from_secs(300),
             heartbeat_interval: Duration::from_secs(5),
             workspace_path: None,
+            shared_mode: true,
         }
     }
 }
@@ -224,6 +245,10 @@ pub struct CreateSessionRequest {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission: Option<Vec<PermissionRule>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+    #[serde(rename = "workspace_root", skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -253,6 +278,27 @@ pub struct Session {
     pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
+    #[serde(rename = "workspaceRoot", skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
+    #[serde(
+        rename = "originWorkspaceRoot",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub origin_workspace_root: Option<String>,
+    #[serde(
+        rename = "attachedFromWorkspace",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attached_from_workspace: Option<String>,
+    #[serde(
+        rename = "attachedToWorkspace",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attached_to_workspace: Option<String>,
+    #[serde(rename = "attachTimestampMs", skip_serializing_if = "Option::is_none")]
+    pub attach_timestamp_ms: Option<u64>,
+    #[serde(rename = "attachReason", skip_serializing_if = "Option::is_none")]
+    pub attach_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -640,6 +686,8 @@ pub enum StreamEvent {
     /// Local memory retrieval telemetry for prompt-context injection.
     MemoryRetrieval {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
         used: bool,
         chunks_total: usize,
         session_chunks: usize,
@@ -774,10 +822,12 @@ pub struct SidecarManager {
     /// Serializes start/stop lifecycle transitions to prevent duplicate spawns.
     lifecycle_lock: Mutex<()>,
     process: Mutex<Option<Child>>,
+    owns_process: RwLock<bool>,
     #[cfg(windows)]
     windows_job: Mutex<Option<WindowsJobHandle>>,
     circuit_breaker: Mutex<CircuitBreaker>,
     port: RwLock<Option<u16>>,
+    binary_path: RwLock<Option<String>>,
     http_client: Client,
     /// HTTP client without global timeout for long-lived streams
     stream_client: Client,
@@ -806,9 +856,11 @@ impl SidecarManager {
             state: RwLock::new(SidecarState::Stopped),
             lifecycle_lock: Mutex::new(()),
             process: Mutex::new(None),
+            owns_process: RwLock::new(false),
             #[cfg(windows)]
             windows_job: Mutex::new(None),
             port: RwLock::new(None),
+            binary_path: RwLock::new(None),
             http_client,
             stream_client,
             env_vars: RwLock::new(HashMap::new()),
@@ -841,9 +893,43 @@ impl SidecarManager {
         *self.state.read().await
     }
 
+    pub async fn shared_mode(&self) -> bool {
+        self.config.read().await.shared_mode
+    }
+
     /// Get the port the sidecar is listening on
     pub async fn port(&self) -> Option<u16> {
         *self.port.read().await
+    }
+
+    pub async fn runtime_snapshot(&self) -> SidecarRuntimeSnapshot {
+        let state = *self.state.read().await;
+        let shared_mode = self.config.read().await.shared_mode;
+        let owns_process = *self.owns_process.read().await;
+        let port = *self.port.read().await;
+        let binary_path = self.binary_path.read().await.clone();
+        let pid = self.process.lock().await.as_ref().map(|p| p.id());
+        let cb = self.circuit_breaker.lock().await;
+        let circuit = SidecarCircuitSnapshot {
+            state: match cb.state {
+                CircuitState::Closed => "closed".to_string(),
+                CircuitState::Open => "open".to_string(),
+                CircuitState::HalfOpen => "half_open".to_string(),
+            },
+            failure_count: cb.failure_count,
+            last_failure_age_ms: cb
+                .last_failure
+                .map(|inst| inst.elapsed().as_millis() as u64),
+        };
+        SidecarRuntimeSnapshot {
+            state,
+            shared_mode,
+            owns_process,
+            port,
+            pid,
+            binary_path,
+            circuit,
+        }
     }
 
     /// Set environment variables for OpenCode
@@ -891,13 +977,38 @@ impl SidecarManager {
         }
 
         tracing::info!("Starting tandem-engine sidecar from: {}", sidecar_path);
+        {
+            let mut path_guard = self.binary_path.write().await;
+            *path_guard = Some(sidecar_path.to_string());
+        }
 
-        // Find an available port
+        // Find an available/configured port.
         let port = self.find_available_port().await?;
 
         // Get config and env vars
         let config = self.config.read().await;
         let env_vars = self.env_vars.read().await;
+
+        // In shared mode, prefer attaching to an already-running engine.
+        if config.shared_mode && self.health_check(port).await.is_ok() {
+            {
+                let mut port_guard = self.port.write().await;
+                *port_guard = Some(port);
+            }
+            {
+                let mut owns_guard = self.owns_process.write().await;
+                *owns_guard = false;
+            }
+            {
+                let mut state = self.state.write().await;
+                *state = SidecarState::Running;
+            }
+            tracing::info!(
+                "Attached to existing tandem-engine sidecar on port {}",
+                port
+            );
+            return Ok(());
+        }
 
         tracing::debug!(
             "Sidecar env set: OPENROUTER_API_KEY={} OPENCODE_ZEN_API_KEY={} ANTHROPIC_API_KEY={} OPENAI_API_KEY={}",
@@ -1048,26 +1159,31 @@ impl SidecarManager {
         // where the app process may be terminated abruptly without running shutdown hooks.
         #[cfg(windows)]
         {
-            let pid = child.id();
-            let mut job_guard = self.windows_job.lock().await;
-            if job_guard.is_none() {
-                match windows_create_kill_on_close_job() {
-                    Ok(job) => *job_guard = Some(job),
-                    Err(e) => {
-                        tracing::warn!("Failed to create Windows job object for sidecar: {}", e);
+            if !config.shared_mode {
+                let pid = child.id();
+                let mut job_guard = self.windows_job.lock().await;
+                if job_guard.is_none() {
+                    match windows_create_kill_on_close_job() {
+                        Ok(job) => *job_guard = Some(job),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to create Windows job object for sidecar: {}",
+                                e
+                            );
+                        }
                     }
                 }
-            }
-            if let Some(job) = job_guard.as_ref() {
-                if let Err(e) = windows_try_assign_pid_to_job(job.as_handle(), pid) {
-                    // If Tandem itself is running inside a non-breakaway job, Windows may reject
-                    // assigning the child to another job. In that case we fall back to best-effort
-                    // shutdown hooks and manual cleanup.
-                    tracing::warn!(
-                        "Failed to assign sidecar PID {} to job object (may orphan on dev reload): {}",
-                        pid,
-                        e
-                    );
+                if let Some(job) = job_guard.as_ref() {
+                    if let Err(e) = windows_try_assign_pid_to_job(job.as_handle(), pid) {
+                        // If Tandem itself is running inside a non-breakaway job, Windows may reject
+                        // assigning the child to another job. In that case we fall back to best-effort
+                        // shutdown hooks and manual cleanup.
+                        tracing::warn!(
+                            "Failed to assign sidecar PID {} to job object (may orphan on dev reload): {}",
+                            pid,
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -1076,6 +1192,10 @@ impl SidecarManager {
         {
             let mut process_guard = self.process.lock().await;
             *process_guard = Some(child);
+        }
+        {
+            let mut owns_guard = self.owns_process.write().await;
+            *owns_guard = true;
         }
         {
             let mut port_guard = self.port.write().await;
@@ -1091,8 +1211,39 @@ impl SidecarManager {
                 Ok(())
             }
             Err(e) => {
-                // Clean up on failure
-                self.stop().await?;
+                // Clean up on failure without re-entering lifecycle lock.
+                let child = {
+                    let mut process_guard = self.process.lock().await;
+                    process_guard.take()
+                };
+                if let Some(mut child) = child {
+                    #[cfg(windows)]
+                    {
+                        use std::process::Command as StdCommand;
+                        let pid = child.id();
+                        let mut cmd = StdCommand::new("taskkill");
+                        cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+                        let _ = cmd.output();
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        let _ = child.kill();
+                    }
+                    let _ = child.wait();
+                }
+                {
+                    let mut port_guard = self.port.write().await;
+                    *port_guard = None;
+                }
+                {
+                    let mut owns_guard = self.owns_process.write().await;
+                    *owns_guard = false;
+                }
+                #[cfg(windows)]
+                {
+                    let mut job_guard = self.windows_job.lock().await;
+                    *job_guard = None;
+                }
                 let mut state = self.state.write().await;
                 *state = SidecarState::Failed;
                 Err(e)
@@ -1117,6 +1268,49 @@ impl SidecarManager {
         }
 
         tracing::info!("Stopping tandem-engine sidecar");
+
+        let shared_mode = self.config.read().await.shared_mode;
+        let owns_process = *self.owns_process.read().await;
+
+        // Shared mode: detach and keep engine alive for other clients.
+        if shared_mode {
+            {
+                let mut process_guard = self.process.lock().await;
+                let _ = process_guard.take();
+            }
+            {
+                let mut port_guard = self.port.write().await;
+                *port_guard = None;
+            }
+            {
+                let mut owns_guard = self.owns_process.write().await;
+                *owns_guard = false;
+            }
+            {
+                let mut state = self.state.write().await;
+                *state = SidecarState::Stopped;
+            }
+            tracing::info!("Detached from shared tandem-engine sidecar");
+            return Ok(());
+        }
+
+        // If this manager didn't spawn the process, detach only.
+        if !owns_process {
+            {
+                let mut process_guard = self.process.lock().await;
+                let _ = process_guard.take();
+            }
+            {
+                let mut port_guard = self.port.write().await;
+                *port_guard = None;
+            }
+            {
+                let mut state = self.state.write().await;
+                *state = SidecarState::Stopped;
+            }
+            tracing::info!("Detached from external tandem-engine sidecar");
+            return Ok(());
+        }
 
         // Kill the process
         let child = {
@@ -1195,6 +1389,10 @@ impl SidecarManager {
         {
             let mut state = self.state.write().await;
             *state = SidecarState::Stopped;
+        }
+        {
+            let mut owns_guard = self.owns_process.write().await;
+            *owns_guard = false;
         }
 
         tracing::info!("tandem-engine sidecar stopped");
@@ -1330,7 +1528,11 @@ impl SidecarManager {
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to get session: {}", e)))?;
 
-        self.handle_response(response).await
+        let session: Session = self.handle_response(response).await?;
+        Ok(normalize_session_for_workspace(
+            session,
+            self.workspace_directory().await.as_deref(),
+        ))
     }
 
     /// List all sessions
@@ -1338,47 +1540,39 @@ impl SidecarManager {
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
         self.check_circuit_breaker().await?;
 
-        // Prefer root sessions only, to avoid flooding the UI with internal child sessions
-        // created by orchestration and other features. If the sidecar doesn't support the
-        // `roots` param, fall back to the unfiltered endpoint.
         let base_url = self.base_url().await?;
+        let workspace_directory = self.workspace_directory().await;
+        let url = format!("{}/session", base_url);
+        let mut req = self.http_client.get(&url).query(&[("scope", "workspace")]);
+        if let Some(directory) = workspace_directory.as_deref() {
+            req = req.query(&[("workspace", directory)]);
+        }
 
-        let try_roots = async {
-            let url = format!("{}/session", base_url);
-            let mut req = self.http_client.get(&url).query(&[("roots", "true")]);
-            if let Some(directory) = self.workspace_directory().await {
-                req = req.query(&[("directory", directory)]);
+        let response = match req.send().await {
+            Ok(resp) => resp,
+            Err(primary_err) => {
+                // Compatibility fallback for older sidecar builds that do not support scope/workspace.
+                let mut compat_req = self.http_client.get(&url).query(&[("roots", "true")]);
+                if let Some(directory) = workspace_directory.as_deref() {
+                    compat_req = compat_req.query(&[("directory", directory)]);
+                }
+                compat_req.send().await.map_err(|compat_err| {
+                    TandemError::Sidecar(format!(
+                        "Failed to list sessions (primary: {}; compat: {})",
+                        primary_err, compat_err
+                    ))
+                })?
             }
-            let response = req
-                .send()
-                .await
-                .map_err(|e| TandemError::Sidecar(format!("Failed to list sessions: {}", e)))?;
-            let raw: serde_json::Value = self.handle_response(response).await?;
-            parse_sessions_response(raw).ok_or_else(|| {
+        };
+
+        let raw: serde_json::Value = self.handle_response(response).await?;
+        parse_sessions_response(raw)
+            .map(|sessions| {
+                normalize_sessions_for_workspace(sessions, workspace_directory.as_deref())
+            })
+            .ok_or_else(|| {
                 TandemError::Sidecar("Failed to parse sessions response shape".to_string())
             })
-        }
-        .await;
-
-        match try_roots {
-            Ok(sessions) => Ok(sessions),
-            Err(e) => {
-                tracing::warn!("Failed to list root sessions (falling back): {}", e);
-                let url = format!("{}/session", base_url);
-                let mut req = self.http_client.get(&url);
-                if let Some(directory) = self.workspace_directory().await {
-                    req = req.query(&[("directory", directory)]);
-                }
-                let response = req
-                    .send()
-                    .await
-                    .map_err(|e| TandemError::Sidecar(format!("Failed to list sessions: {}", e)))?;
-                let raw: serde_json::Value = self.handle_response(response).await?;
-                parse_sessions_response(raw).ok_or_else(|| {
-                    TandemError::Sidecar("Failed to parse sessions response shape".to_string())
-                })
-            }
-        }
     }
 
     /// Delete a session
@@ -3040,6 +3234,52 @@ fn parse_sessions_response(raw: serde_json::Value) -> Option<Vec<Session>> {
     None
 }
 
+fn normalize_session_for_workspace(
+    mut session: Session,
+    workspace_directory: Option<&str>,
+) -> Session {
+    if session
+        .workspace_root
+        .as_deref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        session.workspace_root = session.directory.clone();
+    }
+
+    let has_real_directory = session
+        .directory
+        .as_deref()
+        .map(|d| {
+            let trimmed = d.trim();
+            !trimmed.is_empty() && trimmed != "." && trimmed != "./" && trimmed != ".\\"
+        })
+        .unwrap_or(false);
+
+    if !has_real_directory {
+        if let Some(workspace) = workspace_directory {
+            if !workspace.trim().is_empty() {
+                session.directory = Some(workspace.to_string());
+                if session.workspace_root.is_none() {
+                    session.workspace_root = Some(workspace.to_string());
+                }
+            }
+        }
+    }
+
+    session
+}
+
+fn normalize_sessions_for_workspace(
+    sessions: Vec<Session>,
+    workspace_directory: Option<&str>,
+) -> Vec<Session> {
+    sessions
+        .into_iter()
+        .map(|session| normalize_session_for_workspace(session, workspace_directory))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3283,6 +3523,7 @@ mod tests {
     fn test_memory_retrieval_event_serialization_tag() {
         let event = StreamEvent::MemoryRetrieval {
             session_id: "ses_123".to_string(),
+            status: Some("retrieved_used".to_string()),
             used: true,
             chunks_total: 5,
             session_chunks: 1,

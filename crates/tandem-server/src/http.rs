@@ -29,6 +29,13 @@ use tandem_wire::{
 
 use crate::AppState;
 
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum SessionScope {
+    Workspace,
+    Global,
+}
+
 #[derive(Debug, Deserialize)]
 struct PermissionReplyInput {
     reply: String,
@@ -40,12 +47,25 @@ struct ListSessionsQuery {
     page: Option<usize>,
     page_size: Option<usize>,
     archived: Option<bool>,
+    scope: Option<SessionScope>,
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct UpdateSessionInput {
     title: Option<String>,
     archived: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachSessionInput {
+    target_workspace: String,
+    reason_tag: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceOverrideInput {
+    ttl_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,11 +204,21 @@ fn app_router(state: AppState) -> Router {
                 .delete(delete_session)
                 .patch(update_session),
         )
+        .route("/session/{id}/attach", post(attach_session))
+        .route(
+            "/session/{id}/workspace/override",
+            post(grant_workspace_override),
+        )
         .route(
             "/api/session/{id}",
             get(get_session)
                 .delete(delete_session)
                 .patch(update_session),
+        )
+        .route("/api/session/{id}/attach", post(attach_session))
+        .route(
+            "/api/session/{id}/workspace/override",
+            post(grant_workspace_override),
         )
         .route(
             "/session/{id}/message",
@@ -334,6 +364,22 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<WireSession>, StatusCode> {
     let mut session = Session::new(req.title, req.directory);
+    let workspace_from_runtime = {
+        let snapshot = state.workspace_index.snapshot().await;
+        tandem_core::normalize_workspace_path(&snapshot.root)
+    };
+    let workspace = req
+        .workspace_root
+        .as_deref()
+        .and_then(tandem_core::normalize_workspace_path)
+        .or_else(|| tandem_core::normalize_workspace_path(&session.directory))
+        .or(workspace_from_runtime);
+    if let Some(workspace) = workspace {
+        session.workspace_root = Some(workspace.clone());
+        if session.directory.trim() == "." || session.directory.trim().is_empty() {
+            session.directory = workspace;
+        }
+    }
     session.model = req.model;
     session.provider = req.provider;
     state
@@ -352,7 +398,44 @@ async fn list_sessions(
     State(state): State<AppState>,
     Query(query): Query<ListSessionsQuery>,
 ) -> Json<Vec<WireSession>> {
-    let mut sessions = state.storage.list_sessions().await;
+    let workspace_from_query = query
+        .workspace
+        .as_deref()
+        .and_then(tandem_core::normalize_workspace_path);
+    let workspace_from_runtime = {
+        let snapshot = state.workspace_index.snapshot().await;
+        tandem_core::normalize_workspace_path(&snapshot.root)
+    };
+    let effective_scope = query.scope.unwrap_or_else(|| {
+        if workspace_from_query.is_some() || workspace_from_runtime.is_some() {
+            SessionScope::Workspace
+        } else {
+            SessionScope::Global
+        }
+    });
+    let mut sessions = match effective_scope {
+        SessionScope::Global => {
+            state
+                .storage
+                .list_sessions_scoped(tandem_core::SessionListScope::Global)
+                .await
+        }
+        SessionScope::Workspace => {
+            let workspace = workspace_from_query.or(workspace_from_runtime);
+            match workspace {
+                Some(workspace_root) => {
+                    state
+                        .storage
+                        .list_sessions_scoped(tandem_core::SessionListScope::Workspace {
+                            workspace_root,
+                        })
+                        .await
+                }
+                None => Vec::new(),
+            }
+        }
+    };
+    let total_after_scope = sessions.len();
     sessions.sort_by(|a, b| b.time.updated.cmp(&a.time.updated));
 
     if let Some(archived) = query.archived {
@@ -387,7 +470,69 @@ async fn list_sessions(
         .take(page_size)
         .map(Into::into)
         .collect::<Vec<WireSession>>();
+    tracing::debug!(
+        "session.list scope={:?} matched={} page={} page_size={}",
+        effective_scope,
+        total_after_scope,
+        page,
+        page_size
+    );
     Json(items)
+}
+
+async fn attach_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<AttachSessionInput>,
+) -> Result<Json<WireSession>, StatusCode> {
+    let reason = input
+        .reason_tag
+        .unwrap_or_else(|| "manual_attach".to_string());
+    let session = state
+        .storage
+        .attach_session_to_workspace(&id, &input.target_workspace, &reason)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    state.event_bus.publish(EngineEvent::new(
+        "session.attached",
+        json!({
+            "sessionID": session.id,
+            "workspaceRoot": session.workspace_root,
+            "attachedFromWorkspace": session.attached_from_workspace,
+            "attachedToWorkspace": session.attached_to_workspace,
+            "attachReason": session.attach_reason
+        }),
+    ));
+    Ok(Json(session.into()))
+}
+
+async fn grant_workspace_override(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<WorkspaceOverrideInput>,
+) -> Result<Json<Value>, StatusCode> {
+    if state.storage.get_session(&id).await.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let ttl = input.ttl_seconds.unwrap_or(900).clamp(30, 86_400);
+    let expires_at = state
+        .engine_loop
+        .grant_workspace_override_for_session(&id, ttl)
+        .await;
+    state.event_bus.publish(EngineEvent::new(
+        "session.workspace_override.granted",
+        json!({
+            "sessionID": id,
+            "ttlSeconds": ttl,
+            "expiresAtMs": expires_at
+        }),
+    ));
+    Ok(Json(json!({
+        "ok": true,
+        "ttlSeconds": ttl,
+        "expiresAtMs": expires_at
+    })))
 }
 
 async fn get_session(
@@ -1885,6 +2030,97 @@ mod tests {
         assert!(!list.is_empty());
         assert!(list[0].get("info").is_some());
         assert!(list[0].get("parts").is_some());
+    }
+
+    #[tokio::test]
+    async fn session_listing_honors_workspace_scope_query() {
+        let state = test_state().await;
+        let ws_a = std::env::temp_dir()
+            .join(format!("tandem-http-ws-a-{}", Uuid::new_v4()))
+            .to_string_lossy()
+            .to_string();
+        let ws_b = std::env::temp_dir()
+            .join(format!("tandem-http-ws-b-{}", Uuid::new_v4()))
+            .to_string_lossy()
+            .to_string();
+
+        let mut session_a = Session::new(Some("A".to_string()), Some(ws_a.clone()));
+        session_a.workspace_root = Some(ws_a.clone());
+        state.storage.save_session(session_a).await.expect("save A");
+
+        let mut session_b = Session::new(Some("B".to_string()), Some(ws_b.clone()));
+        session_b.workspace_root = Some(ws_b.clone());
+        state.storage.save_session(session_b).await.expect("save B");
+
+        let app = app_router(state);
+        let encoded_ws_a = ws_a.replace('\\', "%5C").replace(':', "%3A");
+        let scoped_req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/session?scope=workspace&workspace={}",
+                encoded_ws_a
+            ))
+            .body(Body::empty())
+            .expect("request");
+        let scoped_resp = app.clone().oneshot(scoped_req).await.expect("response");
+        assert_eq!(scoped_resp.status(), StatusCode::OK);
+        let scoped_body = to_bytes(scoped_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let scoped_payload: Value = serde_json::from_slice(&scoped_body).expect("json");
+        assert_eq!(scoped_payload.as_array().map(|v| v.len()), Some(1));
+
+        let global_req = Request::builder()
+            .method("GET")
+            .uri("/session?scope=global")
+            .body(Body::empty())
+            .expect("request");
+        let global_resp = app.oneshot(global_req).await.expect("response");
+        assert_eq!(global_resp.status(), StatusCode::OK);
+        let global_body = to_bytes(global_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let global_payload: Value = serde_json::from_slice(&global_body).expect("json");
+        assert_eq!(global_payload.as_array().map(|v| v.len()), Some(2));
+    }
+
+    #[tokio::test]
+    async fn attach_session_route_updates_workspace_metadata() {
+        let state = test_state().await;
+        let ws_a = std::env::temp_dir()
+            .join(format!("tandem-http-attach-a-{}", Uuid::new_v4()))
+            .to_string_lossy()
+            .to_string();
+        let ws_b = std::env::temp_dir()
+            .join(format!("tandem-http-attach-b-{}", Uuid::new_v4()))
+            .to_string_lossy()
+            .to_string();
+        let mut session = Session::new(Some("attach".to_string()), Some(ws_a.clone()));
+        session.workspace_root = Some(ws_a);
+        let session_id = session.id.clone();
+        state.storage.save_session(session).await.expect("save");
+
+        let app = app_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/attach"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"target_workspace": ws_b, "reason_tag": "manual_attach"}).to_string(),
+            ))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            payload.get("attachReason").and_then(|v| v.as_str()),
+            Some("manual_attach")
+        );
+        assert!(payload
+            .get("workspaceRoot")
+            .and_then(|v| v.as_str())
+            .is_some());
     }
 
     #[tokio::test]

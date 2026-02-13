@@ -124,9 +124,37 @@ Important: the filename is the same (`tandem-engine` or `tandem-engine.exe`), bu
 From `tandem/`:
 
 ```powershell
+pnpm engine:stop:windows
 cargo build -p tandem-engine
 New-Item -ItemType Directory -Force -Path .\src-tauri\binaries | Out-Null
 Copy-Item .\target\debug\tandem-engine.exe .\src-tauri\binaries\tandem-engine.exe -Force
+pnpm tauri dev
+```
+
+## Shared Engine Mode (Desktop + TUI together)
+
+Desktop and TUI now use shared engine mode by default:
+
+- fixed engine port: `127.0.0.1:3000`
+- clients attach to an already-running engine when available
+- closing one client detaches instead of force-stopping the shared engine
+
+Disable shared mode (legacy single-client behavior) by setting:
+
+```powershell
+$env:TANDEM_SHARED_ENGINE_MODE="0"
+```
+
+If the app is stuck on `Connecting...` or fails to load, do a clean dev restart:
+
+```powershell
+pnpm tauri:dev:clean
+```
+
+Manual equivalent:
+
+```powershell
+Get-Process | Where-Object { $_.ProcessName -in @('tandem','tandem-engine','node') } | Stop-Process -Force -ErrorAction SilentlyContinue
 pnpm tauri dev
 ```
 
@@ -205,6 +233,7 @@ pkill -f tandem-engine || true
 - `Access is denied (os error 5)` on Windows build usually means `tandem-engine.exe` is still running and locked by the OS loader.
 - Stop rogue engine processes, then rebuild.
 - If bind fails, verify no process is already listening on your port.
+- If startup log shows `Another instance tried to launch`, a previous app instance is still running. Close/kill all `tandem` processes and relaunch.
 - For writable state/config, use `--state-dir` with a project-local directory.
 
 ## Storage migration verification (legacy upgrades)
@@ -217,3 +246,41 @@ When upgrading from builds that used `ai.frumu.tandem`, verify canonical migrati
 4. Verify `%APPDATA%/tandem/storage_version.json` and `%APPDATA%/tandem/migration_report.json` exist.
 5. Verify sessions/tool history are visible without manual copying.
 6. Verify `%APPDATA%/ai.frumu.tandem` remains intact (copy + keep legacy).
+
+## Startup migration wizard verification (blocking progress UX)
+
+1. Seed legacy data under either:
+2. `%APPDATA%/ai.frumu.tandem`
+3. `%APPDATA%/opencode`
+4. `%USERPROFILE%/.local/share/opencode/storage`
+5. Launch Tandem and unlock vault.
+6. Verify full-screen migration overlay appears and blocks interaction until completion.
+7. Verify progress updates through phases:
+8. scanning -> copying -> rehydrating -> finalizing.
+9. On success/partial, verify summary card shows repaired session/message counts.
+10. Click Continue and verify chat history loads for migrated sessions.
+
+## Settings migration rerun verification
+
+1. Open Settings -> Data Migration.
+2. Run `Dry Run` and verify result status reports `dry_run`.
+3. Run `Run Migration Again` and verify counters update.
+4. Verify `migration_report.json` timestamp updates and report path is shown.
+
+## Workspace namespace migration verification (`.opencode` -> `.tandem`)
+
+For an existing workspace that contains legacy metadata:
+
+1. Ensure `<workspace>/.opencode/plans` and/or `<workspace>/.opencode/skill` exists.
+2. Start Tandem and set/switch active workspace to that folder.
+3. Verify `<workspace>/.tandem/plans` and `<workspace>/.tandem/skill` are created.
+4. Verify plan list and skills list still include legacy entries.
+5. Create a new plan and install/import a skill; verify new files are written under `.tandem/*`.
+6. Confirm legacy `.opencode/*` remains untouched (read-compatible window).
+
+## Workspace-scoped session history checks
+
+1. With multiple projects configured, switch active folder in the project switcher.
+2. Verify sidebar session list shows only sessions belonging to that folder.
+3. Create a new chat in the active folder; verify it appears immediately in sidebar.
+4. Verify sessions with legacy `directory = "."` still appear under current workspace.

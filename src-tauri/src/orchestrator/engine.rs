@@ -1046,6 +1046,8 @@ impl OrchestratorEngine {
             model,
             provider,
             permission,
+            directory: Some(self.workspace_path.to_string_lossy().to_string()),
+            workspace_root: Some(self.workspace_path.to_string_lossy().to_string()),
         };
 
         let session = self.sidecar.create_session(request).await?;
@@ -1184,6 +1186,8 @@ impl OrchestratorEngine {
                     action: "allow".to_string(),
                 },
             ]),
+            directory: Some(self.workspace_path.to_string_lossy().to_string()),
+            workspace_root: Some(self.workspace_path.to_string_lossy().to_string()),
         };
 
         let session = self.sidecar.create_session(request).await?;

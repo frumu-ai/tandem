@@ -173,7 +173,7 @@ export function Chat({
   );
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [streamHealth, setStreamHealth] = useState<"healthy" | "degraded" | "recovering">(
-    "recovering"
+    "healthy"
   );
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   // const [activities, setActivities] = useState<ActivityItem[]>([]);
@@ -514,6 +514,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           try {
             await startSidecar();
             setSidecarStatus("running");
+            setStreamHealth("healthy");
             // Notify parent that sidecar is connected
             onSidecarConnectedRef.current?.();
           } catch (e) {
@@ -523,6 +524,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
             setIsConnecting(false);
           }
         } else {
+          setStreamHealth("healthy");
           // Already running, notify parent
           onSidecarConnectedRef.current?.();
         }
@@ -1163,6 +1165,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               {
                 ...lastMessage,
                 memoryRetrieval: {
+                  status: event.status,
                   used: event.used,
                   chunks_total: event.chunks_total,
                   latency_ms: event.latency_ms,
@@ -1517,10 +1520,12 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
   const connectSidecar = async () => {
     setIsConnecting(true);
     setError(null);
+    setStreamHealth("recovering");
 
     try {
       await startSidecar();
       setSidecarStatus("running");
+      setStreamHealth("healthy");
       // Don't create a session here - it will be created when user sends first message
       // Notify parent that sidecar is connected
       onSidecarConnected?.();
@@ -2105,6 +2110,7 @@ ${g.example}
   }, [activePlan, hasPendingQuestionOverlay, pendingQuestionRequests, showPlanView, usePlanMode]);
 
   const needsConnection = sidecarStatus !== "running" && !isConnecting;
+  const showConnectingOverlay = isConnecting || sidecarStatus === "starting";
 
   return (
     <div className="relative flex h-full flex-col">
@@ -2113,6 +2119,43 @@ ${g.example}
           {statusBanner}
         </div>
       )}
+      <AnimatePresence>
+        {showConnectingOverlay && (
+          <motion.div
+            className="absolute inset-0 z-30 flex items-center justify-center bg-black/55 backdrop-blur-sm"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="w-[min(520px,88vw)] rounded-2xl border border-primary/25 bg-surface-elevated/95 p-6 shadow-2xl"
+              initial={{ scale: 0.97, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+            >
+              <div className="mb-3 flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary/30 bg-primary/10">
+                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-text">Connecting to Tandem Engine</h3>
+                  <p className="text-sm text-text-muted">
+                    Starting the sidecar and syncing the live stream.
+                  </p>
+                </div>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-surface">
+                <motion.div
+                  className="h-full bg-gradient-to-r from-primary via-secondary to-primary"
+                  initial={{ x: "-35%", width: "35%" }}
+                  animate={{ x: "130%" }}
+                  transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
+                />
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* Header */}
       <header className="flex items-center justify-between border-b border-border px-6 py-4">
         <div className="flex items-center gap-3">

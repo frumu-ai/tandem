@@ -52,4 +52,36 @@ impl SecureKeyStore {
 
         Ok(Some(value))
     }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        let data = serde_json::to_vec_pretty(&self.store).context("Failed to encode key store")?;
+        std::fs::write(path.as_ref(), data)
+            .context(format!("Failed to write key store to {:?}", path.as_ref()))?;
+        Ok(())
+    }
+
+    pub fn list_keys(&self) -> Vec<String> {
+        self.store.entries.keys().cloned().collect()
+    }
+
+    pub fn set(&mut self, key: &str, value: String) -> Result<()> {
+        let cipher = Aes256Gcm::new_from_slice(&self.master_key)
+            .map_err(|e| anyhow!("Invalid master key: {}", e))?;
+
+        let nonce_bytes: [u8; 12] = rand::random();
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let ciphertext = cipher
+            .encrypt(nonce, value.as_bytes())
+            .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+
+        self.store
+            .entries
+            .insert(key.to_string(), (nonce_bytes.to_vec(), ciphertext));
+        Ok(())
+    }
+
+    pub fn remove(&mut self, key: &str) -> bool {
+        self.store.entries.remove(key).is_some()
+    }
 }

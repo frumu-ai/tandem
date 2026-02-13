@@ -2,14 +2,16 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::fs;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use tandem_types::{Message, Session};
+use tandem_types::{Message, MessagePart, MessageRole, Session};
+
+use crate::normalize_workspace_path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionMeta {
@@ -53,17 +55,45 @@ pub struct Storage {
     question_requests: RwLock<HashMap<String, QuestionRequest>>,
 }
 
+#[derive(Debug, Clone)]
+pub enum SessionListScope {
+    Global,
+    Workspace { workspace_root: String },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionRepairStats {
+    pub sessions_repaired: u64,
+    pub messages_recovered: u64,
+    pub parts_recovered: u64,
+    pub conflicts_merged: u64,
+}
+
 impl Storage {
     pub async fn new(base: impl AsRef<Path>) -> anyhow::Result<Self> {
         let base = base.as_ref().to_path_buf();
         fs::create_dir_all(&base).await?;
         let sessions_file = base.join("sessions.json");
-        let sessions = if sessions_file.exists() {
+        let mut imported_legacy_sessions = false;
+        let mut sessions = if sessions_file.exists() {
             let raw = fs::read_to_string(&sessions_file).await?;
-            serde_json::from_str::<HashMap<String, Session>>(&raw).unwrap_or_default()
+            let mut current =
+                serde_json::from_str::<HashMap<String, Session>>(&raw).unwrap_or_default();
+            let imported = load_legacy_opencode_sessions(&base).unwrap_or_default();
+            if merge_legacy_sessions(&mut current, imported) {
+                imported_legacy_sessions = true;
+            }
+            current
         } else {
-            HashMap::new()
+            let imported = load_legacy_opencode_sessions(&base).unwrap_or_default();
+            if !imported.is_empty() {
+                imported_legacy_sessions = true;
+            }
+            imported
         };
+        if hydrate_workspace_roots(&mut sessions) {
+            imported_legacy_sessions = true;
+        }
         let metadata_file = base.join("session_meta.json");
         let metadata = if metadata_file.exists() {
             let raw = fs::read_to_string(&metadata_file).await?;
@@ -78,23 +108,66 @@ impl Storage {
         } else {
             HashMap::new()
         };
-        Ok(Self {
+        let storage = Self {
             base,
             sessions: RwLock::new(sessions),
             metadata: RwLock::new(metadata),
             question_requests: RwLock::new(question_requests),
-        })
+        };
+
+        if imported_legacy_sessions {
+            storage.flush().await?;
+        }
+
+        Ok(storage)
     }
 
     pub async fn list_sessions(&self) -> Vec<Session> {
-        self.sessions.read().await.values().cloned().collect()
+        self.list_sessions_scoped(SessionListScope::Global).await
+    }
+
+    pub async fn list_sessions_scoped(&self, scope: SessionListScope) -> Vec<Session> {
+        let all = self
+            .sessions
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        match scope {
+            SessionListScope::Global => all,
+            SessionListScope::Workspace { workspace_root } => {
+                let Some(normalized_workspace) = normalize_workspace_path(&workspace_root) else {
+                    return Vec::new();
+                };
+                all.into_iter()
+                    .filter(|session| {
+                        let direct = session
+                            .workspace_root
+                            .as_ref()
+                            .and_then(|p| normalize_workspace_path(p))
+                            .map(|p| p == normalized_workspace)
+                            .unwrap_or(false);
+                        if direct {
+                            return true;
+                        }
+                        normalize_workspace_path(&session.directory)
+                            .map(|p| p == normalized_workspace)
+                            .unwrap_or(false)
+                    })
+                    .collect()
+            }
+        }
     }
 
     pub async fn get_session(&self, id: &str) -> Option<Session> {
         self.sessions.read().await.get(id).cloned()
     }
 
-    pub async fn save_session(&self, session: Session) -> anyhow::Result<()> {
+    pub async fn save_session(&self, mut session: Session) -> anyhow::Result<()> {
+        if session.workspace_root.is_none() {
+            session.workspace_root = normalize_workspace_path(&session.directory);
+        }
         let session_id = session.id.clone();
         self.sessions
             .write()
@@ -106,6 +179,37 @@ impl Storage {
             .entry(session_id)
             .or_insert_with(SessionMeta::default);
         self.flush().await
+    }
+
+    pub async fn repair_sessions_from_file_store(&self) -> anyhow::Result<SessionRepairStats> {
+        let mut stats = SessionRepairStats::default();
+        let mut sessions = self.sessions.write().await;
+
+        for session in sessions.values_mut() {
+            let imported = load_legacy_session_messages(&self.base, &session.id);
+            if imported.is_empty() {
+                continue;
+            }
+
+            let (merged, merge_stats, changed) =
+                merge_session_messages(&session.messages, &imported);
+            if changed {
+                session.messages = merged;
+                session.time.updated =
+                    most_recent_message_time(&session.messages).unwrap_or(session.time.updated);
+                stats.sessions_repaired += 1;
+                stats.messages_recovered += merge_stats.messages_recovered;
+                stats.parts_recovered += merge_stats.parts_recovered;
+                stats.conflicts_merged += merge_stats.conflicts_merged;
+            }
+        }
+
+        if stats.sessions_repaired > 0 {
+            drop(sessions);
+            self.flush().await?;
+        }
+
+        Ok(stats)
     }
 
     pub async fn delete_session(&self, id: &str) -> anyhow::Result<bool> {
@@ -368,6 +472,40 @@ impl Storage {
         self.reply_question(request_id).await
     }
 
+    pub async fn attach_session_to_workspace(
+        &self,
+        session_id: &str,
+        target_workspace: &str,
+        reason_tag: &str,
+    ) -> anyhow::Result<Option<Session>> {
+        let Some(target_workspace) = normalize_workspace_path(target_workspace) else {
+            return Ok(None);
+        };
+        let mut sessions = self.sessions.write().await;
+        let Some(session) = sessions.get_mut(session_id) else {
+            return Ok(None);
+        };
+        let previous_workspace = session
+            .workspace_root
+            .clone()
+            .or_else(|| normalize_workspace_path(&session.directory));
+
+        if session.origin_workspace_root.is_none() {
+            session.origin_workspace_root = previous_workspace.clone();
+        }
+        session.attached_from_workspace = previous_workspace;
+        session.attached_to_workspace = Some(target_workspace.clone());
+        session.attach_timestamp_ms = Some(Utc::now().timestamp_millis().max(0) as u64);
+        session.attach_reason = Some(reason_tag.trim().to_string());
+        session.workspace_root = Some(target_workspace.clone());
+        session.directory = target_workspace;
+        session.time.updated = Utc::now();
+        let updated = session.clone();
+        drop(sessions);
+        self.flush().await?;
+        Ok(Some(updated))
+    }
+
     async fn flush(&self) -> anyhow::Result<()> {
         let snapshot = self.sessions.read().await.clone();
         let payload = serde_json::to_string_pretty(&snapshot)?;
@@ -418,9 +556,379 @@ fn normalize_todo_items(items: Vec<Value>) -> Vec<Value> {
         .collect()
 }
 
+fn merge_legacy_sessions(
+    current: &mut HashMap<String, Session>,
+    imported: HashMap<String, Session>,
+) -> bool {
+    let mut changed = false;
+    for (id, legacy) in imported {
+        match current.get_mut(&id) {
+            None => {
+                current.insert(id, legacy);
+                changed = true;
+            }
+            Some(existing) => {
+                let should_merge_messages =
+                    existing.messages.is_empty() && !legacy.messages.is_empty();
+                let should_fill_title =
+                    existing.title.trim().is_empty() && !legacy.title.trim().is_empty();
+                let should_fill_directory = (existing.directory.trim().is_empty()
+                    || existing.directory.trim() == "."
+                    || existing.directory.trim() == "./"
+                    || existing.directory.trim() == ".\\")
+                    && !legacy.directory.trim().is_empty();
+                let should_fill_workspace =
+                    existing.workspace_root.is_none() && legacy.workspace_root.is_some();
+                if should_merge_messages {
+                    existing.messages = legacy.messages.clone();
+                }
+                if should_fill_title {
+                    existing.title = legacy.title.clone();
+                }
+                if should_fill_directory {
+                    existing.directory = legacy.directory.clone();
+                }
+                if should_fill_workspace {
+                    existing.workspace_root = legacy.workspace_root.clone();
+                }
+                if should_merge_messages
+                    || should_fill_title
+                    || should_fill_directory
+                    || should_fill_workspace
+                {
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
+fn hydrate_workspace_roots(sessions: &mut HashMap<String, Session>) -> bool {
+    let mut changed = false;
+    for session in sessions.values_mut() {
+        if session.workspace_root.is_none() {
+            let normalized = normalize_workspace_path(&session.directory);
+            if normalized.is_some() {
+                session.workspace_root = normalized;
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacySessionTime {
+    created: i64,
+    updated: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacySession {
+    id: String,
+    slug: Option<String>,
+    version: Option<String>,
+    #[serde(rename = "projectID")]
+    project_id: Option<String>,
+    title: Option<String>,
+    directory: Option<String>,
+    time: LegacySessionTime,
+}
+
+fn load_legacy_opencode_sessions(base: &Path) -> anyhow::Result<HashMap<String, Session>> {
+    let legacy_root = base.join("session");
+    if !legacy_root.is_dir() {
+        return Ok(HashMap::new());
+    }
+
+    let mut out = HashMap::new();
+    let mut stack = vec![legacy_root];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let raw = match std::fs::read_to_string(&path) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let legacy = match serde_json::from_str::<LegacySession>(&raw) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let created = Utc
+                .timestamp_millis_opt(legacy.time.created)
+                .single()
+                .unwrap_or_else(Utc::now);
+            let updated = Utc
+                .timestamp_millis_opt(legacy.time.updated)
+                .single()
+                .unwrap_or(created);
+
+            let session_id = legacy.id.clone();
+            out.insert(
+                session_id.clone(),
+                Session {
+                    id: session_id.clone(),
+                    slug: legacy.slug,
+                    version: legacy.version,
+                    project_id: legacy.project_id,
+                    title: legacy
+                        .title
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "New session".to_string()),
+                    directory: legacy
+                        .directory
+                        .clone()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| ".".to_string()),
+                    workspace_root: legacy
+                        .directory
+                        .as_deref()
+                        .and_then(normalize_workspace_path),
+                    origin_workspace_root: None,
+                    attached_from_workspace: None,
+                    attached_to_workspace: None,
+                    attach_timestamp_ms: None,
+                    attach_reason: None,
+                    time: tandem_types::SessionTime { created, updated },
+                    model: None,
+                    provider: None,
+                    messages: load_legacy_session_messages(base, &session_id),
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyMessageTime {
+    created: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyMessage {
+    id: String,
+    role: String,
+    time: LegacyMessageTime,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyPart {
+    #[serde(rename = "type")]
+    part_type: Option<String>,
+    text: Option<String>,
+    tool: Option<String>,
+    args: Option<Value>,
+    result: Option<Value>,
+    error: Option<String>,
+}
+
+fn load_legacy_session_messages(base: &Path, session_id: &str) -> Vec<Message> {
+    let msg_dir = base.join("message").join(session_id);
+    if !msg_dir.is_dir() {
+        return Vec::new();
+    }
+
+    let mut legacy_messages: Vec<(i64, Message)> = Vec::new();
+
+    let Ok(entries) = std::fs::read_dir(&msg_dir) else {
+        return Vec::new();
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(legacy) = serde_json::from_str::<LegacyMessage>(&raw) else {
+            continue;
+        };
+
+        let created_at = Utc
+            .timestamp_millis_opt(legacy.time.created)
+            .single()
+            .unwrap_or_else(Utc::now);
+
+        legacy_messages.push((
+            legacy.time.created,
+            Message {
+                id: legacy.id.clone(),
+                role: legacy_role_to_message_role(&legacy.role),
+                parts: load_legacy_message_parts(base, &legacy.id),
+                created_at,
+            },
+        ));
+    }
+
+    legacy_messages.sort_by_key(|(created_ms, _)| *created_ms);
+    legacy_messages.into_iter().map(|(_, msg)| msg).collect()
+}
+
+fn load_legacy_message_parts(base: &Path, message_id: &str) -> Vec<MessagePart> {
+    let parts_dir = base.join("part").join(message_id);
+    if !parts_dir.is_dir() {
+        return Vec::new();
+    }
+
+    let Ok(entries) = std::fs::read_dir(&parts_dir) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(part) = serde_json::from_str::<LegacyPart>(&raw) else {
+            continue;
+        };
+
+        let mapped = if let Some(tool) = part.tool {
+            Some(MessagePart::ToolInvocation {
+                tool,
+                args: part.args.unwrap_or_else(|| json!({})),
+                result: part.result,
+                error: part.error,
+            })
+        } else {
+            match part.part_type.as_deref() {
+                Some("reasoning") => Some(MessagePart::Reasoning {
+                    text: part.text.unwrap_or_default(),
+                }),
+                Some("tool") => Some(MessagePart::ToolInvocation {
+                    tool: "tool".to_string(),
+                    args: part.args.unwrap_or_else(|| json!({})),
+                    result: part.result,
+                    error: part.error,
+                }),
+                Some("text") | None => Some(MessagePart::Text {
+                    text: part.text.unwrap_or_default(),
+                }),
+                _ => None,
+            }
+        };
+
+        if let Some(part) = mapped {
+            out.push(part);
+        }
+    }
+    out
+}
+
+fn legacy_role_to_message_role(role: &str) -> MessageRole {
+    match role.to_lowercase().as_str() {
+        "user" => MessageRole::User,
+        "assistant" => MessageRole::Assistant,
+        "system" => MessageRole::System,
+        "tool" => MessageRole::Tool,
+        _ => MessageRole::Assistant,
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct MessageMergeStats {
+    messages_recovered: u64,
+    parts_recovered: u64,
+    conflicts_merged: u64,
+}
+
+fn message_richness(msg: &Message) -> usize {
+    msg.parts
+        .iter()
+        .map(|p| match p {
+            MessagePart::Text { text } | MessagePart::Reasoning { text } => {
+                if text.trim().is_empty() {
+                    0
+                } else {
+                    1
+                }
+            }
+            MessagePart::ToolInvocation { result, error, .. } => {
+                if result.is_some() || error.is_some() {
+                    2
+                } else {
+                    1
+                }
+            }
+        })
+        .sum()
+}
+
+fn most_recent_message_time(messages: &[Message]) -> Option<chrono::DateTime<Utc>> {
+    messages.iter().map(|m| m.created_at).max()
+}
+
+fn merge_session_messages(
+    existing: &[Message],
+    imported: &[Message],
+) -> (Vec<Message>, MessageMergeStats, bool) {
+    if existing.is_empty() {
+        let messages_recovered = imported.len() as u64;
+        let parts_recovered = imported.iter().map(|m| m.parts.len() as u64).sum();
+        return (
+            imported.to_vec(),
+            MessageMergeStats {
+                messages_recovered,
+                parts_recovered,
+                conflicts_merged: 0,
+            },
+            true,
+        );
+    }
+
+    let mut merged_by_id: HashMap<String, Message> = existing
+        .iter()
+        .cloned()
+        .map(|m| (m.id.clone(), m))
+        .collect();
+    let mut stats = MessageMergeStats::default();
+    let mut changed = false;
+
+    for incoming in imported {
+        match merged_by_id.get(&incoming.id) {
+            None => {
+                merged_by_id.insert(incoming.id.clone(), incoming.clone());
+                stats.messages_recovered += 1;
+                stats.parts_recovered += incoming.parts.len() as u64;
+                changed = true;
+            }
+            Some(current) => {
+                let incoming_richer = message_richness(incoming) > message_richness(current)
+                    || incoming.parts.len() > current.parts.len();
+                if incoming_richer {
+                    merged_by_id.insert(incoming.id.clone(), incoming.clone());
+                    stats.conflicts_merged += 1;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<Message> = merged_by_id.into_values().collect();
+    out.sort_by_key(|m| m.created_at);
+    (out, stats, changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs as stdfs;
 
     #[tokio::test]
     async fn todos_are_normalized_to_wire_shape() {
@@ -449,5 +957,199 @@ mod tests {
             assert!(todo.get("content").and_then(|v| v.as_str()).is_some());
             assert!(todo.get("status").and_then(|v| v.as_str()).is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn imports_legacy_opencode_session_index_when_sessions_json_missing() {
+        let base =
+            std::env::temp_dir().join(format!("tandem-core-legacy-import-{}", Uuid::new_v4()));
+        let legacy_session_dir = base.join("session").join("global");
+        stdfs::create_dir_all(&legacy_session_dir).expect("legacy session dir");
+        stdfs::write(
+            legacy_session_dir.join("ses_test.json"),
+            r#"{
+  "id": "ses_test",
+  "slug": "test",
+  "version": "1.0.0",
+  "projectID": "proj_1",
+  "directory": "C:\\work\\demo",
+  "title": "Legacy Session",
+  "time": { "created": 1770913145613, "updated": 1770913146613 }
+}"#,
+        )
+        .expect("legacy session write");
+
+        let storage = Storage::new(&base).await.expect("storage");
+        let sessions = storage.list_sessions().await;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "ses_test");
+        assert_eq!(sessions[0].title, "Legacy Session");
+        assert!(base.join("sessions.json").exists());
+    }
+
+    #[tokio::test]
+    async fn imports_legacy_messages_and_parts_for_session() {
+        let base = std::env::temp_dir().join(format!("tandem-core-legacy-msg-{}", Uuid::new_v4()));
+        let session_dir = base.join("session").join("global");
+        let message_dir = base.join("message").join("ses_test");
+        let part_dir = base.join("part").join("msg_1");
+        stdfs::create_dir_all(&session_dir).expect("session dir");
+        stdfs::create_dir_all(&message_dir).expect("message dir");
+        stdfs::create_dir_all(&part_dir).expect("part dir");
+
+        stdfs::write(
+            session_dir.join("ses_test.json"),
+            r#"{
+  "id": "ses_test",
+  "projectID": "proj_1",
+  "directory": "C:\\work\\demo",
+  "title": "Legacy Session",
+  "time": { "created": 1770913145613, "updated": 1770913146613 }
+}"#,
+        )
+        .expect("write session");
+
+        stdfs::write(
+            message_dir.join("msg_1.json"),
+            r#"{
+  "id": "msg_1",
+  "sessionID": "ses_test",
+  "role": "assistant",
+  "time": { "created": 1770913145613 }
+}"#,
+        )
+        .expect("write msg");
+
+        stdfs::write(
+            part_dir.join("prt_1.json"),
+            r#"{
+  "id": "prt_1",
+  "sessionID": "ses_test",
+  "messageID": "msg_1",
+  "type": "text",
+  "text": "hello from legacy"
+}"#,
+        )
+        .expect("write part");
+
+        let storage = Storage::new(&base).await.expect("storage");
+        let sessions = storage.list_sessions().await;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].messages.len(), 1);
+        assert_eq!(sessions[0].messages[0].parts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn merges_legacy_sessions_even_when_sessions_json_exists() {
+        let base =
+            std::env::temp_dir().join(format!("tandem-core-legacy-merge-{}", Uuid::new_v4()));
+        stdfs::create_dir_all(&base).expect("base");
+        stdfs::write(
+            base.join("sessions.json"),
+            r#"{
+  "ses_current": {
+    "id": "ses_current",
+    "slug": null,
+    "version": "v1",
+    "project_id": null,
+    "title": "Current Session",
+    "directory": ".",
+    "workspace_root": null,
+    "origin_workspace_root": null,
+    "attached_from_workspace": null,
+    "attached_to_workspace": null,
+    "attach_timestamp_ms": null,
+    "attach_reason": null,
+    "time": {"created":"2026-01-01T00:00:00Z","updated":"2026-01-01T00:00:00Z"},
+    "model": null,
+    "provider": null,
+    "messages": []
+  }
+}"#,
+        )
+        .expect("sessions.json");
+
+        let legacy_session_dir = base.join("session").join("global");
+        stdfs::create_dir_all(&legacy_session_dir).expect("legacy session dir");
+        stdfs::write(
+            legacy_session_dir.join("ses_legacy.json"),
+            r#"{
+  "id": "ses_legacy",
+  "slug": "legacy",
+  "version": "1.0.0",
+  "projectID": "proj_legacy",
+  "directory": "C:\\work\\legacy",
+  "title": "Legacy Session",
+  "time": { "created": 1770913145613, "updated": 1770913146613 }
+}"#,
+        )
+        .expect("legacy session write");
+
+        let storage = Storage::new(&base).await.expect("storage");
+        let sessions = storage.list_sessions().await;
+        let ids = sessions.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+        assert!(ids.contains(&"ses_current".to_string()));
+        assert!(ids.contains(&"ses_legacy".to_string()));
+    }
+
+    #[tokio::test]
+    async fn list_sessions_scoped_filters_by_workspace_root() {
+        let base = std::env::temp_dir().join(format!("tandem-core-scope-{}", Uuid::new_v4()));
+        let storage = Storage::new(&base).await.expect("storage");
+        let ws_a = base.join("ws-a");
+        let ws_b = base.join("ws-b");
+        stdfs::create_dir_all(&ws_a).expect("ws_a");
+        stdfs::create_dir_all(&ws_b).expect("ws_b");
+        let ws_a_str = ws_a.to_string_lossy().to_string();
+        let ws_b_str = ws_b.to_string_lossy().to_string();
+
+        let mut a = Session::new(Some("a".to_string()), Some(ws_a_str.clone()));
+        a.workspace_root = Some(ws_a_str.clone());
+        storage.save_session(a).await.expect("save a");
+
+        let mut b = Session::new(Some("b".to_string()), Some(ws_b_str.clone()));
+        b.workspace_root = Some(ws_b_str);
+        storage.save_session(b).await.expect("save b");
+
+        let scoped = storage
+            .list_sessions_scoped(SessionListScope::Workspace {
+                workspace_root: ws_a_str,
+            })
+            .await;
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].title, "a");
+    }
+
+    #[tokio::test]
+    async fn attach_session_persists_audit_metadata() {
+        let base = std::env::temp_dir().join(format!("tandem-core-attach-{}", Uuid::new_v4()));
+        let storage = Storage::new(&base).await.expect("storage");
+        let ws_a = base.join("ws-a");
+        let ws_b = base.join("ws-b");
+        stdfs::create_dir_all(&ws_a).expect("ws_a");
+        stdfs::create_dir_all(&ws_b).expect("ws_b");
+        let ws_a_str = ws_a.to_string_lossy().to_string();
+        let ws_b_str = ws_b.to_string_lossy().to_string();
+        let mut session = Session::new(Some("s".to_string()), Some(ws_a_str.clone()));
+        session.workspace_root = Some(ws_a_str);
+        let id = session.id.clone();
+        storage.save_session(session).await.expect("save");
+
+        let updated = storage
+            .attach_session_to_workspace(&id, &ws_b_str, "manual")
+            .await
+            .expect("attach")
+            .expect("session exists");
+        let normalized_expected = normalize_workspace_path(&ws_b_str).expect("normalized path");
+        assert_eq!(
+            updated.workspace_root.as_deref(),
+            Some(normalized_expected.as_str())
+        );
+        assert_eq!(
+            updated.attached_to_workspace.as_deref(),
+            Some(normalized_expected.as_str())
+        );
+        assert_eq!(updated.attach_reason.as_deref(), Some("manual"));
+        assert!(updated.attach_timestamp_ms.is_some());
     }
 }

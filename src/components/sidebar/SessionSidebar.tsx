@@ -13,6 +13,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { resolveSessionDirectory, sessionBelongsToWorkspace } from "@/lib/sessionScope";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { UserProject } from "@/lib/tauri";
@@ -38,8 +39,8 @@ export interface SessionInfo {
   id: string;
   slug?: string;
   version?: string;
-  projectID: string;
-  directory: string;
+  projectID?: string;
+  directory?: string;
   title: string;
   time: {
     created: number;
@@ -130,8 +131,8 @@ export function SessionSidebar({
       items.push({
         id: s.id,
         type: "chat",
-        projectID: s.projectID,
-        directory: s.directory,
+        projectID: s.projectID || activeProject?.id || "__workspace__",
+        directory: resolveSessionDirectory(s.directory, activeProject?.path),
         title: s.title,
         updatedAt: s.time.updated,
         summary: s.summary,
@@ -145,13 +146,13 @@ export function SessionSidebar({
     if (activeProject) {
       // Find a matching project ID from existing sessions if possible
       // to ensure they group together under the same header.
-      const normalizedActivePath = activeProject.path.toLowerCase().replace(/\\/g, "/");
-
       const matchingSession = sessions.find(
-        (s) => s.directory && s.directory.toLowerCase().replace(/\\/g, "/") === normalizedActivePath
+        (s) =>
+          sessionBelongsToWorkspace({ directory: s.directory }, activeProject.path) &&
+          !!(s.projectID || "").trim()
       );
 
-      const targetProjectID = matchingSession ? matchingSession.projectID : activeProject.id;
+      const targetProjectID = (matchingSession?.projectID || activeProject.id).trim();
 
       // Create a Set of session IDs used by runs to filter them out of the chat list
       const runSessionIds = new Set(runs.map((r) => r.session_id));
@@ -208,7 +209,7 @@ export function SessionSidebar({
     if (currentSessionId) {
       const session = sessions.find((s) => s.id === currentSessionId);
       if (session) {
-        ids.add(session.projectID);
+        ids.add(session.projectID || activeProject?.id || "__workspace__");
       }
     }
 

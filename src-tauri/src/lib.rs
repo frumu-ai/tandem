@@ -28,7 +28,8 @@ mod tool_proxy;
 mod vault;
 
 use std::sync::RwLock;
-use tandem_core::{migrate_legacy_storage_if_needed, resolve_shared_paths};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tandem_core::resolve_shared_paths;
 use tauri::Manager;
 use tauri_plugin_store::StoreExt;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -116,14 +117,106 @@ fn init_tracing(app_data_dir: &std::path::Path) {
     tracing::info!("Log level: INFO (use RUST_LOG env var to change)");
 }
 
+fn is_recoverable_memory_error(err: &memory::types::MemoryError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("vector blob")
+        || msg.contains("project_memory_vectors_vector_chunks")
+        || msg.contains("database disk image is malformed")
+        || msg.contains("malformed")
+}
+
+fn memory_db_file_paths(db_path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut paths = vec![db_path.to_path_buf()];
+    if let (Some(parent), Some(name)) = (db_path.parent(), db_path.file_name()) {
+        let stem = name.to_string_lossy().to_string();
+        paths.push(parent.join(format!("{stem}-shm")));
+        paths.push(parent.join(format!("{stem}-wal")));
+    }
+    paths
+}
+
+fn backup_and_reset_memory_db(
+    app_data_dir: &std::path::Path,
+    db_path: &std::path::Path,
+) -> std::io::Result<Option<std::path::PathBuf>> {
+    let memory_files = memory_db_file_paths(db_path)
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect::<Vec<_>>();
+
+    if memory_files.is_empty() {
+        return Ok(None);
+    }
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup_dir = app_data_dir
+        .join("memory_backups")
+        .join(format!("memory-corrupt-{ts}"));
+    std::fs::create_dir_all(&backup_dir)?;
+
+    for file in &memory_files {
+        if let Some(name) = file.file_name() {
+            let _ = std::fs::copy(file, backup_dir.join(name));
+        }
+    }
+    for file in &memory_files {
+        let _ = std::fs::remove_file(file);
+    }
+
+    Ok(Some(backup_dir))
+}
+
+fn init_memory_manager_with_recovery(
+    app_data_dir: &std::path::Path,
+    db_path: &std::path::Path,
+) -> Result<memory::MemoryManager, memory::types::MemoryError> {
+    match tauri::async_runtime::block_on(memory::MemoryManager::new(db_path)) {
+        Ok(manager) => return Ok(manager),
+        Err(err) if is_recoverable_memory_error(&err) => {
+            tracing::warn!(
+                "Memory DB appears incompatible/corrupt, attempting self-heal: {}",
+                err
+            );
+            match backup_and_reset_memory_db(app_data_dir, db_path) {
+                Ok(Some(backup_dir)) => {
+                    tracing::warn!(
+                        "Backed up memory DB files before reset: {}",
+                        backup_dir.display()
+                    );
+                }
+                Ok(None) => {
+                    tracing::warn!("No memory DB files found to back up before reset");
+                }
+                Err(e) => {
+                    tracing::error!("Failed to back up/reset memory DB: {}", e);
+                    return Err(err);
+                }
+            }
+
+            tauri::async_runtime::block_on(memory::MemoryManager::new(db_path))
+        }
+        Err(err) => Err(err),
+    }
+}
+
 /// Initialize keystore with the given master key and load API keys
 fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
     let app_data_dir = match resolve_shared_paths() {
         Ok(paths) => paths.canonical_root,
-        Err(_) => app
-            .path()
-            .app_data_dir()
-            .expect("Failed to resolve app data directory"),
+        Err(e) => dirs::data_dir()
+            .map(|d| d.join("tandem"))
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "Failed to resolve canonical shared paths ({}); falling back to Tauri app_data_dir",
+                    e
+                );
+                app.path()
+                    .app_data_dir()
+                    .expect("Failed to resolve app data directory")
+            }),
     };
     let keystore_path = app_data_dir.join("tandem.keystore");
 
@@ -222,10 +315,17 @@ pub fn run() {
             // Use canonical shared storage root across Tauri, engine, and TUI.
             let app_data_dir = match resolve_shared_paths() {
                 Ok(paths) => paths.canonical_root,
-                Err(_) => app
-                    .path()
-                    .app_data_dir()
-                    .expect("Failed to get app data directory"),
+                Err(e) => dirs::data_dir()
+                    .map(|d| d.join("tandem"))
+                    .unwrap_or_else(|| {
+                        eprintln!(
+                            "Failed to resolve canonical shared paths ({}); falling back to Tauri app_data_dir",
+                            e
+                        );
+                        app.path()
+                            .app_data_dir()
+                            .expect("Failed to get app data directory")
+                    }),
             };
 
             std::fs::create_dir_all(&app_data_dir).ok();
@@ -233,19 +333,9 @@ pub fn run() {
             tracing::debug!("Starting Tandem application");
             tracing::info!("Canonical storage root: {}", app_data_dir.display());
 
-            if let Ok(paths) = resolve_shared_paths() {
-                match migrate_legacy_storage_if_needed(&paths) {
-                    Ok(report) => tracing::info!(
-                        "Storage migration status: reason={} performed={} copied={} skipped={} errors={}",
-                        report.reason,
-                        report.performed,
-                        report.copied.len(),
-                        report.skipped.len(),
-                        report.errors.len()
-                    ),
-                    Err(e) => tracing::warn!("Storage migration failed: {}", e),
-                }
-            }
+            tracing::info!(
+                "Storage migration is managed by frontend startup wizard (blocking overlay)."
+            );
 
             // Initialize vault state (manages PIN-based encryption)
             let vault_state = VaultState::new(app_data_dir.clone());
@@ -256,7 +346,7 @@ pub fn run() {
 
             // Initialize MemoryManager (Vector DB)
             let memory_db_path = app_data_dir.join("memory.sqlite");
-            match tauri::async_runtime::block_on(memory::MemoryManager::new(&memory_db_path)) {
+            match init_memory_manager_with_recovery(&app_data_dir, &memory_db_path) {
                 Ok(manager) => {
                     tracing::info!("Memory manager initialized at {:?}", memory_db_path);
                     app_state.memory_manager = Some(std::sync::Arc::new(manager));
@@ -356,6 +446,18 @@ pub fn run() {
                 }
             }
 
+            if let Some(workspace_path) = app_state.get_workspace_path() {
+                if let Err(e) =
+                    commands::migrate_workspace_legacy_namespace_if_needed(&workspace_path)
+                {
+                    tracing::warn!(
+                        "Workspace namespace migration check failed for {}: {}",
+                        workspace_path.display(),
+                        e
+                    );
+                }
+            }
+
             app.manage(app_state);
 
             // Sync bundled skills (like Plan agent) to global OpenCode config
@@ -401,6 +503,10 @@ pub fn run() {
             commands::log_frontend_error,
             commands::get_app_state,
             commands::get_storage_status,
+            commands::get_storage_migration_status,
+            commands::run_storage_migration,
+            commands::run_tool_history_backfill,
+            commands::get_tool_history_backfill_status,
             commands::set_workspace_path,
             commands::get_workspace_path,
             // Project management
@@ -432,6 +538,10 @@ pub fn run() {
             commands::start_sidecar,
             commands::stop_sidecar,
             commands::get_sidecar_status,
+            commands::get_runtime_diagnostics,
+            commands::engine_acquire_lease,
+            commands::engine_renew_lease,
+            commands::engine_release_lease,
             // Session management
             commands::create_session,
             commands::get_session,

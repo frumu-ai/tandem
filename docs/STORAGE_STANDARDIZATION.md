@@ -29,9 +29,12 @@ Legacy source root (read/migrate only):
 ## Migration Policy
 
 - Mode: **copy + keep legacy** (non-destructive).
-- Migration runs at startup when:
-- legacy root exists
-- canonical root is empty
+- Migration now runs through a startup wizard (blocking UI overlay) and can be re-run from Settings.
+- Startup auto-run triggers after vault unlock when legacy sources are detected.
+- Source discovery order includes:
+- `%APPDATA%/ai.frumu.tandem`
+- `%APPDATA%/opencode`
+- `%USERPROFILE%/.local/share/opencode`
 - Copy uses guarded behavior:
 - skip when destination already exists with same length and newer/equal mtime
 - copy otherwise
@@ -39,6 +42,9 @@ Legacy source root (read/migrate only):
 - Migration writes:
 - `storage_version.json` (layout marker)
 - `migration_report.json` (reason, copied/skipped/errors, timestamp)
+- Startup progress events:
+- `storage-migration-progress`
+- `storage-migration-complete`
 
 ## Cross-Client Wiring
 
@@ -55,8 +61,10 @@ Legacy source root (read/migrate only):
 
 ## Diagnostics
 
-Tauri command:
+Tauri commands:
 
 - `get_storage_status()`
+- `get_storage_migration_status()`
+- `run_storage_migration(options)`
 
 Returns canonical/legacy roots and marker/report presence so UI and future TUI adapters can verify migration state deterministically.

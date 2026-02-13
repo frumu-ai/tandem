@@ -54,6 +54,7 @@ globset = "0.4"
 tokio-util = { version = "0.7", features = ["rt"] }
 semver = "1"
 tandem-core = { path = "../crates/tandem-core" }
+tandem-types = { path = "../crates/tandem-types" }
 
 # Memory context dependencies
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }

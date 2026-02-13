@@ -9,7 +9,8 @@ export interface PlanInfo {
 }
 
 /**
- * List all plans in the workspace, grouped by session
+ * List all plans in the workspace.
+ * Canonical path is `.tandem/plans`; legacy `.opencode/plans` is read-compatible.
  */
 export async function listPlans(): Promise<PlanInfo[]> {
   return invoke<PlanInfo[]>("list_plans");

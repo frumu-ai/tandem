@@ -212,6 +212,16 @@ pub struct QueuedMessage {
     pub created_at_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngineLease {
+    pub lease_id: String,
+    pub client_id: String,
+    pub client_type: String,
+    pub acquired_at_ms: u64,
+    pub last_renewed_at_ms: u64,
+    pub ttl_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PermissionType {
     Read,
@@ -278,6 +288,8 @@ pub struct AppState {
     pub file_tree_watcher: Arc<StdMutex<Option<crate::file_watcher::FileTreeWatcher>>>,
     /// Per-session queued messages (FIFO).
     pub message_queue: Arc<Mutex<HashMap<String, Vec<QueuedMessage>>>>,
+    /// Shared engine lease table used by Desktop + TUI/CLI.
+    pub engine_leases: Arc<Mutex<HashMap<String, EngineLease>>>,
 }
 
 impl AppState {
@@ -316,6 +328,7 @@ impl AppState {
             active_log_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
             file_tree_watcher: Arc::new(StdMutex::new(None)),
             message_queue: Arc::new(Mutex::new(HashMap::new())),
+            engine_leases: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
