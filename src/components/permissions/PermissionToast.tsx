@@ -36,6 +36,8 @@ interface PermissionToastProps {
 }
 
 export function PermissionToast({ request, onApprove, onDeny }: PermissionToastProps) {
+  const toolLabel = request.tool ? request.tool.replace(/_/g, " ") : null;
+
   const getIcon = () => {
     switch (request.type) {
       case "read_file":
@@ -100,7 +102,9 @@ export function PermissionToast({ request, onApprove, onDeny }: PermissionToastP
           <div className={cn("rounded-lg border p-2", getRiskColor())}>{getIcon()}</div>
           <div>
             <h3 className="font-semibold text-text">{getTitle()}</h3>
-            <p className="text-xs text-text-subtle">Tandem wants to perform this action</p>
+            <p className="text-xs text-text-subtle">
+              {toolLabel ? `Tool request: ${toolLabel}` : "Tandem requests your approval"}
+            </p>
           </div>
         </div>
         <button
@@ -136,7 +140,7 @@ export function PermissionToast({ request, onApprove, onDeny }: PermissionToastP
         {/* Reasoning */}
         <div>
           <p className="text-xs text-text-subtle mb-1">Reason</p>
-          <p className="text-sm text-text-muted">{request.reasoning}</p>
+          <p className="text-sm text-text">{request.reasoning}</p>
         </div>
 
         {/* Diff preview for write operations */}

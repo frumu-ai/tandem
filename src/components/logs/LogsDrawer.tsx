@@ -33,8 +33,14 @@ type Provenance = "current" | "legacy";
 
 type ParsedLine = {
   ts?: string;
+  ts_ms?: number;
   level: Level;
   target?: string;
+  process?: string;
+  component?: string;
+  event?: string;
+  correlation_id?: string;
+  session_id?: string;
   msg: string;
   provenance: Provenance;
 };
@@ -57,6 +63,70 @@ function parseLine(raw: string): ParsedLine {
     lower.includes(".config/opencode");
   const provenance: Provenance = legacy ? "legacy" : "current";
 
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      const obj = JSON.parse(trimmed) as Record<string, unknown>;
+      const fieldString = (key: string, nested?: Record<string, unknown>): string | undefined => {
+        const fromNested = nested?.[key];
+        if (typeof fromNested === "string" && fromNested.trim().length > 0) {
+          return fromNested;
+        }
+        const fromTop = obj[key];
+        if (typeof fromTop === "string" && fromTop.trim().length > 0) {
+          return fromTop;
+        }
+        return undefined;
+      };
+      const levelRaw = typeof obj.level === "string" ? obj.level.toUpperCase() : "UNKNOWN";
+      const level: Level =
+        levelRaw === "TRACE" ||
+        levelRaw === "DEBUG" ||
+        levelRaw === "INFO" ||
+        levelRaw === "WARN" ||
+        levelRaw === "ERROR"
+          ? (levelRaw as Level)
+          : "UNKNOWN";
+      const ts =
+        (typeof obj.timestamp === "string" && obj.timestamp) ||
+        (typeof obj.ts === "string" && obj.ts) ||
+        undefined;
+      const parsedTs = ts ? Date.parse(ts) : NaN;
+      const target =
+        (typeof obj.target === "string" && obj.target) ||
+        (typeof obj.component === "string" && obj.component) ||
+        undefined;
+      const fields =
+        obj.fields && typeof obj.fields === "object"
+          ? (obj.fields as Record<string, unknown>)
+          : undefined;
+      const process = fieldString("process", fields);
+      const component = fieldString("component", fields);
+      const event = fieldString("event", fields);
+      const correlation_id = fieldString("correlation_id", fields);
+      const session_id = fieldString("session_id", fields);
+      const message =
+        (fields && typeof fields.message === "string" && fields.message) ||
+        (typeof obj.message === "string" && obj.message) ||
+        (fields && typeof fields.event === "string" && fields.event) ||
+        trimmed;
+      return {
+        ts,
+        ts_ms: Number.isFinite(parsedTs) ? parsedTs : undefined,
+        level,
+        target,
+        process,
+        component,
+        event,
+        correlation_id,
+        session_id,
+        msg: message,
+        provenance,
+      };
+    } catch {
+      // Fall through to text parsing
+    }
+  }
+
   const sidecar = trimmed.match(/^(STDOUT|STDERR)\s*(?:[:-])?\s*(.*)$/);
   if (sidecar) {
     const level = sidecar[1] as "STDOUT" | "STDERR";
@@ -67,8 +137,10 @@ function parseLine(raw: string): ParsedLine {
   // 2026-02-09T15:30:55.123Z  INFO module::path: message...
   const m = trimmed.match(/^(\S+)\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+([^:]+):\s*(.*)$/);
   if (m) {
+    const parsedTs = Date.parse(m[1]);
     return {
       ts: m[1],
+      ts_ms: Number.isFinite(parsedTs) ? parsedTs : undefined,
       level: m[2] as Level,
       target: m[3],
       msg: m[4] ?? "",
@@ -164,7 +236,14 @@ export function LogsDrawer({
   const [paused, setPaused] = useState(false);
   const [search, setSearch] = useState("");
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("ALL");
-  const [provenanceFilter, setProvenanceFilter] = useState<ProvenanceFilter>("ALL");
+  // Default to current-runtime lines so migrated legacy logs do not dominate the view.
+  const [provenanceFilter, setProvenanceFilter] = useState<ProvenanceFilter>("CURRENT");
+  const [processFilter, setProcessFilter] = useState<string>("ALL");
+  const [componentFilter, setComponentFilter] = useState<string>("ALL");
+  const [eventFilter, setEventFilter] = useState<string>("ALL");
+  const [correlationFilter, setCorrelationFilter] = useState("");
+  const [sessionFilter, setSessionFilter] = useState("");
+  const [currentRuntimeOnly, setCurrentRuntimeOnly] = useState(true);
   const [follow, setFollow] = useState(true);
   const [lines, setLines] = useState<LineItem[]>([]);
   const [dropped, setDropped] = useState(0);
@@ -323,19 +402,93 @@ export function LogsDrawer({
     };
   }, [stopCurrentStream]);
 
+  const currentRuntimeCutoffMs = useMemo(() => {
+    if (!currentRuntimeOnly) return undefined;
+
+    // Identify the latest desktop startup marker in this file and use that as the runtime cutoff.
+    // This avoids the previous behavior where cutoff was "drawer open time", which could hide
+    // valid lines if the drawer was opened later.
+    let cutoff: number | undefined;
+    for (const line of lines) {
+      if (
+        line.parsed.event === "logging.initialized" &&
+        line.parsed.process === "desktop" &&
+        typeof line.parsed.ts_ms === "number"
+      ) {
+        if (cutoff === undefined || line.parsed.ts_ms > cutoff) {
+          cutoff = line.parsed.ts_ms;
+        }
+      }
+    }
+    return cutoff;
+  }, [lines, currentRuntimeOnly]);
+
   const visibleLines = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const correlationQuery = correlationFilter.trim();
+    const sessionQuery = sessionFilter.trim();
     return lines.filter((l) => {
       if (levelFilter !== "ALL") {
         const lv = l.parsed.level;
         if (lv !== levelFilter) return false;
       }
-      if (provenanceFilter === "CURRENT" && l.parsed.provenance !== "current") return false;
+      if (processFilter !== "ALL" && (l.parsed.process ?? "") !== processFilter) return false;
+      if (componentFilter !== "ALL" && (l.parsed.component ?? "") !== componentFilter) return false;
+      if (eventFilter !== "ALL" && (l.parsed.event ?? "") !== eventFilter) return false;
+      if (correlationQuery && !(l.parsed.correlation_id ?? "").includes(correlationQuery)) {
+        return false;
+      }
+      if (sessionQuery && !(l.parsed.session_id ?? "").includes(sessionQuery)) {
+        return false;
+      }
+      if (provenanceFilter === "CURRENT") {
+        if (l.parsed.provenance !== "current") return false;
+      }
+      if (typeof currentRuntimeCutoffMs === "number") {
+        // Keep current-process lines only after the latest desktop startup marker.
+        if (typeof l.parsed.ts_ms === "number" && l.parsed.ts_ms < currentRuntimeCutoffMs) {
+          return false;
+        }
+      }
       if (provenanceFilter === "LEGACY" && l.parsed.provenance !== "legacy") return false;
       if (!q) return true;
       return l.raw.toLowerCase().includes(q);
     });
-  }, [lines, levelFilter, provenanceFilter, search]);
+  }, [
+    lines,
+    levelFilter,
+    processFilter,
+    componentFilter,
+    eventFilter,
+    correlationFilter,
+    sessionFilter,
+    provenanceFilter,
+    currentRuntimeOnly,
+    currentRuntimeCutoffMs,
+    search,
+  ]);
+
+  const processOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(lines.map((l) => l.parsed.process).filter((v): v is string => !!v))
+      ).sort(),
+    [lines]
+  );
+
+  const componentOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(lines.map((l) => l.parsed.component).filter((v): v is string => !!v))
+      ).sort(),
+    [lines]
+  );
+
+  const eventOptions = useMemo(
+    () =>
+      Array.from(new Set(lines.map((l) => l.parsed.event).filter((v): v is string => !!v))).sort(),
+    [lines]
+  );
 
   // Keep the view pinned to the bottom when follow is enabled.
   useEffect(() => {
@@ -628,6 +781,77 @@ export function LogsDrawer({
                   </select>
                 </label>
 
+                <label className="flex items-center gap-2 text-xs text-text-subtle">
+                  <span className="hidden sm:inline">Process</span>
+                  <select
+                    className="max-w-[140px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
+                    value={processFilter}
+                    onChange={(e) => setProcessFilter(e.target.value)}
+                  >
+                    <option value="ALL">All</option>
+                    {processOptions.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-2 text-xs text-text-subtle">
+                  <span className="hidden sm:inline">Component</span>
+                  <select
+                    className="max-w-[170px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
+                    value={componentFilter}
+                    onChange={(e) => setComponentFilter(e.target.value)}
+                  >
+                    <option value="ALL">All</option>
+                    {componentOptions.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-2 text-xs text-text-subtle">
+                  <span className="hidden sm:inline">Event</span>
+                  <select
+                    className="max-w-[180px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
+                    value={eventFilter}
+                    onChange={(e) => setEventFilter(e.target.value)}
+                  >
+                    <option value="ALL">All</option>
+                    {eventOptions.map((ev) => (
+                      <option key={ev} value={ev}>
+                        {ev}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <input
+                  value={correlationFilter}
+                  onChange={(e) => setCorrelationFilter(e.target.value)}
+                  className="w-[170px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text placeholder:text-text-subtle outline-none focus:border-primary"
+                  placeholder="Correlation ID"
+                />
+
+                <input
+                  value={sessionFilter}
+                  onChange={(e) => setSessionFilter(e.target.value)}
+                  className="w-[170px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text placeholder:text-text-subtle outline-none focus:border-primary"
+                  placeholder="Session ID"
+                />
+
+                <label className="flex items-center gap-1.5 text-xs text-text-subtle">
+                  <input
+                    type="checkbox"
+                    checked={currentRuntimeOnly}
+                    onChange={(e) => setCurrentRuntimeOnly(e.target.checked)}
+                  />
+                  Current runtime only
+                </label>
+
                 <div className="flex-1" />
 
                 <div className="text-xs text-text-subtle">
@@ -728,22 +952,30 @@ export function LogsDrawer({
                     <button
                       type="button"
                       onClick={() => {
-                        globalThis.navigator?.clipboard?.writeText(selectedLine.raw).then(() => {
-                          setToastMsg("Copied to clipboard");
-                          if (toastTimerRef.current) {
-                            globalThis.clearTimeout(toastTimerRef.current);
-                          }
-                          toastTimerRef.current = globalThis.setTimeout(() => {
-                            setToastMsg(null);
-                            toastTimerRef.current = null;
-                          }, 2000);
-                        });
+                        void copyText(selectedLine.raw, "Copied to clipboard");
                       }}
                       className="flex items-center gap-1 rounded px-2 py-1 text-xs text-text-subtle transition hover:bg-surface-elevated hover:text-text"
                     >
                       <Copy className="h-3 w-3" />
                       Copy
                     </button>
+                    {!!selectedLine.parsed.correlation_id && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const correlationId = selectedLine.parsed.correlation_id!;
+                          const trace = lines
+                            .filter((l) => l.parsed.correlation_id === correlationId)
+                            .map((l) => l.raw.replace(/\r?\n$/, ""))
+                            .join("\n");
+                          void copyText(trace, "Copied correlation trace");
+                        }}
+                        className="flex items-center gap-1 rounded px-2 py-1 text-xs text-text-subtle transition hover:bg-surface-elevated hover:text-text"
+                      >
+                        <Copy className="h-3 w-3" />
+                        Copy Correlation Trace
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => setSelectedLine(null)}
@@ -752,6 +984,23 @@ export function LogsDrawer({
                       <X className="h-3 w-3" />
                       Close
                     </button>
+                  </div>
+                </div>
+                <div className="border-t border-border px-3 py-2 text-[11px] text-text-subtle">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {selectedLine.parsed.process && (
+                      <span>process: {selectedLine.parsed.process}</span>
+                    )}
+                    {selectedLine.parsed.component && (
+                      <span>component: {selectedLine.parsed.component}</span>
+                    )}
+                    {selectedLine.parsed.event && <span>event: {selectedLine.parsed.event}</span>}
+                    {selectedLine.parsed.correlation_id && (
+                      <span>correlation: {selectedLine.parsed.correlation_id}</span>
+                    )}
+                    {selectedLine.parsed.session_id && (
+                      <span>session: {selectedLine.parsed.session_id}</span>
+                    )}
                   </div>
                 </div>
                 <div className="max-h-40 overflow-auto border-t border-border bg-background px-3 py-2">
