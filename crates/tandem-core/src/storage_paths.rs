@@ -76,12 +76,7 @@ pub fn migrate_legacy_storage_if_needed(paths: &SharedPaths) -> anyhow::Result<M
         return Ok(result);
     }
 
-    if !is_dir_effectively_empty(&paths.canonical_root)? {
-        result.reason = "canonical_not_empty".to_string();
-        persist_storage_marker(paths)?;
-        persist_migration_report(paths, &result)?;
-        return Ok(result);
-    }
+    let canonical_empty = is_dir_effectively_empty(&paths.canonical_root)?;
 
     let file_artifacts = [
         "vault.key",
@@ -126,9 +121,11 @@ pub fn migrate_legacy_storage_if_needed(paths: &SharedPaths) -> anyhow::Result<M
         }
     }
 
-    result.performed = result.errors.is_empty() && !result.copied.is_empty();
-    result.reason = if result.performed {
-        "migration_copied".to_string()
+    result.performed = !result.copied.is_empty();
+    result.reason = if result.performed && canonical_empty {
+        "migration_copied_into_empty_canonical".to_string()
+    } else if result.performed {
+        "migration_backfilled_missing_artifacts".to_string()
     } else if !result.errors.is_empty() {
         "migration_partial_error".to_string()
     } else {
@@ -266,9 +263,42 @@ mod tests {
         };
 
         let report = migrate_legacy_storage_if_needed(&paths).expect("migrate");
-        assert!(report.reason == "migration_copied" || report.reason == "migration_partial_error");
+        assert!(
+            report.reason == "migration_copied_into_empty_canonical"
+                || report.reason == "migration_partial_error"
+        );
         assert!(paths.vault_key_path.exists());
         assert!(paths.memory_db_path.exists());
         assert!(paths.storage_version_path.exists());
+    }
+
+    #[test]
+    fn migration_backfills_keys_when_canonical_already_has_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let legacy = temp.path().join("legacy");
+        let canonical = temp.path().join("canonical");
+        fs::create_dir_all(&legacy).expect("legacy");
+        fs::create_dir_all(canonical.join("logs")).expect("logs");
+        fs::write(legacy.join("vault.key"), "abc").expect("write");
+        fs::write(legacy.join("tandem.keystore"), "secret").expect("write");
+
+        let paths = SharedPaths {
+            canonical_root: canonical.clone(),
+            legacy_root: legacy.clone(),
+            engine_state_dir: canonical.join("data"),
+            config_path: canonical.join("config.json"),
+            keystore_path: canonical.join("tandem.keystore"),
+            vault_key_path: canonical.join("vault.key"),
+            memory_db_path: canonical.join("memory.sqlite"),
+            sidecar_release_cache_path: canonical.join("sidecar_release_cache.json"),
+            logs_dir: canonical.join("logs"),
+            storage_version_path: canonical.join("storage_version.json"),
+            migration_report_path: canonical.join("migration_report.json"),
+        };
+
+        let report = migrate_legacy_storage_if_needed(&paths).expect("migrate");
+        assert_eq!(report.reason, "migration_backfilled_missing_artifacts");
+        assert!(paths.vault_key_path.exists());
+        assert!(paths.keystore_path.exists());
     }
 }
