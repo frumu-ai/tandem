@@ -10,10 +10,12 @@ chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 ignore = "0.4"
 regex = "1"
+reqwest = { version = "0.12", default-features = true, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+tracing = "0.1"
 tandem-core = { path = "../tandem-core" }
 tandem-providers = { path = "../tandem-providers" }
 tandem-runtime = { path = "../tandem-runtime" }

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tandem_core::{
-    AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus, PermissionManager,
-    PluginRegistry, Storage,
+    migrate_legacy_storage_if_needed, resolve_shared_paths, AgentRegistry, CancellationRegistry,
+    ConfigStore, EngineLoop, EventBus, PermissionManager, PluginRegistry, Storage,
 };
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_server::{serve, AppState};
@@ -59,7 +59,22 @@ async fn main() -> anyhow::Result<()> {
             in_process,
         } => {
             let state_dir = resolve_state_dir(state_dir);
+
+            if let Ok(paths) = resolve_shared_paths() {
+                if let Ok(report) = migrate_legacy_storage_if_needed(&paths) {
+                    info!(
+                        "storage migration status: reason={} performed={} copied={} skipped={} errors={}",
+                        report.reason,
+                        report.performed,
+                        report.copied.len(),
+                        report.skipped.len(),
+                        report.errors.len()
+                    );
+                }
+            }
+
             let state = build_state(&state_dir).await?;
+
             state
                 .in_process_mode
                 .store(in_process, std::sync::atomic::Ordering::Relaxed);
@@ -93,7 +108,9 @@ fn resolve_state_dir(flag: Option<String>) -> PathBuf {
             return PathBuf::from(dir);
         }
     }
-    PathBuf::from(".tandem")
+    resolve_shared_paths()
+        .map(|p| p.engine_state_dir)
+        .unwrap_or_else(|_| PathBuf::from(".tandem"))
 }
 
 fn log_startup_paths(state_dir: &PathBuf, addr: &SocketAddr) {
@@ -108,6 +125,13 @@ fn log_startup_paths(state_dir: &PathBuf, addr: &SocketAddr) {
         state_dir.display(),
         config_path.display()
     );
+    if let Ok(paths) = resolve_shared_paths() {
+        info!(
+            "storage root: canonical={} legacy={}",
+            paths.canonical_root.display(),
+            paths.legacy_root.display()
+        );
+    }
 }
 
 async fn build_state(state_dir: &PathBuf) -> anyhow::Result<AppState> {

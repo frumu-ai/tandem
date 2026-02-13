@@ -196,6 +196,9 @@ impl StreamHub {
                             match next_item {
                                 Ok(event) => {
                                     last_progress = Instant::now();
+                                    if let Err(e) = crate::tool_history::record_stream_event(&app, &event) {
+                                        tracing::warn!("Failed to persist tool history event: {}", e);
+                                    }
                                     match &event {
                                         StreamEvent::ToolStart { session_id, part_id, tool, .. } => {
                                             pending_tools.insert((session_id.clone(), part_id.clone()), (tool.clone(), Instant::now()));

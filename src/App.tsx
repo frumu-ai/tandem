@@ -1004,7 +1004,7 @@ function App() {
     return new Set(
       sessions
         .filter((s) => {
-          if (runBaseSessionIds.has(s.id)) return false;
+          if (runBaseSessionIds.has(s.id) && s.title?.startsWith("Orchestrator Run:")) return false;
           if (s.title?.startsWith("Orchestrator Task ")) return false;
           if (s.title?.startsWith("Orchestrator Resume:")) return false;
           return true;

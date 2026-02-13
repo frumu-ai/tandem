@@ -343,7 +343,7 @@ pnpm format
 cargo fmt
 ```
 
-Engine-specific build/run/smoke instructions: see `docs/ENGINE_TESTING.md`.
+Engine-specific build/run/smoke instructions (including `pnpm tauri dev` sidecar setup): see `docs/ENGINE_TESTING.md`.
 
 ## Project Structure
 

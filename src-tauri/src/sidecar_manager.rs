@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tandem_core::resolve_shared_paths;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 
@@ -18,6 +19,13 @@ const RELEASES_PER_PAGE: usize = 20;
 const MAX_RELEASE_PAGES: usize = 5;
 const RELEASE_CHECK_INTERVAL_SECS: i64 = 6 * 60 * 60;
 const RELEASE_CACHE_FILE: &str = "sidecar_release_cache.json";
+
+fn shared_app_data_dir(app: &AppHandle) -> Option<PathBuf> {
+    resolve_shared_paths()
+        .map(|p| p.canonical_root)
+        .ok()
+        .or_else(|| app.path().app_data_dir().ok())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidecarStatus {
@@ -84,7 +92,7 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
     let binary_name = get_binary_name();
 
     // 1. Check AppData (user downloads/updates)
-    if let Ok(app_data_dir) = app.path().app_data_dir() {
+    if let Some(app_data_dir) = shared_app_data_dir(app) {
         let updated_binary = app_data_dir.join("binaries").join(binary_name);
         if updated_binary.exists() {
             tracing::debug!("Using updated sidecar from AppData: {:?}", updated_binary);
@@ -110,7 +118,7 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
             // We assume we are running from 'src-tauri' or project root
             let dev_binary = current_dir.join("binaries").join(binary_name);
             if dev_binary.exists() {
-                tracing::info!("Using dev sidecar from CWD/binaries: {:?}", dev_binary);
+                tracing::debug!("Using dev sidecar from CWD/binaries: {:?}", dev_binary);
                 return Ok(dev_binary);
             }
 
@@ -120,7 +128,7 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
                 .join("binaries")
                 .join(binary_name);
             if dev_binary_nested.exists() {
-                tracing::info!(
+                tracing::debug!(
                     "Using dev sidecar from src-tauri/binaries: {:?}",
                     dev_binary_nested
                 );
@@ -205,6 +213,10 @@ pub async fn check_sidecar_status(app: &AppHandle) -> Result<SidecarStatus> {
             .unwrap_or(false);
 
     let binary_path = binary_path_result.ok();
+    let using_dev_sidecar = binary_path
+        .as_ref()
+        .map(|path| is_dev_sidecar_path(app, path))
+        .unwrap_or(false);
 
     let version = if installed {
         get_installed_version(app)
@@ -212,7 +224,11 @@ pub async fn check_sidecar_status(app: &AppHandle) -> Result<SidecarStatus> {
         None
     };
 
-    let release_discovery = fetch_release_discovery(app).await.ok();
+    let release_discovery = if using_dev_sidecar {
+        None
+    } else {
+        fetch_release_discovery(app).await.ok()
+    };
     let latest_version = release_discovery
         .as_ref()
         .and_then(|discovery| discovery.latest_compatible_release.as_ref())
@@ -236,6 +252,28 @@ pub async fn check_sidecar_status(app: &AppHandle) -> Result<SidecarStatus> {
         compatibility_message,
         binary_path: binary_path.map(|p| p.to_string_lossy().to_string()),
     })
+}
+
+fn is_dev_sidecar_path(app: &AppHandle, path: &Path) -> bool {
+    let in_app_data = shared_app_data_dir(app)
+        .map(|dir| path.starts_with(dir))
+        .unwrap_or(false);
+    if in_app_data {
+        return false;
+    }
+
+    let in_resources = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| path.starts_with(dir))
+        .unwrap_or(false);
+    if in_resources {
+        return false;
+    }
+
+    // Any other location (for example CWD/src-tauri/binaries) is treated as a dev sidecar.
+    true
 }
 
 struct ReleaseDiscovery {
@@ -353,7 +391,14 @@ async fn fetch_releases(
             .text()
             .await
             .unwrap_or_else(|_| "Failed to read error response".to_string());
-        tracing::error!("GitHub API error {}: {}", status, error_text);
+        if status.as_u16() == 404 {
+            tracing::warn!(
+                "Sidecar release endpoint returned 404 (repo may be private/unpublished): {}",
+                error_text
+            );
+        } else {
+            tracing::error!("GitHub API error {}: {}", status, error_text);
+        }
 
         if let Some(cache) = &cached {
             tracing::warn!("Using cached releases after GitHub API error {}", status);
@@ -362,6 +407,8 @@ async fn fetch_releases(
 
         let message = if status.as_u16() == 403 {
             "GitHub rate limit reached. Please wait a few minutes and try again.".to_string()
+        } else if status.as_u16() == 404 {
+            "Sidecar release metadata endpoint was not found (404). This does not block local sidecar usage if a binary is already installed.".to_string()
         } else {
             format!(
                 "Unable to fetch releases (error {}). Please try again later.",
@@ -650,10 +697,7 @@ fn beta_channel_enabled() -> bool {
 }
 
 fn get_release_cache_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join(RELEASE_CACHE_FILE))
+    shared_app_data_dir(app).map(|dir| dir.join(RELEASE_CACHE_FILE))
 }
 
 fn load_release_cache(app: &AppHandle) -> Option<ReleaseCache> {
@@ -761,10 +805,8 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     );
 
     // Download to AppData (writable), not resources (read-only)
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| TandemError::Sidecar(format!("Failed to get app data dir: {}", e)))?;
+    let app_data_dir = shared_app_data_dir(&app)
+        .ok_or_else(|| TandemError::Sidecar("Failed to get app data dir".to_string()))?;
 
     let binaries_dir = app_data_dir.join("binaries");
     fs::create_dir_all(&binaries_dir).map_err(|e| {

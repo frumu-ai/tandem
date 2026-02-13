@@ -23,6 +23,7 @@ use crate::sidecar::{
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
 use crate::stream_hub::{StreamEventEnvelopeV2, StreamEventSource};
+use crate::tool_history::ToolExecutionRow;
 use crate::tool_policy;
 use crate::tool_proxy::{FileSnapshot, JournalEntry, OperationStatus, UndoAction};
 use crate::vault::{self, EncryptedVaultKey, VaultStatus};
@@ -35,9 +36,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tandem_core::resolve_shared_paths;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_store::StoreExt;
 use uuid::Uuid;
+
+fn shared_app_data_dir(app: &AppHandle) -> Result<PathBuf> {
+    match resolve_shared_paths() {
+        Ok(paths) => Ok(paths.canonical_root),
+        Err(_) => app
+            .path()
+            .app_data_dir()
+            .map_err(|e| TandemError::InvalidConfig(format!("Failed to get app data dir: {}", e))),
+    }
+}
 
 // ============================================================================
 // Packs (guided workflows)
@@ -1447,7 +1459,7 @@ pub async fn set_providers_config(
 // Sidecar Management
 // ============================================================================
 
-/// Start the OpenCode sidecar
+/// Start the tandem-engine sidecar
 #[tauri::command]
 pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<u16> {
     // Get the sidecar path (checks AppData first, then resources)
@@ -1524,7 +1536,7 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
         .ok_or_else(|| TandemError::Sidecar("Sidecar started but no port assigned".to_string()))
 }
 
-/// Stop the OpenCode sidecar
+/// Stop the tandem-engine sidecar
 #[tauri::command]
 pub async fn stop_sidecar(state: State<'_, AppState>) -> Result<()> {
     state.stream_hub.stop().await;
@@ -1668,11 +1680,13 @@ pub async fn create_session(
         Some(permissions)
     };
 
+    let selected_provider = normalize_provider_id_for_sidecar(provider.or(default_provider));
+    let selected_model = model.or(default_model);
     let request = CreateSessionRequest {
         parent_id: None,
         title,
-        model: model.or(default_model),
-        provider: provider.or(default_provider),
+        model: build_sidecar_session_model(selected_model, selected_provider.clone()),
+        provider: selected_provider,
         permission,
     };
 
@@ -1722,6 +1736,17 @@ pub async fn get_session_messages(
     session_id: String,
 ) -> Result<Vec<SessionMessage>> {
     state.sidecar.get_session_messages(&session_id).await
+}
+
+/// List persisted tool executions for a session (session-scoped only)
+#[tauri::command]
+pub fn list_tool_executions(
+    app: AppHandle,
+    session_id: String,
+    limit: Option<u32>,
+    before_ts_ms: Option<u64>,
+) -> Result<Vec<ToolExecutionRow>> {
+    crate::tool_history::list_tool_executions(&app, &session_id, limit.unwrap_or(200), before_ts_ms)
 }
 
 /// Get todos for a session
@@ -2271,6 +2296,46 @@ pub async fn list_providers_from_sidecar(state: State<'_, AppState>) -> Result<V
     state.sidecar.list_providers().await
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageStatus {
+    pub canonical_root: String,
+    pub legacy_root: String,
+    pub migration_report_exists: bool,
+    pub storage_version_exists: bool,
+    pub migration_reason: Option<String>,
+    pub migration_timestamp_ms: Option<u64>,
+}
+
+#[tauri::command]
+pub fn get_storage_status() -> Result<StorageStatus> {
+    let paths = resolve_shared_paths().map_err(|e| {
+        TandemError::InvalidConfig(format!("Failed to resolve shared paths: {}", e))
+    })?;
+
+    let report_value = fs::read_to_string(&paths.migration_report_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+
+    let migration_reason = report_value
+        .as_ref()
+        .and_then(|v| v.get("reason"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let migration_timestamp_ms = report_value
+        .as_ref()
+        .and_then(|v| v.get("timestamp_ms"))
+        .and_then(|v| v.as_u64());
+
+    Ok(StorageStatus {
+        canonical_root: paths.canonical_root.to_string_lossy().to_string(),
+        legacy_root: paths.legacy_root.to_string_lossy().to_string(),
+        migration_report_exists: paths.migration_report_path.exists(),
+        storage_version_exists: paths.storage_version_path.exists(),
+        migration_reason,
+        migration_timestamp_ms,
+    })
+}
+
 // ============================================================================
 // Logs (on-demand streaming)
 // ============================================================================
@@ -2287,10 +2352,7 @@ pub struct LogStreamBatch {
 
 #[tauri::command]
 pub async fn list_app_log_files(app: AppHandle) -> Result<Vec<LogFileInfo>> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| TandemError::InvalidConfig(format!("Failed to get app data dir: {}", e)))?;
+    let app_data_dir = shared_app_data_dir(&app)?;
     let logs_dir = app_data_dir.join("logs");
     logs::list_log_files(&logs_dir)
 }
@@ -2380,7 +2442,7 @@ pub async fn start_log_stream(
                 }
             }
             "tandem" => {
-                let app_data_dir = match app.path().app_data_dir() {
+                let app_data_dir = match shared_app_data_dir(&app) {
                     Ok(d) => d,
                     Err(e) => {
                         let _ = send_batch(
@@ -2696,7 +2758,7 @@ pub async fn rewind_to_message(
         .create_session(CreateSessionRequest {
             parent_id: None,
             title: Some(format!("Rewind from {}", session_id)),
-            model: default_model,
+            model: build_sidecar_session_model(default_model, default_provider.clone()),
             provider: default_provider,
             permission: Some(vec![
                 crate::sidecar::PermissionRule {
@@ -5765,7 +5827,7 @@ pub async fn start_plan_session(
         .create_session(CreateSessionRequest {
             parent_id: None,
             title: Some(goal.clone().unwrap_or_else(|| "Plan Mode".to_string())),
-            model: default_model,
+            model: build_sidecar_session_model(default_model, default_provider.clone()),
             provider: default_provider,
             permission: None,
         })
@@ -5948,6 +6010,29 @@ fn normalize_provider_id_for_sidecar(provider: Option<String>) -> Option<String>
     })
 }
 
+fn build_sidecar_session_model(
+    model: Option<String>,
+    provider: Option<String>,
+) -> Option<serde_json::Value> {
+    match (model, provider) {
+        (Some(model_id), Some(provider_id)) => Some(serde_json::json!({
+            "provider_id": provider_id,
+            "model_id": model_id
+        })),
+        _ => None,
+    }
+}
+
+fn orchestrator_strict_contract_flag() -> bool {
+    match std::env::var("TANDEM_ORCH_STRICT_CONTRACT") {
+        Ok(v) => matches!(
+            v.trim().to_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => cfg!(debug_assertions),
+    }
+}
+
 /// Create a new orchestration run
 #[tauri::command]
 pub async fn orchestrator_create_run(
@@ -5980,7 +6065,7 @@ pub async fn orchestrator_create_run(
             &objective[..objective.len().min(50)]
         )),
         // Clone so we can also persist the selection onto the Run object below.
-        model: final_model.clone(),
+        model: build_sidecar_session_model(final_model.clone(), final_provider.clone()),
         provider: final_provider.clone(),
         permission: Some(orchestrator_permission_rules()),
     };
@@ -6014,6 +6099,17 @@ pub async fn orchestrator_create_run(
     }
     if config.max_wall_time_secs == 20 * 60 {
         config.max_wall_time_secs = 60 * 60;
+    }
+    if orchestrator_strict_contract_flag() {
+        config.strict_planner_json = true;
+        config.strict_validator_json = true;
+        config.contract_warnings_enabled = true;
+        // Keep fallback enabled in phase 1 unless explicitly disabled by user config later.
+        if !config.allow_prose_fallback {
+            tracing::warn!(
+                "orchestrator strict contract flag enabled with prose fallback disabled via config"
+            );
+        }
     }
 
     // Create the run object
@@ -6253,7 +6349,7 @@ pub async fn orchestrator_set_resume_model(
             "Orchestrator Resume: {}",
             &snapshot.objective[..snapshot.objective.len().min(50)]
         )),
-        model: Some(model.clone()),
+        model: build_sidecar_session_model(Some(model.clone()), normalized_provider.clone()),
         provider: normalized_provider.clone(),
         permission: Some(orchestrator_permission_rules()),
     };

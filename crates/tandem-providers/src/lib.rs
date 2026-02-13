@@ -97,10 +97,16 @@ impl ProviderRegistry {
     }
 
     pub async fn default_complete(&self, prompt: &str) -> anyhow::Result<String> {
-        let providers = self.providers.read().await;
-        let Some(provider) = providers.first() else {
-            return Ok("No provider configured.".to_string());
-        };
+        let provider = self.select_provider(None).await?;
+        provider.complete(prompt).await
+    }
+
+    pub async fn complete_for_provider(
+        &self,
+        provider_id: Option<&str>,
+        prompt: &str,
+    ) -> anyhow::Result<String> {
+        let provider = self.select_provider(provider_id).await?;
         provider.complete(prompt).await
     }
 
@@ -110,19 +116,35 @@ impl ProviderRegistry {
         tools: Option<Vec<ToolSchema>>,
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
-        let providers = self.providers.read().await;
-        let Some(provider) = providers.first() else {
-            let stream = futures::stream::iter(vec![
-                Ok(StreamChunk::TextDelta(
-                    "No provider configured.".to_string(),
-                )),
-                Ok(StreamChunk::Done {
-                    finish_reason: "stop".to_string(),
-                }),
-            ]);
-            return Ok(Box::pin(stream));
-        };
+        self.stream_for_provider(None, messages, tools, cancel)
+            .await
+    }
+
+    pub async fn stream_for_provider(
+        &self,
+        provider_id: Option<&str>,
+        messages: Vec<ChatMessage>,
+        tools: Option<Vec<ToolSchema>>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+        let provider = self.select_provider(provider_id).await?;
         provider.stream(messages, tools, cancel).await
+    }
+
+    async fn select_provider(
+        &self,
+        provider_id: Option<&str>,
+    ) -> anyhow::Result<Arc<dyn Provider>> {
+        let providers = self.providers.read().await;
+        if let Some(id) = provider_id {
+            if let Some(provider) = providers.iter().find(|p| p.info().id == id) {
+                return Ok(provider.clone());
+            }
+        };
+        let Some(provider) = providers.first() else {
+            anyhow::bail!("No provider configured.");
+        };
+        Ok(provider.clone())
     }
 }
 
@@ -222,7 +244,16 @@ fn build_providers(config: &AppConfig) -> Vec<Arc<dyn Provider>> {
 
     if let Some(anthropic) = config.providers.get("anthropic") {
         providers.push(Arc::new(AnthropicProvider {
-            api_key: anthropic.api_key.clone(),
+            api_key: anthropic
+                .api_key
+                .as_deref()
+                .filter(|key| !is_placeholder_api_key(key))
+                .map(|key| key.to_string())
+                .or_else(|| {
+                    std::env::var("ANTHROPIC_API_KEY")
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                }),
             default_model: anthropic
                 .default_model
                 .clone()
@@ -232,7 +263,16 @@ fn build_providers(config: &AppConfig) -> Vec<Arc<dyn Provider>> {
     }
     if let Some(cohere) = config.providers.get("cohere") {
         providers.push(Arc::new(CohereProvider {
-            api_key: cohere.api_key.clone(),
+            api_key: cohere
+                .api_key
+                .as_deref()
+                .filter(|key| !is_placeholder_api_key(key))
+                .map(|key| key.to_string())
+                .or_else(|| {
+                    std::env::var("COHERE_API_KEY")
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                }),
             base_url: normalize_plain_base(
                 cohere.url.as_deref().unwrap_or("https://api.cohere.com/v2"),
             ),
@@ -268,7 +308,12 @@ fn add_openai_provider(
         name: name.to_string(),
         base_url: normalize_base(entry.url.as_deref().unwrap_or(default_url)),
         api_key: if use_api_key {
-            entry.api_key.clone()
+            entry
+                .api_key
+                .as_deref()
+                .filter(|key| !is_placeholder_api_key(key))
+                .map(|key| key.to_string())
+                .or_else(|| env_api_key_for_provider(id))
         } else {
             None
         },
@@ -278,6 +323,28 @@ fn add_openai_provider(
             .unwrap_or_else(|| default_model.to_string()),
         client: Client::new(),
     }));
+}
+
+fn is_placeholder_api_key(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("x")
+        || trimmed.eq_ignore_ascii_case("placeholder")
+}
+
+fn env_api_key_for_provider(id: &str) -> Option<String> {
+    let env_name = match id {
+        "openai" => Some("OPENAI_API_KEY"),
+        "openrouter" => Some("OPENROUTER_API_KEY"),
+        "groq" => Some("GROQ_API_KEY"),
+        "mistral" => Some("MISTRAL_API_KEY"),
+        "together" => Some("TOGETHER_API_KEY"),
+        "copilot" => Some("GITHUB_TOKEN"),
+        _ => None,
+    }?;
+    std::env::var(env_name)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
 }
 
 struct LocalEchoProvider;
@@ -336,12 +403,30 @@ impl Provider for OpenAICompatibleProvider {
         if let Some(api_key) = &self.api_key {
             req = req.bearer_auth(api_key);
         }
-        let value: serde_json::Value = req.send().await?.json().await?;
-        let text = value["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("No completion content.")
-            .to_string();
-        Ok(text)
+        let response = req.send().await?;
+        let status = response.status();
+        let value: serde_json::Value = response.json().await?;
+
+        if !status.is_success() {
+            let detail = extract_openai_error(&value)
+                .unwrap_or_else(|| format!("provider request failed with status {}", status));
+            anyhow::bail!(detail);
+        }
+
+        if let Some(detail) = extract_openai_error(&value) {
+            anyhow::bail!(detail);
+        }
+
+        if let Some(text) = extract_openai_text(&value) {
+            return Ok(text);
+        }
+
+        let body_preview = truncate_for_error(&value.to_string(), 500);
+        anyhow::bail!(
+            "provider returned no completion content for model `{}` (response: {})",
+            self.default_model,
+            body_preview
+        );
     }
 }
 
@@ -512,4 +597,95 @@ fn normalize_base(input: &str) -> String {
 
 fn normalize_plain_base(input: &str) -> String {
     input.trim_end_matches('/').to_string()
+}
+
+fn truncate_for_error(input: &str, max_len: usize) -> String {
+    if input.len() <= max_len {
+        input.to_string()
+    } else {
+        format!("{}...", &input[..max_len])
+    }
+}
+
+fn collect_text_fragments(value: &serde_json::Value, out: &mut String) {
+    match value {
+        serde_json::Value::String(s) => out.push_str(s),
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                collect_text_fragments(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(text) = map.get("text").and_then(|v| v.as_str()) {
+                out.push_str(text);
+            }
+            if let Some(text) = map.get("output_text").and_then(|v| v.as_str()) {
+                out.push_str(text);
+            }
+            if let Some(content) = map.get("content") {
+                collect_text_fragments(content, out);
+            }
+            if let Some(delta) = map.get("delta") {
+                collect_text_fragments(delta, out);
+            }
+            if let Some(message) = map.get("message") {
+                collect_text_fragments(message, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_openai_text(value: &serde_json::Value) -> Option<String> {
+    let mut out = String::new();
+
+    if let Some(choice) = value.get("choices").and_then(|v| v.get(0)) {
+        collect_text_fragments(choice, &mut out);
+        if !out.trim().is_empty() {
+            return Some(out);
+        }
+    }
+
+    if let Some(text) = value
+        .get("choices")
+        .and_then(|v| v.get(0))
+        .and_then(|v| v.get("text"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(text.to_string());
+    }
+
+    if let Some(output) = value.get("output") {
+        collect_text_fragments(output, &mut out);
+        if !out.trim().is_empty() {
+            return Some(out);
+        }
+    }
+
+    if let Some(content) = value.get("content") {
+        collect_text_fragments(content, &mut out);
+        if !out.trim().is_empty() {
+            return Some(out);
+        }
+    }
+
+    if let Some(text) = value.get("output_text").and_then(|v| v.as_str()) {
+        return Some(text.to_string());
+    }
+
+    None
+}
+
+fn extract_openai_error(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("error")
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            value
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
 }

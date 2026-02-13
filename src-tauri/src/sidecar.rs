@@ -1,16 +1,18 @@
 // Tandem Sidecar Manager
-// Handles spawning, lifecycle, and communication with the OpenCode sidecar process
+// Handles spawning, lifecycle, and communication with the tandem-engine sidecar process
 
 use crate::error::{Result, TandemError};
 use crate::logs::LogRingBuffer;
 use futures::StreamExt;
 use reqwest::Client;
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tandem_core::resolve_shared_paths;
 use tokio::sync::{Mutex, RwLock};
 
 #[cfg(windows)]
@@ -217,7 +219,7 @@ pub struct CreateSessionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub model: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -256,12 +258,47 @@ pub struct Session {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<SessionTime>,
     // Legacy fields for compatibility
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_model_string_or_object"
+    )]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default)]
-    pub messages: Vec<Message>,
+    pub messages: Vec<serde_json::Value>,
+}
+
+fn deserialize_model_string_or_object<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    match value {
+        serde_json::Value::String(s) => Ok(Some(s)),
+        serde_json::Value::Object(map) => {
+            if let Some(model) = map
+                .get("modelID")
+                .and_then(|v| v.as_str())
+                .or_else(|| map.get("model_id").and_then(|v| v.as_str()))
+            {
+                return Ok(Some(model.to_string()));
+            }
+            Err(D::Error::custom(
+                "model object missing modelID/model_id string field",
+            ))
+        }
+        other => Err(D::Error::custom(format!(
+            "invalid type for model field: {other}"
+        ))),
+    }
 }
 
 /// Message in a session
@@ -318,9 +355,9 @@ pub enum MessagePartInput {
 /// Model specification for prompt
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelSpec {
-    #[serde(rename = "providerID")]
+    #[serde(alias = "providerID")]
     pub provider_id: String,
-    #[serde(rename = "modelID")]
+    #[serde(alias = "modelID")]
     pub model_id: String,
 }
 
@@ -401,12 +438,15 @@ pub struct Project {
     pub vcs: Option<String>,
     #[serde(default)]
     pub sandboxes: Vec<serde_json::Value>,
+    #[serde(default)]
     pub time: ProjectTime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectTime {
+    #[serde(default)]
     pub created: u64,
+    #[serde(default)]
     pub updated: u64,
 }
 
@@ -850,7 +890,7 @@ impl SidecarManager {
             *state = SidecarState::Starting;
         }
 
-        tracing::info!("Starting OpenCode sidecar from: {}", sidecar_path);
+        tracing::info!("Starting tandem-engine sidecar from: {}", sidecar_path);
 
         // Find an available port
         let port = self.find_available_port().await?;
@@ -878,7 +918,7 @@ impl SidecarManager {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        // OpenCode 'serve' subcommand starts a headless server
+        // tandem-engine 'serve' subcommand starts a headless server
         // Use --hostname and --port flags
         cmd.args([
             "serve",
@@ -887,6 +927,10 @@ impl SidecarManager {
             "--port",
             &port.to_string(),
         ]);
+        if let Ok(paths) = resolve_shared_paths() {
+            let state_dir = paths.engine_state_dir.to_string_lossy().to_string();
+            cmd.args(["--state-dir", &state_dir]);
+        }
 
         // Set working directory if workspace is configured
         if let Some(ref workspace) = config.workspace_path {
@@ -894,13 +938,13 @@ impl SidecarManager {
             cmd.env("OPENCODE_DIR", workspace);
         }
 
-        // Ensure OpenCode config exists and is updated with dynamic Ollama models.
+        // Ensure sidecar config exists and is updated with dynamic Ollama models.
         //
         // IMPORTANT: Do not overwrite the entire config file; preserve unknown fields so
         // MCP/plugin settings (and any user settings) survive sidecar restarts.
         match crate::tandem_config::global_config_path() {
             Ok(config_path) => {
-                // Make sure OpenCode actually loads the file we're managing, even if its
+                // Make sure the sidecar loads the file we're managing, even if its
                 // defaults change across versions/platforms.
                 cmd.env("OPENCODE_CONFIG", &config_path);
 
@@ -933,16 +977,16 @@ impl SidecarManager {
                     crate::tandem_config::set_provider_ollama_models(cfg, models);
                     Ok(())
                 }) {
-                    tracing::warn!("Failed to update OpenCode config {:?}: {}", config_path, e);
+                    tracing::warn!("Failed to update sidecar config {:?}: {}", config_path, e);
                 } else {
                     tracing::info!(
-                        "Updated OpenCode config with Ollama models at: {:?}",
+                        "Updated sidecar config with Ollama models at: {:?}",
                         config_path
                     );
                 }
             }
             Err(e) => {
-                tracing::warn!("Could not determine OpenCode config path: {}", e);
+                tracing::warn!("Could not determine sidecar config path: {}", e);
             }
         }
 
@@ -1043,7 +1087,7 @@ impl SidecarManager {
             Ok(_) => {
                 let mut state = self.state.write().await;
                 *state = SidecarState::Running;
-                tracing::info!("OpenCode sidecar started on port {}", port);
+                tracing::info!("tandem-engine sidecar started on port {}", port);
                 Ok(())
             }
             Err(e) => {
@@ -1072,7 +1116,7 @@ impl SidecarManager {
             *state = SidecarState::Stopping;
         }
 
-        tracing::info!("Stopping OpenCode sidecar");
+        tracing::info!("Stopping tandem-engine sidecar");
 
         // Kill the process
         let child = {
@@ -1086,7 +1130,7 @@ impl SidecarManager {
                 // On Windows, try graceful termination first, then force kill
                 use std::process::Command as StdCommand;
                 let pid = child.id();
-                tracing::info!("Killing OpenCode process with PID {}", pid);
+                tracing::info!("Killing tandem-engine process with PID {}", pid);
 
                 // Try taskkill /T to terminate child processes too
                 let mut cmd = StdCommand::new("taskkill");
@@ -1153,7 +1197,7 @@ impl SidecarManager {
             *state = SidecarState::Stopped;
         }
 
-        tracing::info!("OpenCode sidecar stopped");
+        tracing::info!("tandem-engine sidecar stopped");
         Ok(())
     }
 
@@ -1214,7 +1258,7 @@ impl SidecarManager {
     }
 
     /// Health check for the sidecar
-    /// OpenCode exposes /global/health endpoint that returns JSON
+    /// tandem-engine exposes /global/health endpoint that returns JSON
     async fn health_check(&self, port: u16) -> Result<()> {
         let url = format!("http://127.0.0.1:{}/global/health", port);
 
@@ -1233,7 +1277,7 @@ impl SidecarManager {
             })?;
 
             if body.get("healthy").and_then(|v| v.as_bool()) == Some(true) {
-                tracing::debug!("OpenCode health check passed: {:?}", body);
+                tracing::debug!("tandem-engine health check passed: {:?}", body);
                 Ok(())
             } else {
                 Err(TandemError::Sidecar(format!(
@@ -1309,7 +1353,10 @@ impl SidecarManager {
                 .send()
                 .await
                 .map_err(|e| TandemError::Sidecar(format!("Failed to list sessions: {}", e)))?;
-            self.handle_response(response).await
+            let raw: serde_json::Value = self.handle_response(response).await?;
+            parse_sessions_response(raw).ok_or_else(|| {
+                TandemError::Sidecar("Failed to parse sessions response shape".to_string())
+            })
         }
         .await;
 
@@ -1326,7 +1373,10 @@ impl SidecarManager {
                     .send()
                     .await
                     .map_err(|e| TandemError::Sidecar(format!("Failed to list sessions: {}", e)))?;
-                self.handle_response(response).await
+                let raw: serde_json::Value = self.handle_response(response).await?;
+                parse_sessions_response(raw).ok_or_else(|| {
+                    TandemError::Sidecar("Failed to parse sessions response shape".to_string())
+                })
             }
         }
     }
@@ -1372,8 +1422,89 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to list projects: {}", e)))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to read projects body: {}", e)))?;
 
-        self.handle_response(response).await
+        if !status.is_success() {
+            self.record_failure().await;
+            return Err(TandemError::Sidecar(format!(
+                "Failed to list projects ({}): {}",
+                status, body
+            )));
+        }
+
+        self.record_success().await;
+
+        let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            TandemError::Sidecar(format!(
+                "Failed to parse projects payload: {}. Body: {}",
+                e,
+                &body[..body.len().min(200)]
+            ))
+        })?;
+
+        let mut projects = Vec::new();
+        if let Some(items) = value.as_array() {
+            for item in items {
+                if let Some(path) = item.as_str() {
+                    projects.push(Project {
+                        id: path.to_string(),
+                        worktree: path.to_string(),
+                        vcs: None,
+                        sandboxes: Vec::new(),
+                        time: ProjectTime {
+                            created: 0,
+                            updated: 0,
+                        },
+                    });
+                    continue;
+                }
+                if let Ok(project) = serde_json::from_value::<Project>(item.clone()) {
+                    projects.push(project);
+                    continue;
+                }
+                if let Some(obj) = item.as_object() {
+                    let worktree = obj
+                        .get("worktree")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| obj.get("directory").and_then(|v| v.as_str()))
+                        .unwrap_or(".")
+                        .to_string();
+                    let id = obj
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&worktree)
+                        .to_string();
+                    projects.push(Project {
+                        id,
+                        worktree,
+                        vcs: obj.get("vcs").and_then(|v| v.as_str()).map(str::to_string),
+                        sandboxes: obj
+                            .get("sandboxes")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default(),
+                        time: ProjectTime {
+                            created: obj
+                                .get("time")
+                                .and_then(|t| t.get("created"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                            updated: obj
+                                .get("time")
+                                .and_then(|t| t.get("updated"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                        },
+                    });
+                }
+            }
+        }
+
+        Ok(projects)
     }
 
     /// Get messages for a session
@@ -2039,10 +2170,15 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to list providers: {}", e)))?;
-
-        self.handle_response(response).await.map_err(|e| {
+        let raw: serde_json::Value = self.handle_response(response).await.map_err(|e| {
             tracing::warn!("Failed to parse providers from {}: {}", url, e);
             e
+        })?;
+        parse_provider_catalog_response(raw).ok_or_else(|| {
+            TandemError::Sidecar(format!(
+                "Failed to parse provider catalog shape from {}",
+                url
+            ))
         })
     }
 
@@ -2135,7 +2271,7 @@ impl Drop for SidecarManager {
         // Note: This is blocking, but Drop can't be async
         if let Ok(mut process_guard) = self.process.try_lock() {
             if let Some(mut child) = process_guard.take() {
-                tracing::info!("Killing OpenCode sidecar on drop");
+                tracing::info!("Killing tandem-engine sidecar on drop");
                 let _ = child.kill();
             }
         }
@@ -2718,6 +2854,192 @@ fn extract_error_message(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+fn parse_provider_catalog_response(raw: serde_json::Value) -> Option<ProviderCatalogResponse> {
+    fn parse_model_map(
+        raw_models: Option<&serde_json::Value>,
+    ) -> HashMap<String, ProviderCatalogModel> {
+        let mut models = HashMap::new();
+        let Some(raw_models) = raw_models else {
+            return models;
+        };
+
+        if let Some(map) = raw_models.as_object() {
+            for (id, value) in map {
+                let name = value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let context = value
+                    .get("limit")
+                    .and_then(|v| v.get("context"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .or_else(|| {
+                        value
+                            .get("context")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32)
+                    })
+                    .or_else(|| {
+                        value
+                            .get("context_length")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32)
+                    });
+                models.insert(
+                    id.to_string(),
+                    ProviderCatalogModel {
+                        name,
+                        limit: context.map(|context| ProviderCatalogLimit {
+                            context: Some(context),
+                        }),
+                    },
+                );
+            }
+            return models;
+        }
+
+        if let Some(items) = raw_models.as_array() {
+            for item in items {
+                if let Some(id) = item.as_str() {
+                    models.insert(
+                        id.to_string(),
+                        ProviderCatalogModel {
+                            name: Some(id.to_string()),
+                            limit: None,
+                        },
+                    );
+                    continue;
+                }
+                if let Some(obj) = item.as_object() {
+                    let id = obj
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| obj.get("model").and_then(|v| v.as_str()));
+                    if let Some(id) = id {
+                        let name = obj
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .or_else(|| Some(id.to_string()));
+                        let context = obj
+                            .get("context_length")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32);
+                        models.insert(
+                            id.to_string(),
+                            ProviderCatalogModel {
+                                name,
+                                limit: context.map(|context| ProviderCatalogLimit {
+                                    context: Some(context),
+                                }),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        models
+    }
+
+    fn parse_provider_entry(value: &serde_json::Value) -> Option<(ProviderCatalogEntry, bool)> {
+        let obj = value.as_object()?;
+        let id = obj.get("id").and_then(|v| v.as_str())?.to_string();
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let configured = obj
+            .get("configured")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let models = parse_model_map(obj.get("models"));
+        Some((ProviderCatalogEntry { id, name, models }, configured))
+    }
+
+    if let Some(obj) = raw.as_object() {
+        let connected = obj
+            .get("connected")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let source_entries = obj
+            .get("all")
+            .and_then(|v| v.as_array())
+            .or_else(|| obj.get("providers").and_then(|v| v.as_array()));
+        if let Some(entries) = source_entries {
+            let mut all = Vec::new();
+            let mut connected_out = connected;
+            for entry in entries {
+                if let Some((parsed, configured)) = parse_provider_entry(entry) {
+                    if configured && !connected_out.contains(&parsed.id) {
+                        connected_out.push(parsed.id.clone());
+                    }
+                    all.push(parsed);
+                }
+            }
+            return Some(ProviderCatalogResponse {
+                all,
+                connected: connected_out,
+            });
+        }
+    }
+
+    if let Some(arr) = raw.as_array() {
+        let mut all = Vec::new();
+        let mut connected = Vec::new();
+        for entry in arr {
+            if let Some((parsed, configured)) = parse_provider_entry(entry) {
+                if configured {
+                    connected.push(parsed.id.clone());
+                }
+                all.push(parsed);
+            }
+        }
+        return Some(ProviderCatalogResponse { all, connected });
+    }
+
+    None
+}
+
+fn parse_sessions_response(raw: serde_json::Value) -> Option<Vec<Session>> {
+    fn decode_array(items: &[serde_json::Value]) -> Vec<Session> {
+        let mut sessions = Vec::new();
+        for item in items {
+            match serde_json::from_value::<Session>(item.clone()) {
+                Ok(session) => sessions.push(session),
+                Err(err) => {
+                    tracing::debug!("Skipping malformed session entry: {}", err);
+                }
+            }
+        }
+        sessions
+    }
+
+    if let Some(items) = raw.as_array() {
+        return Some(decode_array(items));
+    }
+
+    if let Some(obj) = raw.as_object() {
+        if let Some(items) = obj.get("items").and_then(|v| v.as_array()) {
+            return Some(decode_array(items));
+        }
+        if let Some(items) = obj.get("sessions").and_then(|v| v.as_array()) {
+            return Some(decode_array(items));
+        }
+        if let Some(items) = obj.get("data").and_then(|v| v.as_array()) {
+            return Some(decode_array(items));
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2804,6 +3126,157 @@ mod tests {
             }
             other => panic!("Unexpected event: {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_parse_sse_tool_lifecycle_with_structured_state() {
+        let mut start_buffer = String::from(
+            "data: {\"type\":\"message.part.updated\",\"properties\":{\"part\":{\"id\":\"call_1\",\"sessionID\":\"ses_123\",\"messageID\":\"msg_456\",\"type\":\"tool\",\"tool\":\"todo_write\",\"state\":{\"status\":\"running\",\"input\":{\"todos\":[{\"content\":\"task\"}]}}}}}\n\n",
+        );
+        let start = parse_sse_event(&mut start_buffer);
+        match start {
+            Some(StreamEvent::ToolStart {
+                session_id,
+                message_id,
+                part_id,
+                tool,
+                args,
+            }) => {
+                assert_eq!(session_id, "ses_123");
+                assert_eq!(message_id, "msg_456");
+                assert_eq!(part_id, "call_1");
+                assert_eq!(tool, "todo_write");
+                assert_eq!(
+                    args.get("todos")
+                        .and_then(|t| t.as_array())
+                        .map(|v| v.len()),
+                    Some(1)
+                );
+            }
+            other => panic!("Unexpected start event: {:?}", other),
+        }
+
+        let mut end_buffer = String::from(
+            "data: {\"type\":\"message.part.updated\",\"properties\":{\"part\":{\"id\":\"call_1\",\"sessionID\":\"ses_123\",\"messageID\":\"msg_456\",\"type\":\"tool\",\"tool\":\"todo_write\",\"state\":{\"status\":\"completed\",\"output\":{\"todos\":[{\"id\":\"t1\",\"content\":\"task\",\"status\":\"open\"}]}}}}}\n\n",
+        );
+        let end = parse_sse_event(&mut end_buffer);
+        match end {
+            Some(StreamEvent::ToolEnd {
+                session_id,
+                message_id,
+                part_id,
+                tool,
+                result,
+                error,
+            }) => {
+                assert_eq!(session_id, "ses_123");
+                assert_eq!(message_id, "msg_456");
+                assert_eq!(part_id, "call_1");
+                assert_eq!(tool, "todo_write");
+                assert!(error.is_none());
+                let result = result.unwrap_or_default();
+                assert_eq!(
+                    result
+                        .get("todos")
+                        .and_then(|t| t.as_array())
+                        .map(|v| v.len()),
+                    Some(1)
+                );
+            }
+            other => panic!("Unexpected end event: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_sse_todo_updated_tolerates_invalid_entries() {
+        let mut buffer = String::from(
+            "data: {\"type\":\"todo.updated\",\"properties\":{\"sessionID\":\"ses_123\",\"todos\":[{\"id\":\"1\",\"content\":\"good\",\"status\":\"open\"},{\"content\":\"missing id\"}]}}\n\n",
+        );
+        let event = parse_sse_event(&mut buffer);
+        match event {
+            Some(StreamEvent::TodoUpdated { session_id, todos }) => {
+                assert_eq!(session_id, "ses_123");
+                assert_eq!(todos.len(), 1);
+                assert_eq!(todos[0].id, "1");
+                assert_eq!(todos[0].content, "good");
+                assert_eq!(todos[0].status, "open");
+            }
+            other => panic!("Unexpected event: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_provider_catalog_legacy_array_shape() {
+        let raw = serde_json::json!([
+            {
+                "id": "openrouter",
+                "name": "OpenRouter",
+                "models": ["openai/gpt-4o-mini", "z-ai/glm-5"],
+                "configured": true
+            },
+            {
+                "id": "ollama",
+                "name": "Ollama",
+                "models": [{"id":"llama3.1:8b","name":"llama3.1:8b","context_length":8192}],
+                "configured": false
+            }
+        ]);
+        let parsed = parse_provider_catalog_response(raw).expect("catalog");
+        assert_eq!(parsed.all.len(), 2);
+        assert_eq!(parsed.connected, vec!["openrouter".to_string()]);
+        let openrouter = parsed
+            .all
+            .iter()
+            .find(|p| p.id == "openrouter")
+            .expect("openrouter");
+        assert_eq!(openrouter.models.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_provider_catalog_all_shape() {
+        let raw = serde_json::json!({
+            "all": [
+                {
+                    "id": "openai",
+                    "name": "OpenAI",
+                    "models": {
+                        "gpt-4o-mini": {"name":"gpt-4o-mini","limit":{"context":128000}}
+                    }
+                }
+            ],
+            "connected": ["openai"]
+        });
+        let parsed = parse_provider_catalog_response(raw).expect("catalog");
+        assert_eq!(parsed.all.len(), 1);
+        assert_eq!(parsed.connected, vec!["openai".to_string()]);
+        let openai = &parsed.all[0];
+        assert!(openai.models.contains_key("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn test_parse_sessions_response_object_items_shape() {
+        let raw = serde_json::json!({
+            "items": [
+                {"id":"ses_1","title":"Chat 1","directory":".","time":{"created":1,"updated":1}},
+                {"id":"ses_2","title":"Chat 2","directory":".","time":{"created":2,"updated":2}}
+            ]
+        });
+        let sessions = parse_sessions_response(raw).expect("sessions");
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].id, "ses_1");
+    }
+
+    #[test]
+    fn test_parse_sessions_response_skips_malformed_entries() {
+        let raw = serde_json::json!([
+            {"id":"ses_ok","title":"OK","directory":".","time":{"created":1,"updated":1}},
+            {"title":"bad missing id"},
+            {"id":"ses_ok2","title":"OK 2","directory":".","time":{"created":2,"updated":2}}
+        ]);
+        let sessions = parse_sessions_response(raw).expect("sessions");
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].id, "ses_ok");
+        assert_eq!(sessions[1].id, "ses_ok2");
     }
 
     #[test]

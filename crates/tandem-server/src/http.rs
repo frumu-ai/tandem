@@ -22,7 +22,10 @@ use tokio_stream::StreamExt;
 use tandem_types::{
     CreateSessionRequest, EngineEvent, MessagePart, SendMessageRequest, Session, TodoItem,
 };
-use tandem_wire::{WireProviderCatalog, WireSession, WireSessionMessage};
+use tandem_wire::{
+    WireProviderCatalog, WireProviderEntry, WireProviderModel, WireProviderModelLimit, WireSession,
+    WireSessionMessage,
+};
 
 use crate::AppState;
 
@@ -790,12 +793,226 @@ async fn list_providers(State(state): State<AppState>) -> Json<Value> {
         .map(|p| p.id)
         .collect::<Vec<_>>();
     let all = state.providers.list().await;
-    let wire = WireProviderCatalog::from_providers(all, connected);
+    let mut wire = WireProviderCatalog::from_providers(all, connected);
+    let effective_cfg = state.config.get_effective_value().await;
+
+    merge_known_provider_defaults(&mut wire);
+    merge_provider_models_from_config(&mut wire, &effective_cfg);
+    if let Some(openrouter_models) = fetch_openrouter_models(&effective_cfg).await {
+        merge_provider_model_map(
+            &mut wire,
+            "openrouter",
+            Some("OpenRouter"),
+            openrouter_models,
+        );
+    }
+
     Json(json!({
         "all": wire.all,
         "connected": wire.connected,
         "default": default
     }))
+}
+
+fn merge_known_provider_defaults(wire: &mut WireProviderCatalog) {
+    let known = [
+        ("openrouter", "OpenRouter", "openai/gpt-4o-mini"),
+        ("openai", "OpenAI", "gpt-4o-mini"),
+        ("anthropic", "Anthropic", "claude-3-5-sonnet-latest"),
+        ("ollama", "Ollama", "llama3.1:8b"),
+        ("groq", "Groq", "llama-3.1-8b-instant"),
+        ("mistral", "Mistral", "mistral-small-latest"),
+        (
+            "together",
+            "Together",
+            "meta-llama/Llama-3.1-8B-Instruct-Turbo",
+        ),
+        ("cohere", "Cohere", "command-r-plus"),
+        ("azure", "Azure OpenAI-Compatible", "gpt-4o-mini"),
+        (
+            "bedrock",
+            "Bedrock-Compatible",
+            "anthropic.claude-3-5-sonnet-20240620-v1:0",
+        ),
+        ("vertex", "Vertex-Compatible", "gemini-1.5-flash"),
+        ("copilot", "GitHub Copilot-Compatible", "gpt-4o-mini"),
+    ];
+
+    for (provider_id, provider_name, default_model) in known {
+        let mut models = HashMap::new();
+        models.insert(
+            default_model.to_string(),
+            WireProviderModel {
+                name: Some(default_model.to_string()),
+                limit: None,
+            },
+        );
+        merge_provider_model_map(wire, provider_id, Some(provider_name), models);
+    }
+}
+
+fn ensure_provider_entry<'a>(
+    wire: &'a mut WireProviderCatalog,
+    provider_id: &str,
+    provider_name: Option<&str>,
+) -> &'a mut WireProviderEntry {
+    if !wire.connected.iter().any(|id| id == provider_id) {
+        wire.connected.push(provider_id.to_string());
+    }
+
+    if let Some(idx) = wire.all.iter().position(|entry| entry.id == provider_id) {
+        return &mut wire.all[idx];
+    }
+
+    wire.all.push(WireProviderEntry {
+        id: provider_id.to_string(),
+        name: provider_name.map(|s| s.to_string()),
+        models: HashMap::new(),
+    });
+    wire.all.last_mut().expect("provider entry just inserted")
+}
+
+fn merge_provider_model_map(
+    wire: &mut WireProviderCatalog,
+    provider_id: &str,
+    provider_name: Option<&str>,
+    models: HashMap<String, WireProviderModel>,
+) {
+    let entry = ensure_provider_entry(wire, provider_id, provider_name);
+    for (model_id, model) in models {
+        entry.models.insert(model_id, model);
+    }
+}
+
+fn merge_provider_models_from_config(wire: &mut WireProviderCatalog, cfg: &Value) {
+    let Some(provider_root) = cfg.get("provider").and_then(|v| v.as_object()) else {
+        return;
+    };
+
+    for (provider_id, provider_value) in provider_root {
+        let provider_name = provider_value
+            .get("name")
+            .and_then(|v| v.as_str())
+            .or(Some(provider_id.as_str()));
+
+        let mut model_map: HashMap<String, WireProviderModel> = HashMap::new();
+        if let Some(models_obj) = provider_value.get("models").and_then(|v| v.as_object()) {
+            for (model_id, model_value) in models_obj {
+                let display_name = model_value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| Some(model_id.to_string()));
+                let context = model_value
+                    .get("limit")
+                    .and_then(|v| v.get("context"))
+                    .and_then(|v| v.as_u64())
+                    .or_else(|| model_value.get("context_length").and_then(|v| v.as_u64()))
+                    .map(|v| v as u32);
+
+                model_map.insert(
+                    model_id.to_string(),
+                    WireProviderModel {
+                        name: display_name,
+                        limit: context.map(|ctx| WireProviderModelLimit { context: Some(ctx) }),
+                    },
+                );
+            }
+        }
+
+        if !model_map.is_empty() {
+            merge_provider_model_map(wire, provider_id, provider_name, model_map);
+        }
+    }
+}
+
+async fn fetch_openrouter_models(cfg: &Value) -> Option<HashMap<String, WireProviderModel>> {
+    let api_key = cfg
+        .get("provider")
+        .and_then(|v| v.get("openrouter"))
+        .and_then(|v| v.get("api_key"))
+        .and_then(|v| v.as_str())
+        .filter(|k| !k.trim().is_empty() && *k != "x")
+        .map(|k| k.to_string())
+        .or_else(|| {
+            cfg.get("providers")
+                .and_then(|v| v.get("openrouter"))
+                .and_then(|v| v.get("api_key"))
+                .and_then(|v| v.as_str())
+                .filter(|k| !k.trim().is_empty() && *k != "x")
+                .map(|k| k.to_string())
+        })
+        .or_else(|| std::env::var("OPENCODE_OPENROUTER_API_KEY").ok())
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
+        .filter(|k| !k.trim().is_empty());
+
+    let client = reqwest::Client::new();
+    let mut req = client
+        .get("https://openrouter.ai/api/v1/models")
+        .timeout(Duration::from_secs(20));
+    if let Some(api_key) = api_key {
+        req = req.bearer_auth(api_key);
+    }
+    let resp = match req.send().await {
+        Ok(resp) => resp,
+        Err(err) => {
+            tracing::debug!("Failed to fetch OpenRouter models: {}", err);
+            return None;
+        }
+    };
+
+    if !resp.status().is_success() {
+        tracing::debug!("OpenRouter models request returned {}", resp.status());
+        return None;
+    }
+
+    let body: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::debug!("Failed to decode OpenRouter models: {}", err);
+            return None;
+        }
+    };
+
+    let Some(data) = body.get("data").and_then(|v| v.as_array()) else {
+        return None;
+    };
+
+    let mut out = HashMap::new();
+    for item in data {
+        let Some(model_id) = item.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let name = item
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| Some(model_id.to_string()));
+        let context = item
+            .get("context_length")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                item.get("top_provider")
+                    .and_then(|v| v.get("context_length"))
+                    .and_then(|v| v.as_u64())
+            })
+            .map(|v| v as u32);
+
+        out.insert(
+            model_id.to_string(),
+            WireProviderModel {
+                name,
+                limit: context.map(|ctx| WireProviderModelLimit { context: Some(ctx) }),
+            },
+        );
+    }
+
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 async fn list_providers_legacy(State(state): State<AppState>) -> Json<Vec<LegacyProviderInfo>> {
     let connected_ids = state
@@ -1568,6 +1785,40 @@ mod tests {
         let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
         let payload: Value = serde_json::from_slice(&body).expect("json");
         assert!(payload.as_array().map(|v| !v.is_empty()).unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn create_session_accepts_camel_case_model_spec() {
+        let state = test_state().await;
+        let app = app_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/session")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "title": "camel-model",
+                    "model": {
+                        "providerID": "openrouter",
+                        "modelID": "openai/gpt-4o-mini"
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        let model = payload.get("model").cloned().unwrap_or_else(|| json!({}));
+        assert_eq!(
+            model.get("providerID").and_then(|v| v.as_str()),
+            Some("openrouter")
+        );
+        assert_eq!(
+            model.get("modelID").and_then(|v| v.as_str()),
+            Some("openai/gpt-4o-mini")
+        );
     }
 
     #[tokio::test]

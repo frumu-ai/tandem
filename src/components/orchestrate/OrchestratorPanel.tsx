@@ -61,6 +61,8 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
 
   // Task detail modal
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [runSessionId, setRunSessionId] = useState<string | null>(null);
+  const consoleSessionId = selectedTask?.session_id ?? runSessionId ?? null;
 
   // Sync internal runId state when parent changes selection
   useEffect(() => {
@@ -72,8 +74,31 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
       setError(null);
       setRunModel(undefined);
       setRunProvider(undefined);
+      setRunSessionId(null);
     }
   }, [initialRunId]);
+
+  useEffect(() => {
+    if (!runId) {
+      setRunSessionId(null);
+      return;
+    }
+
+    let isMounted = true;
+    (async () => {
+      try {
+        const run = await invoke<Run>("orchestrator_load_run", { runId });
+        if (!isMounted) return;
+        setRunSessionId(run.session_id ?? null);
+      } catch {
+        // best effort only
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [runId]);
 
   // Prefill model/provider for new runs from the user's last selected provider/model (same as chat).
   useEffect(() => {
@@ -335,6 +360,22 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
 
         if (payload.type === "run_completed" || payload.type === "run_resumed") {
           setError(null);
+          return;
+        }
+
+        if (payload.type === "contract_error") {
+          const phase = typeof payload.phase === "string" ? payload.phase : "unknown";
+          const reason =
+            typeof payload.reason === "string" && payload.reason.trim().length > 0
+              ? payload.reason
+              : "Contract parsing failed.";
+          setError(`[Contract:${phase}] ${reason}`);
+          return;
+        }
+
+        if (payload.type === "contract_warning") {
+          const reason = typeof payload.reason === "string" ? payload.reason : "Contract warning";
+          console.warn("[Orchestrator contract warning]", payload, reason);
         }
       });
     };
@@ -1014,7 +1055,9 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
       </AnimatePresence>
 
       {/* Logs Drawer */}
-      {showLogsDrawer && <LogsDrawer onClose={() => setShowLogsDrawer(false)} />}
+      {showLogsDrawer && (
+        <LogsDrawer onClose={() => setShowLogsDrawer(false)} sessionId={consoleSessionId} />
+      )}
     </div>
   );
 }

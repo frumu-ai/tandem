@@ -2,7 +2,7 @@
 members = [
     "src-tauri",
     "engine",
-    "crates/tandem-types", "crates/tandem-wire", "crates/tandem-core", "crates/tandem-providers", "crates/tandem-tools", "crates/tandem-server", "crates/tandem-runtime",
+    "crates/tandem-types", "crates/tandem-wire", "crates/tandem-core", "crates/tandem-providers", "crates/tandem-tools", "crates/tandem-server", "crates/tandem-runtime", "crates/tandem-tui",
+ "crates/tandem-tui",
 ]
 resolver = "2"
-

@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelSpec {
+    #[serde(alias = "providerID", alias = "providerId")]
     pub provider_id: String,
+    #[serde(alias = "modelID", alias = "modelId")]
     pub model_id: String,
 }
 

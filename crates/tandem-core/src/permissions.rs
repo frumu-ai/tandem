@@ -60,12 +60,13 @@ impl PermissionManager {
     }
 
     pub async fn evaluate(&self, permission: &str, pattern: &str) -> PermissionAction {
+        let permission = normalize_permission_alias(permission);
+        let pattern = normalize_permission_alias(pattern);
         let rules = self.rules.read().await;
-        if let Some(rule) = rules
-            .iter()
-            .rev()
-            .find(|rule| rule.permission == permission && wildcard_matches(&rule.pattern, pattern))
-        {
+        if let Some(rule) = rules.iter().rev().find(|rule| {
+            normalize_permission_alias(&rule.permission) == permission
+                && wildcard_matches(&normalize_permission_alias(&rule.pattern), &pattern)
+        }) {
             return rule.action.clone();
         }
         PermissionAction::Ask
@@ -214,6 +215,13 @@ fn wildcard_matches(pattern: &str, value: &str) -> bool {
     pattern.ends_with('*') || remaining.is_empty()
 }
 
+fn normalize_permission_alias(input: &str) -> String {
+    match input.trim().to_lowercase().replace('-', "_").as_str() {
+        "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        other => other.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +273,20 @@ mod tests {
                 .unwrap_or(""),
             "README.md"
         );
+    }
+
+    #[tokio::test]
+    async fn evaluate_todo_aliases_as_same_permission() {
+        let bus = EventBus::new();
+        let manager = PermissionManager::new(bus);
+        manager.rules.write().await.push(PermissionRule {
+            id: Uuid::new_v4().to_string(),
+            permission: "todowrite".to_string(),
+            pattern: "todowrite".to_string(),
+            action: PermissionAction::Allow,
+        });
+
+        let action = manager.evaluate("todo_write", "todo_write").await;
+        assert!(matches!(action, PermissionAction::Allow));
     }
 }

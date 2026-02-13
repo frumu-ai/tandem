@@ -556,6 +556,11 @@ pub fn build_permission_rules(mode: &ResolvedMode) -> Vec<PermissionRule> {
             pattern: "*".to_string(),
             action: "allow".to_string(),
         });
+        rules.push(PermissionRule {
+            permission: "todo_write".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        });
     }
     if mode_has_any_tool(mode, &["websearch"]) {
         rules.push(PermissionRule {

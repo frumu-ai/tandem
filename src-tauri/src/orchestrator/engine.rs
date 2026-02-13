@@ -4,15 +4,16 @@
 
 use crate::error::{Result, TandemError};
 use crate::orchestrator::{
-    agents::{AgentPrompts, ParsedTask, PlannerConstraints},
+    agents::{AgentPrompts, PlannerConstraints},
     budget::{BudgetCheckResult, BudgetTracker},
-    policy::{PolicyDecision, PolicyEngine},
+    policy::PolicyEngine,
     scheduler::TaskScheduler,
     store::OrchestratorStore,
     types::*,
 };
 use crate::sidecar::SidecarManager;
 use crate::stream_hub::StreamHub;
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -20,6 +21,10 @@ use std::time::Instant;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+
+fn is_sidecar_session_not_found(err: &TandemError) -> bool {
+    matches!(err, TandemError::Sidecar(msg) if msg.contains("404 Not Found"))
+}
 
 // ============================================================================
 // Orchestrator Engine
@@ -52,6 +57,7 @@ pub struct OrchestratorEngine {
     task_semaphore: Arc<Semaphore>,
     llm_semaphore: Arc<Semaphore>,
     task_sessions: Arc<RwLock<HashMap<String, String>>>,
+    contract_metrics: Arc<RwLock<HashMap<String, u64>>>,
     #[cfg(test)]
     test_task_executor: Option<
         Arc<
@@ -122,6 +128,7 @@ impl OrchestratorEngine {
             task_semaphore: Arc::new(Semaphore::new(max_parallel_tasks)),
             llm_semaphore: Arc::new(Semaphore::new(llm_parallel)),
             task_sessions: Arc::new(RwLock::new(HashMap::new())),
+            contract_metrics: Arc::new(RwLock::new(HashMap::new())),
             #[cfg(test)]
             test_task_executor: None,
         }
@@ -268,10 +275,89 @@ impl OrchestratorEngine {
             return Ok(());
         }
 
-        // Parse tasks from response
-        let parsed_tasks = AgentPrompts::parse_task_list(&response).ok_or_else(|| {
-            TandemError::ParseError("Failed to parse task list from planner output".to_string())
-        })?;
+        let contract_config = {
+            let run = self.run.read().await;
+            run.config.clone()
+        };
+
+        // Parse tasks from response with strict JSON-first enforcement.
+        let parsed_tasks = if contract_config.strict_planner_json {
+            match AgentPrompts::parse_task_list_strict(&response) {
+                Ok(tasks) => {
+                    self.bump_contract_metric("planner_strict_parse_success")
+                        .await;
+                    tasks
+                }
+                Err(strict_err) => {
+                    self.bump_contract_metric("planner_parse_failed").await;
+                    let snippet = Self::sample_snippet(&response);
+                    if contract_config.contract_warnings_enabled {
+                        self.emit_contract_warning(
+                            None,
+                            "planner",
+                            "planning",
+                            &strict_err,
+                            false,
+                            snippet.clone(),
+                        )
+                        .await;
+                    }
+                    if contract_config.allow_prose_fallback {
+                        if let Some(tasks) = AgentPrompts::parse_task_list_fallback(&response) {
+                            self.bump_contract_metric("planner_fallback_used").await;
+                            if contract_config.contract_warnings_enabled {
+                                self.emit_contract_warning(
+                                    None,
+                                    "planner",
+                                    "planning",
+                                    "planner strict parse failed; prose fallback used",
+                                    true,
+                                    snippet,
+                                )
+                                .await;
+                            }
+                            tasks
+                        } else {
+                            if contract_config.contract_warnings_enabled {
+                                self.emit_contract_error(
+                                    None,
+                                    "planner",
+                                    "planning",
+                                    "PLANNER_CONTRACT_PARSE_FAILED",
+                                    false,
+                                    Some(strict_err.clone()),
+                                )
+                                .await;
+                            }
+                            return Err(TandemError::ParseError(format!(
+                                "PLANNER_CONTRACT_PARSE_FAILED: {}",
+                                strict_err
+                            )));
+                        }
+                    } else {
+                        if contract_config.contract_warnings_enabled {
+                            self.emit_contract_error(
+                                None,
+                                "planner",
+                                "planning",
+                                "PLANNER_CONTRACT_PARSE_FAILED",
+                                false,
+                                Some(strict_err.clone()),
+                            )
+                            .await;
+                        }
+                        return Err(TandemError::ParseError(format!(
+                            "PLANNER_CONTRACT_PARSE_FAILED: {}",
+                            strict_err
+                        )));
+                    }
+                }
+            }
+        } else {
+            AgentPrompts::parse_task_list(&response).ok_or_else(|| {
+                TandemError::ParseError("Failed to parse task list from planner output".to_string())
+            })?
+        };
 
         // Convert to Task objects
         let tasks: Vec<Task> = parsed_tasks.into_iter().map(Task::from).collect();
@@ -605,7 +691,7 @@ impl OrchestratorEngine {
         // stuck in `in_progress` (otherwise the orphan-recovery logic will keep re-queuing
         // it forever and budgets will "explode").
         let execution_result: Result<(String, bool, Option<ValidationResult>)> = async {
-            let session_id = self.get_or_create_task_session_id(&task).await?;
+            let mut session_id = self.get_or_create_task_session_id(&task).await?;
             self.emit_task_trace(&task_id, Some(&session_id), "EXEC_STARTED", None);
 
             self.emit_event(OrchestratorEvent::TaskStarted {
@@ -628,7 +714,7 @@ impl OrchestratorEngine {
             }
 
             let builder_response = self
-                .call_agent(Some(&task_id), &session_id, &prompt)
+                .call_agent_for_task_with_recovery(&task, &mut session_id, &prompt)
                 .await?;
 
             // Record tokens
@@ -650,7 +736,7 @@ impl OrchestratorEngine {
             }
 
             let validator_response = self
-                .call_agent(Some(&task_id), &session_id, &validator_prompt)
+                .call_agent_for_task_with_recovery(&task, &mut session_id, &validator_prompt)
                 .await?;
 
             // Record tokens
@@ -659,8 +745,79 @@ impl OrchestratorEngine {
                 tracker.record_tokens(None, Some(validator_response.len()));
             }
 
-            // Parse validation result
-            let validation = AgentPrompts::parse_validation_result(&validator_response);
+            let contract_config = {
+                let run = self.run.read().await;
+                run.config.clone()
+            };
+
+            // Parse validation result with strict JSON-first enforcement.
+            let validation = if contract_config.strict_validator_json {
+                match AgentPrompts::parse_validation_result_strict(&validator_response) {
+                    Ok(parsed) => {
+                        self.bump_contract_metric("validator_strict_parse_success")
+                            .await;
+                        Some(parsed)
+                    }
+                    Err(strict_err) => {
+                        self.bump_contract_metric("validator_parse_failed").await;
+                        let snippet = Self::sample_snippet(&validator_response);
+                        if contract_config.contract_warnings_enabled {
+                            self.emit_contract_warning(
+                                Some(task_id.clone()),
+                                "validator",
+                                "task_validation",
+                                &strict_err,
+                                false,
+                                snippet.clone(),
+                            )
+                            .await;
+                        }
+                        if contract_config.allow_prose_fallback {
+                            let fallback =
+                                AgentPrompts::parse_validation_result_fallback(&validator_response);
+                            if fallback.is_some() {
+                                self.bump_contract_metric("validator_fallback_used").await;
+                                if contract_config.contract_warnings_enabled {
+                                    self.emit_contract_warning(
+                                        Some(task_id.clone()),
+                                        "validator",
+                                        "task_validation",
+                                        "validator strict parse failed; prose fallback used",
+                                        true,
+                                        snippet,
+                                    )
+                                    .await;
+                                }
+                            }
+                            fallback
+                        } else {
+                            if contract_config.contract_warnings_enabled {
+                                self.emit_contract_error(
+                                    Some(task_id.clone()),
+                                    "validator",
+                                    "task_validation",
+                                    "VALIDATOR_CONTRACT_PARSE_FAILED",
+                                    false,
+                                    Some(strict_err.clone()),
+                                )
+                                .await;
+                            }
+                            self.emit_task_trace(
+                                &task_id,
+                                Some(&session_id),
+                                "VALIDATOR_CONTRACT_PARSE_FAILED",
+                                Some(strict_err.clone()),
+                            );
+                            return Err(TandemError::ParseError(format!(
+                                "VALIDATOR_CONTRACT_PARSE_FAILED: {}",
+                                strict_err
+                            )));
+                        }
+                    }
+                }
+            } else {
+                AgentPrompts::parse_validation_result(&validator_response)
+            };
             let passed = validation.as_ref().map(|v| v.passed).unwrap_or(false);
 
             Ok((session_id, passed, validation))
@@ -814,7 +971,18 @@ impl OrchestratorEngine {
             (run.session_id.clone(), run.config.clone())
         };
 
-        let base_session = self.sidecar.get_session(&run_session_id).await?;
+        let base_session = match self.sidecar.get_session(&run_session_id).await {
+            Ok(session) => session,
+            Err(e) if is_sidecar_session_not_found(&e) => {
+                tracing::warn!(
+                    "Base orchestrator session {} is missing (404). Recreating base session.",
+                    run_session_id
+                );
+                let new_session_id = self.recreate_base_run_session().await?;
+                self.sidecar.get_session(&new_session_id).await?
+            }
+            Err(e) => return Err(e),
+        };
 
         let permission = Some(vec![
             PermissionRule {
@@ -859,15 +1027,24 @@ impl OrchestratorEngine {
             },
         ]);
 
+        let provider = base_session.provider.clone();
+        let model = match (base_session.model.clone(), provider.clone()) {
+            (Some(model_id), Some(provider_id)) => Some(json!({
+                "provider_id": provider_id,
+                "model_id": model_id
+            })),
+            _ => None,
+        };
+
         let request = CreateSessionRequest {
-            parent_id: Some(run_session_id),
+            parent_id: Some(base_session.id.clone()),
             title: Some(format!(
                 "Orchestrator Task {}: {}",
                 task.id,
                 &task.title[..task.title.len().min(50)]
             )),
-            model: base_session.model.clone(),
-            provider: base_session.provider.clone(),
+            model,
+            provider,
             permission,
         };
 
@@ -892,6 +1069,146 @@ impl OrchestratorEngine {
         }
 
         Ok(session_id)
+    }
+
+    async fn call_agent_for_task_with_recovery(
+        &self,
+        task: &Task,
+        session_id: &mut String,
+        prompt: &str,
+    ) -> Result<String> {
+        match self
+            .call_agent(Some(&task.id), session_id.as_str(), prompt)
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(e) if is_sidecar_session_not_found(&e) => {
+                tracing::warn!(
+                    "Task {} session {} missing (404). Recreating task session and retrying once.",
+                    task.id,
+                    session_id
+                );
+                self.invalidate_task_session(&task.id).await;
+                *session_id = self.get_or_create_task_session_id(task).await?;
+                self.call_agent(Some(&task.id), session_id.as_str(), prompt)
+                    .await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn invalidate_task_session(&self, task_id: &str) {
+        {
+            let mut sessions = self.task_sessions.write().await;
+            sessions.remove(task_id);
+        }
+        {
+            let mut run = self.run.write().await;
+            if let Some(task) = run.tasks.iter_mut().find(|t| t.id == task_id) {
+                task.session_id = None;
+            }
+        }
+    }
+
+    async fn recreate_base_run_session(&self) -> Result<String> {
+        use crate::sidecar::{CreateSessionRequest, PermissionRule};
+
+        let (objective, run_model, run_provider) = {
+            let run = self.run.read().await;
+            (
+                run.objective.clone(),
+                run.model.clone(),
+                run.provider.clone(),
+            )
+        };
+
+        let model = match (run_provider.clone(), run_model.clone()) {
+            (Some(provider_id), Some(model_id))
+                if !provider_id.trim().is_empty() && !model_id.trim().is_empty() =>
+            {
+                Some(json!({
+                    "provider_id": provider_id,
+                    "model_id": model_id
+                }))
+            }
+            _ => None,
+        };
+
+        let request = CreateSessionRequest {
+            parent_id: None,
+            title: Some(format!(
+                "Orchestrator Run: {}",
+                &objective[..objective.len().min(50)]
+            )),
+            model,
+            provider: run_provider,
+            permission: Some(vec![
+                PermissionRule {
+                    permission: "ls".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                PermissionRule {
+                    permission: "read".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                PermissionRule {
+                    permission: "todowrite".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                PermissionRule {
+                    permission: "websearch".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                PermissionRule {
+                    permission: "webfetch".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                PermissionRule {
+                    permission: "glob".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                PermissionRule {
+                    permission: "grep".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+                PermissionRule {
+                    permission: "search".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                },
+            ]),
+        };
+
+        let session = self.sidecar.create_session(request).await?;
+        let new_session_id = session.id;
+
+        {
+            let mut run = self.run.write().await;
+            run.session_id = new_session_id.clone();
+            for task in run.tasks.iter_mut() {
+                if task.state != TaskState::Done {
+                    task.session_id = None;
+                }
+            }
+        }
+        {
+            let mut sessions = self.task_sessions.write().await;
+            sessions.clear();
+        }
+        self.save_state().await?;
+
+        tracing::info!(
+            "Recreated missing base orchestrator session with new id {}",
+            new_session_id
+        );
+        Ok(new_session_id)
     }
 
     /// Call an agent via the sidecar
@@ -964,11 +1281,27 @@ impl OrchestratorEngine {
         };
 
         let mut stream = self.stream_hub.subscribe();
+        let mut active_session_id = session_id.to_string();
 
         // Then send message to sidecar
         let mut request = SendMessageRequest::text(prompt.to_string());
-        request.model = model_spec;
-        self.sidecar.send_message(session_id, request).await?;
+        request.model = model_spec.clone();
+        if let Err(e) = self.sidecar.send_message(&active_session_id, request).await {
+            if task_id.is_none() && is_sidecar_session_not_found(&e) {
+                tracing::warn!(
+                    "Base orchestrator session {} missing (404) during agent call. Recreating and retrying once.",
+                    active_session_id
+                );
+                active_session_id = self.recreate_base_run_session().await?;
+                let mut retry_request = SendMessageRequest::text(prompt.to_string());
+                retry_request.model = model_spec;
+                self.sidecar
+                    .send_message(&active_session_id, retry_request)
+                    .await?;
+            } else {
+                return Err(e);
+            }
+        }
 
         let mut content = String::new();
         let mut errors: Vec<String> = Vec::new();
@@ -1002,7 +1335,7 @@ impl OrchestratorEngine {
                         content: full_content,
                         ..
                     } => {
-                        if sid == session_id {
+                        if sid == &active_session_id {
                             // Prefer delta if available, otherwise use full content
                             if let Some(text) = delta {
                                 content.push_str(text);
@@ -1014,8 +1347,11 @@ impl OrchestratorEngine {
                         }
                     }
                     StreamEvent::SessionIdle { session_id: sid } => {
-                        if sid == session_id {
-                            tracing::info!("Session {} is idle, response complete", session_id);
+                        if sid == &active_session_id {
+                            tracing::info!(
+                                "Session {} is idle, response complete",
+                                active_session_id
+                            );
                             break;
                         }
                     }
@@ -1025,12 +1361,12 @@ impl OrchestratorEngine {
                         tool,
                         ..
                     } => {
-                        if sid == session_id && first_tool_part_id.is_none() {
+                        if sid == &active_session_id && first_tool_part_id.is_none() {
                             first_tool_part_id = Some(part_id.clone());
                             if let Some(task_id) = task_id {
                                 self.emit_task_trace(
                                     task_id,
-                                    Some(session_id),
+                                    Some(&active_session_id),
                                     "FIRST_TOOL_CALL",
                                     Some(tool.clone()),
                                 );
@@ -1044,7 +1380,7 @@ impl OrchestratorEngine {
                         error,
                         ..
                     } => {
-                        if sid == session_id
+                        if sid == &active_session_id
                             && !first_tool_finished
                             && first_tool_part_id.as_deref() == Some(part_id)
                         {
@@ -1056,7 +1392,7 @@ impl OrchestratorEngine {
                                 };
                                 self.emit_task_trace(
                                     task_id,
-                                    Some(session_id),
+                                    Some(&active_session_id),
                                     "TOOL_CALL_FINISHED",
                                     detail,
                                 );
@@ -1067,8 +1403,8 @@ impl OrchestratorEngine {
                         session_id: sid,
                         error,
                     } => {
-                        if sid == session_id {
-                            tracing::error!("Session {} error: {}", session_id, error);
+                        if sid == &active_session_id {
+                            tracing::error!("Session {} error: {}", active_session_id, error);
                             errors.push(error.clone());
                             break;
                         }
@@ -1508,6 +1844,88 @@ impl OrchestratorEngine {
             stage: stage.to_string(),
             detail,
             thread,
+            timestamp: chrono::Utc::now(),
+        });
+    }
+
+    fn sample_snippet(input: &str) -> Option<String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let mut snippet = trimmed
+            .chars()
+            .take(400)
+            .collect::<String>()
+            .replace('\n', " ")
+            .replace('\r', " ");
+        if trimmed.len() > 400 {
+            snippet.push_str(" ...");
+        }
+        Some(snippet)
+    }
+
+    async fn bump_contract_metric(&self, key: &str) {
+        let mut metrics = self.contract_metrics.write().await;
+        let value = metrics.entry(key.to_string()).or_insert(0);
+        *value += 1;
+        tracing::info!("orchestrator.contract_metric {}={}", key, value);
+    }
+
+    async fn emit_contract_warning(
+        &self,
+        task_id: Option<String>,
+        agent: &str,
+        phase: &str,
+        reason: &str,
+        fallback_used: bool,
+        snippet: Option<String>,
+    ) {
+        tracing::warn!(
+            "orchestrator.contract_warning agent={} phase={} fallback_used={} reason={} snippet={}",
+            agent,
+            phase,
+            fallback_used,
+            reason,
+            snippet.as_deref().unwrap_or("")
+        );
+        self.emit_event(OrchestratorEvent::ContractWarning {
+            run_id: self.run_id.clone(),
+            task_id,
+            agent: agent.to_string(),
+            phase: phase.to_string(),
+            reason: reason.to_string(),
+            fallback_used,
+            snippet,
+            timestamp: chrono::Utc::now(),
+        });
+    }
+
+    async fn emit_contract_error(
+        &self,
+        task_id: Option<String>,
+        agent: &str,
+        phase: &str,
+        reason: &str,
+        fallback_used: bool,
+        snippet: Option<String>,
+    ) {
+        tracing::error!(
+            "orchestrator.contract_error agent={} phase={} fallback_used={} reason={} snippet={}",
+            agent,
+            phase,
+            fallback_used,
+            reason,
+            snippet.as_deref().unwrap_or("")
+        );
+        self.emit_event(OrchestratorEvent::ContractError {
+            run_id: self.run_id.clone(),
+            task_id,
+            agent: agent.to_string(),
+            phase: phase.to_string(),
+            reason: reason.to_string(),
+            fallback_used,
+            snippet,
             timestamp: chrono::Utc::now(),
         });
     }

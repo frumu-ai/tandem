@@ -44,7 +44,10 @@ impl ToolRegistry {
         map.insert("webfetch".to_string(), Arc::new(WebFetchTool));
         map.insert("websearch".to_string(), Arc::new(WebSearchTool));
         map.insert("codesearch".to_string(), Arc::new(CodeSearchTool));
-        map.insert("todo_write".to_string(), Arc::new(TodoWriteTool));
+        let todo_tool: Arc<dyn Tool> = Arc::new(TodoWriteTool);
+        map.insert("todo_write".to_string(), todo_tool.clone());
+        map.insert("todowrite".to_string(), todo_tool.clone());
+        map.insert("update_todo_list".to_string(), todo_tool);
         map.insert("task".to_string(), Arc::new(TaskTool));
         map.insert("question".to_string(), Arc::new(QuestionTool));
         map.insert("skill".to_string(), Arc::new(SkillTool));

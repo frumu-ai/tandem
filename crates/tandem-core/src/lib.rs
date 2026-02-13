@@ -6,6 +6,7 @@ pub mod event_bus;
 pub mod permissions;
 pub mod plugins;
 pub mod storage;
+pub mod storage_paths;
 
 pub use agents::*;
 pub use cancellation::*;
@@ -15,3 +16,4 @@ pub use event_bus::*;
 pub use permissions::*;
 pub use plugins::*;
 pub use storage::*;
+pub use storage_paths::*;

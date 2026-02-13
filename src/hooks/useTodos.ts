@@ -16,6 +16,27 @@ interface StreamEventPayload {
   todos?: TodoItem[];
 }
 
+function normalizeTodoStatus(status: string): TodoItem["status"] {
+  const s = status.trim().toLowerCase();
+  if (s === "in_progress" || s === "inprogress" || s === "running" || s === "working") {
+    return "in_progress";
+  }
+  if (s === "completed" || s === "complete" || s === "done") {
+    return "completed";
+  }
+  if (s === "cancelled" || s === "canceled" || s === "aborted" || s === "skipped") {
+    return "cancelled";
+  }
+  return "pending";
+}
+
+function normalizeTodos(items: TodoItem[]): TodoItem[] {
+  return items.map((t) => ({
+    ...t,
+    status: normalizeTodoStatus(t.status),
+  }));
+}
+
 export function useTodos(sessionId: string | null) {
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -30,7 +51,7 @@ export function useTodos(sessionId: string | null) {
     getSessionTodos(sessionId)
       .then((fetchedTodos) => {
         console.log("[useTodos] Fetched todos:", fetchedTodos);
-        setTodos(fetchedTodos);
+        setTodos(normalizeTodos(fetchedTodos));
       })
       .catch((error) => {
         console.error("[useTodos] Failed to fetch todos:", error);
@@ -62,7 +83,7 @@ export function useTodos(sessionId: string | null) {
           );
           if (typedPayload.session_id === sessionId && typedPayload.todos) {
             console.log("[useTodos] Updating todos:", typedPayload.todos);
-            setTodos(typedPayload.todos);
+            setTodos(normalizeTodos(typedPayload.todos));
           }
         }
       });

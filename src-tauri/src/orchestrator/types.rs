@@ -42,6 +42,40 @@ pub struct OrchestratorConfig {
     pub shell_parallel: u32,
     #[serde(default)]
     pub network_parallel: u32,
+    #[serde(default = "default_strict_planner_json")]
+    pub strict_planner_json: bool,
+    #[serde(default = "default_strict_validator_json")]
+    pub strict_validator_json: bool,
+    #[serde(default = "default_allow_prose_fallback")]
+    pub allow_prose_fallback: bool,
+    #[serde(default = "default_contract_warnings_enabled")]
+    pub contract_warnings_enabled: bool,
+}
+
+fn strict_contract_flag_default() -> bool {
+    match std::env::var("TANDEM_ORCH_STRICT_CONTRACT") {
+        Ok(v) => matches!(
+            v.trim().to_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => cfg!(debug_assertions),
+    }
+}
+
+fn default_strict_planner_json() -> bool {
+    strict_contract_flag_default()
+}
+
+fn default_strict_validator_json() -> bool {
+    strict_contract_flag_default()
+}
+
+fn default_allow_prose_fallback() -> bool {
+    true
+}
+
+fn default_contract_warnings_enabled() -> bool {
+    true
 }
 
 impl Default for OrchestratorConfig {
@@ -67,6 +101,10 @@ impl Default for OrchestratorConfig {
             fs_write_parallel: 1,
             shell_parallel: 1,
             network_parallel: 2,
+            strict_planner_json: default_strict_planner_json(),
+            strict_validator_json: default_strict_validator_json(),
+            allow_prose_fallback: default_allow_prose_fallback(),
+            contract_warnings_enabled: default_contract_warnings_enabled(),
         }
     }
 }
@@ -477,6 +515,26 @@ pub enum OrchestratorEvent {
     },
     RunCancelled {
         run_id: String,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    },
+    ContractWarning {
+        run_id: String,
+        task_id: Option<String>,
+        agent: String,
+        phase: String,
+        reason: String,
+        fallback_used: bool,
+        snippet: Option<String>,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    },
+    ContractError {
+        run_id: String,
+        task_id: Option<String>,
+        agent: String,
+        phase: String,
+        reason: String,
+        fallback_used: bool,
+        snippet: Option<String>,
         timestamp: chrono::DateTime<chrono::Utc>,
     },
 }

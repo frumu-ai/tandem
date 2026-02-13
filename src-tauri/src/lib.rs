@@ -22,11 +22,13 @@ mod skills;
 mod state;
 mod stream_hub;
 mod tandem_config;
+mod tool_history;
 mod tool_policy;
 mod tool_proxy;
 mod vault;
 
 use std::sync::RwLock;
+use tandem_core::{migrate_legacy_storage_if_needed, resolve_shared_paths};
 use tauri::Manager;
 use tauri_plugin_store::StoreExt;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -116,10 +118,13 @@ fn init_tracing(app_data_dir: &std::path::Path) {
 
 /// Initialize keystore with the given master key and load API keys
 fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .expect("Failed to get app data directory");
+    let app_data_dir = match resolve_shared_paths() {
+        Ok(paths) => paths.canonical_root,
+        Err(_) => app
+            .path()
+            .app_data_dir()
+            .expect("Failed to resolve app data directory"),
+    };
     let keystore_path = app_data_dir.join("tandem.keystore");
 
     // Create keystore (fast - no Argon2!)
@@ -214,15 +219,33 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
-            // Get app data directory for logging and state
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("Failed to get app data directory");
+            // Use canonical shared storage root across Tauri, engine, and TUI.
+            let app_data_dir = match resolve_shared_paths() {
+                Ok(paths) => paths.canonical_root,
+                Err(_) => app
+                    .path()
+                    .app_data_dir()
+                    .expect("Failed to get app data directory"),
+            };
 
             std::fs::create_dir_all(&app_data_dir).ok();
             init_tracing(&app_data_dir);
             tracing::debug!("Starting Tandem application");
+            tracing::info!("Canonical storage root: {}", app_data_dir.display());
+
+            if let Ok(paths) = resolve_shared_paths() {
+                match migrate_legacy_storage_if_needed(&paths) {
+                    Ok(report) => tracing::info!(
+                        "Storage migration status: reason={} performed={} copied={} skipped={} errors={}",
+                        report.reason,
+                        report.performed,
+                        report.copied.len(),
+                        report.skipped.len(),
+                        report.errors.len()
+                    ),
+                    Err(e) => tracing::warn!("Storage migration failed: {}", e),
+                }
+            }
 
             // Initialize vault state (manages PIN-based encryption)
             let vault_state = VaultState::new(app_data_dir.clone());
@@ -377,6 +400,7 @@ pub fn run() {
             commands::greet,
             commands::log_frontend_error,
             commands::get_app_state,
+            commands::get_storage_status,
             commands::set_workspace_path,
             commands::get_workspace_path,
             // Project management
@@ -424,6 +448,7 @@ pub fn run() {
             commands::list_projects,
             commands::get_session_messages,
             commands::get_session_todos,
+            commands::list_tool_executions,
             // Message handling
             commands::send_message,
             commands::send_message_streaming,
@@ -513,6 +538,8 @@ pub fn run() {
             commands::packs_install_default,
             // Guaranteed Plan Mode
             commands::start_plan_session,
+            commands::list_plans,
+            commands::read_plan_content,
             // Ralph Loop commands
             commands::ralph_start,
             commands::ralph_cancel,

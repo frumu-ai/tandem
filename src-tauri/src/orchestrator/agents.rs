@@ -2,7 +2,8 @@
 // Defines prompts for Planner, Builder, Validator, and Researcher agents
 // See: docs/orchestration_plan.md
 
-use crate::orchestrator::types::{AgentRole, Task, ValidationResult};
+use crate::orchestrator::types::{Task, ValidationResult};
+use std::collections::HashSet;
 
 // ============================================================================
 // Prompt Templates
@@ -255,38 +256,336 @@ Begin your research now."#,
     }
 
     /// Parse validation result from agent output
-    pub fn parse_validation_result(output: &str) -> Option<ValidationResult> {
-        // Try to extract JSON from the output
-        let json_start = output.find('{')?;
-        let json_end = output.rfind('}')?;
-        let json_str = &output[json_start..=json_end];
-
+    pub fn parse_validation_result_strict(
+        output: &str,
+    ) -> std::result::Result<ValidationResult, String> {
         #[derive(serde::Deserialize)]
         struct RawResult {
             passed: bool,
+            #[serde(default)]
             feedback: String,
             #[serde(default)]
             suggested_fixes: Vec<String>,
         }
 
-        serde_json::from_str::<RawResult>(json_str)
+        if let Ok(parsed) = serde_json::from_str::<RawResult>(output) {
+            return Ok(ValidationResult {
+                passed: parsed.passed,
+                feedback: if parsed.feedback.trim().is_empty() {
+                    if parsed.passed {
+                        "Validation passed".to_string()
+                    } else {
+                        "Validation failed".to_string()
+                    }
+                } else {
+                    parsed.feedback
+                },
+                suggested_fixes: parsed.suggested_fixes,
+            });
+        }
+
+        for candidate in validation_json_candidates(output) {
+            if let Ok(parsed) = serde_json::from_str::<RawResult>(&candidate) {
+                return Ok(ValidationResult {
+                    passed: parsed.passed,
+                    feedback: if parsed.feedback.trim().is_empty() {
+                        if parsed.passed {
+                            "Validation passed".to_string()
+                        } else {
+                            "Validation failed".to_string()
+                        }
+                    } else {
+                        parsed.feedback
+                    },
+                    suggested_fixes: parsed.suggested_fixes,
+                });
+            }
+        }
+
+        Err("validator response did not match required JSON schema".to_string())
+    }
+
+    pub fn parse_validation_result_fallback(output: &str) -> Option<ValidationResult> {
+        let lower = output.to_lowercase();
+        let inferred = if lower.contains("\"passed\": true") || lower.contains("passed: true") {
+            Some(true)
+        } else if lower.contains("\"passed\": false") || lower.contains("passed: false") {
+            Some(false)
+        } else if lower.contains("all acceptance criteria are met")
+            || lower.contains("meets all acceptance criteria")
+            || lower.contains("criteria are satisfied")
+        {
+            Some(true)
+        } else if lower.contains("acceptance criteria not met")
+            || lower.contains("does not meet")
+            || lower.contains("missing")
+            || lower.contains("not satisfied")
+        {
+            Some(false)
+        } else if lower.contains("passed") && !lower.contains("not passed") {
+            Some(true)
+        } else if lower.contains("failed") && !lower.contains("not failed") {
+            Some(false)
+        } else {
+            None
+        };
+
+        inferred.map(|passed| ValidationResult {
+            passed,
+            feedback: output
+                .lines()
+                .take(6)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim()
+                .to_string(),
+            suggested_fixes: Vec::new(),
+        })
+    }
+
+    pub fn parse_validation_result(output: &str) -> Option<ValidationResult> {
+        Self::parse_validation_result_strict(output)
             .ok()
-            .map(|r| ValidationResult {
-                passed: r.passed,
-                feedback: r.feedback,
-                suggested_fixes: r.suggested_fixes,
-            })
+            .or_else(|| Self::parse_validation_result_fallback(output))
     }
 
     /// Parse task list from planner output
-    pub fn parse_task_list(output: &str) -> Option<Vec<ParsedTask>> {
-        // Try to extract JSON array from the output
-        let json_start = output.find('[')?;
-        let json_end = output.rfind(']')?;
-        let json_str = &output[json_start..=json_end];
-
-        serde_json::from_str(json_str).ok()
+    pub fn parse_task_list_strict(output: &str) -> std::result::Result<Vec<ParsedTask>, String> {
+        let tasks = parse_tasks_from_json(output).ok_or_else(|| {
+            "planner response did not contain valid JSON task payload".to_string()
+        })?;
+        let normalized = normalize_and_validate_parsed_tasks(tasks)?;
+        if normalized.is_empty() {
+            return Err("planner produced an empty task list".to_string());
+        }
+        Ok(normalized)
     }
+
+    pub fn parse_task_list_fallback(output: &str) -> Option<Vec<ParsedTask>> {
+        let markdown_tasks = parse_tasks_from_markdown(output);
+        if markdown_tasks.is_empty() {
+            return None;
+        }
+        normalize_and_validate_parsed_tasks(markdown_tasks).ok()
+    }
+
+    pub fn parse_task_list(output: &str) -> Option<Vec<ParsedTask>> {
+        Self::parse_task_list_strict(output)
+            .ok()
+            .or_else(|| Self::parse_task_list_fallback(output))
+    }
+}
+
+fn parse_tasks_from_json(output: &str) -> Option<Vec<ParsedTask>> {
+    #[derive(serde::Deserialize)]
+    struct WrappedTasks {
+        tasks: Vec<ParsedTask>,
+    }
+    #[derive(serde::Deserialize)]
+    struct WrappedPlan {
+        plan: Vec<ParsedTask>,
+    }
+    #[derive(serde::Deserialize)]
+    struct WrappedSteps {
+        steps: Vec<ParsedTask>,
+    }
+    #[derive(serde::Deserialize)]
+    struct WrappedItems {
+        items: Vec<ParsedTask>,
+    }
+    #[derive(serde::Deserialize)]
+    struct WrappedTaskList {
+        task_list: Vec<ParsedTask>,
+    }
+
+    if let Ok(tasks) = serde_json::from_str::<Vec<ParsedTask>>(output) {
+        return Some(tasks);
+    }
+    if let Ok(wrapped) = serde_json::from_str::<WrappedTasks>(output) {
+        return Some(wrapped.tasks);
+    }
+    if let Ok(wrapped) = serde_json::from_str::<WrappedPlan>(output) {
+        return Some(wrapped.plan);
+    }
+    if let Ok(wrapped) = serde_json::from_str::<WrappedSteps>(output) {
+        return Some(wrapped.steps);
+    }
+    if let Ok(wrapped) = serde_json::from_str::<WrappedItems>(output) {
+        return Some(wrapped.items);
+    }
+    if let Ok(wrapped) = serde_json::from_str::<WrappedTaskList>(output) {
+        return Some(wrapped.task_list);
+    }
+
+    for candidate in json_candidates(output) {
+        if let Ok(tasks) = serde_json::from_str::<Vec<ParsedTask>>(&candidate) {
+            return Some(tasks);
+        }
+        if let Ok(wrapped) = serde_json::from_str::<WrappedTasks>(&candidate) {
+            return Some(wrapped.tasks);
+        }
+        if let Ok(wrapped) = serde_json::from_str::<WrappedPlan>(&candidate) {
+            return Some(wrapped.plan);
+        }
+        if let Ok(wrapped) = serde_json::from_str::<WrappedSteps>(&candidate) {
+            return Some(wrapped.steps);
+        }
+        if let Ok(wrapped) = serde_json::from_str::<WrappedItems>(&candidate) {
+            return Some(wrapped.items);
+        }
+        if let Ok(wrapped) = serde_json::from_str::<WrappedTaskList>(&candidate) {
+            return Some(wrapped.task_list);
+        }
+    }
+
+    None
+}
+
+fn json_candidates(output: &str) -> Vec<String> {
+    let mut out = Vec::new();
+
+    for marker in ["```json", "```JSON", "```"] {
+        if let Some(start) = output.find(marker) {
+            let after = &output[start + marker.len()..];
+            if let Some(end) = after.find("```") {
+                let block = after[..end].trim();
+                if !block.is_empty() {
+                    out.push(block.to_string());
+                }
+            }
+        }
+    }
+
+    if let (Some(start), Some(end)) = (output.find('['), output.rfind(']')) {
+        if start <= end {
+            out.push(output[start..=end].to_string());
+        }
+    }
+
+    if let (Some(start), Some(end)) = (output.find('{'), output.rfind('}')) {
+        if start <= end {
+            out.push(output[start..=end].to_string());
+        }
+    }
+
+    out
+}
+
+fn validation_json_candidates(output: &str) -> Vec<String> {
+    let mut out = Vec::new();
+
+    if let Some(start) = output.find("```json") {
+        let after = &output[start + "```json".len()..];
+        if let Some(end) = after.find("```") {
+            out.push(after[..end].trim().to_string());
+        }
+    }
+
+    if let (Some(start), Some(end)) = (output.find('{'), output.rfind('}')) {
+        if start <= end {
+            out.push(output[start..=end].to_string());
+        }
+    }
+
+    out
+}
+
+fn parse_tasks_from_markdown(output: &str) -> Vec<ParsedTask> {
+    let mut tasks = Vec::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let candidate = trimmed
+            .trim_start_matches("- ")
+            .trim_start_matches("* ")
+            .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')')
+            .trim();
+
+        let (id, title) = if let Some((id_part, rest)) = candidate.split_once(':') {
+            let parsed_id = id_part.trim().to_string();
+            let parsed_title = rest.trim().to_string();
+            if parsed_id.is_empty() || parsed_title.is_empty() {
+                continue;
+            }
+            (parsed_id, parsed_title)
+        } else {
+            // Plain checklist fallback without explicit IDs.
+            let parsed_title = candidate.trim().to_string();
+            if parsed_title.len() < 4 {
+                continue;
+            }
+            (String::new(), parsed_title)
+        };
+
+        tasks.push(ParsedTask {
+            id,
+            title: title.clone(),
+            description: title,
+            dependencies: Vec::new(),
+            acceptance_criteria: vec!["Task completed successfully".to_string()],
+        });
+    }
+
+    tasks
+}
+
+fn normalize_and_validate_parsed_tasks(
+    tasks: Vec<ParsedTask>,
+) -> std::result::Result<Vec<ParsedTask>, String> {
+    if tasks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut seen_ids = HashSet::<String>::new();
+    let mut normalized = Vec::new();
+
+    for (idx, mut task) in tasks.into_iter().enumerate() {
+        task.id = task.id.trim().to_string();
+        task.title = task.title.trim().to_string();
+        task.description = task.description.trim().to_string();
+        task.dependencies = task
+            .dependencies
+            .into_iter()
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty())
+            .collect();
+        task.acceptance_criteria = task
+            .acceptance_criteria
+            .into_iter()
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect();
+
+        if task.id.is_empty() {
+            task.id = format!("task_{}", idx + 1);
+        }
+        if task.title.is_empty() {
+            return Err(format!("task {} has empty title", idx + 1));
+        }
+        if task.description.is_empty() {
+            return Err(format!("task {} has empty description", idx + 1));
+        }
+        if task.acceptance_criteria.is_empty() {
+            task.acceptance_criteria = vec!["Task completed successfully".to_string()];
+        }
+
+        let base_id = task.id.clone();
+        let mut unique_id = base_id.clone();
+        let mut suffix = 2usize;
+        while seen_ids.contains(&unique_id) {
+            unique_id = format!("{}_{}", base_id, suffix);
+            suffix += 1;
+        }
+        task.id = unique_id.clone();
+        seen_ids.insert(unique_id);
+        normalized.push(task);
+    }
+
+    Ok(normalized)
 }
 
 // ============================================================================
@@ -402,5 +701,83 @@ Here is the plan:
         let tasks = tasks.unwrap();
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[1].dependencies, vec!["1"]);
+    }
+
+    #[test]
+    fn test_parse_task_list_wrapped_json() {
+        let output = r#"{
+  "tasks": [
+    {"id":"task_1","title":"Analyze","description":"Analyze code","dependencies":[],"acceptance_criteria":["done"]}
+  ]
+}"#;
+        let tasks = AgentPrompts::parse_task_list(output).expect("tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "task_1");
+    }
+
+    #[test]
+    fn test_parse_task_list_markdown_fallback() {
+        let output = r#"
+- task_1: Analyze existing codebase
+- task_2: Implement feature
+"#;
+        let tasks = AgentPrompts::parse_task_list(output).expect("tasks");
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].id, "task_1");
+    }
+
+    #[test]
+    fn test_parse_task_list_wrapped_plan_key() {
+        let output = r#"{
+  "plan": [
+    {"id":"task_1","title":"Analyze","description":"Analyze code","dependencies":[],"acceptance_criteria":["done"]}
+  ]
+}"#;
+        let tasks = AgentPrompts::parse_task_list(output).expect("tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "task_1");
+    }
+
+    #[test]
+    fn test_parse_task_list_markdown_plain_checklist() {
+        let output = r#"
+- Analyze existing code structure
+- Implement feature X
+"#;
+        let tasks = AgentPrompts::parse_task_list(output).expect("tasks");
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].id, "task_1");
+        assert_eq!(tasks[0].title, "Analyze existing code structure");
+    }
+
+    #[test]
+    fn test_parse_task_list_strict_rejects_markdown() {
+        let output = r#"
+- Analyze existing code structure
+- Implement feature X
+"#;
+        let tasks = AgentPrompts::parse_task_list_strict(output);
+        assert!(tasks.is_err());
+    }
+
+    #[test]
+    fn test_parse_task_list_strict_dedupes_ids() {
+        let output = r#"
+[
+  {"id":"task_1","title":"A","description":"Desc A","dependencies":[],"acceptance_criteria":["done"]},
+  {"id":"task_1","title":"B","description":"Desc B","dependencies":[],"acceptance_criteria":["done"]}
+]
+"#;
+        let tasks = AgentPrompts::parse_task_list_strict(output).expect("tasks");
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].id, "task_1");
+        assert_eq!(tasks[1].id, "task_1_2");
+    }
+
+    #[test]
+    fn test_parse_validation_result_strict_rejects_prose() {
+        let output = "Looks good overall, passed.";
+        let parsed = AgentPrompts::parse_validation_result_strict(output);
+        assert!(parsed.is_err());
     }
 }

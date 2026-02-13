@@ -1,5 +1,6 @@
 use futures::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Number, Value};
+use std::collections::HashSet;
 use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk};
 use tandem_tools::ToolRegistry;
 use tandem_types::{
@@ -53,6 +54,16 @@ impl EngineLoop {
         session_id: String,
         req: SendMessageRequest,
     ) -> anyhow::Result<()> {
+        let session_provider = self
+            .storage
+            .get_session(&session_id)
+            .await
+            .and_then(|s| s.provider);
+        let provider_hint = req
+            .model
+            .as_ref()
+            .map(|m| m.provider_id.clone())
+            .or(session_provider);
         let cancel = self.cancellations.create(&session_id).await;
         self.event_bus.publish(EngineEvent::new(
             "session.status",
@@ -148,7 +159,12 @@ impl EngineLoop {
                 }
                 let stream = self
                     .providers
-                    .default_stream(messages, Some(self.tools.list().await), cancel.clone())
+                    .stream_for_provider(
+                        provider_hint.as_deref(),
+                        messages,
+                        Some(self.tools.list().await),
+                        cancel.clone(),
+                    )
                     .await?;
                 tokio::pin!(stream);
                 completion.clear();
@@ -176,30 +192,46 @@ impl EngineLoop {
                     }
                 }
 
-                if let Some((tool, args)) = parse_tool_invocation_from_response(&completion) {
-                    if !agent_can_use_tool(&active_agent, &tool) {
-                        break;
+                let tool_calls = parse_tool_invocations_from_response(&completion);
+                if !tool_calls.is_empty() {
+                    let mut outputs = Vec::new();
+                    for (tool, args) in tool_calls {
+                        if !agent_can_use_tool(&active_agent, &tool) {
+                            continue;
+                        }
+                        if let Some(output) = self
+                            .execute_tool_with_permission(
+                                &session_id,
+                                &user_message_id,
+                                tool,
+                                args,
+                                cancel.clone(),
+                            )
+                            .await?
+                        {
+                            outputs.push(output);
+                        }
                     }
-                    let Some(output) = self
-                        .execute_tool_with_permission(
-                            &session_id,
-                            &user_message_id,
-                            tool.clone(),
-                            args,
-                            cancel.clone(),
-                        )
-                        .await?
-                    else {
-                        break;
-                    };
-                    followup_context = Some(format!("{output}\nContinue."));
-                    continue;
+                    if !outputs.is_empty() {
+                        followup_context = Some(format!("{}\nContinue.", outputs.join("\n\n")));
+                        continue;
+                    }
                 }
 
                 break;
             }
             truncate_text(&completion, 16_000)
         };
+        if active_agent.name.eq_ignore_ascii_case("plan") {
+            emit_plan_todo_fallback(
+                self.storage.clone(),
+                &self.event_bus,
+                &session_id,
+                &user_message_id,
+                &completion,
+            )
+            .await;
+        }
         if cancel.is_cancelled() {
             self.event_bus.publish(EngineEvent::new(
                 "session.status",
@@ -249,6 +281,7 @@ impl EngineLoop {
         args: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<Option<String>> {
+        let tool = normalize_tool_name(&tool);
         let rule = self
             .plugins
             .permission_override(&tool)
@@ -310,6 +343,7 @@ impl EngineLoop {
             "message.part.updated",
             json!({"part": invoke_part}),
         ));
+        let args_for_side_events = args.clone();
         let result = self
             .tools
             .execute_with_cancel(&tool, args, cancel.clone())
@@ -320,6 +354,7 @@ impl EngineLoop {
             session_id,
             message_id,
             &tool,
+            &args_for_side_events,
             &result.metadata,
         )
         .await;
@@ -351,10 +386,18 @@ fn truncate_text(input: &str, max_len: usize) -> String {
     out
 }
 
+fn normalize_tool_name(name: &str) -> String {
+    match name.trim().to_lowercase().replace('-', "_").as_str() {
+        "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn agent_can_use_tool(agent: &AgentDefinition, tool_name: &str) -> bool {
+    let target = normalize_tool_name(tool_name);
     match agent.tools.as_ref() {
         None => true,
-        Some(list) => list.iter().any(|t| t == tool_name),
+        Some(list) => list.iter().any(|t| normalize_tool_name(t) == target),
     }
 }
 
@@ -365,7 +408,7 @@ fn parse_tool_invocation(input: &str) -> Option<(String, serde_json::Value)> {
     }
     let rest = raw.trim_start_matches("/tool ").trim();
     let mut split = rest.splitn(2, ' ');
-    let tool = split.next()?.trim().to_string();
+    let tool = normalize_tool_name(split.next()?.trim());
     let args = split
         .next()
         .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
@@ -373,11 +416,427 @@ fn parse_tool_invocation(input: &str) -> Option<(String, serde_json::Value)> {
     Some((tool, args))
 }
 
+fn parse_tool_invocations_from_response(input: &str) -> Vec<(String, serde_json::Value)> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(found) = extract_tool_call_from_value(&parsed) {
+            return vec![found];
+        }
+    }
+
+    if let Some(block) = extract_first_json_object(trimmed) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&block) {
+            if let Some(found) = extract_tool_call_from_value(&parsed) {
+                return vec![found];
+            }
+        }
+    }
+
+    parse_function_style_tool_calls(trimmed)
+}
+
+#[cfg(test)]
 fn parse_tool_invocation_from_response(input: &str) -> Option<(String, serde_json::Value)> {
-    let parsed = serde_json::from_str::<serde_json::Value>(input).ok()?;
-    let tool = parsed.get("tool")?.as_str()?.to_string();
-    let args = parsed.get("args").cloned().unwrap_or_else(|| json!({}));
-    Some((tool, args))
+    parse_tool_invocations_from_response(input)
+        .into_iter()
+        .next()
+}
+
+fn parse_function_style_tool_calls(input: &str) -> Vec<(String, Value)> {
+    let mut calls = Vec::new();
+    let lower = input.to_lowercase();
+    let names = [
+        "todo_write",
+        "todowrite",
+        "update_todo_list",
+        "update_todos",
+    ];
+    let mut cursor = 0usize;
+
+    while cursor < lower.len() {
+        let mut best: Option<(usize, &str)> = None;
+        for name in names {
+            let needle = format!("{name}(");
+            if let Some(rel_idx) = lower[cursor..].find(&needle) {
+                let idx = cursor + rel_idx;
+                if best.as_ref().map_or(true, |(best_idx, _)| idx < *best_idx) {
+                    best = Some((idx, name));
+                }
+            }
+        }
+
+        let Some((tool_start, tool_name)) = best else {
+            break;
+        };
+
+        let open_paren = tool_start + tool_name.len();
+        if let Some(close_paren) = find_matching_paren(input, open_paren) {
+            if let Some(args_text) = input.get(open_paren + 1..close_paren) {
+                let args = parse_function_style_args(args_text.trim());
+                calls.push((normalize_tool_name(tool_name), Value::Object(args)));
+            }
+            cursor = close_paren.saturating_add(1);
+        } else {
+            cursor = tool_start.saturating_add(tool_name.len());
+        }
+    }
+
+    calls
+}
+
+fn find_matching_paren(input: &str, open_paren: usize) -> Option<usize> {
+    if input.as_bytes().get(open_paren).copied()? != b'(' {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for (offset, ch) in input.get(open_paren..)?.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && (in_single || in_double) {
+            escaped = true;
+            continue;
+        }
+        if ch == '\'' && !in_double {
+            in_single = !in_single;
+            continue;
+        }
+        if ch == '"' && !in_single {
+            in_double = !in_double;
+            continue;
+        }
+        if in_single || in_double {
+            continue;
+        }
+
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(open_paren + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn parse_function_style_args(input: &str) -> Map<String, Value> {
+    let mut args = Map::new();
+    if input.trim().is_empty() {
+        return args;
+    }
+
+    let mut parts = Vec::<String>::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut depth_paren = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_brace = 0usize;
+
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && (in_single || in_double) {
+            current.push(ch);
+            escaped = true;
+            continue;
+        }
+        if ch == '\'' && !in_double {
+            in_single = !in_single;
+            current.push(ch);
+            continue;
+        }
+        if ch == '"' && !in_single {
+            in_double = !in_double;
+            current.push(ch);
+            continue;
+        }
+        if in_single || in_double {
+            current.push(ch);
+            continue;
+        }
+
+        match ch {
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            ',' if depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 => {
+                let part = current.trim();
+                if !part.is_empty() {
+                    parts.push(part.to_string());
+                }
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(ch);
+    }
+    let tail = current.trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+
+    for part in parts {
+        let Some((raw_key, raw_value)) = part
+            .split_once('=')
+            .or_else(|| part.split_once(':'))
+            .map(|(k, v)| (k.trim(), v.trim()))
+        else {
+            continue;
+        };
+        let key = raw_key.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+        if key.is_empty() {
+            continue;
+        }
+        let value = parse_scalar_like_value(raw_value);
+        args.insert(key.to_string(), value);
+    }
+
+    args
+}
+
+fn parse_scalar_like_value(raw: &str) -> Value {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Value::Null;
+    }
+
+    if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        return Value::String(trimmed[1..trimmed.len().saturating_sub(1)].to_string());
+    }
+
+    if trimmed.eq_ignore_ascii_case("true") {
+        return Value::Bool(true);
+    }
+    if trimmed.eq_ignore_ascii_case("false") {
+        return Value::Bool(false);
+    }
+    if trimmed.eq_ignore_ascii_case("null") {
+        return Value::Null;
+    }
+
+    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+        return v;
+    }
+    if let Ok(v) = trimmed.parse::<i64>() {
+        return Value::Number(Number::from(v));
+    }
+    if let Ok(v) = trimmed.parse::<f64>() {
+        if let Some(n) = Number::from_f64(v) {
+            return Value::Number(n);
+        }
+    }
+
+    Value::String(trimmed.to_string())
+}
+
+fn extract_tool_call_from_value(value: &Value) -> Option<(String, Value)> {
+    if let Some(obj) = value.as_object() {
+        if let Some(tool) = obj.get("tool").and_then(|v| v.as_str()) {
+            return Some((
+                normalize_tool_name(tool),
+                obj.get("args").cloned().unwrap_or_else(|| json!({})),
+            ));
+        }
+
+        if let Some(tool) = obj.get("name").and_then(|v| v.as_str()) {
+            let args = obj
+                .get("args")
+                .cloned()
+                .or_else(|| obj.get("arguments").cloned())
+                .unwrap_or_else(|| json!({}));
+            let args = if let Some(raw) = args.as_str() {
+                serde_json::from_str::<Value>(raw).unwrap_or_else(|_| json!({}))
+            } else {
+                args
+            };
+            return Some((normalize_tool_name(tool), args));
+        }
+
+        for key in [
+            "tool_call",
+            "toolCall",
+            "call",
+            "function_call",
+            "functionCall",
+        ] {
+            if let Some(nested) = obj.get(key) {
+                if let Some(found) = extract_tool_call_from_value(nested) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+
+    if let Some(items) = value.as_array() {
+        for item in items {
+            if let Some(found) = extract_tool_call_from_value(item) {
+                return Some(found);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_first_json_object(input: &str) -> Option<String> {
+    let mut start = None;
+    let mut depth = 0usize;
+    for (idx, ch) in input.char_indices() {
+        if ch == '{' {
+            if start.is_none() {
+                start = Some(idx);
+            }
+            depth += 1;
+        } else if ch == '}' {
+            if depth == 0 {
+                continue;
+            }
+            depth -= 1;
+            if depth == 0 {
+                let begin = start?;
+                let block = input.get(begin..=idx)?;
+                return Some(block.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_todo_candidates_from_text(input: &str) -> Vec<Value> {
+    let mut seen = HashSet::<String>::new();
+    let mut todos = Vec::new();
+
+    for raw_line in input.lines() {
+        let mut line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("```") {
+            continue;
+        }
+        if line.ends_with(':') {
+            continue;
+        }
+        if let Some(rest) = line
+            .strip_prefix("- [ ]")
+            .or_else(|| line.strip_prefix("* [ ]"))
+            .or_else(|| line.strip_prefix("- [x]"))
+            .or_else(|| line.strip_prefix("* [x]"))
+        {
+            line = rest.trim();
+        } else if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            line = rest.trim();
+        } else {
+            let bytes = line.as_bytes();
+            let mut i = 0usize;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i > 0 && i + 1 < bytes.len() && (bytes[i] == b'.' || bytes[i] == b')') {
+                line = line[i + 1..].trim();
+            }
+        }
+
+        let content = line.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '*');
+        if content.len() < 5 || content.len() > 180 {
+            continue;
+        }
+        let key = content.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.insert(key);
+        todos.push(json!({ "content": content }));
+        if todos.len() >= 25 {
+            break;
+        }
+    }
+
+    todos
+}
+
+async fn emit_plan_todo_fallback(
+    storage: std::sync::Arc<Storage>,
+    bus: &EventBus,
+    session_id: &str,
+    message_id: &str,
+    completion: &str,
+) {
+    let todos = extract_todo_candidates_from_text(completion);
+    if todos.is_empty() {
+        return;
+    }
+
+    let invoke_part = WireMessagePart::tool_invocation(
+        session_id,
+        message_id,
+        "todo_write",
+        json!({"todos": todos.clone()}),
+    );
+    let call_id = invoke_part.id.clone();
+    bus.publish(EngineEvent::new(
+        "message.part.updated",
+        json!({"part": invoke_part}),
+    ));
+
+    if storage.set_todos(session_id, todos).await.is_err() {
+        let mut failed_part =
+            WireMessagePart::tool_result(session_id, message_id, "todo_write", json!(null));
+        failed_part.id = call_id;
+        failed_part.state = Some("failed".to_string());
+        failed_part.error = Some("failed to persist plan todos".to_string());
+        bus.publish(EngineEvent::new(
+            "message.part.updated",
+            json!({"part": failed_part}),
+        ));
+        return;
+    }
+
+    let normalized = storage.get_todos(session_id).await;
+    let mut result_part = WireMessagePart::tool_result(
+        session_id,
+        message_id,
+        "todo_write",
+        json!({ "todos": normalized }),
+    );
+    result_part.id = call_id;
+    bus.publish(EngineEvent::new(
+        "message.part.updated",
+        json!({"part": result_part}),
+    ));
+    bus.publish(EngineEvent::new(
+        "todo.updated",
+        json!({
+            "sessionID": session_id,
+            "todos": normalized
+        }),
+    ));
 }
 
 async fn load_chat_history(storage: std::sync::Arc<Storage>, session_id: &str) -> Vec<ChatMessage> {
@@ -414,15 +873,25 @@ async fn emit_tool_side_events(
     session_id: &str,
     message_id: &str,
     tool: &str,
+    args: &serde_json::Value,
     metadata: &serde_json::Value,
 ) {
     if tool == "todo_write" {
-        let todos = metadata
+        let todos_from_metadata = metadata
             .get("todos")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        let _ = storage.set_todos(session_id, todos.clone()).await;
+
+        if !todos_from_metadata.is_empty() {
+            let _ = storage.set_todos(session_id, todos_from_metadata).await;
+        } else {
+            let current = storage.get_todos(session_id).await;
+            if let Some(updated) = apply_todo_updates_from_args(current, args) {
+                let _ = storage.set_todos(session_id, updated).await;
+            }
+        }
+
         let normalized = storage.get_todos(session_id).await;
         bus.publish(EngineEvent::new(
             "todo.updated",
@@ -462,6 +931,108 @@ async fn emit_tool_side_events(
                 })
             }),
         ));
+    }
+}
+
+fn apply_todo_updates_from_args(current: Vec<Value>, args: &Value) -> Option<Vec<Value>> {
+    let obj = args.as_object()?;
+    let mut todos = current;
+    let mut changed = false;
+
+    if let Some(items) = obj.get("todos").and_then(|v| v.as_array()) {
+        for item in items {
+            let Some(item_obj) = item.as_object() else {
+                continue;
+            };
+            let status = item_obj
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(normalize_todo_status);
+            let target = item_obj
+                .get("task_id")
+                .or_else(|| item_obj.get("todo_id"))
+                .or_else(|| item_obj.get("id"));
+
+            if let (Some(status), Some(target)) = (status, target) {
+                changed |= apply_single_todo_status_update(&mut todos, target, &status);
+            }
+        }
+    }
+
+    let status = obj
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(normalize_todo_status);
+    let target = obj
+        .get("task_id")
+        .or_else(|| obj.get("todo_id"))
+        .or_else(|| obj.get("id"));
+    if let (Some(status), Some(target)) = (status, target) {
+        changed |= apply_single_todo_status_update(&mut todos, target, &status);
+    }
+
+    if changed {
+        Some(todos)
+    } else {
+        None
+    }
+}
+
+fn apply_single_todo_status_update(todos: &mut [Value], target: &Value, status: &str) -> bool {
+    let idx_from_value = match target {
+        Value::Number(n) => n.as_u64().map(|v| v.saturating_sub(1) as usize),
+        Value::String(s) => {
+            let trimmed = s.trim();
+            trimmed
+                .parse::<usize>()
+                .ok()
+                .map(|v| v.saturating_sub(1))
+                .or_else(|| {
+                    let digits = trimmed
+                        .chars()
+                        .rev()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect::<String>();
+                    digits.parse::<usize>().ok().map(|v| v.saturating_sub(1))
+                })
+        }
+        _ => None,
+    };
+
+    if let Some(idx) = idx_from_value {
+        if idx < todos.len() {
+            if let Some(obj) = todos[idx].as_object_mut() {
+                obj.insert("status".to_string(), Value::String(status.to_string()));
+                return true;
+            }
+        }
+    }
+
+    let id_target = target.as_str().map(|s| s.trim()).filter(|s| !s.is_empty());
+    if let Some(id_target) = id_target {
+        for todo in todos.iter_mut() {
+            if let Some(obj) = todo.as_object_mut() {
+                if obj.get("id").and_then(|v| v.as_str()) == Some(id_target) {
+                    obj.insert("status".to_string(), Value::String(status.to_string()));
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+fn normalize_todo_status(raw: &str) -> String {
+    match raw.trim().to_lowercase().as_str() {
+        "in_progress" | "inprogress" | "running" | "working" => "in_progress".to_string(),
+        "done" | "complete" | "completed" => "completed".to_string(),
+        "cancelled" | "canceled" | "aborted" | "skipped" => "cancelled".to_string(),
+        "open" | "todo" | "pending" => "pending".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -527,6 +1098,7 @@ mod tests {
             "m1",
             "todo_write",
             &json!({"todos":[{"content":"ship parity"}]}),
+            &json!({"todos":[{"content":"ship parity"}]}),
         )
         .await;
 
@@ -563,6 +1135,7 @@ mod tests {
             &session_id,
             "msg-1",
             "question",
+            &json!({"questions":[{"header":"Topic","question":"Pick one","options":[{"label":"A","description":"d"}]}]}),
             &json!({"questions":[{"header":"Topic","question":"Pick one","options":[{"label":"A","description":"d"}]}]}),
         )
         .await;
@@ -603,5 +1176,84 @@ mod tests {
         assert_eq!(compacted[0].role, "system");
         assert!(compacted[0].content.contains("history compacted"));
         assert!(compacted.iter().any(|m| m.content.contains("message-59")));
+    }
+
+    #[test]
+    fn extracts_todos_from_checklist_and_numbered_lines() {
+        let input = r#"
+Plan:
+- [ ] Audit current implementation
+- [ ] Add planner fallback
+1. Add regression test coverage
+"#;
+        let todos = extract_todo_candidates_from_text(input);
+        assert_eq!(todos.len(), 3);
+        assert_eq!(
+            todos[0].get("content").and_then(|v| v.as_str()),
+            Some("Audit current implementation")
+        );
+    }
+
+    #[test]
+    fn parses_wrapped_tool_call_from_markdown_response() {
+        let input = r#"
+Here is the tool call:
+```json
+{"tool_call":{"name":"todo_write","arguments":{"todos":[{"content":"a"}]}}}
+```
+"#;
+        let parsed = parse_tool_invocation_from_response(input).expect("tool call");
+        assert_eq!(parsed.0, "todo_write");
+        assert!(parsed.1.get("todos").is_some());
+    }
+
+    #[test]
+    fn parses_function_style_todowrite_call() {
+        let input = r#"Status: Completed
+Call: todowrite(task_id=2, status="completed")"#;
+        let parsed = parse_tool_invocation_from_response(input).expect("function-style tool call");
+        assert_eq!(parsed.0, "todo_write");
+        assert_eq!(parsed.1.get("task_id").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(
+            parsed.1.get("status").and_then(|v| v.as_str()),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn parses_multiple_function_style_todowrite_calls() {
+        let input = r#"
+Call: todowrite(task_id=2, status="completed")
+Call: todowrite(task_id=3, status="in_progress")
+"#;
+        let parsed = parse_tool_invocations_from_response(input);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].0, "todo_write");
+        assert_eq!(parsed[0].1.get("task_id").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(
+            parsed[0].1.get("status").and_then(|v| v.as_str()),
+            Some("completed")
+        );
+        assert_eq!(parsed[1].1.get("task_id").and_then(|v| v.as_i64()), Some(3));
+        assert_eq!(
+            parsed[1].1.get("status").and_then(|v| v.as_str()),
+            Some("in_progress")
+        );
+    }
+
+    #[test]
+    fn applies_todo_status_update_from_task_id_args() {
+        let current = vec![
+            json!({"id":"todo-1","content":"a","status":"pending"}),
+            json!({"id":"todo-2","content":"b","status":"pending"}),
+            json!({"id":"todo-3","content":"c","status":"pending"}),
+        ];
+        let updated =
+            apply_todo_updates_from_args(current, &json!({"task_id":2, "status":"completed"}))
+                .expect("status update");
+        assert_eq!(
+            updated[1].get("status").and_then(|v| v.as_str()),
+            Some("completed")
+        );
     }
 }

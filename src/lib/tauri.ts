@@ -140,6 +140,28 @@ export interface SessionMessage {
   parts: unknown[];
 }
 
+export interface StorageStatus {
+  canonical_root: string;
+  legacy_root: string;
+  migration_report_exists: boolean;
+  storage_version_exists: boolean;
+  migration_reason?: string | null;
+  migration_timestamp_ms?: number | null;
+}
+
+export interface ToolExecutionRow {
+  id: string;
+  session_id: string;
+  message_id?: string;
+  tool: string;
+  status: "pending" | "running" | "completed" | "failed";
+  args?: unknown;
+  result?: unknown;
+  error?: string;
+  started_at_ms: number;
+  ended_at_ms?: number;
+}
+
 export interface FileAttachment {
   id: string;
   type: "image" | "file";
@@ -337,6 +359,10 @@ export async function greet(name: string): Promise<string> {
 
 export async function getAppState(): Promise<AppStateInfo> {
   return invoke("get_app_state");
+}
+
+export async function getStorageStatus(): Promise<StorageStatus> {
+  return invoke("get_storage_status");
 }
 
 export async function setWorkspacePath(path: string): Promise<void> {
@@ -560,6 +586,14 @@ export async function listProjects(): Promise<Project[]> {
 
 export async function getSessionMessages(sessionId: string): Promise<SessionMessage[]> {
   return invoke("get_session_messages", { sessionId });
+}
+
+export async function listToolExecutions(
+  sessionId: string,
+  limit: number = 200,
+  beforeTsMs?: number
+): Promise<ToolExecutionRow[]> {
+  return invoke("list_tool_executions", { sessionId, limit, beforeTsMs });
 }
 
 export async function getSessionTodos(sessionId: string): Promise<TodoItem[]> {
