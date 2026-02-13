@@ -1,4 +1,8 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::{
+    event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -34,6 +38,9 @@ pub enum Action {
     ScrollDown,
     PageUp,
     PageDown,
+    ToggleTaskPin(String),
+    PromptSuccess(Vec<ChatMessage>),
+    PromptFailure(String),
 }
 
 use crate::net::client::Session;
@@ -43,6 +50,14 @@ pub enum PinPromptMode {
     UnlockExisting,
     CreateNew,
     ConfirmNew { first_pin: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EngineConnectionStatus {
+    Disconnected,
+    Connecting,
+    Connected,
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +77,8 @@ pub enum AppState {
         command_input: String,
         messages: Vec<ChatMessage>,
         scroll_from_bottom: u16,
+        tasks: Vec<Task>,
+        active_task_id: Option<String>,
     },
     Connecting,
     SetupWizard {
@@ -86,7 +103,38 @@ pub enum SetupStep {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatMessage {
     pub role: MessageRole,
-    pub content: String,
+    pub content: Vec<ContentBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContentBlock {
+    Text(String),
+    Code { language: String, code: String },
+    ToolCall(ToolCallInfo),
+    ToolResult(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCallInfo {
+    pub id: String,
+    pub name: String,
+    pub args: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Task {
+    pub id: String,
+    pub description: String,
+    pub status: TaskStatus,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskStatus {
+    Pending,
+    Working,
+    Done,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,6 +181,7 @@ pub struct App {
     pub current_model: Option<String>,
     pub provider_catalog: Option<crate::net::client::ProviderCatalog>,
     pub connection_status: String,
+    pub engine_health: EngineConnectionStatus,
     pub engine_lease_id: Option<String>,
     pub engine_lease_last_renewed: Option<Instant>,
     pub pending_model_provider: Option<String>,
@@ -140,6 +189,7 @@ pub struct App {
     pub autocomplete_index: usize,
     pub autocomplete_mode: AutocompleteMode,
     pub show_autocomplete: bool,
+    pub action_tx: Option<tokio::sync::mpsc::UnboundedSender<Action>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -289,6 +339,7 @@ impl App {
             current_model: None,
             provider_catalog: None,
             connection_status: "Initializing...".to_string(),
+            engine_health: EngineConnectionStatus::Disconnected,
             engine_lease_id: None,
             engine_lease_last_renewed: None,
             pending_model_provider: None,
@@ -296,6 +347,7 @@ impl App {
             autocomplete_index: 0,
             autocomplete_mode: AutocompleteMode::Command,
             show_autocomplete: false,
+            action_tx: None,
         }
     }
 
@@ -494,13 +546,30 @@ impl App {
             AppState::SetupWizard { .. } => match key.code {
                 KeyCode::Esc => Some(Action::Quit),
                 KeyCode::Enter => Some(Action::SetupNextStep),
-                KeyCode::Char('j') | KeyCode::Down => Some(Action::SetupNextItem),
-                KeyCode::Char('k') | KeyCode::Up => Some(Action::SetupPrevItem),
+                KeyCode::Down => Some(Action::SetupNextItem),
+                KeyCode::Up => Some(Action::SetupPrevItem),
                 KeyCode::Char(c) => Some(Action::SetupInput(c)),
                 KeyCode::Backspace => Some(Action::SetupBackspace),
                 _ => None,
             },
 
+            _ => None,
+        }
+    }
+    pub fn handle_mouse_event(&self, mouse: MouseEvent) -> Option<Action> {
+        match mouse.kind {
+            MouseEventKind::ScrollDown => match self.state {
+                AppState::MainMenu => Some(Action::NextSession),
+                AppState::Chat { .. } => Some(Action::ScrollDown),
+                AppState::SetupWizard { .. } => Some(Action::SetupNextItem),
+                _ => None,
+            },
+            MouseEventKind::ScrollUp => match self.state {
+                AppState::MainMenu => Some(Action::PreviousSession),
+                AppState::Chat { .. } => Some(Action::ScrollUp),
+                AppState::SetupWizard { .. } => Some(Action::SetupPrevItem),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -521,12 +590,15 @@ impl App {
                     };
                 }
             }
-            Action::Tick => {
-                if let AppState::StartupAnimation { frame } = &mut self.state {
-                    *frame += 1;
-                    self.matrix.update(120, 40);
+            Action::ToggleTaskPin(task_id) => {
+                if let AppState::Chat { tasks, .. } = &mut self.state {
+                    if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+                        task.pinned = !task.pinned;
+                    }
                 }
             }
+
+            Action::Tick => self.tick().await,
 
             Action::EnterPin(c) => {
                 if let AppState::PinPrompt { input, .. } = &mut self.state {
@@ -718,6 +790,35 @@ impl App {
                 }
             }
             Action::NewSession => {
+                // If configuration is missing, force wizard
+                if (self.current_provider.is_none() || self.current_model.is_none())
+                    && self.provider_catalog.is_some()
+                {
+                    let mut step = SetupStep::SelectProvider;
+                    let mut selected_provider_index = 0;
+
+                    if let Some(ref current_p) = self.current_provider {
+                        if let Some(ref catalog) = self.provider_catalog {
+                            if let Some(idx) = catalog.all.iter().position(|p| &p.id == current_p) {
+                                selected_provider_index = idx;
+                                if self.current_model.is_none() {
+                                    step = SetupStep::SelectModel;
+                                }
+                            }
+                        }
+                    }
+
+                    self.state = AppState::SetupWizard {
+                        step,
+                        provider_catalog: self.provider_catalog.clone(),
+                        selected_provider_index,
+                        selected_model_index: 0,
+                        api_key_input: String::new(),
+                        model_input: String::new(),
+                    };
+                    return Ok(());
+                }
+
                 if let Some(client) = &self.client {
                     let client = client.clone();
                     // We can't await easily here if update locks self?
@@ -741,6 +842,8 @@ impl App {
                                     command_input: String::new(),
                                     messages: Vec::new(),
                                     scroll_from_bottom: 0,
+                                    tasks: Vec::new(),
+                                    active_task_id: None,
                                 };
                             }
                         }
@@ -756,6 +859,8 @@ impl App {
                         command_input: String::new(),
                         messages: Vec::new(),
                         scroll_from_bottom: 0,
+                        tasks: Vec::new(),
+                        active_task_id: None,
                     };
                 }
             }
@@ -945,22 +1050,7 @@ impl App {
                             model_input.clear();
                         }
                         SetupStep::SelectModel => {
-                            if *selected_model_index > 0 {
-                                *selected_model_index -= 1;
-                            }
-                            if let Some(catalog) = provider_catalog {
-                                let model_count = Self::filtered_model_ids(
-                                    catalog,
-                                    *selected_provider_index,
-                                    model_input,
-                                )
-                                .len();
-                                if model_count == 0 {
-                                    *selected_model_index = 0;
-                                } else if *selected_model_index >= model_count {
-                                    *selected_model_index = model_count.saturating_sub(1);
-                                }
-                            }
+                            *selected_model_index = 0;
                         }
                         _ => {}
                     }
@@ -995,13 +1085,14 @@ impl App {
                         SetupStep::SelectModel => {
                             if let Some(ref catalog) = provider_catalog {
                                 if *selected_provider_index < catalog.all.len() {
-                                    let model_count = Self::filtered_model_ids(
+                                    let model_ids = Self::filtered_model_ids(
                                         catalog,
                                         *selected_provider_index,
                                         model_input,
-                                    )
-                                    .len();
-                                    if model_count > 0 && *selected_model_index < model_count - 1 {
+                                    );
+                                    if !model_ids.is_empty()
+                                        && *selected_model_index < model_ids.len() - 1
+                                    {
                                         *selected_model_index += 1;
                                     }
                                 }
@@ -1023,23 +1114,27 @@ impl App {
                     ..
                 } = &mut self.state
                 {
-                    if matches!(step, SetupStep::EnterApiKey) {
-                        api_key_input.push(c);
-                    } else if matches!(step, SetupStep::SelectModel) {
-                        model_input.push(c);
-                        if let Some(catalog) = provider_catalog {
-                            let model_count = Self::filtered_model_ids(
-                                catalog,
-                                *selected_provider_index,
-                                model_input,
-                            )
-                            .len();
-                            if model_count == 0 {
-                                *selected_model_index = 0;
-                            } else if *selected_model_index >= model_count {
-                                *selected_model_index = model_count.saturating_sub(1);
+                    match step {
+                        SetupStep::EnterApiKey => {
+                            api_key_input.push(c);
+                        }
+                        SetupStep::SelectModel => {
+                            model_input.push(c);
+                            if let Some(catalog) = provider_catalog {
+                                let model_count = Self::filtered_model_ids(
+                                    catalog,
+                                    *selected_provider_index,
+                                    model_input,
+                                )
+                                .len();
+                                if model_count == 0 {
+                                    *selected_model_index = 0;
+                                } else if *selected_model_index >= model_count {
+                                    *selected_model_index = model_count.saturating_sub(1);
+                                }
                             }
                         }
+                        _ => {}
                     }
                 }
             }
@@ -1055,23 +1150,27 @@ impl App {
                     ..
                 } = &mut self.state
                 {
-                    if matches!(step, SetupStep::EnterApiKey) {
-                        api_key_input.pop();
-                    } else if matches!(step, SetupStep::SelectModel) {
-                        model_input.pop();
-                        if let Some(catalog) = provider_catalog {
-                            let model_count = Self::filtered_model_ids(
-                                catalog,
-                                *selected_provider_index,
-                                model_input,
-                            )
-                            .len();
-                            if model_count == 0 {
-                                *selected_model_index = 0;
-                            } else if *selected_model_index >= model_count {
-                                *selected_model_index = model_count.saturating_sub(1);
+                    match step {
+                        SetupStep::EnterApiKey => {
+                            api_key_input.pop();
+                        }
+                        SetupStep::SelectModel => {
+                            model_input.pop();
+                            if let Some(catalog) = provider_catalog {
+                                let model_count = Self::filtered_model_ids(
+                                    catalog,
+                                    *selected_provider_index,
+                                    model_input,
+                                )
+                                .len();
+                                if model_count == 0 {
+                                    *selected_model_index = 0;
+                                } else if *selected_model_index >= model_count {
+                                    *selected_model_index = model_count.saturating_sub(1);
+                                }
                             }
                         }
+                        _ => {}
                     }
                 }
             }
@@ -1138,7 +1237,7 @@ impl App {
                         if let AppState::Chat { messages, .. } = &mut self.state {
                             messages.push(ChatMessage {
                                 role: MessageRole::System,
-                                content: response,
+                                content: vec![ContentBlock::Text(response)],
                             });
                         }
                     } else if let Some(provider_id) = self.pending_model_provider.clone() {
@@ -1147,8 +1246,9 @@ impl App {
                             if let AppState::Chat { messages, .. } = &mut self.state {
                                 messages.push(ChatMessage {
                                     role: MessageRole::System,
-                                    content: "Model cannot be empty. Paste a model name."
-                                        .to_string(),
+                                    content: vec![ContentBlock::Text(
+                                        "Model cannot be empty. Paste a model name.".to_string(),
+                                    )],
                                 });
                             }
                         } else {
@@ -1160,50 +1260,86 @@ impl App {
                             if let AppState::Chat { messages, .. } = &mut self.state {
                                 messages.push(ChatMessage {
                                     role: MessageRole::System,
-                                    content: format!(
+                                    content: vec![ContentBlock::Text(format!(
                                         "Provider set to {} with model {}.",
                                         provider_id, model_id
-                                    ),
+                                    ))],
                                 });
                             }
                         }
                     } else {
-                        let agent = Some(self.current_mode.as_agent().to_string());
+                        // User message
                         if let AppState::Chat { messages, .. } = &mut self.state {
                             messages.push(ChatMessage {
                                 role: MessageRole::User,
-                                content: msg.clone(),
+                                content: vec![ContentBlock::Text(msg.clone())],
                             });
+                            // Add a temporary "Thinking..." message or just rely on async response?
+                            // For TUI, it's nice to see something.
+                            // But for now let's just send the request.
                         }
+
                         if let Some(client) = &self.client {
-                            let model = self.current_model_spec();
-                            match client
-                                .send_prompt(&session_id, &msg, agent.as_deref(), model)
-                                .await
-                            {
-                                Ok(messages) => {
-                                    if let Some(response) =
-                                        Self::extract_assistant_message(&messages)
+                            if let Some(tx) = &self.action_tx {
+                                let client = client.clone();
+                                let tx = tx.clone();
+                                let session_id = session_id.clone();
+                                let msg = msg.clone();
+                                let agent = Some(self.current_mode.as_agent().to_string());
+                                let model = self.current_model_spec();
+
+                                tokio::spawn(async move {
+                                    match client
+                                        .send_prompt(&session_id, &msg, agent.as_deref(), model)
+                                        .await
                                     {
-                                        if let AppState::Chat { messages, .. } = &mut self.state {
-                                            messages.push(ChatMessage {
-                                                role: MessageRole::Assistant,
-                                                content: response,
-                                            });
+                                        Ok(messages) => {
+                                            if let Some(response) =
+                                                Self::extract_assistant_message(&messages)
+                                            {
+                                                let _ = tx.send(Action::PromptSuccess(vec![
+                                                    ChatMessage {
+                                                        role: MessageRole::Assistant,
+                                                        content: response,
+                                                    },
+                                                ]));
+                                            }
+                                        }
+                                        Err(err) => {
+                                            let _ = tx.send(Action::PromptFailure(err.to_string()));
                                         }
                                     }
-                                }
-                                Err(err) => {
-                                    if let AppState::Chat { messages, .. } = &mut self.state {
-                                        messages.push(ChatMessage {
-                                            role: MessageRole::System,
-                                            content: format!("Prompt failed: {}", err),
-                                        });
-                                    }
+                                });
+                            } else {
+                                // Fallback for synchronous (should not happen if main.rs is updated)
+                                // or if channel is missing.
+                                // We can't await here without blocking, so we just log error to chat
+                                if let AppState::Chat { messages, .. } = &mut self.state {
+                                    messages.push(ChatMessage {
+                                        role: MessageRole::System,
+                                        content: vec![ContentBlock::Text(
+                                            "Error: Async channel not initialized. Cannot send prompt."
+                                                .to_string(),
+                                        )],
+                                    });
                                 }
                             }
                         }
                     }
+                }
+            }
+
+            Action::PromptSuccess(new_messages) => {
+                if let AppState::Chat { messages, .. } = &mut self.state {
+                    messages.extend(new_messages);
+                }
+            }
+            Action::PromptFailure(err) => {
+                if let AppState::Chat { messages, .. } = &mut self.state {
+                    messages.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: vec![ContentBlock::Text(format!("Prompt failed: {}", err))],
+                    });
                 }
             }
 
@@ -1214,6 +1350,19 @@ impl App {
 
     pub async fn tick(&mut self) {
         self.tick_count += 1;
+
+        // Check engine health every ~1 second (assuming 60tps)
+        if self.tick_count % 60 == 0 {
+            if let Some(client) = &self.client {
+                match client.check_health().await {
+                    Ok(true) => self.engine_health = EngineConnectionStatus::Connected,
+                    _ => self.engine_health = EngineConnectionStatus::Error,
+                }
+            } else {
+                self.engine_health = EngineConnectionStatus::Disconnected;
+            }
+        }
+
         match &mut self.state {
             AppState::StartupAnimation { frame } => {
                 *frame += 1;
@@ -1365,6 +1514,12 @@ SESSIONS:
   /prompt <text>    Send prompt to current session
   /cancel           Cancel current operation
   /messages [limit] Show session messages
+  /task add <desc>   Add a new task
+  /task done <id>    Mark task as done
+  /task fail <id>    Mark task as failed
+  /task work <id>    Mark task as working
+  /task pin <id>     Toggle pin status
+  /task list         List all tasks
 
 MODES:
   /modes             List available modes
@@ -1536,61 +1691,36 @@ CONFIG:
             }
 
             "provider" => {
-                if args.is_empty() {
-                    return format!(
-                        "Current provider: {}",
-                        self.current_provider.as_deref().unwrap_or("none")
-                    );
-                }
-                let provider_id = args[0];
-                if let Some(catalog) = &self.provider_catalog {
-                    if catalog.all.iter().any(|p| p.id == provider_id) {
-                        self.current_provider = Some(provider_id.to_string());
-                        self.persist_provider_defaults(provider_id, None, None)
-                            .await;
-                        self.pending_model_provider = Some(provider_id.to_string());
-                        let model_list = catalog
-                            .all
-                            .iter()
-                            .find(|p| p.id == provider_id)
-                            .map(|provider| {
-                                let mut model_ids: Vec<String> =
-                                    provider.models.keys().cloned().collect();
-                                model_ids.sort();
-                                if model_ids.is_empty() {
-                                    "No models listed. Paste a model name to use it.".to_string()
-                                } else {
-                                    format!(
-                                        "Models:\n{}",
-                                        model_ids
-                                            .iter()
-                                            .map(|m| format!("  {}", m))
-                                            .collect::<Vec<_>>()
-                                            .join("\n")
-                                    )
-                                }
-                            })
-                            .unwrap_or_else(|| "Provider not found.".to_string());
-                        format!(
-                            "Provider set to: {}\n{}\n\nPaste a model name to select it.",
-                            provider_id, model_list
-                        )
-                    } else {
-                        format!(
-                            "Unknown provider: {}. Use /providers to see available.",
-                            provider_id
-                        )
+                let mut step = SetupStep::SelectProvider;
+                let mut selected_provider_index = 0;
+                let mut filter_model = String::new();
+
+                if !args.is_empty() {
+                    let provider_id = args[0];
+                    if let Some(catalog) = &self.provider_catalog {
+                        if let Some(idx) = catalog.all.iter().position(|p| p.id == provider_id) {
+                            selected_provider_index = idx;
+                            step = SetupStep::SelectModel;
+                        }
                     }
-                } else {
-                    self.current_provider = Some(provider_id.to_string());
-                    self.persist_provider_defaults(provider_id, None, None)
-                        .await;
-                    self.pending_model_provider = Some(provider_id.to_string());
-                    format!(
-                        "Provider set to: {} (will validate on connect)\nPaste a model name to select it.",
-                        provider_id
-                    )
+                } else if let Some(current) = &self.current_provider {
+                    if let Some(catalog) = &self.provider_catalog {
+                        if let Some(idx) = catalog.all.iter().position(|p| &p.id == current) {
+                            selected_provider_index = idx;
+                            step = SetupStep::SelectModel;
+                        }
+                    }
                 }
+
+                self.state = AppState::SetupWizard {
+                    step,
+                    provider_catalog: self.provider_catalog.clone(),
+                    selected_provider_index,
+                    selected_model_index: 0,
+                    api_key_input: String::new(),
+                    model_input: filter_model,
+                };
+                "Opening provider selection...".to_string()
             }
 
             "models" => {
@@ -1628,10 +1758,24 @@ CONFIG:
 
             "model" => {
                 if args.is_empty() {
-                    return format!(
-                        "Current model: {}",
-                        self.current_model.as_deref().unwrap_or("none")
-                    );
+                    // Open wizard for model selection
+                    let mut selected_provider_index = 0;
+                    if let Some(current) = &self.current_provider {
+                        if let Some(catalog) = &self.provider_catalog {
+                            if let Some(idx) = catalog.all.iter().position(|p| &p.id == current) {
+                                selected_provider_index = idx;
+                            }
+                        }
+                    }
+                    self.state = AppState::SetupWizard {
+                        step: SetupStep::SelectModel,
+                        provider_catalog: self.provider_catalog.clone(),
+                        selected_provider_index,
+                        selected_model_index: 0,
+                        api_key_input: String::new(),
+                        model_input: String::new(),
+                    };
+                    return "Opening model selection...".to_string();
                 }
                 let model_id = args.join(" ");
                 self.current_model = Some(model_id.clone());
@@ -1708,6 +1852,76 @@ CONFIG:
 
             "cancel" => "Cancel not implemented yet.".to_string(),
 
+            "task" => {
+                if let AppState::Chat { tasks, .. } = &mut self.state {
+                    match args.get(0).map(|s| *s) {
+                        Some("add") => {
+                            if args.len() < 2 {
+                                return "Usage: /task add <description>".to_string();
+                            }
+                            let description = args[1..].join(" ");
+                            let id = format!("task-{}", tasks.len() + 1);
+                            tasks.push(Task {
+                                id: id.clone(),
+                                description: description.clone(),
+                                status: TaskStatus::Pending,
+                                pinned: false,
+                            });
+                            format!("Task added: {} (ID: {})", description, id)
+                        }
+                        Some("done") | Some("fail") | Some("work") | Some("pending") => {
+                            if args.len() < 2 {
+                                return "Usage: /task <status> <id>".to_string();
+                            }
+                            let id = args[1];
+                            if let Some(task) = tasks.iter_mut().find(|t| t.id == id) {
+                                match args[0] {
+                                    "done" => task.status = TaskStatus::Done,
+                                    "fail" => task.status = TaskStatus::Failed,
+                                    "work" => task.status = TaskStatus::Working,
+                                    "pending" => task.status = TaskStatus::Pending,
+                                    _ => {}
+                                }
+                                format!("Task {} marked as {}", id, args[0])
+                            } else {
+                                format!("Task not found: {}", id)
+                            }
+                        }
+                        Some("pin") => {
+                            if args.len() < 2 {
+                                return "Usage: /task pin <id>".to_string();
+                            }
+                            let id = args[1];
+                            if let Some(task) = tasks.iter_mut().find(|t| t.id == id) {
+                                task.pinned = !task.pinned;
+                                format!("Task {} pinned: {}", id, task.pinned)
+                            } else {
+                                format!("Task not found: {}", id)
+                            }
+                        }
+                        Some("list") => {
+                            if tasks.is_empty() {
+                                "No tasks.".to_string()
+                            } else {
+                                let lines: Vec<String> = tasks
+                                    .iter()
+                                    .map(|t| {
+                                        format!(
+                                            "[{}] {} ({:?}) - Pinned: {}",
+                                            t.id, t.description, t.status, t.pinned
+                                        )
+                                    })
+                                    .collect();
+                                format!("Tasks:\n{}", lines.join("\n"))
+                            }
+                        }
+                        _ => "Usage: /task add|done|fail|work|pin|list ...".to_string(),
+                    }
+                } else {
+                    "Not in a chat session.".to_string()
+                }
+            }
+
             "messages" => {
                 let limit = args.first().and_then(|s| s.parse().ok()).unwrap_or(10);
                 format!("Message history not implemented yet. (limit: {})", limit)
@@ -1726,7 +1940,7 @@ CONFIG:
                 {
                     messages.push(ChatMessage {
                         role: MessageRole::User,
-                        content: text.clone(),
+                        content: vec![ContentBlock::Text(text.clone())],
                     });
                     (session_id.clone(), true)
                 } else {
@@ -1758,7 +1972,10 @@ CONFIG:
                             if let AppState::Chat { messages, .. } = &mut self.state {
                                 messages.push(ChatMessage {
                                     role: MessageRole::System,
-                                    content: format!("Prompt failed: {}", err),
+                                    content: vec![ContentBlock::Text(format!(
+                                        "Prompt failed: {}",
+                                        err
+                                    ))],
                                 });
                             }
                         }
@@ -1835,28 +2052,50 @@ CONFIG:
         })
     }
 
-    fn extract_assistant_message(messages: &[WireSessionMessage]) -> Option<String> {
+    fn extract_assistant_message(messages: &[WireSessionMessage]) -> Option<Vec<ContentBlock>> {
         let message = messages
             .iter()
             .rev()
             .find(|msg| msg.info.role.eq_ignore_ascii_case("assistant"))?;
-        let parts = message
-            .parts
-            .iter()
-            .filter_map(|part: &serde_json::Value| {
-                if part.get("type").and_then(|v| v.as_str()) == Some("text") {
-                    part.get("text")
-                        .and_then(|v| v.as_str())
-                        .map(|v| v.to_string())
-                } else {
-                    None
+
+        let mut blocks = Vec::new();
+        for part in &message.parts {
+            let type_str = part.get("type").and_then(|v| v.as_str());
+            match type_str {
+                Some("text") => {
+                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                        blocks.push(ContentBlock::Text(text.to_string()));
+                    }
                 }
-            })
-            .collect::<Vec<_>>();
-        if parts.is_empty() {
+                Some("tool_use") => {
+                    let id = part
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = part
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let input = part
+                        .get("input")
+                        .map(|v| v.to_string())
+                        .unwrap_or("{}".to_string());
+                    blocks.push(ContentBlock::ToolCall(ToolCallInfo {
+                        id,
+                        name,
+                        args: input,
+                    }));
+                }
+                _ => {}
+            }
+        }
+
+        if blocks.is_empty() {
             None
         } else {
-            Some(parts.join("\n"))
+            Some(blocks)
         }
     }
 

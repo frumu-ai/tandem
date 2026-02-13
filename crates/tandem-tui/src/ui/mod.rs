@@ -6,8 +6,10 @@ use ratatui::{
     Frame,
 };
 
+pub mod components;
 pub mod matrix;
 use crate::app::{App, AppState, PinPromptMode, SetupStep};
+use crate::ui::components::{flow::FlowList, task_list::TaskList};
 
 pub fn draw(f: &mut Frame, app: &App) {
     match &app.state {
@@ -160,6 +162,8 @@ fn draw_chat(f: &mut Frame, app: &App) {
         command_input,
         messages,
         scroll_from_bottom,
+        tasks,
+        ..
     } = &app.state
     {
         let chunks = Layout::default()
@@ -171,7 +175,7 @@ fn draw_chat(f: &mut Frame, app: &App) {
             ])
             .split(f.area());
 
-        let messages_chunk = chunks[0];
+        let content_area = chunks[0];
         let input_chunk = chunks[1];
         let status_chunk = chunks[2];
 
@@ -184,55 +188,70 @@ fn draw_chat(f: &mut Frame, app: &App) {
             .unwrap_or("New session");
         let chat_title = format!(" {} ", session_title);
 
-        let message_widget = if messages.is_empty() {
-            Paragraph::new("No messages yet. Type a prompt or /help for commands.\n\nPress Tab for command autocomplete.")
+        // Split content_area for tasks if needed
+        let (messages_area, tasks_area) = if !tasks.is_empty() {
+            let areas = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+                .split(content_area);
+            (areas[0], Some(areas[1]))
+        } else {
+            (content_area, None)
+        };
+
+        // Engine Status
+        let (status_color, status_text) = match app.engine_health {
+            crate::app::EngineConnectionStatus::Disconnected => (Color::DarkGray, " ○ Offline "),
+            crate::app::EngineConnectionStatus::Connecting => (Color::Yellow, " ◌ Connecting "),
+            crate::app::EngineConnectionStatus::Connected => (Color::Green, " ● Online "),
+            crate::app::EngineConnectionStatus::Error => (Color::Red, " ✖ Error "),
+        };
+        let status_title = ratatui::widgets::block::Title::from(Span::styled(
+            status_text,
+            Style::default()
+                .fg(status_color)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .alignment(Alignment::Right);
+
+        // Render Chat (FlowList)
+        if messages.is_empty() {
+            let empty_msg = Paragraph::new("No messages yet. Type a prompt or /help for commands.\n\nPress Tab for command autocomplete.")
                 .style(Style::default().fg(Color::DarkGray))
                 .alignment(Alignment::Center)
-                .block(Block::default().borders(Borders::ALL).title(chat_title.as_str()).border_style(Style::default().fg(Color::DarkGray)))
-        } else {
-            let lines: Vec<Line> = messages
-                .iter()
-                .flat_map(|msg| {
-                    let (color, prefix) = match msg.role {
-                        crate::app::MessageRole::User => (Color::Cyan, "you: "),
-                        crate::app::MessageRole::Assistant => (Color::Green, "ai:  "),
-                        crate::app::MessageRole::System => (Color::Yellow, "sys: "),
-                    };
-                    let mut message_lines = msg.content.lines();
-                    let first = message_lines.next().unwrap_or("");
-                    let mut rows = vec![Line::from(vec![
-                        Span::styled(
-                            prefix,
-                            Style::default().fg(color).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(first.to_string(), Style::default().fg(color)),
-                    ])];
-                    let indent = "     ";
-                    for line in message_lines {
-                        rows.push(Line::from(vec![
-                            Span::raw(indent),
-                            Span::styled(line.to_string(), Style::default().fg(color)),
-                        ]));
-                    }
-                    rows.push(Line::from(""));
-                    rows
-                })
-                .collect();
-            let line_count = lines.len();
-            let visible = messages_chunk.height.saturating_sub(2) as usize;
-            let max_scroll = line_count.saturating_sub(visible);
-            let scroll = max_scroll.saturating_sub(*scroll_from_bottom as usize) as u16;
-            Paragraph::new(Text::from(lines))
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
                         .title(chat_title.as_str())
+                        .title(status_title.clone())
                         .border_style(Style::default().fg(Color::DarkGray)),
-                )
-                .wrap(Wrap { trim: false })
-                .scroll((scroll, 0))
-        };
-        f.render_widget(message_widget, messages_chunk);
+                );
+            f.render_widget(empty_msg, messages_area);
+        } else {
+            let flow_list = FlowList::new(messages).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .borders(Borders::ALL)
+                    .title(chat_title.as_str())
+                    .title(status_title)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            );
+
+            let mut flow_state = crate::ui::components::flow::FlowListState {
+                offset: *scroll_from_bottom as usize,
+            };
+            f.render_stateful_widget(flow_list, messages_area, &mut flow_state);
+        }
+
+        // Render Tasks (TaskList)
+        if let Some(area) = tasks_area {
+            let task_list = TaskList::new(tasks)
+                .block(Block::default().borders(Borders::ALL).title(" Tasks "))
+                .spinner_frame(app.tick_count);
+
+            let mut task_state = crate::ui::components::task_list::TaskListState::default();
+            f.render_stateful_widget(task_list, area, &mut task_state);
+        }
 
         // Input box with cursor
         let input_style = if command_input.is_empty() {
