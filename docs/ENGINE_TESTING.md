@@ -284,3 +284,26 @@ For an existing workspace that contains legacy metadata:
 2. Verify sidebar session list shows only sessions belonging to that folder.
 3. Create a new chat in the active folder; verify it appears immediately in sidebar.
 4. Verify sessions with legacy `directory = "."` still appear under current workspace.
+
+## Observability verification (JSONL + correlation)
+
+After launching desktop (`pnpm tauri dev`) and sending one prompt:
+
+1. Open `%APPDATA%\\tandem\\logs` and verify files exist:
+   - `tandem.desktop.YYYY-MM-DD.jsonl`
+   - `tandem.engine.YYYY-MM-DD.jsonl`
+2. Search for `provider.call.start` in engine JSONL.
+3. Search for `chat.dispatch.start` in desktop JSONL.
+4. Verify a matching `correlation_id` exists across desktop dispatch and engine provider events.
+5. If stream fails, verify one of:
+   - `stream.subscribe.error`
+   - `stream.disconnected`
+   - `stream.watchdog.no_events`
+
+PowerShell helpers:
+
+```powershell
+Select-String -Path "$env:APPDATA\tandem\logs\tandem.desktop.*.jsonl" -Pattern "chat.dispatch.start"
+Select-String -Path "$env:APPDATA\tandem\logs\tandem.engine.*.jsonl" -Pattern "provider.call.start"
+Select-String -Path "$env:APPDATA\tandem\logs\tandem.desktop.*.jsonl" -Pattern "stream.subscribe.error|stream.disconnected|stream.watchdog.no_events"
+```

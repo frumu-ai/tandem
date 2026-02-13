@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import {
   startSidecar,
   getSidecarStatus,
+  getSidecarStartupHealth,
   createSession,
   sendMessageStreaming,
   cancelGeneration,
@@ -53,6 +54,7 @@ import {
   type StreamEventEnvelopeV2,
   type QueuedMessage,
   type SidecarState,
+  type SidecarStartupHealth,
   type TodoItem,
   type QuestionRequestEvent,
   type FileAttachmentInput,
@@ -92,6 +94,146 @@ interface ChatProps {
   onDraftMessageConsumed?: () => void;
   activeOrchestrationCount?: number;
   activeChatRunningCount?: number;
+}
+
+function startupPhaseLabel(phase?: string | null): string {
+  switch ((phase || "").toLowerCase()) {
+    case "migration":
+      return "Scanning legacy data";
+    case "storage_init":
+      return "Loading sessions and storage";
+    case "config_init":
+      return "Loading provider config";
+    case "registry_init":
+      return "Initializing registries";
+    case "engine_loop_init":
+      return "Starting runtime loop";
+    case "ready":
+      return "Ready";
+    case "failed":
+      return "Startup failed";
+    default:
+      return "Starting sidecar";
+  }
+}
+
+function startupPhaseDetail(phase?: string | null): string {
+  switch ((phase || "").toLowerCase()) {
+    case "migration":
+      return "Checking legacy data and migration markers.";
+    case "storage_init":
+      return "Loading session history and workspace metadata.";
+    case "config_init":
+      return "Loading providers, models, and runtime config.";
+    case "registry_init":
+      return "Preparing tools, plugins, and registries.";
+    case "engine_loop_init":
+      return "Starting message processing and event pipeline.";
+    case "ready":
+      return "Engine startup complete.";
+    case "failed":
+      return "Startup failed. Open logs for details.";
+    default:
+      return "Preparing engine startup components.";
+  }
+}
+
+function startupPhaseProgress(phase?: string | null): number {
+  switch ((phase || "").toLowerCase()) {
+    case "migration":
+      return 12;
+    case "storage_init":
+      return 36;
+    case "config_init":
+      return 56;
+    case "registry_init":
+      return 72;
+    case "engine_loop_init":
+      return 88;
+    case "ready":
+      return 100;
+    case "failed":
+      return 100;
+    default:
+      return 6;
+  }
+}
+
+function stringifyPermissionValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    return value
+      .map((item) => stringifyPermissionValue(item))
+      .filter((item): item is string => Boolean(item))
+      .join(", ");
+  }
+  return undefined;
+}
+
+function buildPermissionReason(
+  tool?: string,
+  args?: Record<string, unknown>
+): { reasoning: string; path?: string; command?: string } {
+  const normalizedTool = (tool || "unknown").toLowerCase();
+  const pathCandidate =
+    stringifyPermissionValue(args?.path) ||
+    stringifyPermissionValue(args?.cwd) ||
+    stringifyPermissionValue(args?.directory) ||
+    stringifyPermissionValue(args?.file_path);
+  const patternCandidate =
+    stringifyPermissionValue(args?.pattern) ||
+    stringifyPermissionValue(args?.glob) ||
+    stringifyPermissionValue(args?.query);
+  const commandCandidate =
+    stringifyPermissionValue(args?.command) || stringifyPermissionValue(args?.cmd);
+
+  switch (normalizedTool) {
+    case "glob":
+      return {
+        reasoning: patternCandidate
+          ? `AI wants to search files matching pattern: ${patternCandidate}`
+          : "AI wants to search files in your workspace.",
+        path: pathCandidate,
+      };
+    case "read":
+    case "read_file":
+      return {
+        reasoning: pathCandidate
+          ? `AI wants to read this file: ${pathCandidate}`
+          : "AI wants to read a file in your workspace.",
+        path: pathCandidate,
+      };
+    case "list":
+    case "ls":
+    case "list_directory":
+      return {
+        reasoning: pathCandidate
+          ? `AI wants to list this directory: ${pathCandidate}`
+          : "AI wants to list files in your workspace.",
+        path: pathCandidate,
+      };
+    case "bash":
+    case "run_command":
+    case "shell":
+      return {
+        reasoning: commandCandidate
+          ? `AI wants to run this command: ${commandCandidate}`
+          : "AI wants to run a shell command in your workspace.",
+        command: commandCandidate,
+        path: pathCandidate,
+      };
+    default:
+      return {
+        reasoning: `AI requests permission for tool '${tool || "unknown"}'.`,
+        path: pathCandidate,
+        command: commandCandidate,
+      };
+  }
 }
 
 export function Chat({
@@ -175,6 +317,8 @@ export function Chat({
   const [streamHealth, setStreamHealth] = useState<"healthy" | "degraded" | "recovering">(
     "healthy"
   );
+  const [startupHealth, setStartupHealth] = useState<SidecarStartupHealth | null>(null);
+  const [engineReady, setEngineReady] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   // const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -213,6 +357,10 @@ export function Chat({
   const currentSessionIdRef = useRef<string | null>(null);
   // If we try to load history before the sidecar is running, stash the session id and retry later.
   const deferredSessionLoadRef = useRef<string | null>(null);
+  const engineReadyRef = useRef(false);
+  useEffect(() => {
+    engineReadyRef.current = engineReady;
+  }, [engineReady]);
 
   // Staging area hook
   const {
@@ -233,6 +381,57 @@ export function Chat({
     refreshPlans,
   } = usePlans(workspacePath);
   const [showPlanView, setShowPlanView] = useState(false);
+  // Backend startup can run an extended 240s path on first-run/import repair.
+  // Keep frontend attach wait above that to avoid false reconnect churn.
+  const SIDECAR_ATTACH_TIMEOUT_MS = 250_000;
+
+  const waitForSidecarRunning = useCallback(
+    async (timeoutMs = SIDECAR_ATTACH_TIMEOUT_MS, pollIntervalMs = 500): Promise<boolean> => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        const status = await getSidecarStatus();
+        setSidecarStatus(status);
+        if (status === "running") {
+          return true;
+        }
+        await new Promise((resolve) => globalThis.setTimeout(resolve, pollIntervalMs));
+      }
+      return false;
+    },
+    []
+  );
+
+  const waitForEngineReady = useCallback(
+    async (timeoutMs = 12_000, pollIntervalMs = 200): Promise<boolean> => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        if (engineReadyRef.current) {
+          return true;
+        }
+        const status = await getSidecarStatus();
+        setSidecarStatus(status);
+        if (status !== "running" && status !== "starting") {
+          return false;
+        }
+        await new Promise((resolve) => globalThis.setTimeout(resolve, pollIntervalMs));
+      }
+      return engineReadyRef.current;
+    },
+    []
+  );
+
+  const startSidecarWithTimeout = useCallback(async () => {
+    setSidecarStatus("starting");
+    setEngineReady(false);
+    // Let backend startup logic control timeout/retries so frontend doesn't
+    // abort early while engine reports healthy-but-not-ready startup phases.
+    await startSidecar();
+
+    const isRunning = await waitForSidecarRunning(3_000, 300);
+    if (!isRunning) {
+      throw new Error("Tandem Engine start returned, but engine is not in running state.");
+    }
+  }, [waitForSidecarRunning]);
 
   // Handle creating a new frictionless plan
   const handleNewPlan = async () => {
@@ -508,32 +707,75 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
         const status = await getSidecarStatus();
         setSidecarStatus(status);
 
-        // Auto-start if not already running
+        // Auto-start if not already running.
+        // If another client already started it, wait for it to transition instead of
+        // issuing duplicate start calls that can pile up behind lifecycle locks.
+        if (status === "starting") {
+          setIsConnecting(true);
+          setEngineReady(false);
+          const attached = await waitForSidecarRunning(SIDECAR_ATTACH_TIMEOUT_MS, 500);
+          if (!attached) {
+            try {
+              await startSidecarWithTimeout();
+            } catch (e) {
+              setSidecarStatus("failed");
+              setError(
+                e instanceof Error
+                  ? e.message
+                  : "Tandem Engine is still starting. Please click Connect to retry."
+              );
+              setIsConnecting(false);
+              return;
+            }
+          }
+          const ready = await waitForEngineReady();
+          if (!ready) {
+            throw new Error("Tandem Engine started but did not signal readiness on event stream.");
+          }
+          setSidecarStatus("running");
+          setStreamHealth("healthy");
+          onSidecarConnectedRef.current?.();
+          setIsConnecting(false);
+          return;
+        }
+
         if (status !== "running") {
           setIsConnecting(true);
           try {
-            await startSidecar();
+            await startSidecarWithTimeout();
+            const ready = await waitForEngineReady();
+            if (!ready) {
+              throw new Error(
+                "Tandem Engine started but did not signal readiness on event stream."
+              );
+            }
             setSidecarStatus("running");
             setStreamHealth("healthy");
             // Notify parent that sidecar is connected
             onSidecarConnectedRef.current?.();
           } catch (e) {
             console.error("Failed to auto-start sidecar:", e);
+            setSidecarStatus("failed");
+            setError(
+              e instanceof Error ? e.message : "Failed to connect to Tandem Engine. Retry below."
+            );
             // Don't set error - user can still manually connect
           } finally {
             setIsConnecting(false);
           }
         } else {
+          setEngineReady(true);
           setStreamHealth("healthy");
           // Already running, notify parent
           onSidecarConnectedRef.current?.();
         }
       } catch (e) {
         console.error("Failed to get sidecar status:", e);
+        setSidecarStatus("failed");
       }
     };
     autoConnect();
-  }, []); // Only run on mount
+  }, [startSidecarWithTimeout, waitForEngineReady, waitForSidecarRunning]); // Only run on mount behaviorally
 
   // Sync internal session ID with prop (only when prop truly changes)
   useEffect(() => {
@@ -733,12 +975,22 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
               // Skip finished technical tools in history to keep chat clean
               const state = partObj.state as Record<string, unknown> | undefined;
+              const explicitStatus = typeof state?.status === "string" ? state.status : undefined;
+              const hasOutput =
+                state?.output !== undefined ||
+                partObj.result !== undefined ||
+                partObj.output !== undefined;
+              const hasError = state?.error !== undefined || partObj.error !== undefined;
               const status =
-                state?.status === "completed"
+                explicitStatus === "completed"
                   ? "completed"
-                  : state?.status === "failed"
+                  : explicitStatus === "failed"
                     ? "failed"
-                    : "pending";
+                    : hasError
+                      ? "failed"
+                      : hasOutput
+                        ? "completed"
+                        : "pending";
 
               if (technicalTools.includes(toolName) && status === "completed") {
                 continue;
@@ -952,6 +1204,31 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
     }, 2600);
   }, []);
 
+  const finalizePendingToolCalls = useCallback((reason: string) => {
+    setMessages((prev) =>
+      prev.map((msg) => {
+        if (
+          msg.role !== "assistant" ||
+          !Array.isArray(msg.toolCalls) ||
+          msg.toolCalls.length === 0
+        ) {
+          return msg;
+        }
+        const nextToolCalls = msg.toolCalls.map((tc) => {
+          if (tc.status !== "pending") {
+            return tc;
+          }
+          return {
+            ...tc,
+            status: "failed" as const,
+            result: tc.result || reason,
+          };
+        });
+        return { ...msg, toolCalls: nextToolCalls };
+      })
+    );
+  }, []);
+
   const handleApprovePermission = async (id: string, _remember?: "once" | "session" | "always") => {
     try {
       const req = pendingPermissions.find((p) => p.id === id);
@@ -1013,24 +1290,30 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
       switch (event.type) {
         case "content": {
-          // Prefer full content when available to avoid duplicate appends
-          const newContent = event.delta || event.content;
-
           // Update the message ID ref if we have one from OpenCode
           if (event.message_id && !currentAssistantMessageIdRef.current) {
             currentAssistantMessageIdRef.current = event.message_id;
           }
 
-          if (event.delta && event.content) {
-            // OpenCode often sends full content alongside delta
-            // Use full content to prevent repeated text loops
-            currentAssistantMessageRef.current = event.content;
-          } else if (event.delta) {
-            // Append delta to current message
-            currentAssistantMessageRef.current += newContent;
-          } else {
-            // Replace with full content
-            currentAssistantMessageRef.current = newContent;
+          const current = currentAssistantMessageRef.current;
+          const incoming = event.content || "";
+          const delta = event.delta || "";
+
+          if (event.delta) {
+            // Prefer full snapshots when they are clearly cumulative.
+            if (incoming && (!current || incoming.startsWith(current))) {
+              currentAssistantMessageRef.current = incoming;
+            } else {
+              currentAssistantMessageRef.current = current + delta;
+            }
+          } else if (!current) {
+            currentAssistantMessageRef.current = incoming;
+          } else if (incoming.startsWith(current)) {
+            // No explicit delta: some providers still send cumulative content.
+            currentAssistantMessageRef.current = incoming;
+          } else if (!current.startsWith(incoming)) {
+            // No delta + non-cumulative chunk: treat as append to avoid losing tokens.
+            currentAssistantMessageRef.current = current + incoming;
           }
           scheduleAssistantFlush();
           break;
@@ -1124,14 +1407,31 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           setMessages((prev) => {
             const lastMessage = prev[prev.length - 1];
             if (lastMessage && lastMessage.role === "assistant" && lastMessage.toolCalls) {
+              let matchedToolCallId = event.part_id;
+              const hasExactMatch = lastMessage.toolCalls.some((tc) => tc.id === event.part_id);
+              if (!hasExactMatch) {
+                const fallbackMatch = [...lastMessage.toolCalls]
+                  .reverse()
+                  .find(
+                    (tc) =>
+                      tc.status === "pending" &&
+                      tc.tool.toLowerCase() === (event.tool || "").toLowerCase()
+                  );
+                if (fallbackMatch) {
+                  matchedToolCallId = fallbackMatch.id;
+                }
+              }
+
               // If it's a technical tool, we might want to remove it entirely once done
               if (isTechnical && !event.error) {
-                const newToolCalls = lastMessage.toolCalls.filter((tc) => tc.id !== event.part_id);
+                const newToolCalls = lastMessage.toolCalls.filter(
+                  (tc) => tc.id !== matchedToolCallId
+                );
                 return [...prev.slice(0, -1), { ...lastMessage, toolCalls: newToolCalls }];
               }
 
               const newToolCalls = lastMessage.toolCalls.map((tc) =>
-                tc.id === event.part_id
+                tc.id === matchedToolCallId
                   ? {
                       ...tc,
                       result: event.error || String(event.result || ""),
@@ -1178,6 +1478,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
         case "session_idle": {
           console.log("[StreamEvent] Session idle - completing generation");
+          finalizePendingToolCalls("interrupted");
 
           // Capture final content before any async operations
           const finalContent = currentAssistantMessageRef.current;
@@ -1230,10 +1531,26 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               currentAssistantMessageIdRef.current = null;
             }
 
-            // Check if we need to backfill from session history (content was empty)
+            // Check if we need to backfill from session history.
+            // Besides empty content, we also treat "assistant echoes user prompt"
+            // as suspicious (seen when stream events miss final assistant text).
             const lastMsg = messagesRef.current[messagesRef.current.length - 1];
+            const previousMsg = messagesRef.current[messagesRef.current.length - 2];
+            const echoedUserPrompt =
+              lastMsg?.role === "assistant" &&
+              previousMsg?.role === "user" &&
+              Boolean(lastMsg.content?.trim()) &&
+              lastMsg.content.trim() === previousMsg.content?.trim();
+            const hasPendingTools =
+              lastMsg?.role === "assistant" &&
+              Array.isArray(lastMsg.toolCalls) &&
+              lastMsg.toolCalls.some((tc) => tc.status === "pending");
             const needsBackfill =
-              !lastMsg || lastMsg.role !== "assistant" || !lastMsg.content?.trim();
+              !lastMsg ||
+              lastMsg.role !== "assistant" ||
+              !lastMsg.content?.trim() ||
+              echoedUserPrompt ||
+              hasPendingTools;
             if (needsBackfill && currentSessionIdRef.current) {
               console.log("[Chat] Backfilling empty assistant content from history");
               loadSessionHistory(currentSessionIdRef.current);
@@ -1280,6 +1597,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
         case "session_error": {
           console.error("[StreamEvent] Session error:", event.error);
+          finalizePendingToolCalls(event.error || "interrupted");
 
           // Display the error to the user
           setError(`Session error: ${event.error}`);
@@ -1383,14 +1701,18 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
                 }
               });
             } else {
+              const summary = buildPermissionReason(
+                event.tool || undefined,
+                (event.args as Record<string, unknown>) || undefined
+              );
               // Immediate mode: show permission toast as before
               const permissionRequest: PermissionRequest = {
                 id: event.request_id,
                 session_id: event.session_id,
                 type: (event.tool || "unknown") as PermissionRequest["type"],
-                path: event.args?.path as string | undefined,
-                command: event.args?.command as string | undefined,
-                reasoning: "AI requests permission to perform this action",
+                path: summary.path,
+                command: summary.command,
+                reasoning: summary.reasoning,
                 riskLevel:
                   event.tool === "delete_file" || event.tool === "bash" ? "high" : "medium",
                 tool: event.tool || undefined,
@@ -1447,6 +1769,27 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
             const status = data?.status;
             if (status === "healthy" || status === "degraded" || status === "recovering") {
               setStreamHealth(status);
+              if (status === "healthy") {
+                setEngineReady(true);
+              }
+            }
+            break;
+          }
+
+          if (event.event_type === "engine.lifecycle.ready") {
+            setEngineReady(true);
+            setSidecarStatus("running");
+            setStreamHealth("healthy");
+            break;
+          }
+
+          if (event.event_type === "system.engine_restart_detected") {
+            setEngineReady(false);
+            setIsGenerating(false);
+            finalizePendingToolCalls("interrupted: engine restarted");
+            showStatusBanner("Engine restarted. Rehydrating session state...");
+            if (currentSessionIdRef.current) {
+              loadSessionHistory(currentSessionIdRef.current);
             }
             break;
           }
@@ -1483,6 +1826,8 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
       usePlanMode,
       allowAllTools,
       scheduleAssistantFlush,
+      finalizePendingToolCalls,
+      showStatusBanner,
     ]
   );
 
@@ -1521,9 +1866,23 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
     setIsConnecting(true);
     setError(null);
     setStreamHealth("recovering");
+    setSidecarStatus("starting");
+    setEngineReady(false);
 
     try {
-      await startSidecar();
+      const status = await getSidecarStatus();
+      if (status === "starting") {
+        const attached = await waitForSidecarRunning(SIDECAR_ATTACH_TIMEOUT_MS, 500);
+        if (!attached) {
+          throw new Error("Tandem Engine is still starting and did not become ready in time.");
+        }
+      } else {
+        await startSidecarWithTimeout();
+      }
+      const ready = await waitForEngineReady();
+      if (!ready) {
+        throw new Error("Tandem Engine started but did not signal readiness on event stream.");
+      }
       setSidecarStatus("running");
       setStreamHealth("healthy");
       // Don't create a session here - it will be created when user sends first message
@@ -1553,6 +1912,13 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           return;
         }
         if (currentStatus !== "running") {
+          return;
+        }
+      }
+      if (!engineReadyRef.current) {
+        const ready = await waitForEngineReady(8_000, 200);
+        if (!ready) {
+          setError("Tandem Engine is running but not ready to stream yet. Please retry Connect.");
           return;
         }
       }
@@ -2109,8 +2475,36 @@ ${g.example}
     }
   }, [activePlan, hasPendingQuestionOverlay, pendingQuestionRequests, showPlanView, usePlanMode]);
 
+  useEffect(() => {
+    if (!isConnecting) {
+      setStartupHealth(null);
+      return;
+    }
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const health = await getSidecarStartupHealth();
+        if (!cancelled) {
+          setStartupHealth(health);
+        }
+      } catch {
+        if (!cancelled) {
+          setStartupHealth(null);
+        }
+      }
+    };
+
+    poll();
+    const interval = globalThis.setInterval(poll, 700);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(interval);
+    };
+  }, [isConnecting]);
+
   const needsConnection = sidecarStatus !== "running" && !isConnecting;
-  const showConnectingOverlay = isConnecting || sidecarStatus === "starting";
+  const showConnectingOverlay = isConnecting;
 
   return (
     <div className="relative flex h-full flex-col">
@@ -2122,35 +2516,76 @@ ${g.example}
       <AnimatePresence>
         {showConnectingOverlay && (
           <motion.div
-            className="absolute inset-0 z-30 flex items-center justify-center bg-black/55 backdrop-blur-sm"
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-[radial-gradient(circle_at_center,color-mix(in_srgb,var(--color-primary)_20%,transparent)_0%,color-mix(in_srgb,var(--color-background)_78%,black_22%)_68%,color-mix(in_srgb,var(--color-background)_90%,black_10%)_100%)] backdrop-blur-md"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
             <motion.div
-              className="w-[min(520px,88vw)] rounded-2xl border border-primary/25 bg-surface-elevated/95 p-6 shadow-2xl"
+              className="w-[min(440px,88vw)] rounded-2xl border border-primary/20 bg-surface-elevated/92 p-4 shadow-2xl shadow-black/35"
               initial={{ scale: 0.97, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.98, opacity: 0 }}
             >
-              <div className="mb-3 flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary/30 bg-primary/10">
-                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
+              <div className="mb-2.5 flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-primary/25 bg-primary/10 shadow-lg shadow-primary/20">
+                  <Loader2 className="h-5 w-5 animate-spin text-primary/90" />
                 </div>
                 <div>
                   <h3 className="text-base font-semibold text-text">Connecting to Tandem Engine</h3>
-                  <p className="text-sm text-text-muted">
-                    Starting the sidecar and syncing the live stream.
+                  <p className="text-sm text-text-subtle">
+                    {startupPhaseLabel(startupHealth?.phase)}
+                    {startupHealth
+                      ? ` - ${Math.max(0, Math.round((startupHealth.startup_elapsed_ms || 0) / 1000))}s`
+                      : ""}
                   </p>
                 </div>
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-surface">
-                <motion.div
-                  className="h-full bg-gradient-to-r from-primary via-secondary to-primary"
-                  initial={{ x: "-35%", width: "35%" }}
-                  animate={{ x: "130%" }}
-                  transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
-                />
+              <div className="rounded-lg border border-border bg-surface/70 px-2 py-2">
+                <div className="grid grid-cols-[repeat(14,minmax(0,1fr))] gap-1">
+                  {Array.from({ length: 14 }).map((_, index) => (
+                    <motion.div
+                      key={`connect-cell-${index}`}
+                      className="h-2.5 w-full rounded-[3px] border border-primary/20 bg-primary/10"
+                      animate={{
+                        opacity:
+                          index <
+                          Math.max(
+                            1,
+                            Math.round((startupPhaseProgress(startupHealth?.phase) / 100) * 14)
+                          )
+                            ? [0.35, 0.65, 1, 0.65, 0.35]
+                            : [0.12, 0.2, 0.3, 0.2, 0.12],
+                        scaleY: [0.9, 1, 1.08, 1, 0.9],
+                        backgroundColor: [
+                          "var(--color-primary-muted)",
+                          "var(--color-primary)",
+                          "var(--color-secondary)",
+                          "var(--color-primary)",
+                          "var(--color-primary-muted)",
+                        ],
+                        boxShadow: [
+                          "0 0 0px transparent",
+                          "0 0 8px color-mix(in srgb, var(--color-primary) 55%, transparent)",
+                          "0 0 12px color-mix(in srgb, var(--color-secondary) 55%, transparent)",
+                          "0 0 8px color-mix(in srgb, var(--color-primary) 45%, transparent)",
+                          "0 0 0px transparent",
+                        ],
+                      }}
+                      transition={{
+                        duration: 1.15,
+                        repeat: Infinity,
+                        repeatType: "loop",
+                        ease: "easeInOut",
+                        delay: index * 0.06,
+                      }}
+                    />
+                  ))}
+                </div>
+                <div className="mt-1.5 flex items-center justify-between text-xs text-text-muted">
+                  <span>{startupPhaseDetail(startupHealth?.phase)}</span>
+                  <span>{startupPhaseProgress(startupHealth?.phase)}% estimated</span>
+                </div>
               </div>
             </motion.div>
           </motion.div>
