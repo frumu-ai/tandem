@@ -65,6 +65,17 @@ pub struct ProviderConfigEntry {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct EngineLease {
+    pub lease_id: String,
+    pub client_id: String,
+    pub client_type: String,
+    pub acquired_at_ms: u64,
+    pub last_renewed_at_ms: u64,
+    pub ttl_ms: u64,
+    pub lease_count: usize,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SendMessageRequest {
     #[serde(default)]
     pub parts: Vec<MessagePartInput>,
@@ -117,6 +128,47 @@ impl EngineClient {
         let resp = self.client.get(&url).send().await?;
         let status = resp.json::<EngineStatus>().await?;
         Ok(status)
+    }
+
+    pub async fn acquire_lease(
+        &self,
+        client_id: &str,
+        client_type: &str,
+        ttl_ms: Option<u64>,
+    ) -> Result<EngineLease> {
+        let url = format!("{}/global/lease/acquire", self.base_url);
+        let payload = serde_json::json!({
+            "client_id": client_id,
+            "client_type": client_type,
+            "ttl_ms": ttl_ms.unwrap_or(60_000),
+        });
+        let resp = self.client.post(&url).json(&payload).send().await?;
+        let lease = resp.json::<EngineLease>().await?;
+        Ok(lease)
+    }
+
+    pub async fn renew_lease(&self, lease_id: &str) -> Result<bool> {
+        let url = format!("{}/global/lease/renew", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "lease_id": lease_id }))
+            .send()
+            .await?;
+        let body = resp.json::<serde_json::Value>().await?;
+        Ok(body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+    }
+
+    pub async fn release_lease(&self, lease_id: &str) -> Result<bool> {
+        let url = format!("{}/global/lease/release", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "lease_id": lease_id }))
+            .send()
+            .await?;
+        let body = resp.json::<serde_json::Value>().await?;
+        Ok(body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {

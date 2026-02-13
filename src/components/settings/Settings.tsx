@@ -540,7 +540,7 @@ export function Settings({
             <Info className="h-4 w-4 text-primary" />
             <span>Tandem v{appVersion || "..."}</span>
             <span className="text-text-subtle">•</span>
-            <span>OpenCode v{sidecarStatus?.version || "..."}</span>
+            <span>Tandem Engine v{sidecarStatus?.version || "..."}</span>
           </div>
         </div>
 
@@ -623,7 +623,7 @@ export function Settings({
                 <div>
                   <CardTitle>Data Migration</CardTitle>
                   <CardDescription>
-                    Import legacy OpenCode and older Tandem data into canonical storage.
+                    Import legacy OpenCode and older Tandem data into canonical Tandem storage.
                   </CardDescription>
                 </div>
               </div>
@@ -1028,7 +1028,7 @@ export function Settings({
             <div className="space-y-4">
               <ProviderCard
                 id="opencode_zen"
-                name="OpenCode Zen"
+                name="Tandem Zen"
                 description="Access to free and premium models - includes free options"
                 endpoint="https://opencode.ai/zen/v1"
                 model={providers.opencode_zen.model}

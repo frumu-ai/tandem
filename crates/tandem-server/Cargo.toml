@@ -16,6 +16,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
 tandem-core = { path = "../tandem-core" }
 tandem-providers = { path = "../tandem-providers" }
 tandem-runtime = { path = "../tandem-runtime" }
@@ -25,4 +26,3 @@ tandem-wire = { path = "../tandem-wire" }
 
 [dev-dependencies]
 tower = "0.5"
-uuid = { version = "1", features = ["v4"] }

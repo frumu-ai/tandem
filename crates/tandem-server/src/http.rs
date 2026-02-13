@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use uuid::Uuid;
 
 use tandem_types::{
     CreateSessionRequest, EngineEvent, MessagePart, SendMessageRequest, Session, TodoItem,
@@ -49,6 +50,23 @@ struct ListSessionsQuery {
     archived: Option<bool>,
     scope: Option<SessionScope>,
     workspace: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EngineLeaseAcquireInput {
+    client_id: Option<String>,
+    client_type: Option<String>,
+    ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EngineLeaseRenewInput {
+    lease_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EngineLeaseReleaseInput {
+    lease_id: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -188,6 +206,9 @@ fn app_router(state: AppState) -> Router {
     Router::new()
         .route("/global/health", get(global_health))
         .route("/global/event", get(events))
+        .route("/global/lease/acquire", post(global_lease_acquire))
+        .route("/global/lease/renew", post(global_lease_renew))
+        .route("/global/lease/release", post(global_lease_release))
         .route(
             "/global/config",
             get(global_config).patch(global_config_patch),
@@ -319,14 +340,82 @@ fn app_router(state: AppState) -> Router {
 }
 
 async fn global_health(State(state): State<AppState>) -> impl IntoResponse {
+    let now = crate::now_ms();
+    let lease_count = {
+        let mut leases = state.engine_leases.write().await;
+        leases.retain(|_, lease| !lease.is_expired(now));
+        leases.len()
+    };
     let in_process = state
         .in_process_mode
         .load(std::sync::atomic::Ordering::Relaxed);
     Json(json!({
         "healthy": true,
         "version": env!("CARGO_PKG_VERSION"),
-        "mode": if in_process { "in-process" } else { "sidecar" }
+        "mode": if in_process { "in-process" } else { "sidecar" },
+        "leaseCount": lease_count
     }))
+}
+
+async fn global_lease_acquire(
+    State(state): State<AppState>,
+    Json(input): Json<EngineLeaseAcquireInput>,
+) -> Json<Value> {
+    let now = crate::now_ms();
+    let lease_id = Uuid::new_v4().to_string();
+    let lease = crate::EngineLease {
+        lease_id: lease_id.clone(),
+        client_id: input
+            .client_id
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "unknown".to_string()),
+        client_type: input
+            .client_type
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "unknown".to_string()),
+        acquired_at_ms: now,
+        last_renewed_at_ms: now,
+        ttl_ms: input.ttl_ms.unwrap_or(60_000).clamp(5_000, 10 * 60_000),
+    };
+    let mut leases = state.engine_leases.write().await;
+    leases.retain(|_, l| !l.is_expired(now));
+    leases.insert(lease_id.clone(), lease.clone());
+    Json(json!({
+        "lease_id": lease_id,
+        "client_id": lease.client_id,
+        "client_type": lease.client_type,
+        "acquired_at_ms": lease.acquired_at_ms,
+        "last_renewed_at_ms": lease.last_renewed_at_ms,
+        "ttl_ms": lease.ttl_ms,
+        "lease_count": leases.len()
+    }))
+}
+
+async fn global_lease_renew(
+    State(state): State<AppState>,
+    Json(input): Json<EngineLeaseRenewInput>,
+) -> Json<Value> {
+    let now = crate::now_ms();
+    let mut leases = state.engine_leases.write().await;
+    leases.retain(|_, l| !l.is_expired(now));
+    let renewed = if let Some(lease) = leases.get_mut(&input.lease_id) {
+        lease.last_renewed_at_ms = now;
+        true
+    } else {
+        false
+    };
+    Json(json!({ "ok": renewed, "lease_count": leases.len() }))
+}
+
+async fn global_lease_release(
+    State(state): State<AppState>,
+    Json(input): Json<EngineLeaseReleaseInput>,
+) -> Json<Value> {
+    let now = crate::now_ms();
+    let mut leases = state.engine_leases.write().await;
+    leases.retain(|_, l| !l.is_expired(now));
+    let removed = leases.remove(&input.lease_id).is_some();
+    Json(json!({ "ok": removed, "lease_count": leases.len() }))
 }
 
 fn sse_stream(state: AppState) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {

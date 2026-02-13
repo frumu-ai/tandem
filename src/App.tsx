@@ -47,6 +47,9 @@ import {
   onStorageMigrationComplete,
   onStorageMigrationProgress,
   runStorageMigration,
+  engineAcquireLease,
+  engineRenewLease,
+  engineReleaseLease,
   type StorageMigrationProgressEvent,
   type StorageMigrationRunResult,
   type Session,
@@ -143,6 +146,65 @@ function App() {
     }
   }, [currentSessionId]);
 
+  useEffect(() => {
+    let disposed = false;
+
+    const clearRenewTimer = () => {
+      if (engineLeaseTimerRef.current) {
+        globalThis.clearInterval(engineLeaseTimerRef.current);
+        engineLeaseTimerRef.current = null;
+      }
+    };
+
+    const releaseLease = async () => {
+      clearRenewTimer();
+      const leaseId = engineLeaseIdRef.current;
+      if (!leaseId) return;
+      engineLeaseIdRef.current = null;
+      try {
+        await engineReleaseLease(leaseId);
+      } catch (err) {
+        console.warn("[EngineLease] Failed to release lease:", err);
+      }
+    };
+
+    const acquireLease = async () => {
+      try {
+        const lease = await engineAcquireLease("desktop-ui", "desktop", 60_000);
+        if (disposed) return;
+        engineLeaseIdRef.current = lease.lease_id;
+        clearRenewTimer();
+        engineLeaseTimerRef.current = globalThis.setInterval(async () => {
+          const id = engineLeaseIdRef.current;
+          if (!id) return;
+          try {
+            const ok = await engineRenewLease(id);
+            if (!ok) {
+              console.warn("[EngineLease] Renewal failed, reacquiring lease");
+              engineLeaseIdRef.current = null;
+              await acquireLease();
+            }
+          } catch (err) {
+            console.warn("[EngineLease] Failed to renew lease:", err);
+          }
+        }, 20_000);
+      } catch (err) {
+        console.warn("[EngineLease] Failed to acquire lease:", err);
+      }
+    };
+
+    if (vaultUnlocked) {
+      void acquireLease();
+    } else {
+      void releaseLease();
+    }
+
+    return () => {
+      disposed = true;
+      void releaseLease();
+    };
+  }, [vaultUnlocked]);
+
   // File browser state
   const [sidebarTab, setSidebarTab] = useState<"sessions" | "files">("sessions");
   const [selectedFile, setSelectedFile] = useState<FileEntry | null>(null);
@@ -161,6 +223,8 @@ function App() {
   );
   const [migrationResult, setMigrationResult] = useState<StorageMigrationRunResult | null>(null);
   const migrationCheckedRef = useRef(false);
+  const engineLeaseIdRef = useRef<string | null>(null);
+  const engineLeaseTimerRef = useRef<ReturnType<typeof globalThis.setInterval> | null>(null);
 
   // Auto-index workspace files when a project becomes active (if enabled in settings).
   useEffect(() => {
@@ -412,7 +476,7 @@ function App() {
         case "openrouter":
           return "OpenRouter";
         case "opencode_zen":
-          return "OpenCode Zen";
+          return "Tandem Zen";
         case "anthropic":
           return "Anthropic";
         case "openai":
@@ -424,7 +488,7 @@ function App() {
       }
     };
 
-    // Prefer the explicitly selected model/provider (supports OpenCode custom providers).
+    // Prefer the explicitly selected model/provider (supports Tandem custom providers).
     if (config.selected_model?.provider_id?.trim() && config.selected_model?.model_id?.trim()) {
       const providerId =
         config.selected_model.provider_id === "opencode"
@@ -440,7 +504,7 @@ function App() {
     const enabledCustom = (config.custom ?? []).find((c) => c.enabled);
     const candidates = [
       { id: "openrouter", label: "OpenRouter", config: config.openrouter },
-      { id: "opencode_zen", label: "OpenCode Zen", config: config.opencode_zen },
+      { id: "opencode_zen", label: "Tandem Zen", config: config.opencode_zen },
       { id: "anthropic", label: "Anthropic", config: config.anthropic },
       { id: "openai", label: "OpenAI", config: config.openai },
       { id: "ollama", label: "Ollama", config: config.ollama },

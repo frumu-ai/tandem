@@ -113,6 +113,7 @@ use tokio::time::{sleep, timeout};
 use crate::crypto::{keystore::SecureKeyStore, vault::EncryptedVaultKey};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::Instant;
 use tandem_core::{migrate_legacy_storage_if_needed, resolve_shared_paths};
 
 pub struct App {
@@ -132,6 +133,8 @@ pub struct App {
     pub current_model: Option<String>,
     pub provider_catalog: Option<crate::net::client::ProviderCatalog>,
     pub connection_status: String,
+    pub engine_lease_id: Option<String>,
+    pub engine_lease_last_renewed: Option<Instant>,
     pub pending_model_provider: Option<String>,
     pub autocomplete_items: Vec<(String, String)>,
     pub autocomplete_index: usize,
@@ -286,6 +289,8 @@ impl App {
             current_model: None,
             provider_catalog: None,
             connection_status: "Initializing...".to_string(),
+            engine_lease_id: None,
+            engine_lease_last_renewed: None,
             pending_model_provider: None,
             autocomplete_items: Vec::new(),
             autocomplete_index: 0,
@@ -1244,6 +1249,7 @@ impl App {
                         if healthy {
                             self.connection_status = "Connected! Loading...".to_string();
                             self.client = Some(client.clone());
+                            self.acquire_engine_lease().await;
                             // Check if providers are configured
                             if let Ok(providers) = client.list_providers().await {
                                 self.provider_catalog = Some(providers.clone());
@@ -1306,6 +1312,7 @@ impl App {
                 }
             }
             AppState::MainMenu | AppState::Chat { .. } => {
+                self.renew_engine_lease_if_due().await;
                 if self.tick_count % 63 == 0 {
                     if let Some(client) = &self.client {
                         if let AppState::MainMenu = self.state {
@@ -1407,6 +1414,7 @@ CONFIG:
                 }
                 Some("restart") => {
                     self.connection_status = "Restarting engine...".to_string();
+                    self.release_engine_lease().await;
                     self.stop_engine_process().await;
                     self.client = None;
                     self.provider_catalog = None;
@@ -1984,11 +1992,67 @@ CONFIG:
     }
 
     pub async fn shutdown(&mut self) {
+        self.release_engine_lease().await;
         if Self::shared_engine_mode_enabled() {
             // Shared mode: detach and let the engine continue serving other clients.
             let _ = self.engine_process.take();
             return;
         }
         self.stop_engine_process().await;
+    }
+
+    async fn acquire_engine_lease(&mut self) {
+        let Some(client) = &self.client else {
+            return;
+        };
+        if self.engine_lease_id.is_some() {
+            return;
+        }
+        match client.acquire_lease("tui-cli", "tui", Some(60_000)).await {
+            Ok(lease) => {
+                self.engine_lease_id = Some(lease.lease_id);
+                self.engine_lease_last_renewed = Some(Instant::now());
+            }
+            Err(err) => {
+                self.connection_status = format!("Lease acquire failed: {}", err);
+            }
+        }
+    }
+
+    async fn renew_engine_lease_if_due(&mut self) {
+        let Some(lease_id) = self.engine_lease_id.clone() else {
+            return;
+        };
+        let should_renew = self
+            .engine_lease_last_renewed
+            .map(|t| t.elapsed().as_secs() >= 20)
+            .unwrap_or(true);
+        if !should_renew {
+            return;
+        }
+        let Some(client) = &self.client else {
+            return;
+        };
+        match client.renew_lease(&lease_id).await {
+            Ok(true) => {
+                self.engine_lease_last_renewed = Some(Instant::now());
+            }
+            Ok(false) => {
+                self.engine_lease_id = None;
+                self.engine_lease_last_renewed = None;
+                self.acquire_engine_lease().await;
+            }
+            Err(_) => {}
+        }
+    }
+
+    async fn release_engine_lease(&mut self) {
+        let Some(lease_id) = self.engine_lease_id.take() else {
+            return;
+        };
+        self.engine_lease_last_renewed = None;
+        if let Some(client) = &self.client {
+            let _ = client.release_lease(&lease_id).await;
+        }
     }
 }

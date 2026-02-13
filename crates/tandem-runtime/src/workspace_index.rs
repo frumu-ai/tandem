@@ -36,7 +36,10 @@ impl WorkspaceIndex {
             root: Arc::new(root),
             snapshot: Arc::new(RwLock::new(initial)),
         };
-        let _ = this.refresh().await;
+        let clone = this.clone();
+        tokio::spawn(async move {
+            let _ = clone.refresh().await;
+        });
         this
     }
 

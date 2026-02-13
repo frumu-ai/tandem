@@ -180,5 +180,6 @@ async fn build_state(state_dir: &PathBuf) -> anyhow::Result<AppState> {
         in_process_mode,
         cancellations,
         engine_loop,
+        engine_leases: Arc::new(RwLock::new(std::collections::HashMap::new())),
     })
 }

@@ -28,12 +28,15 @@ const DEFAULT_TAIL_LINES = 500;
 
 type Level = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "STDOUT" | "STDERR" | "UNKNOWN";
 type LevelFilter = "ALL" | Exclude<Level, "UNKNOWN">;
+type ProvenanceFilter = "ALL" | "CURRENT" | "LEGACY";
+type Provenance = "current" | "legacy";
 
 type ParsedLine = {
   ts?: string;
   level: Level;
   target?: string;
   msg: string;
+  provenance: Provenance;
 };
 
 type LineItem = {
@@ -44,11 +47,20 @@ type LineItem = {
 
 function parseLine(raw: string): ParsedLine {
   const trimmed = raw.replace(/\r?\n$/, "");
+  const lower = trimmed.toLowerCase();
+  const legacy =
+    lower.includes("opencode") ||
+    lower.includes("ai.frumu.tandem") ||
+    lower.includes(".local\\share\\opencode") ||
+    lower.includes(".local/share/opencode") ||
+    lower.includes(".config\\opencode") ||
+    lower.includes(".config/opencode");
+  const provenance: Provenance = legacy ? "legacy" : "current";
 
   const sidecar = trimmed.match(/^(STDOUT|STDERR)\s*(?:[:-])?\s*(.*)$/);
   if (sidecar) {
     const level = sidecar[1] as "STDOUT" | "STDERR";
-    return { level, msg: sidecar[2] ?? "" };
+    return { level, msg: sidecar[2] ?? "", provenance };
   }
 
   // Common tracing format:
@@ -60,16 +72,17 @@ function parseLine(raw: string): ParsedLine {
       level: m[2] as Level,
       target: m[3],
       msg: m[4] ?? "",
+      provenance,
     };
   }
 
   // Fallback: [LEVEL] ... or LEVEL ...
   const m2 = trimmed.match(/^\[?(TRACE|DEBUG|INFO|WARN|ERROR)\]?\s+(.*)$/);
   if (m2) {
-    return { level: m2[1] as Level, msg: m2[2] ?? "" };
+    return { level: m2[1] as Level, msg: m2[2] ?? "", provenance };
   }
 
-  return { level: "UNKNOWN", msg: trimmed };
+  return { level: "UNKNOWN", msg: trimmed, provenance };
 }
 
 function levelBadgeClasses(level: Level): string {
@@ -151,6 +164,7 @@ export function LogsDrawer({
   const [paused, setPaused] = useState(false);
   const [search, setSearch] = useState("");
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("ALL");
+  const [provenanceFilter, setProvenanceFilter] = useState<ProvenanceFilter>("ALL");
   const [follow, setFollow] = useState(true);
   const [lines, setLines] = useState<LineItem[]>([]);
   const [dropped, setDropped] = useState(0);
@@ -316,10 +330,12 @@ export function LogsDrawer({
         const lv = l.parsed.level;
         if (lv !== levelFilter) return false;
       }
+      if (provenanceFilter === "CURRENT" && l.parsed.provenance !== "current") return false;
+      if (provenanceFilter === "LEGACY" && l.parsed.provenance !== "legacy") return false;
       if (!q) return true;
       return l.raw.toLowerCase().includes(q);
     });
-  }, [lines, levelFilter, search]);
+  }, [lines, levelFilter, provenanceFilter, search]);
 
   // Keep the view pinned to the bottom when follow is enabled.
   useEffect(() => {
@@ -369,6 +385,12 @@ export function LogsDrawer({
 
           {p.target && (
             <span className="shrink-0 font-mono text-[11px] text-text-muted">{p.target}</span>
+          )}
+
+          {p.provenance === "legacy" && (
+            <span className="shrink-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200">
+              LEGACY
+            </span>
           )}
 
           <span className="font-mono text-[12px] text-text whitespace-pre">
@@ -590,6 +612,19 @@ export function LogsDrawer({
                     <option value="TRACE">Trace</option>
                     <option value="STDERR">Stderr</option>
                     <option value="STDOUT">Stdout</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-2 text-xs text-text-subtle">
+                  <span className="hidden sm:inline">Source</span>
+                  <select
+                    className="rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
+                    value={provenanceFilter}
+                    onChange={(e) => setProvenanceFilter(e.target.value as ProvenanceFilter)}
+                  >
+                    <option value="ALL">All sources</option>
+                    <option value="CURRENT">Current runtime</option>
+                    <option value="LEGACY">Legacy imported</option>
                   </select>
                 </label>
 

@@ -278,7 +278,7 @@ export function IntegrationsTab({ workspacePath }: IntegrationsTabProps) {
             <div className="flex-1">
               <CardTitle>Configured MCP servers</CardTitle>
               <CardDescription>
-                These settings are written to OpenCode config. Remote HTTP servers are tested by
+                These settings are written to Tandem config. Remote HTTP servers are tested by
                 sending a real MCP <span className="font-mono">initialize</span> request (Streamable
                 HTTP / SSE). Restart the AI engine to apply changes.
               </CardDescription>
