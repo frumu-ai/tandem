@@ -16,6 +16,7 @@ import {
   Play,
   Square,
   RefreshCw,
+  RotateCcw,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -572,43 +573,46 @@ export function ProviderCard({
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-medium text-text-subtle">Base URL</label>
-                  <div className="flex items-center gap-2">
-                    {isEndpointModified && (
-                      <button
-                        type="button"
-                        onClick={handleResetEndpoint}
-                        className="text-xs text-primary hover:underline"
-                      >
-                        Reset to default
-                      </button>
-                    )}
-                    {!isEditingEndpoint && onEndpointChange && (
-                      <button
-                        type="button"
-                        onClick={() => setIsEditingEndpoint(true)}
-                        className="text-xs text-primary hover:underline"
-                      >
-                        Edit
-                      </button>
-                    )}
-                  </div>
+                  {!isEditingEndpoint && onEndpointChange && (
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingEndpoint(true)}
+                      className="text-xs text-primary hover:underline"
+                    >
+                      Edit
+                    </button>
+                  )}
                 </div>
                 {isEditingEndpoint ? (
                   <div className="space-y-2">
-                    <Input
-                      type="text"
-                      placeholder="https://api.example.com/v1"
-                      value={endpointInput}
-                      onChange={(e) => setEndpointInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          handleSaveEndpoint();
-                        } else if (e.key === "Escape") {
-                          setEndpointInput(endpoint);
-                          setIsEditingEndpoint(false);
-                        }
-                      }}
-                    />
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="text"
+                        placeholder="https://api.example.com/v1"
+                        value={endpointInput}
+                        onChange={(e) => setEndpointInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            handleSaveEndpoint();
+                          } else if (e.key === "Escape") {
+                            setEndpointInput(endpoint);
+                            setIsEditingEndpoint(false);
+                          }
+                        }}
+                        className="flex-1"
+                      />
+                      {isEndpointModified && defaultEndpoint && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={handleResetEndpoint}
+                          title="Reset to default endpoint"
+                          className="shrink-0"
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
                     <div className="flex items-center gap-2">
                       <Button
                         size="sm"
