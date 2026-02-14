@@ -1,0 +1,63 @@
+{
+  "header": {
+    "newChat": "新建聊天",
+    "mode": "模式",
+    "model": "模型",
+    "selectMode": "选择模式",
+    "selectModel": "选择模型"
+  },
+  "input": {
+    "placeholder": "输入消息...",
+    "send": "发送",
+    "attachFile": "附加文件",
+    "attachImage": "附加图片",
+    "recording": "录音中...",
+    "stopRecording": "停止录音"
+  },
+  "modes": {
+    "chat": "聊天",
+    "plan": "计划",
+    "ask": "询问",
+    "debug": "调试",
+    "ralph": "Ralph 循环",
+    "orchestrator": "编排模式"
+  },
+  "messages": {
+    "thinking": "思考中...",
+    "generating": "生成中...",
+    "error": "发送消息失败",
+    "empty": "暂无消息",
+    "deleted": "消息已删除",
+    "edited": "已编辑"
+  },
+  "actions": {
+    "copy": "复制",
+    "edit": "编辑",
+    "delete": "删除",
+    "regenerate": "重新生成",
+    "retry": "重试",
+    "stop": "停止生成"
+  },
+  "session": {
+    "new": "新建会话",
+    "rename": "重命名",
+    "delete": "删除会话",
+    "deleteConfirm": "确定要删除此会话吗？",
+    "export": "导出",
+    "import": "导入"
+  },
+  "memory": {
+    "title": "记忆",
+    "used": "已使用",
+    "notUsed": "未使用",
+    "chunks": "{{count}} 个片段",
+    "retrieving": "检索中..."
+  },
+  "tools": {
+    "title": "工具",
+    "executing": "执行中",
+    "completed": "已完成",
+    "failed": "失败",
+    "pending": "待处理"
+  }
+}
