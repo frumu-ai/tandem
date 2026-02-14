@@ -570,9 +570,16 @@ pub fn build_permission_rules(mode: &ResolvedMode) -> Vec<PermissionRule> {
             action: "allow".to_string(),
         });
     }
-    if mode_has_any_tool(mode, &["webfetch"]) {
+    if mode_has_any_tool(mode, &["webfetch", "webfetch_document"]) {
         rules.push(PermissionRule {
             permission: "webfetch".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        });
+    }
+    if mode_has_any_tool(mode, &["webfetch_document"]) {
+        rules.push(PermissionRule {
+            permission: "webfetch_document".to_string(),
             pattern: "*".to_string(),
             action: "allow".to_string(),
         });

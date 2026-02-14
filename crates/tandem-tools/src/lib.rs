@@ -43,6 +43,11 @@ impl ToolRegistry {
         map.insert("glob".to_string(), Arc::new(GlobTool));
         map.insert("grep".to_string(), Arc::new(GrepTool));
         map.insert("webfetch".to_string(), Arc::new(WebFetchTool));
+        map.insert(
+            "webfetch_document".to_string(),
+            Arc::new(WebFetchDocumentTool),
+        );
+        map.insert("mcp_debug".to_string(), Arc::new(McpDebugTool));
         map.insert("websearch".to_string(), Arc::new(WebSearchTool));
         map.insert("codesearch".to_string(), Arc::new(CodeSearchTool));
         let todo_tool: Arc<dyn Tool> = Arc::new(TodoWriteTool);
@@ -432,6 +437,329 @@ impl Tool for WebFetchTool {
     }
 }
 
+struct WebFetchDocumentTool;
+#[async_trait]
+impl Tool for WebFetchDocumentTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "webfetch_document".to_string(),
+            description: "Fetch URL content and return a structured markdown document".to_string(),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "url":{"type":"string"},
+                    "mode":{"type":"string"},
+                    "return":{"type":"string"},
+                    "max_bytes":{"type":"integer"},
+                    "timeout_ms":{"type":"integer"},
+                    "max_redirects":{"type":"integer"}
+                }
+            }),
+        }
+    }
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let url = args["url"].as_str().unwrap_or("").trim();
+        if url.is_empty() {
+            return Ok(ToolResult {
+                output: "url is required".to_string(),
+                metadata: json!({"url": url}),
+            });
+        }
+        let mode = args["mode"].as_str().unwrap_or("auto");
+        let return_mode = args["return"].as_str().unwrap_or("both");
+        let timeout_ms = args["timeout_ms"]
+            .as_u64()
+            .unwrap_or(15_000)
+            .clamp(1_000, 120_000);
+        let max_bytes = args["max_bytes"].as_u64().unwrap_or(500_000).min(5_000_000) as usize;
+        let max_redirects = args["max_redirects"].as_u64().unwrap_or(5).min(20) as usize;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .redirect(reqwest::redirect::Policy::limited(max_redirects))
+            .build()?;
+
+        let started = std::time::Instant::now();
+        let res = client
+            .get(url)
+            .header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .send()
+            .await?;
+        let final_url = res.url().to_string();
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        let mut stream = res.bytes_stream();
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut truncated = false;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if buffer.len() + chunk.len() > max_bytes {
+                let remaining = max_bytes.saturating_sub(buffer.len());
+                buffer.extend_from_slice(&chunk[..remaining]);
+                truncated = true;
+                break;
+            }
+            buffer.extend_from_slice(&chunk);
+        }
+        let raw = String::from_utf8_lossy(&buffer).to_string();
+
+        let cleaned = strip_html_noise(&raw);
+        let title = extract_title(&cleaned).unwrap_or_default();
+        let canonical = extract_canonical(&cleaned);
+        let links = extract_links(&cleaned);
+
+        let markdown = if content_type.contains("html") || content_type.is_empty() {
+            html2md::parse_html(&cleaned)
+        } else {
+            cleaned.clone()
+        };
+
+        let text = markdown_to_text(&markdown);
+
+        let markdown_out = if return_mode == "text" {
+            String::new()
+        } else {
+            markdown
+        };
+        let text_out = if return_mode == "markdown" {
+            String::new()
+        } else {
+            text
+        };
+
+        let raw_chars = raw.chars().count();
+        let markdown_chars = markdown_out.chars().count();
+        let reduction_pct = if raw_chars == 0 {
+            0.0
+        } else {
+            ((raw_chars.saturating_sub(markdown_chars)) as f64 / raw_chars as f64) * 100.0
+        };
+
+        let output = json!({
+            "url": url,
+            "final_url": final_url,
+            "title": title,
+            "content_type": content_type,
+            "markdown": markdown_out,
+            "text": text_out,
+            "links": links,
+            "meta": {
+                "canonical": canonical,
+                "mode": mode
+            },
+            "stats": {
+                "bytes_in": buffer.len(),
+                "bytes_out": markdown_chars,
+                "raw_chars": raw_chars,
+                "markdown_chars": markdown_chars,
+                "reduction_pct": reduction_pct,
+                "elapsed_ms": started.elapsed().as_millis(),
+                "truncated": truncated
+            }
+        });
+
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&output)?,
+            metadata: json!({
+                "url": url,
+                "final_url": final_url,
+                "content_type": content_type,
+                "truncated": truncated
+            }),
+        })
+    }
+}
+
+fn strip_html_noise(input: &str) -> String {
+    let script_re = Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap();
+    let style_re = Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap();
+    let noscript_re = Regex::new(r"(?is)<noscript[^>]*>.*?</noscript>").unwrap();
+    let cleaned = script_re.replace_all(input, "");
+    let cleaned = style_re.replace_all(&cleaned, "");
+    let cleaned = noscript_re.replace_all(&cleaned, "");
+    cleaned.to_string()
+}
+
+fn extract_title(input: &str) -> Option<String> {
+    let title_re = Regex::new(r"(?is)<title[^>]*>(.*?)</title>").ok()?;
+    let caps = title_re.captures(input)?;
+    let raw = caps.get(1)?.as_str();
+    let tag_re = Regex::new(r"(?is)<[^>]+>").ok()?;
+    Some(tag_re.replace_all(raw, "").trim().to_string())
+}
+
+fn extract_canonical(input: &str) -> Option<String> {
+    let canon_re =
+        Regex::new(r#"(?is)<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["'][^>]*>"#)
+            .ok()?;
+    let caps = canon_re.captures(input)?;
+    Some(caps.get(1)?.as_str().trim().to_string())
+}
+
+fn extract_links(input: &str) -> Vec<Value> {
+    let link_re = Regex::new(r#"(?is)<a[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>"#).unwrap();
+    let tag_re = Regex::new(r"(?is)<[^>]+>").unwrap();
+    let mut out = Vec::new();
+    for caps in link_re.captures_iter(input).take(200) {
+        let href = caps.get(1).map(|m| m.as_str()).unwrap_or("").trim();
+        let raw_text = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        let text = tag_re.replace_all(raw_text, "");
+        if !href.is_empty() {
+            out.push(json!({
+                "text": text.trim(),
+                "href": href
+            }));
+        }
+    }
+    out
+}
+
+fn markdown_to_text(input: &str) -> String {
+    let code_block_re = Regex::new(r"(?s)```.*?```").unwrap();
+    let inline_code_re = Regex::new(r"`[^`]*`").unwrap();
+    let link_re = Regex::new(r"\[([^\]]+)\]\([^)]+\)").unwrap();
+    let emphasis_re = Regex::new(r"[*_~]+").unwrap();
+    let cleaned = code_block_re.replace_all(input, "");
+    let cleaned = inline_code_re.replace_all(&cleaned, "");
+    let cleaned = link_re.replace_all(&cleaned, "$1");
+    let cleaned = emphasis_re.replace_all(&cleaned, "");
+    let cleaned = cleaned.replace('#', "");
+    let whitespace_re = Regex::new(r"\n{3,}").unwrap();
+    let cleaned = whitespace_re.replace_all(&cleaned, "\n\n");
+    cleaned.trim().to_string()
+}
+
+struct McpDebugTool;
+#[async_trait]
+impl Tool for McpDebugTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "mcp_debug".to_string(),
+            description: "Call an MCP tool and return the raw response".to_string(),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "url":{"type":"string"},
+                    "tool":{"type":"string"},
+                    "args":{"type":"object"},
+                    "headers":{"type":"object"},
+                    "timeout_ms":{"type":"integer"},
+                    "max_bytes":{"type":"integer"}
+                }
+            }),
+        }
+    }
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let url = args["url"].as_str().unwrap_or("").trim();
+        let tool = args["tool"].as_str().unwrap_or("").trim();
+        if url.is_empty() || tool.is_empty() {
+            return Ok(ToolResult {
+                output: "url and tool are required".to_string(),
+                metadata: json!({"url": url, "tool": tool}),
+            });
+        }
+        let timeout_ms = args["timeout_ms"]
+            .as_u64()
+            .unwrap_or(15_000)
+            .clamp(1_000, 120_000);
+        let max_bytes = args["max_bytes"].as_u64().unwrap_or(200_000).min(5_000_000) as usize;
+        let request_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
+
+        #[derive(serde::Serialize)]
+        struct McpCallRequest {
+            jsonrpc: String,
+            id: u32,
+            method: String,
+            params: McpCallParams,
+        }
+
+        #[derive(serde::Serialize)]
+        struct McpCallParams {
+            name: String,
+            arguments: Value,
+        }
+
+        let request = McpCallRequest {
+            jsonrpc: "2.0".to_string(),
+            id: 1,
+            method: "tools/call".to_string(),
+            params: McpCallParams {
+                name: tool.to_string(),
+                arguments: request_args,
+            },
+        };
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .build()?;
+
+        let mut builder = client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+
+        if let Some(headers) = args.get("headers").and_then(|v| v.as_object()) {
+            for (key, value) in headers {
+                if let Some(value) = value.as_str() {
+                    builder = builder.header(key, value);
+                }
+            }
+        }
+
+        let res = builder.json(&request).send().await?;
+        let status = res.status().as_u16();
+
+        let mut response_headers = serde_json::Map::new();
+        for (key, value) in res.headers().iter() {
+            if let Ok(value) = value.to_str() {
+                response_headers.insert(key.to_string(), Value::String(value.to_string()));
+            }
+        }
+
+        let mut stream = res.bytes_stream();
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut truncated = false;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if buffer.len() + chunk.len() > max_bytes {
+                let remaining = max_bytes.saturating_sub(buffer.len());
+                buffer.extend_from_slice(&chunk[..remaining]);
+                truncated = true;
+                break;
+            }
+            buffer.extend_from_slice(&chunk);
+        }
+
+        let body = String::from_utf8_lossy(&buffer).to_string();
+        let output = json!({
+            "status": status,
+            "headers": response_headers,
+            "body": body,
+            "truncated": truncated,
+            "bytes": buffer.len()
+        });
+
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&output)?,
+            metadata: json!({
+                "url": url,
+                "tool": tool,
+                "timeout_ms": timeout_ms,
+                "max_bytes": max_bytes
+            }),
+        })
+    }
+}
+
 struct WebSearchTool;
 #[async_trait]
 impl Tool for WebSearchTool {
@@ -444,20 +772,21 @@ impl Tool for WebSearchTool {
                 "properties": {
                     "query": { "type": "string" },
                     "limit": { "type": "integer" }
-                }
+                },
+                "required": ["query"]
             }),
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
-        let query = args["query"].as_str().unwrap_or("").trim();
+        let query = extract_websearch_query(&args).unwrap_or_default();
         if query.is_empty() {
             tracing::warn!("WebSearchTool missing query. Args: {}", args);
             return Ok(ToolResult {
                 output: format!("missing query. Received args: {}", args),
-                metadata: json!({"count": 0}),
+                metadata: json!({"count": 0, "error": "missing_query"}),
             });
         }
-        let num_results = args["limit"].as_u64().map(|v| v.clamp(1, 10)).unwrap_or(8);
+        let num_results = extract_websearch_limit(&args).unwrap_or(8);
 
         #[derive(serde::Serialize)]
         struct McpSearchRequest {
@@ -568,6 +897,66 @@ impl Tool for WebSearchTool {
             metadata: json!({"query": query}),
         })
     }
+}
+
+fn extract_websearch_query(args: &Value) -> Option<String> {
+    // Direct keys first.
+    const QUERY_KEYS: [&str; 5] = ["query", "q", "search_query", "searchQuery", "keywords"];
+    for key in QUERY_KEYS {
+        if let Some(query) = args.get(key).and_then(|v| v.as_str()) {
+            let trimmed = query.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    // Some tool-call envelopes nest args.
+    for container in ["arguments", "args", "input", "params"] {
+        if let Some(obj) = args.get(container) {
+            for key in QUERY_KEYS {
+                if let Some(query) = obj.get(key).and_then(|v| v.as_str()) {
+                    let trimmed = query.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Last resort: plain string args.
+    args.as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
+fn extract_websearch_limit(args: &Value) -> Option<u64> {
+    let mut read_limit = |value: &Value| value.as_u64().map(|v| v.clamp(1, 10));
+
+    if let Some(limit) = args
+        .get("limit")
+        .and_then(&mut read_limit)
+        .or_else(|| args.get("numResults").and_then(&mut read_limit))
+        .or_else(|| args.get("num_results").and_then(&mut read_limit))
+    {
+        return Some(limit);
+    }
+
+    for container in ["arguments", "args", "input", "params"] {
+        if let Some(obj) = args.get(container) {
+            if let Some(limit) = obj
+                .get("limit")
+                .and_then(&mut read_limit)
+                .or_else(|| obj.get("numResults").and_then(&mut read_limit))
+                .or_else(|| obj.get("num_results").and_then(&mut read_limit))
+            {
+                return Some(limit);
+            }
+        }
+    }
+    None
 }
 
 struct CodeSearchTool;
@@ -1030,6 +1419,43 @@ mod tests {
             unique.len(),
             schemas.len(),
             "tool schemas must be unique by name"
+        );
+    }
+
+    #[test]
+    fn websearch_query_extraction_accepts_aliases_and_nested_shapes() {
+        let direct = json!({"query":"meaning of life"});
+        assert_eq!(
+            extract_websearch_query(&direct).as_deref(),
+            Some("meaning of life")
+        );
+
+        let alias = json!({"q":"hello"});
+        assert_eq!(extract_websearch_query(&alias).as_deref(), Some("hello"));
+
+        let nested = json!({"arguments":{"search_query":"rust tokio"}});
+        assert_eq!(
+            extract_websearch_query(&nested).as_deref(),
+            Some("rust tokio")
+        );
+
+        let as_string = json!("find docs");
+        assert_eq!(
+            extract_websearch_query(&as_string).as_deref(),
+            Some("find docs")
+        );
+    }
+
+    #[test]
+    fn websearch_limit_extraction_clamps_and_reads_nested_fields() {
+        assert_eq!(extract_websearch_limit(&json!({"limit": 100})), Some(10));
+        assert_eq!(
+            extract_websearch_limit(&json!({"arguments":{"numResults": 0}})),
+            Some(1)
+        );
+        assert_eq!(
+            extract_websearch_limit(&json!({"input":{"num_results": 6}})),
+            Some(6)
         );
     }
 }

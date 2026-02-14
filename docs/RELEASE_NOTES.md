@@ -2,34 +2,27 @@
 
 ## Highlights
 
-- **Major-version break for runtime API naming**: Hard-renamed legacy `send_message_streaming` naming to split-semantics names aligned with Session-linear execution.
-- **Desktop recovery contract coverage**: Added dedicated sidecar tests for reconnect recovery via `GET /session/{id}/run`.
-- **Conflict and cancel-by-runID coverage**: Added explicit tests for `409` conflict parsing (`retryAfterMs`, `attachEventStream`) and client cancel-by-runID flows for desktop + CLI.
-- **Dual-license rollout for Rust SDK/runtime**: Rust SDK and runtime packages are now `MIT OR Apache-2.0` for broader adoption and clearer patent grant coverage.
-- **App/web licensing unchanged**: This pass does not change desktop/web app licensing scope.
+- **Webpage → Markdown extraction**: `webfetch_document` converts HTML into clean Markdown with link extraction and size stats.
+- **Tool debugging via CLI**: `tandem-engine tool --json` runs tools directly, and `mcp_debug` returns raw MCP responses for parser validation.
+- **Default web tools**: `websearch` (MCP-backed) and `webfetch_document` are now available in default modes with approval gating.
 
 ## Complete Feature List
 
-### Naming and Interfaces
+### Tools
 
-- Renamed server append handler to `post_session_message_append`.
-- Renamed Tauri command `send_message_streaming` to `send_message_and_start_run`.
-- Renamed frontend bridge export `sendMessageStreaming` to `sendMessageAndStartRun`.
-- Renamed sidecar methods to explicit split semantics:
-  - `append_message_and_start_run`
-  - `append_message_and_start_run_with_context`
+- Added `webfetch_document` for HTML → Markdown conversion, metadata/link extraction, and size stats.
+- Added `mcp_debug` to capture raw MCP responses (status, headers, body, truncation).
+- Added `tandem-engine tool --json` for direct CLI tool execution.
+- Improved MCP tool calls to accept `text/event-stream` responses.
 
-### Tests
+### Modes and Permissions
 
-- Added sidecar tests:
-  - `test_parse_prompt_async_response_409_includes_retry_and_attach`
-  - `test_parse_prompt_async_response_202_parses_run_payload`
-  - `recover_active_run_attach_stream_uses_get_run_endpoint`
-  - `cancel_run_by_id_posts_expected_endpoint`
-  - `cancel_run_by_id_handles_non_active_run`
-- Added `tandem-tui` client tests:
-  - `cancel_run_by_id_posts_expected_endpoint`
-  - `cancel_run_by_id_returns_false_for_non_active_run`
+- Default mode presets now include `websearch` and `webfetch_document`.
+- Added permission rule support for `webfetch_document`.
+
+### Docs
+
+- Expanded `ENGINE_TESTING.md` with tool testing examples, size savings, and Windows quickstart.
 
 ---
 

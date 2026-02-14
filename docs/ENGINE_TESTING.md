@@ -6,6 +6,19 @@ This guide covers:
 - how to run automated tests
 - how to run the end-to-end smoke/runtime proof flow on Windows, macOS, and Linux
 
+## Windows quickstart (engine + tauri dev)
+
+From `tandem/`:
+
+```powershell
+pnpm install
+pnpm engine:stop:windows
+cargo build -p tandem-engine
+New-Item -ItemType Directory -Force -Path .\src-tauri\binaries | Out-Null
+Copy-Item .\target\debug\tandem-engine.exe .\src-tauri\binaries\tandem-engine.exe -Force
+pnpm tauri dev
+```
+
 ## Quick commands
 
 From `tandem/`:
@@ -29,6 +42,49 @@ State directory resolution order:
 1. `--state-dir`
 2. `TANDEM_STATE_DIR`
 3. canonical shared storage data dir (`.../tandem/data`)
+
+## Tool testing (CLI)
+
+Use the `tool` subcommand to invoke built-in tools directly with JSON input.
+`webfetch_document` is especially useful because it converts noisy HTML into clean Markdown,
+extracts links + metadata, and reports size reductions. It should work against any public
+HTTP/HTTPS webpage (subject to site limits, auth, or anti-bot protections).
+
+The Markdown output is returned inline on stdout as JSON in the `output` field:
+
+- `output.markdown` holds the Markdown
+- `output.text` holds the plain-text fallback
+- `output.stats` includes raw vs Markdown size
+
+Size savings example (proven from the Frumu.ai run above):
+
+- raw chars: 36,141
+- markdown chars: 7,292
+- reduction: 79.82%
+- bytes in: 36,188
+- bytes out: 7,292
+
+### Windows (PowerShell)
+
+```powershell
+@'
+{"tool":"webfetch_document","args":{"url":"https://frumu.ai","return":"both","mode":"auto"}}
+'@ | cargo run -p tandem-engine -- tool --json -
+```
+
+```powershell
+@'
+{"tool":"mcp_debug","args":{"url":"https://mcp.exa.ai/mcp","tool":"web_search_exa","args":{"query":"tandem engine","numResults":1}}}
+'@ | cargo run -p tandem-engine -- tool --json -
+```
+
+### macOS/Linux (bash)
+
+```bash
+cat << 'JSON' | cargo run -p tandem-engine -- tool --json -
+{"tool":"webfetch_document","args":{"url":"https://frumu.ai","return":"both","mode":"auto"}}
+JSON
+```
 
 ## Automated test layers
 
@@ -134,18 +190,6 @@ Tauri dev must be able to find the `tandem-engine` sidecar binary in a dev looku
 Use the binary built in `target/` and copy it into `src-tauri/binaries/`.
 
 Important: the filename is the same (`tandem-engine` or `tandem-engine.exe`), but the directories are different.
-
-### Windows (PowerShell)
-
-From `tandem/`:
-
-```powershell
-pnpm engine:stop:windows
-cargo build -p tandem-engine
-New-Item -ItemType Directory -Force -Path .\src-tauri\binaries | Out-Null
-Copy-Item .\target\debug\tandem-engine.exe .\src-tauri\binaries\tandem-engine.exe -Force
-pnpm tauri dev
-```
 
 ## Shared Engine Mode (Desktop + TUI together)
 

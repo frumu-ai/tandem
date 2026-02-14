@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-14
+
+### Added
+
+- **Web Markdown Extraction**: Added `webfetch_document` to convert HTML into clean Markdown with links, metadata, and size stats.
+- **Tool Debugging**: Added `mcp_debug` to capture raw MCP responses (status, headers, body, truncation).
+- **CLI Tool Runner**: Added `tandem-engine tool --json` to invoke tools directly from the engine binary.
+
+### Changed
+
+- **Web Tool Defaults**: Default modes now include `websearch` and `webfetch_document` (approval gated).
+- **Tool Permissions**: Added permission support for `webfetch_document` in mode rules.
+- **MCP Accept Header**: MCP calls now accept `text/event-stream` responses for SSE endpoints.
+
+### Docs
+
+- **Engine Testing Guide**: Added tool testing workflows, size savings example, and Windows quickstart for tauri dev.
+
 ## [0.2.25] - 2026-02-12
 
 ### Added
@@ -610,7 +628,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.2.25...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/frumu-ai/tandem/compare/v0.2.25...v0.3.0
 [0.2.25]: https://github.com/frumu-ai/tandem/compare/v0.2.24...v0.2.25
 [0.2.24]: https://github.com/frumu-ai/tandem/compare/v0.2.23...v0.2.24
 [0.2.23]: https://github.com/frumu-ai/tandem/compare/v0.2.22...v0.2.23

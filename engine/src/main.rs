@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use std::{fs, io::Read};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -45,6 +46,12 @@ enum Command {
         prompt: String,
     },
     Chat,
+    Tool {
+        #[arg(long)]
+        json: String,
+        #[arg(long)]
+        state_dir: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -136,6 +143,29 @@ async fn main() -> anyhow::Result<()> {
             let _state = build_runtime(&resolve_state_dir(None), None).await?;
             println!("Interactive chat mode is planned; use `serve` for now.");
         }
+        Command::Tool { json, state_dir } => {
+            let state_dir = resolve_state_dir(state_dir);
+            let state = build_runtime(&state_dir, None).await?;
+            let payload = read_tool_json(&json)?;
+            let tool = payload
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args = payload
+                .get("args")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            if tool.is_empty() {
+                anyhow::bail!("tool is required in input json");
+            }
+            let result = state.tools.execute(&tool, args).await?;
+            let output = serde_json::json!({
+                "output": result.output,
+                "metadata": result.metadata
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
     }
 
     Ok(())
@@ -153,6 +183,19 @@ fn resolve_state_dir(flag: Option<String>) -> PathBuf {
     resolve_shared_paths()
         .map(|p| p.engine_state_dir)
         .unwrap_or_else(|_| PathBuf::from(".tandem"))
+}
+
+fn read_tool_json(input: &str) -> anyhow::Result<serde_json::Value> {
+    if input.trim() == "-" {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        return Ok(serde_json::from_str(&buf)?);
+    }
+    if let Some(path) = input.strip_prefix('@') {
+        let raw = fs::read_to_string(path)?;
+        return Ok(serde_json::from_str(&raw)?);
+    }
+    Ok(serde_json::from_str(input)?)
 }
 
 fn log_startup_paths(state_dir: &PathBuf, addr: &SocketAddr, startup_attempt_id: &str) {
