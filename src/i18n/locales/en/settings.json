@@ -1,0 +1,86 @@
+{
+  "title": "Settings",
+  "sections": {
+    "providers": "Providers",
+    "projects": "Projects",
+    "memory": "Memory",
+    "theme": "Theme",
+    "language": "Language",
+    "advanced": "Advanced"
+  },
+  "providers": {
+    "title": "LLM Providers",
+    "description": "Configure your AI model providers",
+    "apiKey": "API Key",
+    "apiKeyPlaceholder": "Enter your API key",
+    "endpoint": "Endpoint",
+    "endpointPlaceholder": "Enter API endpoint URL",
+    "model": "Model",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "default": "Default",
+    "testConnection": "Test Connection",
+    "connectionSuccess": "Connection successful",
+    "connectionFailed": "Connection failed",
+    "saveKey": "Save Key",
+    "removeKey": "Remove Key",
+    "hasKey": "Key configured",
+    "noKey": "No key configured"
+  },
+  "projects": {
+    "title": "Project Management",
+    "description": "Manage your workspaces and projects",
+    "addProject": "Add Project",
+    "selectFolder": "Select Folder",
+    "projectName": "Project Name",
+    "projectPath": "Project Path",
+    "activeProject": "Active Project",
+    "switchProject": "Switch Project",
+    "removeProject": "Remove Project",
+    "removeConfirm": "Are you sure you want to remove this project?"
+  },
+  "memory": {
+    "title": "Memory Settings",
+    "description": "Configure vector memory and indexing",
+    "autoIndex": "Auto Index",
+    "autoIndexDescription": "Automatically index files when project loads",
+    "indexNow": "Index Now",
+    "clearIndex": "Clear Index",
+    "indexStatus": "Index Status",
+    "indexed": "Indexed",
+    "notIndexed": "Not Indexed",
+    "indexing": "Indexing...",
+    "filesIndexed": "{{count}} file indexed",
+    "filesIndexed_plural": "{{count}} files indexed",
+    "chunksStored": "{{count}} chunk stored",
+    "chunksStored_plural": "{{count}} chunks stored"
+  },
+  "theme": {
+    "title": "Theme Settings",
+    "description": "Customize the app appearance",
+    "selectTheme": "Select Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "auto": "Auto",
+    "customBackground": "Custom Background",
+    "uploadBackground": "Upload Background",
+    "removeBackground": "Remove Background"
+  },
+  "language": {
+    "title": "Language Settings",
+    "description": "Choose your preferred language",
+    "current": "Current Language",
+    "available": "Available Languages",
+    "selectLanguage": "Select Language",
+    "restart": "Restart required to apply language changes"
+  },
+  "advanced": {
+    "title": "Advanced Settings",
+    "description": "Advanced configuration options",
+    "developerMode": "Developer Mode",
+    "debugLogs": "Debug Logs",
+    "clearCache": "Clear Cache",
+    "resetSettings": "Reset Settings",
+    "resetConfirm": "Are you sure you want to reset all settings?"
+  }
+}

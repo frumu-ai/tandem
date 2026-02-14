@@ -6,6 +6,7 @@ import "@fontsource/geist-sans/900.css";
 import "@fontsource-variable/geist-mono";
 import App from "./App";
 import "./index.css";
+import "./i18n"; // Initialize i18n
 import { ThemeProvider } from "@/hooks/useTheme";
 import { UpdaterProvider } from "@/hooks/useUpdater";
 import { MemoryIndexingProvider } from "@/contexts/MemoryIndexingContext";

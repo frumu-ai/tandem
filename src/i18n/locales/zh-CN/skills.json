@@ -1,0 +1,62 @@
+{
+  "title": "技能",
+  "description": "管理 AI 技能和能力",
+  "tabs": {
+    "installed": "已安装",
+    "templates": "模板",
+    "import": "导入"
+  },
+  "installed": {
+    "title": "已安装的技能",
+    "empty": "尚未安装任何技能",
+    "scope": {
+      "global": "全局",
+      "workspace": "工作区"
+    }
+  },
+  "templates": {
+    "title": "技能模板",
+    "description": "快速安装启动技能",
+    "install": "安装",
+    "installed": "已安装",
+    "installing": "安装中...",
+    "requires": "需要",
+    "category": "分类"
+  },
+  "import": {
+    "title": "导入技能",
+    "description": "从文件或 URL 导入技能",
+    "fromFile": "从文件",
+    "fromUrl": "从 URL",
+    "selectFile": "选择 SKILL.md 或 ZIP 文件",
+    "enterUrl": "输入技能 URL",
+    "importing": "导入中...",
+    "success": "技能导入成功",
+    "error": "导入技能失败"
+  },
+  "actions": {
+    "install": "安装",
+    "uninstall": "卸载",
+    "edit": "编辑",
+    "delete": "删除",
+    "export": "导出",
+    "duplicate": "复制"
+  },
+  "conflicts": {
+    "title": "冲突解决",
+    "description": "已存在同名技能",
+    "skip": "跳过",
+    "overwrite": "覆盖",
+    "rename": "重命名"
+  },
+  "metadata": {
+    "name": "名称",
+    "description": "描述",
+    "author": "作者",
+    "version": "版本",
+    "category": "分类",
+    "tags": "标签",
+    "license": "许可证",
+    "compatibility": "兼容性"
+  }
+}

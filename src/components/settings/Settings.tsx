@@ -23,6 +23,7 @@ import { Switch } from "@/components/ui/Switch";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
 import { MemoryStats } from "./MemoryStats";
+import { LanguageSettings } from "./LanguageSettings";
 
 import { useUpdater } from "@/hooks/useUpdater";
 import {
@@ -1116,7 +1117,9 @@ export function Settings({
           )}
         </div>
 
-        {/* Memory Stats */}
+        {/* Language Settings */}
+        <LanguageSettings />
+
         {/* Memory Stats */}
         <MemoryStats />
 

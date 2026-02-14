@@ -1,0 +1,84 @@
+{
+  "title": "设置",
+  "sections": {
+    "providers": "提供商",
+    "projects": "项目",
+    "memory": "记忆",
+    "theme": "主题",
+    "language": "语言",
+    "advanced": "高级"
+  },
+  "providers": {
+    "title": "LLM 提供商",
+    "description": "配置您的 AI 模型提供商",
+    "apiKey": "API 密钥",
+    "apiKeyPlaceholder": "输入您的 API 密钥",
+    "endpoint": "端点",
+    "endpointPlaceholder": "输入 API 端点 URL",
+    "model": "模型",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "default": "默认",
+    "testConnection": "测试连接",
+    "connectionSuccess": "连接成功",
+    "connectionFailed": "连接失败",
+    "saveKey": "保存密钥",
+    "removeKey": "移除密钥",
+    "hasKey": "已配置密钥",
+    "noKey": "未配置密钥"
+  },
+  "projects": {
+    "title": "项目管理",
+    "description": "管理您的工作区和项目",
+    "addProject": "添加项目",
+    "selectFolder": "选择文件夹",
+    "projectName": "项目名称",
+    "projectPath": "项目路径",
+    "activeProject": "当前项目",
+    "switchProject": "切换项目",
+    "removeProject": "移除项目",
+    "removeConfirm": "确定要移除此项目吗？"
+  },
+  "memory": {
+    "title": "记忆设置",
+    "description": "配置向量记忆和索引",
+    "autoIndex": "自动索引",
+    "autoIndexDescription": "项目加载时自动索引文件",
+    "indexNow": "立即索引",
+    "clearIndex": "清除索引",
+    "indexStatus": "索引状态",
+    "indexed": "已索引",
+    "notIndexed": "未索引",
+    "indexing": "索引中...",
+    "filesIndexed": "已索引 {{count}} 个文件",
+    "chunksStored": "存储了 {{count}} 个片段"
+  },
+  "theme": {
+    "title": "主题设置",
+    "description": "自定义应用外观",
+    "selectTheme": "选择主题",
+    "light": "浅色",
+    "dark": "深色",
+    "auto": "跟随系统",
+    "customBackground": "自定义背景",
+    "uploadBackground": "上传背景图片",
+    "removeBackground": "移除背景"
+  },
+  "language": {
+    "title": "语言设置",
+    "description": "选择您的首选语言",
+    "current": "当前语言",
+    "available": "可用语言",
+    "selectLanguage": "选择语言",
+    "restart": "需要重启以应用语言更改"
+  },
+  "advanced": {
+    "title": "高级设置",
+    "description": "高级配置选项",
+    "developerMode": "开发者模式",
+    "debugLogs": "调试日志",
+    "clearCache": "清除缓存",
+    "resetSettings": "重置设置",
+    "resetConfirm": "确定要重置所有设置吗？"
+  }
+}
