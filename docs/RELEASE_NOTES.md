@@ -1,3 +1,44 @@
+# Tandem v0.2.26 Release Notes
+
+## Highlights
+
+- **Internationalization (i18n) foundation**: Added app-wide i18n initialization and locale resources for English and Simplified Chinese.
+- **Language settings in-app**: Added a dedicated Settings section for language selection with persisted preference support.
+- **Editable provider base URLs**: Provider cards now support editing and saving custom base URLs for configured providers.
+- **Endpoint reset UX**: Added quick reset-to-default endpoint controls to make experimenting with custom endpoints safer.
+- **Community contribution**: Thanks [@iridite](https://github.com/iridite) for the full v0.2.26 contribution set, including i18n and provider base URL improvements.
+- **Version Sync**: Bumped app metadata to `0.2.26`.
+
+## Complete Feature List
+
+### Localization
+
+- Added i18n runtime setup and namespace-based locale resources.
+- Added English locale JSON bundles for:
+  - `common`
+  - `chat`
+  - `settings`
+  - `skills`
+  - `errors`
+- Added Simplified Chinese locale JSON bundles for:
+  - `common`
+  - `chat`
+  - `settings`
+  - `skills`
+  - `errors`
+- Added a Settings `Language` section for selecting `English` or `简体中文`.
+- Added language setting persistence behavior for user-selected locale.
+- Added `docs/I18N_GUIDE.md` for implementation and usage guidance.
+
+### Provider Settings
+
+- Added editable `Base URL` controls in provider settings cards.
+- Added endpoint save/cancel flow and keyboard shortcuts (`Enter` to save, `Escape` to cancel).
+- Added endpoint revert-to-default action for providers with known default endpoints.
+- Wired endpoint edits to persisted providers config updates.
+
+---
+
 # Tandem v0.2.25 Release Notes
 
 ## Highlights

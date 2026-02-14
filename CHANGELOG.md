@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.26] - 2026-02-14
+
+### Added
+
+- **Internationalization (i18n) Foundation**: Added i18n initialization, translation namespaces, and locale bundles for English and Simplified Chinese.
+- **Language Settings UI**: Added a dedicated language selection section in Settings with persisted language preference.
+- **I18N Documentation**: Added `docs/I18N_GUIDE.md` for localization architecture and usage.
+- **Provider Base URL Editing**: Added editable provider `Base URL` controls in Settings cards with save/cancel flow and keyboard support.
+- **Endpoint Reset Control**: Added reset-to-default endpoint action for providers to quickly recover known defaults.
+
+### Changed
+
+- **Provider Endpoint Source of Truth**: Provider cards now render endpoint values from persisted provider config rather than static literals.
+- **Version Metadata Sync**: Bumped version to `0.2.26` across `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`.
+- **Credits**: Thanks [@iridite](https://github.com/iridite) for the full `0.2.26` contribution set, including i18n and provider base URL improvements.
+
 ## [0.2.25] - 2026-02-12
 
 ### Added
