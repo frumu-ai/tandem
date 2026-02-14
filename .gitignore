@@ -57,6 +57,9 @@ coverage/
 # Tauri
 src-tauri/gen/
 
+# Tandem
+.tandem/
+
 # TypeScript
 *.tsbuildinfo
 
