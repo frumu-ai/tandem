@@ -98,6 +98,8 @@ static KNOWN_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "list",
         "read",
         "search",
+        "grep",
+        "codesearch",
         "glob",
         "write",
         "write_file",
@@ -114,9 +116,17 @@ static KNOWN_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "run_command",
         "websearch",
         "webfetch",
+        "webfetch_document",
+        "todo_write",
         "todowrite",
         "new_task",
         "update_todo_list",
+        "task",
+        "question",
+        "skill",
+        "apply_patch",
+        "batch",
+        "lsp",
         "switch_mode",
         "run_slash_command",
     ])
@@ -536,55 +546,14 @@ fn mode_has_any_tool(mode: &ResolvedMode, tools: &[&str]) -> bool {
 }
 
 pub fn build_permission_rules(mode: &ResolvedMode) -> Vec<PermissionRule> {
-    let mut rules = Vec::new();
-    if mode_has_any_tool(mode, &["ls", "list", "glob", "search"]) {
-        rules.push(PermissionRule {
-            permission: "ls".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    if mode_has_any_tool(mode, &["read"]) {
-        rules.push(PermissionRule {
-            permission: "read".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    if mode_has_any_tool(mode, &["todowrite", "new_task", "update_todo_list"]) {
-        rules.push(PermissionRule {
-            permission: "todowrite".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-        rules.push(PermissionRule {
-            permission: "todo_write".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    if mode_has_any_tool(mode, &["websearch"]) {
-        rules.push(PermissionRule {
-            permission: "websearch".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    if mode_has_any_tool(mode, &["webfetch", "webfetch_document"]) {
-        rules.push(PermissionRule {
-            permission: "webfetch".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    if mode_has_any_tool(mode, &["webfetch_document"]) {
-        rules.push(PermissionRule {
-            permission: "webfetch_document".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    rules
+    tandem_core::build_mode_permission_rules(mode.allowed_tools.as_deref())
+        .into_iter()
+        .map(|rule| PermissionRule {
+            permission: rule.permission,
+            pattern: rule.pattern,
+            action: rule.action,
+        })
+        .collect()
 }
 
 fn scope_path(app: &AppHandle, workspace: Option<&Path>, scope: ModeScope) -> Result<PathBuf> {
