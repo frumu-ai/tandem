@@ -4,6 +4,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use tandem_types::{CreateSessionRequest, ModelSpec};
 use tandem_wire::{WireProviderEntry, WireSessionMessage};
 
@@ -84,6 +85,79 @@ pub struct SendMessageRequest {
     pub agent: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct PermissionRequest {
+    pub id: String,
+    #[serde(rename = "sessionID", default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    #[serde(rename = "argsSource", default)]
+    pub args_source: Option<String>,
+    #[serde(rename = "argsIntegrity", default)]
+    pub args_integrity: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct PermissionSnapshot {
+    #[serde(default)]
+    pub requests: Vec<PermissionRequest>,
+    #[serde(default)]
+    pub rules: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct QuestionChoice {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct QuestionInfo {
+    #[serde(default)]
+    pub header: String,
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<QuestionChoice>,
+    #[serde(default)]
+    pub multiple: Option<bool>,
+    #[serde(default)]
+    pub custom: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct QuestionToolRef {
+    #[serde(rename = "callID", default)]
+    pub call_id: Option<String>,
+    #[serde(rename = "messageID", default)]
+    pub message_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct QuestionRequest {
+    pub id: String,
+    #[serde(rename = "sessionID", default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub questions: Vec<QuestionInfo>,
+    #[serde(default)]
+    pub tool: Option<QuestionToolRef>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamRequestEvent {
+    PermissionAsked(PermissionRequest),
+    PermissionReplied { request_id: String, reply: String },
+    QuestionAsked(QuestionRequest),
+}
+
 #[derive(Debug, Clone)]
 pub struct PromptRunResult {
     pub messages: Vec<WireSessionMessage>,
@@ -98,6 +172,19 @@ pub struct StreamEventEnvelope {
     pub agent_id: Option<String>,
     pub channel: Option<String>,
     pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptConflictResponse {
+    code: Option<String>,
+    #[serde(rename = "activeRun")]
+    active_run: Option<ActiveRunRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActiveRunRef {
+    #[serde(rename = "runID")]
+    run_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -230,7 +317,7 @@ impl EngineClient {
                 .and_then(|p| normalize_workspace_path(&p)),
             model: None,
             provider: None,
-            permission: None,
+            permission: Some(default_tui_permission_rules()),
         };
 
         let resp = self.client.post(&url).json(&req).send().await?;
@@ -243,6 +330,13 @@ impl EngineClient {
         let resp = self.client.get(&url).send().await?;
         let session = resp.json::<Session>().await?;
         Ok(session)
+    }
+
+    pub async fn get_session_messages(&self, session_id: &str) -> Result<Vec<WireSessionMessage>> {
+        let url = format!("{}/session/{}/message", self.base_url, session_id);
+        let resp = self.client.get(&url).send().await?;
+        let messages = resp.json::<Vec<WireSessionMessage>>().await?;
+        Ok(messages)
     }
 
     pub async fn update_session(
@@ -290,6 +384,51 @@ impl EngineClient {
         let url = format!("{}/auth/{}", self.base_url, provider_id);
         self.client.delete(&url).send().await?;
         Ok(())
+    }
+
+    pub async fn list_permissions(&self) -> Result<PermissionSnapshot> {
+        let url = format!("{}/permission", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        let snapshot = resp.json::<PermissionSnapshot>().await?;
+        Ok(snapshot)
+    }
+
+    pub async fn reply_permission(&self, id: &str, reply: &str) -> Result<bool> {
+        let url = format!("{}/permission/{}/reply", self.base_url, id);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "reply": reply }))
+            .send()
+            .await?;
+        let body = resp.json::<serde_json::Value>().await?;
+        Ok(body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+    }
+
+    pub async fn list_questions(&self) -> Result<Vec<QuestionRequest>> {
+        let url = format!("{}/question", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        let snapshot = resp.json::<Vec<QuestionRequest>>().await?;
+        Ok(snapshot)
+    }
+
+    pub async fn reply_question(&self, id: &str, answers: Vec<Vec<String>>) -> Result<bool> {
+        let url = format!("{}/question/{}/reply", self.base_url, id);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "answers": answers }))
+            .send()
+            .await?;
+        let body = resp.json::<serde_json::Value>().await?;
+        Ok(body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+    }
+
+    pub async fn reject_question(&self, id: &str) -> Result<bool> {
+        let url = format!("{}/question/{}/reject", self.base_url, id);
+        let resp = self.client.post(&url).send().await?;
+        let body = resp.json::<serde_json::Value>().await?;
+        Ok(body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
     }
 
     pub async fn send_prompt(
@@ -363,7 +502,33 @@ impl EngineClient {
         if let Some(agent_id) = agent_id {
             prompt_req = prompt_req.header("x-tandem-agent-id", agent_id);
         }
-        let resp = prompt_req.json(&req).send().await?;
+        let mut resp = prompt_req.json(&req).send().await?;
+        if resp.status() == reqwest::StatusCode::CONFLICT {
+            let body = resp.text().await?;
+            let run_id = serde_json::from_str::<PromptConflictResponse>(&body)
+                .ok()
+                .and_then(|payload| {
+                    if payload.code.as_deref() == Some("SESSION_RUN_CONFLICT") {
+                        payload.active_run.and_then(|run| run.run_id)
+                    } else {
+                        None
+                    }
+                });
+            if let Some(run_id) = run_id {
+                let _ = self.cancel_run_by_id(session_id, &run_id).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let mut retry_req = self
+                    .client
+                    .post(&prompt_url)
+                    .header("Accept", "text/event-stream");
+                if let Some(agent_id) = agent_id {
+                    retry_req = retry_req.header("x-tandem-agent-id", agent_id);
+                }
+                resp = retry_req.json(&req).send().await?;
+            } else {
+                bail!("409 Conflict: {}", body);
+            }
+        }
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await?;
@@ -379,7 +544,9 @@ impl EngineClient {
             let mut stream = resp.bytes_stream();
             let mut streamed = false;
             let mut buffer = String::new();
-            while let Some(chunk) = stream.next().await {
+            while let Some(chunk) =
+                tokio::time::timeout(Duration::from_secs(90), stream.next()).await?
+            {
                 let chunk = chunk?;
                 let text = String::from_utf8_lossy(&chunk);
                 buffer.push_str(&text);
@@ -481,6 +648,19 @@ fn normalize_workspace_path(path: &PathBuf) -> Option<String> {
         absolute
     };
     Some(normalized.to_string_lossy().to_string())
+}
+
+fn default_tui_permission_rules() -> Vec<serde_json::Value> {
+    tandem_core::default_tui_permission_rules()
+        .into_iter()
+        .map(|rule| {
+            serde_json::json!({
+                "permission": rule.permission,
+                "pattern": rule.pattern,
+                "action": rule.action
+            })
+        })
+        .collect()
 }
 
 fn parse_sse_payload(buffer: &mut String) -> Option<serde_json::Value> {
@@ -585,6 +765,132 @@ pub fn extract_delta_text(payload: &serde_json::Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .filter(|s| !s.trim().is_empty())
+}
+
+pub fn extract_stream_activity(payload: &serde_json::Value) -> Option<String> {
+    let event_type = payload.get("type").and_then(|v| v.as_str())?;
+    let props = payload.get("properties")?;
+
+    match event_type {
+        "permission.asked" => {
+            let tool = props.get("tool").and_then(|v| v.as_str()).unwrap_or("tool");
+            let request_id = props
+                .get("requestID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            Some(format!(
+                "Waiting for permission: `{}` (request `{}`)",
+                tool, request_id
+            ))
+        }
+        "permission.replied" => {
+            let request_id = props
+                .get("requestID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let reply = props
+                .get("reply")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            Some(format!(
+                "Permission `{}` replied with `{}`.",
+                request_id, reply
+            ))
+        }
+        "question.asked" => Some("Agent is waiting for your input.".to_string()),
+        "message.part.updated" => {
+            let Some(part) = props.get("part") else {
+                return None;
+            };
+            let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if part_type != "tool" {
+                return None;
+            }
+            let tool = part
+                .get("tool")
+                .or_else(|| part.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool");
+            let status = part
+                .get("state")
+                .and_then(|s| s.get("status"))
+                .or_else(|| part.get("status"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match status {
+                "running" => Some(format!("Running tool `{}`...", tool)),
+                "pending" => Some(format!("Tool `{}` pending...", tool)),
+                "completed" | "done" => Some(format!("Tool `{}` completed.", tool)),
+                "failed" | "error" => Some(format!("Tool `{}` failed.", tool)),
+                "cancelled" | "canceled" => Some(format!("Tool `{}` cancelled.", tool)),
+                _ => Some(format!("Tool `{}` update.", tool)),
+            }
+        }
+        _ => None,
+    }
+}
+
+pub fn extract_stream_request(payload: &serde_json::Value) -> Option<StreamRequestEvent> {
+    let event_type = payload.get("type").and_then(|v| v.as_str())?;
+    let props = payload.get("properties")?.clone();
+
+    match event_type {
+        "permission.asked" => {
+            let request = serde_json::from_value::<PermissionRequest>(serde_json::json!({
+                "id": props
+                    .get("requestID")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+                "sessionID": props.get("sessionID").cloned().unwrap_or(serde_json::Value::Null),
+                "status": "pending",
+                "tool": props.get("tool").cloned().unwrap_or(serde_json::Value::Null),
+                "args": props.get("args").cloned().unwrap_or(serde_json::Value::Null),
+                "argsSource": props
+                    .get("argsSource")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                "argsIntegrity": props
+                    .get("argsIntegrity")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                "query": props.get("query").cloned().unwrap_or(serde_json::Value::Null),
+            }))
+            .ok()?;
+            if request.id.trim().is_empty() {
+                return None;
+            }
+            Some(StreamRequestEvent::PermissionAsked(request))
+        }
+        "permission.replied" => Some(StreamRequestEvent::PermissionReplied {
+            request_id: props
+                .get("requestID")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            reply: props
+                .get("reply")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        "question.asked" => {
+            let request = serde_json::from_value::<QuestionRequest>(serde_json::json!({
+                "id": props.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                "sessionID": props.get("sessionID").cloned().unwrap_or(serde_json::Value::Null),
+                "questions": props
+                    .get("questions")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([])),
+                "tool": props.get("tool").cloned().unwrap_or(serde_json::Value::Null),
+            }))
+            .ok()?;
+            if request.id.trim().is_empty() {
+                return None;
+            }
+            Some(StreamRequestEvent::QuestionAsked(request))
+        }
+        _ => None,
+    }
 }
 
 pub fn extract_stream_error(payload: &serde_json::Value) -> Option<String> {

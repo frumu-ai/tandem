@@ -11,6 +11,13 @@
 - **Transcript readability improvements**: long lines now wrap in the TUI flow renderer; added `/last_error` for quick full error recall.
 - **Working-state UX**: added active-agent spinner/status activity indicators in footer and grid pane titles.
 - **Windows dev docs fixes**: added explicit PowerShell equivalents for build/copy/tauri-dev steps and lock-file recovery guidance.
+- **Request center in TUI**: added approval/answer modal flow for pending permissions and questions (`Alt+R`, `/requests`) with keyboard-only controls.
+- **Permission context clarity**: approval modal now shows mode + tool intent and explains why a permission is needed (especially in Plan mode).
+- **Plan/question flow repair**: normalized `permission(tool=question)` events into answerable question flows and added custom-answer support with multiple-choice prompts.
+- **Startup/PIN polish**: fullscreen-centered PIN prompt, stricter digit-only PIN entry, and animated connecting screen that waits for full engine readiness before switching views.
+- **Shared permission defaults**: desktop and TUI now consume centralized permission rule defaults from `tandem-core`.
+- **TUI interaction polish**: moved grid toggle to `Alt+G`, increased scroll speed, and reduced in-transcript request noise in favor of status/request UI.
+- **Markdown renderer integration**: assistant transcript pipeline now preprocesses markdown via `tui-markdown`.
 
 ## Highlights
 

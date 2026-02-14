@@ -8,7 +8,10 @@ use ratatui::{
 
 pub mod components;
 pub mod matrix;
-use crate::app::{AgentStatus, App, AppState, ModalState, PinPromptMode, SetupStep, UiMode};
+use crate::app::{
+    AgentStatus, App, AppState, ChatMessage, ContentBlock, ModalState, PendingRequestKind,
+    PinPromptMode, SetupStep, UiMode,
+};
 use crate::ui::components::{flow::FlowList, task_list::TaskList};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -41,40 +44,12 @@ fn draw_pin_prompt(
     let matrix = app.matrix.layer(false);
     f.render_widget(matrix, f.area());
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(42),
-            Constraint::Length(3), // Input box
-            Constraint::Length(1), // Error msg
-            Constraint::Length(2), // Hint
-            Constraint::Percentage(38),
-        ])
-        .split(f.area());
-
-    let input_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(37),
-            Constraint::Length(26),
-            Constraint::Percentage(37),
-        ])
-        .split(chunks[1]);
-
-    let error_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Length(40),
-            Constraint::Percentage(30),
-        ])
-        .split(chunks[2]);
-
     let masked_input = if input.is_empty() {
         " ".to_string()
     } else {
-        input.chars().map(|_| '•').collect::<String>()
+        input.chars().map(|_| '*').collect::<String>()
     };
+
     let title = match mode {
         PinPromptMode::UnlockExisting => "Unlock PIN",
         PinPromptMode::CreateNew => "Create PIN",
@@ -86,26 +61,44 @@ fn draw_pin_prompt(
         PinPromptMode::ConfirmNew { .. } => "Re-enter the same PIN",
     };
 
+    let popup_h = if error.is_some() { 9 } else { 7 };
+    let popup_area = centered_fixed_rect(52, popup_h, f.area());
+    f.render_widget(Clear, popup_area);
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(title);
+    let inner = popup_block.inner(popup_area);
+    f.render_widget(popup_block, popup_area);
+
+    let mut rows = vec![Constraint::Length(3), Constraint::Length(1)];
+    if error.is_some() {
+        rows.push(Constraint::Length(1));
+    }
+    let content = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(rows)
+        .split(inner);
+
     let input_widget = Paragraph::new(masked_input)
         .style(Style::default().fg(Color::Yellow))
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title(title));
-
-    f.render_widget(input_widget, input_chunks[1]);
+        .alignment(Alignment::Center);
+    f.render_widget(input_widget, content[0]);
 
     if let Some(err) = error {
         let error_widget = Paragraph::new(err)
             .style(Style::default().fg(Color::Red))
             .alignment(Alignment::Center);
-        f.render_widget(error_widget, error_chunks[1]);
+        f.render_widget(error_widget, content[1]);
     }
 
     let hint_widget = Paragraph::new(hint)
         .style(Style::default().fg(Color::Gray))
         .alignment(Alignment::Center);
-    f.render_widget(hint_widget, chunks[3]);
+    let hint_idx = if error.is_some() { 2 } else { 1 };
+    f.render_widget(hint_widget, content[hint_idx]);
 }
-
 fn draw_main_menu(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -168,6 +161,9 @@ fn draw_chat(f: &mut Frame, app: &App) {
         ui_mode,
         grid_page,
         modal,
+        pending_requests,
+        request_cursor,
+        permission_choice,
         ..
     } = &app.state
     {
@@ -446,14 +442,46 @@ fn draw_chat(f: &mut Frame, app: &App) {
                 AgentStatus::Idle => "Idle".to_string(),
             })
             .unwrap_or_else(|| "Idle".to_string());
+        let context_chars = estimate_context_chars(messages);
+        let context_limit = resolve_context_limit(app);
+        let context_label = match context_limit {
+            Some(limit) if limit > 0 => {
+                let pct = ((context_chars as f64 / limit as f64) * 100.0).round() as i64;
+                format!("Ctx~{}%", pct.max(0))
+            }
+            _ => format!("Ctx~{}ch", context_chars),
+        };
+        let compacting_label = if matches!(
+            agents.get(*active_agent_index).map(|a| &a.status),
+            Some(AgentStatus::Running | AgentStatus::Streaming)
+        ) {
+            if let Some(limit) = context_limit {
+                if limit > 0 && context_chars.saturating_mul(100) >= (limit as usize * 90) {
+                    Some(format!("{} Compacting", spinner_frame(app.tick_count)))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let (active_req_count, background_req_count) = app.pending_request_counts();
         let status_text = format!(
-            " Tandem TUI | {} | {} | {} | {} | Active: {} ({}) ",
+            " Tandem TUI | {} | {} | {} | {} | Active: {} ({}) | {}{} | Req:{}/{} ",
             mode_str,
             provider_str,
             model_str,
             &session_id[..8.min(session_id.len())],
             active_label,
-            active_activity
+            active_activity,
+            context_label,
+            compacting_label
+                .map(|v| format!(" | {}", v))
+                .unwrap_or_default(),
+            active_req_count,
+            background_req_count
         );
         let status_widget = Paragraph::new(status_text)
             .style(
@@ -469,7 +497,7 @@ fn draw_chat(f: &mut Frame, app: &App) {
             let area = centered_rect(58, 34, f.area());
             f.render_widget(Clear, area);
             let text = match modal_state {
-                ModalState::Help => "Keys:\nTab/Shift+Tab switch agent\nAlt+1..9 jump agent\nCtrl+N new agent\nCtrl+W close agent\nCtrl+C cancel active run\nG toggle grid\nShift+Enter newline\nEsc close modal/input\nCtrl+X quit",
+                ModalState::Help => "Keys:\nF1 Help\nTab/Shift+Tab switch agent\nAlt+1..9 jump agent\nCtrl+N new agent\nCtrl+W close agent\nCtrl+C cancel active run\nAlt+G toggle grid\nAlt+R open request center\nAlt+S / Alt+B demo streams\nShift+Enter newline\nEsc close modal/input\nCtrl+X quit",
                 ModalState::ConfirmCloseAgent { target_agent_id } => {
                     if target_agent_id.is_empty() {
                         "Close active agent and discard draft? (Y/N)"
@@ -477,13 +505,160 @@ fn draw_chat(f: &mut Frame, app: &App) {
                         "Discard draft and close this agent? (Y/N)"
                     }
                 }
+                ModalState::RequestCenter => "Request center",
             };
-            let popup = Paragraph::new(text).wrap(Wrap { trim: true }).block(
-                Block::default()
-                    .title(" Modal ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow)),
-            );
+            let popup_block = Block::default()
+                .title(" Modal ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow));
+
+            let popup = if matches!(modal_state, ModalState::RequestCenter) {
+                if let Some(request) = pending_requests.get(*request_cursor) {
+                    if let PendingRequestKind::Permission(permission) = &request.kind {
+                        let args_preview = permission
+                            .args
+                            .as_ref()
+                            .map(|args| args.to_string())
+                            .unwrap_or_else(|| "{}".to_string());
+
+                        let choice_chip =
+                            |idx: usize, label: &str, active: usize| -> Span<'static> {
+                                if idx == active {
+                                    Span::styled(
+                                        format!(" {} ", label),
+                                        Style::default()
+                                            .fg(Color::Black)
+                                            .bg(Color::LightGreen)
+                                            .add_modifier(Modifier::BOLD),
+                                    )
+                                } else {
+                                    Span::styled(
+                                        format!(" {} ", label),
+                                        Style::default().fg(Color::Gray).bg(Color::DarkGray),
+                                    )
+                                }
+                            };
+
+                        let choice_line = Line::from(vec![
+                            choice_chip(0, "1 Allow Once", *permission_choice),
+                            Span::raw(" "),
+                            choice_chip(1, "2 Allow Always", *permission_choice),
+                            Span::raw(" "),
+                            choice_chip(2, "3 Deny", *permission_choice),
+                        ]);
+
+                        let mode_name = format!("{:?}", app.current_mode);
+                        let why = permission_reason(&permission.tool, &mode_name);
+                        let mut lines = vec![
+                            Line::from(format!(
+                                "Pending request {}/{}",
+                                request_cursor + 1,
+                                pending_requests.len()
+                            )),
+                            Line::from(format!(
+                                "Session: {} | Agent: {}",
+                                request.session_id, request.agent_id
+                            )),
+                            Line::from("Type: Permission"),
+                            Line::from(format!("Mode: {}", mode_name)),
+                            Line::from(format!("Tool: {}", permission.tool)),
+                            Line::from(format!("Request ID: {}", permission.id)),
+                            Line::from(format!("Args: {}", args_preview)),
+                            Line::from(format!("Why this permission: {}", why)),
+                        ];
+
+                        if permission.tool.eq_ignore_ascii_case("question") {
+                            let prompts = extract_permission_questions(permission.args.as_ref());
+                            if !prompts.is_empty() {
+                                lines.push(Line::from(""));
+                                lines.push(Line::from(format!(
+                                    "This will ask you {} question(s):",
+                                    prompts.len()
+                                )));
+                                for q in prompts.iter().take(4) {
+                                    lines.push(Line::from(format!("  - {}", q)));
+                                }
+                                if prompts.len() > 4 {
+                                    lines.push(Line::from("  - ..."));
+                                }
+                                lines.push(Line::from(
+                                    "Tip: choose `Allow Once` to continue and answer them.",
+                                ));
+                            }
+                        }
+
+                        lines.push(Line::from(""));
+                        lines.push(Line::from("Selected choice:"));
+                        lines.push(choice_line);
+                        lines.push(Line::from(""));
+                        lines.push(Line::from("Keys: Up/Down request, Left/Right choice, 1..3 quick choice, Enter confirm, R reject, Esc close"));
+
+                        let text = Text::from(lines);
+
+                        Paragraph::new(text)
+                            .wrap(Wrap { trim: true })
+                            .block(popup_block)
+                    } else {
+                        let modal_text = if let PendingRequestKind::Question(question) =
+                            &request.kind
+                        {
+                            if let Some(q) = question.questions.get(question.question_index) {
+                                let mut options = String::new();
+                                for (idx, option) in q.options.iter().enumerate() {
+                                    let selected = if q.selected_options.contains(&idx) {
+                                        "*"
+                                    } else {
+                                        " "
+                                    };
+                                    let cursor = if q.option_cursor == idx { ">" } else { " " };
+                                    options.push_str(&format!(
+                                        "{}{} {}. {} {}\n",
+                                        cursor,
+                                        selected,
+                                        idx + 1,
+                                        option.label,
+                                        option.description
+                                    ));
+                                }
+                                let custom_display = if q.custom_input.trim().is_empty() {
+                                    "<none>"
+                                } else {
+                                    q.custom_input.trim()
+                                };
+                                format!(
+                                    "Pending request {}/{}\nSession: {} | Agent: {}\nType: Question\nRequest ID: {}\n\nQuestion {}/{}: {}\n{}\n{}\nCustom: {}\n\nKeys: Up/Down request, Left/Right option, Space toggle, 1..9 quick toggle, type custom text, Backspace edit, Enter next/submit, R reject, Esc close",
+                                    request_cursor + 1,
+                                    pending_requests.len(),
+                                    request.session_id,
+                                    request.agent_id,
+                                    question.id,
+                                    question.question_index + 1,
+                                    question.questions.len(),
+                                    q.header,
+                                    q.question,
+                                    options,
+                                    custom_display
+                                )
+                            } else {
+                                "Question request has no prompts.".to_string()
+                            }
+                        } else {
+                            "No pending requests.".to_string()
+                        };
+                        Paragraph::new(modal_text)
+                            .wrap(Wrap { trim: true })
+                            .block(popup_block)
+                    }
+                } else {
+                    Paragraph::new("No pending requests.")
+                        .wrap(Wrap { trim: true })
+                        .block(popup_block)
+                }
+            } else {
+                Paragraph::new(text)
+                    .wrap(Wrap { trim: true })
+                    .block(popup_block)
+            };
             f.render_widget(popup, area);
         }
     }
@@ -522,6 +697,41 @@ fn draw_status_bar(f: &mut Frame, app: &App) {
         .alignment(Alignment::Left)
         .block(Block::default().borders(Borders::NONE));
     f.render_widget(status_widget, status_chunk);
+}
+
+fn permission_reason(tool: &str, mode: &str) -> &'static str {
+    match tool {
+        "question" => "The agent wants to ask you one or more clarification questions.",
+        "task" | "todo_write" | "todowrite" | "update_todo_list" | "new_task" => {
+            if mode.eq_ignore_ascii_case("Plan") {
+                "Plan mode uses task/todo tools to propose or update structured steps."
+            } else {
+                "The agent wants to track or update a task/todo item."
+            }
+        }
+        "bash" | "run_command" => "The agent wants to run a shell command.",
+        "read" | "glob" | "grep" | "codesearch" | "search" | "ls" | "list" => {
+            "The agent wants to inspect workspace files."
+        }
+        "websearch" | "webfetch" | "webfetch_document" => {
+            "The agent wants to retrieve information from the web."
+        }
+        _ => "The agent requested a tool call that needs your approval.",
+    }
+}
+
+fn extract_permission_questions(args: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(args) = args else {
+        return Vec::new();
+    };
+    let Some(items) = args.get("questions").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| item.get("question").and_then(|q| q.as_str()))
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn draw_connecting(f: &mut Frame, app: &App) {
@@ -589,12 +799,18 @@ fn draw_connecting(f: &mut Frame, app: &App) {
         )]));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        &app.connection_status,
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )]));
+    let connect_frames = ["Starting", "Starting.", "Starting..", "Starting..."];
+    let connect_label = connect_frames[(app.tick_count / 10) % connect_frames.len()];
+    lines.push(Line::from(vec![
+        Span::styled(connect_label, Style::default().fg(Color::Cyan)),
+        Span::raw(" "),
+        Span::styled(
+            &app.connection_status,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
     lines.push(Line::from(vec![
         Span::styled("RPM: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
@@ -770,7 +986,48 @@ fn centered_rect(
         .split(popup_layout[1])[1]
 }
 
+fn centered_fixed_rect(
+    width: u16,
+    height: u16,
+    area: ratatui::layout::Rect,
+) -> ratatui::layout::Rect {
+    let w = width.min(area.width.max(1));
+    let h = height.min(area.height.max(1));
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    ratatui::layout::Rect::new(x, y, w, h)
+}
+
 fn spinner_frame(tick: usize) -> &'static str {
     const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
     FRAMES[tick % FRAMES.len()]
+}
+
+fn resolve_context_limit(app: &App) -> Option<u32> {
+    let provider_id = app.current_provider.as_ref()?;
+    let model_id = app.current_model.as_ref()?;
+    let catalog = app.provider_catalog.as_ref()?;
+    let provider = catalog.all.iter().find(|p| &p.id == provider_id)?;
+    provider
+        .models
+        .get(model_id)
+        .and_then(|m| m.limit.as_ref())
+        .and_then(|l| l.context)
+}
+
+fn estimate_context_chars(messages: &[ChatMessage]) -> usize {
+    messages
+        .iter()
+        .map(|m| {
+            m.content
+                .iter()
+                .map(|b| match b {
+                    ContentBlock::Text(t) => t.len(),
+                    ContentBlock::Code { language, code } => language.len() + code.len(),
+                    ContentBlock::ToolCall(t) => t.name.len() + t.args.len() + t.id.len(),
+                    ContentBlock::ToolResult(t) => t.len(),
+                })
+                .sum::<usize>()
+        })
+        .sum()
 }

@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **TUI Key Setup Wizard**: Added interactive API-key setup flow when a selected provider is not configured.
 - **TUI Error Recall Command**: Added `/last_error` to quickly print the most recent prompt/system failure message.
 - **TUI Working Indicator**: Added active-agent working status/spinner visibility in chat footer and grid pane titles.
+- **TUI Request Center**: Added pending-request modal (`Alt+R` / `/requests`) for permission approvals and interactive question replies.
+- **Shared Permission Defaults**: Added centralized permission-default rule builder in `tandem-core` for desktop + TUI consistency.
 
 ### Changed
 
@@ -19,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Keystore -> Engine Sync**: On connect, TUI now syncs unlocked local keystore provider keys into engine provider config to keep desktop/TUI auth behavior consistent.
 - **Transcript Rendering**: Chat flow renderer now wraps long lines for readable error/output text in narrow terminals.
 - **Windows Dev Docs**: Expanded `ENGINE_TESTING.md` with PowerShell-safe build/copy/run commands and bash-vs-PowerShell clarity.
+- **TUI Keybinds/UX**: Grid toggle moved to `Alt+G`; request center added on `Alt+R`; scroll speed increased for line/page scrolling.
+- **Startup + PIN UX**: PIN prompt re-centered for fullscreen, digit-only PIN input enforced, and connecting screen now stays active until engine readiness checks complete.
+- **Markdown Pipeline**: TUI transcript path now uses `tui-markdown` preprocessing for assistant markdown content.
 
 ### Fixed
 
@@ -26,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Run Stream Stability**: Fixed run-scoped SSE handling so unrelated events do not prematurely terminate active stream processing.
 - **No-Response Completion Case**: Added explicit fallback error messaging when a run completes without streamed deltas or assistant content.
 - **Provider Auth in TUI**: Fixed a key-discovery mismatch that prevented existing desktop-stored keys from being recognized by TUI.
+- **Request Visibility**: Replaced noisy in-transcript request activity lines with dedicated request/status UI.
+- **Permission Clarity in Plan Mode**: Request modal now shows mode/tool context and explains why permission is requested, including `tool: question` previews.
+- **Question Handling**: Added custom-answer support alongside multiple-choice options and fixed `permission(tool=question)` normalization into question-answer flow.
 
 ## [0.3.0] - 2026-02-14
 

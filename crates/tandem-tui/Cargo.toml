@@ -11,6 +11,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 pulldown-cmark = "0.10"
 throbber-widgets-tui = "0.8"
+tui-markdown = "0.3.7"
 
 # Async & Networking
 tokio = { version = "1", features = ["full"] }

@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, StatefulWidget, Widget},
 };
+use tui_markdown::from_str as markdown_to_text;
 
 use crate::app::{ChatMessage, ContentBlock, MessageRole};
 
@@ -68,14 +69,27 @@ impl<'a> StatefulWidget for FlowList<'a> {
             for block in &msg.content {
                 match block {
                     ContentBlock::Text(text) => {
-                        for line in text.lines() {
-                            push_wrapped_line(
-                                &mut lines,
-                                "     ",
-                                line,
-                                Style::default(),
-                                max_width,
-                            );
+                        if matches!(msg.role, MessageRole::Assistant) {
+                            let rendered = markdown_to_text(text);
+                            for md_line in rendered.lines {
+                                push_wrapped_line(
+                                    &mut lines,
+                                    "     ",
+                                    &md_line.to_string(),
+                                    Style::default(),
+                                    max_width,
+                                );
+                            }
+                        } else {
+                            for line in text.lines() {
+                                push_wrapped_line(
+                                    &mut lines,
+                                    "     ",
+                                    line,
+                                    Style::default(),
+                                    max_width,
+                                );
+                            }
                         }
                     }
                     ContentBlock::Code { language, code } => {
@@ -126,16 +140,20 @@ impl<'a> StatefulWidget for FlowList<'a> {
             lines.push(Line::from("")); // Spacing
         }
 
-        // 2. Adjust offset/scrolling
+        // 2. Adjust offset/scrolling.
+        // `state.offset` is interpreted as "lines from bottom":
+        // 0 = stick to latest content, >0 = user scrolled up into history.
         let visible_height = area.height as usize;
         let total_lines = lines.len();
-
-        let scroll = state.offset;
+        let max_from_bottom = total_lines.saturating_sub(visible_height);
+        let from_bottom = state.offset.min(max_from_bottom);
+        state.offset = from_bottom;
+        let start = total_lines.saturating_sub(visible_height + from_bottom);
 
         // 3. Render visible lines
         if total_lines > 0 {
             // Simple render loop
-            for (i, line) in lines.iter().skip(scroll).take(visible_height).enumerate() {
+            for (i, line) in lines.iter().skip(start).take(visible_height).enumerate() {
                 let x = area.x;
                 let y = area.y + i as u16;
                 buf.set_line(x, y, line, area.width);
