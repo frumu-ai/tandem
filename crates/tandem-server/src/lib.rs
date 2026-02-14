@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -31,6 +32,99 @@ pub struct EngineLease {
 impl EngineLease {
     pub fn is_expired(&self, now_ms: u64) -> bool {
         now_ms.saturating_sub(self.last_renewed_at_ms) > self.ttl_ms
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ActiveRun {
+    #[serde(rename = "runID")]
+    pub run_id: String,
+    #[serde(rename = "startedAtMs")]
+    pub started_at_ms: u64,
+    #[serde(rename = "lastActivityAtMs")]
+    pub last_activity_at_ms: u64,
+    #[serde(rename = "clientID", skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct RunRegistry {
+    active: Arc<RwLock<std::collections::HashMap<String, ActiveRun>>>,
+}
+
+impl RunRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn get(&self, session_id: &str) -> Option<ActiveRun> {
+        self.active.read().await.get(session_id).cloned()
+    }
+
+    pub async fn acquire(
+        &self,
+        session_id: &str,
+        run_id: String,
+        client_id: Option<String>,
+    ) -> std::result::Result<ActiveRun, ActiveRun> {
+        let mut guard = self.active.write().await;
+        if let Some(existing) = guard.get(session_id).cloned() {
+            return Err(existing);
+        }
+        let now = now_ms();
+        let run = ActiveRun {
+            run_id,
+            started_at_ms: now,
+            last_activity_at_ms: now,
+            client_id,
+        };
+        guard.insert(session_id.to_string(), run.clone());
+        Ok(run)
+    }
+
+    pub async fn touch(&self, session_id: &str, run_id: &str) {
+        let mut guard = self.active.write().await;
+        if let Some(run) = guard.get_mut(session_id) {
+            if run.run_id == run_id {
+                run.last_activity_at_ms = now_ms();
+            }
+        }
+    }
+
+    pub async fn finish_if_match(&self, session_id: &str, run_id: &str) -> Option<ActiveRun> {
+        let mut guard = self.active.write().await;
+        if let Some(run) = guard.get(session_id) {
+            if run.run_id == run_id {
+                return guard.remove(session_id);
+            }
+        }
+        None
+    }
+
+    pub async fn finish_active(&self, session_id: &str) -> Option<ActiveRun> {
+        self.active.write().await.remove(session_id)
+    }
+
+    pub async fn reap_stale(&self, stale_ms: u64) -> Vec<(String, ActiveRun)> {
+        let now = now_ms();
+        let mut guard = self.active.write().await;
+        let stale_ids = guard
+            .iter()
+            .filter_map(|(session_id, run)| {
+                if now.saturating_sub(run.last_activity_at_ms) > stale_ms {
+                    Some(session_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut out = Vec::with_capacity(stale_ids.len());
+        for session_id in stale_ids {
+            if let Some(run) = guard.remove(&session_id) {
+                out.push((session_id, run));
+            }
+        }
+        out
     }
 }
 
@@ -93,6 +187,8 @@ pub struct AppState {
     pub startup: Arc<RwLock<StartupState>>,
     pub in_process_mode: Arc<AtomicBool>,
     pub engine_leases: Arc<RwLock<std::collections::HashMap<String, EngineLease>>>,
+    pub run_registry: RunRegistry,
+    pub run_stale_ms: u64,
 }
 
 impl AppState {
@@ -108,6 +204,8 @@ impl AppState {
             })),
             in_process_mode: Arc::new(AtomicBool::new(in_process)),
             engine_leases: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            run_registry: RunRegistry::new(),
+            run_stale_ms: resolve_run_stale_ms(),
         }
     }
 
@@ -157,6 +255,14 @@ impl AppState {
         startup.phase = phase.into();
         startup.last_error = Some(error.into());
     }
+}
+
+fn resolve_run_stale_ms() -> u64 {
+    std::env::var("TANDEM_RUN_STALE_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(120_000)
+        .clamp(30_000, 600_000)
 }
 
 impl Deref for AppState {

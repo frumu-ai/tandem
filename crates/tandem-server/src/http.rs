@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
+use axum::http::header::{self, HeaderValue};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -23,14 +24,15 @@ use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 use tandem_types::{
-    CreateSessionRequest, EngineEvent, MessagePart, SendMessageRequest, Session, TodoItem,
+    CreateSessionRequest, EngineEvent, Message, MessagePart, MessagePartInput, MessageRole,
+    SendMessageRequest, Session, TodoItem,
 };
 use tandem_wire::{
     WireProviderCatalog, WireProviderEntry, WireProviderModel, WireProviderModelLimit, WireSession,
     WireSessionMessage,
 };
 
-use crate::{AppState, StartupStatus};
+use crate::{ActiveRun, AppState, StartupStatus};
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -52,6 +54,19 @@ struct ListSessionsQuery {
     archived: Option<bool>,
     scope: Option<SessionScope>,
     workspace: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct EventFilterQuery {
+    #[serde(rename = "sessionID")]
+    session_id: Option<String>,
+    #[serde(rename = "runID")]
+    run_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PromptAsyncQuery {
+    r#return: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,16 +211,40 @@ struct LegacyProviderInfo {
 }
 
 pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
+    let reaper_state = state.clone();
     let app = app_router(state);
+    let reaper = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let stale = reaper_state
+                .run_registry
+                .reap_stale(reaper_state.run_stale_ms)
+                .await;
+            for (session_id, run) in stale {
+                let _ = reaper_state.cancellations.cancel(&session_id).await;
+                reaper_state.event_bus.publish(EngineEvent::new(
+                    "session.run.finished",
+                    json!({
+                        "sessionID": session_id,
+                        "runID": run.run_id,
+                        "finishedAtMs": crate::now_ms(),
+                        "status": "timeout",
+                    }),
+                ));
+            }
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(async {
             if tokio::signal::ctrl_c().await.is_err() {
                 futures::future::pending::<()>().await;
             }
         })
-        .await?;
+        .await;
+    reaper.abort();
+    result?;
     Ok(())
 }
 
@@ -251,19 +290,28 @@ fn app_router(state: AppState) -> Router {
         )
         .route(
             "/session/{id}/message",
-            get(session_messages).post(send_message_streaming),
+            get(session_messages).post(post_session_message_append),
         )
         .route(
             "/api/session/{id}/message",
-            get(session_messages).post(send_message_streaming),
+            get(session_messages).post(post_session_message_append),
         )
         .route("/session/{id}/todo", get(session_todos))
         .route("/api/session/{id}/todo", get(session_todos))
         .route("/session/{id}/prompt_async", post(prompt_async))
         .route("/api/session/{id}/prompt_async", post(prompt_async))
+        .route("/session/{id}/prompt_sync", post(prompt_sync))
+        .route("/api/session/{id}/prompt_sync", post(prompt_sync))
+        .route("/session/{id}/run", get(get_active_run))
+        .route("/api/session/{id}/run", get(get_active_run))
         .route("/session/{id}/abort", post(abort_session))
         .route("/session/{id}/cancel", post(abort_session))
         .route("/api/session/{id}/cancel", post(abort_session))
+        .route("/session/{id}/run/{run_id}/cancel", post(cancel_run_by_id))
+        .route(
+            "/api/session/{id}/run/{run_id}/cancel",
+            post(cancel_run_by_id),
+        )
         .route("/session/{id}/fork", post(fork_session))
         .route("/session/{id}/revert", post(revert_session))
         .route("/session/{id}/unrevert", post(unrevert_session))
@@ -491,7 +539,10 @@ async fn global_storage_repair(
     })))
 }
 
-fn sse_stream(state: AppState) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
+fn sse_stream(
+    state: AppState,
+    filter: EventFilterQuery,
+) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
     let rx = state.event_bus.subscribe();
     let initial = tokio_stream::once(Ok(Event::default().data(
         serde_json::to_string(&EngineEvent::new("server.connected", json!({}))).unwrap_or_default(),
@@ -507,8 +558,11 @@ fn sse_stream(state: AppState) -> impl Stream<Item = Result<Event, std::convert:
         ))
         .unwrap_or_default(),
     )));
-    let live = BroadcastStream::new(rx).filter_map(|msg| match msg {
+    let live = BroadcastStream::new(rx).filter_map(move |msg| match msg {
         Ok(event) => {
+            if !event_matches_filter(&event, &filter) {
+                return None;
+            }
             let payload = serde_json::to_string(&event).unwrap_or_default();
             let payload = truncate_for_stream(&payload, 16_000);
             Some(Ok(Event::default().data(payload)))
@@ -520,8 +574,39 @@ fn sse_stream(state: AppState) -> impl Stream<Item = Result<Event, std::convert:
 
 async fn events(
     State(state): State<AppState>,
+    Query(filter): Query<EventFilterQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    Sse::new(sse_stream(state)).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
+    Sse::new(sse_stream(state, filter))
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
+}
+
+fn event_matches_filter(event: &EngineEvent, filter: &EventFilterQuery) -> bool {
+    if filter.session_id.is_none() && filter.run_id.is_none() {
+        return true;
+    }
+    let event_session = event
+        .properties
+        .get("sessionID")
+        .or_else(|| event.properties.get("sessionId"))
+        .or_else(|| event.properties.get("id"))
+        .and_then(|v| v.as_str());
+    if let Some(session_id) = filter.session_id.as_deref() {
+        if event_session != Some(session_id) {
+            return false;
+        }
+    }
+    if let Some(run_id) = filter.run_id.as_deref() {
+        let event_run = event
+            .properties
+            .get("runID")
+            .or_else(|| event.properties.get("run_id"))
+            .and_then(|v| v.as_str());
+        if let Some(value) = event_run {
+            return value == run_id;
+        }
+        return filter.session_id.is_some() && event_session.is_some();
+    }
+    true
 }
 
 async fn create_session(
@@ -744,16 +829,44 @@ async fn session_messages(
 async fn prompt_async(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<PromptAsyncQuery>,
     headers: HeaderMap,
     Json(req): Json<SendMessageRequest>,
-) -> Result<StatusCode, StatusCode> {
-    let engine = state.engine_loop.clone();
-    let cancellations = state.cancellations.clone();
+) -> Result<Response, StatusCode> {
+    if state.storage.get_session(&id).await.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let session_id = id.clone();
     let correlation_id = headers
         .get("x-tandem-correlation-id")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+    let client_id = headers
+        .get("x-tandem-client-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let run_id = Uuid::new_v4().to_string();
+
+    let active_run = match state
+        .run_registry
+        .acquire(&session_id, run_id.clone(), client_id.clone())
+        .await
+    {
+        Ok(run) => run,
+        Err(active) => {
+            let payload = conflict_payload(&session_id, &active);
+            state.event_bus.publish(EngineEvent::new(
+                "session.run.conflict",
+                json!({
+                    "sessionID": session_id,
+                    "runID": active.run_id,
+                    "retryAfterMs": 500,
+                    "attachEventStream": attach_event_stream_path(&id, &active.run_id),
+                }),
+            ));
+            return Ok((StatusCode::CONFLICT, Json(payload)).into_response());
+        }
+    };
 
     tracing::info!(
         target: "tandem.obs",
@@ -763,67 +876,169 @@ async fn prompt_async(
         correlation_id = %correlation_id.as_deref().unwrap_or(""),
         "prompt_async request accepted"
     );
+    state.event_bus.publish(EngineEvent::new(
+        "session.run.started",
+        json!({
+            "sessionID": session_id,
+            "runID": active_run.run_id,
+            "startedAtMs": active_run.started_at_ms,
+            "clientID": active_run.client_id,
+        }),
+    ));
 
-    tokio::spawn(async move {
-        let run = tokio::time::timeout(
-            Duration::from_secs(60 * 10),
-            engine.run_prompt_async_with_context(id, req, correlation_id.clone()),
+    spawn_run_task(
+        state.clone(),
+        id.clone(),
+        run_id.clone(),
+        req,
+        correlation_id,
+    );
+
+    if query.r#return.as_deref() == Some("run") {
+        let mut response = (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "runID": run_id,
+                "attachEventStream": attach_event_stream_path(&id, &run_id),
+            })),
         )
-        .await;
-        match run {
-            Ok(Ok(_)) => {
-                tracing::info!(
-                    target: "tandem.obs",
-                    event = "server.prompt_async.finish",
-                    component = "http.prompt_async",
-                    session_id = %session_id,
-                    correlation_id = %correlation_id.as_deref().unwrap_or(""),
-                    "prompt_async finished successfully"
-                );
+            .into_response();
+        if let Ok(value) = HeaderValue::from_str(&run_id) {
+            response.headers_mut().insert("x-tandem-run-id", value);
+        }
+        return Ok(response);
+    }
+
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    if let Ok(value) = HeaderValue::from_str(&run_id) {
+        response.headers_mut().insert("x-tandem-run-id", value);
+    }
+    Ok(response)
+}
+
+async fn prompt_sync(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<SendMessageRequest>,
+) -> Result<Response, StatusCode> {
+    if state.storage.get_session(&id).await.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let accept_sse = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/event-stream"))
+        .unwrap_or(false);
+    let correlation_id = headers
+        .get("x-tandem-correlation-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let client_id = headers
+        .get("x-tandem-client-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let run_id = Uuid::new_v4().to_string();
+    let active_run = match state
+        .run_registry
+        .acquire(&id, run_id.clone(), client_id.clone())
+        .await
+    {
+        Ok(run) => run,
+        Err(active) => {
+            let payload = conflict_payload(&id, &active);
+            state.event_bus.publish(EngineEvent::new(
+                "session.run.conflict",
+                json!({
+                    "sessionID": id,
+                    "runID": active.run_id,
+                    "retryAfterMs": 500,
+                    "attachEventStream": attach_event_stream_path(&id, &active.run_id),
+                }),
+            ));
+            return Ok((StatusCode::CONFLICT, Json(payload)).into_response());
+        }
+    };
+    state.event_bus.publish(EngineEvent::new(
+        "session.run.started",
+        json!({
+            "sessionID": id,
+            "runID": active_run.run_id,
+            "startedAtMs": active_run.started_at_ms,
+            "clientID": active_run.client_id,
+        }),
+    ));
+
+    if accept_sse {
+        spawn_run_task(
+            state.clone(),
+            id.clone(),
+            run_id.clone(),
+            req,
+            correlation_id,
+        );
+        let stream = sse_run_stream(state.clone(), id.clone(), run_id.clone());
+        return Ok(Sse::new(stream)
+            .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
+            .into_response());
+    }
+
+    let _ = execute_run(
+        state.clone(),
+        id.clone(),
+        run_id.clone(),
+        req,
+        correlation_id,
+    )
+    .await;
+    let session = state
+        .storage
+        .get_session(&id)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let messages = session
+        .messages
+        .iter()
+        .map(|msg| WireSessionMessage::from_message(msg, &id))
+        .collect::<Vec<_>>();
+    Ok(Json(json!(messages)).into_response())
+}
+
+fn spawn_run_task(
+    state: AppState,
+    session_id: String,
+    run_id: String,
+    req: SendMessageRequest,
+    correlation_id: Option<String>,
+) {
+    tokio::spawn(async move {
+        let _ = execute_run(state, session_id, run_id, req, correlation_id).await;
+    });
+}
+
+async fn execute_run(
+    state: AppState,
+    session_id: String,
+    run_id: String,
+    req: SendMessageRequest,
+    correlation_id: Option<String>,
+) -> anyhow::Result<()> {
+    let mut run_fut = Box::pin(state.engine_loop.run_prompt_async_with_context(
+        session_id.clone(),
+        req,
+        correlation_id.clone(),
+    ));
+    let mut timeout = Box::pin(tokio::time::sleep(Duration::from_secs(60 * 10)));
+    let mut ticker = tokio::time::interval(Duration::from_secs(2));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let (status, error_msg): (&str, Option<String>) = loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                state.run_registry.touch(&session_id, &run_id).await;
             }
-            Ok(Err(err)) => {
-                let error_message = err.to_string();
-                let error_code = dispatch_error_code(&error_message);
-                tracing::error!(
-                    target: "tandem.obs",
-                    event = "server.prompt_async.error",
-                    component = "http.prompt_async",
-                    session_id = %session_id,
-                    correlation_id = %correlation_id.as_deref().unwrap_or(""),
-                    error_code = error_code,
-                    "prompt_async failed: {:#}",
-                    err
-                );
-                state.event_bus.publish(EngineEvent::new(
-                    "session.error",
-                    json!({
-                        "sessionID": session_id,
-                        "error": {
-                            "code": error_code,
-                            "message": truncate_text(&error_message, 500),
-                        }
-                    }),
-                ));
-                state.event_bus.publish(EngineEvent::new(
-                    "session.status",
-                    json!({"sessionID": session_id, "status":"error"}),
-                ));
-                state.event_bus.publish(EngineEvent::new(
-                    "session.updated",
-                    json!({"sessionID": session_id, "status":"error"}),
-                ));
-                let _ = cancellations.cancel(&session_id).await;
-            }
-            Err(_) => {
-                tracing::error!(
-                    target: "tandem.obs",
-                    event = "server.prompt_async.error",
-                    component = "http.prompt_async",
-                    session_id = %session_id,
-                    correlation_id = %correlation_id.as_deref().unwrap_or(""),
-                    error_code = "ENGINE_TIMEOUT",
-                    "prompt_async timed out"
-                );
+            _ = &mut timeout => {
+                let _ = state.cancellations.cancel(&session_id).await;
                 state.event_bus.publish(EngineEvent::new(
                     "session.error",
                     json!({
@@ -842,11 +1057,144 @@ async fn prompt_async(
                     "session.updated",
                     json!({"sessionID": session_id, "status":"error"}),
                 ));
-                let _ = cancellations.cancel(&session_id).await;
+                break ("timeout", Some("prompt_async timed out".to_string()));
+            }
+            result = &mut run_fut => {
+                match result {
+                    Ok(()) => break ("completed", None),
+                    Err(err) => {
+                        let error_message = err.to_string();
+                        let error_code = dispatch_error_code(&error_message);
+                        state.event_bus.publish(EngineEvent::new(
+                            "session.error",
+                            json!({
+                                "sessionID": session_id,
+                                "error": {
+                                    "code": error_code,
+                                    "message": truncate_text(&error_message, 500),
+                                }
+                            }),
+                        ));
+                        state.event_bus.publish(EngineEvent::new(
+                            "session.status",
+                            json!({"sessionID": session_id, "status":"error"}),
+                        ));
+                        state.event_bus.publish(EngineEvent::new(
+                            "session.updated",
+                            json!({"sessionID": session_id, "status":"error"}),
+                        ));
+                        let _ = state.cancellations.cancel(&session_id).await;
+                        break ("error", Some(truncate_text(&error_message, 500)));
+                    }
+                }
             }
         }
+    };
+
+    let _ = state
+        .run_registry
+        .finish_if_match(&session_id, &run_id)
+        .await;
+    state.event_bus.publish(EngineEvent::new(
+        "session.run.finished",
+        json!({
+            "sessionID": session_id,
+            "runID": run_id,
+            "finishedAtMs": crate::now_ms(),
+            "status": status,
+            "error": error_msg,
+        }),
+    ));
+    Ok(())
+}
+
+fn sse_run_stream(
+    state: AppState,
+    session_id: String,
+    run_id: String,
+) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
+    let rx = state.event_bus.subscribe();
+    let started = tokio_stream::once(Ok(Event::default().data(
+        serde_json::to_string(&EngineEvent::new(
+            "session.run.started",
+            json!({
+                "sessionID": session_id,
+                "runID": run_id,
+                "startedAtMs": crate::now_ms(),
+            }),
+        ))
+        .unwrap_or_default(),
+    )));
+    let take_session_id = session_id.clone();
+    let take_run_id = run_id.clone();
+    let map_session_id = session_id.clone();
+    let map_run_id = run_id.clone();
+    let live = BroadcastStream::new(rx).take_while(move |msg| {
+        let session_id = take_session_id.clone();
+        let run_id = take_run_id.clone();
+        match msg {
+            Ok(event) => {
+                let matches = event_matches_run(event, &session_id, &run_id);
+                let is_finished = event.event_type == "session.run.finished"
+                    && event
+                        .properties
+                        .get("runID")
+                        .and_then(|v| v.as_str())
+                        .map(|v| v == run_id.as_str())
+                        .unwrap_or(false);
+                matches && !is_finished
+            }
+            Err(_) => false,
+        }
     });
-    Ok(StatusCode::NO_CONTENT)
+    let mapped = live.filter_map(move |msg| match msg {
+        Ok(event) if event_matches_run(&event, &map_session_id, &map_run_id) => {
+            let payload = serde_json::to_string(&event).unwrap_or_default();
+            Some(Ok(Event::default().data(payload)))
+        }
+        _ => None,
+    });
+    started.chain(mapped)
+}
+
+fn conflict_payload(session_id: &str, active: &ActiveRun) -> Value {
+    json!({
+        "code": "SESSION_RUN_CONFLICT",
+        "sessionID": session_id,
+        "activeRun": {
+            "runID": active.run_id,
+            "startedAtMs": active.started_at_ms,
+            "lastActivityAtMs": active.last_activity_at_ms,
+            "clientID": active.client_id,
+        },
+        "retryAfterMs": 500,
+        "attachEventStream": attach_event_stream_path(session_id, &active.run_id),
+    })
+}
+
+fn attach_event_stream_path(session_id: &str, run_id: &str) -> String {
+    format!("/event?sessionID={session_id}&runID={run_id}")
+}
+
+fn event_matches_run(event: &EngineEvent, session_id: &str, run_id: &str) -> bool {
+    let event_session = event
+        .properties
+        .get("sessionID")
+        .or_else(|| event.properties.get("sessionId"))
+        .or_else(|| event.properties.get("id"))
+        .and_then(|v| v.as_str());
+    if event_session != Some(session_id) {
+        return false;
+    }
+    let event_run = event
+        .properties
+        .get("runID")
+        .or_else(|| event.properties.get("run_id"))
+        .and_then(|v| v.as_str());
+    match event_run {
+        Some(value) => value == run_id,
+        None => true,
+    }
 }
 
 fn dispatch_error_code(message: &str) -> &'static str {
@@ -866,6 +1214,42 @@ fn truncate_text(input: &str, max_len: usize) -> String {
     let mut out = input[..max_len].to_string();
     out.push_str("...<truncated>");
     out
+}
+
+async fn append_message_only(
+    state: &AppState,
+    session_id: &str,
+    req: SendMessageRequest,
+) -> Result<WireSessionMessage, String> {
+    if state.storage.get_session(session_id).await.is_none() {
+        return Err("session not found".to_string());
+    }
+    let text = req
+        .parts
+        .iter()
+        .map(|p| match p {
+            MessagePartInput::Text { text } => text.clone(),
+            MessagePartInput::File {
+                mime,
+                filename,
+                url,
+            } => format!(
+                "[file mime={} name={} url={}]",
+                mime,
+                filename.clone().unwrap_or_else(|| "unknown".to_string()),
+                url
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let msg = Message::new(MessageRole::User, vec![MessagePart::Text { text }]);
+    let wire = WireSessionMessage::from_message(&msg, session_id);
+    state
+        .storage
+        .append_message(session_id, msg)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(wire)
 }
 
 async fn session_todos(
@@ -934,65 +1318,73 @@ async fn update_session(
     }
     Ok(Json(json!(session)))
 }
-async fn send_message_streaming(
+async fn post_session_message_append(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
     Json(req): Json<SendMessageRequest>,
-) -> Result<Json<Vec<WireSessionMessage>>, (StatusCode, String)> {
-    let correlation_id = headers
-        .get("x-tandem-correlation-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    tracing::info!(
-        target: "tandem.obs",
-        event = "server.prompt_async.start",
-        component = "http.send_message_streaming",
-        session_id = %id,
-        correlation_id = %correlation_id.as_deref().unwrap_or(""),
-        "prompt_async request received"
-    );
-    state
-        .engine_loop
-        .run_prompt_async_with_context(id.clone(), req, correlation_id)
+) -> Result<Response, (StatusCode, String)> {
+    let wire = append_message_only(&state, &id, req)
         .await
-        .map_err(|err| {
-            tracing::error!(
-                target: "tandem.obs",
-                event = "server.prompt_async.error",
-                component = "http.send_message_streaming",
-                session_id = %id,
-                error_code = "ENGINE_DISPATCH_FAILED",
-                "prompt_async failed: {:#}",
-                err
-            );
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Engine error: {:#}", err),
-            )
-        })?;
-    tracing::info!(
-        target: "tandem.obs",
-        event = "server.prompt_async.finish",
-        component = "http.send_message_streaming",
-        session_id = %id,
-        "prompt_async completed"
-    );
-    let session = state
-        .storage
-        .get_session(&id)
-        .await
-        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
-    let messages = session
-        .messages
-        .iter()
-        .map(|msg| WireSessionMessage::from_message(msg, &id))
-        .collect::<Vec<_>>();
-    Ok(Json(messages))
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
+    Ok(Json(wire).into_response())
 }
+
+async fn get_active_run(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    if state.storage.get_session(&id).await.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let active = state.run_registry.get(&id).await;
+    match active {
+        Some(run) => Ok(Json(json!({ "active": run }))),
+        None => Ok(Json(json!({ "active": Value::Null }))),
+    }
+}
+
 async fn abort_session(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     let cancelled = state.cancellations.cancel(&id).await;
-    Json(json!({"ok": true, "cancelled": cancelled}))
+    let cancelled_run = state.run_registry.finish_active(&id).await;
+    if let Some(run) = cancelled_run.as_ref() {
+        state.event_bus.publish(EngineEvent::new(
+            "session.run.finished",
+            json!({
+                "sessionID": id,
+                "runID": run.run_id,
+                "finishedAtMs": crate::now_ms(),
+                "status": "cancelled",
+            }),
+        ));
+    }
+    Json(json!({
+        "ok": true,
+        "cancelled": cancelled || cancelled_run.is_some()
+    }))
+}
+
+async fn cancel_run_by_id(
+    State(state): State<AppState>,
+    Path((id, run_id)): Path<(String, String)>,
+) -> Json<Value> {
+    let active = state.run_registry.get(&id).await;
+    if let Some(active_run) = active {
+        if active_run.run_id == run_id {
+            let cancelled = state.cancellations.cancel(&id).await;
+            let _ = state.run_registry.finish_if_match(&id, &run_id).await;
+            state.event_bus.publish(EngineEvent::new(
+                "session.run.finished",
+                json!({
+                    "sessionID": id,
+                    "runID": run_id,
+                    "finishedAtMs": crate::now_ms(),
+                    "status": "cancelled",
+                }),
+            ));
+            return Json(json!({"ok": true, "cancelled": cancelled || true}));
+        }
+    }
+    Json(json!({"ok": true, "cancelled": false}))
 }
 async fn fork_session(
     State(state): State<AppState>,
@@ -2036,7 +2428,14 @@ async fn openapi_doc() -> Json<Value> {
             "/global/health":{"get":{"summary":"Health check"}},
             "/global/storage/repair":{"post":{"summary":"Force legacy storage repair scan"}},
             "/session":{"get":{"summary":"List sessions"},"post":{"summary":"Create session"}},
-            "/session/{id}/message":{"post":{"summary":"Run message loop"}},
+            "/session/{id}/message":{"post":{"summary":"Append message"}},
+            "/session/{id}/prompt_async":{"post":{"summary":"Start async prompt run"}},
+            "/session/{id}/prompt_sync":{"post":{"summary":"Start sync prompt run"}},
+            "/session/{id}/run":{"get":{"summary":"Get active run"}},
+            "/session/{id}/cancel":{"post":{"summary":"Cancel active run"}},
+            "/session/{id}/run/{run_id}/cancel":{"post":{"summary":"Cancel run by id"}},
+            "/event":{"get":{"summary":"SSE event stream"}},
+            "/provider":{"get":{"summary":"List providers"}},
             "/session/{id}/fork":{"post":{"summary":"Fork a session"}},
             "/worktree":{"get":{"summary":"List worktrees"},"post":{"summary":"Create worktree"},"delete":{"summary":"Delete worktree"}},
             "/mcp/resources":{"get":{"summary":"List MCP resources"}},
@@ -2340,7 +2739,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_session_message_returns_wire_messages() {
+    async fn post_session_message_returns_wire_message() {
         let state = test_state().await;
         let session = Session::new(Some("post-msg".to_string()), Some(".".to_string()));
         let session_id = session.id.clone();
@@ -2358,10 +2757,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
         let payload: Value = serde_json::from_slice(&body).expect("json");
-        let list = payload.as_array().expect("array");
-        assert!(!list.is_empty());
-        assert!(list[0].get("info").is_some());
-        assert!(list[0].get("parts").is_some());
+        assert!(payload.get("info").is_some());
+        assert!(payload.get("parts").is_some());
     }
 
     #[tokio::test]
@@ -2605,5 +3002,267 @@ mod tests {
             Some("permission_request_not_found")
         );
         assert!(payload.get("error").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[tokio::test]
+    async fn prompt_async_return_run_returns_202_with_run_id_and_attach_stream() {
+        let state = test_state().await;
+        let session = Session::new(Some("return-run".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        state.storage.save_session(session).await.expect("save");
+        let app = app_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/prompt_async?return=run"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"parts":[{"type":"text","text":"hello return=run"}]}).to_string(),
+            ))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        let run_id = payload.get("runID").and_then(|v| v.as_str()).unwrap_or("");
+        let attach = payload
+            .get("attachEventStream")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(!run_id.is_empty());
+        assert_eq!(
+            attach,
+            format!("/event?sessionID={session_id}&runID={run_id}")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_session_run_returns_active_metadata_while_run_is_in_flight() {
+        let state = test_state().await;
+        let session = Session::new(Some("active-run".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        state.storage.save_session(session).await.expect("save");
+        let app = app_router(state.clone());
+
+        let first_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/prompt_async?return=run"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "parts": [
+                        {"type":"text","text":"/tool todo_write {\"todos\":[{\"content\":\"hold run\"}]}"}
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let first_resp = app.clone().oneshot(first_req).await.expect("response");
+        assert_eq!(first_resp.status(), StatusCode::ACCEPTED);
+        let first_body = to_bytes(first_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let first_payload: Value = serde_json::from_slice(&first_body).expect("json");
+        let run_id = first_payload
+            .get("runID")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        assert!(!run_id.is_empty());
+
+        let run_req = Request::builder()
+            .method("GET")
+            .uri(format!("/session/{session_id}/run"))
+            .body(Body::empty())
+            .expect("request");
+        let run_resp = app.oneshot(run_req).await.expect("response");
+        assert_eq!(run_resp.status(), StatusCode::OK);
+        let run_body = to_bytes(run_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let run_payload: Value = serde_json::from_slice(&run_body).expect("json");
+        let active = run_payload.get("active").cloned().unwrap_or(Value::Null);
+        assert_eq!(
+            active.get("runID").and_then(|v| v.as_str()),
+            Some(run_id.as_str())
+        );
+
+        let cancel_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/cancel"))
+            .body(Body::empty())
+            .expect("cancel request");
+        let cancel_resp = app_router(state)
+            .oneshot(cancel_req)
+            .await
+            .expect("cancel response");
+        assert_eq!(cancel_resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn concurrent_prompt_async_returns_conflict_with_nested_active_run() {
+        let state = test_state().await;
+        let session = Session::new(Some("conflict".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        state.storage.save_session(session).await.expect("save");
+        let app = app_router(state.clone());
+
+        let first_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/prompt_async?return=run"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "parts": [
+                        {"type":"text","text":"/tool todo_write {\"todos\":[{\"content\":\"block\"}]}"}
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let first_resp = app.clone().oneshot(first_req).await.expect("response");
+        assert_eq!(first_resp.status(), StatusCode::ACCEPTED);
+        let first_body = to_bytes(first_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let first_payload: Value = serde_json::from_slice(&first_body).expect("json");
+        let active_run_id = first_payload
+            .get("runID")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        assert!(!active_run_id.is_empty());
+
+        let second_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/prompt_async"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"parts":[{"type":"text","text":"second prompt"}]}).to_string(),
+            ))
+            .expect("request");
+        let second_resp = app.clone().oneshot(second_req).await.expect("response");
+        assert_eq!(second_resp.status(), StatusCode::CONFLICT);
+        let second_body = to_bytes(second_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let second_payload: Value = serde_json::from_slice(&second_body).expect("json");
+        assert_eq!(
+            second_payload.get("code").and_then(|v| v.as_str()),
+            Some("SESSION_RUN_CONFLICT")
+        );
+        assert_eq!(
+            second_payload
+                .get("activeRun")
+                .and_then(|v| v.get("runID"))
+                .and_then(|v| v.as_str()),
+            Some(active_run_id.as_str())
+        );
+        assert!(second_payload
+            .get("activeRun")
+            .and_then(|v| v.get("startedAtMs"))
+            .and_then(|v| v.as_i64())
+            .is_some());
+        assert!(second_payload
+            .get("activeRun")
+            .and_then(|v| v.get("lastActivityAtMs"))
+            .and_then(|v| v.as_i64())
+            .is_some());
+        assert!(second_payload
+            .get("retryAfterMs")
+            .and_then(|v| v.as_u64())
+            .is_some());
+        assert_eq!(
+            second_payload
+                .get("attachEventStream")
+                .and_then(|v| v.as_str()),
+            Some(format!("/event?sessionID={session_id}&runID={active_run_id}").as_str())
+        );
+
+        let cancel_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/cancel"))
+            .body(Body::empty())
+            .expect("cancel request");
+        let cancel_resp = app_router(state)
+            .oneshot(cancel_req)
+            .await
+            .expect("cancel response");
+        assert_eq!(cancel_resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn append_message_succeeds_while_run_is_active() {
+        let state = test_state().await;
+        let session = Session::new(Some("append-active".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        state.storage.save_session(session).await.expect("save");
+        let app = app_router(state.clone());
+
+        let first_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/prompt_async?return=run"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "parts": [
+                        {"type":"text","text":"/tool todo_write {\"todos\":[{\"content\":\"block append\"}]}"}
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let first_resp = app.clone().oneshot(first_req).await.expect("response");
+        assert_eq!(first_resp.status(), StatusCode::ACCEPTED);
+
+        let append_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/message?mode=append"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"parts":[{"type":"text","text":"appended while active"}]}).to_string(),
+            ))
+            .expect("append request");
+        let append_resp = app.clone().oneshot(append_req).await.expect("response");
+        assert_eq!(append_resp.status(), StatusCode::OK);
+        let _ = to_bytes(append_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+
+        let list_req = Request::builder()
+            .method("GET")
+            .uri(format!("/session/{session_id}/message"))
+            .body(Body::empty())
+            .expect("list request");
+        let list_resp = app.clone().oneshot(list_req).await.expect("response");
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let list_body = to_bytes(list_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let list_payload: Value = serde_json::from_slice(&list_body).expect("json");
+        let list = list_payload.as_array().cloned().unwrap_or_default();
+        assert!(!list.is_empty());
+        let has_appended_text = list.iter().any(|message| {
+            message
+                .get("parts")
+                .and_then(|v| v.as_array())
+                .map(|parts| {
+                    parts.iter().any(|part| {
+                        part.get("text").and_then(|v| v.as_str()) == Some("appended while active")
+                    })
+                })
+                .unwrap_or(false)
+        });
+        assert!(has_appended_text);
+
+        let cancel_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/cancel"))
+            .body(Body::empty())
+            .expect("cancel request");
+        let cancel_resp = app_router(state)
+            .oneshot(cancel_req)
+            .await
+            .expect("cancel response");
+        assert_eq!(cancel_resp.status(), StatusCode::OK);
     }
 }

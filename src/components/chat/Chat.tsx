@@ -31,7 +31,7 @@ import {
   getSidecarStatus,
   getSidecarStartupHealth,
   createSession,
-  sendMessageStreaming,
+  sendMessageAndStartRun,
   cancelGeneration,
   onSidecarEventV2,
   queueMessage,
@@ -2131,7 +2131,7 @@ ${g.example}
         }
 
         // Send message and stream response, with selected agent
-        await sendMessageStreaming(
+        await sendMessageAndStartRun(
           sessionId,
           messageContent,
           attachmentsToSend.length > 0 ? attachmentsToSend : undefined,
@@ -2166,7 +2166,7 @@ ${g.example}
       connectSidecar,
       getSidecarStatus,
       createSession,
-      sendMessageStreaming,
+      sendMessageAndStartRun,
       setError,
       setIsGenerating,
       setMessages,
@@ -3142,7 +3142,7 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                 setTimeout(async () => {
                   try {
                     // Use the same agent (plan agent if in plan mode)
-                    await sendMessageStreaming(
+                    await sendMessageAndStartRun(
                       currentSessionId,
                       confirmMessage,
                       undefined,

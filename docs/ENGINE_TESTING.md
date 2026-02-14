@@ -46,7 +46,11 @@ Coverage includes route shape/contracts like:
 - `/provider`
 - `/api/session` alias behavior
 - `/session/{id}/message`
+- `/session/{id}/run`
+- `/session/{id}/run/{run_id}/cancel`
 - SSE `message.part.updated`
+- `prompt_async?return=run` (`202` with `runID` + attach stream)
+- same-session conflict (`409` with nested `activeRun`)
 - permission approve/deny compatibility routes
 
 Contract-focused tests (JSON-first orchestrator parsing):
@@ -54,6 +58,18 @@ Contract-focused tests (JSON-first orchestrator parsing):
 ```bash
 cargo test -p tandem test_parse_task_list_strict -- --nocapture
 cargo test -p tandem test_parse_validation_result_strict_rejects_prose -- --nocapture
+```
+
+Desktop/CLI runtime contract closure tests:
+
+```bash
+# Desktop sidecar tests (includes reconnect recovery + conflict parsing + run-id cancel)
+cargo test -p tandem sidecar::tests::recover_active_run_attach_stream_uses_get_run_endpoint -- --nocapture
+cargo test -p tandem sidecar::tests::test_parse_prompt_async_response_409_includes_retry_and_attach -- --nocapture
+cargo test -p tandem sidecar::tests::cancel_run_by_id_posts_expected_endpoint -- --nocapture
+
+# CLI (tandem-tui) run-id cancel client path
+cargo test -p tandem-tui cancel_run_by_id_posts_expected_endpoint -- --nocapture
 ```
 
 ## 2) Engine smoke/runtime proof (process + HTTP + SSE + memory)

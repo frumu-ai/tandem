@@ -557,7 +557,7 @@ pub fn run() {
             commands::list_tool_executions,
             // Message handling
             commands::send_message,
-            commands::send_message_streaming,
+            commands::send_message_and_start_run,
             commands::queue_message,
             commands::queue_list,
             commands::queue_remove,

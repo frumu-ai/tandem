@@ -1290,7 +1290,11 @@ impl OrchestratorEngine {
         // Then send message to sidecar
         let mut request = SendMessageRequest::text(prompt.to_string());
         request.model = model_spec.clone();
-        if let Err(e) = self.sidecar.send_message(&active_session_id, request).await {
+        if let Err(e) = self
+            .sidecar
+            .append_message_and_start_run(&active_session_id, request)
+            .await
+        {
             if task_id.is_none() && is_sidecar_session_not_found(&e) {
                 tracing::warn!(
                     "Base orchestrator session {} missing (404) during agent call. Recreating and retrying once.",
@@ -1300,7 +1304,7 @@ impl OrchestratorEngine {
                 let mut retry_request = SendMessageRequest::text(prompt.to_string());
                 retry_request.model = model_spec;
                 self.sidecar
-                    .send_message(&active_session_id, retry_request)
+                    .append_message_and_start_run(&active_session_id, retry_request)
                     .await?;
             } else {
                 return Err(e);

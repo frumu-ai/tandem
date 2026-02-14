@@ -396,6 +396,28 @@ export type StreamEvent =
       error?: string;
     }
   | { type: "session_status"; session_id: string; status: string }
+  | {
+      type: "run_started";
+      session_id: string;
+      run_id: string;
+      started_at_ms: number;
+      client_id?: string;
+    }
+  | {
+      type: "run_finished";
+      session_id: string;
+      run_id: string;
+      finished_at_ms: number;
+      status: "completed" | "cancelled" | "error" | "timeout" | string;
+      error?: string;
+    }
+  | {
+      type: "run_conflict";
+      session_id: string;
+      run_id: string;
+      retry_after_ms: number;
+      attach_event_stream: string;
+    }
   | { type: "session_idle"; session_id: string }
   | { type: "session_error"; session_id: string; error: string }
   | {
@@ -783,14 +805,14 @@ export async function sendMessage(
   return invoke("send_message", { sessionId, content, attachments });
 }
 
-export async function sendMessageStreaming(
+export async function sendMessageAndStartRun(
   sessionId: string,
   content: string,
   attachments?: FileAttachmentInput[],
   agent?: string,
   modeId?: string
 ): Promise<void> {
-  return invoke("send_message_streaming", {
+  return invoke("send_message_and_start_run", {
     sessionId,
     content,
     attachments,
