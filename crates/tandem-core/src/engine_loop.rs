@@ -1,7 +1,8 @@
 use chrono::Utc;
 use futures::StreamExt;
 use serde_json::{json, Map, Number, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
 use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk};
@@ -194,6 +195,8 @@ impl EngineLoop {
                     &user_message_id,
                     tool.clone(),
                     args,
+                    &text,
+                    None,
                     cancel.clone(),
                 )
                 .await?
@@ -204,6 +207,10 @@ impl EngineLoop {
             let mut max_iterations = 25usize;
             let mut followup_context: Option<String> = None;
             let mut last_tool_outputs: Vec<String> = Vec::new();
+            let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
+            let mut readonly_tool_cache: HashMap<String, String> = HashMap::new();
+            let mut readonly_signature_counts: HashMap<String, usize> = HashMap::new();
+            let mut websearch_query_blocked = false;
 
             while max_iterations > 0 && !cancel.is_cancelled() {
                 max_iterations -= 1;
@@ -364,9 +371,9 @@ impl EngineLoop {
                         if call.name.trim().is_empty() {
                             return None;
                         }
-                        let parsed_args = serde_json::from_str::<Value>(call.args.trim())
-                            .unwrap_or_else(|_| json!({}));
-                        Some((normalize_tool_name(&call.name), parsed_args))
+                        let tool_name = normalize_tool_name(&call.name);
+                        let parsed_args = parse_streamed_tool_args(&tool_name, &call.args);
+                        Some((tool_name, parsed_args))
                     })
                     .collect::<Vec<_>>();
                 if tool_calls.is_empty() {
@@ -378,27 +385,110 @@ impl EngineLoop {
                         if !agent_can_use_tool(&active_agent, &tool) {
                             continue;
                         }
+                        let tool_key = normalize_tool_name(&tool);
+                        if websearch_query_blocked && tool_key == "websearch" {
+                            outputs.push(
+                                "Tool `websearch` call skipped: WEBSEARCH_QUERY_MISSING".to_string(),
+                            );
+                            continue;
+                        }
+                        let entry = tool_call_counts.entry(tool_key.clone()).or_insert(0);
+                        *entry += 1;
+                        let budget = tool_budget_for(&tool_key);
+                        if *entry > budget {
+                            outputs.push(format!(
+                                "Tool `{}` call skipped: per-run guard budget exceeded ({}).",
+                                tool_key, budget
+                            ));
+                            continue;
+                        }
+                        let signature = tool_signature(&tool_key, &args);
+                        let mut signature_count = 1usize;
+                        if is_read_only_tool(&tool_key) {
+                            let count = readonly_signature_counts
+                                .entry(signature.clone())
+                                .and_modify(|v| *v = v.saturating_add(1))
+                                .or_insert(1);
+                            signature_count = *count;
+                            if tool_key == "websearch" && *count > 2 {
+                                self.event_bus.publish(EngineEvent::new(
+                                    "tool.loop_guard.triggered",
+                                    json!({
+                                        "sessionID": session_id,
+                                        "messageID": user_message_id,
+                                        "tool": tool_key,
+                                        "reason": "duplicate_signature_retry_exhausted",
+                                        "queryHash": extract_websearch_query(&args).map(|q| stable_hash(&q)),
+                                        "loop_guard_triggered": true
+                                    }),
+                                ));
+                                outputs.push(
+                                    "Tool `websearch` call skipped: WEBSEARCH_LOOP_GUARD"
+                                        .to_string(),
+                                );
+                                continue;
+                            }
+                            if tool_key != "websearch" && *count > 1 {
+                                if let Some(cached) = readonly_tool_cache.get(&signature) {
+                                    outputs.push(cached.clone());
+                                } else {
+                                    outputs.push(format!(
+                                        "Tool `{}` call skipped: duplicate call signature detected.",
+                                        tool_key
+                                    ));
+                                }
+                                continue;
+                            }
+                        }
                         if let Some(output) = self
                             .execute_tool_with_permission(
                                 &session_id,
                                 &user_message_id,
                                 tool,
                                 args,
+                                &text,
+                                Some(&completion),
                                 cancel.clone(),
                             )
                             .await?
                         {
+                            if output.contains("WEBSEARCH_QUERY_MISSING") {
+                                websearch_query_blocked = true;
+                            }
+                            if is_read_only_tool(&tool_key)
+                                && tool_key != "websearch"
+                                && signature_count == 1
+                            {
+                                readonly_tool_cache.insert(signature, output.clone());
+                            }
                             outputs.push(output);
                         }
                     }
                     if !outputs.is_empty() {
                         last_tool_outputs = outputs.clone();
-                        followup_context = Some(format!("{}\nContinue.", outputs.join("\n\n")));
+                        followup_context = Some(format!(
+                            "{}\nContinue with a concise final response and avoid repeating identical tool calls.",
+                            summarize_tool_outputs(&outputs)
+                        ));
                         continue;
                     }
                 }
 
                 break;
+            }
+            if completion.trim().is_empty() && !last_tool_outputs.is_empty() {
+                if let Some(narrative) = self
+                    .generate_final_narrative_without_tools(
+                        &session_id,
+                        &active_agent,
+                        provider_hint.as_deref(),
+                        cancel.clone(),
+                        &last_tool_outputs,
+                    )
+                    .await
+                {
+                    completion = narrative;
+                }
             }
             if completion.trim().is_empty() && !last_tool_outputs.is_empty() {
                 let preview = last_tool_outputs
@@ -488,9 +578,70 @@ impl EngineLoop {
         message_id: &str,
         tool: String,
         args: Value,
+        latest_user_text: &str,
+        latest_assistant_context: Option<&str>,
         cancel: CancellationToken,
     ) -> anyhow::Result<Option<String>> {
         let tool = normalize_tool_name(&tool);
+        let normalized = normalize_tool_args(
+            &tool,
+            args,
+            latest_user_text,
+            latest_assistant_context.unwrap_or_default(),
+        );
+        self.event_bus.publish(EngineEvent::new(
+            "tool.args.normalized",
+            json!({
+                "sessionID": session_id,
+                "messageID": message_id,
+                "tool": tool,
+                "argsSource": normalized.args_source,
+                "argsIntegrity": normalized.args_integrity,
+                "query": normalized.query,
+                "queryHash": normalized.query.as_ref().map(|q| stable_hash(q)),
+                "requestID": Value::Null
+            }),
+        ));
+        if normalized.args_integrity == "recovered" {
+            self.event_bus.publish(EngineEvent::new(
+                "tool.args.recovered",
+                json!({
+                    "sessionID": session_id,
+                    "messageID": message_id,
+                    "tool": tool,
+                    "argsSource": normalized.args_source,
+                    "query": normalized.query,
+                    "queryHash": normalized.query.as_ref().map(|q| stable_hash(q)),
+                    "requestID": Value::Null
+                }),
+            ));
+        }
+        if normalized.missing_terminal {
+            self.event_bus.publish(EngineEvent::new(
+                "tool.args.missing_terminal",
+                json!({
+                    "sessionID": session_id,
+                    "messageID": message_id,
+                    "tool": tool,
+                    "argsSource": normalized.args_source,
+                    "argsIntegrity": normalized.args_integrity,
+                    "requestID": Value::Null,
+                    "error": "WEBSEARCH_QUERY_MISSING"
+                }),
+            ));
+            let mut failed_part =
+                WireMessagePart::tool_result(session_id, message_id, tool.clone(), json!(null));
+            failed_part.state = Some("failed".to_string());
+            failed_part.error = Some("WEBSEARCH_QUERY_MISSING".to_string());
+            self.event_bus.publish(EngineEvent::new(
+                "message.part.updated",
+                json!({"part": failed_part}),
+            ));
+            return Ok(Some("WEBSEARCH_QUERY_MISSING".to_string()));
+        }
+
+        let args = normalized.args;
+        let mut tool_call_id: Option<String> = None;
         if let Some(violation) = self
             .workspace_sandbox_violation(session_id, &tool, &args)
             .await
@@ -520,7 +671,16 @@ impl EngineLoop {
         if matches!(rule, PermissionAction::Ask) {
             let pending = self
                 .permissions
-                .ask_for_session(Some(session_id), &tool, args.clone())
+                .ask_for_session_with_context(
+                    Some(session_id),
+                    &tool,
+                    args.clone(),
+                    Some(crate::PermissionArgsContext {
+                        args_source: normalized.args_source.clone(),
+                        args_integrity: normalized.args_integrity.clone(),
+                        query: normalized.query.clone(),
+                    }),
+                )
                 .await;
             let mut pending_part = WireMessagePart::tool_invocation(
                 session_id,
@@ -529,6 +689,7 @@ impl EngineLoop {
                 args.clone(),
             );
             pending_part.id = Some(pending.id.clone());
+            tool_call_id = Some(pending.id.clone());
             pending_part.state = Some("pending".to_string());
             self.event_bus.publish(EngineEvent::new(
                 "message.part.updated",
@@ -560,17 +721,32 @@ impl EngineLoop {
         }
 
         let args = self.plugins.inject_tool_args(&tool, effective_args).await;
-        let invoke_part =
+        let mut invoke_part =
             WireMessagePart::tool_invocation(session_id, message_id, tool.clone(), args.clone());
+        if let Some(call_id) = tool_call_id.clone() {
+            invoke_part.id = Some(call_id);
+        }
+        let invoke_part_id = invoke_part.id.clone();
         self.event_bus.publish(EngineEvent::new(
             "message.part.updated",
             json!({"part": invoke_part}),
         ));
         let args_for_side_events = args.clone();
-        let result = self
-            .tools
-            .execute_with_cancel(&tool, args, cancel.clone())
-            .await?;
+        let result = match self.tools.execute_with_cancel(&tool, args, cancel.clone()).await {
+            Ok(result) => result,
+            Err(err) => {
+                let mut failed_part =
+                    WireMessagePart::tool_result(session_id, message_id, tool.clone(), json!(null));
+                failed_part.id = invoke_part_id.clone();
+                failed_part.state = Some("failed".to_string());
+                failed_part.error = Some(err.to_string());
+                self.event_bus.publish(EngineEvent::new(
+                    "message.part.updated",
+                    json!({"part": failed_part}),
+                ));
+                return Err(err);
+            }
+        };
         emit_tool_side_events(
             self.storage.clone(),
             &self.event_bus,
@@ -583,12 +759,13 @@ impl EngineLoop {
         .await;
         let output = self.plugins.transform_tool_output(result.output).await;
         let output = truncate_text(&output, 16_000);
-        let result_part = WireMessagePart::tool_result(
+        let mut result_part = WireMessagePart::tool_result(
             session_id,
             message_id,
             tool.clone(),
             json!(output.clone()),
         );
+        result_part.id = invoke_part_id;
         self.event_bus.publish(EngineEvent::new(
             "message.part.updated",
             json!({"part": result_part}),
@@ -662,6 +839,60 @@ impl EngineLoop {
             .get(session_id)
             .map(|expires_at| *expires_at > now)
             .unwrap_or(false)
+    }
+
+    async fn generate_final_narrative_without_tools(
+        &self,
+        session_id: &str,
+        active_agent: &AgentDefinition,
+        provider_hint: Option<&str>,
+        cancel: CancellationToken,
+        tool_outputs: &[String],
+    ) -> Option<String> {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        let mut messages = load_chat_history(self.storage.clone(), session_id).await;
+        if let Some(system) = active_agent.system_prompt.as_ref() {
+            messages.insert(
+                0,
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: system.clone(),
+                },
+            );
+        }
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: format!(
+                "Tool observations:\n{}\n\nProvide a direct final answer now. Do not call tools.",
+                summarize_tool_outputs(tool_outputs)
+            ),
+        });
+        let stream = self
+            .providers
+            .stream_for_provider(provider_hint, messages, None, cancel.clone())
+            .await
+            .ok()?;
+        tokio::pin!(stream);
+        let mut completion = String::new();
+        while let Some(chunk) = stream.next().await {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            match chunk {
+                Ok(StreamChunk::TextDelta(delta)) => completion.push_str(&delta),
+                Ok(StreamChunk::Done { .. }) => break,
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+        let completion = truncate_text(&completion, 16_000);
+        if completion.trim().is_empty() {
+            None
+        } else {
+            Some(completion)
+        }
     }
 }
 
@@ -746,6 +977,213 @@ fn agent_can_use_tool(agent: &AgentDefinition, tool_name: &str) -> bool {
         None => true,
         Some(list) => list.iter().any(|t| normalize_tool_name(t) == target),
     }
+}
+
+fn is_read_only_tool(tool_name: &str) -> bool {
+    matches!(
+        normalize_tool_name(tool_name).as_str(),
+        "glob"
+            | "read"
+            | "grep"
+            | "search"
+            | "codesearch"
+            | "list"
+            | "ls"
+            | "lsp"
+            | "websearch"
+            | "webfetch_document"
+    )
+}
+
+fn tool_budget_for(tool_name: &str) -> usize {
+    match normalize_tool_name(tool_name).as_str() {
+        "glob" => 4,
+        "read" => 8,
+        "websearch" => 3,
+        "grep" | "search" | "codesearch" => 6,
+        _ => 10,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedToolArgs {
+    args: Value,
+    args_source: String,
+    args_integrity: String,
+    query: Option<String>,
+    missing_terminal: bool,
+}
+
+fn normalize_tool_args(
+    tool_name: &str,
+    raw_args: Value,
+    latest_user_text: &str,
+    latest_assistant_context: &str,
+) -> NormalizedToolArgs {
+    let normalized_tool = normalize_tool_name(tool_name);
+    let mut args = raw_args;
+    let mut args_source = if args.is_string() {
+        "provider_string".to_string()
+    } else {
+        "provider_json".to_string()
+    };
+    let mut args_integrity = "ok".to_string();
+    let mut query = None;
+    let mut missing_terminal = false;
+
+    if normalized_tool == "websearch" {
+        if let Some(found) = extract_websearch_query(&args) {
+            query = Some(found);
+            args = set_websearch_query_and_source(args, query.clone(), "tool_args");
+        } else if let Some(inferred) = infer_websearch_query_from_text(latest_user_text) {
+            args_source = "inferred_from_user".to_string();
+            args_integrity = "recovered".to_string();
+            query = Some(inferred);
+            args = set_websearch_query_and_source(args, query.clone(), "inferred_from_user");
+        } else if let Some(recovered) = infer_websearch_query_from_text(latest_assistant_context) {
+            args_source = "recovered_from_context".to_string();
+            args_integrity = "recovered".to_string();
+            query = Some(recovered);
+            args = set_websearch_query_and_source(args, query.clone(), "recovered_from_context");
+        } else {
+            args_source = "missing".to_string();
+            args_integrity = "empty".to_string();
+            missing_terminal = true;
+        }
+    }
+
+    NormalizedToolArgs {
+        args,
+        args_source,
+        args_integrity,
+        query,
+        missing_terminal,
+    }
+}
+
+fn set_websearch_query_and_source(args: Value, query: Option<String>, query_source: &str) -> Value {
+    let mut obj = args.as_object().cloned().unwrap_or_default();
+    if let Some(q) = query {
+        obj.insert("query".to_string(), Value::String(q));
+    }
+    obj.insert(
+        "__query_source".to_string(),
+        Value::String(query_source.to_string()),
+    );
+    Value::Object(obj)
+}
+
+fn extract_websearch_query(args: &Value) -> Option<String> {
+    const QUERY_KEYS: [&str; 5] = ["query", "q", "search_query", "searchQuery", "keywords"];
+    for key in QUERY_KEYS {
+        if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    for container in ["arguments", "args", "input", "params"] {
+        if let Some(obj) = args.get(container) {
+            for key in QUERY_KEYS {
+                if let Some(value) = obj.get(key).and_then(|v| v.as_str()) {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+    args.as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
+fn infer_websearch_query_from_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_lowercase();
+    const PREFIXES: [&str; 11] = [
+        "web search",
+        "websearch",
+        "search web for",
+        "search web",
+        "search for",
+        "search",
+        "look up",
+        "lookup",
+        "find",
+        "web lookup",
+        "query",
+    ];
+
+    let mut candidate = trimmed;
+    for prefix in PREFIXES {
+        if lower.starts_with(prefix) && lower.len() >= prefix.len() {
+            let remainder = trimmed[prefix.len()..]
+                .trim_start_matches(|c: char| c.is_whitespace() || c == ':' || c == '-');
+            candidate = remainder;
+            break;
+        }
+    }
+
+    let normalized = candidate
+        .trim()
+        .trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace())
+        .trim_matches(|c: char| matches!(c, '.' | ',' | '!' | '?'))
+        .trim()
+        .to_string();
+
+    if normalized.split_whitespace().count() < 2 {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn tool_signature(tool_name: &str, args: &Value) -> String {
+    let normalized = normalize_tool_name(tool_name);
+    if normalized == "websearch" {
+        let query = extract_websearch_query(args)
+            .unwrap_or_default()
+            .to_lowercase();
+        let limit = args
+            .get("limit")
+            .or_else(|| args.get("numResults"))
+            .or_else(|| args.get("num_results"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(8);
+        let domains = args
+            .get("domains")
+            .or_else(|| args.get("domain"))
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let recency = args
+            .get("recency")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        return format!("websearch:q={query}|limit={limit}|domains={domains}|recency={recency}");
+    }
+    format!("{}:{}", normalized, args)
+}
+
+fn stable_hash(input: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    input.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn summarize_tool_outputs(outputs: &[String]) -> String {
+    outputs
+        .iter()
+        .take(6)
+        .map(|output| truncate_text(output, 600))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn parse_tool_invocation(input: &str) -> Option<(String, serde_json::Value)> {
@@ -1002,6 +1440,67 @@ fn parse_scalar_like_value(raw: &str) -> Value {
     Value::String(trimmed.to_string())
 }
 
+fn parse_streamed_tool_args(tool_name: &str, raw_args: &str) -> Value {
+    let trimmed = raw_args.trim();
+    if trimmed.is_empty() {
+        return json!({});
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+        return normalize_streamed_tool_args(tool_name, parsed, trimmed);
+    }
+
+    // Some providers emit non-JSON argument text (for example: raw query strings
+    // or key=value fragments). Recover the common forms instead of dropping to {}.
+    let kv_args = parse_function_style_args(trimmed);
+    if !kv_args.is_empty() {
+        return normalize_streamed_tool_args(tool_name, Value::Object(kv_args), trimmed);
+    }
+
+    if normalize_tool_name(tool_name) == "websearch" {
+        return json!({ "query": trimmed });
+    }
+
+    json!({})
+}
+
+fn normalize_streamed_tool_args(tool_name: &str, parsed: Value, raw: &str) -> Value {
+    let normalized_tool = normalize_tool_name(tool_name);
+    if normalized_tool != "websearch" {
+        return parsed;
+    }
+
+    match parsed {
+        Value::Object(mut obj) => {
+            if !has_websearch_query(&obj) {
+                if !raw.trim().is_empty() {
+                    obj.insert("query".to_string(), Value::String(raw.trim().to_string()));
+                }
+            }
+            Value::Object(obj)
+        }
+        Value::String(s) => {
+            let q = s.trim();
+            if q.is_empty() {
+                json!({})
+            } else {
+                json!({ "query": q })
+            }
+        }
+        other => other,
+    }
+}
+
+fn has_websearch_query(obj: &Map<String, Value>) -> bool {
+    const QUERY_KEYS: [&str; 5] = ["query", "q", "search_query", "searchQuery", "keywords"];
+    QUERY_KEYS.iter().any(|key| {
+        obj.get(*key)
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+    })
+}
+
 fn extract_tool_call_from_value(value: &Value) -> Option<(String, Value)> {
     if let Some(obj) = value.as_object() {
         if let Some(tool) = obj.get("tool").and_then(|v| v.as_str()) {
@@ -1017,12 +1516,13 @@ fn extract_tool_call_from_value(value: &Value) -> Option<(String, Value)> {
                 .cloned()
                 .or_else(|| obj.get("arguments").cloned())
                 .unwrap_or_else(|| json!({}));
+            let normalized_tool = normalize_tool_name(tool);
             let args = if let Some(raw) = args.as_str() {
-                serde_json::from_str::<Value>(raw).unwrap_or_else(|_| json!({}))
+                parse_streamed_tool_args(&normalized_tool, raw)
             } else {
                 args
             };
-            return Some((normalize_tool_name(tool), args));
+            return Some((normalized_tool, args));
         }
 
         for key in [
@@ -1602,5 +2102,59 @@ Call: todowrite(task_id=3, status="in_progress")
             updated[1].get("status").and_then(|v| v.as_str()),
             Some("completed")
         );
+    }
+
+    #[test]
+    fn streamed_websearch_args_fallback_to_query_string() {
+        let parsed = parse_streamed_tool_args("websearch", "meaning of life");
+        assert_eq!(
+            parsed.get("query").and_then(|v| v.as_str()),
+            Some("meaning of life")
+        );
+    }
+
+    #[test]
+    fn streamed_websearch_stringified_json_args_are_unwrapped() {
+        let parsed = parse_streamed_tool_args("websearch", r#""donkey gestation period""#);
+        assert_eq!(
+            parsed.get("query").and_then(|v| v.as_str()),
+            Some("donkey gestation period")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_websearch_infers_from_user_text() {
+        let normalized = normalize_tool_args("websearch", json!({}), "web search meaning of life", "");
+        assert_eq!(
+            normalized.args.get("query").and_then(|v| v.as_str()),
+            Some("meaning of life")
+        );
+        assert_eq!(normalized.args_source, "inferred_from_user");
+        assert_eq!(normalized.args_integrity, "recovered");
+    }
+
+    #[test]
+    fn normalize_tool_args_websearch_keeps_existing_query() {
+        let normalized = normalize_tool_args(
+            "websearch",
+            json!({"query":"already set"}),
+            "web search should not override",
+            "",
+        );
+        assert_eq!(
+            normalized.args.get("query").and_then(|v| v.as_str()),
+            Some("already set")
+        );
+        assert_eq!(normalized.args_source, "provider_json");
+        assert_eq!(normalized.args_integrity, "ok");
+    }
+
+    #[test]
+    fn normalize_tool_args_websearch_fails_when_unrecoverable() {
+        let normalized = normalize_tool_args("websearch", json!({}), "search", "");
+        assert!(normalized.query.is_none());
+        assert!(normalized.missing_terminal);
+        assert_eq!(normalized.args_source, "missing");
+        assert_eq!(normalized.args_integrity, "empty");
     }
 }

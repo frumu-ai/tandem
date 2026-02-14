@@ -275,6 +275,8 @@ export interface ToolExecutionRow {
   id: string;
   session_id: string;
   message_id?: string;
+  part_id?: string;
+  correlation_id?: string;
   tool: string;
   status: "pending" | "running" | "completed" | "failed";
   args?: unknown;
@@ -282,6 +284,13 @@ export interface ToolExecutionRow {
   error?: string;
   started_at_ms: number;
   ended_at_ms?: number;
+}
+
+export interface ActiveRunStatusResponse {
+  run_id: string;
+  started_at_ms: number;
+  last_activity_at_ms: number;
+  client_id?: string;
 }
 
 export interface FileAttachment {
@@ -736,6 +745,12 @@ export async function getSession(sessionId: string): Promise<Session> {
 
 export async function listSessions(): Promise<Session[]> {
   return invoke("list_sessions");
+}
+
+export async function getSessionActiveRun(
+  sessionId: string
+): Promise<ActiveRunStatusResponse | null> {
+  return invoke("get_session_active_run", { sessionId });
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

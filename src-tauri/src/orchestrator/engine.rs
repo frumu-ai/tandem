@@ -26,6 +26,33 @@ fn is_sidecar_session_not_found(err: &TandemError) -> bool {
     matches!(err, TandemError::Sidecar(msg) if msg.contains("404 Not Found"))
 }
 
+fn extract_text_from_message_part(part: &serde_json::Value) -> Option<String> {
+    let obj = part.as_object()?;
+    let part_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+
+    if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+        if !text.trim().is_empty() {
+            return Some(text.to_string());
+        }
+    }
+
+    if let Some(content) = obj.get("content").and_then(|v| v.as_str()) {
+        if !content.trim().is_empty() {
+            return Some(content.to_string());
+        }
+    }
+
+    if matches!(part_type, "text" | "reasoning" | "output_text") {
+        if let Some(delta) = obj.get("delta").and_then(|v| v.as_str()) {
+            if !delta.trim().is_empty() {
+                return Some(delta.to_string());
+            }
+        }
+    }
+
+    None
+}
+
 // ============================================================================
 // Orchestrator Engine
 // ============================================================================
@@ -1315,6 +1342,8 @@ impl OrchestratorEngine {
         let mut errors: Vec<String> = Vec::new();
         let mut first_tool_part_id: Option<String> = None;
         let mut first_tool_finished = false;
+        let mut stalled_windows: usize = 0;
+        const MAX_STALLED_WINDOWS_BEFORE_FAIL: usize = 4;
 
         // Add a hard timeout to prevent hanging forever (even if the sidecar only sends heartbeats).
         // Planning can legitimately take a while (large repos, slower models, cold starts).
@@ -1325,15 +1354,82 @@ impl OrchestratorEngine {
             loop {
                 let next = tokio::time::timeout(per_event_timeout, stream.recv()).await;
                 let event = match next {
-                    Ok(Ok(env)) => env.payload,
+                    Ok(Ok(env)) => {
+                        stalled_windows = 0;
+                        env.payload
+                    }
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
                         tracing::warn!("Orchestrator stream lagged by {} events", skipped);
                         continue;
                     }
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
                     Err(_) => {
-                        errors.push("No SSE events received for 60s".to_string());
-                        break;
+                        stalled_windows = stalled_windows.saturating_add(1);
+                        tracing::warn!(
+                            "No SSE events for {}s (window {}/{}), probing active run for session {}",
+                            stalled_windows * 60,
+                            stalled_windows,
+                            MAX_STALLED_WINDOWS_BEFORE_FAIL,
+                            active_session_id
+                        );
+
+                        match self.sidecar.get_active_run(&active_session_id).await {
+                            Ok(Some(active)) => {
+                                if let Some(task_id) = task_id {
+                                    self.emit_task_trace(
+                                        task_id,
+                                        Some(&active_session_id),
+                                        "STREAM_STALLED",
+                                        Some(format!(
+                                            "run={} last_activity_ms={}",
+                                            active.run_id, active.last_activity_at_ms
+                                        )),
+                                    );
+                                }
+
+                                if stalled_windows >= MAX_STALLED_WINDOWS_BEFORE_FAIL {
+                                    errors.push(format!(
+                                        "No SSE events received for {}s while run {} remained active",
+                                        stalled_windows * 60,
+                                        active.run_id
+                                    ));
+                                    break;
+                                }
+
+                                continue;
+                            }
+                            Ok(None) => {
+                                tracing::info!(
+                                    "No active run found for {}; treating stall as terminal boundary",
+                                    active_session_id
+                                );
+                                if content.trim().is_empty() {
+                                    if let Some(recovered) = self
+                                        .recover_agent_response_from_history(&active_session_id)
+                                        .await
+                                    {
+                                        content = recovered;
+                                    }
+                                }
+                                break;
+                            }
+                            Err(probe_err) => {
+                                tracing::warn!(
+                                    "Failed to probe active run for {} during stall recovery: {}",
+                                    active_session_id,
+                                    probe_err
+                                );
+                                if stalled_windows >= MAX_STALLED_WINDOWS_BEFORE_FAIL {
+                                    errors.push(format!(
+                                        "No SSE events received for {}s and run probe failed: {}",
+                                        stalled_windows * 60,
+                                        probe_err
+                                    ));
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
                     }
                 };
                 match &event {
@@ -1430,12 +1526,43 @@ impl OrchestratorEngine {
             errors.push(format!("Timed out after {:?}", timeout));
         }
 
+        if content.trim().is_empty() && errors.is_empty() {
+            if let Some(recovered) = self
+                .recover_agent_response_from_history(&active_session_id)
+                .await
+            {
+                content = recovered;
+            }
+        }
+
         if !errors.is_empty() {
             return Err(TandemError::Sidecar(errors.join(", ")));
         }
 
         tracing::info!("Agent response received, length: {}", content.len());
         Ok(content)
+    }
+
+    async fn recover_agent_response_from_history(&self, session_id: &str) -> Option<String> {
+        let messages = self.sidecar.get_session_messages(session_id).await.ok()?;
+        let latest_assistant = messages.iter().rev().find(|message| {
+            message.info.role == "assistant"
+                && !message.info.deleted.unwrap_or(false)
+                && !message.info.reverted.unwrap_or(false)
+        })?;
+
+        let text = latest_assistant
+            .parts
+            .iter()
+            .filter_map(extract_text_from_message_part)
+            .collect::<Vec<_>>()
+            .join("");
+
+        if text.trim().is_empty() {
+            None
+        } else {
+            Some(text)
+        }
     }
 
     /// Build a summary of the workspace

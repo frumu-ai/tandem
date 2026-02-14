@@ -180,11 +180,7 @@ export function SessionSidebar({
 
       // Remove chat sessions that correspond to orchestrator runs
       const filteredItems = items.filter(
-        (item) =>
-          item.type !== "chat" ||
-          !runSessionIds.has(item.id) ||
-          // Extra guard: only hide if it is clearly an orchestrator-root session title.
-          !item.title?.startsWith("Orchestrator Run:")
+        (item) => item.type !== "chat" || !runSessionIds.has(item.id)
       );
 
       // Clear items and add back filtered ones

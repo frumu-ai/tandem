@@ -14,16 +14,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Web Markdown Extraction**: Added `webfetch_document` to convert HTML into clean Markdown with links, metadata, and size stats.
 - **Tool Debugging**: Added `mcp_debug` to capture raw MCP responses (status, headers, body, truncation).
 - **CLI Tool Runner**: Added `tandem-engine tool --json` to invoke tools directly from the engine binary.
+- **Runtime API Tests**: Added sidecar and TUI coverage for conflict handling, recovery, and cancel-by-runID flows.
 
 ### Changed
 
 - **Web Tool Defaults**: Default modes now include `websearch` and `webfetch_document` (approval gated).
 - **Tool Permissions**: Added permission support for `webfetch_document` in mode rules.
 - **MCP Accept Header**: MCP calls now accept `text/event-stream` responses for SSE endpoints.
+- **Runtime API Naming**: Renamed `send_message_streaming` and related client/sidecar identifiers to split-semantics naming.
+- **Rust SDK/Runtime Licensing**: Rust packages now ship under `MIT OR Apache-2.0` (app/web licensing unchanged).
+- **Tool Arg Integrity Pipeline**: Added normalized tool-arg handling across permission + execution boundaries with websearch query-source tracking.
+- **Dev Sidecar Build Handshake**: Added `/global/health` build metadata (`build_id`, `binary_path`) and desktop mismatch diagnostics.
 
 ### Docs
 
 - **Engine Testing Guide**: Added tool testing workflows, size savings example, and Windows quickstart for tauri dev.
+
+### Fixed
+
+- **Websearch Empty-Args Failures**: Prevented repeated `websearch` executions with `{}` by recovering/inferencing queries and emitting explicit terminal errors when unrecoverable.
+- **Websearch Looping**: Added read-only dedupe and loop-guard controls for repeated identical `websearch` calls.
+- **Provider Auth Error Clarity**: Provider auth failures now emit provider-specific API key guidance (for example OpenRouter key hints).
+- **Desktop External Links**: Markdown links in assistant messages now open reliably through Tauri opener integration.
 
 ## [0.2.25] - 2026-02-12
 

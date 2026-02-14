@@ -25,6 +25,7 @@ import { useMemoryIndexing } from "@/contexts/MemoryIndexingContext";
 import { resolveSessionDirectory, sessionBelongsToWorkspace } from "@/lib/sessionScope";
 import {
   listSessions,
+  getSessionActiveRun,
   listProjects,
   deleteSession,
   deleteOrchestratorRun,
@@ -343,6 +344,7 @@ function App() {
   const [orchestratorOpen, setOrchestratorOpen] = useState(false);
   const [currentOrchestratorRunId, setCurrentOrchestratorRunId] = useState<string | null>(null);
   const [orchestratorRuns, setOrchestratorRuns] = useState<RunSummary[]>([]);
+  const skipOrchestratorAutoResumeRef = useRef(false);
 
   // Poll for orchestrator runs
   useEffect(() => {
@@ -366,7 +368,11 @@ function App() {
           const sid = "session_id" in payload ? payload.session_id : undefined;
           if (!sid) return;
 
-          if (payload.type === "session_idle" || payload.type === "session_error") {
+          if (
+            payload.type === "session_idle" ||
+            payload.type === "session_error" ||
+            payload.type === "run_finished"
+          ) {
             setRunningSessionIds((prev) => {
               if (!prev.has(sid)) return prev;
               const next = new Set(prev);
@@ -376,10 +382,21 @@ function App() {
             return;
           }
 
+          if (payload.type === "run_started") {
+            setRunningSessionIds((prev) => {
+              if (prev.has(sid)) return prev;
+              const next = new Set(prev);
+              next.add(sid);
+              return next;
+            });
+            return;
+          }
+
           if (payload.type === "session_status") {
-            const terminal = ["idle", "completed", "failed", "error", "cancelled"].includes(
+            const terminal = ["idle", "completed", "failed", "error", "cancelled", "timeout"].includes(
               payload.status
             );
+            const running = ["running", "in_progress", "executing"].includes(payload.status);
             setRunningSessionIds((prev) => {
               const has = prev.has(sid);
               if (terminal && has) {
@@ -387,7 +404,7 @@ function App() {
                 next.delete(sid);
                 return next;
               }
-              if (!terminal && !has) {
+              if (running && !has) {
                 const next = new Set(prev);
                 next.add(sid);
                 return next;
@@ -396,14 +413,6 @@ function App() {
             });
             return;
           }
-
-          // Any other session-scoped event implies activity.
-          setRunningSessionIds((prev) => {
-            if (prev.has(sid)) return prev;
-            const next = new Set(prev);
-            next.add(sid);
-            return next;
-          });
         });
       } catch (e) {
         console.error("Failed to subscribe to sidecar events in App:", e);
@@ -423,6 +432,10 @@ function App() {
   // Do not auto-open completed/failed/cancelled history; let users start fresh by default.
   useEffect(() => {
     if (!orchestratorOpen || currentOrchestratorRunId) return;
+    if (skipOrchestratorAutoResumeRef.current) {
+      skipOrchestratorAutoResumeRef.current = false;
+      return;
+    }
     invoke<RunSummary[]>("orchestrator_list_runs")
       .then((runs) => {
         if (!runs || runs.length === 0) return;
@@ -476,7 +489,7 @@ function App() {
         case "openrouter":
           return "OpenRouter";
         case "opencode_zen":
-          return "Tandem Zen";
+          return "Opencode Zen";
         case "anthropic":
           return "Anthropic";
         case "openai":
@@ -504,7 +517,7 @@ function App() {
     const enabledCustom = (config.custom ?? []).find((c) => c.enabled);
     const candidates = [
       { id: "openrouter", label: "OpenRouter", config: config.openrouter },
-      { id: "opencode_zen", label: "Tandem Zen", config: config.opencode_zen },
+      { id: "opencode_zen", label: "Opencode Zen", config: config.opencode_zen },
       { id: "anthropic", label: "Anthropic", config: config.anthropic },
       { id: "openai", label: "OpenAI", config: config.openai },
       { id: "ollama", label: "Ollama", config: config.ollama },
@@ -655,6 +668,19 @@ function App() {
 
       setSessions(sessionInfos);
       setProjects(projectsData);
+      const runChecks = await Promise.allSettled(
+        sessionInfos.map(async (session) => {
+          const activeRun = await getSessionActiveRun(session.id);
+          return { sessionId: session.id, running: !!activeRun };
+        })
+      );
+      const activeIds = new Set<string>();
+      for (const result of runChecks) {
+        if (result.status === "fulfilled" && result.value.running) {
+          activeIds.add(result.value.sessionId);
+        }
+      }
+      setRunningSessionIds(activeIds);
     } catch (e) {
       console.error("Failed to load history:", e);
     } finally {
@@ -679,6 +705,36 @@ function App() {
   useEffect(() => {
     loadHistory();
   }, [loadHistory]);
+
+  useEffect(() => {
+    if (sessions.length === 0) return;
+    let cancelled = false;
+    const reconcile = async () => {
+      try {
+        const checks = await Promise.allSettled(
+          sessions.map(async (session) => {
+            const activeRun = await getSessionActiveRun(session.id);
+            return { sessionId: session.id, running: !!activeRun };
+          })
+        );
+        if (cancelled) return;
+        const activeIds = new Set<string>();
+        for (const result of checks) {
+          if (result.status === "fulfilled" && result.value.running) {
+            activeIds.add(result.value.sessionId);
+          }
+        }
+        setRunningSessionIds(activeIds);
+      } catch (e) {
+        console.warn("Session running-state reconcile failed:", e);
+      }
+    };
+    const interval = setInterval(reconcile, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [sessions]);
 
   const runMigration = useCallback(
     async (force = false) => {
@@ -1017,6 +1073,14 @@ function App() {
   };
 
   const handleSelectSession = (sessionId: string) => {
+    const run = orchestratorRuns.find((r) => r.session_id === sessionId);
+    if (run) {
+      setCurrentSessionId(null);
+      setCurrentOrchestratorRunId(run.run_id);
+      setOrchestratorOpen(true);
+      setView("chat");
+      return;
+    }
     setView("chat");
     setOrchestratorOpen(false);
     setCurrentOrchestratorRunId(null);
@@ -1031,6 +1095,7 @@ function App() {
   };
 
   const handleNewChat = () => {
+    skipOrchestratorAutoResumeRef.current = true;
     setOrchestratorOpen(false);
     setCurrentOrchestratorRunId(null);
     setCurrentSessionId(null);
@@ -1086,6 +1151,9 @@ function App() {
   const handleAgentChange = (agent: string | undefined) => {
     setSelectedAgent(agent);
     if (agent === "orchestrate") {
+      skipOrchestratorAutoResumeRef.current = true;
+      setCurrentSessionId(null);
+      setCurrentOrchestratorRunId(null);
       setOrchestratorOpen(true);
     }
   };
@@ -1215,6 +1283,14 @@ function App() {
       orchestratorRuns.filter((run) => run.status === "planning" || run.status === "executing")
         .length,
     [orchestratorRuns]
+  );
+  const currentOrchestratorRunSessionId = useMemo(
+    () =>
+      currentOrchestratorRunId
+        ? (orchestratorRuns.find((run) => run.run_id === currentOrchestratorRunId)?.session_id ??
+          null)
+        : null,
+    [orchestratorRuns, currentOrchestratorRunId]
   );
   const activeChatRunningCount = useMemo(
     () => Array.from(runningSessionIds).filter((sid) => visibleChatSessionIds.has(sid)).length,
@@ -1528,6 +1604,7 @@ function App() {
                   // Orchestrator as main view
                   <OrchestratorPanel
                     runId={currentOrchestratorRunId}
+                    runSessionIdHint={currentOrchestratorRunSessionId}
                     onClose={() => {
                       setOrchestratorOpen(false);
                       // Reset to default agent when closing

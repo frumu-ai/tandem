@@ -85,7 +85,7 @@ export function ModelSelector({
           case "openrouter":
             return "OpenRouter";
           case "opencode_zen":
-            return "Tandem Zen";
+            return "Opencode Zen";
           case "ollama":
             return "Ollama";
           case "poe":

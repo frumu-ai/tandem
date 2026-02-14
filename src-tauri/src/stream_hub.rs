@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{broadcast, oneshot, Mutex};
 use uuid::Uuid;
 
@@ -479,7 +479,7 @@ impl StreamHub {
                             };
 
                             match next_item {
-                                Ok(event) => {
+                                Ok(mut event) => {
                                     last_progress = Instant::now();
                                     {
                                         let mut rt = runtime.write().await;
@@ -496,6 +496,41 @@ impl StreamHub {
                                             &runtime,
                                         )
                                         .await;
+                                    }
+                                    if let StreamEvent::ToolEnd {
+                                        session_id,
+                                        message_id,
+                                        part_id,
+                                        tool,
+                                        ..
+                                    } = &mut event
+                                    {
+                                        if !pending_tools
+                                            .contains_key(&(session_id.clone(), part_id.clone()))
+                                        {
+                                            if let Some((candidate_part, _)) = pending_tools
+                                                .iter()
+                                                .find(|((sid, _), pending)| {
+                                                    sid == session_id
+                                                        && pending.message_id == *message_id
+                                                        && pending.tool.eq_ignore_ascii_case(tool)
+                                                })
+                                                .map(|((_, candidate_part), pending)| {
+                                                    (candidate_part.clone(), pending.clone())
+                                                })
+                                            {
+                                                let incoming_part_id = part_id.clone();
+                                                *part_id = candidate_part.clone();
+                                                tracing::warn!(
+                                                    "tool.lifecycle.end remapped mismatched part_id session_id={} message_id={} tool={} incoming_part_id={} resolved_part_id={}",
+                                                    session_id,
+                                                    message_id,
+                                                    tool,
+                                                    incoming_part_id,
+                                                    candidate_part
+                                                );
+                                            }
+                                        }
                                     }
                                     if let Err(e) = crate::tool_history::record_stream_event(&app, &event) {
                                         tracing::warn!("Failed to persist tool history event: {}", e);
@@ -584,41 +619,17 @@ impl StreamHub {
                                             tool,
                                             ..
                                         } => {
-                                            let mut resolved_part_id = part_id.clone();
-                                            if !pending_tools
-                                                .contains_key(&(session_id.clone(), part_id.clone()))
-                                            {
-                                                if let Some(((candidate_session, candidate_part), _)) =
-                                                    pending_tools
-                                                        .iter()
-                                                        .find(|((sid, _), pending)| {
-                                                            sid == session_id
-                                                                && pending.message_id == *message_id
-                                                                && pending.tool.eq_ignore_ascii_case(tool)
-                                                        })
-                                                {
-                                                    resolved_part_id = candidate_part.clone();
-                                                    tracing::warn!(
-                                                        "tool.lifecycle.end remapped mismatched part_id session_id={} message_id={} tool={} incoming_part_id={} resolved_part_id={}",
-                                                        candidate_session,
-                                                        message_id,
-                                                        tool,
-                                                        part_id,
-                                                        resolved_part_id
-                                                    );
-                                                }
-                                            }
                                             tracing::info!(
                                                 "tool.lifecycle.end session_id={} message_id={} part_id={} correlation_id={}:{} tool={}",
                                                 session_id,
                                                 message_id,
-                                                resolved_part_id,
+                                                part_id,
                                                 session_id,
-                                                resolved_part_id,
+                                                part_id,
                                                 tool
                                             );
                                             pending_tools
-                                                .remove(&(session_id.clone(), resolved_part_id.clone()));
+                                                .remove(&(session_id.clone(), part_id.clone()));
                                         }
                                         StreamEvent::SessionIdle { session_id }
                                         | StreamEvent::SessionError { session_id, .. }
@@ -642,6 +653,37 @@ impl StreamHub {
                                                     ),
                                                 },
                                             );
+                                            let dangling: Vec<((String, String), PendingToolState)> =
+                                                pending_tools
+                                                    .iter()
+                                                    .filter(|((sid, _), _)| sid == session_id)
+                                                    .map(|(key, pending)| (key.clone(), pending.clone()))
+                                                    .collect();
+                                            for ((pending_session, pending_part_id), pending) in &dangling {
+                                                let synthetic = StreamEvent::ToolEnd {
+                                                    session_id: pending_session.clone(),
+                                                    message_id: pending.message_id.clone(),
+                                                    part_id: pending_part_id.clone(),
+                                                    tool: pending.tool.clone(),
+                                                    result: None,
+                                                    error: Some("interrupted".to_string()),
+                                                };
+                                                let _ = crate::tool_history::record_stream_event(&app, &synthetic);
+                                                let synthetic_env = StreamEventEnvelopeV2 {
+                                                    event_id: Uuid::new_v4().to_string(),
+                                                    correlation_id: pending.correlation_id.clone(),
+                                                    ts_ms: crate::logs::now_ms(),
+                                                    session_id: Some(pending_session.clone()),
+                                                    source: StreamEventSource::System,
+                                                    payload: synthetic.clone(),
+                                                };
+                                                let _ = app.emit("sidecar_event", &synthetic);
+                                                let _ = app.emit("sidecar_event_v2", &synthetic_env);
+                                                let _ = tx.send(synthetic_env);
+                                            }
+                                            for ((pending_session, pending_part_id), _) in dangling {
+                                                pending_tools.remove(&(pending_session, pending_part_id));
+                                            }
                                             match crate::tool_history::mark_running_tools_terminal(
                                                 &app,
                                                 Some(session_id),
@@ -690,6 +732,45 @@ impl StreamHub {
                                                         ),
                                                     },
                                                 ),
+                                            }
+                                        }
+                                        StreamEvent::PermissionAsked {
+                                            session_id,
+                                            request_id,
+                                            tool,
+                                            args,
+                                            query,
+                                            ..
+                                        } => {
+                                            if let Some(app_state) =
+                                                app.try_state::<crate::state::AppState>()
+                                            {
+                                                if let Some(args_value) = args.clone() {
+                                                    app_state
+                                                        .permission_args_cache
+                                                        .lock()
+                                                        .await
+                                                        .insert(request_id.clone(), args_value);
+                                                }
+                                                if tool
+                                                    .as_deref()
+                                                    .map(normalize_tool_name)
+                                                    .as_deref()
+                                                    == Some("websearch")
+                                                {
+                                                    if let Some(query_text) = query.clone().or_else(
+                                                        || extract_websearch_query(args.as_ref()),
+                                                    ) {
+                                                        app_state
+                                                            .session_websearch_intent
+                                                            .lock()
+                                                            .await
+                                                            .insert(
+                                                                session_id.clone(),
+                                                                query_text,
+                                                            );
+                                                    }
+                                                }
                                             }
                                         }
                                         _ => {}
@@ -864,4 +945,25 @@ fn tool_timeout_for(tool: &str) -> Duration {
         "grep" | "search" | "codesearch" => Duration::from_secs(5 * 60),
         _ => Duration::from_secs(120),
     }
+}
+
+fn normalize_tool_name(name: &str) -> String {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn extract_websearch_query(args: Option<&serde_json::Value>) -> Option<String> {
+    let args = args?;
+    const QUERY_KEYS: [&str; 5] = ["query", "q", "search_query", "searchQuery", "keywords"];
+    for key in QUERY_KEYS {
+        if let Some(q) = args.get(key).and_then(|v| v.as_str()) {
+            let trimmed = q.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }

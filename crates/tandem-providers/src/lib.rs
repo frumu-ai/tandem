@@ -347,6 +347,19 @@ fn env_api_key_for_provider(id: &str) -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+fn provider_api_key_env_hint(id: &str) -> &'static str {
+    match id {
+        "openrouter" => "OPENROUTER_API_KEY",
+        "opencode" => "OPENCODE_ZEN_API_KEY",
+        "openai" => "OPENAI_API_KEY",
+        "anthropic" => "ANTHROPIC_API_KEY",
+        "groq" => "GROQ_API_KEY",
+        "mistral" => "MISTRAL_API_KEY",
+        "cohere" => "COHERE_API_KEY",
+        _ => "provider API key",
+    }
+}
+
 struct LocalEchoProvider;
 
 #[async_trait]
@@ -475,6 +488,15 @@ impl Provider for OpenAICompatibleProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
+            if text.contains("Failed to authenticate request with Clerk") {
+                let key_hint = provider_api_key_env_hint(&self.id);
+                anyhow::bail!(
+                    "provider authentication failed ({}) for `{}`. Verify the provider API key (set `{}` or configure the key in Settings) and retry.",
+                    status,
+                    self.id,
+                    key_hint
+                );
+            }
             anyhow::bail!(
                 "provider stream request failed with status {}: {}",
                 status,

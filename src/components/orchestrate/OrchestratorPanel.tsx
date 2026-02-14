@@ -19,13 +19,21 @@ import { BudgetMeter } from "./BudgetMeter";
 import { TaskBoard } from "./TaskBoard";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { LogsDrawer } from "@/components/logs";
-import { getProvidersConfig } from "@/lib/tauri";
+import { getProvidersConfig, getSessionMessages, type SessionMessage } from "@/lib/tauri";
 import { DEFAULT_ORCHESTRATOR_CONFIG } from "./types";
-import type { OrchestratorConfig, RunSnapshot, Run, Task, OrchestratorEvent } from "./types";
+import type {
+  OrchestratorConfig,
+  RunSnapshot,
+  Run,
+  RunSummary,
+  Task,
+  OrchestratorEvent,
+} from "./types";
 
 interface OrchestratorPanelProps {
   onClose: () => void;
   runId?: string | null;
+  runSessionIdHint?: string | null;
 }
 
 interface OrchestratorModelSelection {
@@ -33,7 +41,26 @@ interface OrchestratorModelSelection {
   provider?: string | null;
 }
 
-export function OrchestratorPanel({ onClose, runId: initialRunId }: OrchestratorPanelProps) {
+function extractSessionMessageText(message: SessionMessage): string {
+  return (message.parts || [])
+    .map((part) => {
+      if (!part || typeof part !== "object") return "";
+      const rec = part as Record<string, unknown>;
+      const text = rec.text;
+      if (typeof text === "string") return text;
+      const content = rec.content;
+      if (typeof content === "string") return content;
+      return "";
+    })
+    .filter((s) => s.trim().length > 0)
+    .join("");
+}
+
+export function OrchestratorPanel({
+  onClose,
+  runId: initialRunId,
+  runSessionIdHint,
+}: OrchestratorPanelProps) {
   const [runId, setRunId] = useState<string | null>(initialRunId || null);
   const [snapshot, setSnapshot] = useState<RunSnapshot | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -62,7 +89,9 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
   // Task detail modal
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [runSessionId, setRunSessionId] = useState<string | null>(null);
-  const consoleSessionId = selectedTask?.session_id ?? runSessionId ?? null;
+  const [lastTaskSessionId, setLastTaskSessionId] = useState<string | null>(null);
+  const [plannerTranscriptPreview, setPlannerTranscriptPreview] = useState<string>("");
+  const consoleSessionId = selectedTask?.session_id ?? lastTaskSessionId ?? runSessionId ?? null;
 
   // Sync internal runId state when parent changes selection
   useEffect(() => {
@@ -75,12 +104,22 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
       setRunModel(undefined);
       setRunProvider(undefined);
       setRunSessionId(null);
+      setLastTaskSessionId(null);
+      setPlannerTranscriptPreview("");
     }
   }, [initialRunId]);
 
   useEffect(() => {
+    if (runSessionIdHint) {
+      setRunSessionId(runSessionIdHint);
+    }
+  }, [runSessionIdHint]);
+
+  useEffect(() => {
     if (!runId) {
       setRunSessionId(null);
+      setLastTaskSessionId(null);
+      setPlannerTranscriptPreview("");
       return;
     }
 
@@ -91,7 +130,17 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
         if (!isMounted) return;
         setRunSessionId(run.session_id ?? null);
       } catch {
-        // best effort only
+        // Fallback to list summaries if full run load is temporarily unavailable.
+        try {
+          const runs = await invoke<RunSummary[]>("orchestrator_list_runs");
+          if (!isMounted) return;
+          const summary = runs.find((r) => r.run_id === runId);
+          setRunSessionId(summary?.session_id ?? null);
+        } catch (e) {
+          if (!isMounted) return;
+          console.warn("[OrchestratorPanel] Failed to resolve run session id:", e);
+          setRunSessionId(null);
+        }
       }
     })();
 
@@ -99,6 +148,40 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
       isMounted = false;
     };
   }, [runId]);
+
+  // Show a lightweight live transcript preview from the run base session.
+  useEffect(() => {
+    if (!runSessionId || !runId) return;
+    let isMounted = true;
+
+    const refreshPreview = async () => {
+      try {
+        const messages = await getSessionMessages(runSessionId);
+        if (!isMounted) return;
+
+        const latestAssistant = [...messages]
+          .reverse()
+          .find((m) => m.info.role === "assistant" && !m.info.deleted && !m.info.reverted);
+
+        if (!latestAssistant) {
+          setPlannerTranscriptPreview("");
+          return;
+        }
+
+        const text = extractSessionMessageText(latestAssistant);
+        setPlannerTranscriptPreview(text.trim());
+      } catch {
+        // best effort only
+      }
+    };
+
+    void refreshPreview();
+    const interval = setInterval(refreshPreview, 1500);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [runSessionId, runId]);
 
   // Prefill model/provider for new runs from the user's last selected provider/model (same as chat).
   useEffect(() => {
@@ -315,7 +398,12 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
           const taskId = payload.task_id as string | undefined;
           const stage = payload.stage as string | undefined;
           const detail = payload.detail as string | undefined;
+          const traceSessionId =
+            typeof payload.session_id === "string" ? payload.session_id : undefined;
           if (!taskId || !stage) return;
+          if (traceSessionId) {
+            setLastTaskSessionId(traceSessionId);
+          }
 
           setTaskRuntime((prev) => {
             const next = { ...prev };
@@ -939,13 +1027,29 @@ export function OrchestratorPanel({ onClose, runId: initialRunId }: Orchestrator
 
                 {/* Task Board or Loading State */}
                 {snapshot.status === "planning" && tasks.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center rounded-lg border border-border bg-surface py-12 text-center">
-                    <Loader2 className="mb-4 h-8 w-8 animate-spin text-primary" />
-                    <h3 className="text-lg font-medium text-text">Generating Plan</h3>
-                    <p className="mt-1 max-w-sm text-sm text-text-muted">
-                      The orchestrator is analyzing your request and breaking it down into
-                      executable tasks...
-                    </p>
+                  <div className="space-y-4">
+                    <div className="flex flex-col items-center justify-center rounded-lg border border-border bg-surface py-12 text-center">
+                      <Loader2 className="mb-4 h-8 w-8 animate-spin text-primary" />
+                      <h3 className="text-lg font-medium text-text">Generating Plan</h3>
+                      <p className="mt-1 max-w-sm text-sm text-text-muted">
+                        The orchestrator is analyzing your request and breaking it down into
+                        executable tasks...
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                      <div className="text-[10px] uppercase tracking-wide text-text-subtle mb-2">
+                        Planner Transcript
+                      </div>
+                      {plannerTranscriptPreview ? (
+                        <p className="text-sm text-text whitespace-pre-wrap line-clamp-8">
+                          {plannerTranscriptPreview}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-text-muted">
+                          Waiting for planner output...
+                        </p>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <TaskBoard

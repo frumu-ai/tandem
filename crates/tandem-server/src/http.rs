@@ -444,6 +444,8 @@ async fn global_health(State(state): State<AppState>) -> impl IntoResponse {
         leases.len()
     };
     let startup = state.startup_snapshot().await;
+    let build_id = crate::build_id();
+    let binary_path = crate::binary_path_for_health();
     Json(json!({
         "healthy": true,
         "ready": state.is_ready(),
@@ -452,6 +454,8 @@ async fn global_health(State(state): State<AppState>) -> impl IntoResponse {
         "startup_elapsed_ms": startup.elapsed_ms,
         "last_error": startup.last_error,
         "version": env!("CARGO_PKG_VERSION"),
+        "build_id": build_id,
+        "binary_path": binary_path,
         "mode": state.mode_label(),
         "leaseCount": lease_count
     }))

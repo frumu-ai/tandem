@@ -151,6 +151,10 @@ struct SidecarHealthResponse {
     startup_elapsed_ms: u64,
     #[serde(default)]
     last_error: Option<String>,
+    #[serde(default)]
+    build_id: Option<String>,
+    #[serde(default)]
+    binary_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -161,6 +165,8 @@ pub struct SidecarStartupHealth {
     pub startup_attempt_id: String,
     pub startup_elapsed_ms: u64,
     pub last_error: Option<String>,
+    pub build_id: Option<String>,
+    pub binary_path: Option<String>,
 }
 
 fn default_health_ready() -> bool {
@@ -639,6 +645,11 @@ pub struct PermissionAskedProps {
     pub request_id: String,
     pub tool: Option<String>,
     pub args: Option<serde_json::Value>,
+    #[serde(rename = "argsSource")]
+    pub args_source: Option<String>,
+    #[serde(rename = "argsIntegrity")]
+    pub args_integrity: Option<String>,
+    pub query: Option<String>,
 }
 
 /// Raw OpenCode event from SSE stream
@@ -711,6 +722,9 @@ pub enum StreamEvent {
         request_id: String,
         tool: Option<String>,
         args: Option<serde_json::Value>,
+        args_source: Option<String>,
+        args_integrity: Option<String>,
+        query: Option<String>,
     },
     /// File edited (from file.edited event)
     FileEdited {
@@ -863,7 +877,7 @@ pub struct TodoItem {
     pub status: String, // "pending" | "in_progress" | "completed" | "cancelled"
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveRunStatusResponse {
     #[serde(rename = "runID")]
     pub run_id: String,
@@ -1014,6 +1028,8 @@ impl SidecarManager {
             startup_attempt_id: health.startup_attempt_id,
             startup_elapsed_ms: health.startup_elapsed_ms,
             last_error: health.last_error,
+            build_id: health.build_id,
+            binary_path: health.binary_path,
         })
     }
 
@@ -3072,15 +3088,30 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                             .and_then(|r| r.as_str())
                             .unwrap_or("");
                         if role != "assistant" {
+                            // Tandem engine final text snapshots may omit role metadata.
+                            // If this is a non-empty text snapshot without delta and without
+                            // message role envelope, pass it through so final answer is visible.
+                            let has_text = part
+                                .get("text")
+                                .and_then(|s| s.as_str())
+                                .map(|s| !s.trim().is_empty())
+                                .unwrap_or(false);
+                            let has_message_envelope = props.get("message").is_some();
+                            if has_text && !has_message_envelope {
+                                tracing::debug!(
+                                    "Emitting text part without delta based on text snapshot fallback"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "Skipping text/reasoning part without delta (likely user message)"
+                                );
+                                return None;
+                            }
+                        } else {
                             tracing::debug!(
-                                "Skipping text/reasoning part without delta (likely user message)"
+                                "Emitting text part without delta for assistant"
                             );
-                            return None;
                         }
-
-                        // If it's an assistant message with text but no delta, we should probably emit it
-                        // to ensure we don't miss content.
-                        tracing::debug!("Emitting text part without delta for assistant");
                     }
 
                     let text = part
@@ -3350,11 +3381,26 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                 .and_then(|s| s.as_str())
                 .map(|s| s.to_string());
             let args = props.get("args").cloned();
+            let args_source = props
+                .get("argsSource")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+            let args_integrity = props
+                .get("argsIntegrity")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+            let query = props
+                .get("query")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
             Some(StreamEvent::PermissionAsked {
                 session_id,
                 request_id,
                 tool,
                 args,
+                args_source,
+                args_integrity,
+                query,
             })
         }
         "question.asked" => {
