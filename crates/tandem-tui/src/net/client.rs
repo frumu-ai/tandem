@@ -482,34 +482,42 @@ fn extract_delta_text(payload: &serde_json::Value) -> Option<String> {
         return None;
     }
     let props = payload.get("properties")?;
-    let delta = props.get("delta")?;
-    match delta {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Object(map) => map
-            .get("text")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        serde_json::Value::Array(items) => {
-            let text = items
-                .iter()
-                .filter_map(|item| match item {
-                    serde_json::Value::String(s) => Some(s.clone()),
-                    serde_json::Value::Object(map) => map
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
+    if let Some(delta) = props.get("delta") {
+        return match delta {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Object(map) => map
+                .get("text")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            serde_json::Value::Array(items) => {
+                let text = items
+                    .iter()
+                    .filter_map(|item| match item {
+                        serde_json::Value::String(s) => Some(s.clone()),
+                        serde_json::Value::Object(map) => map
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
             }
-        }
-        _ => None,
+            _ => None,
+        };
     }
+    // Some runtime snapshots only include the final text payload without explicit delta.
+    props
+        .get("part")
+        .and_then(|p| p.get("text"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.trim().is_empty())
 }
 
 #[cfg(test)]

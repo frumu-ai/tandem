@@ -44,6 +44,8 @@ import {
   replyQuestion,
   rejectQuestion,
   getSessionMessages,
+  listToolExecutions,
+  type ToolExecutionRow,
   undoViaCommand,
   isGitRepo,
   getToolGuidance,
@@ -891,7 +893,10 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           return;
         }
 
-        const sessionMessages = await getSessionMessages(sessionId);
+        const [sessionMessages, persistedToolRows] = await Promise.all([
+          getSessionMessages(sessionId),
+          listToolExecutions(sessionId, 500).catch(() => [] as ToolExecutionRow[]),
+        ]);
 
         console.log("[LoadHistory] Received", sessionMessages.length, "messages from OpenCode");
 
@@ -915,8 +920,17 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           }))
         );
 
+        const toolRowsByMessageId = new Map<string, ToolExecutionRow[]>();
+        for (const row of persistedToolRows) {
+          if (!row.message_id) continue;
+          const arr = toolRowsByMessageId.get(row.message_id) || [];
+          arr.push(row);
+          toolRowsByMessageId.set(row.message_id, arr);
+        }
+
         // Convert session messages to our format
         const convertedMessages: MessageProps[] = [];
+        let pendingRowsForAssistant: ToolExecutionRow[] = [];
 
         for (const msg of sessionMessages) {
           // Skip reverted or deleted messages
@@ -998,12 +1012,20 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               */
 
               const state = partObj.state as Record<string, unknown> | undefined;
-              const status =
-                state?.status === "completed"
+              const explicit = typeof state?.status === "string" ? state.status : undefined;
+              const status: "pending" | "running" | "completed" | "failed" =
+                explicit === "completed"
                   ? "completed"
-                  : state?.status === "failed"
+                  : explicit === "failed" ||
+                      explicit === "error" ||
+                      explicit === "cancelled" ||
+                      explicit === "canceled" ||
+                      explicit === "denied" ||
+                      explicit === "timeout"
                     ? "failed"
-                    : "pending";
+                    : explicit === "running" || explicit === "in_progress"
+                      ? "running"
+                      : "pending";
 
               toolCalls.push({
                 id: (partObj.id || partObj.callID || "") as string,
@@ -1014,6 +1036,39 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
                 isTechnical: false, // technicalTools.includes(toolName), // Always show in history
               });
             }
+          }
+
+          if (role === "user") {
+            pendingRowsForAssistant = toolRowsByMessageId.get(msg.info.id) || [];
+          }
+          if (role === "assistant" && pendingRowsForAssistant.length > 0) {
+            const rehydrated = pendingRowsForAssistant.map((row) => {
+              const rowStatus = (row.status || "").toLowerCase();
+              const mappedStatus: "pending" | "running" | "completed" | "failed" =
+                rowStatus === "completed"
+                  ? "completed"
+                  : rowStatus === "failed" || rowStatus === "error" || rowStatus === "cancelled"
+                    ? "failed"
+                    : rowStatus === "running"
+                      ? "running"
+                      : "pending";
+              return {
+                id: row.part_id || row.id,
+                tool: row.tool,
+                args: (row.args as Record<string, unknown>) || {},
+                result:
+                  row.error || row.result === undefined ? undefined : JSON.stringify(row.result),
+                status: mappedStatus,
+                isTechnical: false,
+              };
+            });
+
+            for (const call of rehydrated) {
+              if (!toolCalls.some((existing) => existing.id === call.id)) {
+                toolCalls.push(call);
+              }
+            }
+            pendingRowsForAssistant = [];
           }
 
           // Only add messages that have actual text content or are user messages
@@ -1029,6 +1084,37 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
             });
           } else {
             console.log(`[LoadHistory] Skipping empty/technical assistant message: ${msg.info.id}`);
+          }
+        }
+
+        if (pendingRowsForAssistant.length > 0 && convertedMessages.length > 0) {
+          for (let i = convertedMessages.length - 1; i >= 0; i -= 1) {
+            const msg = convertedMessages[i];
+            if (msg.role !== "assistant") continue;
+            const existing = msg.toolCalls || [];
+            const merged = [...existing];
+            for (const row of pendingRowsForAssistant) {
+              const id = row.part_id || row.id;
+              if (merged.some((call) => call.id === id)) continue;
+              merged.push({
+                id,
+                tool: row.tool,
+                args: (row.args as Record<string, unknown>) || {},
+                result:
+                  row.error || row.result === undefined ? undefined : JSON.stringify(row.result),
+                status:
+                  row.status === "completed"
+                    ? "completed"
+                    : row.status === "running"
+                      ? "running"
+                      : row.status === "failed"
+                        ? "failed"
+                        : "pending",
+                isTechnical: false,
+              });
+            }
+            convertedMessages[i] = { ...msg, toolCalls: merged };
+            break;
           }
         }
 
@@ -1450,6 +1536,16 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           // Could update UI to show session status
           console.log("Session status:", event.status);
           break;
+
+        case "run_finished": {
+          if (!currentSessionId || event.session_id !== currentSessionId) {
+            break;
+          }
+          if (event.status !== "completed") {
+            finalizePendingToolCalls(event.error || `run_${event.status}`);
+          }
+          break;
+        }
 
         case "memory_retrieval": {
           if (!currentSessionId || event.session_id !== currentSessionId) {

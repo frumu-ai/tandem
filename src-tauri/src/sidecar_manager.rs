@@ -91,6 +91,39 @@ struct CompatibleRelease<'a> {
 pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
     let binary_name = get_binary_name();
 
+    // In debug builds, prefer the freshly compiled engine binary first.
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(current_dir) = std::env::current_dir() {
+            let mut candidates = Vec::new();
+            candidates.push(current_dir.join("target").join("debug").join(binary_name));
+            candidates.push(
+                current_dir
+                    .join("..")
+                    .join("target")
+                    .join("debug")
+                    .join(binary_name),
+            );
+            candidates.push(
+                current_dir
+                    .join("src-tauri")
+                    .join("..")
+                    .join("target")
+                    .join("debug")
+                    .join(binary_name),
+            );
+            for candidate in candidates {
+                if candidate.exists() {
+                    tracing::debug!(
+                        "Using dev sidecar from target/debug preference: {:?}",
+                        candidate
+                    );
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
     // 1. Check AppData (user downloads/updates)
     if let Some(app_data_dir) = shared_app_data_dir(app) {
         let updated_binary = app_data_dir.join("binaries").join(binary_name);

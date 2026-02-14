@@ -17,8 +17,8 @@ use crate::orchestrator::{
 };
 use crate::python_env;
 use crate::sidecar::{
-    CreateSessionRequest, FilePartInput, ModelInfo, ModelSpec, Project, ProviderInfo,
-    SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent, TodoItem,
+    ActiveRunStatusResponse, CreateSessionRequest, FilePartInput, ModelInfo, ModelSpec, Project,
+    ProviderInfo, SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent, TodoItem,
 };
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
@@ -149,6 +149,7 @@ pub fn get_vault_status(vault_state: State<'_, VaultState>) -> VaultStatus {
 pub async fn create_vault(
     app: AppHandle,
     vault_state: State<'_, VaultState>,
+    state: State<'_, AppState>,
     pin: String,
 ) -> Result<()> {
     // Validate PIN
@@ -185,6 +186,15 @@ pub async fn create_vault(
         crate::init_keystore_and_keys(&app_clone, &master_key_clone);
         tracing::info!("Keystore initialization complete");
     });
+
+    // Start the sidecar as part of lock-screen unlock/create flow.
+    // Startup failures must not block vault creation.
+    if let Err(err) = start_sidecar(app.clone(), state).await {
+        tracing::warn!(
+            "Vault created but failed to auto-start tandem-engine sidecar: {}",
+            err
+        );
+    }
 
     Ok(())
 }
@@ -362,6 +372,7 @@ pub async fn index_workspace_command(
 pub async fn unlock_vault(
     app: AppHandle,
     vault_state: State<'_, VaultState>,
+    state: State<'_, AppState>,
     pin: String,
 ) -> Result<()> {
     // Check if vault exists
@@ -395,6 +406,15 @@ pub async fn unlock_vault(
         crate::init_keystore_and_keys(&app_clone, &master_key_clone);
         tracing::info!("Keystore initialization complete");
     });
+
+    // Start the sidecar as part of lock-screen unlock flow.
+    // Startup failures must not block vault unlock.
+    if let Err(err) = start_sidecar(app.clone(), state).await {
+        tracing::warn!(
+            "Vault unlocked but failed to auto-start tandem-engine sidecar: {}",
+            err
+        );
+    }
 
     Ok(())
 }
@@ -1706,6 +1726,63 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
         .sidecar
         .start(sidecar_path.to_string_lossy().as_ref())
         .await?;
+
+    if let Ok(health) = state.sidecar.startup_health().await {
+        let expected_build_id = expected_engine_build_id();
+        let selected_binary = sidecar_path.to_string_lossy().to_string();
+        let mut mismatch_reason: Option<String> = None;
+
+        if let Some(actual_build_id) = health.build_id.clone() {
+            if !expected_build_id.is_empty() && actual_build_id != expected_build_id {
+                mismatch_reason = Some(format!(
+                    "build_id mismatch expected={} actual={}",
+                    expected_build_id, actual_build_id
+                ));
+            }
+        }
+        if mismatch_reason.is_none() {
+            if let Some(actual_binary) = health.binary_path.clone() {
+                if !same_binary_path(&selected_binary, &actual_binary) {
+                    mismatch_reason = Some(format!(
+                        "binary_path mismatch selected={} running={}",
+                        selected_binary, actual_binary
+                    ));
+                }
+            }
+        }
+
+        if let Some(reason) = mismatch_reason {
+            let _ = app.emit(
+                "sidecar-binary-mismatch",
+                serde_json::json!({
+                    "warning": "Running stale engine binary",
+                    "reason": reason,
+                    "selectedBinary": selected_binary,
+                    "buildIDExpected": expected_build_id,
+                    "buildIDActual": health.build_id,
+                    "binaryPathActual": health.binary_path
+                }),
+            );
+            emit_event(
+                tracing::Level::WARN,
+                ProcessKind::Desktop,
+                ObservabilityEvent {
+                    event: "sidecar.binary.mismatch",
+                    component: "tauri.commands",
+                    correlation_id: None,
+                    session_id: None,
+                    run_id: None,
+                    message_id: None,
+                    provider_id: None,
+                    model_id: None,
+                    status: Some("degraded"),
+                    error_code: Some("STALE_ENGINE_BINARY"),
+                    detail: Some("sidecar /global/health build/path mismatch detected"),
+                },
+            );
+        }
+    }
+
     state
         .stream_hub
         .start(app.clone(), state.sidecar.clone())
@@ -1748,6 +1825,28 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
         .port()
         .await
         .ok_or_else(|| TandemError::Sidecar("Sidecar started but no port assigned".to_string()))
+}
+
+fn expected_engine_build_id() -> String {
+    if let Some(explicit) = option_env!("TANDEM_BUILD_ID") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Some(git_sha) = option_env!("VERGEN_GIT_SHA") {
+        let trimmed = git_sha.trim();
+        if !trimmed.is_empty() {
+            return format!("{}+{}", env!("CARGO_PKG_VERSION"), trimmed);
+        }
+    }
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+fn same_binary_path(selected: &str, running: &str) -> bool {
+    let selected_norm = selected.replace('\\', "/").to_ascii_lowercase();
+    let running_norm = running.replace('\\', "/").to_ascii_lowercase();
+    selected_norm == running_norm
 }
 
 /// Stop the tandem-engine sidecar
@@ -2079,6 +2178,15 @@ pub async fn get_session(state: State<'_, AppState>, session_id: String) -> Resu
 #[tauri::command]
 pub async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
     state.sidecar.list_sessions().await
+}
+
+/// Get currently active run for a session.
+#[tauri::command]
+pub async fn get_session_active_run(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<ActiveRunStatusResponse>> {
+    state.sidecar.get_active_run(&session_id).await
 }
 
 /// Delete a session
@@ -3768,6 +3876,136 @@ fn effective_session_mode(state: &AppState, session_id: &str) -> ResolvedMode {
         })
 }
 
+fn normalize_tool_name_for_approval(name: &str) -> String {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn extract_websearch_query(args: &serde_json::Value) -> Option<String> {
+    const QUERY_KEYS: [&str; 5] = ["query", "q", "search_query", "searchQuery", "keywords"];
+    for key in QUERY_KEYS {
+        if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    for container in ["arguments", "args", "input", "params"] {
+        if let Some(obj) = args.get(container) {
+            for key in QUERY_KEYS {
+                if let Some(value) = obj.get(key).and_then(|v| v.as_str()) {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn websearch_query_present(args: Option<&serde_json::Value>) -> bool {
+    args.and_then(extract_websearch_query).is_some()
+}
+
+fn set_websearch_query(
+    args: Option<serde_json::Value>,
+    query: &str,
+    query_source: &str,
+) -> serde_json::Value {
+    let mut obj = args
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    obj.insert(
+        "query".to_string(),
+        serde_json::Value::String(query.to_string()),
+    );
+    obj.insert(
+        "__query_source".to_string(),
+        serde_json::Value::String(query_source.to_string()),
+    );
+    serde_json::Value::Object(obj)
+}
+
+fn infer_websearch_query_from_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_lowercase();
+    const PREFIXES: [&str; 10] = [
+        "web search",
+        "websearch",
+        "search web",
+        "search for",
+        "search",
+        "look up",
+        "lookup",
+        "find",
+        "web lookup",
+        "query",
+    ];
+
+    let mut candidate = trimmed;
+    for prefix in PREFIXES {
+        if lower.starts_with(prefix) && lower.len() >= prefix.len() {
+            candidate = trimmed[prefix.len()..]
+                .trim_start_matches(|c: char| c.is_whitespace() || c == ':' || c == '-');
+            break;
+        }
+    }
+
+    let normalized = candidate
+        .trim()
+        .trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace())
+        .trim_matches(|c: char| matches!(c, '.' | ',' | '!' | '?'))
+        .trim()
+        .to_string();
+    if normalized.split_whitespace().count() < 2 {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn latest_user_text_from_messages(messages: &[SessionMessage]) -> Option<String> {
+    messages.iter().rev().find_map(|message| {
+        if !message.info.role.eq_ignore_ascii_case("user") {
+            return None;
+        }
+        let mut out = String::new();
+        for part in &message.parts {
+            let text = part
+                .get("text")
+                .and_then(|v| v.as_str())
+                .or_else(|| part.get("content").and_then(|v| v.as_str()))
+                .or_else(|| {
+                    part.get("type")
+                        .and_then(|v| v.as_str())
+                        .filter(|t| *t == "text")
+                        .and_then(|_| part.get("text"))
+                        .and_then(|v| v.as_str())
+                });
+            if let Some(text) = text {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(text);
+            }
+        }
+        let trimmed = out.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 /// Approve a pending tool execution
 #[tauri::command]
 pub async fn approve_tool(
@@ -3786,7 +4024,100 @@ pub async fn approve_tool(
         args
     );
 
-    if let (Some(tool_name), Some(args_val)) = (tool.clone(), args.clone()) {
+    let effective_tool = tool.clone();
+    let mut effective_args = args.clone();
+    let normalized_tool = effective_tool
+        .as_deref()
+        .map(normalize_tool_name_for_approval);
+
+    if normalized_tool.as_deref() == Some("websearch") && !websearch_query_present(effective_args.as_ref()) {
+        // Try request-scoped cache first.
+        if let Some(cached_args) = state
+            .permission_args_cache
+            .lock()
+            .await
+            .get(&tool_call_id)
+            .cloned()
+        {
+            if let Some(query) = extract_websearch_query(&cached_args) {
+                tracing::warn!(
+                    "[approve_tool] recovered websearch query from request cache request_id={} query={}",
+                    tool_call_id,
+                    query
+                );
+                effective_args = Some(set_websearch_query(
+                    Some(cached_args),
+                    &query,
+                    "recovered_from_context",
+                ));
+            }
+        }
+    }
+    if normalized_tool.as_deref() == Some("websearch") && !websearch_query_present(effective_args.as_ref()) {
+        // Then per-session recovered intent cache.
+        if let Some(query) = state
+            .session_websearch_intent
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+        {
+            tracing::warn!(
+                "[approve_tool] recovered websearch query from session intent session_id={} query={}",
+                session_id,
+                query
+            );
+            effective_args = Some(set_websearch_query(
+                effective_args.clone(),
+                &query,
+                "recovered_from_context",
+            ));
+        }
+    }
+    if normalized_tool.as_deref() == Some("websearch") && !websearch_query_present(effective_args.as_ref()) {
+        // Last resort: infer from latest user message text in session history.
+        if let Ok(messages) = state.sidecar.get_session_messages(&session_id).await {
+            if let Some(user_text) = latest_user_text_from_messages(&messages) {
+                if let Some(query) = infer_websearch_query_from_text(&user_text) {
+                    tracing::warn!(
+                        "[approve_tool] inferred websearch query from latest user text session_id={} query={}",
+                        session_id,
+                        query
+                    );
+                    effective_args = Some(set_websearch_query(
+                        effective_args.clone(),
+                        &query,
+                        "inferred_from_user",
+                    ));
+                }
+            }
+        }
+    }
+    if normalized_tool.as_deref() == Some("websearch") && !websearch_query_present(effective_args.as_ref()) {
+        tracing::warn!(
+            "[approve_tool] denying websearch due to missing query after recovery attempts request_id={}",
+            tool_call_id
+        );
+        let _ = state.sidecar.deny_tool(&session_id, &tool_call_id).await;
+        return Err(TandemError::PermissionDenied(
+            "WEBSEARCH_QUERY_MISSING_APPROVAL".to_string(),
+        ));
+    }
+
+    // Keep session-level intent fresh once query is present.
+    if normalized_tool.as_deref() == Some("websearch") {
+        if let Some(args_val) = effective_args.as_ref() {
+            if let Some(query) = extract_websearch_query(args_val) {
+                state
+                    .session_websearch_intent
+                    .lock()
+                    .await
+                    .insert(session_id.clone(), query);
+            }
+        }
+    }
+
+    if let (Some(tool_name), Some(args_val)) = (effective_tool.clone(), effective_args.clone()) {
         let mode = effective_session_mode(&state, &session_id);
         if let Err(e) = crate::modes::mode_allows_tool_execution(
             &mode,
@@ -3801,7 +4132,7 @@ pub async fn approve_tool(
 
     // Strict Python venv enforcement for AI terminal-like tools.
     // Goal: prevent global pip installs and python runs outside workspace venv.
-    if let (Some(tool_name), Some(args_val)) = (tool.clone(), args.clone()) {
+    if let (Some(tool_name), Some(args_val)) = (effective_tool.clone(), effective_args.clone()) {
         let ws = state
             .get_workspace_path()
             .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
@@ -3830,7 +4161,7 @@ pub async fn approve_tool(
     // Capture a snapshot BEFORE allowing the tool to run, so we can undo file changes later.
     // We only snapshot direct file tools (write/delete). Shell commands and reads are too broad.
     // Note: OpenCode's tool names are "write", "delete", "read", "bash", "list", "search", etc.
-    if let (Some(tool_name), Some(args_val)) = (tool.clone(), args.clone()) {
+    if let (Some(tool_name), Some(args_val)) = (effective_tool.clone(), effective_args.clone()) {
         let is_file_tool = matches!(
             tool_name.as_str(),
             "write" | "write_file" | "create_file" | "delete" | "delete_file"
@@ -3927,6 +4258,9 @@ pub async fn approve_tool(
         tracing::info!("[approve_tool] No tool/args provided, skipping snapshot");
     }
 
+    // Clear request-scoped cache after approval resolution.
+    state.permission_args_cache.lock().await.remove(&tool_call_id);
+
     state.sidecar.approve_tool(&session_id, &tool_call_id).await
 }
 
@@ -3954,6 +4288,8 @@ pub async fn deny_tool(
         };
         state.operation_journal.record(entry, None);
     }
+
+    state.permission_args_cache.lock().await.remove(&tool_call_id);
 
     state.sidecar.deny_tool(&session_id, &tool_call_id).await
 }

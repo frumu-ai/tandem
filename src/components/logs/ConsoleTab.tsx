@@ -509,9 +509,26 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
 
         case "tool_end": {
           if (event.session_id !== sessionId) break;
-          setEntries((prev) =>
-            prev.map((e) =>
-              e.id === event.part_id
+          setEntries((prev) => {
+            let matchedId = event.part_id;
+            const hasExact = prev.some((e) => e.id === event.part_id);
+            if (!hasExact) {
+              for (let i = prev.length - 1; i >= 0; i -= 1) {
+                const candidate = prev[i];
+                if (
+                  candidate.sessionId === event.session_id &&
+                  candidate.status === "running" &&
+                  candidate.tool.toLowerCase() === event.tool.toLowerCase() &&
+                  (!event.message_id || candidate.messageId === event.message_id)
+                ) {
+                  matchedId = candidate.id;
+                  break;
+                }
+              }
+            }
+
+            return prev.map((e) =>
+              e.id === matchedId
                 ? {
                     ...e,
                     status: event.error ? "failed" : "completed",
@@ -519,8 +536,8 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
                     error: event.error ?? undefined,
                   }
                 : e
-            )
-          );
+            );
+          });
           // Remove any approval for this tool
           setApprovals((prev) => {
             const next = new Map(prev);
@@ -531,6 +548,31 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
             }
             return next;
           });
+          break;
+        }
+
+        case "run_finished":
+        case "session_idle":
+        case "session_error": {
+          const sid = event.session_id;
+          if (sid !== sessionId) break;
+          const terminalError =
+            event.type === "session_error"
+              ? event.error
+              : event.type === "run_finished" && event.status !== "completed"
+                ? event.error || `run_${event.status}`
+                : "interrupted";
+          setEntries((prev) =>
+            prev.map((e) =>
+              e.sessionId === sid && e.status === "running"
+                ? {
+                    ...e,
+                    status: "failed",
+                    error: e.error || terminalError,
+                  }
+                : e
+            )
+          );
           break;
         }
 

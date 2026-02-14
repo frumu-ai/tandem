@@ -542,6 +542,7 @@ pub fn run() {
             commands::create_session,
             commands::get_session,
             commands::list_sessions,
+            commands::get_session_active_run,
             commands::delete_session,
             commands::get_current_session_id,
             commands::set_current_session_id,

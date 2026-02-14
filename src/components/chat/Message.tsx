@@ -22,8 +22,10 @@ import {
   ChevronUp,
   Brain,
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import React, {
   startTransition,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -355,6 +357,23 @@ function MessageComponent({
   const [editedContent, setEditedContent] = useState(content);
   const [copied, setCopied] = useState(false);
 
+  const handleExternalLinkOpen = useCallback(async (href: string) => {
+    if (!href) return;
+    try {
+      await openUrl(href);
+      return;
+    } catch (error) {
+      console.warn("[Message] Failed to open external URL via Tauri opener:", error);
+    }
+
+    // Browser fallback for web/non-tauri environments.
+    try {
+      globalThis.open(href, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error("[Message] Failed to open external URL fallback:", error);
+    }
+  }, []);
+
   // Memoize markdown components to prevent re-creation on every render
   const markdownComponents = React.useMemo(
     () => ({
@@ -384,8 +403,11 @@ function MessageComponent({
         return (
           <a
             href={href}
-            target="_blank"
-            rel="noopener noreferrer"
+            onClick={(event) => {
+              if (!href) return;
+              event.preventDefault();
+              void handleExternalLinkOpen(href);
+            }}
             className="text-primary hover:underline"
             {...props}
           >
@@ -457,7 +479,7 @@ function MessageComponent({
         </li>
       ),
     }),
-    [onFileOpen, renderMode]
+    [handleExternalLinkOpen, onFileOpen, renderMode]
   );
 
   const handleCopy = () => {
@@ -728,13 +750,7 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [nowMs, setNowMs] = useState<number>(() => new Date().getTime());
-
-  useEffect(() => {
-    const id = globalThis.setInterval(() => {
-      setNowMs(new Date().getTime());
-    }, 1000);
-    return () => globalThis.clearInterval(id);
-  }, []);
+  const [endedAtMs, setEndedAtMs] = useState<number | null>(null);
 
   const runningCount = useMemo(
     () => toolCalls.filter((t) => t.status === "running").length,
@@ -752,7 +768,30 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
     () => toolCalls.filter((t) => t.status === "failed").length,
     [toolCalls]
   );
-  const durationSec = Math.max(1, Math.round((nowMs - messageTimestamp.getTime()) / 1000));
+  const isTerminal = runningCount === 0 && pendingCount === 0 && toolCalls.length > 0;
+
+  useEffect(() => {
+    if (isTerminal) return;
+    const id = globalThis.setInterval(() => {
+      setNowMs(new Date().getTime());
+    }, 1000);
+    return () => globalThis.clearInterval(id);
+  }, [isTerminal]);
+
+  useEffect(() => {
+    if (isTerminal && endedAtMs == null) {
+      setEndedAtMs(new Date().getTime());
+      return;
+    }
+    if (!isTerminal && endedAtMs != null) {
+      setEndedAtMs(null);
+    }
+  }, [isTerminal, endedAtMs]);
+
+  const durationSec = Math.max(
+    1,
+    Math.round(((endedAtMs ?? nowMs) - messageTimestamp.getTime()) / 1000)
+  );
 
   // Group by tool type for summary
   const summary = useMemo(() => {

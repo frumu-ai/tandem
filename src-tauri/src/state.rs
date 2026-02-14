@@ -290,6 +290,10 @@ pub struct AppState {
     pub message_queue: Arc<Mutex<HashMap<String, Vec<QueuedMessage>>>>,
     /// Shared engine lease table used by Desktop + TUI/CLI.
     pub engine_leases: Arc<Mutex<HashMap<String, EngineLease>>>,
+    /// Cached normalized permission args by requestID for resilient approvals.
+    pub permission_args_cache: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    /// Last known per-session websearch intent for best-effort recovery.
+    pub session_websearch_intent: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl AppState {
@@ -329,6 +333,8 @@ impl AppState {
             file_tree_watcher: Arc::new(StdMutex::new(None)),
             message_queue: Arc::new(Mutex::new(HashMap::new())),
             engine_leases: Arc::new(Mutex::new(HashMap::new())),
+            permission_args_cache: Arc::new(Mutex::new(HashMap::new())),
+            session_websearch_intent: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

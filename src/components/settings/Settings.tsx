@@ -1028,7 +1028,7 @@ export function Settings({
             <div className="space-y-4">
               <ProviderCard
                 id="opencode_zen"
-                name="Tandem Zen"
+                name="Opencode Zen"
                 description="Access to free and premium models - includes free options"
                 endpoint="https://opencode.ai/zen/v1"
                 model={providers.opencode_zen.model}

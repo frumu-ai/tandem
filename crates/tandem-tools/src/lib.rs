@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -779,11 +780,33 @@ impl Tool for WebSearchTool {
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
         let query = extract_websearch_query(&args).unwrap_or_default();
+        let query_source = args
+            .get("__query_source")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                if query.is_empty() {
+                    "missing".to_string()
+                } else {
+                    "tool_args".to_string()
+                }
+            });
+        let query_hash = if query.is_empty() {
+            None
+        } else {
+            Some(stable_hash(&query))
+        };
         if query.is_empty() {
             tracing::warn!("WebSearchTool missing query. Args: {}", args);
             return Ok(ToolResult {
                 output: format!("missing query. Received args: {}", args),
-                metadata: json!({"count": 0, "error": "missing_query"}),
+                metadata: json!({
+                    "count": 0,
+                    "error": "missing_query",
+                    "query_source": query_source,
+                    "query_hash": query_hash,
+                    "loop_guard_triggered": false
+                }),
             });
         }
         let num_results = extract_websearch_limit(&args).unwrap_or(8);
@@ -869,7 +892,12 @@ impl Tool for WebSearchTool {
                                         {
                                             return Ok(ToolResult {
                                                 output: text.to_string(),
-                                                metadata: json!({"query": query}),
+                                                metadata: json!({
+                                                    "query": query,
+                                                    "query_source": query_source,
+                                                    "query_hash": query_hash,
+                                                    "loop_guard_triggered": false
+                                                }),
                                             });
                                         }
                                     }
@@ -886,7 +914,13 @@ impl Tool for WebSearchTool {
                     tracing::warn!("WebSearchTool stream timed out waiting for chunk.");
                     return Ok(ToolResult {
                         output: "Search timed out. No results received.".to_string(),
-                        metadata: json!({"query": query, "error": "timeout"}),
+                        metadata: json!({
+                            "query": query,
+                            "error": "timeout",
+                            "query_source": query_source,
+                            "query_hash": query_hash,
+                            "loop_guard_triggered": false
+                        }),
                     });
                 }
             }
@@ -894,9 +928,20 @@ impl Tool for WebSearchTool {
 
         Ok(ToolResult {
             output: "No search results found.".to_string(),
-            metadata: json!({"query": query}),
+            metadata: json!({
+                "query": query,
+                "query_source": query_source,
+                "query_hash": query_hash,
+                "loop_guard_triggered": false
+            }),
         })
     }
+}
+
+fn stable_hash(input: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    input.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 fn extract_websearch_query(args: &Value) -> Option<String> {

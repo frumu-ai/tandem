@@ -19,6 +19,20 @@ Copy-Item .\target\debug\tandem-engine.exe .\src-tauri\binaries\tandem-engine.ex
 pnpm tauri dev
 ```
 
+## macOS/Linux quickstart (engine + tauri dev)
+
+From `tandem/`:
+
+```bash
+pnpm install
+# Kill any existing engine instance
+pkill tandem-engine || true
+cargo build -p tandem-engine
+mkdir -p src-tauri/binaries
+cp target/debug/tandem-engine src-tauri/binaries/tandem-engine
+pnpm tauri dev
+```
+
 ## Quick commands
 
 From `tandem/`:

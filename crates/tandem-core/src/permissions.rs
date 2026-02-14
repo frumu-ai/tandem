@@ -38,7 +38,23 @@ pub struct PermissionRequest {
     pub tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "argsSource")]
+    pub args_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "argsIntegrity")]
+    pub args_integrity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionArgsContext {
+    #[serde(rename = "argsSource")]
+    pub args_source: String,
+    #[serde(rename = "argsIntegrity")]
+    pub args_integrity: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
 }
 
 #[derive(Clone)]
@@ -78,6 +94,17 @@ impl PermissionManager {
         tool: &str,
         args: Value,
     ) -> PermissionRequest {
+        self.ask_for_session_with_context(session_id, tool, args, None)
+            .await
+    }
+
+    pub async fn ask_for_session_with_context(
+        &self,
+        session_id: Option<&str>,
+        tool: &str,
+        args: Value,
+        context: Option<PermissionArgsContext>,
+    ) -> PermissionRequest {
         let req = PermissionRequest {
             id: Uuid::new_v4().to_string(),
             session_id: session_id.map(ToString::to_string),
@@ -85,6 +112,9 @@ impl PermissionManager {
             pattern: tool.to_string(),
             tool: Some(tool.to_string()),
             args: Some(args.clone()),
+            args_source: context.as_ref().map(|c| c.args_source.clone()),
+            args_integrity: context.as_ref().map(|c| c.args_integrity.clone()),
+            query: context.as_ref().and_then(|c| c.query.clone()),
             status: "pending".to_string(),
         };
         let (tx, _rx) = watch::channel(None);
@@ -99,7 +129,10 @@ impl PermissionManager {
                 "sessionID": session_id.unwrap_or_default(),
                 "requestID": req.id,
                 "tool": tool,
-                "args": args
+                "args": args,
+                "argsSource": req.args_source,
+                "argsIntegrity": req.args_integrity,
+                "query": req.query
             }),
         ));
         req
@@ -272,6 +305,47 @@ mod tests {
                 .and_then(|v| v.as_str())
                 .unwrap_or(""),
             "README.md"
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_asked_event_includes_args_integrity_context() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let manager = PermissionManager::new(bus);
+
+        let _ = manager
+            .ask_for_session_with_context(
+                Some("ses_1"),
+                "websearch",
+                json!({"query":"meaning of life"}),
+                Some(PermissionArgsContext {
+                    args_source: "inferred_from_user".to_string(),
+                    args_integrity: "recovered".to_string(),
+                    query: Some("meaning of life".to_string()),
+                }),
+            )
+            .await;
+
+        let event = rx.recv().await.expect("event");
+        assert_eq!(event.event_type, "permission.asked");
+        assert_eq!(
+            event
+                .properties
+                .get("argsSource")
+                .and_then(|v| v.as_str()),
+            Some("inferred_from_user")
+        );
+        assert_eq!(
+            event
+                .properties
+                .get("argsIntegrity")
+                .and_then(|v| v.as_str()),
+            Some("recovered")
+        );
+        assert_eq!(
+            event.properties.get("query").and_then(|v| v.as_str()),
+            Some("meaning of life")
         );
     }
 
