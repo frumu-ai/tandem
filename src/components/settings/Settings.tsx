@@ -284,6 +284,21 @@ export function Settings({
     onProviderChange?.();
   };
 
+  const handleEndpointChange = async (
+    provider: keyof Omit<ProvidersConfig, "custom">,
+    endpoint: string
+  ) => {
+    if (!providers) return;
+
+    const updated = {
+      ...providers,
+      [provider]: { ...providers[provider], endpoint },
+    };
+    setProviders(updated);
+    await setProvidersConfig(updated);
+    onProviderChange?.();
+  };
+
   const handleSelectFolder = async () => {
     try {
       const selected = await open({
@@ -933,12 +948,14 @@ export function Settings({
                 id="opencode_zen"
                 name="OpenCode Zen"
                 description="Access to free and premium models - includes free options"
-                endpoint="https://opencode.ai/zen/v1"
+                endpoint={providers.opencode_zen.endpoint}
+                defaultEndpoint="https://opencode.ai/zen/v1"
                 model={providers.opencode_zen.model}
                 isDefault={providers.opencode_zen.default}
                 enabled={providers.opencode_zen.enabled}
                 onEnabledChange={(enabled) => handleProviderChange("opencode_zen", enabled)}
                 onModelChange={(model) => handleModelChange("opencode_zen", model)}
+                onEndpointChange={(endpoint) => handleEndpointChange("opencode_zen", endpoint)}
                 onSetDefault={() => handleSetDefault("opencode_zen")}
                 onKeyChange={onProviderChange}
                 docsUrl="https://opencode.ai/auth"
@@ -948,12 +965,14 @@ export function Settings({
                 id="openrouter"
                 name="OpenRouter"
                 description="Access 100+ models with one API key"
-                endpoint="https://openrouter.ai/api/v1"
+                endpoint={providers.openrouter.endpoint}
+                defaultEndpoint="https://openrouter.ai/api/v1"
                 model={providers.openrouter.model}
                 isDefault={providers.openrouter.default}
                 enabled={providers.openrouter.enabled}
                 onEnabledChange={(enabled) => handleProviderChange("openrouter", enabled)}
                 onModelChange={(model) => handleModelChange("openrouter", model)}
+                onEndpointChange={(endpoint) => handleEndpointChange("openrouter", endpoint)}
                 onSetDefault={() => handleSetDefault("openrouter")}
                 onKeyChange={onProviderChange}
                 docsUrl="https://openrouter.ai/keys"
@@ -963,12 +982,14 @@ export function Settings({
                 id="anthropic"
                 name="Anthropic"
                 description="Direct access to Anthropic models"
-                endpoint="https://api.anthropic.com"
+                endpoint={providers.anthropic.endpoint}
+                defaultEndpoint="https://api.anthropic.com"
                 model={providers.anthropic.model}
                 isDefault={providers.anthropic.default}
                 enabled={providers.anthropic.enabled}
                 onEnabledChange={(enabled) => handleProviderChange("anthropic", enabled)}
                 onModelChange={(model) => handleModelChange("anthropic", model)}
+                onEndpointChange={(endpoint) => handleEndpointChange("anthropic", endpoint)}
                 onSetDefault={() => handleSetDefault("anthropic")}
                 onKeyChange={onProviderChange}
                 docsUrl="https://console.anthropic.com/settings/keys"
@@ -978,12 +999,14 @@ export function Settings({
                 id="openai"
                 name="OpenAI"
                 description="GPT-4 and other OpenAI models"
-                endpoint="https://api.openai.com/v1"
+                endpoint={providers.openai.endpoint}
+                defaultEndpoint="https://api.openai.com/v1"
                 model={providers.openai.model}
                 isDefault={providers.openai.default}
                 enabled={providers.openai.enabled}
                 onEnabledChange={(enabled) => handleProviderChange("openai", enabled)}
                 onModelChange={(model) => handleModelChange("openai", model)}
+                onEndpointChange={(endpoint) => handleEndpointChange("openai", endpoint)}
                 onSetDefault={() => handleSetDefault("openai")}
                 onKeyChange={onProviderChange}
                 docsUrl="https://platform.openai.com/api-keys"
@@ -993,12 +1016,14 @@ export function Settings({
                 id="ollama"
                 name="Ollama"
                 description="Run models locally - no API key needed"
-                endpoint="http://localhost:11434"
+                endpoint={providers.ollama.endpoint}
+                defaultEndpoint="http://localhost:11434"
                 model={providers.ollama.model}
                 isDefault={providers.ollama.default}
                 enabled={providers.ollama.enabled}
                 onEnabledChange={(enabled) => handleProviderChange("ollama", enabled)}
                 onModelChange={(model) => handleModelChange("ollama", model)}
+                onEndpointChange={(endpoint) => handleEndpointChange("ollama", endpoint)}
                 onSetDefault={() => handleSetDefault("ollama")}
                 onKeyChange={onProviderChange}
                 docsUrl="https://ollama.ai"
@@ -1008,12 +1033,14 @@ export function Settings({
                 id="poe"
                 name="Poe"
                 description="Access models via Poe's API"
-                endpoint="https://api.poe.com/v1"
+                endpoint={providers.poe.endpoint}
+                defaultEndpoint="https://api.poe.com/v1"
                 model={providers.poe.model}
                 isDefault={providers.poe.default}
                 enabled={providers.poe.enabled}
                 onEnabledChange={(enabled) => handleProviderChange("poe", enabled)}
                 onModelChange={(model) => handleModelChange("poe", model)}
+                onEndpointChange={(endpoint) => handleEndpointChange("poe", endpoint)}
                 onSetDefault={() => handleSetDefault("poe")}
                 onKeyChange={onProviderChange}
                 docsUrl="https://poe.com/api"
