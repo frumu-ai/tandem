@@ -2259,6 +2259,9 @@ fn emit_stream_event_pair(
             | StreamEvent::ToolStart { session_id, .. }
             | StreamEvent::ToolEnd { session_id, .. }
             | StreamEvent::SessionStatus { session_id, .. }
+            | StreamEvent::RunStarted { session_id, .. }
+            | StreamEvent::RunFinished { session_id, .. }
+            | StreamEvent::RunConflict { session_id, .. }
             | StreamEvent::SessionIdle { session_id }
             | StreamEvent::SessionError { session_id, .. }
             | StreamEvent::PermissionAsked { session_id, .. }
@@ -2394,7 +2397,7 @@ pub async fn send_message(
     content: String,
     attachments: Option<Vec<FileAttachmentInput>>,
 ) -> Result<()> {
-    send_message_streaming_internal(
+    send_message_and_start_run_internal(
         &app,
         &state,
         session_id,
@@ -2410,7 +2413,7 @@ pub async fn send_message(
 /// Send a message and subscribe to events for the response
 /// This emits events to the frontend as chunks arrive
 #[tauri::command]
-pub async fn send_message_streaming(
+pub async fn send_message_and_start_run(
     app: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
@@ -2419,7 +2422,7 @@ pub async fn send_message_streaming(
     agent: Option<String>,
     mode_id: Option<String>,
 ) -> Result<()> {
-    send_message_streaming_internal(
+    send_message_and_start_run_internal(
         &app,
         &state,
         session_id,
@@ -2432,7 +2435,7 @@ pub async fn send_message_streaming(
     .await
 }
 
-async fn send_message_streaming_internal(
+async fn send_message_and_start_run_internal(
     app: &AppHandle,
     state: &AppState,
     session_id: String,
@@ -2457,15 +2460,15 @@ async fn send_message_streaming_internal(
             model_id: None,
             status: Some("start"),
             error_code: None,
-            detail: Some("send_message_streaming_internal"),
+            detail: Some("send_message_and_start_run_internal"),
         },
     );
     let mode_resolution = resolve_effective_mode(app, state, mode_id.as_deref(), agent.as_deref())?;
     if let Some(reason) = mode_resolution.fallback_reason.as_ref() {
-        tracing::warn!("[send_message_streaming] {}", reason);
+        tracing::warn!("[send_message_and_start_run] {}", reason);
     }
     tracing::info!(
-        "[send_message_streaming] session={} mode_id={} base_mode={:?} requested_agent={:?} resolved_sidecar_agent={:?}",
+        "[send_message_and_start_run] session={} mode_id={} base_mode={:?} requested_agent={:?} resolved_sidecar_agent={:?}",
         session_id,
         mode_resolution.mode.id,
         mode_resolution.mode.base_mode,
@@ -2542,7 +2545,7 @@ async fn send_message_streaming_internal(
 
     match state
         .sidecar
-        .send_message_with_context(&session_id, request, Some(&correlation_id))
+        .append_message_and_start_run_with_context(&session_id, request, Some(&correlation_id))
         .await
     {
         Ok(()) => {
@@ -2702,7 +2705,7 @@ async fn queue_send_next_internal(
     };
 
     let attachments = queued_to_attachment_inputs(next.attachments.clone());
-    let send_res = send_message_streaming_internal(
+    let send_res = send_message_and_start_run_internal(
         app,
         state,
         session_id.to_string(),
@@ -3572,7 +3575,10 @@ pub async fn rewind_to_message(
     if let Some(content) = edited_content {
         tracing::info!("Sending edited message to new session");
         let request = SendMessageRequest::text(content);
-        state.sidecar.send_message(&new_session.id, request).await?;
+        state
+            .sidecar
+            .append_message_and_start_run(&new_session.id, request)
+            .await?;
     }
 
     // Update current session
@@ -3654,7 +3660,10 @@ pub async fn undo_via_command(state: State<'_, AppState>, session_id: String) ->
     // Send "/undo" as a regular prompt - same as typing it in the TUI
     // OpenCode intercepts slash commands and handles them specially
     let request = crate::sidecar::SendMessageRequest::text("/undo".to_string());
-    state.sidecar.send_message(&session_id, request).await
+    state
+        .sidecar
+        .append_message_and_start_run(&session_id, request)
+        .await
 }
 
 // ============================================================================
@@ -6635,7 +6644,11 @@ pub async fn start_plan_session(
     let request = SendMessageRequest::text(system_directive);
 
     // We ignore the result of the message send itself, as long as session exists
-    if let Err(e) = state.sidecar.send_message(&session.id, request).await {
+    if let Err(e) = state
+        .sidecar
+        .append_message_and_start_run(&session.id, request)
+        .await
+    {
         tracing::warn!("Failed to inject plan directive: {}", e);
     } else {
         tracing::info!("Injected plan directive into session {}", session.id);

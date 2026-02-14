@@ -679,6 +679,28 @@ pub enum StreamEvent {
     },
     /// Session status changed
     SessionStatus { session_id: String, status: String },
+    /// Session run started
+    RunStarted {
+        session_id: String,
+        run_id: String,
+        started_at_ms: u64,
+        client_id: Option<String>,
+    },
+    /// Session run finished
+    RunFinished {
+        session_id: String,
+        run_id: String,
+        finished_at_ms: u64,
+        status: String,
+        error: Option<String>,
+    },
+    /// Session run conflict
+    RunConflict {
+        session_id: String,
+        run_id: String,
+        retry_after_ms: u64,
+        attach_event_stream: String,
+    },
     /// Session is idle (generation complete)
     SessionIdle { session_id: String },
     /// Session error
@@ -839,6 +861,23 @@ pub struct TodoItem {
     pub id: String,
     pub content: String,
     pub status: String, // "pending" | "in_progress" | "completed" | "cancelled"
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActiveRunStatusResponse {
+    #[serde(rename = "runID")]
+    pub run_id: String,
+    #[serde(rename = "startedAtMs")]
+    pub started_at_ms: u64,
+    #[serde(rename = "lastActivityAtMs")]
+    pub last_activity_at_ms: u64,
+    #[serde(rename = "clientID")]
+    pub client_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ActiveRunEnvelope {
+    active: Option<ActiveRunStatusResponse>,
 }
 
 // ============================================================================
@@ -1994,12 +2033,16 @@ impl SidecarManager {
     /// Send a message to a session (async, non-blocking)
     /// OpenCode API: POST /session/{id}/prompt_async
     /// Returns 204 No Content - actual response comes via /event SSE stream
-    pub async fn send_message(&self, session_id: &str, request: SendMessageRequest) -> Result<()> {
-        self.send_message_with_context(session_id, request, None)
+    pub async fn append_message_and_start_run(
+        &self,
+        session_id: &str,
+        request: SendMessageRequest,
+    ) -> Result<()> {
+        self.append_message_and_start_run_with_context(session_id, request, None)
             .await
     }
 
-    pub async fn send_message_with_context(
+    pub async fn append_message_and_start_run_with_context(
         &self,
         session_id: &str,
         request: SendMessageRequest,
@@ -2008,8 +2051,14 @@ impl SidecarManager {
         self.check_circuit_breaker().await?;
 
         let base = self.base_url().await?;
-        let url = format!("{}/session/{}/prompt_async", base, session_id);
-        let fallback_url = format!("{}/api/session/{}/prompt_async", base, session_id);
+        let append_url = format!("{}/session/{}/message?mode=append", base, session_id);
+        let append_fallback_url =
+            format!("{}/api/session/{}/message?mode=append", base, session_id);
+        let url = format!("{}/session/{}/prompt_async?return=run", base, session_id);
+        let fallback_url = format!(
+            "{}/api/session/{}/prompt_async?return=run",
+            base, session_id
+        );
 
         if let Some(model) = &request.model {
             tracing::debug!(
@@ -2027,6 +2076,45 @@ impl SidecarManager {
 
         tracing::debug!("Sending prompt to: {} with {:?}", url, request);
 
+        let mut append_builder = self.http_client.post(&append_url);
+        if let Some(cid) = correlation_id {
+            append_builder = append_builder
+                .header("x-tandem-correlation-id", cid)
+                .header("x-tandem-session-id", session_id);
+        }
+        let append_response = append_builder
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to append message: {}", e)))?;
+        if !append_response.status().is_success() {
+            tracing::warn!(
+                "append message failed on primary URL {}, retrying via {}",
+                append_url,
+                append_fallback_url
+            );
+            let mut append_fallback_builder = self.http_client.post(&append_fallback_url);
+            if let Some(cid) = correlation_id {
+                append_fallback_builder = append_fallback_builder
+                    .header("x-tandem-correlation-id", cid)
+                    .header("x-tandem-session-id", session_id);
+            }
+            let append_fallback_response = append_fallback_builder
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| TandemError::Sidecar(format!("Failed to append message: {}", e)))?;
+            if !append_fallback_response.status().is_success() {
+                let status = append_fallback_response.status();
+                let body = append_fallback_response.text().await.unwrap_or_default();
+                self.record_failure().await;
+                return Err(TandemError::Sidecar(format!(
+                    "Failed to append message: {} {}",
+                    status, body
+                )));
+            }
+        }
+
         let mut request_builder = self.http_client.post(&url);
         if let Some(cid) = correlation_id {
             request_builder = request_builder
@@ -2039,34 +2127,17 @@ impl SidecarManager {
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
 
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-
-        // prompt_async should return 204 No Content on success
-        if status.as_u16() == 204 {
-            self.record_success().await;
-            return Ok(());
-        }
-
-        if status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let is_html = content_type.contains("text/html")
-                || body.trim_start().starts_with("<!doctype html")
-                || body.trim_start().starts_with("<html");
-
-            if is_html {
+        match Self::handle_prompt_async_response(response).await {
+            Ok(()) => {
+                self.record_success().await;
+                Ok(())
+            }
+            Err(err) if err.starts_with("html_response") => {
                 tracing::warn!(
-                    "prompt_async returned HTML from {} (status {}), retrying via {}",
+                    "prompt_async returned HTML from {}, retrying via {}",
                     url,
-                    status,
                     fallback_url
                 );
-
                 let mut fallback_builder = self.http_client.post(&fallback_url);
                 if let Some(cid) = correlation_id {
                     fallback_builder = fallback_builder
@@ -2077,58 +2148,96 @@ impl SidecarManager {
                     fallback_builder.json(&request).send().await.map_err(|e| {
                         TandemError::Sidecar(format!("Failed to send message: {}", e))
                     })?;
-
-                let status = response.status();
-                let content_type = response
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("")
-                    .to_string();
-
-                if status.as_u16() == 204 {
-                    self.record_success().await;
-                    return Ok(());
+                match Self::handle_prompt_async_response(response).await {
+                    Ok(()) => {
+                        self.record_success().await;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        self.record_failure().await;
+                        Err(TandemError::Sidecar(format!(
+                            "Failed to send message: {}",
+                            err
+                        )))
+                    }
                 }
-
-                let body = response.text().await.unwrap_or_default();
-                tracing::warn!(
-                    "Sidecar prompt_async failed (fallback): status={} content_type={} body={}",
-                    status,
-                    content_type,
-                    body
-                );
-                self.record_failure().await;
-                return Err(TandemError::Sidecar(format!(
-                    "Failed to send message: {}",
-                    body
-                )));
             }
-
-            tracing::warn!(
-                "Sidecar prompt_async unexpected success status: status={} content_type={} body={}",
-                status,
-                content_type,
-                body
-            );
-            self.record_failure().await;
-            return Err(TandemError::Sidecar(format!(
-                "Failed to send message: {}",
-                body
-            )));
+            Err(err) => {
+                self.record_failure().await;
+                Err(TandemError::Sidecar(format!(
+                    "Failed to send message: {}",
+                    err
+                )))
+            }
         }
+    }
 
-        self.record_failure().await;
+    async fn handle_prompt_async_response(
+        response: reqwest::Response,
+    ) -> std::result::Result<(), String> {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let content_type = headers
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
         let body = response.text().await.unwrap_or_default();
-        tracing::warn!(
-            "Sidecar prompt_async failed: status={} body={}",
-            status,
-            body
-        );
-        Err(TandemError::Sidecar(format!(
-            "Failed to send message: {}",
-            body
-        )))
+        parse_prompt_async_response(status.as_u16(), &headers, &content_type, &body)
+    }
+
+    pub async fn get_active_run(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ActiveRunStatusResponse>> {
+        self.check_circuit_breaker().await?;
+
+        let base = self.base_url().await?;
+        let url = format!("{}/session/{}/run", base, session_id);
+        let fallback_url = format!("{}/api/session/{}/run", base, session_id);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to get active run: {}", e)))?;
+
+        match self.handle_response::<ActiveRunEnvelope>(response).await {
+            Ok(payload) => Ok(payload.active),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to read active run from {}, retrying {}: {}",
+                    url,
+                    fallback_url,
+                    err
+                );
+                let fallback = self
+                    .http_client
+                    .get(&fallback_url)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        TandemError::Sidecar(format!("Failed to get active run: {}", e))
+                    })?;
+                let payload: ActiveRunEnvelope = self.handle_response(fallback).await?;
+                Ok(payload.active)
+            }
+        }
+    }
+
+    pub async fn recover_active_run_attach_stream(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>> {
+        let active = self.get_active_run(session_id).await?;
+        Ok(active.map(|run| {
+            format!(
+                "/event?sessionID={}&runID={}",
+                session_id,
+                run.run_id.as_str()
+            )
+        }))
     }
 
     /// Revert a message (undo)
@@ -2330,6 +2439,48 @@ impl SidecarManager {
                 // Don't fail the operation, just log it. The frontend will stop listening anyway.
                 self.record_success().await;
                 Ok(())
+            }
+        }
+    }
+
+    pub async fn cancel_run_by_id(&self, session_id: &str, run_id: &str) -> Result<bool> {
+        self.check_circuit_breaker().await?;
+
+        let base = self.base_url().await?;
+        let url = format!("{}/session/{}/run/{}/cancel", base, session_id, run_id);
+        let fallback_url = format!("{}/api/session/{}/run/{}/cancel", base, session_id, run_id);
+        let response = self
+            .http_client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to cancel run by id: {}", e)))?;
+
+        match self.handle_response::<serde_json::Value>(response).await {
+            Ok(payload) => Ok(payload
+                .get("cancelled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)),
+            Err(err) => {
+                tracing::warn!(
+                    "Cancel run by id failed on {}, retrying {}: {}",
+                    url,
+                    fallback_url,
+                    err
+                );
+                let fallback = self
+                    .http_client
+                    .post(&fallback_url)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        TandemError::Sidecar(format!("Failed to cancel run by id: {}", e))
+                    })?;
+                let payload: serde_json::Value = self.handle_response(fallback).await?;
+                Ok(payload
+                    .get("cancelled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false))
             }
         }
     }
@@ -3115,6 +3266,64 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
             let status = props.get("status").and_then(|s| s.as_str())?.to_string();
             Some(StreamEvent::SessionStatus { session_id, status })
         }
+        "session.run.started" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let run_id = props.get("runID").and_then(|s| s.as_str())?.to_string();
+            let started_at_ms = props
+                .get("startedAtMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let client_id = props
+                .get("clientID")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+            Some(StreamEvent::RunStarted {
+                session_id,
+                run_id,
+                started_at_ms,
+                client_id,
+            })
+        }
+        "session.run.finished" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let run_id = props.get("runID").and_then(|s| s.as_str())?.to_string();
+            let finished_at_ms = props
+                .get("finishedAtMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let status = props
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("completed")
+                .to_string();
+            let error = props.get("error").and_then(extract_error_message);
+            Some(StreamEvent::RunFinished {
+                session_id,
+                run_id,
+                finished_at_ms,
+                status,
+                error,
+            })
+        }
+        "session.run.conflict" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let run_id = props.get("runID").and_then(|s| s.as_str())?.to_string();
+            let retry_after_ms = props
+                .get("retryAfterMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(500);
+            let attach_event_stream = props
+                .get("attachEventStream")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(StreamEvent::RunConflict {
+                session_id,
+                run_id,
+                retry_after_ms,
+                attach_event_stream,
+            })
+        }
         "session.idle" => {
             let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
             Some(StreamEvent::SessionIdle { session_id })
@@ -3266,6 +3475,82 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
             })
         }
     }
+}
+
+fn parse_prompt_async_response(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    content_type: &str,
+    body: &str,
+) -> std::result::Result<(), String> {
+    if status == 204 {
+        let run_id = headers
+            .get("x-tandem-run-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !run_id.is_empty() {
+            tracing::debug!("prompt_async accepted with header run_id={}", run_id);
+        }
+        return Ok(());
+    }
+
+    if status == 202 {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+            let run_id = json.get("runID").and_then(|v| v.as_str()).unwrap_or("");
+            let attach = json
+                .get("attachEventStream")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            tracing::debug!(
+                "prompt_async accepted with body run_id={} attach_event_stream={}",
+                run_id,
+                attach
+            );
+            return Ok(());
+        }
+        return Err(format!("202 response had invalid JSON body: {}", body));
+    }
+
+    if status == 409 {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+            let retry_after_ms = json
+                .get("retryAfterMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(500);
+            let attach = json
+                .get("attachEventStream")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let active_run = json
+                .get("activeRun")
+                .and_then(|v| v.get("runID"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            return Err(format!(
+                "run_conflict retryAfterMs={} activeRun={} attachEventStream={}",
+                retry_after_ms, active_run, attach
+            ));
+        }
+        return Err(format!("run_conflict body={}", body));
+    }
+
+    if (200..300).contains(&status) {
+        let is_html = content_type.contains("text/html")
+            || body.trim_start().starts_with("<!doctype html")
+            || body.trim_start().starts_with("<html");
+        if is_html {
+            return Err(format!(
+                "html_response status={} content_type={}",
+                status, content_type
+            ));
+        }
+        return Err(format!(
+            "unexpected_success status={} content_type={} body={}",
+            status, content_type, body
+        ));
+    }
+
+    Err(format!("status={} body={}", status, body))
 }
 
 fn extract_error_message(value: &serde_json::Value) -> Option<String> {
@@ -3558,6 +3843,41 @@ fn normalize_sessions_for_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn spawn_single_response_server(
+        expected_path: &'static str,
+        response_status: &'static str,
+        response_body: &'static str,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 4096];
+            let n = socket.read(&mut buf).await.expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let first_line = req.lines().next().unwrap_or("");
+            assert!(
+                first_line.contains(expected_path),
+                "expected path {}, got request line {}",
+                expected_path,
+                first_line
+            );
+            let response = format!(
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_status,
+                response_body.len(),
+                response_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write_all");
+        });
+        format!("http://{}", addr)
+    }
 
     #[test]
     fn test_circuit_breaker() {
@@ -3820,5 +4140,110 @@ mod tests {
             Some("ses_123")
         );
         assert_eq!(value.get("chunks_total").and_then(|v| v.as_u64()), Some(5));
+    }
+
+    #[test]
+    fn test_parse_prompt_async_response_409_includes_retry_and_attach() {
+        let headers = reqwest::header::HeaderMap::new();
+        let content_type = "application/json";
+        let body = r#"{
+            "code":"SESSION_RUN_CONFLICT",
+            "activeRun":{"runID":"run_123"},
+            "retryAfterMs":500,
+            "attachEventStream":"/event?sessionID=s1&runID=run_123"
+        }"#;
+        let err = parse_prompt_async_response(409, &headers, content_type, body)
+            .expect_err("should be conflict");
+        assert!(err.contains("run_conflict"));
+        assert!(err.contains("retryAfterMs=500"));
+        assert!(err.contains("activeRun=run_123"));
+        assert!(err.contains("attachEventStream=/event?sessionID=s1&runID=run_123"));
+    }
+
+    #[test]
+    fn test_parse_prompt_async_response_202_parses_run_payload() {
+        let headers = reqwest::header::HeaderMap::new();
+        let content_type = "application/json";
+        let body = r#"{
+            "runID":"run_abc",
+            "attachEventStream":"/event?sessionID=s1&runID=run_abc"
+        }"#;
+        let result = parse_prompt_async_response(202, &headers, content_type, body);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn recover_active_run_attach_stream_uses_get_run_endpoint() {
+        let base = spawn_single_response_server(
+            "/session/s1/run",
+            "200 OK",
+            r#"{"active":{"runID":"run_42","startedAtMs":1,"lastActivityAtMs":2,"clientID":null}}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let attach = manager
+            .recover_active_run_attach_stream("s1")
+            .await
+            .expect("recover");
+        assert_eq!(attach, Some("/event?sessionID=s1&runID=run_42".to_string()));
+    }
+
+    #[tokio::test]
+    async fn cancel_run_by_id_posts_expected_endpoint() {
+        let base = spawn_single_response_server(
+            "/session/s1/run/run_42/cancel",
+            "200 OK",
+            r#"{"ok":true,"cancelled":true}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let cancelled = manager
+            .cancel_run_by_id("s1", "run_42")
+            .await
+            .expect("cancel");
+        assert!(cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancel_run_by_id_handles_non_active_run() {
+        let base = spawn_single_response_server(
+            "/session/s1/run/run_missing/cancel",
+            "200 OK",
+            r#"{"ok":true,"cancelled":false}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let cancelled = manager
+            .cancel_run_by_id("s1", "run_missing")
+            .await
+            .expect("cancel");
+        assert!(!cancelled);
     }
 }

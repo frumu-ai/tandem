@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Result};
+use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -81,6 +82,12 @@ pub struct SendMessageRequest {
     pub parts: Vec<MessagePartInput>,
     pub model: Option<ModelSpec>,
     pub agent: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PromptRunResult {
+    pub messages: Vec<WireSessionMessage>,
+    pub streamed: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -282,7 +289,28 @@ impl EngineClient {
         agent: Option<&str>,
         model: Option<ModelSpec>,
     ) -> Result<Vec<WireSessionMessage>> {
-        let url = format!("{}/session/{}/message", self.base_url, session_id);
+        let result = self
+            .send_prompt_with_stream(session_id, message, agent, model, |_| {})
+            .await?;
+        Ok(result.messages)
+    }
+
+    pub async fn send_prompt_with_stream<F>(
+        &self,
+        session_id: &str,
+        message: &str,
+        agent: Option<&str>,
+        model: Option<ModelSpec>,
+        mut on_delta: F,
+    ) -> Result<PromptRunResult>
+    where
+        F: FnMut(String),
+    {
+        let append_url = format!(
+            "{}/session/{}/message?mode=append",
+            self.base_url, session_id
+        );
+        let prompt_url = format!("{}/session/{}/prompt_sync", self.base_url, session_id);
         let req = SendMessageRequest {
             parts: vec![MessagePartInput::Text {
                 text: message.to_string(),
@@ -290,21 +318,84 @@ impl EngineClient {
             model,
             agent: agent.map(String::from),
         };
-        let resp = self.client.post(&url).json(&req).send().await?;
+        let append_resp = self.client.post(&append_url).json(&req).send().await?;
+        if !append_resp.status().is_success() {
+            let status = append_resp.status();
+            let body = append_resp.text().await?;
+            bail!("append failed {}: {}", status, body);
+        }
+        let resp = self
+            .client
+            .post(&prompt_url)
+            .header("Accept", "text/event-stream")
+            .json(&req)
+            .send()
+            .await?;
         let status = resp.status();
-        let body = resp.text().await?;
         if !status.is_success() {
+            let body = resp.text().await?;
             bail!("{}: {}", status, body);
         }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        if content_type.starts_with("text/event-stream") {
+            let mut stream = resp.bytes_stream();
+            let mut streamed = false;
+            let mut buffer = String::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                let text = String::from_utf8_lossy(&chunk);
+                buffer.push_str(&text);
+                while let Some(payload) = parse_sse_payload(&mut buffer) {
+                    if let Some(delta) = extract_delta_text(&payload) {
+                        if !delta.is_empty() {
+                            streamed = true;
+                            on_delta(delta);
+                        }
+                    }
+                }
+            }
+            let final_url = format!("{}/session/{}/message", self.base_url, session_id);
+            let final_resp = self.client.get(&final_url).send().await?;
+            let final_status = final_resp.status();
+            let final_body = final_resp.text().await?;
+            if !final_status.is_success() {
+                bail!("{}: {}", final_status, final_body);
+            }
+            let messages: Vec<WireSessionMessage> = serde_json::from_str(&final_body)
+                .map_err(|err| anyhow!("Invalid response body: {} | body: {}", err, final_body))?;
+            return Ok(PromptRunResult { messages, streamed });
+        }
+        let body = resp.text().await?;
         let messages: Vec<WireSessionMessage> = serde_json::from_str(&body)
             .map_err(|err| anyhow!("Invalid response body: {} | body: {}", err, body))?;
-        Ok(messages)
+        Ok(PromptRunResult {
+            messages,
+            streamed: false,
+        })
     }
 
     pub async fn abort_session(&self, session_id: &str) -> Result<()> {
-        let url = format!("{}/session/{}/abort", self.base_url, session_id);
+        let url = format!("{}/session/{}/cancel", self.base_url, session_id);
         self.client.post(&url).send().await?;
         Ok(())
+    }
+
+    pub async fn cancel_run_by_id(&self, session_id: &str, run_id: &str) -> Result<bool> {
+        let url = format!(
+            "{}/session/{}/run/{}/cancel",
+            self.base_url, session_id, run_id
+        );
+        let resp = self.client.post(&url).send().await?;
+        let payload = resp.json::<serde_json::Value>().await?;
+        Ok(payload
+            .get("cancelled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false))
     }
 
     pub async fn get_config(&self) -> Result<serde_json::Value> {
@@ -354,4 +445,141 @@ fn normalize_workspace_path(path: &PathBuf) -> Option<String> {
         absolute
     };
     Some(normalized.to_string_lossy().to_string())
+}
+
+fn parse_sse_payload(buffer: &mut String) -> Option<serde_json::Value> {
+    let (end_idx, delim_len) = if let Some(i) = buffer.find("\r\n\r\n") {
+        (i, 4)
+    } else if let Some(i) = buffer.find("\n\n") {
+        (i, 2)
+    } else {
+        return None;
+    };
+
+    let event_str = buffer[..end_idx].to_string();
+    *buffer = buffer[end_idx + delim_len..].to_string();
+
+    let mut data_lines: Vec<String> = Vec::new();
+    for raw_line in event_str.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if let Some(rest) = line.strip_prefix("data:") {
+            data_lines.push(rest.trim_start().to_string());
+        }
+    }
+    if data_lines.is_empty() {
+        return None;
+    }
+    let data = data_lines.join("\n");
+    if data == "[DONE]" {
+        return None;
+    }
+    serde_json::from_str::<serde_json::Value>(&data).ok()
+}
+
+fn extract_delta_text(payload: &serde_json::Value) -> Option<String> {
+    let event_type = payload.get("type").and_then(|v| v.as_str())?;
+    if event_type != "message.part.updated" {
+        return None;
+    }
+    let props = payload.get("properties")?;
+    let delta = props.get("delta")?;
+    match delta {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Object(map) => map
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        serde_json::Value::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(|item| match item {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Object(map) => map
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn spawn_single_response_server(
+        expected_path: &'static str,
+        response_status: &'static str,
+        response_body: &'static str,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 4096];
+            let n = socket.read(&mut buf).await.expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let first_line = req.lines().next().unwrap_or("");
+            assert!(
+                first_line.contains(expected_path),
+                "expected path {}, got {}",
+                expected_path,
+                first_line
+            );
+            let response = format!(
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_status,
+                response_body.len(),
+                response_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write_all");
+        });
+        format!("http://{}", addr)
+    }
+
+    #[tokio::test]
+    async fn cancel_run_by_id_posts_expected_endpoint() {
+        let base = spawn_single_response_server(
+            "/session/s1/run/run_42/cancel",
+            "200 OK",
+            r#"{"ok":true,"cancelled":true}"#,
+        )
+        .await;
+        let client = EngineClient::new(base);
+        let cancelled = client
+            .cancel_run_by_id("s1", "run_42")
+            .await
+            .expect("cancel");
+        assert!(cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancel_run_by_id_returns_false_for_non_active_run() {
+        let base = spawn_single_response_server(
+            "/session/s1/run/run_missing/cancel",
+            "200 OK",
+            r#"{"ok":true,"cancelled":false}"#,
+        )
+        .await;
+        let client = EngineClient::new(base);
+        let cancelled = client
+            .cancel_run_by_id("s1", "run_missing")
+            .await
+            .expect("cancel");
+        assert!(!cancelled);
+    }
 }

@@ -40,6 +40,7 @@ pub enum Action {
     PageDown,
     ToggleTaskPin(String),
     PromptSuccess(Vec<ChatMessage>),
+    PromptDelta(String),
     PromptFailure(String),
 }
 
@@ -1290,19 +1291,29 @@ impl App {
 
                                 tokio::spawn(async move {
                                     match client
-                                        .send_prompt(&session_id, &msg, agent.as_deref(), model)
+                                        .send_prompt_with_stream(
+                                            &session_id,
+                                            &msg,
+                                            agent.as_deref(),
+                                            model,
+                                            |delta| {
+                                                let _ = tx.send(Action::PromptDelta(delta));
+                                            },
+                                        )
                                         .await
                                     {
-                                        Ok(messages) => {
-                                            if let Some(response) =
-                                                Self::extract_assistant_message(&messages)
-                                            {
-                                                let _ = tx.send(Action::PromptSuccess(vec![
-                                                    ChatMessage {
-                                                        role: MessageRole::Assistant,
-                                                        content: response,
-                                                    },
-                                                ]));
+                                        Ok(run) => {
+                                            if !run.streamed {
+                                                if let Some(response) =
+                                                    Self::extract_assistant_message(&run.messages)
+                                                {
+                                                    let _ = tx.send(Action::PromptSuccess(vec![
+                                                        ChatMessage {
+                                                            role: MessageRole::Assistant,
+                                                            content: response,
+                                                        },
+                                                    ]));
+                                                }
                                             }
                                         }
                                         Err(err) => {
@@ -1332,6 +1343,26 @@ impl App {
             Action::PromptSuccess(new_messages) => {
                 if let AppState::Chat { messages, .. } = &mut self.state {
                     messages.extend(new_messages);
+                }
+            }
+            Action::PromptDelta(delta) => {
+                if let AppState::Chat { messages, .. } = &mut self.state {
+                    if let Some(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content,
+                    }) = messages.last_mut()
+                    {
+                        if let Some(ContentBlock::Text(existing)) = content.first_mut() {
+                            existing.push_str(&delta);
+                        } else {
+                            content.push(ContentBlock::Text(delta));
+                        }
+                    } else {
+                        messages.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: vec![ContentBlock::Text(delta)],
+                        });
+                    }
                 }
             }
             Action::PromptFailure(err) => {
@@ -1954,31 +1985,48 @@ CONFIG:
                 let agent = Some(self.current_mode.as_agent().to_string());
                 if let Some(client) = &self.client {
                     let model = self.current_model_spec();
-                    match client
-                        .send_prompt(&session_id, &text, agent.as_deref(), model)
-                        .await
-                    {
-                        Ok(messages) => {
-                            if let Some(response) = Self::extract_assistant_message(&messages) {
-                                if let AppState::Chat { messages, .. } = &mut self.state {
-                                    messages.push(ChatMessage {
-                                        role: MessageRole::Assistant,
-                                        content: response,
-                                    });
+                    if let Some(tx) = &self.action_tx {
+                        let client = client.clone();
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            match client
+                                .send_prompt_with_stream(
+                                    &session_id,
+                                    &text,
+                                    agent.as_deref(),
+                                    model,
+                                    |delta| {
+                                        let _ = tx.send(Action::PromptDelta(delta));
+                                    },
+                                )
+                                .await
+                            {
+                                Ok(run) => {
+                                    if !run.streamed {
+                                        if let Some(response) =
+                                            Self::extract_assistant_message(&run.messages)
+                                        {
+                                            let _ =
+                                                tx.send(Action::PromptSuccess(vec![ChatMessage {
+                                                    role: MessageRole::Assistant,
+                                                    content: response,
+                                                }]));
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    let _ = tx.send(Action::PromptFailure(err.to_string()));
                                 }
                             }
-                        }
-                        Err(err) => {
-                            if let AppState::Chat { messages, .. } = &mut self.state {
-                                messages.push(ChatMessage {
-                                    role: MessageRole::System,
-                                    content: vec![ContentBlock::Text(format!(
-                                        "Prompt failed: {}",
-                                        err
-                                    ))],
-                                });
-                            }
-                        }
+                        });
+                    } else if let AppState::Chat { messages, .. } = &mut self.state {
+                        messages.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: vec![ContentBlock::Text(
+                                "Error: Async channel not initialized. Cannot send prompt."
+                                    .to_string(),
+                            )],
+                        });
                     }
                 }
                 "Prompt sent.".to_string()

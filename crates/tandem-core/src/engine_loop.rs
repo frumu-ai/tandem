@@ -1,3 +1,4 @@
+use chrono::Utc;
 use futures::StreamExt;
 use serde_json::{json, Map, Number, Value};
 use std::collections::{HashMap, HashSet};
@@ -146,25 +147,31 @@ impl EngineLoop {
             .collect::<Vec<_>>()
             .join("\n");
         let active_agent = self.agents.get(req.agent.as_deref()).await;
+        let mut user_message_id = self
+            .find_recent_matching_user_message_id(&session_id, &text)
+            .await;
+        if user_message_id.is_none() {
+            let user_message = Message::new(
+                MessageRole::User,
+                vec![MessagePart::Text { text: text.clone() }],
+            );
+            let created_message_id = user_message.id.clone();
+            self.storage
+                .append_message(&session_id, user_message)
+                .await?;
 
-        let user_message = Message::new(
-            MessageRole::User,
-            vec![MessagePart::Text { text: text.clone() }],
-        );
-        let user_message_id = user_message.id.clone();
-        self.storage
-            .append_message(&session_id, user_message)
-            .await?;
-
-        let user_part = WireMessagePart::text(&session_id, &user_message_id, text.clone());
-        self.event_bus.publish(EngineEvent::new(
-            "message.part.updated",
-            json!({
-                "part": user_part,
-                "delta": text,
-                "agent": active_agent.name
-            }),
-        ));
+            let user_part = WireMessagePart::text(&session_id, &created_message_id, text.clone());
+            self.event_bus.publish(EngineEvent::new(
+                "message.part.updated",
+                json!({
+                    "part": user_part,
+                    "delta": text,
+                    "agent": active_agent.name
+                }),
+            ));
+            user_message_id = Some(created_message_id);
+        }
+        let user_message_id = user_message_id.unwrap_or_else(|| "unknown".to_string());
 
         if cancel.is_cancelled() {
             self.event_bus.publish(EngineEvent::new(
@@ -590,6 +597,35 @@ impl EngineLoop {
             &format!("Tool `{tool}` result:\n{output}"),
             16_000,
         )))
+    }
+
+    async fn find_recent_matching_user_message_id(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> Option<String> {
+        let session = self.storage.get_session(session_id).await?;
+        let last = session.messages.last()?;
+        if !matches!(last.role, MessageRole::User) {
+            return None;
+        }
+        let age_ms = (Utc::now() - last.created_at).num_milliseconds().max(0) as u64;
+        if age_ms > 10_000 {
+            return None;
+        }
+        let last_text = last
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if last_text == text {
+            return Some(last.id.clone());
+        }
+        None
     }
 
     async fn workspace_sandbox_violation(

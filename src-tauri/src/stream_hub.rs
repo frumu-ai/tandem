@@ -621,7 +621,8 @@ impl StreamHub {
                                                 .remove(&(session_id.clone(), resolved_part_id.clone()));
                                         }
                                         StreamEvent::SessionIdle { session_id }
-                                        | StreamEvent::SessionError { session_id, .. } => {
+                                        | StreamEvent::SessionError { session_id, .. }
+                                        | StreamEvent::RunFinished { session_id, .. } => {
                                             emit_event(
                                                 tracing::Level::INFO,
                                                 ProcessKind::Desktop,
@@ -786,6 +787,9 @@ fn extract_session_id(event: &StreamEvent) -> Option<String> {
         | StreamEvent::ToolStart { session_id, .. }
         | StreamEvent::ToolEnd { session_id, .. }
         | StreamEvent::SessionStatus { session_id, .. }
+        | StreamEvent::RunStarted { session_id, .. }
+        | StreamEvent::RunFinished { session_id, .. }
+        | StreamEvent::RunConflict { session_id, .. }
         | StreamEvent::SessionIdle { session_id }
         | StreamEvent::SessionError { session_id, .. }
         | StreamEvent::PermissionAsked { session_id, .. }
@@ -835,6 +839,15 @@ fn derive_correlation_id(event: &StreamEvent) -> String {
             ..
         } => format!("{}:{}", session_id, request_id),
         StreamEvent::SessionStatus { session_id, status } => format!("{}:{}", session_id, status),
+        StreamEvent::RunStarted {
+            session_id, run_id, ..
+        }
+        | StreamEvent::RunFinished {
+            session_id, run_id, ..
+        }
+        | StreamEvent::RunConflict {
+            session_id, run_id, ..
+        } => format!("{}:{}", session_id, run_id),
         StreamEvent::SessionIdle { session_id }
         | StreamEvent::SessionError { session_id, .. }
         | StreamEvent::TodoUpdated { session_id, .. }

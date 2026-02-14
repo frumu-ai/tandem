@@ -1,3 +1,36 @@
+# Tandem v0.3.0 Release Notes
+
+## Highlights
+
+- **Major-version break for runtime API naming**: Hard-renamed legacy `send_message_streaming` naming to split-semantics names aligned with Session-linear execution.
+- **Desktop recovery contract coverage**: Added dedicated sidecar tests for reconnect recovery via `GET /session/{id}/run`.
+- **Conflict and cancel-by-runID coverage**: Added explicit tests for `409` conflict parsing (`retryAfterMs`, `attachEventStream`) and client cancel-by-runID flows for desktop + CLI.
+
+## Complete Feature List
+
+### Naming and Interfaces
+
+- Renamed server append handler to `post_session_message_append`.
+- Renamed Tauri command `send_message_streaming` to `send_message_and_start_run`.
+- Renamed frontend bridge export `sendMessageStreaming` to `sendMessageAndStartRun`.
+- Renamed sidecar methods to explicit split semantics:
+  - `append_message_and_start_run`
+  - `append_message_and_start_run_with_context`
+
+### Tests
+
+- Added sidecar tests:
+  - `test_parse_prompt_async_response_409_includes_retry_and_attach`
+  - `test_parse_prompt_async_response_202_parses_run_payload`
+  - `recover_active_run_attach_stream_uses_get_run_endpoint`
+  - `cancel_run_by_id_posts_expected_endpoint`
+  - `cancel_run_by_id_handles_non_active_run`
+- Added `tandem-tui` client tests:
+  - `cancel_run_by_id_posts_expected_endpoint`
+  - `cancel_run_by_id_returns_false_for_non_active_run`
+
+---
+
 # Tandem v0.2.25 Release Notes
 
 ## Highlights
