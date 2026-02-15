@@ -4,6 +4,11 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## Unreleased
 
+- TUI Startup: Engine bootstrap now runs before PIN entry, keeping startup on the matrix/connect screen until engine availability is confirmed.
+- TUI Download UX: Added byte-based download progress, install-phase messaging, and surfaced last download error details in the connect view.
+- TUI Reliability: Engine download failures now support retry/backoff in-process instead of requiring a full app restart.
+- TUI Debug Flow: Debug builds now fall back to GitHub release download when no local dev engine binary is present.
+- TUI Keystore Recovery: Corrupt/unreadable keystore files now route to create/recovery flow rather than repeated unlock failure loops.
 - Skills: Expanded discovery to support multiple project/global ecosystem directories with deterministic project-over-global precedence.
 - Skills: Added per-agent `skills` activation controls and universal mode-level access for the `skill` tool.
 - Memory: Wired `src-tauri` to consume shared `crates/tandem-memory` directly and removed duplicated local memory implementation files.
