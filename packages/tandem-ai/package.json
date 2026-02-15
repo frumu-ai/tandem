@@ -1,0 +1,17 @@
+{
+  "name": "tandem-ai",
+  "version": "0.0.2",
+  "description": "Tandem AI CLI installer/launcher",
+  "license": "MIT",
+  "bin": {
+    "tandem": "bin/tandem.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "git-checks": false
+  },
+  "files": [
+    "bin",
+    "scripts"
+  ]
+}
