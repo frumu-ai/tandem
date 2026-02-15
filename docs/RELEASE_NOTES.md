@@ -4,6 +4,11 @@
 
 ### Highlights
 
+- **Engine CLI concurrency mode**: Added `tandem-engine parallel` to run multiple prompts concurrently with explicit JSON task batches and bounded concurrency control.
+- **Engine CLI docs overhaul**: Added a bash/WSL-first `ENGINE_CLI.md` with practical examples for `run`, `tool`, `parallel`, and full `serve` + HTTP/SSE workflows.
+- **Engine communication reference**: Added `ENGINE_COMMUNICATION.md` documenting client/runtime topology, API/run lifecycle contracts, and observability paths.
+- **Default engine port hardening**: Standardized default engine endpoint to `127.0.0.1:39731` (from `3000`) to avoid common frontend-dev collisions, with env override support across engine, desktop sidecar, and TUI.
+
 - **Plan mode todo-call recovery**: Fixed repeated `todowrite` no-op loops by normalizing common todo payload aliases and skipping empty todo executions.
 - **Plan mode clarification fallback**: Added engine-level structured `question.asked` fallback when planning cannot derive a concrete todo list.
 - **Todo fallback precision**: Todo extraction fallback now only accepts structured checklist/numbered lines, preventing prose clarification text from becoming fake tasks.

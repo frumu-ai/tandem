@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Core Session Titles**: Added smart session titling logic in `tandem-core` to derive clean session names from user prompts.
 - **TUI Guide**: Added a comprehensive `TANDEM_TUI_GUIDE.md` covering installation, navigation, and usage.
 - **Tandem Guide Book**: Added a new mdbook-based guide in `guide/` for better documentation structure.
+- **Engine CLI Concurrency**: Added `tandem-engine parallel --json ... --concurrency N` to run multiple prompt tasks concurrently from one CLI process.
+- **Engine Communication Guide**: Added `docs/ENGINE_COMMUNICATION.md` documenting desktop/TUI <-> engine runtime contracts, run lifecycle, and SSE usage.
+- **Engine CLI Guide Expansion**: Added a comprehensive `docs/ENGINE_CLI.md` with bash/WSL-first command examples, direct tool calls, and serve+API workflows.
 
 - **TUI Key Setup Wizard**: Added interactive API-key setup flow when a selected provider is not configured.
 - **TUI Error Recall Command**: Added `/last_error` to quickly print the most recent prompt/system failure message.
@@ -29,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Frontend history**: Added debounce to history refresh to prevent excessive re-fetching.
 - **TUI key bindings**: Improved TUI key handling and help interface.
 - **Scripts**: Updated benchmarking and sidecar download scripts.
+- **Engine Default Port**: Standardized default engine endpoint to `127.0.0.1:39731` (away from common frontend port `3000`) with env overrides (`TANDEM_ENGINE_PORT`, `TANDEM_ENGINE_HOST`, `TANDEM_ENGINE_URL`).
+- **Desktop/TUI Endpoint Alignment**: Desktop sidecar + TUI now share centralized default port configuration and honor env overrides for connection/spawn behavior.
+- **Engine Testing Docs**: Updated `ENGINE_TESTING.md` examples to use `tandem-ai` crate commands and the new default engine port.
 
 - **Keystore Key Mapping**: TUI now normalizes legacy/local keystore key names (e.g. `openrouter_key`, `*_api_key`, `opencode_*_api_key`) to canonical provider IDs before syncing to engine config.
 - **Keystore -> Engine Sync**: On connect, TUI now syncs unlocked local keystore provider keys into engine provider config to keep desktop/TUI auth behavior consistent.

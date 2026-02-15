@@ -8,6 +8,8 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Core: Implemented smart session titling to better name sessions based on user intent.
 - Frontend: Debounced history refresh calls to improve performance.
 - Docs: Added `TANDEM_TUI_GUIDE.md` and initialized a new `guide` mdbook.
+- Engine CLI: Added `parallel` command for concurrent prompt execution with structured JSON task input/output.
+- Docs: Added `docs/ENGINE_CLI.md` (bash/WSL-first) and `docs/ENGINE_COMMUNICATION.md` with end-to-end serve/API/SSE flows.
 
 - Plan Mode: Fixed `todowrite` empty-argument loops (`todo list updated: 0 items`) by normalizing common todo payload shapes and skipping true empty calls.
 - Plan Mode: Added structured clarification fallback (`question.asked`) when no concrete task list can be produced, instead of leaving planning in prose-only follow-up.
@@ -15,6 +17,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Desktop UX: Restored walkthrough-question overlays when prompts arrive via `permission(tool=question)` by normalizing into the question modal flow.
 - Desktop UX: Scoped permission prompts to the active session to prevent cross-session/parallel-client approval bleed.
 - TUI Startup: Engine bootstrap now runs before PIN entry, keeping startup on the matrix/connect screen until engine availability is confirmed.
+- Engine Networking: Default engine port standardized to `39731` (instead of `3000`) to reduce frontend port conflicts; desktop/TUI honor env overrides for endpoint selection.
 - TUI Download UX: Added byte-based download progress, install-phase messaging, and surfaced last download error details in the connect view.
 - TUI Reliability: Engine download failures now support retry/backoff in-process instead of requiring a full app restart.
 - TUI Debug Flow: Debug builds now fall back to GitHub release download when no local dev engine binary is present.
