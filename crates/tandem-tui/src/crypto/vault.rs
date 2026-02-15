@@ -11,7 +11,7 @@ use std::path::PathBuf;
 /// Minimum PIN length
 pub const MIN_PIN_LENGTH: usize = 4;
 /// Maximum PIN length
-pub const MAX_PIN_LENGTH: usize = 8;
+pub const MAX_PIN_LENGTH: usize = 4;
 
 /// Encrypted vault key file format
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,11 +132,8 @@ impl EncryptedVaultKey {
 
 /// Validate PIN format
 pub fn validate_pin_format(pin: &str) -> Result<()> {
-    if pin.len() < MIN_PIN_LENGTH {
-        return Err(anyhow!("PIN must be at least {} digits", MIN_PIN_LENGTH));
-    }
-    if pin.len() > MAX_PIN_LENGTH {
-        return Err(anyhow!("PIN must be at most {} digits", MAX_PIN_LENGTH));
+    if pin.len() != MIN_PIN_LENGTH {
+        return Err(anyhow!("PIN must be {} digits", MIN_PIN_LENGTH));
     }
     if !pin.chars().all(|c| c.is_ascii_digit()) {
         return Err(anyhow!("PIN must contain only digits"));

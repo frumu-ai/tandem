@@ -553,7 +553,7 @@ impl EngineClient {
                 while let Some(payload) = parse_sse_payload(&mut buffer) {
                     if let Some(event) = parse_stream_event_envelope(payload) {
                         if extract_delta_text(&event.payload)
-                            .map(|d| !d.is_empty())
+                            .map(|d| !d.trim().is_empty())
                             .unwrap_or(false)
                         {
                             streamed = true;
@@ -730,10 +730,11 @@ pub fn extract_delta_text(payload: &serde_json::Value) -> Option<String> {
     }
     let props = payload.get("properties")?;
     if let Some(delta) = props.get("delta") {
-        return match delta {
+        let extracted = match delta {
             serde_json::Value::String(s) => Some(s.clone()),
             serde_json::Value::Object(map) => map
                 .get("text")
+                .or_else(|| map.get("delta").and_then(|d| d.get("text")))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
             serde_json::Value::Array(items) => {
@@ -743,6 +744,7 @@ pub fn extract_delta_text(payload: &serde_json::Value) -> Option<String> {
                         serde_json::Value::String(s) => Some(s.clone()),
                         serde_json::Value::Object(map) => map
                             .get("text")
+                            .or_else(|| map.get("delta").and_then(|d| d.get("text")))
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string()),
                         _ => None,
@@ -757,13 +759,41 @@ pub fn extract_delta_text(payload: &serde_json::Value) -> Option<String> {
             }
             _ => None,
         };
+        if extracted.is_some() {
+            return extracted;
+        }
     }
     // Some runtime snapshots only include the final text payload without explicit delta.
-    props
+    let from_part_text = props
         .get("part")
         .and_then(|p| p.get("text"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+        .filter(|s| !s.trim().is_empty());
+    if from_part_text.is_some() {
+        return from_part_text;
+    }
+
+    // Some providers emit content arrays with typed text chunks.
+    props
+        .get("part")
+        .and_then(|p| p.get("content"))
+        .and_then(|c| c.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Object(map) => map
+                        .get("text")
+                        .or_else(|| map.get("value"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        })
         .filter(|s| !s.trim().is_empty())
 }
 
@@ -891,6 +921,26 @@ pub fn extract_stream_request(payload: &serde_json::Value) -> Option<StreamReque
         }
         _ => None,
     }
+}
+
+pub fn extract_stream_todo_update(
+    payload: &serde_json::Value,
+) -> Option<(String, Vec<serde_json::Value>)> {
+    let event_type = payload.get("type").and_then(|v| v.as_str())?;
+    if event_type != "todo.updated" {
+        return None;
+    }
+    let props = payload.get("properties")?;
+    let session_id = props
+        .get("sessionID")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())?;
+    let todos = props
+        .get("todos")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Some((session_id, todos))
 }
 
 pub fn extract_stream_error(payload: &serde_json::Value) -> Option<String> {

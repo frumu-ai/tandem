@@ -3870,7 +3870,6 @@ impl App {
 
     pub async fn tick(&mut self) {
         self.tick_count += 1;
-        let mut transition_to_pin = false;
 
         // Check engine health every ~1 second (assuming 60tps)
         if self.tick_count % 60 == 0 {
@@ -3910,7 +3909,8 @@ impl App {
                     match self.ensure_engine_binary().await {
                         Ok(_) => {
                             self.startup_engine_bootstrap_done = true;
-                            transition_to_pin = true;
+                            self.connection_status =
+                                "Engine ready. Press Enter to continue.".to_string();
                         }
                         Err(err) => {
                             self.engine_download_active = false;
@@ -3920,8 +3920,6 @@ impl App {
                             self.connection_status = format!("Engine download failed: {}", err);
                         }
                     }
-                } else {
-                    transition_to_pin = true;
                 }
             }
             AppState::PinPrompt { .. } => {
@@ -4063,18 +4061,6 @@ impl App {
             }
 
             _ => {}
-        }
-
-        if transition_to_pin {
-            self.state = AppState::PinPrompt {
-                input: String::new(),
-                error: None,
-                mode: if self.vault_key.is_some() && !self.keystore_missing_or_empty() {
-                    PinPromptMode::UnlockExisting
-                } else {
-                    PinPromptMode::CreateNew
-                },
-            };
         }
     }
 

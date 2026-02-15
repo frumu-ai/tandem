@@ -29,7 +29,9 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_startup(f: &mut Frame, app: &App) {
-    draw_connecting(f, app);
+    // Fill background with matrix
+    let matrix = app.matrix.layer(true);
+    f.render_widget(matrix, f.area());
 }
 
 fn draw_pin_prompt(

@@ -34,6 +34,17 @@ impl SecureKeyStore {
         Ok(Self { master_key, store })
     }
 
+    pub fn is_empty_on_disk(path: impl AsRef<Path>) -> Result<bool> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(true);
+        }
+        let data = std::fs::read(path)?;
+        let store: EncryptedStore =
+            serde_json::from_slice(&data).context("Failed to parse key store")?;
+        Ok(store.entries.is_empty())
+    }
+
     pub fn get(&self, key: &str) -> Result<Option<String>> {
         let Some((nonce_bytes, ciphertext)) = self.store.entries.get(key) else {
             return Ok(None);
