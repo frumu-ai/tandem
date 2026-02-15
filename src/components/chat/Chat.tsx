@@ -348,6 +348,19 @@ export function Chat({
   const messagesRef = useRef<MessageProps[]>([]);
   const currentAssistantMessageRef = useRef<string>("");
   const currentAssistantMessageIdRef = useRef<string | null>(null);
+  const pendingMemoryRetrievalRef = useRef<
+    Record<string, NonNullable<MessageProps["memoryRetrieval"]>>
+  >({});
+  const pendingAssistantStorageRef = useRef<
+    Record<
+      string,
+      {
+        messageId?: string;
+        session_chunks_stored: number;
+        project_chunks_stored: number;
+      }
+    >
+  >({});
   const seenEventIdsRef = useRef<Set<string>>(new Set());
   const queueDrainRef = useRef(false);
   const assistantFlushFrameRef = useRef<number | null>(null);
@@ -475,6 +488,8 @@ export function Chat({
     pendingQuestionToolCallIdsRef.current = new Set();
     pendingQuestionToolMessageIdsRef.current = new Set();
     seenEventIdsRef.current = new Set();
+    pendingMemoryRetrievalRef.current = {};
+    pendingAssistantStorageRef.current = {};
   }, [currentSessionId]);
 
   useEffect(() => {
@@ -1339,13 +1354,63 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
   const applyAssistantContent = useCallback((contentToApply: string) => {
     setMessages((prev) => {
+      const sessionId = currentSessionIdRef.current || "";
+      const mergePendingMemory = (
+        existing: MessageProps["memoryRetrieval"] | undefined,
+        messageId?: string | null
+      ): MessageProps["memoryRetrieval"] | undefined => {
+        const pendingRetrieval = pendingMemoryRetrievalRef.current[sessionId];
+        const pendingStorage = pendingAssistantStorageRef.current[sessionId];
+
+        const storageMatchesMessage =
+          pendingStorage &&
+          (!pendingStorage.messageId || !messageId || pendingStorage.messageId === messageId);
+        const hasPending = Boolean(pendingRetrieval || storageMatchesMessage);
+        if (!hasPending) {
+          return existing;
+        }
+
+        const next: NonNullable<MessageProps["memoryRetrieval"]> = {
+          status: existing?.status,
+          used: existing?.used ?? false,
+          chunks_total: existing?.chunks_total ?? 0,
+          latency_ms: existing?.latency_ms ?? 0,
+          embedding_status: existing?.embedding_status,
+          embedding_reason: existing?.embedding_reason,
+          session_chunks_stored: existing?.session_chunks_stored ?? 0,
+          project_chunks_stored: existing?.project_chunks_stored ?? 0,
+        };
+
+        if (pendingRetrieval) {
+          next.status = pendingRetrieval.status;
+          next.used = pendingRetrieval.used;
+          next.chunks_total = pendingRetrieval.chunks_total;
+          next.latency_ms = pendingRetrieval.latency_ms;
+          next.embedding_status = pendingRetrieval.embedding_status;
+          next.embedding_reason = pendingRetrieval.embedding_reason;
+          delete pendingMemoryRetrievalRef.current[sessionId];
+        }
+
+        if (storageMatchesMessage && pendingStorage) {
+          next.session_chunks_stored = pendingStorage.session_chunks_stored;
+          next.project_chunks_stored = pendingStorage.project_chunks_stored;
+          delete pendingAssistantStorageRef.current[sessionId];
+        }
+
+        return next;
+      };
+
       const targetId = currentAssistantMessageIdRef.current;
 
       if (targetId) {
         const idx = prev.findIndex((m) => m.id === targetId);
         if (idx >= 0) {
           const updated = [...prev];
-          updated[idx] = { ...updated[idx], content: contentToApply };
+          updated[idx] = {
+            ...updated[idx],
+            content: contentToApply,
+            memoryRetrieval: mergePendingMemory(updated[idx].memoryRetrieval, targetId),
+          };
           return updated;
         }
       }
@@ -1358,6 +1423,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
             ...lastMessage,
             id: targetId || lastMessage.id,
             content: contentToApply,
+            memoryRetrieval: mergePendingMemory(lastMessage.memoryRetrieval, targetId),
           },
         ];
       }
@@ -1369,6 +1435,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           role: "assistant",
           content: contentToApply,
           timestamp: new Date(),
+          memoryRetrieval: mergePendingMemory(undefined, targetId),
         },
       ];
     });
@@ -1675,9 +1742,26 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           if (!currentSessionId || event.session_id !== currentSessionId) {
             break;
           }
+          const nextRetrieval: NonNullable<MessageProps["memoryRetrieval"]> = {
+            status: event.status,
+            used: event.used,
+            chunks_total: event.chunks_total,
+            latency_ms: event.latency_ms,
+            embedding_status: event.embedding_status,
+            embedding_reason: event.embedding_reason,
+            session_chunks_stored: 0,
+            project_chunks_stored: 0,
+          };
           setMessages((prev) => {
             const lastMessage = prev[prev.length - 1];
             if (!lastMessage || lastMessage.role !== "assistant") {
+              pendingMemoryRetrievalRef.current[event.session_id] = {
+                ...nextRetrieval,
+                session_chunks_stored:
+                  pendingAssistantStorageRef.current[event.session_id]?.session_chunks_stored ?? 0,
+                project_chunks_stored:
+                  pendingAssistantStorageRef.current[event.session_id]?.project_chunks_stored ?? 0,
+              };
               return prev;
             }
             return [
@@ -1685,12 +1769,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               {
                 ...lastMessage,
                 memoryRetrieval: {
-                  status: event.status,
-                  used: event.used,
-                  chunks_total: event.chunks_total,
-                  latency_ms: event.latency_ms,
-                  embedding_status: event.embedding_status,
-                  embedding_reason: event.embedding_reason,
+                  ...nextRetrieval,
                   session_chunks_stored: lastMessage.memoryRetrieval?.session_chunks_stored ?? 0,
                   project_chunks_stored: lastMessage.memoryRetrieval?.project_chunks_stored ?? 0,
                 },
@@ -1713,9 +1792,23 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               event.message_id != null
                 ? prev.findIndex((m) => m.id === event.message_id)
                 : prev.length - 1;
-            if (targetIdx < 0) return prev;
+            if (targetIdx < 0) {
+              pendingAssistantStorageRef.current[event.session_id] = {
+                messageId: event.message_id,
+                session_chunks_stored: event.session_chunks_stored,
+                project_chunks_stored: event.project_chunks_stored,
+              };
+              return prev;
+            }
             const target = prev[targetIdx];
-            if (target.role !== "assistant") return prev;
+            if (target.role !== "assistant") {
+              pendingAssistantStorageRef.current[event.session_id] = {
+                messageId: event.message_id,
+                session_chunks_stored: event.session_chunks_stored,
+                project_chunks_stored: event.project_chunks_stored,
+              };
+              return prev;
+            }
 
             const next = [...prev];
             next[targetIdx] = {
