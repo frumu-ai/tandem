@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use futures::StreamExt;
-use reqwest::Client;
+use reqwest::{header::HeaderMap, header::HeaderValue, Client};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -210,9 +210,27 @@ pub struct UpdateSessionRequest {
 
 impl EngineClient {
     pub fn new(base_url: String) -> Self {
+        Self::new_with_token(base_url, None)
+    }
+
+    pub fn new_with_token(base_url: String, api_token: Option<String>) -> Self {
+        let mut headers = HeaderMap::new();
+        if let Some(token) = api_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if let Ok(value) = HeaderValue::from_str(token) {
+                headers.insert("x-tandem-token", value);
+            }
+        }
+        let client = Client::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
             base_url,
-            client: Client::new(),
+            client,
             api_key: None,
         }
     }

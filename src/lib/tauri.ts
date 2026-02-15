@@ -303,6 +303,13 @@ export interface RuntimeDiagnostics {
   };
 }
 
+export interface EngineApiTokenInfo {
+  token_masked: string;
+  token?: string | null;
+  path: string;
+  storage_backend?: string;
+}
+
 export interface EngineLeaseInfo {
   lease_id: string;
   client_id: string;
@@ -751,6 +758,10 @@ export async function getSidecarStartupHealth(): Promise<SidecarStartupHealth | 
 
 export async function getRuntimeDiagnostics(): Promise<RuntimeDiagnostics> {
   return invoke("get_runtime_diagnostics");
+}
+
+export async function getEngineApiToken(reveal = false): Promise<EngineApiTokenInfo> {
+  return invoke("get_engine_api_token", { reveal });
 }
 
 export async function engineAcquireLease(

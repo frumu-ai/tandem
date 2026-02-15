@@ -4,7 +4,7 @@
 use crate::error::{Result, TandemError};
 use crate::logs::LogRingBuffer;
 use futures::StreamExt;
-use reqwest::Client;
+use reqwest::{header::HeaderMap, header::HeaderValue, Client};
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -12,7 +12,10 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tandem_core::{resolve_shared_paths, DEFAULT_ENGINE_PORT};
+use tandem_core::{
+    engine_api_token_file_path, load_or_create_engine_api_token, resolve_shared_paths,
+    DEFAULT_ENGINE_PORT,
+};
 use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
 use tandem_skills::{SkillContent, SkillInfo, SkillLocation, SkillTemplateInfo};
 use tokio::sync::{Mutex, RwLock};
@@ -179,6 +182,31 @@ fn default_sidecar_port() -> u16 {
         .ok()
         .and_then(|raw| raw.trim().parse::<u16>().ok())
         .unwrap_or(DEFAULT_ENGINE_PORT)
+}
+
+fn build_http_client(timeout: Duration, api_token: &str) -> Client {
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(api_token) {
+        headers.insert("x-tandem-token", value);
+    }
+    Client::builder()
+        .default_headers(headers)
+        .timeout(timeout)
+        .build()
+        .expect("Failed to create HTTP client")
+}
+
+fn build_stream_client(api_token: &str) -> Client {
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(api_token) {
+        headers.insert("x-tandem-token", value);
+    }
+    Client::builder()
+        .default_headers(headers)
+        .http1_only()
+        .tcp_keepalive(Duration::from_secs(60))
+        .build()
+        .expect("Failed to create stream client")
 }
 
 /// Configuration for the sidecar manager
@@ -1000,20 +1028,16 @@ pub struct SidecarManager {
     env_vars: RwLock<HashMap<String, String>>,
     /// Always-drained stdout/stderr lines from the sidecar (bounded ring buffer).
     log_buffer: Arc<LogRingBuffer>,
+    api_token: String,
+    api_token_backend: String,
 }
 
 impl SidecarManager {
     pub fn new(config: SidecarConfig) -> Self {
-        let http_client = Client::builder()
-            .timeout(config.operation_timeout)
-            .build()
-            .expect("Failed to create HTTP client");
-
-        let stream_client = Client::builder()
-            .http1_only() // SSE works best with HTTP/1.1 on many platforms
-            .tcp_keepalive(Duration::from_secs(60))
-            .build()
-            .expect("Failed to create stream client");
+        let token_material = load_or_create_engine_api_token();
+        let api_token = token_material.token;
+        let http_client = build_http_client(config.operation_timeout, &api_token);
+        let stream_client = build_stream_client(&api_token);
 
         Self {
             circuit_breaker: Mutex::new(CircuitBreaker::new(config.clone())),
@@ -1030,6 +1054,8 @@ impl SidecarManager {
             stream_client,
             env_vars: RwLock::new(HashMap::new()),
             log_buffer: Arc::new(LogRingBuffer::new(2000)),
+            api_token,
+            api_token_backend: token_material.backend,
         }
     }
 
@@ -1041,6 +1067,18 @@ impl SidecarManager {
             .map(|l| (l.seq, l.text))
             .collect::<Vec<_>>();
         (lines, self.log_buffer.dropped_total())
+    }
+
+    pub fn api_token(&self) -> String {
+        self.api_token.clone()
+    }
+
+    pub fn api_token_path(&self) -> PathBuf {
+        engine_api_token_file_path()
+    }
+
+    pub fn api_token_backend(&self) -> String {
+        self.api_token_backend.clone()
     }
 
     pub fn sidecar_logs_since(&self, seq: u64) -> (Vec<(u64, String)>, u64) {
@@ -1298,6 +1336,7 @@ impl SidecarManager {
         for (key, value) in env_vars.iter() {
             cmd.env(key, value);
         }
+        cmd.env("TANDEM_API_TOKEN", &self.api_token);
 
         // OPTIMIZATION: Set Bun/JSC memory limits to avoid excessive idle usage
         // (Addresses feedback about 500MB+ idle usage)

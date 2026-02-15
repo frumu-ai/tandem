@@ -170,6 +170,13 @@ struct ShellRunInput {
 
 #[derive(Debug, Deserialize, Default)]
 struct AuthInput {
+    #[serde(alias = "apiKey", alias = "api_key")]
+    token: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ApiTokenInput {
+    #[serde(alias = "apiToken", alias = "api_token")]
     token: Option<String>,
 }
 
@@ -428,6 +435,8 @@ fn app_router(state: AppState) -> Router {
         .route("/session/{id}/command", post(run_command))
         .route("/session/{id}/shell", post(run_shell))
         .route("/auth/{id}", put(set_auth).delete(delete_auth))
+        .route("/auth/token", put(set_api_token).delete(clear_api_token))
+        .route("/auth/token/generate", post(generate_api_token))
         .route("/path", get(path_info))
         .route("/agent", get(agent_list))
         .route("/skills", get(skills_list).post(skills_import))
@@ -444,7 +453,61 @@ fn app_router(state: AppState) -> Router {
         .route("/log", post(push_log))
         .route("/doc", get(openapi_doc))
         .layer(middleware::from_fn_with_state(state.clone(), startup_gate))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_gate))
         .with_state(state)
+}
+
+async fn auth_gate(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    if path == "/global/health" {
+        return next.run(request).await;
+    }
+
+    let required = state.api_token().await;
+    let Some(expected) = required else {
+        return next.run(request).await;
+    };
+
+    // Allow initial token bootstrap endpoints only when token auth is currently disabled.
+    // Once a token is configured, these endpoints also require auth.
+    let provided = extract_request_token(request.headers());
+    if provided.as_deref() == Some(expected.as_str()) {
+        return next.run(request).await;
+    }
+
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorEnvelope {
+            error: "Unauthorized: missing or invalid API token".to_string(),
+            code: Some("AUTH_REQUIRED".to_string()),
+        }),
+    )
+        .into_response()
+}
+
+fn extract_request_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(token) = headers
+        .get("x-tandem-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return Some(token.to_string());
+    }
+
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())?;
+    let trimmed = auth.trim();
+    let bearer = trimmed
+        .strip_prefix("Bearer ")
+        .or_else(|| trimmed.strip_prefix("bearer "))?;
+    let token = bearer.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
 }
 
 async fn startup_gate(State(state): State<AppState>, request: Request, next: Next) -> Response {
@@ -500,6 +563,7 @@ async fn global_health(State(state): State<AppState>) -> impl IntoResponse {
     Json(json!({
         "healthy": true,
         "ready": state.is_ready(),
+        "apiTokenRequired": state.api_token().await.is_some(),
         "phase": startup.phase,
         "startup_attempt_id": startup.attempt_id,
         "startup_elapsed_ms": startup.elapsed_ms,
@@ -2606,6 +2670,35 @@ async fn set_auth(
 async fn delete_auth(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     let removed = state.auth.write().await.remove(&id).is_some();
     Json(json!({"ok": removed}))
+}
+
+async fn set_api_token(
+    State(state): State<AppState>,
+    Json(input): Json<ApiTokenInput>,
+) -> Json<Value> {
+    let token = input.token.unwrap_or_default().trim().to_string();
+    if token.is_empty() {
+        return Json(json!({
+            "ok": false,
+            "error": "token cannot be empty"
+        }));
+    }
+    state.set_api_token(Some(token)).await;
+    Json(json!({"ok": true}))
+}
+
+async fn clear_api_token(State(state): State<AppState>) -> Json<Value> {
+    state.set_api_token(None).await;
+    Json(json!({"ok": true}))
+}
+
+async fn generate_api_token(State(state): State<AppState>) -> Json<Value> {
+    let token = format!("tk_{}", Uuid::new_v4().simple());
+    state.set_api_token(Some(token.clone())).await;
+    Json(json!({
+        "ok": true,
+        "token": token
+    }))
 }
 async fn path_info(
     State(state): State<AppState>,

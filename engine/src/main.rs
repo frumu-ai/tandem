@@ -82,6 +82,10 @@ const TOOL_EXAMPLES: &str = r#"Examples:
   - - (read JSON from stdin)
 "#;
 
+const TOKEN_EXAMPLES: &str = r#"Examples:
+  tandem-engine token generate
+"#;
+
 #[derive(Parser, Debug)]
 #[command(name = "tandem-engine")]
 #[command(version)]
@@ -140,6 +144,12 @@ enum Command {
         model: Option<String>,
         #[arg(long, help = "Path to config JSON override.")]
         config: Option<String>,
+        #[arg(
+            long,
+            env = "TANDEM_API_TOKEN",
+            help = "Require API token auth for HTTP endpoints (Authorization: Bearer <token> or X-Tandem-Token)."
+        )]
+        api_token: Option<String>,
     },
     #[command(about = "Run one prompt and print only the assistant response.")]
     #[command(after_help = RUN_EXAMPLES)]
@@ -195,6 +205,18 @@ enum Command {
     },
     #[command(about = "List supported provider IDs for --provider.")]
     Providers,
+    #[command(about = "API token utilities.")]
+    Token {
+        #[command(subcommand)]
+        action: TokenCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TokenCommand {
+    #[command(about = "Generate a random API token string.")]
+    #[command(after_help = TOKEN_EXAMPLES)]
+    Generate,
 }
 
 #[tokio::main]
@@ -211,6 +233,7 @@ async fn main() -> anyhow::Result<()> {
             provider,
             model,
             config,
+            api_token,
         } => {
             let provider = normalize_and_validate_provider(provider)?;
             let overrides = build_cli_overrides(api_key, provider, model)?;
@@ -241,6 +264,17 @@ async fn main() -> anyhow::Result<()> {
             info!("engine logging initialized: {:?}", log_info);
             let startup_attempt_id = Uuid::new_v4().to_string();
             let state = AppState::new_starting(startup_attempt_id.clone(), in_process);
+            if let Some(token) = api_token.and_then(|raw| {
+                let trimmed = raw.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }) {
+                info!("API token auth enabled for tandem-engine HTTP API");
+                state.set_api_token(Some(token)).await;
+            }
             let addr: SocketAddr = format!("{hostname}:{port}")
                 .parse()
                 .context("invalid hostname or port")?;
@@ -409,6 +443,12 @@ async fn main() -> anyhow::Result<()> {
                 println!("  - {provider}");
             }
         }
+        Command::Token { action } => match action {
+            TokenCommand::Generate => {
+                let token = format!("tk_{}", Uuid::new_v4().simple());
+                println!("{token}");
+            }
+        },
     }
 
     Ok(())
@@ -494,19 +534,6 @@ fn resolve_state_dir(flag: Option<String>) -> PathBuf {
     resolve_shared_paths()
         .map(|p| p.engine_state_dir)
         .unwrap_or_else(|_| PathBuf::from(".tandem"))
-}
-
-fn read_tool_json(input: &str) -> anyhow::Result<serde_json::Value> {
-    if input.trim() == "-" {
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
-        return Ok(serde_json::from_str(&buf)?);
-    }
-    if let Some(path) = input.strip_prefix('@') {
-        let raw = fs::read_to_string(path)?;
-        return Ok(serde_json::from_str(&raw)?);
-    }
-    Ok(serde_json::from_str(input)?)
 }
 
 fn read_json_input(input: &str) -> anyhow::Result<serde_json::Value> {

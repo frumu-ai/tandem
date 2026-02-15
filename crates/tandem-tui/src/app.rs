@@ -349,8 +349,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Instant;
 use tandem_core::{
-    migrate_legacy_storage_if_needed, resolve_shared_paths, DEFAULT_ENGINE_HOST,
-    DEFAULT_ENGINE_PORT,
+    engine_api_token_file_path, load_or_create_engine_api_token, migrate_legacy_storage_if_needed,
+    resolve_shared_paths, DEFAULT_ENGINE_HOST, DEFAULT_ENGINE_PORT,
 };
 
 pub struct App {
@@ -381,6 +381,8 @@ pub struct App {
     pub engine_health: EngineConnectionStatus,
     pub engine_lease_id: Option<String>,
     pub engine_lease_last_renewed: Option<Instant>,
+    pub engine_api_token: Option<String>,
+    pub engine_api_token_backend: Option<String>,
     pub pending_model_provider: Option<String>,
     pub autocomplete_items: Vec<(String, String)>,
     pub autocomplete_index: usize,
@@ -595,6 +597,25 @@ impl App {
         )
     }
 
+    fn masked_engine_api_token(token: &str) -> String {
+        let trimmed = token.trim();
+        if trimmed.is_empty() || trimmed.len() <= 8 {
+            return "****".to_string();
+        }
+        format!("{}****{}", &trimmed[..4], &trimmed[trimmed.len() - 4..])
+    }
+
+    fn resolve_engine_api_token() -> Option<(String, String)> {
+        if let Ok(raw) = std::env::var("TANDEM_API_TOKEN") {
+            let token = raw.trim();
+            if !token.is_empty() {
+                return Some((token.to_string(), "env".to_string()));
+            }
+        }
+        let token_material = load_or_create_engine_api_token();
+        Some((token_material.token, token_material.backend))
+    }
+
     pub const COMMAND_HELP: &'static [(&'static str, &'static str)] = &[
         ("help", "Show available commands"),
         ("engine", "Engine status / restart"),
@@ -624,6 +645,9 @@ impl App {
 
     pub fn new() -> Self {
         let config_dir = Self::find_or_create_config_dir();
+        let (engine_api_token, engine_api_token_backend) = Self::resolve_engine_api_token()
+            .map(|(token, backend)| (Some(token), Some(backend)))
+            .unwrap_or((None, None));
 
         let vault_key = if let Some(dir) = &config_dir {
             let path = dir.join("vault.key");
@@ -665,6 +689,8 @@ impl App {
             engine_health: EngineConnectionStatus::Disconnected,
             engine_lease_id: None,
             engine_lease_last_renewed: None,
+            engine_api_token,
+            engine_api_token_backend,
             pending_model_provider: None,
             autocomplete_items: Vec::new(),
             autocomplete_index: 0,
@@ -4087,7 +4113,10 @@ impl App {
                 if self.client.is_none() {
                     self.connection_status = "Searching for engine...".to_string();
                     // Check if running
-                    let client = EngineClient::new(Self::configured_engine_base_url());
+                    let client = EngineClient::new_with_token(
+                        Self::configured_engine_base_url(),
+                        self.engine_api_token.clone(),
+                    );
                     if let Ok(healthy) = client.check_health().await {
                         if healthy {
                             self.connection_status =
@@ -4133,6 +4162,9 @@ impl App {
                             let mut cmd = Command::new(binary_path);
                             cmd.kill_on_drop(!Self::shared_engine_mode_enabled());
                             cmd.arg("serve").arg("--port").arg(&configured_port);
+                            if let Some(token) = &self.engine_api_token {
+                                cmd.env("TANDEM_API_TOKEN", token);
+                            }
                             cmd.stdout(Stdio::null()).stderr(Stdio::null());
                             if let Ok(child) = cmd.spawn() {
                                 self.engine_process = Some(child);
@@ -4144,6 +4176,9 @@ impl App {
                             let mut cmd = Command::new("tandem-engine");
                             cmd.kill_on_drop(!Self::shared_engine_mode_enabled());
                             cmd.arg("serve").arg("--port").arg(&configured_port);
+                            if let Some(token) = &self.engine_api_token {
+                                cmd.env("TANDEM_API_TOKEN", token);
+                            }
                             cmd.stdout(Stdio::null()).stderr(Stdio::null());
                             if let Ok(child) = cmd.spawn() {
                                 self.engine_process = Some(child);
@@ -4162,6 +4197,9 @@ impl App {
                                 .arg("serve")
                                 .arg("--port")
                                 .arg(&configured_port);
+                            if let Some(token) = &self.engine_api_token {
+                                cargo_cmd.env("TANDEM_API_TOKEN", token);
+                            }
                             cargo_cmd.stdout(Stdio::null()).stderr(Stdio::null());
                             if let Ok(child) = cargo_cmd.spawn() {
                                 self.engine_process = Some(child);
@@ -4233,6 +4271,8 @@ BASICS:
   /help              Show this help message
   /engine status     Check engine connection status
   /engine restart    Restart the Tandem engine
+  /engine token      Show masked engine API token
+  /engine token show Show full engine API token
 
 SESSIONS:
   /sessions          List all sessions
@@ -4328,7 +4368,38 @@ MULTI-AGENT KEYS:
                     self.state = AppState::Connecting;
                     "Engine restart requested.".to_string()
                 }
-                _ => "Usage: /engine status | restart".to_string(),
+                Some("token") => {
+                    let show_full =
+                        args.get(1).map(|s| s.eq_ignore_ascii_case("show")) == Some(true);
+                    let Some(token) = self.engine_api_token.as_deref().map(str::trim) else {
+                        return "Engine token is not configured.".to_string();
+                    };
+                    if token.is_empty() {
+                        return "Engine token is not configured.".to_string();
+                    }
+                    let value = if show_full {
+                        token.to_string()
+                    } else {
+                        Self::masked_engine_api_token(token)
+                    };
+                    let path = engine_api_token_file_path().to_string_lossy().to_string();
+                    let backend = self
+                        .engine_api_token_backend
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    if show_full {
+                        format!(
+                            "Engine API token:\n  {}\nStorage: {}\nPath:\n  {}",
+                            value, backend, path
+                        )
+                    } else {
+                        format!(
+                            "Engine API token (masked):\n  {}\nStorage: {}\nUse `/engine token show` to reveal.\nPath:\n  {}",
+                            value, backend, path
+                        )
+                    }
+                }
+                _ => "Usage: /engine status | restart | token [show]".to_string(),
             },
 
             "sessions" => {

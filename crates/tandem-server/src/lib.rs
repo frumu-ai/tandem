@@ -223,6 +223,7 @@ pub struct AppState {
     pub runtime: Arc<OnceLock<RuntimeState>>,
     pub startup: Arc<RwLock<StartupState>>,
     pub in_process_mode: Arc<AtomicBool>,
+    pub api_token: Arc<RwLock<Option<String>>>,
     pub engine_leases: Arc<RwLock<std::collections::HashMap<String, EngineLease>>>,
     pub run_registry: RunRegistry,
     pub run_stale_ms: u64,
@@ -240,6 +241,7 @@ impl AppState {
                 last_error: None,
             })),
             in_process_mode: Arc::new(AtomicBool::new(in_process)),
+            api_token: Arc::new(RwLock::new(None)),
             engine_leases: Arc::new(RwLock::new(std::collections::HashMap::new())),
             run_registry: RunRegistry::new(),
             run_stale_ms: resolve_run_stale_ms(),
@@ -256,6 +258,14 @@ impl AppState {
         } else {
             "sidecar"
         }
+    }
+
+    pub async fn api_token(&self) -> Option<String> {
+        self.api_token.read().await.clone()
+    }
+
+    pub async fn set_api_token(&self, token: Option<String>) {
+        *self.api_token.write().await = token;
     }
 
     pub async fn startup_snapshot(&self) -> StartupSnapshot {

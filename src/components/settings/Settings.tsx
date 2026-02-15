@@ -17,6 +17,9 @@ import {
   RefreshCw,
   FileText,
   ScrollText,
+  Eye,
+  EyeOff,
+  Copy,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { ProviderCard } from "./ProviderCard";
@@ -54,6 +57,8 @@ import {
   initializeGitRepo,
   getStorageMigrationStatus,
   runStorageMigration,
+  getEngineApiToken,
+  type EngineApiTokenInfo,
   type ProvidersConfig,
   type CustomBackgroundInfo,
   type UserProject,
@@ -100,6 +105,9 @@ export function Settings({
 
   // Version info
   const [appVersion, setAppVersion] = useState<string>("");
+  const [engineTokenInfo, setEngineTokenInfo] = useState<EngineApiTokenInfo | null>(null);
+  const [engineTokenVisible, setEngineTokenVisible] = useState(false);
+  const [tokenCopied, setTokenCopied] = useState(false);
 
   // Custom background image (global)
   const [customBg, setCustomBg] = useState<CustomBackgroundInfo | null>(null);
@@ -182,13 +190,16 @@ export function Settings({
 
   const loadSettings = async () => {
     try {
-      const [config, userProjects, activeProj] = await Promise.all([
+      const [config, userProjects, activeProj, tokenInfo] = await Promise.all([
         getProvidersConfig(),
         getUserProjects(),
         getActiveProject(),
+        getEngineApiToken(false),
       ]);
       setProviders(config);
       setProjects(userProjects);
+      setEngineTokenInfo(tokenInfo);
+      setEngineTokenVisible(false);
 
       // Load custom provider if exists
       if (config.custom && config.custom.length > 0) {
@@ -208,6 +219,30 @@ export function Settings({
       console.error("Failed to load settings:", err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRevealEngineToken = async () => {
+    try {
+      const tokenInfo = await getEngineApiToken(!engineTokenVisible);
+      setEngineTokenInfo(tokenInfo);
+      setEngineTokenVisible(!engineTokenVisible);
+      setTokenCopied(false);
+    } catch (err) {
+      console.error("Failed to read engine API token:", err);
+    }
+  };
+
+  const handleCopyEngineToken = async () => {
+    const token = engineTokenInfo?.token;
+    if (!token) return;
+    try {
+      await window.navigator.clipboard.writeText(token);
+      setTokenCopied(true);
+      globalThis.setTimeout(() => setTokenCopied(false), 1500);
+    } catch (err) {
+      console.error("Failed to copy engine API token:", err);
+      setTokenCopied(false);
     }
   };
 
@@ -612,6 +647,55 @@ export function Settings({
             <span>Tandem v{appVersion || "..."}</span>
           </div>
         </div>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <CardTitle>Engine API Token</CardTitle>
+                <CardDescription>
+                  Hidden by default. Reveal and copy when you need to call engine HTTP endpoints.
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="ghost" onClick={handleRevealEngineToken}>
+                  {engineTokenVisible ? (
+                    <>
+                      <EyeOff className="mr-2 h-4 w-4" />
+                      Hide
+                    </>
+                  ) : (
+                    <>
+                      <Eye className="mr-2 h-4 w-4" />
+                      Reveal
+                    </>
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={handleCopyEngineToken}
+                  disabled={!engineTokenInfo?.token}
+                >
+                  <Copy className="mr-2 h-4 w-4" />
+                  {tokenCopied ? "Copied" : "Copy"}
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <Input
+              readOnly
+              value={engineTokenInfo?.token ?? engineTokenInfo?.token_masked ?? "****"}
+            />
+            {engineTokenInfo?.path && (
+              <p className="break-all text-xs text-text-subtle">Path: {engineTokenInfo.path}</p>
+            )}
+            {engineTokenInfo?.storage_backend && (
+              <p className="text-xs text-text-subtle">Storage: {engineTokenInfo.storage_backend}</p>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Updates */}
         <Card>

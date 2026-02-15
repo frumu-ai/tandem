@@ -10,6 +10,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Docs: Added `TANDEM_TUI_GUIDE.md` and initialized a new `guide` mdbook.
 - Engine CLI: Added `parallel` command for concurrent prompt execution with structured JSON task input/output.
 - Docs: Added `docs/ENGINE_CLI.md` (bash/WSL-first) and `docs/ENGINE_COMMUNICATION.md` with end-to-end serve/API/SSE flows.
+- Security: Added engine API token auth hardening with keychain-first token persistence, desktop masked/reveal/copy controls, and TUI `/engine token` commands.
 
 - Plan Mode: Fixed `todowrite` empty-argument loops (`todo list updated: 0 items`) by normalizing common todo payload shapes and skipping true empty calls.
 - Plan Mode: Added structured clarification fallback (`question.asked`) when no concrete task list can be produced, instead of leaving planning in prose-only follow-up.

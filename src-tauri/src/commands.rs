@@ -1954,6 +1954,45 @@ pub async fn get_runtime_diagnostics(state: State<'_, AppState>) -> Result<Runti
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct EngineApiTokenInfo {
+    pub token_masked: String,
+    pub token: Option<String>,
+    pub path: String,
+    pub storage_backend: String,
+}
+
+fn mask_engine_token(token: &str) -> String {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return "****".to_string();
+    }
+    if trimmed.len() <= 8 {
+        return "****".to_string();
+    }
+    format!("{}****{}", &trimmed[..4], &trimmed[trimmed.len() - 4..])
+}
+
+#[tauri::command]
+pub async fn get_engine_api_token(
+    state: State<'_, AppState>,
+    reveal: Option<bool>,
+) -> Result<EngineApiTokenInfo> {
+    let token = state.sidecar.api_token();
+    let masked = mask_engine_token(&token);
+    let path = state.sidecar.api_token_path().to_string_lossy().to_string();
+    Ok(EngineApiTokenInfo {
+        token_masked: masked,
+        token: if reveal.unwrap_or(false) {
+            Some(token)
+        } else {
+            None
+        },
+        path,
+        storage_backend: state.sidecar.api_token_backend(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct EngineLeaseInfo {
     pub lease_id: String,
     pub client_id: String,

@@ -31,6 +31,7 @@ Useful options:
 - `--config`
 - `TANDEM_ENGINE_HOST` (env override)
 - `TANDEM_ENGINE_PORT` (env override)
+- `TANDEM_API_TOKEN` (optional API auth token requirement)
 
 ### `run`
 
@@ -107,6 +108,135 @@ Lists supported provider IDs.
 ```bash
 tandem-engine providers
 ```
+
+## Provider API Keys (CLI/API)
+
+`tandem-engine` does not yet expose a direct `key set` subcommand.  
+Use the engine HTTP API while `serve` is running.
+
+Temporary (in-memory) auth:
+
+- `PUT /auth/{provider}` stores a runtime-only token.
+- It does **not** persist across engine restarts.
+
+```bash
+API="http://127.0.0.1:39731"
+```
+
+Set a provider key (example: `openrouter`):
+
+```bash
+curl -s -X PUT "$API/auth/openrouter" \
+  -H 'content-type: application/json' \
+  -d '{"apiKey":"YOUR_OPENROUTER_KEY"}'
+```
+
+Set another provider key (example: `openai`):
+
+```bash
+curl -s -X PUT "$API/auth/openai" \
+  -H 'content-type: application/json' \
+  -d '{"apiKey":"YOUR_OPENAI_KEY"}'
+```
+
+Persistent auth/config (recommended):
+
+- `PATCH /config` with `providers.<id>.api_key`
+- This persists to the engine config file on disk.
+
+```bash
+curl -s -X PATCH "$API/config" \
+  -H 'content-type: application/json' \
+  -d '{"providers":{"openrouter":{"api_key":"YOUR_OPENROUTER_KEY","default_model":"openai/gpt-4o-mini"}},"default_provider":"openrouter"}' | jq .
+```
+
+Verify configured providers:
+
+```bash
+curl -s "$API/config/providers" | jq .
+```
+
+Optional: set default provider/model:
+
+```bash
+curl -s -X PATCH "$API/config" \
+  -H 'content-type: application/json' \
+  -d '{"default_provider":"openrouter","providers":{"openrouter":{"default_model":"openai/gpt-4o-mini"}}}' | jq .
+```
+
+Delete a provider key:
+
+```bash
+curl -s -X DELETE "$API/auth/openrouter"
+```
+
+WSL note:
+
+- If engine runs on Windows and curl runs in WSL, replace `127.0.0.1` with your Windows host IP:
+
+```bash
+WIN_HOST="$(awk '/nameserver/ {print $2; exit}' /etc/resolv.conf)"
+API="http://${WIN_HOST}:39731"
+```
+
+Config file locations:
+
+- State/project config (engine-local): `<state_dir>/config.json`
+- Global config (from `dirs::config_dir()`):
+- Linux: `~/.config/tandem/config.json`
+- macOS: `~/Library/Application Support/tandem/config.json`
+- Windows: `%APPDATA%\\tandem\\config.json`
+- Override global location with `TANDEM_GLOBAL_CONFIG`
+
+## API Token Security (VPS/Public Deployments)
+
+Generate a token:
+
+```bash
+tandem-engine token generate
+```
+
+Run engine with token requirement:
+
+```bash
+TANDEM_API_TOKEN="tk_your_token_here" tandem-engine serve --hostname 0.0.0.0 --port 39731
+```
+
+Send authenticated requests:
+
+```bash
+curl -s "$API/global/health" -H "Authorization: Bearer $TANDEM_API_TOKEN" | jq .
+curl -s "$API/config/providers" -H "X-Tandem-Token: $TANDEM_API_TOKEN" | jq .
+```
+
+Rotate token at runtime (requires current token header):
+
+```bash
+curl -s -X POST "$API/auth/token/generate" \
+  -H "Authorization: Bearer $TANDEM_API_TOKEN" | jq .
+```
+
+Desktop first-run behavior:
+
+- Tandem Desktop auto-generates an engine API token on first launch.
+- Desktop passes this token to the sidecar via `TANDEM_API_TOKEN`.
+- Desktop also sends the token on sidecar HTTP requests using `X-Tandem-Token`.
+- TUI uses the same shared token and sends `X-Tandem-Token` as well.
+- Token storage is keychain-first with fallback.
+- Primary backend is `keychain` (Windows Credential Manager / macOS Keychain / Linux Secret Service).
+- Fallback backend is shared token file storage when keychain is unavailable/locked.
+
+Desktop token storage path:
+
+- Windows: `%APPDATA%\\tandem\\security\\engine_api_token`
+- macOS: `~/Library/Application Support/tandem/security/engine_api_token`
+- Linux: `~/.local/share/tandem/security/engine_api_token`
+
+Notes:
+
+- Desktop Settings shows token masked by default with `Reveal` and `Copy`.
+- Settings also shows token storage backend (`keychain`, `file`, `env`, or `memory`).
+- TUI token commands include `/engine token` (masked) and `/engine token show` (full token + storage backend + fallback path).
 
 ### `chat`
 

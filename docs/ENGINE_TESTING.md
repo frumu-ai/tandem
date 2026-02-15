@@ -54,6 +54,31 @@ cargo run -p tandem-ai -- serve --host 127.0.0.1 --port 39731
 cargo test -p tandem-server -p tandem-core -p tandem-engine
 ```
 
+## API Token Security Validation
+
+Verify token-gated API behavior:
+
+```bash
+cargo run -p tandem-ai -- serve --host 127.0.0.1 --port 39731 --state-dir .tandem --api-token tk_test_token
+```
+
+In a second terminal:
+
+```bash
+# Health remains public
+curl -s http://127.0.0.1:39731/global/health | jq .
+
+# Non-health endpoints require token
+curl -i -s http://127.0.0.1:39731/config/providers
+curl -s http://127.0.0.1:39731/config/providers -H "X-Tandem-Token: tk_test_token" | jq .
+```
+
+Desktop/TUI token checks:
+
+- Desktop Settings now shows `Engine API Token` masked by default with `Reveal` and `Copy`.
+- TUI supports `/engine token` for masked output and `/engine token show` for full output plus storage backend/path.
+- Storage backend is reported as `keychain`, `file`, `env`, or `memory`.
+
 ## CLI flags
 
 `serve` supports:

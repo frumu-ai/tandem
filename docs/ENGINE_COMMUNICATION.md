@@ -32,6 +32,8 @@ This document explains how Tandem clients communicate with `tandem-engine`, how 
   - Engine CLI `serve` default (`--hostname`) via clap env binding.
 - `TANDEM_ENGINE_URL`
   - TUI explicit base URL override (takes precedence over host/port composition).
+- `TANDEM_API_TOKEN`
+  - When set, engine requires `Authorization: Bearer <token>` or `X-Tandem-Token: <token>` for API calls (except health).
 - `TANDEM_SHARED_ENGINE_MODE`
   - Desktop/TUI shared-engine behavior toggle.
 
@@ -125,7 +127,11 @@ Desktop/TUI map these into their request-center UI flows.
 ## Security Notes
 
 - Engine binds to loopback (`127.0.0.1`) by default.
-- The local HTTP interface is currently local-network scoped only; if additional hardening is required, add authenticated local IPC (token/bearer) on top of loopback binding.
+- Optional token auth is supported via `TANDEM_API_TOKEN` (or runtime token endpoints) for exposed deployments.
+- Desktop sidecar mode auto-generates a local API token, injects it into sidecar env (`TANDEM_API_TOKEN`), and sends `X-Tandem-Token` on requests.
+- Token persistence is keychain-first with fallback to the shared token file path.
+- TUI uses the same shared token material and also sends `X-Tandem-Token`.
+- Desktop Settings exposes token management UX: masked by default, explicit reveal, and copy.
 
 ## Practical Recommendations
 

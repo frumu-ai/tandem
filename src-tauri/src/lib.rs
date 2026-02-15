@@ -535,6 +535,7 @@ pub fn run() {
             commands::get_sidecar_status,
             commands::get_sidecar_startup_health,
             commands::get_runtime_diagnostics,
+            commands::get_engine_api_token,
             commands::engine_acquire_lease,
             commands::engine_renew_lease,
             commands::engine_release_lease,

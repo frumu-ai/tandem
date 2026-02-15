@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod cancellation;
 pub mod config;
+pub mod engine_api_token;
 pub mod engine_loop;
 pub mod event_bus;
 pub mod permission_defaults;
@@ -16,6 +17,7 @@ pub const DEFAULT_ENGINE_PORT: u16 = 39731;
 pub use agents::*;
 pub use cancellation::*;
 pub use config::*;
+pub use engine_api_token::*;
 pub use engine_loop::*;
 pub use event_bus::*;
 pub use permission_defaults::*;
