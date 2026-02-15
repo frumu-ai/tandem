@@ -145,6 +145,20 @@ interface PendingApproval {
 // ---------------------------------------------------------------------------
 
 function formatCommand(tool: string, args: Record<string, unknown>): string {
+  if (tool === "memory.lookup") {
+    const chunks = Number(args.chunks_total ?? 0);
+    const latency = Number(args.latency_ms ?? 0);
+    const status = String(args.status ?? "unknown");
+    return `${chunks} chunks (${latency}ms) [${status}]`;
+  }
+  if (tool === "memory.store") {
+    const role = String(args.role ?? "unknown");
+    const s = Number(args.session_chunks_stored ?? 0);
+    const p = Number(args.project_chunks_stored ?? 0);
+    const status = String(args.status ?? "unknown");
+    return `${role} S${s}/P${p} [${status}]`;
+  }
+
   // For shell commands, extract the actual command
   const shellCmd = args.command ?? args.cmd ?? args.input ?? args.script ?? args.code;
   if (typeof shellCmd === "string") return shellCmd;
@@ -622,6 +636,67 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
           });
           break;
         }
+
+        case "memory_retrieval": {
+          if (event.session_id !== sessionId) break;
+          const eventStatus = event.status ?? "unknown";
+          const isFailure =
+            eventStatus === "error_fallback" || eventStatus === "degraded_disabled";
+          setEntries((prev) => [
+            ...prev,
+            {
+              id: `memory.lookup:${event.session_id}:${event.query_hash}:${Date.now()}`,
+              tool: "memory.lookup",
+              args: {
+                status: eventStatus,
+                used: event.used,
+                chunks_total: event.chunks_total,
+                session_chunks: event.session_chunks,
+                history_chunks: event.history_chunks,
+                project_fact_chunks: event.project_fact_chunks,
+                latency_ms: event.latency_ms,
+                query_hash: event.query_hash,
+                embedding_status: event.embedding_status,
+                embedding_reason: event.embedding_reason,
+              },
+              status: isFailure ? "failed" : "completed",
+              result: `lookup used=${event.used} chunks=${event.chunks_total} latency=${event.latency_ms}ms`,
+              error: isFailure ? `lookup status=${eventStatus}` : undefined,
+              timestamp: new Date(),
+              sessionId: event.session_id,
+              category: "search",
+            },
+          ]);
+          break;
+        }
+
+        case "memory_storage": {
+          if (event.session_id !== sessionId) break;
+          const eventStatus = event.status ?? "unknown";
+          const isFailure = eventStatus === "error" || Boolean(event.error);
+          setEntries((prev) => [
+            ...prev,
+            {
+              id: `memory.store:${event.session_id}:${event.message_id ?? "none"}:${event.role}:${Date.now()}`,
+              tool: "memory.store",
+              args: {
+                role: event.role,
+                session_chunks_stored: event.session_chunks_stored,
+                project_chunks_stored: event.project_chunks_stored,
+                status: eventStatus,
+                message_id: event.message_id,
+              },
+              status: isFailure ? "failed" : "completed",
+              result: `store role=${event.role} session=${event.session_chunks_stored} project=${event.project_chunks_stored}`,
+              error: event.error,
+              timestamp: new Date(),
+              sessionId: event.session_id,
+              messageId: event.message_id,
+              category: "other",
+            },
+          ]);
+          break;
+        }
       }
     },
     [sessionId]
@@ -742,7 +817,7 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
       {/* Header bar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
         <span className="text-xs text-text-subtle">
-          <span className="font-mono tabular-nums">{entries.length}</span> tool
+          <span className="font-mono tabular-nums">{entries.length}</span> event
           {entries.length !== 1 ? "s" : ""}
         </span>
         <button

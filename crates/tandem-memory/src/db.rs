@@ -42,8 +42,23 @@ impl MemoryDatabase {
         // Initialize schema
         db.init_schema().await?;
         db.validate_vector_tables().await?;
+        db.validate_integrity().await?;
 
         Ok(db)
+    }
+
+    /// Validate base SQLite integrity early so startup recovery can heal corrupt DB files.
+    async fn validate_integrity(&self) -> MemoryResult<()> {
+        let conn = self.conn.lock().await;
+        let check: String = conn.query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
+        if check.trim().eq_ignore_ascii_case("ok") {
+            return Ok(());
+        }
+
+        Err(crate::types::MemoryError::InvalidConfig(format!(
+            "malformed database integrity check: {}",
+            check
+        )))
     }
 
     /// Initialize database schema

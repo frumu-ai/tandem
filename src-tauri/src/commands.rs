@@ -2345,6 +2345,26 @@ fn memory_retrieval_event(
     }
 }
 
+fn memory_storage_event(
+    session_id: &str,
+    message_id: Option<String>,
+    role: &str,
+    session_chunks_stored: usize,
+    project_chunks_stored: usize,
+    status: Option<String>,
+    error: Option<String>,
+) -> StreamEvent {
+    StreamEvent::MemoryStorage {
+        session_id: session_id.to_string(),
+        message_id,
+        role: role.to_string(),
+        session_chunks_stored,
+        project_chunks_stored,
+        status,
+        error,
+    }
+}
+
 fn attachment_inputs_to_queued(
     attachments: Option<Vec<FileAttachmentInput>>,
 ) -> Vec<crate::state::QueuedAttachment> {
@@ -2383,6 +2403,9 @@ fn emit_stream_event_pair(
     source: StreamEventSource,
     correlation_id: String,
 ) {
+    if let Err(err) = crate::tool_history::record_stream_event(app, event) {
+        tracing::warn!("Failed to persist stream event to tool history: {}", err);
+    }
     let _ = app.emit("sidecar_event", event);
     let envelope = StreamEventEnvelopeV2 {
         event_id: Uuid::new_v4().to_string(),
@@ -2402,7 +2425,8 @@ fn emit_stream_event_pair(
             | StreamEvent::QuestionAsked { session_id, .. }
             | StreamEvent::TodoUpdated { session_id, .. }
             | StreamEvent::FileEdited { session_id, .. }
-            | StreamEvent::MemoryRetrieval { session_id, .. } => Some(session_id.clone()),
+            | StreamEvent::MemoryRetrieval { session_id, .. }
+            | StreamEvent::MemoryStorage { session_id, .. } => Some(session_id.clone()),
             StreamEvent::Raw { .. } => None,
         },
         source,
@@ -2580,7 +2604,12 @@ async fn resolve_memory_project_id_for_session(state: &AppState, session_id: &st
     state.active_project_id.read().unwrap().clone()
 }
 
-async fn store_user_message_in_memory(state: &AppState, session_id: &str, content: &str) {
+async fn store_user_message_in_memory(
+    app: &AppHandle,
+    state: &AppState,
+    session_id: &str,
+    content: &str,
+) {
     if should_skip_memory_retrieval(content) {
         return;
     }
@@ -2605,13 +2634,23 @@ async fn store_user_message_in_memory(state: &AppState, session_id: &str, conten
         source_hash: None,
         metadata: Some(base_metadata.clone()),
     };
-    if let Err(err) = manager.store_message(session_req).await {
-        tracing::warn!(
-            target: "tandem.memory",
-            "Failed to store user session memory chunk: session_id={} error={}",
-            session_id,
-            err
-        );
+    let mut session_chunks_stored = 0usize;
+    let mut project_chunks_stored = 0usize;
+    let mut storage_error: Option<String> = None;
+
+    match manager.store_message(session_req).await {
+        Ok(ids) => {
+            session_chunks_stored = ids.len();
+        }
+        Err(err) => {
+            tracing::warn!(
+                target: "tandem.memory",
+                "Failed to store user session memory chunk: session_id={} error={}",
+                session_id,
+                err
+            );
+            storage_error.get_or_insert_with(|| err.to_string());
+        }
     }
 
     if let Some(project_id) = active_project_id {
@@ -2627,16 +2666,41 @@ async fn store_user_message_in_memory(state: &AppState, session_id: &str, conten
             source_hash: None,
             metadata: Some(base_metadata),
         };
-        if let Err(err) = manager.store_message(project_req).await {
-            tracing::warn!(
-                target: "tandem.memory",
-                "Failed to store user project memory chunk: session_id={} project_id={} error={}",
-                session_id,
-                project_id,
-                err
-            );
+        match manager.store_message(project_req).await {
+            Ok(ids) => {
+                project_chunks_stored = ids.len();
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "tandem.memory",
+                    "Failed to store user project memory chunk: session_id={} project_id={} error={}",
+                    session_id,
+                    project_id,
+                    err
+                );
+                storage_error.get_or_insert_with(|| err.to_string());
+            }
         }
     }
+
+    emit_stream_event_pair(
+        app,
+        &memory_storage_event(
+            session_id,
+            None,
+            "user",
+            session_chunks_stored,
+            project_chunks_stored,
+            Some(if storage_error.is_some() {
+                "error".to_string()
+            } else {
+                "ok".to_string()
+            }),
+            storage_error,
+        ),
+        StreamEventSource::Memory,
+        format!("{}:memory-store:user:{}", session_id, Uuid::new_v4()),
+    );
 }
 
 /// Send a message to a session (async, starts generation)
@@ -2729,7 +2793,7 @@ async fn send_message_and_start_run_internal(
     );
     set_session_mode(state, &session_id, mode_resolution.mode.clone());
 
-    store_user_message_in_memory(state, &session_id, &content).await;
+    store_user_message_in_memory(app, state, &session_id, &content).await;
     let retrieval_query = content.clone();
     let base_prompt = if let Some(extra) = mode_resolution.mode.system_prompt_append.as_deref() {
         format!(

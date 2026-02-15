@@ -249,6 +249,8 @@ export interface MessageProps {
     latency_ms: number;
     embedding_status?: string;
     embedding_reason?: string;
+    session_chunks_stored?: number;
+    project_chunks_stored?: number;
   } | null;
   renderMode?: "full" | "streaming-lite";
   disableMountAnimation?: boolean;
@@ -586,6 +588,12 @@ function MessageComponent({
                   )}
                 >
                   Embeddings: {memoryRetrieval.embedding_status}
+                </span>
+              )}
+              {(memoryRetrieval.session_chunks_stored || memoryRetrieval.project_chunks_stored) && (
+                <span className="inline-flex items-center gap-1 text-[11px] rounded-md px-2 py-0.5 border bg-sky-500/10 border-sky-500/30 text-sky-300">
+                  Store: S{memoryRetrieval.session_chunks_stored ?? 0} / P
+                  {memoryRetrieval.project_chunks_stored ?? 0}
                 </span>
               )}
             </>

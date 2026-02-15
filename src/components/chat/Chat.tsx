@@ -920,8 +920,13 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           }))
         );
 
+        const isMemoryRow = (row: ToolExecutionRow) =>
+          row.tool === "memory.lookup" || row.tool === "memory.store";
+        const persistedMemoryRows = persistedToolRows.filter(isMemoryRow);
+        const persistedNonMemoryRows = persistedToolRows.filter((row) => !isMemoryRow(row));
+
         const toolRowsByMessageId = new Map<string, ToolExecutionRow[]>();
-        for (const row of persistedToolRows) {
+        for (const row of persistedNonMemoryRows) {
           if (!row.message_id) continue;
           const arr = toolRowsByMessageId.get(row.message_id) || [];
           arr.push(row);
@@ -1116,6 +1121,125 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
             convertedMessages[i] = { ...msg, toolCalls: merged };
             break;
           }
+        }
+
+        const assistantIndices = convertedMessages
+          .map((message, index) => ({ message, index }))
+          .filter(({ message }) => message.role === "assistant")
+          .map(({ index }) => index);
+        const firstAssistantIdx = assistantIndices[0];
+        const lastAssistantIdx = assistantIndices[assistantIndices.length - 1];
+        const toNumber = (value: unknown, fallback = 0): number => {
+          const numeric = Number(value);
+          return Number.isFinite(numeric) ? numeric : fallback;
+        };
+
+        const lookupRowsAsc = persistedMemoryRows
+          .filter((row) => row.tool === "memory.lookup")
+          .slice()
+          .sort(
+            (a, b) =>
+              (a.ended_at_ms ?? a.started_at_ms ?? 0) - (b.ended_at_ms ?? b.started_at_ms ?? 0)
+          );
+        for (const row of lookupRowsAsc) {
+          if (assistantIndices.length === 0) break;
+          const args =
+            row.args && typeof row.args === "object" && !Array.isArray(row.args)
+              ? (row.args as Record<string, unknown>)
+              : {};
+          const rowTs = row.ended_at_ms ?? row.started_at_ms ?? 0;
+          const mappedIdx =
+            assistantIndices.find((idx) => convertedMessages[idx].timestamp.getTime() >= rowTs) ??
+            lastAssistantIdx;
+          if (mappedIdx == null) continue;
+
+          const target = convertedMessages[mappedIdx];
+          const prev = target.memoryRetrieval;
+          convertedMessages[mappedIdx] = {
+            ...target,
+            memoryRetrieval: {
+              status:
+                typeof args.status === "string"
+                  ? (args.status as
+                      | "not_attempted"
+                      | "attempted_no_hits"
+                      | "retrieved_used"
+                      | "degraded_disabled"
+                      | "error_fallback")
+                  : prev?.status,
+              used: Boolean(args.used ?? prev?.used ?? false),
+              chunks_total: toNumber(args.chunks_total, prev?.chunks_total ?? 0),
+              latency_ms: toNumber(args.latency_ms, prev?.latency_ms ?? 0),
+              embedding_status:
+                typeof args.embedding_status === "string"
+                  ? args.embedding_status
+                  : prev?.embedding_status,
+              embedding_reason:
+                typeof args.embedding_reason === "string"
+                  ? args.embedding_reason
+                  : prev?.embedding_reason,
+              session_chunks_stored: prev?.session_chunks_stored ?? 0,
+              project_chunks_stored: prev?.project_chunks_stored ?? 0,
+            },
+          };
+        }
+
+        const storageRowsAsc = persistedMemoryRows
+          .filter((row) => row.tool === "memory.store")
+          .slice()
+          .sort(
+            (a, b) =>
+              (a.ended_at_ms ?? a.started_at_ms ?? 0) - (b.ended_at_ms ?? b.started_at_ms ?? 0)
+          );
+        for (const row of storageRowsAsc) {
+          if (assistantIndices.length === 0) break;
+          const args =
+            row.args && typeof row.args === "object" && !Array.isArray(row.args)
+              ? (row.args as Record<string, unknown>)
+              : {};
+          const role = typeof args.role === "string" ? args.role : "unknown";
+          if (role !== "assistant") continue;
+
+          const rowTs = row.ended_at_ms ?? row.started_at_ms ?? 0;
+          let mappedIdx =
+            row.message_id != null
+              ? convertedMessages.findIndex(
+                  (message) => message.role === "assistant" && message.id === row.message_id
+                )
+              : -1;
+          if (mappedIdx < 0) {
+            mappedIdx =
+              assistantIndices
+                .slice()
+                .reverse()
+                .find((idx) => convertedMessages[idx].timestamp.getTime() <= rowTs) ?? -1;
+          }
+          if (mappedIdx < 0) {
+            mappedIdx = firstAssistantIdx ?? -1;
+          }
+          if (mappedIdx < 0) continue;
+
+          const target = convertedMessages[mappedIdx];
+          const prev = target.memoryRetrieval;
+          convertedMessages[mappedIdx] = {
+            ...target,
+            memoryRetrieval: {
+              status: prev?.status,
+              used: prev?.used ?? false,
+              chunks_total: prev?.chunks_total ?? 0,
+              latency_ms: prev?.latency_ms ?? 0,
+              embedding_status: prev?.embedding_status,
+              embedding_reason: prev?.embedding_reason,
+              session_chunks_stored: toNumber(
+                args.session_chunks_stored,
+                prev?.session_chunks_stored ?? 0
+              ),
+              project_chunks_stored: toNumber(
+                args.project_chunks_stored,
+                prev?.project_chunks_stored ?? 0
+              ),
+            },
+          };
         }
 
         console.log("[LoadHistory] Converted to", convertedMessages.length, "UI messages");
@@ -1567,9 +1691,47 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
                   latency_ms: event.latency_ms,
                   embedding_status: event.embedding_status,
                   embedding_reason: event.embedding_reason,
+                  session_chunks_stored: lastMessage.memoryRetrieval?.session_chunks_stored ?? 0,
+                  project_chunks_stored: lastMessage.memoryRetrieval?.project_chunks_stored ?? 0,
                 },
               },
             ];
+          });
+          break;
+        }
+
+        case "memory_storage": {
+          if (!currentSessionId || event.session_id !== currentSessionId) {
+            break;
+          }
+          if (event.role !== "assistant") {
+            break;
+          }
+          setMessages((prev) => {
+            if (prev.length === 0) return prev;
+            const targetIdx =
+              event.message_id != null
+                ? prev.findIndex((m) => m.id === event.message_id)
+                : prev.length - 1;
+            if (targetIdx < 0) return prev;
+            const target = prev[targetIdx];
+            if (target.role !== "assistant") return prev;
+
+            const next = [...prev];
+            next[targetIdx] = {
+              ...target,
+              memoryRetrieval: {
+                status: target.memoryRetrieval?.status,
+                used: target.memoryRetrieval?.used ?? false,
+                chunks_total: target.memoryRetrieval?.chunks_total ?? 0,
+                latency_ms: target.memoryRetrieval?.latency_ms ?? 0,
+                embedding_status: target.memoryRetrieval?.embedding_status,
+                embedding_reason: target.memoryRetrieval?.embedding_reason,
+                session_chunks_stored: event.session_chunks_stored,
+                project_chunks_stored: event.project_chunks_stored,
+              },
+            };
+            return next;
           });
           break;
         }

@@ -935,14 +935,17 @@ fn extract_session_id(event: &StreamEvent) -> Option<String> {
         | StreamEvent::QuestionAsked { session_id, .. }
         | StreamEvent::TodoUpdated { session_id, .. }
         | StreamEvent::FileEdited { session_id, .. }
-        | StreamEvent::MemoryRetrieval { session_id, .. } => Some(session_id.clone()),
+        | StreamEvent::MemoryRetrieval { session_id, .. }
+        | StreamEvent::MemoryStorage { session_id, .. } => Some(session_id.clone()),
         StreamEvent::Raw { .. } => None,
     }
 }
 
 fn derive_source(event: &StreamEvent) -> StreamEventSource {
     match event {
-        StreamEvent::MemoryRetrieval { .. } => StreamEventSource::Memory,
+        StreamEvent::MemoryRetrieval { .. } | StreamEvent::MemoryStorage { .. } => {
+            StreamEventSource::Memory
+        }
         StreamEvent::Raw { event_type, .. } if event_type.starts_with("system.") => {
             StreamEventSource::System
         }
@@ -991,7 +994,8 @@ fn derive_correlation_id(event: &StreamEvent) -> String {
         | StreamEvent::SessionError { session_id, .. }
         | StreamEvent::TodoUpdated { session_id, .. }
         | StreamEvent::FileEdited { session_id, .. }
-        | StreamEvent::MemoryRetrieval { session_id, .. } => session_id.clone(),
+        | StreamEvent::MemoryRetrieval { session_id, .. }
+        | StreamEvent::MemoryStorage { session_id, .. } => session_id.clone(),
         StreamEvent::Raw { .. } => Uuid::new_v4().to_string(),
     }
 }
@@ -1062,14 +1066,23 @@ async fn persist_assistant_message_memory(
         source_hash: None,
         metadata: Some(metadata.clone()),
     };
-    if let Err(err) = manager.store_message(session_req).await {
-        tracing::warn!(
-            target: "tandem.memory",
-            "Failed to store assistant session memory chunk: session_id={} message_id={} error={}",
-            session_id,
-            message_id,
-            err
-        );
+    let mut session_chunks_stored = 0usize;
+    let mut project_chunks_stored = 0usize;
+    let mut storage_error: Option<String> = None;
+    match manager.store_message(session_req).await {
+        Ok(ids) => {
+            session_chunks_stored = ids.len();
+        }
+        Err(err) => {
+            tracing::warn!(
+                target: "tandem.memory",
+                "Failed to store assistant session memory chunk: session_id={} message_id={} error={}",
+                session_id,
+                message_id,
+                err
+            );
+            storage_error.get_or_insert_with(|| err.to_string());
+        }
     }
 
     if let Some(pid) = project_id {
@@ -1085,15 +1098,48 @@ async fn persist_assistant_message_memory(
             source_hash: None,
             metadata: Some(metadata),
         };
-        if let Err(err) = manager.store_message(project_req).await {
-            tracing::warn!(
-                target: "tandem.memory",
-                "Failed to store assistant project memory chunk: session_id={} project_id={} message_id={} error={}",
-                session_id,
-                pid,
-                message_id,
-                err
-            );
+        match manager.store_message(project_req).await {
+            Ok(ids) => {
+                project_chunks_stored = ids.len();
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "tandem.memory",
+                    "Failed to store assistant project memory chunk: session_id={} project_id={} message_id={} error={}",
+                    session_id,
+                    pid,
+                    message_id,
+                    err
+                );
+                storage_error.get_or_insert_with(|| err.to_string());
+            }
         }
     }
+
+    let event = StreamEvent::MemoryStorage {
+        session_id: session_id.to_string(),
+        message_id: Some(message_id.to_string()),
+        role: "assistant".to_string(),
+        session_chunks_stored,
+        project_chunks_stored,
+        status: Some(if storage_error.is_some() {
+            "error".to_string()
+        } else {
+            "ok".to_string()
+        }),
+        error: storage_error,
+    };
+    if let Err(err) = crate::tool_history::record_stream_event(app, &event) {
+        tracing::warn!("Failed to persist assistant memory storage event: {}", err);
+    }
+    let _ = app.emit("sidecar_event", &event);
+    let envelope = StreamEventEnvelopeV2 {
+        event_id: Uuid::new_v4().to_string(),
+        correlation_id: format!("{}:memory-store:assistant:{}", session_id, Uuid::new_v4()),
+        ts_ms: crate::logs::now_ms(),
+        session_id: Some(session_id.to_string()),
+        source: StreamEventSource::Memory,
+        payload: event,
+    };
+    let _ = app.emit("sidecar_event_v2", envelope);
 }

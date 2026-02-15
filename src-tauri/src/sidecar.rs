@@ -769,6 +769,19 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         embedding_reason: Option<String>,
     },
+    /// Local memory storage telemetry for chat-turn ingestion.
+    MemoryStorage {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        role: String,
+        session_chunks_stored: usize,
+        project_chunks_stored: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 /// A single multiple-choice option for a question prompt.

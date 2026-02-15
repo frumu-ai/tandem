@@ -475,6 +475,16 @@ export type StreamEvent =
       embedding_status?: string;
       embedding_reason?: string;
     }
+  | {
+      type: "memory_storage";
+      session_id: string;
+      message_id?: string;
+      role: "user" | "assistant" | string;
+      session_chunks_stored: number;
+      project_chunks_stored: number;
+      status?: "ok" | "error" | string;
+      error?: string;
+    }
   | { type: "raw"; event_type: string; data: unknown };
 
 export type StreamEventSource = "sidecar" | "memory" | "system";

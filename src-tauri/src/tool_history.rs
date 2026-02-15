@@ -2,7 +2,7 @@ use crate::error::{Result, TandemError};
 use crate::sidecar::StreamEvent;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 use tandem_core::resolve_shared_paths;
 use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
@@ -396,6 +396,179 @@ pub fn record_stream_event(app: &AppHandle, event: &StreamEvent) -> Result<()> {
                 ],
             )
             .map_err(|e| to_memory_error("record tool_end", e))?;
+            Ok(())
+        }
+        StreamEvent::MemoryRetrieval {
+            session_id,
+            status,
+            used,
+            chunks_total,
+            session_chunks,
+            history_chunks,
+            project_fact_chunks,
+            latency_ms,
+            query_hash,
+            score_min,
+            score_max,
+            embedding_status,
+            embedding_reason,
+        } => {
+            let conn = open_conn(app)?;
+            let now_ms = now_ms_i64()?;
+            let status_norm = status.as_deref().unwrap_or("unknown");
+            let tool_status =
+                if status_norm == "error_fallback" || status_norm == "degraded_disabled" {
+                    "failed"
+                } else {
+                    "completed"
+                };
+            let id = format!("{}:memory-lookup:{}:{}", session_id, query_hash, now_ms);
+            let correlation_id = format!("{}:memory-lookup:{}", session_id, query_hash);
+            let args_json = serde_json::to_string(&json!({
+                "status": status_norm,
+                "used": used,
+                "chunks_total": chunks_total,
+                "session_chunks": session_chunks,
+                "history_chunks": history_chunks,
+                "project_fact_chunks": project_fact_chunks,
+                "latency_ms": latency_ms,
+                "query_hash": query_hash,
+                "score_min": score_min,
+                "score_max": score_max,
+                "embedding_status": embedding_status,
+                "embedding_reason": embedding_reason
+            }))
+            .ok();
+            let result_json = serde_json::to_string(&json!({
+                "summary": format!("lookup used={} chunks={} latency={}ms", used, chunks_total, latency_ms)
+            }))
+            .ok();
+            let error_text = if tool_status == "failed" {
+                Some(format!("lookup status={}", status_norm))
+            } else {
+                None
+            };
+
+            conn.execute(
+                r#"
+                INSERT INTO tool_executions (
+                    id, session_id, message_id, part_id, correlation_id, tool, status, args_json, result_json,
+                    error_text, started_at_ms, ended_at_ms, updated_at_ms
+                ) VALUES (?1, ?2, NULL, NULL, ?3, 'memory.lookup', ?4, ?5, ?6, ?7, ?8, ?8, ?8)
+                ON CONFLICT(id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    correlation_id = COALESCE(excluded.correlation_id, tool_executions.correlation_id),
+                    tool = excluded.tool,
+                    status = excluded.status,
+                    args_json = COALESCE(excluded.args_json, tool_executions.args_json),
+                    result_json = COALESCE(excluded.result_json, tool_executions.result_json),
+                    error_text = COALESCE(excluded.error_text, tool_executions.error_text),
+                    ended_at_ms = excluded.ended_at_ms,
+                    updated_at_ms = excluded.updated_at_ms
+                "#,
+                params![
+                    id,
+                    session_id,
+                    correlation_id,
+                    tool_status,
+                    args_json,
+                    result_json,
+                    error_text,
+                    now_ms
+                ],
+            )
+            .map_err(|e| to_memory_error("record memory_retrieval", e))?;
+            tracing::info!(
+                target: "tandem.memory",
+                "memory_history_persist kind=lookup session_id={} status={} chunks_total={} latency_ms={}",
+                session_id,
+                status_norm,
+                chunks_total,
+                latency_ms
+            );
+            Ok(())
+        }
+        StreamEvent::MemoryStorage {
+            session_id,
+            message_id,
+            role,
+            session_chunks_stored,
+            project_chunks_stored,
+            status,
+            error,
+        } => {
+            let conn = open_conn(app)?;
+            let now_ms = now_ms_i64()?;
+            let status_norm = status.as_deref().unwrap_or("unknown");
+            let tool_status = if error.is_some() || status_norm == "error" {
+                "failed"
+            } else {
+                "completed"
+            };
+            let id = if let Some(mid) = message_id.as_ref() {
+                format!("{}:memory-store:{}:{}", session_id, role, mid)
+            } else {
+                format!("{}:memory-store:{}:{}", session_id, role, now_ms)
+            };
+            let correlation_id = if let Some(mid) = message_id.as_ref() {
+                format!("{}:memory-store:{}:{}", session_id, role, mid)
+            } else {
+                format!("{}:memory-store:{}", session_id, role)
+            };
+            let args_json = serde_json::to_string(&json!({
+                "role": role,
+                "session_chunks_stored": session_chunks_stored,
+                "project_chunks_stored": project_chunks_stored,
+                "status": status_norm,
+                "message_id": message_id
+            }))
+            .ok();
+            let result_json = serde_json::to_string(&json!({
+                "summary": format!("store role={} session={} project={}", role, session_chunks_stored, project_chunks_stored)
+            }))
+            .ok();
+
+            conn.execute(
+                r#"
+                INSERT INTO tool_executions (
+                    id, session_id, message_id, part_id, correlation_id, tool, status, args_json, result_json,
+                    error_text, started_at_ms, ended_at_ms, updated_at_ms
+                ) VALUES (?1, ?2, ?3, NULL, ?4, 'memory.store', ?5, ?6, ?7, ?8, ?9, ?9, ?9)
+                ON CONFLICT(id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    message_id = COALESCE(excluded.message_id, tool_executions.message_id),
+                    correlation_id = COALESCE(excluded.correlation_id, tool_executions.correlation_id),
+                    tool = excluded.tool,
+                    status = excluded.status,
+                    args_json = COALESCE(excluded.args_json, tool_executions.args_json),
+                    result_json = COALESCE(excluded.result_json, tool_executions.result_json),
+                    error_text = COALESCE(excluded.error_text, tool_executions.error_text),
+                    ended_at_ms = excluded.ended_at_ms,
+                    updated_at_ms = excluded.updated_at_ms
+                "#,
+                params![
+                    id,
+                    session_id,
+                    message_id,
+                    correlation_id,
+                    tool_status,
+                    args_json,
+                    result_json,
+                    error.clone(),
+                    now_ms
+                ],
+            )
+            .map_err(|e| to_memory_error("record memory_storage", e))?;
+            tracing::info!(
+                target: "tandem.memory",
+                "memory_history_persist kind=store session_id={} role={} status={} session_chunks_stored={} project_chunks_stored={} message_id={}",
+                session_id,
+                role,
+                status_norm,
+                session_chunks_stored,
+                project_chunks_stored,
+                message_id.as_deref().unwrap_or("none")
+            );
             Ok(())
         }
         _ => Ok(()),
