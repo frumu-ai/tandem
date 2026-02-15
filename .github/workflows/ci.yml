@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/engine]
   pull_request:
-    branches: [main]
+    branches: [main, feat/engine]
   workflow_dispatch: # Allow manual trigger
 
 env:
