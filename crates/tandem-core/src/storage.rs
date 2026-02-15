@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use tandem_types::{Message, MessagePart, MessageRole, Session};
 
-use crate::normalize_workspace_path;
+use crate::{derive_session_title_from_prompt, normalize_workspace_path, title_needs_repair};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionMeta {
@@ -141,6 +141,9 @@ impl Storage {
         }
 
         if hydrate_workspace_roots(&mut sessions) {
+            imported_legacy_sessions = true;
+        }
+        if repair_session_titles(&mut sessions) {
             imported_legacy_sessions = true;
         }
         let metadata_file = base.join("session_meta.json");
@@ -849,6 +852,37 @@ fn hydrate_workspace_roots(sessions: &mut HashMap<String, Session>) -> bool {
     changed
 }
 
+fn repair_session_titles(sessions: &mut HashMap<String, Session>) -> bool {
+    let mut changed = false;
+    for session in sessions.values_mut() {
+        if !title_needs_repair(&session.title) {
+            continue;
+        }
+        let first_user_text = session.messages.iter().find_map(|message| {
+            if !matches!(message.role, MessageRole::User) {
+                return None;
+            }
+            message.parts.iter().find_map(|part| match part {
+                MessagePart::Text { text } if !text.trim().is_empty() => Some(text.as_str()),
+                _ => None,
+            })
+        });
+        let Some(source) = first_user_text else {
+            continue;
+        };
+        let Some(derived) = derive_session_title_from_prompt(source, 60) else {
+            continue;
+        };
+        if derived == session.title {
+            continue;
+        }
+        session.title = derived;
+        session.time.updated = Utc::now();
+        changed = true;
+    }
+    changed
+}
+
 #[derive(Debug, Deserialize)]
 struct LegacySessionTime {
     created: i64,
@@ -1382,5 +1416,27 @@ mod tests {
         );
         assert_eq!(updated.attach_reason.as_deref(), Some("manual"));
         assert!(updated.attach_timestamp_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn startup_repairs_placeholder_titles_from_wrapped_user_messages() {
+        let base =
+            std::env::temp_dir().join(format!("tandem-core-title-repair-{}", Uuid::new_v4()));
+        let storage = Storage::new(&base).await.expect("storage");
+        let wrapped = "<memory_context>\n<current_session>\n- fact\n</current_session>\n</memory_context>\n\n[Mode instructions]\nUse tools.\n\n[User request]\nExplain this bug";
+        let mut session = Session::new(Some("<memory_context>".to_string()), Some(".".to_string()));
+        let id = session.id.clone();
+        session.messages.push(Message::new(
+            MessageRole::User,
+            vec![MessagePart::Text {
+                text: wrapped.to_string(),
+            }],
+        ));
+        storage.save_session(session).await.expect("save");
+        drop(storage);
+
+        let storage = Storage::new(&base).await.expect("storage");
+        let repaired = storage.get_session(&id).await.expect("session");
+        assert_eq!(repaired.title, "Explain this bug");
     }
 }

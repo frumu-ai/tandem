@@ -155,6 +155,22 @@ impl PermissionManager {
         self.rules.read().await.clone()
     }
 
+    pub async fn add_rule(
+        &self,
+        permission: impl Into<String>,
+        pattern: impl Into<String>,
+        action: PermissionAction,
+    ) -> PermissionRule {
+        let rule = PermissionRule {
+            id: Uuid::new_v4().to_string(),
+            permission: permission.into(),
+            pattern: pattern.into(),
+            action,
+        };
+        self.rules.write().await.push(rule.clone());
+        rule
+    }
+
     pub async fn reply(&self, id: &str, reply: &str) -> bool {
         let (permission, pattern) = {
             let mut requests = self.requests.write().await;
@@ -330,10 +346,7 @@ mod tests {
         let event = rx.recv().await.expect("event");
         assert_eq!(event.event_type, "permission.asked");
         assert_eq!(
-            event
-                .properties
-                .get("argsSource")
-                .and_then(|v| v.as_str()),
+            event.properties.get("argsSource").and_then(|v| v.as_str()),
             Some("inferred_from_user")
         );
         assert_eq!(

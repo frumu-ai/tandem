@@ -22,6 +22,21 @@ use uuid::Uuid;
 
 use tandem_providers::ProviderRegistry;
 
+const SUPPORTED_PROVIDER_IDS: [&str; 12] = [
+    "openai",
+    "openrouter",
+    "anthropic",
+    "ollama",
+    "groq",
+    "mistral",
+    "together",
+    "azure",
+    "bedrock",
+    "vertex",
+    "copilot",
+    "cohere",
+];
+
 #[derive(Parser, Debug)]
 #[command(name = "tandem-engine")]
 #[command(about = "Headless Tandem AI backend")]
@@ -41,9 +56,25 @@ enum Command {
         state_dir: Option<String>,
         #[arg(long, default_value_t = false)]
         in_process: bool,
+        #[arg(long)]
+        api_key: Option<String>,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        config: Option<String>,
     },
     Run {
         prompt: String,
+        #[arg(long)]
+        api_key: Option<String>,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        config: Option<String>,
     },
     Chat,
     Tool {
@@ -64,7 +95,13 @@ async fn main() -> anyhow::Result<()> {
             port,
             state_dir,
             in_process,
+            api_key,
+            provider,
+            model,
+            config,
         } => {
+            let provider = normalize_and_validate_provider(provider)?;
+            let overrides = build_cli_overrides(api_key, provider, model)?;
             let state_dir = resolve_state_dir(state_dir);
             // Canonical logs must be shared across desktop/engine/tui.
             // If shared path resolution fails, fall back to state-dir-local logs.
@@ -98,8 +135,18 @@ async fn main() -> anyhow::Result<()> {
             log_startup_paths(&state_dir, &addr, &startup_attempt_id);
             let init_state = state.clone();
             let init_state_dir = state_dir.clone();
+            let init_overrides = overrides.clone();
+            let init_config_path = config.map(PathBuf::from);
+
             tokio::spawn(async move {
-                if let Err(err) = initialize_runtime(init_state.clone(), init_state_dir).await {
+                if let Err(err) = initialize_runtime(
+                    init_state.clone(),
+                    init_state_dir,
+                    init_overrides,
+                    init_config_path,
+                )
+                .await
+                {
                     let err_text = err.to_string();
                     init_state
                         .mark_failed("runtime_init", err_text.clone())
@@ -133,19 +180,31 @@ async fn main() -> anyhow::Result<()> {
             });
             serve(addr, state).await?;
         }
-        Command::Run { prompt } => {
+        Command::Run {
+            prompt,
+            api_key,
+            provider,
+            model,
+            config,
+        } => {
+            let provider = normalize_and_validate_provider(provider)?;
+            let overrides = build_cli_overrides(api_key, provider.clone(), model)?;
+            let config_path = config.map(PathBuf::from);
             let state_dir = resolve_state_dir(None);
-            let state = build_runtime(&state_dir, None).await?;
-            let reply = state.engine_loop.run_oneshot(prompt).await?;
+            let state = build_runtime(&state_dir, None, overrides, config_path).await?;
+            let reply = state
+                .engine_loop
+                .run_oneshot_for_provider(prompt, provider.as_deref())
+                .await?;
             println!("{reply}");
         }
         Command::Chat => {
-            let _state = build_runtime(&resolve_state_dir(None), None).await?;
+            let _state = build_runtime(&resolve_state_dir(None), None, None, None).await?;
             println!("Interactive chat mode is planned; use `serve` for now.");
         }
         Command::Tool { json, state_dir } => {
             let state_dir = resolve_state_dir(state_dir);
-            let state = build_runtime(&state_dir, None).await?;
+            let state = build_runtime(&state_dir, None, None, None).await?;
             let payload = read_tool_json(&json)?;
             let tool = payload
                 .get("tool")
@@ -169,6 +228,74 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn build_cli_overrides(
+    api_key: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let provider = normalize_and_validate_provider(provider)?;
+
+    if api_key.is_none() && provider.is_none() && model.is_none() {
+        return Ok(None);
+    }
+    let mut root = serde_json::Map::new();
+
+    // If provider is specified, set default_provider
+    if let Some(p) = &provider {
+        root.insert(
+            "default_provider".to_string(),
+            serde_json::Value::String(p.clone()),
+        );
+    }
+
+    // Determine target provider for api_key/model overrides
+    // Default to "openai" if not specified, OR use the one specified
+    let target_provider = provider.as_deref().unwrap_or("openai");
+
+    if api_key.is_some() || model.is_some() {
+        let mut provider_config = serde_json::Map::new();
+        if let Some(k) = api_key {
+            provider_config.insert("api_key".to_string(), serde_json::Value::String(k));
+        }
+        if let Some(m) = model {
+            provider_config.insert("default_model".to_string(), serde_json::Value::String(m));
+        }
+
+        let mut providers = serde_json::Map::new();
+        providers.insert(
+            target_provider.to_string(),
+            serde_json::Value::Object(provider_config),
+        );
+        root.insert(
+            "providers".to_string(),
+            serde_json::Value::Object(providers),
+        );
+    }
+
+    Ok(Some(serde_json::Value::Object(root)))
+}
+
+fn normalize_and_validate_provider(provider: Option<String>) -> anyhow::Result<Option<String>> {
+    let Some(provider) = provider else {
+        return Ok(None);
+    };
+    let normalized = provider.trim().to_lowercase();
+    if normalized.is_empty() {
+        anyhow::bail!(
+            "provider cannot be empty. supported providers: {}",
+            SUPPORTED_PROVIDER_IDS.join(", ")
+        );
+    }
+    if SUPPORTED_PROVIDER_IDS.contains(&normalized.as_str()) {
+        return Ok(Some(normalized));
+    }
+    anyhow::bail!(
+        "unsupported provider `{}`. supported providers: {}",
+        provider,
+        SUPPORTED_PROVIDER_IDS.join(", ")
+    );
 }
 
 fn resolve_state_dir(flag: Option<String>) -> PathBuf {
@@ -220,7 +347,12 @@ fn log_startup_paths(state_dir: &PathBuf, addr: &SocketAddr, startup_attempt_id:
     }
 }
 
-async fn initialize_runtime(state: AppState, state_dir: PathBuf) -> anyhow::Result<()> {
+async fn initialize_runtime(
+    state: AppState,
+    state_dir: PathBuf,
+    overrides: Option<serde_json::Value>,
+    config_path: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let startup = state.startup_snapshot().await;
     let attempt_id = startup.attempt_id;
     let init_started = Instant::now();
@@ -259,7 +391,7 @@ async fn initialize_runtime(state: AppState, state_dir: PathBuf) -> anyhow::Resu
     })
     .await;
 
-    let runtime = build_runtime(&state_dir, Some(&state)).await?;
+    let runtime = build_runtime(&state_dir, Some(&state), overrides, config_path).await?;
     state.mark_ready(runtime).await?;
     state.set_phase("ready").await;
     emit_event(
@@ -289,6 +421,8 @@ async fn initialize_runtime(state: AppState, state_dir: PathBuf) -> anyhow::Resu
 async fn build_runtime(
     state_dir: &PathBuf,
     startup_state: Option<&AppState>,
+    cli_overrides: Option<serde_json::Value>,
+    override_config_path: Option<PathBuf>,
 ) -> anyhow::Result<RuntimeState> {
     let startup = Instant::now();
     if let Some(state) = startup_state {
@@ -306,7 +440,8 @@ async fn build_runtime(
         emit_startup_phase_event(state, "config_init").await;
     }
     let phase_start = Instant::now();
-    let config = ConfigStore::new(state_dir.join("config.json")).await?;
+    let config_path = override_config_path.unwrap_or_else(|| state_dir.join("config.json"));
+    let config = ConfigStore::new(config_path, cli_overrides).await?;
     info!(
         "engine.startup.phase config_init elapsed_ms={}",
         phase_start.elapsed().as_millis()
@@ -399,4 +534,76 @@ async fn emit_startup_phase_event(state: &AppState, phase: &str) {
             )),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn build_cli_overrides_targets_selected_provider() {
+        let overrides = build_cli_overrides(
+            Some("sk-test".to_string()),
+            Some("openrouter".to_string()),
+            Some("google/gemini-2.5-flash".to_string()),
+        )
+        .expect("overrides")
+        .expect("some");
+
+        assert_eq!(overrides["default_provider"], "openrouter");
+        assert_eq!(
+            overrides["providers"]["openrouter"]["api_key"],
+            json!("sk-test")
+        );
+        assert_eq!(
+            overrides["providers"]["openrouter"]["default_model"],
+            json!("google/gemini-2.5-flash")
+        );
+    }
+
+    #[test]
+    fn build_cli_overrides_defaults_model_and_key_to_openai_without_provider() {
+        let overrides = build_cli_overrides(
+            Some("sk-test".to_string()),
+            None,
+            Some("gpt-4o-mini".to_string()),
+        )
+        .expect("overrides")
+        .expect("some");
+
+        assert!(overrides.get("default_provider").is_none());
+        assert_eq!(
+            overrides["providers"]["openai"]["api_key"],
+            json!("sk-test")
+        );
+        assert_eq!(
+            overrides["providers"]["openai"]["default_model"],
+            json!("gpt-4o-mini")
+        );
+    }
+
+    #[test]
+    fn normalize_and_validate_provider_accepts_known_values_case_insensitive() {
+        let provider =
+            normalize_and_validate_provider(Some(" OpenRouter ".to_string())).expect("provider");
+        assert_eq!(provider.as_deref(), Some("openrouter"));
+    }
+
+    #[test]
+    fn normalize_and_validate_provider_rejects_unknown_value() {
+        let err = normalize_and_validate_provider(Some("openruter".to_string())).unwrap_err();
+        assert!(err.to_string().contains("unsupported provider `openruter`"));
+    }
+
+    #[test]
+    fn build_cli_overrides_rejects_unknown_provider() {
+        let err = build_cli_overrides(
+            Some("sk-test".to_string()),
+            Some("openruter".to_string()),
+            Some("x".to_string()),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unsupported provider `openruter`"));
+    }
 }

@@ -27,6 +27,7 @@ struct ConfigLayers {
     project: Value,
     managed: Value,
     env: Value,
+    cli: Value,
 }
 
 #[derive(Clone)]
@@ -38,7 +39,7 @@ pub struct ConfigStore {
 }
 
 impl ConfigStore {
-    pub async fn new(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub async fn new(path: impl AsRef<Path>, cli_overrides: Option<Value>) -> anyhow::Result<Self> {
         let project_path = path.as_ref().to_path_buf();
         if let Some(parent) = project_path.parent() {
             fs::create_dir_all(parent).await?;
@@ -60,6 +61,7 @@ impl ConfigStore {
                 .await
                 .unwrap_or_else(|_| empty_object()),
             env: env_layer(),
+            cli: cli_overrides.unwrap_or_else(empty_object),
         };
 
         let store = Self {
@@ -85,6 +87,7 @@ impl ConfigStore {
         deep_merge(&mut merged, &layers.project);
         deep_merge(&mut merged, &layers.managed);
         deep_merge(&mut merged, &layers.env);
+        deep_merge(&mut merged, &layers.cli);
         merged
     }
 
@@ -102,7 +105,8 @@ impl ConfigStore {
             "global": layers.global,
             "project": layers.project,
             "managed": layers.managed,
-            "env": layers.env
+            "env": layers.env,
+            "cli": layers.cli
         })
     }
 

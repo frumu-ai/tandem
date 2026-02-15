@@ -72,6 +72,7 @@ pub trait Provider: Send + Sync {
 #[derive(Clone)]
 pub struct ProviderRegistry {
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    default_provider: Arc<RwLock<Option<String>>>,
 }
 
 impl ProviderRegistry {
@@ -79,12 +80,14 @@ impl ProviderRegistry {
         let providers = build_providers(&config);
         Self {
             providers: Arc::new(RwLock::new(providers)),
+            default_provider: Arc::new(RwLock::new(config.default_provider)),
         }
     }
 
     pub async fn reload(&self, config: AppConfig) {
         let rebuilt = build_providers(&config);
         *self.providers.write().await = rebuilt;
+        *self.default_provider.write().await = config.default_provider;
     }
 
     pub async fn list(&self) -> Vec<ProviderInfo> {
@@ -136,11 +139,26 @@ impl ProviderRegistry {
         provider_id: Option<&str>,
     ) -> anyhow::Result<Arc<dyn Provider>> {
         let providers = self.providers.read().await;
+        let available = providers.iter().map(|p| p.info().id).collect::<Vec<_>>();
+
         if let Some(id) = provider_id {
             if let Some(provider) = providers.iter().find(|p| p.info().id == id) {
                 return Ok(provider.clone());
             }
+            anyhow::bail!(
+                "provider `{}` is not configured. configured providers: {}",
+                id,
+                available.join(", ")
+            );
         };
+
+        let configured_default = self.default_provider.read().await.clone();
+        if let Some(default_id) = configured_default {
+            if let Some(provider) = providers.iter().find(|p| p.info().id == default_id) {
+                return Ok(provider.clone());
+            }
+        };
+
         let Some(provider) = providers.first() else {
             anyhow::bail!("No provider configured.");
         };
@@ -863,4 +881,74 @@ fn extract_openai_error(value: &serde_json::Value) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(
+        provider_ids: &[&str],
+        default_provider: Option<&str>,
+        include_openai_key: bool,
+    ) -> AppConfig {
+        let mut providers = HashMap::new();
+        for id in provider_ids {
+            let api_key = if *id == "openai" && include_openai_key {
+                Some("sk-test".to_string())
+            } else {
+                None
+            };
+            providers.insert(
+                (*id).to_string(),
+                ProviderConfig {
+                    api_key,
+                    url: None,
+                    default_model: Some(format!("{id}-model")),
+                },
+            );
+        }
+        AppConfig {
+            providers,
+            default_provider: default_provider.map(|s| s.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_provider_wins_over_default_provider() {
+        let registry = ProviderRegistry::new(cfg(&["openai", "openrouter"], Some("openai"), true));
+        let provider = registry
+            .select_provider(Some("openrouter"))
+            .await
+            .expect("provider");
+        assert_eq!(provider.info().id, "openrouter");
+    }
+
+    #[tokio::test]
+    async fn uses_default_provider_when_explicit_provider_missing() {
+        let registry =
+            ProviderRegistry::new(cfg(&["openai", "openrouter"], Some("openrouter"), true));
+        let provider = registry.select_provider(None).await.expect("provider");
+        assert_eq!(provider.info().id, "openrouter");
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_first_provider_when_default_provider_missing() {
+        let registry = ProviderRegistry::new(cfg(&["openai"], Some("anthropic"), true));
+        let provider = registry.select_provider(None).await.expect("provider");
+        assert_eq!(provider.info().id, "openai");
+    }
+
+    #[tokio::test]
+    async fn explicit_unknown_provider_errors() {
+        let registry = ProviderRegistry::new(cfg(&["openai"], None, true));
+        let err = registry
+            .select_provider(Some("openruter"))
+            .await
+            .err()
+            .expect("expected error");
+        assert!(err
+            .to_string()
+            .contains("provider `openruter` is not configured"));
+    }
 }

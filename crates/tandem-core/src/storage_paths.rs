@@ -58,7 +58,30 @@ pub fn is_within_workspace_root(path: &Path, workspace_root: &Path) -> bool {
     } else {
         workspace_root.to_path_buf()
     };
+    let candidate = normalize_for_workspace_compare(candidate);
+    let root = normalize_for_workspace_compare(root);
     candidate.starts_with(root)
+}
+
+fn normalize_for_workspace_compare(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        // Canonicalized Windows paths often use the verbatim prefix (\\?\),
+        // while runtime paths may not. Strip that prefix so equivalent paths
+        // compare consistently for workspace sandbox checks.
+        let mut text = path.to_string_lossy().replace('/', "\\");
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            text = format!(r"\\{}", rest);
+        } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+            text = rest.to_string();
+        }
+        return PathBuf::from(text.to_ascii_lowercase());
+    }
+
+    #[cfg(not(windows))]
+    {
+        path
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -316,6 +339,21 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_root_compare_handles_verbatim_prefix_mismatch() {
+        let workspace = PathBuf::from(r"\\?\C:\Users\evang\work\tandem-engine\tandem");
+        let candidate = PathBuf::from(r"C:\Users\evang\work\tandem-engine\tandem\*");
+        assert!(is_within_workspace_root(&candidate, &workspace));
+
+        let workspace_plain = PathBuf::from(r"C:\Users\evang\work\tandem-engine\tandem");
+        let candidate_verbatim = PathBuf::from(r"\\?\C:\Users\evang\work\tandem-engine\tandem\src");
+        assert!(is_within_workspace_root(
+            &candidate_verbatim,
+            &workspace_plain
+        ));
+    }
 
     #[test]
     fn migration_copies_from_legacy_when_canonical_empty() {

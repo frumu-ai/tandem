@@ -1434,13 +1434,44 @@ async fn append_message_only(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let msg = Message::new(MessageRole::User, vec![MessagePart::Text { text }]);
+    let msg = Message::new(
+        MessageRole::User,
+        vec![MessagePart::Text { text: text.clone() }],
+    );
     let wire = WireSessionMessage::from_message(&msg, session_id);
     state
         .storage
         .append_message(session_id, msg)
         .await
         .map_err(|e| format!("{e:#}"))?;
+
+    // Auto-update title for new sessions (or existing ones stuck as "New session")
+    if let Some(mut session) = state.storage.get_session(session_id).await {
+        if tandem_core::title_needs_repair(&session.title) {
+            // Prefer the earliest user-authored text in history.
+            let first_user_text = session.messages.iter().find_map(|message| {
+                if !matches!(message.role, MessageRole::User) {
+                    return None;
+                }
+                message.parts.iter().find_map(|part| match part {
+                    MessagePart::Text { text } if !text.trim().is_empty() => Some(text.clone()),
+                    _ => None,
+                })
+            });
+
+            // Fallback to the current appended text when history probing fails.
+            let title_source = first_user_text.unwrap_or_else(|| text.clone());
+            if let Some(new_title) =
+                tandem_core::derive_session_title_from_prompt(&title_source, 60)
+            {
+                session.title = new_title;
+                session.time.updated = chrono::Utc::now();
+                // Ignore errors here as it's a nice-to-have update
+                let _ = state.storage.save_session(session).await;
+            }
+        }
+    }
+
     Ok(wire)
 }
 
@@ -3662,5 +3693,158 @@ mod tests {
         let legacy_payload: Value = serde_json::from_slice(&legacy_body).expect("json");
         assert!(legacy_payload.get("skills").is_some());
         assert!(legacy_payload.get("deprecation_warning").is_some());
+    }
+
+    #[tokio::test]
+    async fn auto_rename_session_on_first_message() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        // 1. Create session
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/session")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "title": null }).to_string()))
+            .expect("create request");
+        let create_resp = app.clone().oneshot(create_req).await.expect("response");
+        assert_eq!(create_resp.status(), StatusCode::OK);
+        let body = to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let session: Value = serde_json::from_slice(&body).expect("json");
+        let session_id = session
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("session id")
+            .to_string();
+        let title = session
+            .get("title")
+            .and_then(|v| v.as_str())
+            .expect("title");
+        assert_eq!(title, "New session");
+
+        // 2. Append first message
+        let append_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/message"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "parts": [{"type": "text", "text": "Hello world this is a test message"}]
+                })
+                .to_string(),
+            ))
+            .expect("append request");
+        let append_resp = app.clone().oneshot(append_req).await.expect("response");
+        assert_eq!(append_resp.status(), StatusCode::OK);
+
+        // 3. Verify title changed
+        let get_req = Request::builder()
+            .method("GET")
+            .uri(format!("/session/{session_id}"))
+            .body(Body::empty())
+            .expect("get request");
+        let get_resp = app.clone().oneshot(get_req).await.expect("response");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let session: Value = serde_json::from_slice(&body).expect("json");
+        let title = session
+            .get("title")
+            .and_then(|v| v.as_str())
+            .expect("title");
+        assert_eq!(title, "Hello world this is a test message");
+
+        // 4. Append second message
+        let append_req_2 = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/message"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "parts": [{"type": "text", "text": "Another message"}]
+                })
+                .to_string(),
+            ))
+            .expect("append request");
+        let append_resp_2 = app.clone().oneshot(append_req_2).await.expect("response");
+        assert_eq!(append_resp_2.status(), StatusCode::OK);
+
+        // 5. Verify title did NOT change
+        let get_req_2 = Request::builder()
+            .method("GET")
+            .uri(format!("/session/{session_id}"))
+            .body(Body::empty())
+            .expect("get request");
+        let get_resp_2 = app.clone().oneshot(get_req_2).await.expect("response");
+
+        let body = to_bytes(get_resp_2.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let session: Value = serde_json::from_slice(&body).expect("json");
+        let title = session
+            .get("title")
+            .and_then(|v| v.as_str())
+            .expect("title");
+        // Title should remain as the first message
+        assert_eq!(title, "Hello world this is a test message");
+    }
+
+    #[tokio::test]
+    async fn auto_rename_ignores_memory_context_wrappers() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/session")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "title": null }).to_string()))
+            .expect("create request");
+        let create_resp = app.clone().oneshot(create_req).await.expect("response");
+        assert_eq!(create_resp.status(), StatusCode::OK);
+        let body = to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let session: Value = serde_json::from_slice(&body).expect("json");
+        let session_id = session
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("session id")
+            .to_string();
+
+        let wrapped = "<memory_context>\n<current_session>\n- fact\n</current_session>\n</memory_context>\n\n[Mode instructions]\nUse tools.\n\n[User request]\nShip the fix quickly";
+        let append_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/message"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "parts": [{"type":"text","text": wrapped}]
+                })
+                .to_string(),
+            ))
+            .expect("append request");
+        let append_resp = app.clone().oneshot(append_req).await.expect("response");
+        assert_eq!(append_resp.status(), StatusCode::OK);
+
+        let get_req = Request::builder()
+            .method("GET")
+            .uri(format!("/session/{session_id}"))
+            .body(Body::empty())
+            .expect("get request");
+        let get_resp = app.clone().oneshot(get_req).await.expect("response");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let session: Value = serde_json::from_slice(&body).expect("json");
+        let title = session
+            .get("title")
+            .and_then(|v| v.as_str())
+            .expect("title");
+        assert_eq!(title, "Ship the fix quickly");
     }
 }

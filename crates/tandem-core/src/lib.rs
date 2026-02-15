@@ -6,6 +6,7 @@ pub mod event_bus;
 pub mod permission_defaults;
 pub mod permissions;
 pub mod plugins;
+pub mod session_title;
 pub mod storage;
 pub mod storage_paths;
 
@@ -17,5 +18,6 @@ pub use event_bus::*;
 pub use permission_defaults::*;
 pub use permissions::*;
 pub use plugins::*;
+pub use session_title::*;
 pub use storage::*;
 pub use storage_paths::*;
