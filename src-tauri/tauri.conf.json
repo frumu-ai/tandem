@@ -47,6 +47,7 @@
     ],
     "resources": [
       "resources/default_config.json",
+      "resources/binaries/**/*",
       "resources/skills/**/*",
       "resources/skill-templates/**/*",
       "resources/packs/**/*",

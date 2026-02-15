@@ -109,6 +109,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Build bundled engine sidecar (Unix)
+        if: ${{ matrix.platform != 'windows-latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p tandem-engine --target ${{ matrix.target }}
+          mkdir -p src-tauri/resources/binaries
+          cp "target/${{ matrix.target }}/release/tandem-engine" "src-tauri/resources/binaries/tandem-engine"
+          chmod +x "src-tauri/resources/binaries/tandem-engine"
+
+      - name: Build bundled engine sidecar (Windows)
+        if: ${{ matrix.platform == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          cargo build --release -p tandem-engine --target ${{ matrix.target }}
+          New-Item -ItemType Directory -Path "src-tauri/resources/binaries" -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "src-tauri/resources/binaries/tandem-engine.exe" -Force
+
       # NOTE: We only attempt macOS signing/notarization when explicitly enabled via
       # `MACOS_SIGNING_ENABLED=true` (repo variable). This prevents release builds from
       # failing when Apple cert secrets are missing or misconfigured.

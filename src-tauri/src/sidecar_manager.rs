@@ -11,7 +11,7 @@ use tandem_core::resolve_shared_paths;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 
-const ENGINE_REPO: &str = "frumu-ai/tandem-engine";
+const ENGINE_REPO: &str = "frumu-ai/tandem";
 const GITHUB_API: &str = "https://api.github.com";
 const MIN_BINARY_SIZE: u64 = 100 * 1024; // 100KB minimum
 const SKIPPED_RELEASE_TAGS: &[&str] = &[];
