@@ -1,5 +1,5 @@
 {
-  "name": "@frumu-ltd/tandem-engine",
+  "name": "tandem-engine",
   "version": "0.0.1",
   "description": "Tandem Engine binary distribution",
   "bin": {

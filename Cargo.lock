@@ -7082,6 +7082,7 @@ dependencies = [
  "base64 0.22.1",
  "byteorder",
  "crossterm",
+ "flate2",
  "futures",
  "pulldown-cmark 0.10.3",
  "rand 0.8.5",
@@ -7094,6 +7095,7 @@ dependencies = [
  "tandem-observability",
  "tandem-types",
  "tandem-wire",
+ "tar",
  "thiserror 1.0.69",
  "throbber-widgets-tui",
  "tokio",
@@ -7101,6 +7103,7 @@ dependencies = [
  "tracing-subscriber",
  "tui-markdown",
  "zeroize",
+ "zip 0.6.6",
 ]
 
 [[package]]

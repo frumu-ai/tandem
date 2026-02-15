@@ -81,9 +81,21 @@ async function download() {
     console.log(`Checking releases for ${REPO}...`);
     const releases = await fetchJson(`https://api.github.com/repos/${REPO}/releases`);
 
-    // Find first release with our asset (prefer full releases if poss, but beta allows pre-release)
-    // We want the LATEST release that contains our asset.
-    let release = releases.find(r => r.assets.some(a => a.name === artifactName));
+    // Get the version from package.json
+    const packageVersion = require('../package.json').version;
+    const targetTag = `v${packageVersion}`;
+
+    console.log(`Filtering releases for ${REPO} (Target: ${targetTag})...`);
+    // const releases = await fetchJson... <--- REMOVED DUPLICATE
+
+    // 1. Try to find the exact release for this package version
+    let release = releases.find(r => r.tag_name === targetTag);
+
+    if (!release) {
+        console.warn(`Warning: No release found for tag ${targetTag}. Checking for latest compatible assets...`);
+        // 2. Fallback: Find LATEST release that contains our asset (useful for nightly/beta where tags might differ)
+        release = releases.find(r => r.assets.some(a => a.name === artifactName));
+    }
 
     if (!release) {
         // Fallback: Check prereleases explicitly if strict filtering was on (it wasn't here)

@@ -11,7 +11,7 @@ async-stream = "0.3"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 dirs = "6"
 futures = "0.3"
 glob = "0.3"

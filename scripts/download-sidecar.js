@@ -116,7 +116,7 @@ function httpsGet(url, options = {}) {
 
 async function downloadFile(url, destPath) {
   console.log(`   Downloading from: ${url}`);
-  
+
   return new Promise((resolve, reject) => {
     const file = createWriteStream(destPath);
 
@@ -172,9 +172,9 @@ async function downloadFile(url, destPath) {
 
 async function extractArchive(archivePath, destDir, isWindows) {
   const { execSync } = await import("child_process");
-  
+
   console.log(`   Extracting archive...`);
-  
+
   if (isWindows) {
     // Use PowerShell to extract zip on Windows
     execSync(`powershell -Command "Expand-Archive -Path '${archivePath}' -DestinationPath '${destDir}' -Force"`, {
@@ -186,7 +186,7 @@ async function extractArchive(archivePath, destDir, isWindows) {
       stdio: "inherit",
     });
   }
-  
+
   console.log(`   Extraction complete!`);
 }
 
@@ -197,45 +197,66 @@ async function fetchReleases() {
   } else {
     console.log(`   ⚠️  No GITHUB_TOKEN found, using unauthenticated request (may be rate limited)`);
   }
-  
+
   const url = `${GITHUB_API}/repos/${OPENCODE_REPO}/releases`;
   const releases = await httpsGet(url, { json: true });
-  
+
   if (!Array.isArray(releases) || releases.length === 0) {
     throw new Error("No releases found");
   }
-  
+
   return releases;
 }
 
-function findBestRelease(releases, assetName) {
-  // Find the most recent release that has the asset we need
+async function findBestRelease(releases, assetName) {
+  // 0. If we are running in a package context, try to match package version
+  try {
+    // This script might be run from inside node_modules/tandem-ai/scripts/
+    const packageJsonPath = join(ROOT_DIR, "package.json");
+    if (existsSync(packageJsonPath)) {
+      const { createRequire } = await import("module");
+      const require = createRequire(import.meta.url);
+      const pkg = require(packageJsonPath);
+
+      // If the package has a "binaryVersion" config, use that. Otherwise use package version.
+      const targetTag = pkg.config?.binary_tag || `v${pkg.version}`;
+
+      const strictMatch = releases.find(r => r.tag_name === targetTag);
+      if (strictMatch && strictMatch.assets?.some(a => a.name === assetName)) {
+        console.log(`   🎯 Found exact match for ${targetTag}`);
+        const asset = strictMatch.assets.find(a => a.name === assetName);
+        return { release: strictMatch, asset };
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  // 1. Find the most recent release that has the asset we need
   for (const release of releases) {
     if (release.draft || release.prerelease) continue;
-    
+
     const asset = release.assets?.find((a) => a.name === assetName);
     if (asset) {
       return { release, asset };
     }
   }
-  
+
   // If no stable release has it, try prereleases
   for (const release of releases) {
     if (release.draft) continue;
-    
+
     const asset = release.assets?.find((a) => a.name === assetName);
     if (asset) {
       console.log(`   ⚠️  Using prerelease: ${release.tag_name}`);
       return { release, asset };
     }
   }
-  
+
   return null;
 }
 
 async function main() {
   const forceDownload = process.argv.includes("--force");
-  
+
   console.log("🔧 Tandem Sidecar Download Script");
   console.log("================================\n");
 
@@ -285,8 +306,8 @@ async function main() {
   }
 
   // Find the best release with our asset
-  const result = findBestRelease(releases, assetName);
-  
+  const result = await findBestRelease(releases, assetName);
+
   if (!result) {
     console.error(`❌ No release found with asset: ${assetName}`);
     console.log("\n   Available assets in latest release:");
@@ -327,10 +348,10 @@ async function main() {
   // Find and rename the extracted binary
   const extractedBinaryName = isWindows ? "opencode.exe" : "opencode";
   const extractedPath = join(BINARIES_DIR, extractedBinaryName);
-  
+
   if (existsSync(extractedPath)) {
     const { renameSync } = await import("fs");
-    
+
     // Rename to Tauri-expected name with platform suffix
     if (extractedPath !== destPath) {
       if (existsSync(destPath)) {
@@ -338,12 +359,12 @@ async function main() {
       }
       renameSync(extractedPath, destPath);
     }
-    
+
     // Set executable permissions on Unix
     if (!isWindows) {
       chmodSync(destPath, 0o755);
     }
-    
+
     const finalStats = statSync(destPath);
     console.log(`\n✅ OpenCode binary installed successfully!`);
     console.log(`   Path: ${destPath}`);
