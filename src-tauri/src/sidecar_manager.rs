@@ -135,10 +135,22 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
 
     // 2. Check bundled resources (installed app)
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled_binary = resource_dir.join("binaries").join(binary_name);
-        if bundled_binary.exists() {
-            tracing::debug!("Using bundled sidecar from resources: {:?}", bundled_binary);
-            return Ok(bundled_binary);
+        // Support both resource layouts:
+        // - <resource_dir>/binaries/<binary>
+        // - <resource_dir>/resources/binaries/<binary>
+        let bundled_candidates = [
+            resource_dir.join("binaries").join(binary_name),
+            resource_dir
+                .join("resources")
+                .join("binaries")
+                .join(binary_name),
+        ];
+
+        for bundled_binary in bundled_candidates {
+            if bundled_binary.exists() {
+                tracing::debug!("Using bundled sidecar from resources: {:?}", bundled_binary);
+                return Ok(bundled_binary);
+            }
         }
     }
 

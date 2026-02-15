@@ -6,6 +6,7 @@ use crate::types::{
 };
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use once_cell::sync::OnceCell;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -65,7 +66,14 @@ impl EmbeddingService {
             );
         };
 
-        let options = InitOptions::new(parsed_model);
+        let cache_dir = resolve_embedding_cache_dir();
+        let options = InitOptions::new(parsed_model).with_cache_dir(cache_dir.clone());
+
+        tracing::info!(
+            target: "tandem.memory",
+            "Initializing embeddings with cache dir: {}",
+            cache_dir.display()
+        );
 
         match TextEmbedding::try_new(options) {
             Ok(model) => (Some(model), None),
@@ -183,6 +191,37 @@ impl EmbeddingService {
             .sum::<f32>()
             .sqrt()
     }
+}
+
+fn resolve_embedding_cache_dir() -> PathBuf {
+    if let Ok(explicit) = std::env::var("FASTEMBED_CACHE_DIR") {
+        let explicit_path = PathBuf::from(explicit);
+        if let Err(err) = std::fs::create_dir_all(&explicit_path) {
+            tracing::warn!(
+                target: "tandem.memory",
+                "Failed to create FASTEMBED_CACHE_DIR {:?}: {}",
+                explicit_path,
+                err
+            );
+        }
+        return explicit_path;
+    }
+
+    let base = dirs::data_local_dir()
+        .or_else(dirs::cache_dir)
+        .unwrap_or_else(std::env::temp_dir);
+    let cache_dir = base.join("tandem").join("fastembed");
+
+    if let Err(err) = std::fs::create_dir_all(&cache_dir) {
+        tracing::warn!(
+            target: "tandem.memory",
+            "Failed to create embedding cache directory {:?}: {}",
+            cache_dir,
+            err
+        );
+    }
+
+    cache_dir
 }
 
 impl Default for EmbeddingService {
