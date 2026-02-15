@@ -782,7 +782,6 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [nowMs, setNowMs] = useState<number>(() => new Date().getTime());
-  const [endedAtMs, setEndedAtMs] = useState<number | null>(null);
 
   const runningCount = useMemo(
     () => toolCalls.filter((t) => t.status === "running").length,
@@ -810,20 +809,7 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
     return () => globalThis.clearInterval(id);
   }, [isTerminal]);
 
-  useEffect(() => {
-    if (isTerminal && endedAtMs == null) {
-      setEndedAtMs(new Date().getTime());
-      return;
-    }
-    if (!isTerminal && endedAtMs != null) {
-      setEndedAtMs(null);
-    }
-  }, [isTerminal, endedAtMs]);
-
-  const durationSec = Math.max(
-    1,
-    Math.round(((endedAtMs ?? nowMs) - messageTimestamp.getTime()) / 1000)
-  );
+  const durationSec = Math.max(1, Math.round((nowMs - messageTimestamp.getTime()) / 1000));
 
   // Group by tool type for summary
   const summary = useMemo(() => {

@@ -2446,7 +2446,10 @@ async fn prepare_prompt_with_memory_context(
         let health = manager.embedding_health().await;
         (Some(health.status), health.reason)
     } else {
-        (Some("unavailable".to_string()), Some("memory manager not initialized".to_string()))
+        (
+            Some("unavailable".to_string()),
+            Some("memory manager not initialized".to_string()),
+        )
     };
 
     if should_skip_memory_retrieval(retrieval_query) {
@@ -2533,7 +2536,11 @@ async fn prepare_prompt_with_memory_context(
             )
         }
         Err(e) => {
-            let status = if e.to_string().to_ascii_lowercase().contains("embeddings disabled") {
+            let status = if e
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("embeddings disabled")
+            {
                 "degraded_disabled"
             } else {
                 "error_fallback"
@@ -2581,7 +2588,10 @@ async fn prepare_prompt_with_memory_context(
     )
 }
 
-async fn resolve_memory_project_id_for_session(state: &AppState, session_id: &str) -> Option<String> {
+async fn resolve_memory_project_id_for_session(
+    state: &AppState,
+    session_id: &str,
+) -> Option<String> {
     if let Ok(session) = state.sidecar.get_session(session_id).await {
         if let Some(pid) = session.project_id {
             let trimmed = pid.trim();
