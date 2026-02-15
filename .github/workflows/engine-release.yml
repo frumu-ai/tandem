@@ -64,7 +64,7 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: |
-          cargo build --release -p tandem-engine --target ${{ matrix.target }}
+          cargo build --release -p tandem-ai --target ${{ matrix.target }}
           cargo build --release -p tandem-tui --target ${{ matrix.target }}
 
       - name: Package zip (Windows)

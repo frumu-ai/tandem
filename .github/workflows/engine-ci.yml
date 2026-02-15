@@ -29,13 +29,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cargo check
-        run: cargo check -p tandem-engine
+        run: cargo check -p tandem-ai
 
       - name: Cargo test
-        run: cargo test -p tandem-engine
+        run: cargo test -p tandem-ai
 
       - name: Cargo clippy
-        run: cargo clippy -p tandem-engine -- -D warnings
+        run: cargo clippy -p tandem-ai -- -D warnings
 
       - name: Cargo fmt
         run: cargo fmt --check

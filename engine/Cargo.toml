@@ -1,9 +1,13 @@
 [package]
-name = "tandem-engine"
+name = "tandem-ai"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
 edition = "2021"
+
+[[bin]]
+name = "tandem-engine"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"

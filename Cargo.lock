@@ -6884,30 +6884,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tandem-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "dirs 6.0.0",
- "futures",
- "serde",
- "serde_json",
- "serde_yaml",
- "tandem-observability",
- "tandem-providers",
- "tandem-tools",
- "tandem-types",
- "tandem-wire",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "tandem-engine"
+name = "tandem-ai"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6939,6 +6916,29 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "tandem-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs 6.0.0",
+ "futures",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tandem-observability",
+ "tandem-providers",
+ "tandem-tools",
+ "tandem-types",
+ "tandem-wire",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
  "uuid",
 ]
 

@@ -631,6 +631,32 @@ fn log_release_selection(context: &str, selected: &CompatibleRelease<'_>) {
     );
 }
 
+fn select_release_for_download<'a>(releases: &'a [GitHubRelease]) -> Result<CompatibleRelease<'a>> {
+    let include_prerelease = beta_channel_enabled();
+
+    match select_latest_compatible_release(releases, include_prerelease) {
+        Ok(selected) => Ok(selected),
+        Err(primary_error) => {
+            if include_prerelease {
+                return Err(primary_error);
+            }
+
+            // Fallback: if stable filtering finds nothing compatible, allow prerelease releases.
+            // This keeps sidecar download functional when only prerelease artifacts are available.
+            match select_latest_compatible_release(releases, true) {
+                Ok(selected) => {
+                    tracing::warn!(
+                        selected_tag = %selected.release.tag_name,
+                        "No stable compatible tandem-engine release found; falling back to prerelease"
+                    );
+                    Ok(selected)
+                }
+                Err(_) => Err(primary_error),
+            }
+        }
+    }
+}
+
 fn should_offer_update(installed_version: Option<&str>, latest_version: Option<&str>) -> bool {
     match (installed_version, latest_version) {
         (Some(current), Some(latest)) => is_version_newer(latest, current),
@@ -798,12 +824,11 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
         emit_state("error", Some(&error_msg));
         e
     })?;
-    let selected =
-        select_latest_compatible_release(&releases, beta_channel_enabled()).map_err(|e| {
-            let error_msg = e.to_string();
-            emit_state("error", Some(&error_msg));
-            e
-        })?;
+    let selected = select_release_for_download(&releases).map_err(|e| {
+        let error_msg = e.to_string();
+        emit_state("error", Some(&error_msg));
+        e
+    })?;
     log_release_selection("sidecar_download", &selected);
 
     let release = selected.release;

@@ -19,7 +19,7 @@ Get-Process | Where-Object { $_.ProcessName -like "tandem-engine*" } | Stop-Proc
 
 Push-Location $repoRoot
 try {
-    cargo build -p tandem-engine | Out-Host
+    cargo build -p tandem-ai | Out-Host
 
     $stdoutLog = Join-Path $outPath "serve.stdout.log"
     $stderrLog = Join-Path $outPath "serve.stderr.log"

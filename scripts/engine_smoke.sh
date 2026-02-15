@@ -28,7 +28,7 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$ROOT_DIR"
-cargo build -p tandem-engine
+cargo build -p tandem-ai
 
 "$ROOT_DIR/target/debug/tandem-engine" serve \
   --host "$HOSTNAME" \
