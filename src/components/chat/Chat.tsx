@@ -161,6 +161,22 @@ function startupPhaseProgress(phase?: string | null): number {
   }
 }
 
+function stripInjectedMemoryContextForDisplay(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("<memory_context>")) {
+    return content;
+  }
+  const closeIdx = trimmed.indexOf("</memory_context>");
+  if (closeIdx < 0) {
+    return content;
+  }
+  const after = trimmed.slice(closeIdx + "</memory_context>".length).trim();
+  if (after.length > 0) {
+    return after;
+  }
+  return content;
+}
+
 function stringifyPermissionValue(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim().length > 0) {
     return value;
@@ -1093,6 +1109,9 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
           // Only add messages that have actual text content or are user messages
           // Skip assistant messages that only have tool calls (internal OpenCode operations)
+          if (role === "user" && content.trim()) {
+            content = stripInjectedMemoryContextForDisplay(content);
+          }
           if (content.trim() || role === "user" || (toolCalls.length > 0 && role === "assistant")) {
             convertedMessages.push({
               id: msg.info.id,
