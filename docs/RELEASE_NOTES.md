@@ -4,6 +4,11 @@
 
 ### Highlights
 
+- **Plan mode todo-call recovery**: Fixed repeated `todowrite` no-op loops by normalizing common todo payload aliases and skipping empty todo executions.
+- **Plan mode clarification fallback**: Added engine-level structured `question.asked` fallback when planning cannot derive a concrete todo list.
+- **Todo fallback precision**: Todo extraction fallback now only accepts structured checklist/numbered lines, preventing prose clarification text from becoming fake tasks.
+- **Question modal reliability**: Desktop now normalizes `permission(tool=question)` into the question overlay flow so walkthrough prompts reappear consistently.
+- **Permission scope isolation**: Permission prompts are now scoped to the active session to avoid cross-session approval bleed when multiple clients are connected.
 - **Memory architecture consolidation**: Desktop now consumes the shared `tandem-memory` crate directly, eliminating duplicated local memory implementation paths.
 - **Strict memory search scope guarantees**: Added a dedicated `memory_search` tool with explicit session/project scope requirements and blocked global-tier queries.
 - **Embedding health visibility**: Memory retrieval telemetry and settings now expose embedding backend status and reason, surfaced in chat/settings badges.

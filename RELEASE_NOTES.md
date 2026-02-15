@@ -4,6 +4,11 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## Unreleased
 
+- Plan Mode: Fixed `todowrite` empty-argument loops (`todo list updated: 0 items`) by normalizing common todo payload shapes and skipping true empty calls.
+- Plan Mode: Added structured clarification fallback (`question.asked`) when no concrete task list can be produced, instead of leaving planning in prose-only follow-up.
+- Plan Mode: Tightened todo fallback extraction to structured checklist/numbered lines only, preventing plain-text clarification prose from becoming phantom tasks.
+- Desktop UX: Restored walkthrough-question overlays when prompts arrive via `permission(tool=question)` by normalizing into the question modal flow.
+- Desktop UX: Scoped permission prompts to the active session to prevent cross-session/parallel-client approval bleed.
 - TUI Startup: Engine bootstrap now runs before PIN entry, keeping startup on the matrix/connect screen until engine availability is confirmed.
 - TUI Download UX: Added byte-based download progress, install-phase messaging, and surfaced last download error details in the connect view.
 - TUI Reliability: Engine download failures now support retry/backoff in-process instead of requiring a full app restart.

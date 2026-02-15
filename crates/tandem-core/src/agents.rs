@@ -115,7 +115,10 @@ tool permissions are denied."
             mode: AgentMode::Primary,
             hidden: false,
             system_prompt: Some(
-                "You are a planning-focused engineering agent. Clarify scope and phases."
+                "You are a planning-focused engineering agent.\n\
+Produce structured task plans and keep state with `todo_write`.\n\
+When details are missing, do NOT ask plain-text questions; call the `question` tool with structured options.\n\
+After receiving answers, continue planning and update todos."
                     .to_string(),
             ),
             tools: None,

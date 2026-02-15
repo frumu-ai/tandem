@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Desktop Permission Routing**: Permission prompts now stay scoped to the active session, preventing cross-session/parallel-client approval leakage into the wrong chat.
+- **Question Overlay Recovery**: Desktop now normalizes `permission(tool=question)` into question-request UI flow so walkthrough prompts consistently appear in the modal.
+- **Plan Mode Todo Reliability**: Fixed repeated `todo_write` no-op loops (`0 items`) by normalizing common todo payload aliases (`tasks`, `items`, checklist/text forms) and skipping empty todo calls.
+- **Plan Mode Clarification Flow**: When planning cannot produce concrete todos, the engine now emits a structured `question.asked` fallback instead of silently proceeding with prose-only clarification.
+- **Todo Fallback Precision**: Todo extraction fallback now ignores plain prose and only derives tasks from structured checklist/numbered lines, preventing accidental phantom tasks.
 - **Silent Prompt Failures in TUI**: Stream failures are now surfaced from runtime events (`session.error` and failed `session.run.finished`) instead of appearing as no-response hangs.
 - **Run Stream Stability**: Fixed run-scoped SSE handling so unrelated events do not prematurely terminate active stream processing.
 - **No-Response Completion Case**: Added explicit fallback error messaging when a run completes without streamed deltas or assistant content.

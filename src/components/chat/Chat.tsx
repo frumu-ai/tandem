@@ -58,6 +58,8 @@ import {
   type SidecarState,
   type SidecarStartupHealth,
   type TodoItem,
+  type QuestionChoice,
+  type QuestionInfo,
   type QuestionRequestEvent,
   type FileAttachmentInput,
   startPlanSession,
@@ -162,19 +164,40 @@ function startupPhaseProgress(phase?: string | null): number {
 }
 
 function stripInjectedMemoryContextForDisplay(content: string): string {
-  const trimmed = content.trim();
-  if (!trimmed.startsWith("<memory_context>")) {
+  let sanitized = content.replace(/<memory_context>[\s\S]*?<\/memory_context>/gi, "").trim();
+  if (!sanitized) {
     return content;
   }
-  const closeIdx = trimmed.indexOf("</memory_context>");
-  if (closeIdx < 0) {
-    return content;
+
+  const extractAfterMarker = (text: string, marker: string): string | null => {
+    const idx = text.toLowerCase().indexOf(marker.toLowerCase());
+    if (idx < 0) return null;
+    return text.slice(idx + marker.length).trim();
+  };
+
+  const markerExtract =
+    extractAfterMarker(sanitized, "[User request]") ??
+    extractAfterMarker(sanitized, "User request:");
+  if (markerExtract && markerExtract.length > 0) {
+    sanitized = markerExtract;
   }
-  const after = trimmed.slice(closeIdx + "</memory_context>".length).trim();
-  if (after.length > 0) {
-    return after;
+
+  while (sanitized.toLowerCase().startsWith("[mode instructions]")) {
+    const splitIdx = sanitized.indexOf("\n\n");
+    if (splitIdx >= 0) {
+      sanitized = sanitized.slice(splitIdx + 2).trim();
+      continue;
+    }
+    const lineIdx = sanitized.indexOf("\n");
+    if (lineIdx >= 0) {
+      sanitized = sanitized.slice(lineIdx + 1).trim();
+      continue;
+    }
+    sanitized = "";
+    break;
   }
-  return content;
+
+  return sanitized.length > 0 ? sanitized : content;
 }
 
 function stringifyPermissionValue(value: unknown): string | undefined {
@@ -252,6 +275,55 @@ function buildPermissionReason(
         command: commandCandidate,
       };
   }
+}
+
+function extractQuestionInfoFromPermissionArgs(
+  args?: Record<string, unknown>
+): QuestionRequestEvent["questions"] {
+  const rawQuestions = args?.questions;
+  if (!Array.isArray(rawQuestions)) {
+    return [];
+  }
+
+  return rawQuestions
+    .map((item): QuestionInfo | null => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const record = item as Record<string, unknown>;
+      const question = typeof record.question === "string" ? record.question.trim() : "";
+      if (!question) {
+        return null;
+      }
+      const header = typeof record.header === "string" ? record.header : "";
+      const options = Array.isArray(record.options)
+        ? record.options
+            .map((option): QuestionChoice | null => {
+              if (!option || typeof option !== "object") {
+                return null;
+              }
+              const opt = option as Record<string, unknown>;
+              const label = typeof opt.label === "string" ? opt.label.trim() : "";
+              if (!label) {
+                return null;
+              }
+              return {
+                label,
+                description: typeof opt.description === "string" ? opt.description : "",
+              };
+            })
+            .filter((option): option is QuestionChoice => option !== null)
+        : [];
+
+      return {
+        header,
+        question,
+        options,
+        multiple: typeof record.multiple === "boolean" ? record.multiple : undefined,
+        custom: typeof record.custom === "boolean" ? record.custom : undefined,
+      };
+    })
+    .filter((question): question is QuestionInfo => question !== null);
 }
 
 export function Chat({
@@ -2025,6 +2097,38 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
         case "permission_asked": {
           // Handle permission requests from OpenCode
+          // Only show permission prompts for the active session.
+          if (!currentSessionId || event.session_id !== currentSessionId) {
+            break;
+          }
+          const normalizedTool = (event.tool || "").toLowerCase();
+          const permissionArgs = (event.args as Record<string, unknown>) || {};
+
+          // Normalize permission(tool=question) into the walkthrough question overlay flow.
+          if (normalizedTool === "question") {
+            const questions = extractQuestionInfoFromPermissionArgs(permissionArgs);
+            if (questions.length > 0) {
+              setPendingQuestionRequests((prev) => {
+                if (
+                  handledQuestionRequestIdsRef.current.has(event.request_id) ||
+                  prev.some((r) => r.request_id === event.request_id)
+                ) {
+                  return prev;
+                }
+
+                return [
+                  ...prev,
+                  {
+                    session_id: event.session_id,
+                    request_id: event.request_id,
+                    questions,
+                  },
+                ];
+              });
+              break;
+            }
+          }
+
           // Use the current assistant message ID so we can associate file snapshots with this message
           const currentMsgId = currentAssistantMessageIdRef.current;
           if (handledPermissionIdsRef.current.has(event.request_id)) {
@@ -2051,7 +2155,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               event.request_id,
               event.session_id,
               event.tool || "unknown",
-              (event.args as Record<string, unknown>) || {},
+              permissionArgs,
               currentMsgId || undefined
             ).catch((err) => {
               console.error("[Permission] Failed to stage operation:", err);
@@ -2062,7 +2166,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
             if (allowAllTools) {
               approveTool(event.session_id, event.request_id, {
                 tool: event.tool || undefined,
-                args: (event.args as Record<string, unknown>) || undefined,
+                args: permissionArgs,
                 messageId: currentMsgId || undefined,
               }).catch((e) => {
                 console.error("[Permission] Auto-approve failed:", e);
@@ -2073,10 +2177,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
                 }
               });
             } else {
-              const summary = buildPermissionReason(
-                event.tool || undefined,
-                (event.args as Record<string, unknown>) || undefined
-              );
+              const summary = buildPermissionReason(event.tool || undefined, permissionArgs);
               // Immediate mode: show permission toast as before
               const permissionRequest: PermissionRequest = {
                 id: event.request_id,
@@ -2088,7 +2189,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
                 riskLevel:
                   event.tool === "delete_file" || event.tool === "bash" ? "high" : "medium",
                 tool: event.tool || undefined,
-                args: (event.args as Record<string, unknown>) || undefined,
+                args: permissionArgs,
                 messageId: currentMsgId || undefined, // Associate with current message for undo
               };
               setPendingPermissions((prev) => {
@@ -2406,7 +2507,7 @@ ${g.example}
       if (effectivePlanMode) {
         finalContent = `${finalContent}
         
-(Please use the todowrite tool to create a structured task list. Then, ask for user approval before starting execution/completing the tasks.)`;
+(Please use the todowrite tool to create a structured task list. If you need more information, call the question tool with structured options instead of asking plain-text questions. Then, ask for user approval before starting execution/completing the tasks.)`;
         console.log("[PlanMode] Using OpenCode's Plan agent with todowrite guidance");
       }
 

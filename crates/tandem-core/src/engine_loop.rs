@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
 use crate::{
-    AgentDefinition, AgentRegistry, CancellationRegistry, EventBus, PermissionAction,
-    PermissionManager, PluginRegistry, Storage,
+    derive_session_title_from_prompt, title_needs_repair, AgentDefinition, AgentRegistry,
+    CancellationRegistry, EventBus, PermissionAction, PermissionManager, PluginRegistry, Storage,
 };
 use tokio::sync::RwLock;
 
@@ -147,6 +147,8 @@ impl EngineLoop {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        self.auto_rename_session_from_user_text(&session_id, &text)
+            .await;
         let active_agent = self.agents.get(req.agent.as_deref()).await;
         let mut user_message_id = self
             .find_recent_matching_user_message_id(&session_id, &text)
@@ -183,7 +185,11 @@ impl EngineLoop {
             return Ok(());
         }
 
+        let mut question_tool_used = false;
         let completion = if let Some((tool, args)) = parse_tool_invocation(&text) {
+            if normalize_tool_name(&tool) == "question" {
+                question_tool_used = true;
+            }
             if !agent_can_use_tool(&active_agent, &tool) {
                 format!(
                     "Tool `{tool}` is not enabled for agent `{}`.",
@@ -397,6 +403,9 @@ impl EngineLoop {
                             continue;
                         }
                         let tool_key = normalize_tool_name(&tool);
+                        if tool_key == "question" {
+                            question_tool_used = true;
+                        }
                         if websearch_query_blocked && tool_key == "websearch" {
                             outputs.push(
                                 "Tool `websearch` call skipped: WEBSEARCH_QUERY_MISSING"
@@ -413,6 +422,17 @@ impl EngineLoop {
                                 tool_key, budget
                             ));
                             continue;
+                        }
+                        let mut effective_args = args.clone();
+                        if tool_key == "todo_write" {
+                            effective_args = normalize_todo_write_args(effective_args, &completion);
+                            if is_empty_todo_write_args(&effective_args) {
+                                outputs.push(
+                                    "Tool `todo_write` call skipped: empty todo payload."
+                                        .to_string(),
+                                );
+                                continue;
+                            }
                         }
                         let signature = tool_signature(&tool_key, &args);
                         let mut signature_count = 1usize;
@@ -457,7 +477,7 @@ impl EngineLoop {
                                 &session_id,
                                 &user_message_id,
                                 tool,
-                                args,
+                                effective_args,
                                 active_agent.skills.as_deref(),
                                 &text,
                                 Some(&completion),
@@ -543,6 +563,17 @@ impl EngineLoop {
                 &completion,
             )
             .await;
+            let todos_after_fallback = self.storage.get_todos(&session_id).await;
+            if todos_after_fallback.is_empty() && !question_tool_used {
+                emit_plan_question_fallback(
+                    self.storage.clone(),
+                    &self.event_bus,
+                    &session_id,
+                    &user_message_id,
+                    &completion,
+                )
+                .await;
+            }
         }
         if cancel.is_cancelled() {
             self.event_bus.publish(EngineEvent::new(
@@ -834,6 +865,34 @@ impl EngineLoop {
             return Some(last.id.clone());
         }
         None
+    }
+
+    async fn auto_rename_session_from_user_text(&self, session_id: &str, fallback_text: &str) {
+        let Some(mut session) = self.storage.get_session(session_id).await else {
+            return;
+        };
+        if !title_needs_repair(&session.title) {
+            return;
+        }
+
+        let first_user_text = session.messages.iter().find_map(|message| {
+            if !matches!(message.role, MessageRole::User) {
+                return None;
+            }
+            message.parts.iter().find_map(|part| match part {
+                MessagePart::Text { text } if !text.trim().is_empty() => Some(text.clone()),
+                _ => None,
+            })
+        });
+
+        let source = first_user_text.unwrap_or_else(|| fallback_text.to_string());
+        let Some(title) = derive_session_title_from_prompt(&source, 60) else {
+            return;
+        };
+
+        session.title = title;
+        session.time.updated = Utc::now();
+        let _ = self.storage.save_session(session).await;
     }
 
     async fn workspace_sandbox_violation(
@@ -1569,6 +1628,117 @@ fn parse_scalar_like_value(raw: &str) -> Value {
     Value::String(trimmed.to_string())
 }
 
+fn normalize_todo_write_args(args: Value, completion: &str) -> Value {
+    if is_todo_status_update_args(&args) {
+        return args;
+    }
+
+    let mut obj = match args {
+        Value::Object(map) => map,
+        Value::Array(items) => {
+            return json!({ "todos": normalize_todo_arg_items(items) });
+        }
+        Value::String(text) => {
+            let derived = extract_todo_candidates_from_text(&text);
+            if !derived.is_empty() {
+                return json!({ "todos": derived });
+            }
+            return json!({});
+        }
+        _ => return json!({}),
+    };
+
+    if obj
+        .get("todos")
+        .and_then(|v| v.as_array())
+        .map(|arr| !arr.is_empty())
+        .unwrap_or(false)
+    {
+        return Value::Object(obj);
+    }
+
+    for alias in ["tasks", "items", "list", "checklist"] {
+        if let Some(items) = obj.get(alias).and_then(|v| v.as_array()) {
+            let normalized = normalize_todo_arg_items(items.clone());
+            if !normalized.is_empty() {
+                obj.insert("todos".to_string(), Value::Array(normalized));
+                return Value::Object(obj);
+            }
+        }
+    }
+
+    let derived = extract_todo_candidates_from_text(completion);
+    if !derived.is_empty() {
+        obj.insert("todos".to_string(), Value::Array(derived));
+    }
+    Value::Object(obj)
+}
+
+fn normalize_todo_arg_items(items: Vec<Value>) -> Vec<Value> {
+    items
+        .into_iter()
+        .filter_map(|item| match item {
+            Value::String(text) => {
+                let content = text.trim();
+                if content.is_empty() {
+                    None
+                } else {
+                    Some(json!({"content": content}))
+                }
+            }
+            Value::Object(mut obj) => {
+                if !obj.contains_key("content") {
+                    if let Some(text) = obj.get("text").cloned() {
+                        obj.insert("content".to_string(), text);
+                    } else if let Some(title) = obj.get("title").cloned() {
+                        obj.insert("content".to_string(), title);
+                    } else if let Some(name) = obj.get("name").cloned() {
+                        obj.insert("content".to_string(), name);
+                    }
+                }
+                let content = obj
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .unwrap_or("");
+                if content.is_empty() {
+                    None
+                } else {
+                    Some(Value::Object(obj))
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn is_todo_status_update_args(args: &Value) -> bool {
+    let Some(obj) = args.as_object() else {
+        return false;
+    };
+    let has_status = obj
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let has_target =
+        obj.get("task_id").is_some() || obj.get("todo_id").is_some() || obj.get("id").is_some();
+    has_status && has_target
+}
+
+fn is_empty_todo_write_args(args: &Value) -> bool {
+    if is_todo_status_update_args(args) {
+        return false;
+    }
+    let Some(obj) = args.as_object() else {
+        return true;
+    };
+    !obj.get("todos")
+        .and_then(|v| v.as_array())
+        .map(|arr| !arr.is_empty())
+        .unwrap_or(false)
+}
+
 fn parse_streamed_tool_args(tool_name: &str, raw_args: &str) -> Value {
     let trimmed = raw_args.trim();
     if trimmed.is_empty() {
@@ -1710,6 +1880,7 @@ fn extract_todo_candidates_from_text(input: &str) -> Vec<Value> {
 
     for raw_line in input.lines() {
         let mut line = raw_line.trim();
+        let mut structured_line = false;
         if line.is_empty() {
             continue;
         }
@@ -1726,8 +1897,10 @@ fn extract_todo_candidates_from_text(input: &str) -> Vec<Value> {
             .or_else(|| line.strip_prefix("* [x]"))
         {
             line = rest.trim();
+            structured_line = true;
         } else if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
             line = rest.trim();
+            structured_line = true;
         } else {
             let bytes = line.as_bytes();
             let mut i = 0usize;
@@ -1736,7 +1909,11 @@ fn extract_todo_candidates_from_text(input: &str) -> Vec<Value> {
             }
             if i > 0 && i + 1 < bytes.len() && (bytes[i] == b'.' || bytes[i] == b')') {
                 line = line[i + 1..].trim();
+                structured_line = true;
             }
+        }
+        if !structured_line {
+            continue;
         }
 
         let content = line.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '*');
@@ -1811,6 +1988,74 @@ async fn emit_plan_todo_fallback(
         json!({
             "sessionID": session_id,
             "todos": normalized
+        }),
+    ));
+}
+
+async fn emit_plan_question_fallback(
+    storage: std::sync::Arc<Storage>,
+    bus: &EventBus,
+    session_id: &str,
+    message_id: &str,
+    completion: &str,
+) {
+    let trimmed = completion.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let hints = extract_todo_candidates_from_text(trimmed)
+        .into_iter()
+        .take(6)
+        .filter_map(|v| {
+            v.get("content")
+                .and_then(|c| c.as_str())
+                .map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+
+    let mut options = hints
+        .iter()
+        .map(|label| json!({"label": label, "description": "Use this as a starting task"}))
+        .collect::<Vec<_>>();
+    if options.is_empty() {
+        options = vec![
+            json!({"label":"Define scope", "description":"Clarify the intended outcome"}),
+            json!({"label":"Provide constraints", "description":"Budget, timeline, and constraints"}),
+            json!({"label":"Draft a starter list", "description":"Generate a first-pass task list"}),
+        ];
+    }
+
+    let question_payload = vec![json!({
+        "header":"Planning Input",
+        "question":"I couldn't produce a concrete task list yet. Which tasks should I include first?",
+        "options": options,
+        "multiple": true,
+        "custom": true
+    })];
+
+    let request = storage
+        .add_question_request(session_id, message_id, question_payload.clone())
+        .await
+        .ok();
+    bus.publish(EngineEvent::new(
+        "question.asked",
+        json!({
+            "id": request
+                .as_ref()
+                .map(|req| req.id.clone())
+                .unwrap_or_else(|| format!("q-{}", uuid::Uuid::new_v4())),
+            "sessionID": session_id,
+            "messageID": message_id,
+            "questions": question_payload,
+            "tool": request.and_then(|req| {
+                req.tool.map(|tool| {
+                    json!({
+                        "callID": tool.call_id,
+                        "messageID": tool.message_id
+                    })
+                })
+            })
         }),
     ));
 }
@@ -2171,6 +2416,17 @@ Plan:
     }
 
     #[test]
+    fn does_not_extract_todos_from_plain_prose_lines() {
+        let input = r#"
+I need more information to proceed.
+Can you tell me the event size and budget?
+Once I have that, I can provide a detailed plan.
+"#;
+        let todos = extract_todo_candidates_from_text(input);
+        assert!(todos.is_empty());
+    }
+
+    #[test]
     fn parses_wrapped_tool_call_from_markdown_response() {
         let input = r#"
 Here is the tool call:
@@ -2231,6 +2487,47 @@ Call: todowrite(task_id=3, status="in_progress")
             updated[1].get("status").and_then(|v| v.as_str()),
             Some("completed")
         );
+    }
+
+    #[test]
+    fn normalizes_todo_write_tasks_alias() {
+        let normalized = normalize_todo_write_args(
+            json!({"tasks":[{"title":"Book venue"},{"name":"Send invites"}]}),
+            "",
+        );
+        let todos = normalized
+            .get("todos")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(todos.len(), 2);
+        assert_eq!(
+            todos[0].get("content").and_then(|v| v.as_str()),
+            Some("Book venue")
+        );
+        assert_eq!(
+            todos[1].get("content").and_then(|v| v.as_str()),
+            Some("Send invites")
+        );
+    }
+
+    #[test]
+    fn normalizes_todo_write_from_completion_when_args_empty() {
+        let completion = "Plan:\n1. Secure venue\n2. Create playlist\n3. Send invites";
+        let normalized = normalize_todo_write_args(json!({}), completion);
+        let todos = normalized
+            .get("todos")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(todos.len(), 3);
+        assert!(!is_empty_todo_write_args(&normalized));
+    }
+
+    #[test]
+    fn empty_todo_write_args_allows_status_updates() {
+        let args = json!({"task_id": 2, "status":"completed"});
+        assert!(!is_empty_todo_write_args(&args));
     }
 
     #[test]
