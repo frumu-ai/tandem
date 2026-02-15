@@ -56,6 +56,10 @@ pub enum Action {
         agent_id: String,
         message: String,
     },
+    PromptTodoUpdated {
+        session_id: String,
+        todos: Vec<Value>,
+    },
     PromptRequest {
         session_id: String,
         agent_id: String,
@@ -85,6 +89,7 @@ pub enum Action {
     ToggleUiMode,
     GridPageNext,
     GridPagePrev,
+    CycleMode,
     ShowHelpModal,
     CloseModal,
     OpenRequestCenter,
@@ -98,6 +103,11 @@ pub enum Action {
     RequestInput(char),
     RequestBackspace,
     RequestReject,
+    PlanWizardNextField,
+    PlanWizardPrevField,
+    PlanWizardInput(char),
+    PlanWizardBackspace,
+    PlanWizardSubmit,
     ConfirmCloseAgent(bool),
     CancelActiveAgent,
     StartDemoStream,
@@ -144,6 +154,19 @@ pub enum ModalState {
     Help,
     ConfirmCloseAgent { target_agent_id: String },
     RequestCenter,
+    PlanFeedbackWizard,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlanFeedbackWizardState {
+    pub plan_name: String,
+    pub scope: String,
+    pub constraints: String,
+    pub priorities: String,
+    pub notes: String,
+    pub cursor_step: usize,
+    pub source_request_id: Option<String>,
+    pub task_preview: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -230,6 +253,9 @@ pub enum AppState {
         pending_requests: Vec<PendingRequest>,
         request_cursor: usize,
         permission_choice: usize,
+        plan_wizard: PlanFeedbackWizardState,
+        last_plan_task_fingerprint: Vec<String>,
+        plan_awaiting_approval: bool,
     },
     Connecting,
     SetupWizard {
@@ -303,13 +329,22 @@ pub enum AutocompleteMode {
 }
 
 use crate::net::client::EngineClient;
+use reqwest::Client;
+use serde::Deserialize;
 use serde_json::{json, Value};
+use std::env;
 use tandem_types::ModelSpec;
 use tandem_wire::WireSessionMessage;
+use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
 
-use crate::crypto::{keystore::SecureKeyStore, vault::EncryptedVaultKey};
+use crate::crypto::{
+    keystore::SecureKeyStore,
+    vault::{EncryptedVaultKey, MAX_PIN_LENGTH},
+};
+use anyhow::anyhow;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Instant;
@@ -324,6 +359,14 @@ pub struct App {
     pub vault_key: Option<EncryptedVaultKey>,
     pub keystore: Option<SecureKeyStore>,
     pub engine_process: Option<Child>,
+    pub engine_binary_path: Option<PathBuf>,
+    pub engine_download_retry_at: Option<Instant>,
+    pub engine_download_last_error: Option<String>,
+    pub engine_download_total_bytes: Option<u64>,
+    pub engine_downloaded_bytes: u64,
+    pub engine_download_active: bool,
+    pub engine_download_phase: Option<String>,
+    pub startup_engine_bootstrap_done: bool,
     pub client: Option<EngineClient>,
     pub sessions: Vec<Session>,
     pub selected_session_index: usize,
@@ -357,6 +400,24 @@ pub enum TandemMode {
 
 const SCROLL_LINE_STEP: u16 = 3;
 const SCROLL_PAGE_STEP: u16 = 20;
+const MIN_ENGINE_BINARY_SIZE: u64 = 100 * 1024;
+const ENGINE_REPO: &str = "frumu-ai/tandem";
+const GITHUB_API: &str = "https://api.github.com";
+
+#[derive(Debug, Deserialize, Clone)]
+struct GitHubRelease {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
+}
 
 impl TandemMode {
     pub fn as_agent(&self) -> &'static str {
@@ -400,6 +461,17 @@ impl TandemMode {
                 "Planning mode with write restrictions - uses plan agent",
             ),
         ]
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            TandemMode::Ask => TandemMode::Coder,
+            TandemMode::Coder => TandemMode::Explore,
+            TandemMode::Explore => TandemMode::Immediate,
+            TandemMode::Immediate => TandemMode::Orchestrate,
+            TandemMode::Orchestrate => TandemMode::Plan,
+            TandemMode::Plan => TandemMode::Ask,
+        }
     }
 }
 
@@ -549,6 +621,14 @@ impl App {
             vault_key,
             keystore: None,
             engine_process: None,
+            engine_binary_path: None,
+            engine_download_retry_at: None,
+            engine_download_last_error: None,
+            engine_download_total_bytes: None,
+            engine_downloaded_bytes: 0,
+            engine_download_active: false,
+            engine_download_phase: None,
+            startup_engine_bootstrap_done: false,
             client: None,
             sessions: Vec::new(),
             selected_session_index: 0,
@@ -888,6 +968,318 @@ impl App {
         None
     }
 
+    fn keystore_missing_or_empty(&self) -> bool {
+        let Some(dir) = &self.config_dir else {
+            return false;
+        };
+        let keystore_path = dir.join("tandem.keystore");
+        match SecureKeyStore::is_empty_on_disk(&keystore_path) {
+            Ok(empty) => empty,
+            Err(_) => true,
+        }
+    }
+
+    fn engine_binary_name() -> &'static str {
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        return "tandem-engine.exe";
+
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        return "tandem-engine";
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        return "tandem-engine";
+
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        return "tandem-engine";
+
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        return "tandem-engine";
+    }
+
+    fn engine_asset_name() -> &'static str {
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        return "tandem-engine-windows-x64.zip";
+
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        return "tandem-engine-darwin-x64.zip";
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        return "tandem-engine-darwin-arm64.zip";
+
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        return "tandem-engine-linux-x64.tar.gz";
+
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        return "tandem-engine-linux-arm64.tar.gz";
+    }
+
+    fn engine_asset_matches(asset_name: &str) -> bool {
+        if !asset_name.starts_with("tandem-engine-") {
+            return false;
+        }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            return asset_name.contains("windows") && asset_name.contains("x64");
+        }
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        {
+            return asset_name.contains("darwin") && asset_name.contains("x64");
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            return asset_name.contains("darwin") && asset_name.contains("arm64");
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            return asset_name.contains("linux") && asset_name.contains("x64");
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            return asset_name.contains("linux") && asset_name.contains("arm64");
+        }
+    }
+
+    fn shared_binaries_dir() -> Option<PathBuf> {
+        resolve_shared_paths()
+            .ok()
+            .map(|paths| paths.canonical_root.join("binaries"))
+    }
+
+    fn find_dev_engine_binary() -> Option<PathBuf> {
+        let Ok(current_dir) = env::current_dir() else {
+            return None;
+        };
+        let binary_name = Self::engine_binary_name();
+        let candidates = [
+            current_dir.join("target").join("debug").join(binary_name),
+            current_dir
+                .join("..")
+                .join("target")
+                .join("debug")
+                .join(binary_name),
+            current_dir
+                .join("src-tauri")
+                .join("..")
+                .join("target")
+                .join("debug")
+                .join(binary_name),
+            current_dir.join("binaries").join(binary_name),
+            current_dir
+                .join("src-tauri")
+                .join("binaries")
+                .join(binary_name),
+        ];
+        for candidate in candidates {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    fn find_extracted_binary(dir: &std::path::Path, binary_name: &str) -> anyhow::Result<PathBuf> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                if let Ok(found) = Self::find_extracted_binary(&path, binary_name) {
+                    return Ok(found);
+                }
+            } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.eq_ignore_ascii_case(binary_name) {
+                    return Ok(path);
+                }
+            }
+        }
+        Err(anyhow!("Extracted engine binary not found"))
+    }
+
+    async fn ensure_engine_binary(&mut self) -> anyhow::Result<Option<PathBuf>> {
+        if let Some(path) = &self.engine_binary_path {
+            if path
+                .metadata()
+                .map(|m| m.len() >= MIN_ENGINE_BINARY_SIZE)
+                .unwrap_or(false)
+            {
+                return Ok(Some(path.clone()));
+            }
+            self.engine_binary_path = None;
+        }
+
+        if cfg!(debug_assertions) {
+            if let Some(path) = Self::find_dev_engine_binary() {
+                self.engine_binary_path = Some(path.clone());
+                self.engine_download_active = false;
+                self.engine_download_total_bytes = None;
+                self.engine_downloaded_bytes = 0;
+                self.engine_download_phase = Some("Using local dev engine binary".to_string());
+                return Ok(Some(path));
+            }
+        }
+        let Some(binaries_dir) = Self::shared_binaries_dir() else {
+            return Ok(None);
+        };
+        let binary_path = binaries_dir.join(Self::engine_binary_name());
+        if binary_path
+            .metadata()
+            .map(|m| m.len() >= MIN_ENGINE_BINARY_SIZE)
+            .unwrap_or(false)
+        {
+            self.engine_binary_path = Some(binary_path.clone());
+            self.engine_download_active = false;
+            self.engine_download_total_bytes = None;
+            self.engine_downloaded_bytes = 0;
+            self.engine_download_phase = Some("Using cached engine binary".to_string());
+            return Ok(Some(binary_path));
+        }
+
+        fs::create_dir_all(&binaries_dir)?;
+        self.connection_status = "Downloading engine...".to_string();
+        let path = self
+            .download_engine_binary(&binaries_dir, &binary_path)
+            .await?;
+        self.engine_binary_path = Some(path.clone());
+        self.engine_download_active = false;
+        self.engine_download_last_error = None;
+        self.engine_download_retry_at = None;
+        self.engine_download_phase = Some("Engine download complete".to_string());
+        Ok(Some(path))
+    }
+
+    async fn download_engine_binary(
+        &mut self,
+        binaries_dir: &PathBuf,
+        binary_path: &PathBuf,
+    ) -> anyhow::Result<PathBuf> {
+        self.engine_download_active = true;
+        self.engine_download_total_bytes = None;
+        self.engine_downloaded_bytes = 0;
+        self.engine_download_phase = Some("Fetching release metadata".to_string());
+
+        let client = Client::new();
+        let release_url = format!("{}/repos/{}/releases", GITHUB_API, ENGINE_REPO);
+        let releases: Vec<GitHubRelease> = client
+            .get(release_url)
+            .header("User-Agent", "Tandem-TUI")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let release = releases
+            .iter()
+            .find(|release| {
+                !release.draft
+                    && !release.prerelease
+                    && release
+                        .assets
+                        .iter()
+                        .any(|asset| Self::engine_asset_matches(&asset.name))
+            })
+            .ok_or_else(|| anyhow!("No compatible tandem-engine release found"))?;
+
+        let asset_name = Self::engine_asset_name();
+        let asset = release
+            .assets
+            .iter()
+            .find(|asset| asset.name == asset_name)
+            .or_else(|| {
+                release
+                    .assets
+                    .iter()
+                    .find(|asset| Self::engine_asset_matches(&asset.name))
+            })
+            .ok_or_else(|| anyhow!("No compatible tandem-engine asset found"))?;
+
+        let download_url = asset.browser_download_url.clone();
+        let archive_path = binary_path.with_extension("download");
+        self.engine_download_total_bytes = Some(asset.size);
+        self.engine_downloaded_bytes = 0;
+        self.engine_download_phase = Some(format!("Downloading {}", asset.name));
+        let mut response = client
+            .get(&download_url)
+            .header("User-Agent", "Tandem-TUI")
+            .send()
+            .await?
+            .error_for_status()?;
+        if let Some(total) = response.content_length() {
+            self.engine_download_total_bytes = Some(total);
+        }
+        let mut file = tokio::fs::File::create(&archive_path).await?;
+        while let Some(chunk) = response.chunk().await? {
+            file.write_all(&chunk).await?;
+            self.engine_downloaded_bytes = self
+                .engine_downloaded_bytes
+                .saturating_add(chunk.len() as u64);
+            self.connection_status = match self.engine_download_total_bytes {
+                Some(total) if total > 0 => {
+                    let pct = (self.engine_downloaded_bytes as f64 / total as f64) * 100.0;
+                    format!("Downloading engine... {:.0}%", pct.clamp(0.0, 100.0))
+                }
+                _ => format!(
+                    "Downloading engine... {} KB",
+                    self.engine_downloaded_bytes / 1024
+                ),
+            };
+        }
+        file.flush().await?;
+        self.engine_download_phase = Some("Extracting engine archive".to_string());
+
+        let asset_name = asset.name.clone();
+        let archive_path_clone = archive_path.clone();
+        let binaries_dir_clone = binaries_dir.clone();
+        let binary_path_clone = binary_path.clone();
+
+        let extracted_path = tokio::task::spawn_blocking(move || -> anyhow::Result<PathBuf> {
+            if asset_name.ends_with(".zip") {
+                let file = fs::File::open(&archive_path_clone)?;
+                let mut archive = zip::ZipArchive::new(file)?;
+                for i in 0..archive.len() {
+                    let mut file = archive.by_index(i)?;
+                    let outpath = binaries_dir_clone.join(file.mangled_name());
+                    if file.is_dir() {
+                        fs::create_dir_all(&outpath)?;
+                    } else {
+                        if let Some(p) = outpath.parent() {
+                            fs::create_dir_all(p)?;
+                        }
+                        let mut outfile = fs::File::create(&outpath)?;
+                        std::io::copy(&mut file, &mut outfile)?;
+                    }
+                }
+            } else if asset_name.ends_with(".tar.gz") {
+                let file = fs::File::open(&archive_path_clone)?;
+                let gz = flate2::read::GzDecoder::new(file);
+                let mut archive = tar::Archive::new(gz);
+                archive.unpack(&binaries_dir_clone)?;
+            }
+
+            let extracted =
+                Self::find_extracted_binary(&binaries_dir_clone, Self::engine_binary_name())?;
+            if extracted != binary_path_clone {
+                if binary_path_clone.exists() {
+                    fs::remove_file(&binary_path_clone)?;
+                }
+                fs::rename(&extracted, &binary_path_clone)?;
+            }
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&binary_path_clone)?.permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&binary_path_clone, perms)?;
+            }
+
+            fs::remove_file(&archive_path_clone).ok();
+            Ok(binary_path_clone)
+        })
+        .await??;
+        self.engine_download_phase = Some("Finalizing engine install".to_string());
+        Ok(extracted_path)
+    }
+
     pub fn handle_key_event(&self, key: KeyEvent) -> Option<Action> {
         // Global control keys
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -909,10 +1301,9 @@ impl App {
 
         match self.state {
             AppState::StartupAnimation { .. } => {
-                // Any key skips animation
-                // But let's ignore modifier keys alone to prevent accidental skips?
-                // Actually user said "no animation", maybe it's skipping too easily.
-                // Let's only skip on Enter or Esc or Space.
+                if !self.startup_engine_bootstrap_done {
+                    return None;
+                }
                 match key.code {
                     KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ') => {
                         Some(Action::SkipAnimation)
@@ -948,11 +1339,36 @@ impl App {
                             KeyCode::Enter if matches!(active_modal, ModalState::RequestCenter) => {
                                 Some(Action::RequestConfirm)
                             }
+                            KeyCode::Enter
+                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                            {
+                                Some(Action::PlanWizardSubmit)
+                            }
                             KeyCode::Up if matches!(active_modal, ModalState::RequestCenter) => {
                                 Some(Action::RequestSelectPrev)
                             }
+                            KeyCode::Up
+                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                            {
+                                Some(Action::PlanWizardPrevField)
+                            }
                             KeyCode::Down if matches!(active_modal, ModalState::RequestCenter) => {
                                 Some(Action::RequestSelectNext)
+                            }
+                            KeyCode::Down
+                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                            {
+                                Some(Action::PlanWizardNextField)
+                            }
+                            KeyCode::Tab
+                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                            {
+                                Some(Action::PlanWizardNextField)
+                            }
+                            KeyCode::BackTab
+                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                            {
+                                Some(Action::PlanWizardPrevField)
                             }
                             KeyCode::Left if matches!(active_modal, ModalState::RequestCenter) => {
                                 Some(Action::RequestOptionPrev)
@@ -964,6 +1380,11 @@ impl App {
                                 if matches!(active_modal, ModalState::RequestCenter) =>
                             {
                                 Some(Action::RequestBackspace)
+                            }
+                            KeyCode::Backspace
+                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                            {
+                                Some(Action::PlanWizardBackspace)
                             }
                             KeyCode::Char(' ')
                                 if matches!(active_modal, ModalState::RequestCenter) =>
@@ -985,6 +1406,11 @@ impl App {
                                 if matches!(active_modal, ModalState::RequestCenter) =>
                             {
                                 Some(Action::RequestInput(c))
+                            }
+                            KeyCode::Char(c)
+                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                            {
+                                Some(Action::PlanWizardInput(c))
                             }
                             KeyCode::Char('y') | KeyCode::Char('Y')
                                 if matches!(active_modal, ModalState::ConfirmCloseAgent { .. }) =>
@@ -1029,6 +1455,11 @@ impl App {
                             if key.modifiers.contains(KeyModifiers::ALT) =>
                         {
                             Some(Action::ToggleUiMode)
+                        }
+                        KeyCode::Char('m') | KeyCode::Char('M')
+                            if key.modifiers.contains(KeyModifiers::ALT) =>
+                        {
+                            Some(Action::CycleMode)
                         }
                         KeyCode::Char('r') | KeyCode::Char('R')
                             if key.modifiers.contains(KeyModifiers::ALT) =>
@@ -1135,7 +1566,7 @@ impl App {
                     self.state = AppState::PinPrompt {
                         input: String::new(),
                         error: None,
-                        mode: if self.vault_key.is_some() {
+                        mode: if self.vault_key.is_some() && !self.keystore_missing_or_empty() {
                             PinPromptMode::UnlockExisting
                         } else {
                             PinPromptMode::CreateNew
@@ -1157,7 +1588,7 @@ impl App {
                 if let AppState::PinPrompt { input, .. } = &mut self.state {
                     if c == '\x08' {
                         input.pop();
-                    } else if c.is_ascii_digit() && input.len() < 8 {
+                    } else if c.is_ascii_digit() && input.len() < MAX_PIN_LENGTH {
                         input.push(c);
                     }
                 }
@@ -1170,6 +1601,14 @@ impl App {
 
                 match mode {
                     PinPromptMode::UnlockExisting => {
+                        if let Err(e) = crate::crypto::vault::validate_pin_format(&input) {
+                            self.state = AppState::PinPrompt {
+                                input: String::new(),
+                                error: Some(e.to_string()),
+                                mode: PinPromptMode::UnlockExisting,
+                            };
+                            return Ok(());
+                        }
                         match &self.vault_key {
                             Some(vk) => match vk.decrypt(&input) {
                                 Ok(master_key) => {
@@ -1249,6 +1688,14 @@ impl App {
                         }
                     }
                     PinPromptMode::ConfirmNew { first_pin } => {
+                        if let Err(e) = crate::crypto::vault::validate_pin_format(&input) {
+                            self.state = AppState::PinPrompt {
+                                input: String::new(),
+                                error: Some(e.to_string()),
+                                mode: PinPromptMode::CreateNew,
+                            };
+                            return Ok(());
+                        }
                         if input != first_pin {
                             self.state = AppState::PinPrompt {
                                 input: String::new(),
@@ -1407,6 +1854,9 @@ impl App {
                                     pending_requests: Vec::new(),
                                     request_cursor: 0,
                                     permission_choice: 0,
+                                    plan_wizard: PlanFeedbackWizardState::default(),
+                                    last_plan_task_fingerprint: Vec::new(),
+                                    plan_awaiting_approval: false,
                                 };
                             }
                         }
@@ -1418,16 +1868,20 @@ impl App {
                 if !self.sessions.is_empty() {
                     let session = &self.sessions[self.selected_session_index];
                     let loaded_messages = self.load_chat_history(&session.id).await;
+                    let (recalled_tasks, recalled_active_task_id) =
+                        Self::rebuild_tasks_from_messages(&loaded_messages);
                     let mut first_agent =
                         Self::make_agent_pane("A1".to_string(), session.id.clone());
                     first_agent.messages = loaded_messages.clone();
+                    first_agent.tasks = recalled_tasks.clone();
+                    first_agent.active_task_id = recalled_active_task_id.clone();
                     self.state = AppState::Chat {
                         session_id: session.id.clone(),
                         command_input: String::new(),
                         messages: loaded_messages,
                         scroll_from_bottom: 0,
-                        tasks: Vec::new(),
-                        active_task_id: None,
+                        tasks: recalled_tasks,
+                        active_task_id: recalled_active_task_id,
                         agents: vec![first_agent],
                         active_agent_index: 0,
                         ui_mode: UiMode::Focus,
@@ -1436,6 +1890,9 @@ impl App {
                         pending_requests: Vec::new(),
                         request_cursor: 0,
                         permission_choice: 0,
+                        plan_wizard: PlanFeedbackWizardState::default(),
+                        last_plan_task_fingerprint: Vec::new(),
+                        plan_awaiting_approval: false,
                     };
                 }
             }
@@ -1594,6 +2051,9 @@ impl App {
                         UiMode::Focus
                     };
                 }
+            }
+            Action::CycleMode => {
+                self.current_mode = self.current_mode.next();
             }
             Action::GridPageNext => {
                 if let AppState::Chat {
@@ -1837,6 +2297,66 @@ impl App {
                     }
                 }
             }
+            Action::PlanWizardNextField => {
+                if let AppState::Chat { plan_wizard, .. } = &mut self.state {
+                    plan_wizard.cursor_step = (plan_wizard.cursor_step + 1) % 5;
+                }
+            }
+            Action::PlanWizardPrevField => {
+                if let AppState::Chat { plan_wizard, .. } = &mut self.state {
+                    plan_wizard.cursor_step = if plan_wizard.cursor_step == 0 {
+                        4
+                    } else {
+                        plan_wizard.cursor_step.saturating_sub(1)
+                    };
+                }
+            }
+            Action::PlanWizardInput(c) => {
+                if let AppState::Chat { plan_wizard, .. } = &mut self.state {
+                    let target = match plan_wizard.cursor_step {
+                        0 => &mut plan_wizard.plan_name,
+                        1 => &mut plan_wizard.scope,
+                        2 => &mut plan_wizard.constraints,
+                        3 => &mut plan_wizard.priorities,
+                        _ => &mut plan_wizard.notes,
+                    };
+                    target.push(c);
+                }
+            }
+            Action::PlanWizardBackspace => {
+                if let AppState::Chat { plan_wizard, .. } = &mut self.state {
+                    let target = match plan_wizard.cursor_step {
+                        0 => &mut plan_wizard.plan_name,
+                        1 => &mut plan_wizard.scope,
+                        2 => &mut plan_wizard.constraints,
+                        3 => &mut plan_wizard.priorities,
+                        _ => &mut plan_wizard.notes,
+                    };
+                    target.pop();
+                }
+            }
+            Action::PlanWizardSubmit => {
+                let follow_up = if let AppState::Chat { plan_wizard, .. } = &self.state {
+                    Self::build_plan_feedback_markdown(plan_wizard)
+                } else {
+                    String::new()
+                };
+                if !follow_up.trim().is_empty() {
+                    if let AppState::Chat {
+                        command_input,
+                        modal,
+                        ..
+                    } = &mut self.state
+                    {
+                        *modal = None;
+                        *command_input = follow_up;
+                    }
+                    self.sync_active_agent_from_chat();
+                    if let Some(tx) = &self.action_tx {
+                        let _ = tx.send(Action::SubmitCommand);
+                    }
+                }
+            }
             Action::RequestReject => {
                 let (request_id, reject_kind, question_permission_id) = if let AppState::Chat {
                     pending_requests,
@@ -1903,6 +2423,8 @@ impl App {
                 let mut permission_reply: Option<String> = None;
                 let mut question_reply: Option<(String, Vec<Vec<String>>)> = None;
                 let mut question_permission_once: Option<String> = None;
+                let mut approved_task_payload: Option<(String, Option<Value>)> = None;
+                let mut approved_request_id: Option<String> = None;
 
                 if let AppState::Chat {
                     pending_requests,
@@ -1921,6 +2443,11 @@ impl App {
                                 };
                                 remove_request_id = Some(permission.id.clone());
                                 permission_reply = Some(reply.to_string());
+                                approved_request_id = Some(permission.id.clone());
+                                if reply != "deny" && Self::is_task_tool_name(&permission.tool) {
+                                    approved_task_payload =
+                                        Some((permission.tool.clone(), permission.args.clone()));
+                                }
                             }
                             PendingRequestKind::Question(question) => {
                                 let can_advance = question
@@ -2003,6 +2530,51 @@ impl App {
                             }
                         }
                     }
+                }
+
+                if let Some((tool, args)) = approved_task_payload {
+                    let fingerprint = Self::plan_fingerprint_from_args(args.as_ref());
+                    let preview = Self::plan_preview_from_args(args.as_ref());
+                    let should_open_wizard = if let AppState::Chat {
+                        last_plan_task_fingerprint,
+                        ..
+                    } = &self.state
+                    {
+                        Self::is_todo_write_tool_name(&tool)
+                            && !fingerprint.is_empty()
+                            && *last_plan_task_fingerprint != fingerprint
+                    } else {
+                        false
+                    };
+
+                    if let AppState::Chat {
+                        tasks,
+                        active_task_id,
+                        plan_wizard,
+                        modal,
+                        last_plan_task_fingerprint,
+                        ..
+                    } = &mut self.state
+                    {
+                        Self::apply_task_payload(tasks, active_task_id, &tool, args.as_ref());
+                        if Self::is_todo_write_tool_name(&tool) && !fingerprint.is_empty() {
+                            *last_plan_task_fingerprint = fingerprint;
+                        }
+                        if should_open_wizard {
+                            *modal = Some(ModalState::PlanFeedbackWizard);
+                            *plan_wizard = PlanFeedbackWizardState {
+                                plan_name: String::new(),
+                                scope: String::new(),
+                                constraints: String::new(),
+                                priorities: String::new(),
+                                notes: String::new(),
+                                cursor_step: 0,
+                                source_request_id: approved_request_id.clone(),
+                                task_preview: preview,
+                            };
+                        }
+                    }
+                    self.sync_active_agent_from_chat();
                 }
             }
             Action::NewAgent => {
@@ -2573,6 +3145,7 @@ impl App {
                     command_input,
                     agents,
                     active_agent_index,
+                    plan_awaiting_approval,
                     ..
                 } = &mut self.state
                 {
@@ -2585,6 +3158,7 @@ impl App {
                         .get(*active_agent_index)
                         .map(|a| a.agent_id.clone())
                         .unwrap_or_else(|| "A1".to_string());
+                    *plan_awaiting_approval = false;
                     (session_id.clone(), agent_id, Some(msg))
                 } else {
                     (String::new(), "A1".to_string(), None)
@@ -2607,7 +3181,7 @@ impl App {
                                 let client = client.clone();
                                 let tx = tx.clone();
                                 let session_id = session_id.clone();
-                                let msg = msg.clone();
+                                let prompt_msg = self.prepare_prompt_text(&msg);
                                 let agent = Some(self.current_mode.as_agent().to_string());
                                 let model = self.current_model_spec();
                                 let agent_id = active_agent_id.clone();
@@ -2619,7 +3193,7 @@ impl App {
                                     match client
                                         .send_prompt_with_stream_events(
                                             &session_id,
-                                            &msg,
+                                            &prompt_msg,
                                             agent.as_deref(),
                                             Some(&agent_id),
                                             model,
@@ -2681,6 +3255,16 @@ impl App {
                                                     );
                                                     let _ = tx.send(action);
                                                 }
+                                                if let Some((event_session_id, todos)) =
+                                                    crate::net::client::extract_stream_todo_update(
+                                                        &event.payload,
+                                                    )
+                                                {
+                                                    let _ = tx.send(Action::PromptTodoUpdated {
+                                                        session_id: event_session_id,
+                                                        todos,
+                                                    });
+                                                }
                                             },
                                         )
                                         .await
@@ -2691,26 +3275,24 @@ impl App {
                                             {
                                                 return;
                                             }
-                                            if !run.streamed {
-                                                if let Some(response) =
-                                                    Self::extract_assistant_message(&run.messages)
-                                                {
-                                                    let _ = tx.send(Action::PromptSuccess {
-                                                        session_id: session_id.clone(),
-                                                        agent_id: agent_id.clone(),
-                                                        messages: vec![ChatMessage {
-                                                            role: MessageRole::Assistant,
-                                                            content: response,
-                                                        }],
-                                                    });
-                                                } else {
-                                                    let _ = tx.send(Action::PromptFailure {
-                                                        session_id: session_id.clone(),
-                                                        agent_id: agent_id.clone(),
-                                                        error: "No assistant response received. Check provider key/config with /keys, /provider, /model."
-                                                            .to_string(),
-                                                    });
-                                                }
+                                            if let Some(response) =
+                                                Self::extract_assistant_message(&run.messages)
+                                            {
+                                                let _ = tx.send(Action::PromptSuccess {
+                                                    session_id: session_id.clone(),
+                                                    agent_id: agent_id.clone(),
+                                                    messages: vec![ChatMessage {
+                                                        role: MessageRole::Assistant,
+                                                        content: response,
+                                                    }],
+                                                });
+                                            } else if !run.streamed {
+                                                let _ = tx.send(Action::PromptFailure {
+                                                    session_id: session_id.clone(),
+                                                    agent_id: agent_id.clone(),
+                                                    error: "No assistant response received. Check provider key/config with /keys, /provider, /model."
+                                                        .to_string(),
+                                                });
                                             } else {
                                                 let _ = tx.send(Action::PromptSuccess {
                                                     session_id: session_id.clone(),
@@ -2803,7 +3385,7 @@ impl App {
                                 let client = client.clone();
                                 let tx = tx.clone();
                                 let session_id = session_id.clone();
-                                let msg = msg.clone();
+                                let prompt_msg = self.prepare_prompt_text(&msg);
                                 let agent = Some(self.current_mode.as_agent().to_string());
                                 let model = self.current_model_spec();
                                 let agent_id = active_agent_id.clone();
@@ -2815,7 +3397,7 @@ impl App {
                                     match client
                                         .send_prompt_with_stream_events(
                                             &session_id,
-                                            &msg,
+                                            &prompt_msg,
                                             agent.as_deref(),
                                             Some(&agent_id),
                                             model,
@@ -2877,6 +3459,16 @@ impl App {
                                                     );
                                                     let _ = tx.send(action);
                                                 }
+                                                if let Some((event_session_id, todos)) =
+                                                    crate::net::client::extract_stream_todo_update(
+                                                        &event.payload,
+                                                    )
+                                                {
+                                                    let _ = tx.send(Action::PromptTodoUpdated {
+                                                        session_id: event_session_id,
+                                                        todos,
+                                                    });
+                                                }
                                             },
                                         )
                                         .await
@@ -2887,26 +3479,24 @@ impl App {
                                             {
                                                 return;
                                             }
-                                            if !run.streamed {
-                                                if let Some(response) =
-                                                    Self::extract_assistant_message(&run.messages)
-                                                {
-                                                    let _ = tx.send(Action::PromptSuccess {
-                                                        session_id: session_id.clone(),
-                                                        agent_id: agent_id.clone(),
-                                                        messages: vec![ChatMessage {
-                                                            role: MessageRole::Assistant,
-                                                            content: response,
-                                                        }],
-                                                    });
-                                                } else {
-                                                    let _ = tx.send(Action::PromptFailure {
-                                                        session_id: session_id.clone(),
-                                                        agent_id: agent_id.clone(),
-                                                        error: "No assistant response received. Check provider key/config with /keys, /provider, /model."
-                                                            .to_string(),
-                                                    });
-                                                }
+                                            if let Some(response) =
+                                                Self::extract_assistant_message(&run.messages)
+                                            {
+                                                let _ = tx.send(Action::PromptSuccess {
+                                                    session_id: session_id.clone(),
+                                                    agent_id: agent_id.clone(),
+                                                    messages: vec![ChatMessage {
+                                                        role: MessageRole::Assistant,
+                                                        content: response,
+                                                    }],
+                                                });
+                                            } else if !run.streamed {
+                                                let _ = tx.send(Action::PromptFailure {
+                                                    session_id: session_id.clone(),
+                                                    agent_id: agent_id.clone(),
+                                                    error: "No assistant response received. Check provider key/config with /keys, /provider, /model."
+                                                        .to_string(),
+                                                });
                                             } else {
                                                 let _ = tx.send(Action::PromptSuccess {
                                                     session_id: session_id.clone(),
@@ -2989,7 +3579,7 @@ impl App {
                         .iter_mut()
                         .find(|a| a.agent_id == agent_id && a.session_id == event_session_id)
                     {
-                        agent.messages.extend(new_messages.clone());
+                        Self::merge_prompt_success_messages(&mut agent.messages, &new_messages);
                         agent.status = AgentStatus::Done;
                         agent.active_run_id = None;
                         agent.scroll_from_bottom = 0;
@@ -2998,17 +3588,95 @@ impl App {
                         && agents[*active_agent_index].agent_id == agent_id
                         && agents[*active_agent_index].session_id == event_session_id
                     {
-                        messages.extend(new_messages);
+                        Self::merge_prompt_success_messages(messages, &new_messages);
                         *scroll_from_bottom = 0;
                     }
                 }
                 self.sync_active_agent_from_chat();
+            }
+            Action::PromptTodoUpdated {
+                session_id: event_session_id,
+                todos,
+            } => {
+                let payload = serde_json::json!({ "todos": todos });
+                let should_guard_pending = matches!(self.current_mode, TandemMode::Plan)
+                    && Self::task_payload_all_pending(Some(&payload));
+                if let AppState::Chat {
+                    session_id,
+                    messages,
+                    tasks,
+                    active_task_id,
+                    agents,
+                    modal,
+                    plan_wizard,
+                    last_plan_task_fingerprint,
+                    plan_awaiting_approval,
+                    ..
+                } = &mut self.state
+                {
+                    if should_guard_pending && *plan_awaiting_approval {
+                        return Ok(());
+                    }
+
+                    let fingerprint = Self::plan_fingerprint_from_args(Some(&payload));
+                    let preview = Self::plan_preview_from_args(Some(&payload));
+                    let should_open_wizard = matches!(self.current_mode, TandemMode::Plan)
+                        && !fingerprint.is_empty()
+                        && *last_plan_task_fingerprint != fingerprint;
+
+                    if *session_id == event_session_id {
+                        Self::apply_task_payload(
+                            tasks,
+                            active_task_id,
+                            "todo_write",
+                            Some(&payload),
+                        );
+                    }
+                    for agent in agents.iter_mut() {
+                        if agent.session_id == event_session_id {
+                            Self::apply_task_payload(
+                                &mut agent.tasks,
+                                &mut agent.active_task_id,
+                                "todo_write",
+                                Some(&payload),
+                            );
+                        }
+                    }
+                    if !fingerprint.is_empty() {
+                        *last_plan_task_fingerprint = fingerprint;
+                    }
+                    if should_guard_pending {
+                        *plan_awaiting_approval = true;
+                    }
+                    if should_open_wizard {
+                        *modal = Some(ModalState::PlanFeedbackWizard);
+                        *plan_wizard = PlanFeedbackWizardState {
+                            plan_name: String::new(),
+                            scope: String::new(),
+                            constraints: String::new(),
+                            priorities: String::new(),
+                            notes: String::new(),
+                            cursor_step: 0,
+                            source_request_id: None,
+                            task_preview: preview,
+                        };
+                        messages.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: vec![ContentBlock::Text(
+                                "Plan tasks updated. Review and refine in the Plan Feedback wizard."
+                                    .to_string(),
+                            )],
+                        });
+                    }
+                }
+                self.sync_chat_from_active_agent();
             }
             Action::PromptDelta {
                 session_id: event_session_id,
                 agent_id,
                 delta,
             } => {
+                let meaningful_delta = !delta.trim().is_empty();
                 if let AppState::Chat {
                     agents,
                     active_agent_index,
@@ -3033,7 +3701,7 @@ impl App {
                             } else {
                                 content.push(ContentBlock::Text(delta.clone()));
                             }
-                        } else {
+                        } else if meaningful_delta {
                             agent.messages.push(ChatMessage {
                                 role: MessageRole::Assistant,
                                 content: vec![ContentBlock::Text(delta.clone())],
@@ -3055,7 +3723,7 @@ impl App {
                             } else {
                                 content.push(ContentBlock::Text(delta));
                             }
-                        } else {
+                        } else if meaningful_delta {
                             messages.push(ChatMessage {
                                 role: MessageRole::Assistant,
                                 content: vec![ContentBlock::Text(delta)],
@@ -3202,6 +3870,7 @@ impl App {
 
     pub async fn tick(&mut self) {
         self.tick_count += 1;
+        let mut transition_to_pin = false;
 
         // Check engine health every ~1 second (assuming 60tps)
         if self.tick_count % 60 == 0 {
@@ -3223,6 +3892,36 @@ impl App {
                     self.matrix.update(w, h);
                 } else {
                     self.matrix.update(120, 50);
+                }
+
+                if !self.startup_engine_bootstrap_done {
+                    if let Some(retry_at) = self.engine_download_retry_at {
+                        if retry_at > Instant::now() {
+                            let wait_secs = retry_at
+                                .saturating_duration_since(Instant::now())
+                                .as_secs()
+                                .max(1);
+                            self.connection_status =
+                                format!("Engine download failed. Retrying in {}s...", wait_secs);
+                            return;
+                        }
+                    }
+                    self.connection_status = "Preparing engine bootstrap...".to_string();
+                    match self.ensure_engine_binary().await {
+                        Ok(_) => {
+                            self.startup_engine_bootstrap_done = true;
+                            transition_to_pin = true;
+                        }
+                        Err(err) => {
+                            self.engine_download_active = false;
+                            self.engine_download_last_error = Some(err.to_string());
+                            self.engine_download_retry_at =
+                                Some(Instant::now() + std::time::Duration::from_secs(5));
+                            self.connection_status = format!("Engine download failed: {}", err);
+                        }
+                    }
+                } else {
+                    transition_to_pin = true;
                 }
             }
             AppState::PinPrompt { .. } => {
@@ -3259,17 +3958,55 @@ impl App {
                     // If not running and no process spawned, spawn it
                     if self.engine_process.is_none() {
                         self.connection_status = "Starting engine...".to_string();
-                        // Find binary (assuming cargo run or in target)
-                        // For dev: use cargo run
-                        // For now, let's just try to spawn "tandem-engine" from path
-                        let mut cmd = Command::new("tandem-engine");
-                        cmd.kill_on_drop(!Self::shared_engine_mode_enabled());
-                        cmd.arg("serve").arg("--port").arg("3000");
-                        cmd.stdout(Stdio::null()).stderr(Stdio::null());
-                        if let Ok(child) = cmd.spawn() {
-                            self.engine_process = Some(child);
-                        } else {
-                            // Fallback for dev environment
+                        if let Some(retry_at) = self.engine_download_retry_at {
+                            if retry_at > Instant::now() {
+                                let wait_secs = retry_at
+                                    .saturating_duration_since(Instant::now())
+                                    .as_secs()
+                                    .max(1);
+                                self.connection_status = format!(
+                                    "Engine download failed. Retrying in {}s...",
+                                    wait_secs
+                                );
+                                return;
+                            }
+                        }
+                        let engine_binary = match self.ensure_engine_binary().await {
+                            Ok(path) => path,
+                            Err(err) => {
+                                self.engine_download_active = false;
+                                self.engine_download_last_error = Some(err.to_string());
+                                self.engine_download_retry_at =
+                                    Some(Instant::now() + std::time::Duration::from_secs(5));
+                                self.connection_status = format!("Engine download failed: {}", err);
+                                return;
+                            }
+                        };
+
+                        let mut spawned = false;
+                        if let Some(binary_path) = engine_binary {
+                            let mut cmd = Command::new(binary_path);
+                            cmd.kill_on_drop(!Self::shared_engine_mode_enabled());
+                            cmd.arg("serve").arg("--port").arg("3000");
+                            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                            if let Ok(child) = cmd.spawn() {
+                                self.engine_process = Some(child);
+                                spawned = true;
+                            }
+                        }
+
+                        if !spawned {
+                            let mut cmd = Command::new("tandem-engine");
+                            cmd.kill_on_drop(!Self::shared_engine_mode_enabled());
+                            cmd.arg("serve").arg("--port").arg("3000");
+                            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                            if let Ok(child) = cmd.spawn() {
+                                self.engine_process = Some(child);
+                                spawned = true;
+                            }
+                        }
+
+                        if !spawned && cfg!(debug_assertions) {
                             let mut cargo_cmd = Command::new("cargo");
                             cargo_cmd.kill_on_drop(!Self::shared_engine_mode_enabled());
                             cargo_cmd
@@ -3281,7 +4018,12 @@ impl App {
                             cargo_cmd.stdout(Stdio::null()).stderr(Stdio::null());
                             if let Ok(child) = cargo_cmd.spawn() {
                                 self.engine_process = Some(child);
+                                spawned = true;
                             }
+                        }
+
+                        if !spawned {
+                            self.connection_status = "Failed to start engine.".to_string();
                         }
                     } else {
                         self.connection_status = "Waiting for engine...".to_string();
@@ -3321,6 +4063,18 @@ impl App {
             }
 
             _ => {}
+        }
+
+        if transition_to_pin {
+            self.state = AppState::PinPrompt {
+                input: String::new(),
+                error: None,
+                mode: if self.vault_key.is_some() && !self.keystore_missing_or_empty() {
+                    PinPromptMode::UnlockExisting
+                } else {
+                    PinPromptMode::CreateNew
+                },
+            };
         }
     }
 
@@ -3396,6 +4150,7 @@ MULTI-AGENT KEYS:
   Ctrl+N             New agent
   Ctrl+W             Close active agent
   Ctrl+C             Cancel active run
+  Alt+M              Cycle mode
   Alt+G              Toggle Focus/Grid
   Alt+R              Open request center
   [ / ]              Prev/next grid page
@@ -3607,10 +4362,14 @@ MULTI-AGENT KEYS:
                 if let Some(idx) = self.sessions.iter().position(|s| s.id == target_id) {
                     self.selected_session_index = idx;
                     let loaded_messages = self.load_chat_history(target_id).await;
+                    let (recalled_tasks, recalled_active_task_id) =
+                        Self::rebuild_tasks_from_messages(&loaded_messages);
                     if let AppState::Chat {
                         session_id,
                         messages,
                         scroll_from_bottom,
+                        tasks,
+                        active_task_id,
                         agents,
                         active_agent_index,
                         ..
@@ -3619,10 +4378,14 @@ MULTI-AGENT KEYS:
                         *session_id = target_id.to_string();
                         *messages = loaded_messages.clone();
                         *scroll_from_bottom = 0;
+                        *tasks = recalled_tasks.clone();
+                        *active_task_id = recalled_active_task_id.clone();
                         if let Some(agent) = agents.get_mut(*active_agent_index) {
                             agent.session_id = target_id.to_string();
                             agent.messages = loaded_messages;
                             agent.scroll_from_bottom = 0;
+                            agent.tasks = recalled_tasks;
+                            agent.active_task_id = recalled_active_task_id;
                         }
                     }
                     format!("Switched to session: {}", target_id)
@@ -4015,6 +4778,7 @@ MULTI-AGENT KEYS:
 
                 let agent = Some(self.current_mode.as_agent().to_string());
                 if let Some(client) = &self.client {
+                    let prompt_text = self.prepare_prompt_text(&text);
                     let model = self.current_model_spec();
                     if let Some(tx) = &self.action_tx {
                         let client = client.clone();
@@ -4027,7 +4791,7 @@ MULTI-AGENT KEYS:
                             match client
                                 .send_prompt_with_stream_events(
                                     &session_id,
-                                    &text,
+                                    &prompt_text,
                                     agent.as_deref(),
                                     Some(&agent_id),
                                     model,
@@ -4084,6 +4848,16 @@ MULTI-AGENT KEYS:
                                             );
                                             let _ = tx.send(action);
                                         }
+                                        if let Some((event_session_id, todos)) =
+                                            crate::net::client::extract_stream_todo_update(
+                                                &event.payload,
+                                            )
+                                        {
+                                            let _ = tx.send(Action::PromptTodoUpdated {
+                                                session_id: event_session_id,
+                                                todos,
+                                            });
+                                        }
                                     },
                                 )
                                 .await
@@ -4092,26 +4866,24 @@ MULTI-AGENT KEYS:
                                     if saw_stream_error.load(std::sync::atomic::Ordering::Relaxed) {
                                         return;
                                     }
-                                    if !run.streamed {
-                                        if let Some(response) =
-                                            Self::extract_assistant_message(&run.messages)
-                                        {
-                                            let _ = tx.send(Action::PromptSuccess {
-                                                session_id: session_id.clone(),
-                                                agent_id: agent_id.clone(),
-                                                messages: vec![ChatMessage {
-                                                    role: MessageRole::Assistant,
-                                                    content: response,
-                                                }],
-                                            });
-                                        } else {
-                                            let _ = tx.send(Action::PromptFailure {
-                                                session_id: session_id.clone(),
-                                                agent_id: agent_id.clone(),
-                                                error: "No assistant response received. Check provider key/config with /keys, /provider, /model."
-                                                    .to_string(),
-                                            });
-                                        }
+                                    if let Some(response) =
+                                        Self::extract_assistant_message(&run.messages)
+                                    {
+                                        let _ = tx.send(Action::PromptSuccess {
+                                            session_id: session_id.clone(),
+                                            agent_id: agent_id.clone(),
+                                            messages: vec![ChatMessage {
+                                                role: MessageRole::Assistant,
+                                                content: response,
+                                            }],
+                                        });
+                                    } else if !run.streamed {
+                                        let _ = tx.send(Action::PromptFailure {
+                                            session_id: session_id.clone(),
+                                            agent_id: agent_id.clone(),
+                                            error: "No assistant response received. Check provider key/config with /keys, /provider, /model."
+                                                .to_string(),
+                                        });
                                     } else {
                                         let _ = tx.send(Action::PromptSuccess {
                                             session_id: session_id.clone(),
@@ -4465,6 +5237,365 @@ MULTI-AGENT KEYS:
             .collect()
     }
 
+    fn is_task_tool_name(tool: &str) -> bool {
+        matches!(
+            Self::canonical_tool_name(tool).as_str(),
+            "task" | "todo_write" | "todowrite" | "update_todo_list" | "new_task"
+        )
+    }
+
+    fn is_todo_write_tool_name(tool: &str) -> bool {
+        matches!(
+            Self::canonical_tool_name(tool).as_str(),
+            "todo_write" | "todowrite" | "update_todo_list"
+        )
+    }
+
+    fn canonical_tool_name(tool: &str) -> String {
+        let last = tool
+            .rsplit('.')
+            .next()
+            .unwrap_or(tool)
+            .trim()
+            .to_lowercase();
+        last.replace('-', "_")
+    }
+
+    fn task_status_from_text(status: &str) -> TaskStatus {
+        match status.to_ascii_lowercase().as_str() {
+            "done" | "completed" | "complete" => TaskStatus::Done,
+            "working" | "in_progress" | "in-progress" | "active" => TaskStatus::Working,
+            "failed" | "error" | "blocked" => TaskStatus::Failed,
+            _ => TaskStatus::Pending,
+        }
+    }
+
+    fn extract_task_payload_items(args: Option<&serde_json::Value>) -> Vec<(String, TaskStatus)> {
+        let Some(args) = args else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let arrays = [
+            args.get("todos").and_then(|v| v.as_array()),
+            args.get("tasks").and_then(|v| v.as_array()),
+            args.get("steps").and_then(|v| v.as_array()),
+            args.get("items").and_then(|v| v.as_array()),
+        ];
+        for arr in arrays.into_iter().flatten() {
+            for item in arr {
+                if let Some(obj) = item.as_object() {
+                    let content = obj
+                        .get("content")
+                        .or_else(|| obj.get("description"))
+                        .or_else(|| obj.get("title"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    if content.is_empty() {
+                        continue;
+                    }
+                    let status_text = obj
+                        .get("status")
+                        .or_else(|| obj.get("state"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("pending");
+                    out.push((
+                        content.to_string(),
+                        Self::task_status_from_text(status_text),
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    fn task_payload_all_pending(args: Option<&serde_json::Value>) -> bool {
+        let items = Self::extract_task_payload_items(args);
+        !items.is_empty()
+            && items
+                .iter()
+                .all(|(_, status)| matches!(status, TaskStatus::Pending))
+    }
+
+    fn apply_task_payload(
+        tasks: &mut Vec<Task>,
+        active_task_id: &mut Option<String>,
+        tool: &str,
+        args: Option<&serde_json::Value>,
+    ) {
+        let incoming = Self::extract_task_payload_items(args);
+        if incoming.is_empty() {
+            return;
+        }
+
+        if Self::is_todo_write_tool_name(tool) {
+            let mut normalized: Vec<(String, TaskStatus)> = Vec::new();
+            for (description, status) in incoming {
+                if let Some(existing) = normalized
+                    .iter_mut()
+                    .find(|(d, _)| d.eq_ignore_ascii_case(description.as_str()))
+                {
+                    existing.1 = status;
+                } else {
+                    normalized.push((description, status));
+                }
+            }
+
+            let pinned_by_description = tasks
+                .iter()
+                .map(|t| (t.description.to_ascii_lowercase(), t.pinned))
+                .collect::<std::collections::HashMap<_, _>>();
+
+            tasks.clear();
+            for (idx, (description, status)) in normalized.into_iter().enumerate() {
+                let pinned = pinned_by_description
+                    .get(&description.to_ascii_lowercase())
+                    .copied()
+                    .unwrap_or(false);
+                tasks.push(Task {
+                    id: format!("task-{}", idx + 1),
+                    description,
+                    status,
+                    pinned,
+                });
+            }
+        } else {
+            for (description, status) in incoming {
+                if let Some(existing) = tasks.iter_mut().find(|t| t.description == description) {
+                    existing.status = status.clone();
+                } else {
+                    let id = format!("task-{}", tasks.len() + 1);
+                    tasks.push(Task {
+                        id,
+                        description,
+                        status: status.clone(),
+                        pinned: false,
+                    });
+                }
+            }
+        }
+
+        if let Some(working) = tasks
+            .iter()
+            .find(|t| matches!(t.status, TaskStatus::Working))
+        {
+            *active_task_id = Some(working.id.clone());
+        } else {
+            *active_task_id = None;
+        }
+    }
+
+    fn plan_fingerprint_from_args(args: Option<&serde_json::Value>) -> Vec<String> {
+        let Some(args) = args else {
+            return Vec::new();
+        };
+        let arrays = [
+            args.get("todos").and_then(|v| v.as_array()),
+            args.get("tasks").and_then(|v| v.as_array()),
+            args.get("steps").and_then(|v| v.as_array()),
+            args.get("items").and_then(|v| v.as_array()),
+        ];
+
+        let mut items: Vec<String> = Vec::new();
+        for arr in arrays.into_iter().flatten() {
+            for item in arr {
+                if let Some(obj) = item.as_object() {
+                    if let Some(content) = obj
+                        .get("content")
+                        .or_else(|| obj.get("description"))
+                        .or_else(|| obj.get("title"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let normalized = content.trim().to_lowercase();
+                        if !normalized.is_empty() {
+                            items.push(normalized);
+                        }
+                    }
+                }
+            }
+        }
+        items.sort();
+        items.dedup();
+        items
+    }
+
+    fn plan_preview_from_args(args: Option<&serde_json::Value>) -> Vec<String> {
+        Self::extract_task_payload_items(args)
+            .into_iter()
+            .map(|(content, _)| content)
+            .take(10)
+            .collect()
+    }
+
+    fn build_plan_feedback_markdown(wizard: &PlanFeedbackWizardState) -> String {
+        let plan_name = if wizard.plan_name.trim().is_empty() {
+            "Current plan".to_string()
+        } else {
+            wizard.plan_name.trim().to_string()
+        };
+        let scope = if wizard.scope.trim().is_empty() {
+            "Use the proposed tasks as the working scope.".to_string()
+        } else {
+            wizard.scope.trim().to_string()
+        };
+        let constraints = if wizard.constraints.trim().is_empty() {
+            "No additional constraints.".to_string()
+        } else {
+            wizard.constraints.trim().to_string()
+        };
+        let priorities = if wizard.priorities.trim().is_empty() {
+            "Follow logical dependency order.".to_string()
+        } else {
+            wizard.priorities.trim().to_string()
+        };
+        let notes = if wizard.notes.trim().is_empty() {
+            "No additional notes.".to_string()
+        } else {
+            wizard.notes.trim().to_string()
+        };
+
+        let mut task_lines = String::new();
+        if wizard.task_preview.is_empty() {
+            task_lines.push_str("- Use the current todo list from `todowrite`.\n");
+        } else {
+            for (idx, task) in wizard.task_preview.iter().enumerate() {
+                task_lines.push_str(&format!("{}. {}\n", idx + 1, task));
+            }
+        }
+
+        format!(
+            "## Plan Feedback\n\
+             \n\
+             **Plan:** {}\n\
+             \n\
+             ### Approved Task Draft\n\
+             {}\n\
+             ### Scope\n\
+             {}\n\
+             \n\
+             ### Constraints\n\
+             {}\n\
+             \n\
+             ### Priority Order\n\
+             {}\n\
+             \n\
+             ### Additional Notes\n\
+             {}\n\
+             \n\
+             ### Next Action\n\
+             Revise the plan using this feedback, update `todowrite` with refined tasks, and then ask for approval before execution.",
+            plan_name, task_lines, scope, constraints, priorities, notes
+        )
+    }
+
+    fn rebuild_tasks_from_messages(messages: &[ChatMessage]) -> (Vec<Task>, Option<String>) {
+        let mut tasks = Vec::new();
+        let mut active_task_id = None;
+
+        for message in messages {
+            for block in &message.content {
+                let ContentBlock::ToolCall(tool_call) = block else {
+                    continue;
+                };
+                if !Self::is_task_tool_name(&tool_call.name) {
+                    continue;
+                }
+                if let Ok(args) = serde_json::from_str::<serde_json::Value>(&tool_call.args) {
+                    Self::apply_task_payload(
+                        &mut tasks,
+                        &mut active_task_id,
+                        &tool_call.name,
+                        Some(&args),
+                    );
+                }
+            }
+        }
+
+        (tasks, active_task_id)
+    }
+
+    fn prepare_prompt_text(&self, text: &str) -> String {
+        let trimmed = text.trim_start();
+        if trimmed.starts_with("/tool ") {
+            return text.to_string();
+        }
+        if !matches!(self.current_mode, TandemMode::Plan) {
+            return text.to_string();
+        }
+        let task_context = self.plan_task_context_block();
+        let task_context_block = task_context
+            .as_deref()
+            .map(|ctx| format!("\nCurrent task list context:\n{}\n", ctx))
+            .unwrap_or_default();
+        format!(
+            "You are operating in Plan mode.\n\
+             Please use the todowrite tool to create a structured task list. Then, ask for user approval before starting execution/completing the tasks.\n\
+             Tool rule: Use `todowrite` (or `todo_write` / `update_todo_list`) for plan tasks.\n\
+             Do NOT use the generic `task` tool for plan creation.\n\
+             First-action rule: On a new planning request, your FIRST action must be creating/updating a structured todo list.\n\
+             Breakdown rule: Do not create a single generic task. Create a concrete multi-step plan with at least 6 actionable tasks (prefer 8-12 when appropriate).\n\
+             Do not return only a plain numbered/text plan before creating/updating todos.\n\
+             Clarification rule: If information is missing, still create an initial draft todo breakdown first, then ask clarification questions.\n\
+             Approval rule: After task creation/update, ask for user approval before execution/completing tasks.\n\
+             Execution rule: During execution, after verifying each task is done, use `todowrite` with status=\"completed\" for that task.\n\
+             If information is missing, ask clarifying questions via the question tool.\n\
+             Ask ONE clarification question at a time, then wait for the user's answer.\n\
+             Prefer structured question tool prompts over plain-text question lists.\n\
+             If there is already one active task list, treat it as the default plan context; do not ask \"which plan\" unless there are multiple distinct plans.\n\
+             When the user says execute/continue/go, update statuses and next steps for the current task list.\n\
+             After tool calls, provide a concise summary.\n{}\n\
+             User request:\n{}",
+            task_context_block,
+            text
+        )
+    }
+
+    fn plan_task_context_block(&self) -> Option<String> {
+        let (tasks, active_task_id) = match &self.state {
+            AppState::Chat {
+                tasks,
+                active_task_id,
+                ..
+            } => (tasks, active_task_id),
+            _ => return None,
+        };
+        if tasks.is_empty() {
+            return None;
+        }
+
+        let mut lines = Vec::new();
+        lines.push(format!("Total tasks: {}", tasks.len()));
+        if let Some(active_id) = active_task_id {
+            lines.push(format!("Active task id: {}", active_id));
+        }
+        for task in tasks.iter().take(12) {
+            let active_marker = if active_task_id.as_deref() == Some(task.id.as_str()) {
+                ">"
+            } else {
+                "-"
+            };
+            lines.push(format!(
+                "{} [{}] {}",
+                active_marker,
+                Self::task_status_label(&task.status),
+                task.description
+            ));
+        }
+        if tasks.len() > 12 {
+            lines.push(format!("... and {} more", tasks.len() - 12));
+        }
+        Some(lines.join("\n"))
+    }
+
+    fn task_status_label(status: &TaskStatus) -> &'static str {
+        match status {
+            TaskStatus::Pending => "pending",
+            TaskStatus::Working => "working",
+            TaskStatus::Done => "done",
+            TaskStatus::Failed => "failed",
+        }
+    }
+
     fn current_model_spec(&self) -> Option<ModelSpec> {
         let provider_id = self.current_provider.as_ref()?.to_string();
         let model_id = self.current_model.as_ref()?.to_string();
@@ -4484,12 +5615,16 @@ MULTI-AGENT KEYS:
         for part in &message.parts {
             let type_str = part.get("type").and_then(|v| v.as_str());
             match type_str {
-                Some("text") => {
+                Some("text") | Some("output_text") | Some("message_text") => {
                     if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                         blocks.push(ContentBlock::Text(text.to_string()));
+                    } else if let Some(value) = part.get("value").and_then(|v| v.as_str()) {
+                        blocks.push(ContentBlock::Text(value.to_string()));
+                    } else if let Some(content) = part.get("content").and_then(|v| v.as_str()) {
+                        blocks.push(ContentBlock::Text(content.to_string()));
                     }
                 }
-                Some("tool_use") => {
+                Some("tool_use") | Some("tool_call") | Some("tool") => {
                     let id = part
                         .get("id")
                         .and_then(|v| v.as_str())
@@ -4510,7 +5645,13 @@ MULTI-AGENT KEYS:
                         args: input,
                     }));
                 }
-                _ => {}
+                Some(_) | None => {
+                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                        if !text.is_empty() {
+                            blocks.push(ContentBlock::Text(text.to_string()));
+                        }
+                    }
+                }
             }
         }
 
@@ -4518,6 +5659,53 @@ MULTI-AGENT KEYS:
             None
         } else {
             Some(blocks)
+        }
+    }
+
+    fn merge_prompt_success_messages(target: &mut Vec<ChatMessage>, new_messages: &[ChatMessage]) {
+        if new_messages.is_empty() {
+            return;
+        }
+        if new_messages.len() == 1 {
+            if let Some(new_text) = Self::assistant_text_of(&new_messages[0]) {
+                if let Some(last) = target.last_mut() {
+                    if let Some(last_text) = Self::assistant_text_of(last) {
+                        let last_trimmed = last_text.trim();
+                        let new_trimmed = new_text.trim();
+                        if new_trimmed.is_empty() {
+                            return;
+                        }
+                        if last_trimmed.is_empty()
+                            || new_trimmed == last_trimmed
+                            || new_trimmed.starts_with(last_trimmed)
+                        {
+                            *last = new_messages[0].clone();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        target.extend_from_slice(new_messages);
+    }
+
+    fn assistant_text_of(message: &ChatMessage) -> Option<String> {
+        if !matches!(message.role, MessageRole::Assistant) {
+            return None;
+        }
+        let text = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
         }
     }
 

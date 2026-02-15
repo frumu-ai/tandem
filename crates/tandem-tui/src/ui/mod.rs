@@ -29,9 +29,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_startup(f: &mut Frame, app: &App) {
-    // Fill background with matrix
-    let matrix = app.matrix.layer(true);
-    f.render_widget(matrix, f.area());
+    draw_connecting(f, app);
 }
 
 fn draw_pin_prompt(
@@ -56,8 +54,8 @@ fn draw_pin_prompt(
         PinPromptMode::ConfirmNew { .. } => "Confirm PIN",
     };
     let hint = match mode {
-        PinPromptMode::UnlockExisting => "Enter your existing 4-8 digit PIN",
-        PinPromptMode::CreateNew => "Create a new 4-8 digit PIN",
+        PinPromptMode::UnlockExisting => "Enter your existing 4-digit PIN",
+        PinPromptMode::CreateNew => "Create a new 4-digit PIN",
         PinPromptMode::ConfirmNew { .. } => "Re-enter the same PIN",
     };
 
@@ -164,21 +162,45 @@ fn draw_chat(f: &mut Frame, app: &App) {
         pending_requests,
         request_cursor,
         permission_choice,
+        plan_wizard,
         ..
     } = &app.state
     {
+        let request_panel_active =
+            matches!(modal, Some(ModalState::RequestCenter)) && !pending_requests.is_empty();
+        let request_height = if request_panel_active {
+            pending_requests
+                .get(*request_cursor)
+                .map(estimate_request_panel_height)
+                .unwrap_or(8)
+                .clamp(7, 16)
+        } else {
+            0
+        };
+
+        let mut constraints = vec![Constraint::Min(0)];
+        if request_panel_active {
+            constraints.push(Constraint::Length(request_height as u16));
+        }
+        constraints.push(Constraint::Length(3));
+        constraints.push(Constraint::Length(1));
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(0),
-                Constraint::Length(3),
-                Constraint::Length(1),
-            ])
+            .constraints(constraints)
             .split(f.area());
 
         let content_area = chunks[0];
-        let input_chunk = chunks[1];
-        let status_chunk = chunks[2];
+        let mut next_chunk_idx = 1usize;
+        let request_chunk = if request_panel_active {
+            let area = chunks[next_chunk_idx];
+            next_chunk_idx += 1;
+            Some(area)
+        } else {
+            None
+        };
+        let input_chunk = chunks[next_chunk_idx];
+        let status_chunk = chunks[next_chunk_idx + 1];
 
         // Find session title
         let session_title = app
@@ -421,6 +443,121 @@ fn draw_chat(f: &mut Frame, app: &App) {
             f.render_widget(popup, popup_area);
         }
 
+        if let Some(request_area) = request_chunk {
+            if let Some(request) = pending_requests.get(*request_cursor) {
+                let request_block = Block::default()
+                    .title(" Requests ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow));
+                let choice_chip = |idx: usize, label: &str, active: usize| -> Span<'static> {
+                    if idx == active {
+                        Span::styled(
+                            format!(" {} ", label),
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::LightGreen)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                    } else {
+                        Span::styled(
+                            format!(" {} ", label),
+                            Style::default().fg(Color::Gray).bg(Color::DarkGray),
+                        )
+                    }
+                };
+
+                let mut lines: Vec<Line> = Vec::new();
+                match &request.kind {
+                    PendingRequestKind::Permission(permission) => {
+                        let canonical_tool = canonical_tool_name(&permission.tool);
+                        lines.push(Line::from(format!(
+                            "Request {}/{}  |  Permission  |  Tool: {}",
+                            request_cursor + 1,
+                            pending_requests.len(),
+                            canonical_tool
+                        )));
+                        for arg_line in
+                            format_permission_args(&permission.tool, permission.args.as_ref())
+                        {
+                            lines.push(Line::from(arg_line));
+                        }
+                        if is_todo_write_tool(&permission.tool) {
+                            lines.push(Line::from(""));
+                            lines.push(Line::from(
+                                "Approve to refine this plan in the guided feedback wizard.",
+                            ));
+                        }
+                        lines.push(Line::from(""));
+                        lines.push(Line::from(Line::from(vec![
+                            choice_chip(0, "1 Allow Once", *permission_choice),
+                            Span::raw(" "),
+                            choice_chip(1, "2 Allow Always", *permission_choice),
+                            Span::raw(" "),
+                            choice_chip(2, "3 Deny", *permission_choice),
+                        ])));
+                        lines.push(Line::from(
+                            "Keys: Up/Down request, Left/Right choice, 1..3, Enter confirm, R reject, Esc close",
+                        ));
+                    }
+                    PendingRequestKind::Question(question) => {
+                        lines.push(Line::from(format!(
+                            "Request {}/{}  |  Question {}/{}",
+                            request_cursor + 1,
+                            pending_requests.len(),
+                            question.question_index + 1,
+                            question.questions.len()
+                        )));
+                        if let Some(q) = question.questions.get(question.question_index) {
+                            lines.push(Line::from(format!("AI asks: {}", q.question)));
+                            if !q.options.is_empty() {
+                                lines.push(Line::from("Choices:"));
+                                for (idx, option) in q.options.iter().enumerate().take(5) {
+                                    let selected = if q.selected_options.contains(&idx) {
+                                        "*"
+                                    } else {
+                                        " "
+                                    };
+                                    let cursor = if q.option_cursor == idx { ">" } else { " " };
+                                    lines.push(Line::from(format!(
+                                        "  {}{} {}. {} {}",
+                                        cursor,
+                                        selected,
+                                        idx + 1,
+                                        option.label,
+                                        option.description
+                                    )));
+                                }
+                                if q.options.len() > 5 {
+                                    lines.push(Line::from("  ..."));
+                                }
+                            }
+                            let custom_display = if q.custom_input.trim().is_empty() {
+                                "Type your answer here..."
+                            } else {
+                                q.custom_input.trim()
+                            };
+                            let (box_top, box_mid, box_bottom) =
+                                ascii_input_box(custom_display, 44);
+                            lines.push(Line::from("Answer:"));
+                            lines.push(Line::from(box_top));
+                            lines.push(Line::from(box_mid));
+                            lines.push(Line::from(box_bottom));
+                            lines.push(Line::from(
+                                "Keys: Left/Right option, Space toggle, 1..9, type answer, Backspace, Enter next/submit, R reject",
+                            ));
+                        } else {
+                            lines.push(Line::from("Question request has no prompts."));
+                        }
+                    }
+                }
+
+                let panel = Paragraph::new(Text::from(lines))
+                    .wrap(Wrap { trim: true })
+                    .block(request_block);
+                f.render_widget(panel, request_area);
+            }
+        }
+
         // Status bar
         let mode_str = format!("{:?}", app.current_mode);
         let provider_str = app.current_provider.as_deref().unwrap_or("not configured");
@@ -494,10 +631,13 @@ fn draw_chat(f: &mut Frame, app: &App) {
         f.render_widget(status_widget, status_chunk);
 
         if let Some(modal_state) = modal {
+            if matches!(modal_state, ModalState::RequestCenter) {
+                return;
+            }
             let area = centered_rect(58, 34, f.area());
             f.render_widget(Clear, area);
             let text = match modal_state {
-                ModalState::Help => "Keys:\nF1 Help\nTab/Shift+Tab switch agent\nAlt+1..9 jump agent\nCtrl+N new agent\nCtrl+W close agent\nCtrl+C cancel active run\nAlt+G toggle grid\nAlt+R open request center\nAlt+S / Alt+B demo streams\nShift+Enter newline\nEsc close modal/input\nCtrl+X quit",
+                ModalState::Help => "Keys:\nF1 Help\nTab/Shift+Tab switch agent\nAlt+1..9 jump agent\nCtrl+N new agent\nCtrl+W close agent\nCtrl+C cancel active run\nAlt+M cycle mode\nAlt+G toggle grid\nAlt+R open request center\nAlt+S / Alt+B demo streams\nShift+Enter newline\nEsc close modal/input\nCtrl+X quit",
                 ModalState::ConfirmCloseAgent { target_agent_id } => {
                     if target_agent_id.is_empty() {
                         "Close active agent and discard draft? (Y/N)"
@@ -506,6 +646,7 @@ fn draw_chat(f: &mut Frame, app: &App) {
                     }
                 }
                 ModalState::RequestCenter => "Request center",
+                ModalState::PlanFeedbackWizard => "Plan feedback wizard",
             };
             let popup_block = Block::default()
                 .title(" Modal ")
@@ -515,12 +656,6 @@ fn draw_chat(f: &mut Frame, app: &App) {
             let popup = if matches!(modal_state, ModalState::RequestCenter) {
                 if let Some(request) = pending_requests.get(*request_cursor) {
                     if let PendingRequestKind::Permission(permission) = &request.kind {
-                        let args_preview = permission
-                            .args
-                            .as_ref()
-                            .map(|args| args.to_string())
-                            .unwrap_or_else(|| "{}".to_string());
-
                         let choice_chip =
                             |idx: usize, label: &str, active: usize| -> Span<'static> {
                                 if idx == active {
@@ -548,24 +683,22 @@ fn draw_chat(f: &mut Frame, app: &App) {
                         ]);
 
                         let mode_name = format!("{:?}", app.current_mode);
-                        let why = permission_reason(&permission.tool, &mode_name);
+                        let canonical_tool = canonical_tool_name(&permission.tool);
                         let mut lines = vec![
                             Line::from(format!(
-                                "Pending request {}/{}",
+                                "Request {}/{}  |  Permission",
                                 request_cursor + 1,
                                 pending_requests.len()
                             )),
-                            Line::from(format!(
-                                "Session: {} | Agent: {}",
-                                request.session_id, request.agent_id
-                            )),
-                            Line::from("Type: Permission"),
                             Line::from(format!("Mode: {}", mode_name)),
-                            Line::from(format!("Tool: {}", permission.tool)),
-                            Line::from(format!("Request ID: {}", permission.id)),
-                            Line::from(format!("Args: {}", args_preview)),
-                            Line::from(format!("Why this permission: {}", why)),
+                            Line::from(format!("Tool: {}", canonical_tool)),
                         ];
+
+                        for arg_line in
+                            format_permission_args(&permission.tool, permission.args.as_ref())
+                        {
+                            lines.push(Line::from(arg_line));
+                        }
 
                         if permission.tool.eq_ignore_ascii_case("question") {
                             let prompts = extract_permission_questions(permission.args.as_ref());
@@ -621,23 +754,28 @@ fn draw_chat(f: &mut Frame, app: &App) {
                                     ));
                                 }
                                 let custom_display = if q.custom_input.trim().is_empty() {
-                                    "<none>"
+                                    "Type your answer here..."
                                 } else {
                                     q.custom_input.trim()
                                 };
+                                let (box_top, box_mid, box_bottom) =
+                                    ascii_input_box(custom_display, 52);
+                                let options_section = if options.is_empty() {
+                                    "Choices: none (free-form answer expected)\n".to_string()
+                                } else {
+                                    format!("Choices (toggle with Space):\n{}", options)
+                                };
                                 format!(
-                                    "Pending request {}/{}\nSession: {} | Agent: {}\nType: Question\nRequest ID: {}\n\nQuestion {}/{}: {}\n{}\n{}\nCustom: {}\n\nKeys: Up/Down request, Left/Right option, Space toggle, 1..9 quick toggle, type custom text, Backspace edit, Enter next/submit, R reject, Esc close",
+                                    "Request {}/{}  |  Question {}/{}\n\nAI asks:\n{}\n\n{}\nType your answer in the box below:\n{}\n{}\n{}\n\nKeys: Up/Down request, Left/Right option, Space toggle, 1..9 quick toggle, type answer, Backspace edit, Enter next/submit, R reject, Esc close",
                                     request_cursor + 1,
                                     pending_requests.len(),
-                                    request.session_id,
-                                    request.agent_id,
-                                    question.id,
                                     question.question_index + 1,
                                     question.questions.len(),
-                                    q.header,
                                     q.question,
-                                    options,
-                                    custom_display
+                                    options_section,
+                                    box_top,
+                                    box_mid,
+                                    box_bottom
                                 )
                             } else {
                                 "Question request has no prompts.".to_string()
@@ -654,6 +792,68 @@ fn draw_chat(f: &mut Frame, app: &App) {
                         .wrap(Wrap { trim: true })
                         .block(popup_block)
                 }
+            } else if matches!(modal_state, ModalState::PlanFeedbackWizard) {
+                let field_line = |idx: usize, label: &str, value: &str, cursor: usize| {
+                    let marker = if idx == cursor { ">" } else { " " };
+                    let shown = if value.trim().is_empty() {
+                        "<empty>".to_string()
+                    } else {
+                        value.to_string()
+                    };
+                    Line::from(format!("{} {}: {}", marker, label, shown))
+                };
+
+                let mut lines = vec![
+                    Line::from("Guided feedback for newly proposed plan tasks"),
+                    Line::from(""),
+                    Line::from("Task preview:"),
+                ];
+                if plan_wizard.task_preview.is_empty() {
+                    lines.push(Line::from("  (no task preview)"));
+                } else {
+                    for (idx, task) in plan_wizard.task_preview.iter().take(8).enumerate() {
+                        lines.push(Line::from(format!("  {}. {}", idx + 1, task)));
+                    }
+                }
+                lines.push(Line::from(""));
+                lines.push(field_line(
+                    0,
+                    "Plan name (optional)",
+                    &plan_wizard.plan_name,
+                    plan_wizard.cursor_step,
+                ));
+                lines.push(field_line(
+                    1,
+                    "Scope",
+                    &plan_wizard.scope,
+                    plan_wizard.cursor_step,
+                ));
+                lines.push(field_line(
+                    2,
+                    "Constraints",
+                    &plan_wizard.constraints,
+                    plan_wizard.cursor_step,
+                ));
+                lines.push(field_line(
+                    3,
+                    "Priorities",
+                    &plan_wizard.priorities,
+                    plan_wizard.cursor_step,
+                ));
+                lines.push(field_line(
+                    4,
+                    "Notes",
+                    &plan_wizard.notes,
+                    plan_wizard.cursor_step,
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::from(
+                    "Keys: Tab/Down next field, Shift+Tab/Up previous, type to edit, Backspace delete, Enter send, Esc close",
+                ));
+
+                Paragraph::new(Text::from(lines))
+                    .wrap(Wrap { trim: true })
+                    .block(popup_block)
             } else {
                 Paragraph::new(text)
                     .wrap(Wrap { trim: true })
@@ -699,27 +899,6 @@ fn draw_status_bar(f: &mut Frame, app: &App) {
     f.render_widget(status_widget, status_chunk);
 }
 
-fn permission_reason(tool: &str, mode: &str) -> &'static str {
-    match tool {
-        "question" => "The agent wants to ask you one or more clarification questions.",
-        "task" | "todo_write" | "todowrite" | "update_todo_list" | "new_task" => {
-            if mode.eq_ignore_ascii_case("Plan") {
-                "Plan mode uses task/todo tools to propose or update structured steps."
-            } else {
-                "The agent wants to track or update a task/todo item."
-            }
-        }
-        "bash" | "run_command" => "The agent wants to run a shell command.",
-        "read" | "glob" | "grep" | "codesearch" | "search" | "ls" | "list" => {
-            "The agent wants to inspect workspace files."
-        }
-        "websearch" | "webfetch" | "webfetch_document" => {
-            "The agent wants to retrieve information from the web."
-        }
-        _ => "The agent requested a tool call that needs your approval.",
-    }
-}
-
 fn extract_permission_questions(args: Option<&serde_json::Value>) -> Vec<String> {
     let Some(args) = args else {
         return Vec::new();
@@ -732,6 +911,174 @@ fn extract_permission_questions(args: Option<&serde_json::Value>) -> Vec<String>
         .filter_map(|item| item.get("question").and_then(|q| q.as_str()))
         .map(|s| s.to_string())
         .collect()
+}
+
+fn estimate_request_panel_height(request: &crate::app::PendingRequest) -> usize {
+    match &request.kind {
+        PendingRequestKind::Permission(permission) => {
+            let mut lines = 6usize;
+            let arg_lines = format_permission_args(&permission.tool, permission.args.as_ref());
+            lines += arg_lines.len().min(8);
+            lines
+        }
+        PendingRequestKind::Question(question) => {
+            let mut lines = 8usize;
+            if let Some(q) = question.questions.get(question.question_index) {
+                lines += q.options.len().min(5);
+            }
+            lines
+        }
+    }
+}
+
+fn format_permission_args(tool: &str, args: Option<&serde_json::Value>) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(args) = args else {
+        lines.push("Args: {}".to_string());
+        return lines;
+    };
+
+    let parsed_todos = if is_task_tool(tool) {
+        extract_task_like_items(args)
+    } else {
+        Vec::new()
+    };
+
+    if !parsed_todos.is_empty() {
+        if is_todo_write_tool(tool) {
+            lines.push(format!(
+                "AI proposed {} planning task(s):",
+                parsed_todos.len()
+            ));
+            for (idx, (content, _status)) in parsed_todos.iter().enumerate().take(5) {
+                lines.push(format!("  {}. {}", idx + 1, content));
+            }
+            if parsed_todos.len() > 5 {
+                lines.push(format!("  ... and {} more", parsed_todos.len() - 5));
+            }
+            lines.push("Hint: Approve to refine with guided plan feedback.".to_string());
+        } else {
+            lines.push("Planned tasks:".to_string());
+            for (idx, (content, status)) in parsed_todos.iter().enumerate().take(10) {
+                lines.push(format!("  {}. [{}] {}", idx + 1, status, content));
+            }
+            if parsed_todos.len() > 10 {
+                lines.push(format!("  ... and {} more", parsed_todos.len() - 10));
+            }
+        }
+        return lines;
+    }
+
+    if is_todo_write_tool(tool) {
+        lines.push("AI is proposing plan tasks via todowrite.".to_string());
+        lines.push("Hint: Approve to open guided feedback.".to_string());
+        return lines;
+    }
+
+    if is_task_tool(tool) {
+        let description = args
+            .get("description")
+            .or_else(|| args.get("content"))
+            .or_else(|| args.get("title"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let goal = args
+            .get("prompt")
+            .or_else(|| args.get("goal"))
+            .or_else(|| args.get("query"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        if description.is_some() || goal.is_some() {
+            if let Some(d) = description {
+                lines.push(format!("Task: {}", d));
+            }
+            if let Some(g) = goal {
+                lines.push(format!("Goal: {}", g));
+            }
+            return lines;
+        }
+    }
+
+    let pretty = serde_json::to_string_pretty(args).unwrap_or_else(|_| args.to_string());
+    lines.push("Args:".to_string());
+    for line in pretty.lines().take(14) {
+        lines.push(format!("  {}", line));
+    }
+    if pretty.lines().count() > 14 {
+        lines.push("  ...".to_string());
+    }
+    lines
+}
+
+fn is_task_tool(tool: &str) -> bool {
+    matches!(
+        canonical_tool_name(tool).as_str(),
+        "task" | "todo_write" | "todowrite" | "update_todo_list" | "new_task"
+    )
+}
+
+fn is_todo_write_tool(tool: &str) -> bool {
+    matches!(
+        canonical_tool_name(tool).as_str(),
+        "todo_write" | "todowrite" | "update_todo_list"
+    )
+}
+
+fn canonical_tool_name(tool: &str) -> String {
+    tool.rsplit('.')
+        .next()
+        .unwrap_or(tool)
+        .trim()
+        .to_lowercase()
+        .replace('-', "_")
+}
+
+fn extract_task_like_items(args: &serde_json::Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let arrays = [
+        args.get("todos").and_then(|v| v.as_array()),
+        args.get("tasks").and_then(|v| v.as_array()),
+        args.get("steps").and_then(|v| v.as_array()),
+        args.get("items").and_then(|v| v.as_array()),
+    ];
+    for arr in arrays.into_iter().flatten() {
+        for item in arr {
+            if let Some(obj) = item.as_object() {
+                let content = obj
+                    .get("content")
+                    .or_else(|| obj.get("description"))
+                    .or_else(|| obj.get("title"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if content.is_empty() {
+                    continue;
+                }
+                let status = obj
+                    .get("status")
+                    .or_else(|| obj.get("state"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("pending")
+                    .trim();
+                out.push((content.to_string(), status.to_string()));
+            }
+        }
+    }
+    out
+}
+
+fn ascii_input_box(content: &str, width: usize) -> (String, String, String) {
+    let inner_width = width.max(8);
+    let trimmed = content.trim();
+    let shown = trimmed.chars().take(inner_width).collect::<String>();
+    let padded = format!("{shown:<inner_width$}");
+    let top = format!("+{}+", "-".repeat(inner_width));
+    let mid = format!("|{}|", padded);
+    let bottom = top.clone();
+    (top, mid, bottom)
 }
 
 fn draw_connecting(f: &mut Frame, app: &App) {
@@ -775,17 +1122,37 @@ fn draw_connecting(f: &mut Frame, app: &App) {
     let frame_idx = (app.tick_count / speed_mod) % engine_frames.len();
     let current_frame = &engine_frames[frame_idx];
 
-    // RPM Gauge
-    let cycle = 20;
-    let step = app.tick_count % cycle;
-    let rev_level = if step < cycle / 2 { step } else { cycle - step };
-    let bar_width = 15;
-    let filled = (rev_level * bar_width) / 10;
-    let gauge = format!("[{:<15}]", "=".repeat(filled));
-    let gauge_color = if filled > 10 {
-        Color::Red
+    let bar_width = 24usize;
+    let animated_fill = (app.tick_count % (bar_width + 1)).min(bar_width);
+    let (filled, status_text) = match app.engine_download_total_bytes {
+        Some(total) if total > 0 => {
+            let ratio = (app.engine_downloaded_bytes as f64 / total as f64).clamp(0.0, 1.0);
+            let done = (ratio * bar_width as f64).round() as usize;
+            (
+                done.min(bar_width),
+                format!(
+                    "{:.0}% ({} / {} MB)",
+                    ratio * 100.0,
+                    app.engine_downloaded_bytes / (1024 * 1024),
+                    total / (1024 * 1024)
+                ),
+            )
+        }
+        _ if app.engine_download_active => (
+            animated_fill,
+            format!("{} KB downloaded", app.engine_downloaded_bytes / 1024),
+        ),
+        _ => (animated_fill, "Waiting...".to_string()),
+    };
+    let gauge = format!(
+        "[{}{}]",
+        "=".repeat(filled),
+        " ".repeat(bar_width.saturating_sub(filled))
+    );
+    let gauge_color = if filled >= (bar_width * 2 / 3) {
+        Color::LightGreen
     } else {
-        Color::Green
+        Color::Yellow
     };
 
     let mut lines = Vec::new();
@@ -812,7 +1179,7 @@ fn draw_connecting(f: &mut Frame, app: &App) {
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("RPM: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Download: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             gauge,
             Style::default()
@@ -820,6 +1187,22 @@ fn draw_connecting(f: &mut Frame, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
+    lines.push(Line::from(vec![Span::styled(
+        status_text,
+        Style::default().fg(Color::Gray),
+    )]));
+    if let Some(phase) = &app.engine_download_phase {
+        lines.push(Line::from(vec![Span::styled(
+            phase,
+            Style::default().fg(Color::DarkGray),
+        )]));
+    }
+    if let Some(last_error) = &app.engine_download_last_error {
+        lines.push(Line::from(vec![Span::styled(
+            format!("Last error: {}", last_error),
+            Style::default().fg(Color::Red),
+        )]));
+    }
     lines.push(Line::from(""));
 
     let content = Paragraph::new(lines).alignment(Alignment::Center).block(

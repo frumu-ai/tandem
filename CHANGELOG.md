@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Keystore Key Mapping**: TUI now normalizes legacy/local keystore key names (e.g. `openrouter_key`, `*_api_key`, `opencode_*_api_key`) to canonical provider IDs before syncing to engine config.
 - **Keystore -> Engine Sync**: On connect, TUI now syncs unlocked local keystore provider keys into engine provider config to keep desktop/TUI auth behavior consistent.
+- **TUI Startup Order**: Startup now performs engine bootstrap check/download before allowing transition to PIN entry, keeping users on the matrix/connect screen until engine install is ready.
+- **TUI Download UX**: Engine download view now shows byte-based progress (downloaded/total) with install phase text and last-error status on failures.
 - **Transcript Rendering**: Chat flow renderer now wraps long lines for readable error/output text in narrow terminals.
 - **Windows Dev Docs**: Expanded `ENGINE_TESTING.md` with PowerShell-safe build/copy/run commands and bash-vs-PowerShell clarity.
 - **TUI Keybinds/UX**: Grid toggle moved to `Alt+G`; request center added on `Alt+R`; scroll speed increased for line/page scrolling.
@@ -41,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Run Stream Stability**: Fixed run-scoped SSE handling so unrelated events do not prematurely terminate active stream processing.
 - **No-Response Completion Case**: Added explicit fallback error messaging when a run completes without streamed deltas or assistant content.
 - **Provider Auth in TUI**: Fixed a key-discovery mismatch that prevented existing desktop-stored keys from being recognized by TUI.
+- **Engine Download Retry in TUI**: Download failures no longer lock out retries for the remainder of the process; retry/backoff now allows recovery without restarting TUI.
+- **Debug Engine Bootstrap Fallback**: Debug builds now fall back to release download when no local dev engine binary is found.
+- **Keystore Corruption Routing**: Unreadable/corrupt keystore files now route to create/recovery behavior instead of trapping users in unlock failures.
 - **Request Visibility**: Replaced noisy in-transcript request activity lines with dedicated request/status UI.
 - **Permission Clarity in Plan Mode**: Request modal now shows mode/tool context and explains why permission is requested, including `tool: question` previews.
 - **Question Handling**: Added custom-answer support alongside multiple-choice options and fixed `permission(tool=question)` normalization into question-answer flow.
