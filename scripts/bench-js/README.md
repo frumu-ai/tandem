@@ -68,3 +68,51 @@ node bench_server.mjs ../urls.txt
 ```
 
 **Conclusion**: The Rust server implementation is the most performant, significantly outperforming both the Node.js implementation (**3x faster p50**) and the CLI-based invocation (**7x faster p50**), while maintaining extremely stable tail latencies and low memory usage. The overhead seen in the CLI benchmark is completely eliminated in server mode.
+
+## Server Feature Benchmark
+
+For broader server capabilities (not just `webfetch_document`), use:
+
+```bash
+npm run bench:features
+```
+
+This benchmark measures:
+
+- `health_burst`: `/global/health` throughput/latency under concurrency
+- `session_lifecycle`: create/get/delete session loop latency
+- `tool_execute_bash`: `/tool/execute` latency for deterministic bash commands
+- optional `sse_prompt_async`: async run + SSE first-event and completion timing
+
+### Common Env Vars
+
+```bash
+# Target server
+BENCH_HOST=127.0.0.1
+BENCH_PORT=39731
+
+# Start/stop engine automatically from this script
+BENCH_START_SERVER=1
+TANDEM_BIN=../../target/debug/tandem-engine.exe
+
+# Auth (if server requires token)
+BENCH_TOKEN=tk_...
+
+# Workload sizing
+BENCH_REQUESTS=200
+BENCH_CONCURRENCY=20
+BENCH_SESSION_LOOPS=80
+BENCH_TOOL_LOOPS=80
+
+# Optional SSE benchmark (requires provider + key)
+BENCH_ENABLE_SSE=1
+BENCH_SSE_RUNS=5
+BENCH_PROVIDER=openrouter
+BENCH_MODEL=openai/gpt-4o-mini
+BENCH_API_KEY=...
+```
+
+Reports are written to:
+
+- `bench_features_results.json`
+- `bench_features_results.tsv`

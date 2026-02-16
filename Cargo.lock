@@ -7323,6 +7323,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+ "tower-http",
  "tracing",
  "uuid",
 ]

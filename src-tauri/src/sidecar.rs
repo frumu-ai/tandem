@@ -2708,6 +2708,21 @@ impl SidecarManager {
         }
     }
 
+    /// Set runtime-only auth token for a provider on the engine sidecar.
+    pub async fn set_provider_auth(&self, provider_id: &str, api_key: &str) -> Result<()> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/auth/{}", self.base_url().await?, provider_id);
+        let response = self
+            .http_client
+            .put(&url)
+            .json(&serde_json::json!({ "apiKey": api_key }))
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to set provider auth: {}", e)))?;
+        let _: serde_json::Value = self.handle_response(response).await?;
+        Ok(())
+    }
+
     // ========================================================================
     // Skills
     // ========================================================================

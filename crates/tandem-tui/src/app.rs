@@ -515,7 +515,6 @@ impl App {
         let Some(keystore) = &self.keystore else {
             return 0;
         };
-        let mut providers = serde_json::Map::new();
         let mut synced = 0usize;
         for key_name in keystore.list_keys() {
             if let Ok(Some(api_key)) = keystore.get(&key_name) {
@@ -523,18 +522,11 @@ impl App {
                     continue;
                 }
                 let provider_id = Self::normalize_provider_id_from_keystore_key(&key_name);
-                providers.insert(provider_id, json!({ "api_key": api_key }));
-                synced += 1;
+                if client.set_auth(&provider_id, &api_key).await.is_ok() {
+                    synced += 1;
+                }
             }
         }
-        if synced == 0 {
-            return 0;
-        }
-        let _ = client
-            .patch_config(json!({
-                "providers": providers
-            }))
-            .await;
         synced
     }
 
@@ -6008,17 +6000,17 @@ MULTI-AGENT KEYS:
         };
         let mut patch = serde_json::Map::new();
         patch.insert("default_provider".to_string(), json!(provider_id));
-        if model_id.is_some() || api_key.is_some() {
+        if model_id.is_some() {
             let mut provider_patch = serde_json::Map::new();
             if let Some(model_id) = model_id {
                 provider_patch.insert("default_model".to_string(), json!(model_id));
             }
-            if let Some(api_key) = api_key {
-                provider_patch.insert("api_key".to_string(), json!(api_key));
-            }
             let mut providers = serde_json::Map::new();
             providers.insert(provider_id.to_string(), Value::Object(provider_patch));
             patch.insert("providers".to_string(), Value::Object(providers));
+        }
+        if let Some(api_key) = api_key {
+            let _ = client.set_auth(provider_id, api_key).await;
         }
         let _ = client.patch_config(Value::Object(patch)).await;
     }

@@ -4,6 +4,12 @@
 
 ### Highlights
 
+- **Keystore/runtime auth realignment**: Provider keys now flow through runtime auth (`PUT /auth/{provider}`) instead of config-secret patch paths.
+- **Config secret write blocking**: `PATCH /config` and `PATCH /global/config` now reject `api_key`/`apiKey` with `400 CONFIG_SECRET_REJECTED`.
+- **Desktop/TUI transport update**: Desktop and TUI now push provider keys from keystore to runtime auth on connect/start rather than persisting keys via config patch payloads.
+- **Plaintext persistence regression fixed**: Closed a beta gap where provider keys could appear in Tandem config files under certain flows.
+- **Browser API compatibility**: Added CORS support on engine HTTP endpoints so browser examples with `X-Tandem-Token` can pass preflight.
+
 - **Engine CLI concurrency mode**: Added `tandem-engine parallel` to run multiple prompts concurrently with explicit JSON task batches and bounded concurrency control.
 - **Engine CLI docs overhaul**: Added a bash/WSL-first `ENGINE_CLI.md` with practical examples for `run`, `tool`, `parallel`, and full `serve` + HTTP/SSE workflows.
 - **Engine communication reference**: Added `ENGINE_COMMUNICATION.md` documenting client/runtime topology, API/run lifecycle contracts, and observability paths.

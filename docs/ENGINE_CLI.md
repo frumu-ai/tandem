@@ -139,15 +139,15 @@ curl -s -X PUT "$API/auth/openai" \
   -d '{"apiKey":"YOUR_OPENAI_KEY"}'
 ```
 
-Persistent auth/config (recommended):
+Persistent provider defaults (safe):
 
-- `PATCH /config` with `providers.<id>.api_key`
-- This persists to the engine config file on disk.
+- `PATCH /config` for non-secret defaults only (for example `default_provider`, `default_model`).
+- `providers.<id>.api_key` is rejected by design.
 
 ```bash
 curl -s -X PATCH "$API/config" \
   -H 'content-type: application/json' \
-  -d '{"providers":{"openrouter":{"api_key":"YOUR_OPENROUTER_KEY","default_model":"openai/gpt-4o-mini"}},"default_provider":"openrouter"}' | jq .
+  -d '{"default_provider":"openrouter","providers":{"openrouter":{"default_model":"openai/gpt-4o-mini"}}}' | jq .
 ```
 
 Verify configured providers:
@@ -156,13 +156,10 @@ Verify configured providers:
 curl -s "$API/config/providers" | jq .
 ```
 
-Optional: set default provider/model:
+Attempting to write secret keys via config now returns:
 
-```bash
-curl -s -X PATCH "$API/config" \
-  -H 'content-type: application/json' \
-  -d '{"default_provider":"openrouter","providers":{"openrouter":{"default_model":"openai/gpt-4o-mini"}}}' | jq .
-```
+- `400 CONFIG_SECRET_REJECTED`
+- Use `PUT /auth/{provider}` or environment variables instead.
 
 Delete a provider key:
 

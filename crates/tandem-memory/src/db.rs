@@ -315,8 +315,7 @@ impl MemoryDatabase {
                 let probe_sql = format!(
                     "SELECT chunk_id, distance
                      FROM {}
-                     WHERE embedding MATCH ?1 AND k = 1
-                     LIMIT 1",
+                     WHERE embedding MATCH ?1 AND k = 1",
                     table
                 );
                 let mut stmt = conn.prepare(&probe_sql)?;

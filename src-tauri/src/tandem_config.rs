@@ -179,8 +179,21 @@ pub fn ensure_schema(cfg: &mut Value) {
     let Some(obj) = cfg.as_object_mut() else {
         return;
     };
-    obj.entry("$schema".to_string())
-        .or_insert_with(|| Value::String("https://tandem.frumu.ai/config.json".to_string()));
+    match obj.get("$schema") {
+        Some(Value::String(current)) if current.trim() == "https://tandem.frumu.ai/config.json" => {
+            obj.insert(
+                "$schema".to_string(),
+                Value::String("./config.schema.json".to_string()),
+            );
+        }
+        Some(_) => {}
+        None => {
+            obj.insert(
+                "$schema".to_string(),
+                Value::String("./config.schema.json".to_string()),
+            );
+        }
+    }
 }
 
 pub fn set_provider_ollama_models(cfg: &mut Value, models: Value) {
