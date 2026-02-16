@@ -1632,6 +1632,42 @@ async fn sync_provider_keys_env(app: &AppHandle, state: &AppState, config: &Prov
     }
 }
 
+async fn sync_provider_keys_runtime_auth(
+    app: &AppHandle,
+    state: &AppState,
+    config: &ProvidersConfig,
+) {
+    if !matches!(state.sidecar.state().await, SidecarState::Running) {
+        return;
+    }
+
+    if config.openrouter.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "openrouter").await {
+            let _ = state.sidecar.set_provider_auth("openrouter", &key).await;
+        }
+    }
+    if config.opencode_zen.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "opencode_zen").await {
+            let _ = state.sidecar.set_provider_auth("zen", &key).await;
+        }
+    }
+    if config.anthropic.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "anthropic").await {
+            let _ = state.sidecar.set_provider_auth("anthropic", &key).await;
+        }
+    }
+    if config.openai.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "openai").await {
+            let _ = state.sidecar.set_provider_auth("openai", &key).await;
+        }
+    }
+    if config.poe.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "poe").await {
+            let _ = state.sidecar.set_provider_auth("poe", &key).await;
+        }
+    }
+}
+
 /// Set the providers configuration
 #[tauri::command]
 pub async fn set_providers_config(
@@ -1679,6 +1715,7 @@ pub async fn set_providers_config(
                 .sidecar
                 .restart(sidecar_path.to_string_lossy().as_ref())
                 .await?;
+            sync_provider_keys_runtime_auth(&app, &state, &config).await;
         }
     }
 
@@ -1748,6 +1785,9 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
         .sidecar
         .start(sidecar_path.to_string_lossy().as_ref())
         .await?;
+
+    // Push runtime-only provider auth immediately after sidecar startup.
+    sync_provider_keys_runtime_auth(&app, &state, &providers).await;
 
     if let Ok(health) = state.sidecar.startup_health().await {
         let expected_build_id = expected_engine_build_id();

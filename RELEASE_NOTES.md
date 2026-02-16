@@ -11,6 +11,11 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Engine CLI: Added `parallel` command for concurrent prompt execution with structured JSON task input/output.
 - Docs: Added `docs/ENGINE_CLI.md` (bash/WSL-first) and `docs/ENGINE_COMMUNICATION.md` with end-to-end serve/API/SSE flows.
 - Security: Added engine API token auth hardening with keychain-first token persistence, desktop masked/reveal/copy controls, and TUI `/engine token` commands.
+- Security: Fixed provider key drift by routing auth to runtime-only `/auth/{provider}` handling instead of config-secret persistence.
+- Security: `PATCH /config` and `PATCH /global/config` now reject `api_key`/`apiKey` fields with `400 CONFIG_SECRET_REJECTED`.
+- Security: TUI and desktop now sync provider keys from keystore to runtime auth (`/auth`) instead of writing keys through config patches.
+- Security: Fixed a beta regression where provider keys could appear in plaintext in Tandem config files in specific config-patch flows.
+- Networking: Added CORS handling to engine HTTP routes for browser clients using custom auth headers (`X-Tandem-Token`).
 
 - Plan Mode: Fixed `todowrite` empty-argument loops (`todo list updated: 0 items`) by normalizing common todo payload shapes and skipping true empty calls.
 - Plan Mode: Added structured clarification fallback (`question.asked`) when no concrete task list can be produced, instead of leaving planning in prose-only follow-up.

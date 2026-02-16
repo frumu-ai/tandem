@@ -6,7 +6,7 @@ use std::time::Duration;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::header::{self, HeaderValue};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
@@ -22,6 +22,7 @@ use tandem_skills::{SkillLocation, SkillService, SkillsConflictPolicy};
 use tokio::process::Command;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 use tandem_types::{
@@ -297,6 +298,11 @@ async fn execute_tool(
 }
 
 fn app_router(state: AppState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     Router::new()
         .route("/global/health", get(global_health))
         .route("/global/event", get(events))
@@ -452,12 +458,16 @@ fn app_router(state: AppState) -> Router {
         .route("/instance/dispose", post(instance_dispose))
         .route("/log", post(push_log))
         .route("/doc", get(openapi_doc))
+        .layer(cors)
         .layer(middleware::from_fn_with_state(state.clone(), startup_gate))
         .layer(middleware::from_fn_with_state(state.clone(), auth_gate))
         .with_state(state)
 }
 
 async fn auth_gate(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if request.method() == Method::OPTIONS {
+        return next.run(request).await;
+    }
     let path = request.uri().path();
     if path == "/global/health" {
         return next.run(request).await;
@@ -511,6 +521,9 @@ fn extract_request_token(headers: &HeaderMap) -> Option<String> {
 }
 
 async fn startup_gate(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if request.method() == Method::OPTIONS {
+        return next.run(request).await;
+    }
     if request.uri().path() == "/global/health" {
         return next.run(request).await;
     }
@@ -2172,51 +2185,107 @@ async fn provider_oauth_authorize() -> Json<Value> {
 async fn provider_oauth_callback() -> Json<Value> {
     Json(json!({"ok": true}))
 }
+
+fn redact_secret_fields(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, field) in map.iter_mut() {
+                if key.eq_ignore_ascii_case("api_key") || key.eq_ignore_ascii_case("apikey") {
+                    *field = Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_secret_fields(field);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                redact_secret_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redacted(mut value: Value) -> Value {
+    redact_secret_fields(&mut value);
+    value
+}
+
+fn contains_secret_config_fields(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.iter().any(|(key, field)| {
+            key.eq_ignore_ascii_case("api_key")
+                || key.eq_ignore_ascii_case("apikey")
+                || contains_secret_config_fields(field)
+        }),
+        Value::Array(items) => items.iter().any(contains_secret_config_fields),
+        _ => false,
+    }
+}
+
 async fn get_config(State(state): State<AppState>) -> Json<Value> {
+    let effective = redacted(state.config.get_effective_value().await);
+    let layers = redacted(state.config.get_layers_value().await);
     Json(json!({
-        "effective": state.config.get_effective_value().await,
-        "layers": state.config.get_layers_value().await
+        "effective": effective,
+        "layers": layers
     }))
 }
-async fn patch_config(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, StatusCode> {
-    let effective = state
-        .config
-        .patch_project(input)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+async fn patch_config(State(state): State<AppState>, Json(input): Json<Value>) -> Response {
+    if contains_secret_config_fields(&input) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+            "error": "Secret provider keys are not accepted in config patches.",
+            "code": "CONFIG_SECRET_REJECTED",
+            "hint": "Use PUT /auth/{provider} or environment variables."
+            })),
+        )
+            .into_response();
+    }
+    let effective = match state.config.patch_project(input).await {
+        Ok(effective) => effective,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     state
         .providers
         .reload(state.config.get().await.into())
         .await;
-    Ok(Json(json!({ "effective": effective })))
+    Json(json!({ "effective": redacted(effective) })).into_response()
 }
 async fn global_config(State(state): State<AppState>) -> Json<Value> {
+    let global = redacted(state.config.get_global_value().await);
+    let effective = redacted(state.config.get_effective_value().await);
     Json(json!({
-        "global": state.config.get_global_value().await,
-        "effective": state.config.get_effective_value().await
+        "global": global,
+        "effective": effective
     }))
 }
-async fn global_config_patch(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, StatusCode> {
-    let effective = state
-        .config
-        .patch_global(input)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+async fn global_config_patch(State(state): State<AppState>, Json(input): Json<Value>) -> Response {
+    if contains_secret_config_fields(&input) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+            "error": "Secret provider keys are not accepted in global config patches.",
+            "code": "CONFIG_SECRET_REJECTED",
+            "hint": "Use PUT /auth/{provider} or environment variables."
+            })),
+        )
+            .into_response();
+    }
+    let effective = match state.config.patch_global(input).await {
+        Ok(effective) => effective,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     state
         .providers
         .reload(state.config.get().await.into())
         .await;
-    Ok(Json(json!({ "effective": effective })))
+    Json(json!({ "effective": redacted(effective) })).into_response()
 }
 async fn config_providers(State(state): State<AppState>) -> Json<Value> {
     let cfg = state.config.get_effective_value().await;
-    let providers = cfg.get("providers").cloned().unwrap_or_else(|| json!({}));
+    let providers = redacted(cfg.get("providers").cloned().unwrap_or_else(|| json!({})));
     let default_provider = cfg.get("default_provider").cloned().unwrap_or(Value::Null);
     Json(json!({
         "providers": providers,
@@ -2663,13 +2732,41 @@ async fn set_auth(
     Path(id): Path<String>,
     Json(input): Json<AuthInput>,
 ) -> Json<Value> {
-    let token = input.token.unwrap_or_default();
-    state.auth.write().await.insert(id.clone(), token);
-    Json(json!({"ok": true, "id": id}))
+    let token = input.token.unwrap_or_default().trim().to_string();
+    if token.is_empty() {
+        return Json(json!({"ok": false, "error": "token cannot be empty"}));
+    }
+
+    // Keep legacy in-memory auth map for compatibility while runtime config
+    // becomes the canonical provider-key source.
+    state.auth.write().await.insert(id.clone(), token.clone());
+
+    let patch = json!({
+        "providers": {
+            id.clone(): {
+                "api_key": token
+            }
+        }
+    });
+    let ok = state.config.patch_runtime(patch).await.is_ok();
+    if ok {
+        state
+            .providers
+            .reload(state.config.get().await.into())
+            .await;
+    }
+    Json(json!({"ok": ok, "id": id}))
 }
 async fn delete_auth(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     let removed = state.auth.write().await.remove(&id).is_some();
-    Json(json!({"ok": removed}))
+    let runtime_removed = state.config.delete_runtime_provider_key(&id).await.is_ok();
+    if runtime_removed {
+        state
+            .providers
+            .reload(state.config.get().await.into())
+            .await;
+    }
+    Json(json!({"ok": removed || runtime_removed}))
 }
 
 async fn set_api_token(

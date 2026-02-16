@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "bench:server": "node bench_server.mjs ../urls.txt",
+    "bench:features": "node bench_server_features.mjs"
   },
   "keywords": [],
   "author": "",

@@ -15,6 +15,28 @@ Currently, the orchestration logic is embedded in the Tauri application:
 - **Event Streaming**: `tandem/src-tauri/src/stream_hub.rs` relies on Tauri's event emitter.
 - **Agent Definitions**: `tandem/crates/tandem-core/src/agents.rs` contains basic definitions but lacks the full runtime context.
 
+## Codebase Reality Check (Verified)
+
+This section reflects what exists today and what is still aspirational.
+
+### Exists Today
+
+- **Engine event model**: `EngineEvent` is a typed envelope with `type` and `properties` in `tandem/crates/tandem-types/src/event.rs`.
+- **SSE streams**: Engine SSE endpoints exist in `tandem/crates/tandem-server/src/http.rs` (`/event` plus run-specific streaming helpers).
+- **Session/run lifecycle**: Sessions + run status are persisted in `tandem/crates/tandem-core/src/storage.rs` and emitted through `tandem/crates/tandem-core/src/engine_loop.rs`.
+- **Tool system**: Tool schemas + execution live in `tandem/crates/tandem-tools/src/lib.rs`, with permission gates in `tandem/crates/tandem-core/src/engine_loop.rs`.
+- **Skills registry**: Skill storage/import/listing is implemented in `tandem/crates/tandem-skills/src/lib.rs` and exposed via `/skills` endpoints in `tandem/crates/tandem-server/src/http.rs`.
+- **Memory store**: Vector memory uses SQLite + sqlite-vec in `tandem/crates/tandem-memory/src/db.rs` with tiers for `session`, `project`, and `global` (no team/curated tiers yet).
+- **Leases**: Engine lease endpoints exist in `tandem/crates/tandem-server/src/http.rs` and are used by TUI in `tandem/crates/tandem-tui/src/net/client.rs`.
+- **Multi-agent orchestration**: A full orchestrator exists in `tandem/src-tauri/src/orchestrator/*` and is Desktop-specific today.
+
+### Not Implemented Yet (Only Proposed)
+
+- **Shared resources/blackboard**: No `/resource` API or shared resource store exists today.
+- **Routines/cron**: No scheduler or routine endpoints exist today.
+- **Mission abstraction in engine**: The orchestrator is not in a shared crate and is not engine-native yet.
+- **Team/curated memory tiers**: Only session/project/global are implemented.
+
 ## Control Center Dashboard Spec ("Spaceship" Aesthetic)
 
 The UI should feel like the cockpit of a sci-fi ship, giving the user a sense of command and visibility.
@@ -41,7 +63,7 @@ Agents are composed of two parts:
 **Assignment Flow**:
 
 1.  **Select Crew Member**: Pick an agent from the roster.
-2.  **Equip Modules**: Drag-and-drop skills from the `tandem/crates/tandem-core/src/skills.rs` registry.
+2.  **Equip Modules**: Drag-and-drop skills from the Skills registry (`tandem/crates/tandem-skills/src/lib.rs`) surfaced via `/skills` endpoints.
     - _Example_: Equip "Filesystem" skill to allow reading/writing files.
     - _Example_: Equip "GitHub" skill to allow making PRs.
 3.  **Set Directives**: Edit the system prompt to define their behavior (e.g., "You are a cautious security officer. Verification is your top priority.").
@@ -183,3 +205,275 @@ Events (SSE/Channel):
 - `TeamStateChanged`
 - `MissionProgress` (Task constraints)
 - `AgentAction` (Tool call)
+
+## SUPER_ORCHESTRATOR Merge (Filtered for Current Reality)
+
+The following ideas are compatible with the repo but are not implemented yet. They should be treated as a roadmap, not current behavior.
+
+### Engine vs UI Boundary (Proposed)
+
+- **Engine owns**: durable state (missions/work items/approvals), orchestration runtime, capability enforcement, SSE streams, skills + MCP + provider routing, audit events.
+- **Desktop/TUI owns**: command center UX, approval workflows, filters/search, device integrations.
+
+### Orchestrator Abstraction (Proposed)
+
+- Reducer model: `init(spec) -> state` and `on_event(state, event) -> Vec<Command>`.
+- Event types should mirror existing `EngineEvent` envelopes and reuse `sessionID/runID` naming.
+- Commands should map to existing engine APIs (start run, call tool, request approval), not invent new side channels.
+
+### Shared Resources / Blackboard (Not Yet Built)
+
+- No `/resource` API exists today; would need new server endpoints and a durable store.
+- Existing leases in `/global/lease/*` can be extended for locks/TTL if a resource store is added.
+
+### Memory Tiers (Partially Implemented)
+
+- Implemented: `session`, `project`, `global` in `tandem-memory`.
+- Proposed: `team` and `curated` tiers, with explicit promotion and review gates.
+
+### Routines / Cron (Not Yet Built)
+
+- No scheduler or routine endpoints exist today; would require new state, persistence, and event emission.
+
+## new ideas
+
+# Mission: Tandem Autonomous Missions + Orchestrator + Shared Resources + Memory + Routines (Cron) + Packaging
+
+You are a senior Rust systems architect working inside the Tandem monorepo. Your job is to propose a concrete, implementation-ready architecture for **autonomous missions** (long-living agent workflows) that are:
+
+- **engine-first** (headless, reusable by other developers)
+- **multi-client** (Desktop + TUI + optional future web)
+- **watchable** (command & control center UX backed by SSE/WS streams)
+- **safe** (capabilities, approvals, auditability)
+- **durable** (survives restarts, replayable)
+- **team/LAN ready** (multi-tenant guardrails)
+
+You must base your proposal on the actual code and existing patterns in this repo (event bus, SSE, tools runtime, memory, leases, MCP, etc). Prefer minimal changes that reuse existing primitives.
+
+---
+
+## 0) Constraints / Non-goals
+
+- Do NOT redesign the entire engine. Extend existing systems.
+- Do NOT put “truth” into vector memory. Vector store is for semantic recall only.
+- The engine must remain usable headlessly, and frontends should remain clients.
+- Assume the engine may run on a LAN server used by multiple team members.
+
+---
+
+## 1) First: Repo reconnaissance (required)
+
+Scan the repo to locate and summarize:
+
+- Engine event types / SSE streaming payload shape (e.g., EngineEvent)
+- Session + run lifecycle endpoints
+- Existing “leases” mechanism (if any)
+- Tool system + tool schemas + any existing policy/permission model
+- Memory / vector store APIs (e.g., memory_search) and storage tiers
+- Skills registry (import/export)
+- MCP registry/connect code paths
+- TUI integration points (if it already talks to engine via HTTP/SSE)
+
+Output: a short “Current State Map” section referencing file paths.
+
+---
+
+## 2) Deliverable A: Engine vs UI boundary (platform split)
+
+Produce a definitive boundary table and rationale.
+
+### Engine MUST own (platform)
+
+- durable state: missions, work items, approvals, shared resources
+- execution: tool runtime + agent runs + orchestration runtime
+- enforcement: capabilities + policy + sandbox boundaries
+- streaming: typed event streams for runs + missions + resources
+- extensibility: skills + MCP + provider routing
+- auditability: who did what, from where, when
+
+### Desktop/TUI MUST own (experience)
+
+- Command & Control Center UX (kanban view, swarm view, timeline, diff viewer)
+- Approve/reject UI, filters, search, layouts, hotkeys, onboarding
+- device integrations (notifications, clipboard, file pickers)
+
+Include “litmus tests” for future decisions.
+
+Output: `docs/design/ENGINE_VS_UI.md`
+
+---
+
+## 3) Deliverable B: Orchestrator abstraction (handles ANY mission type)
+
+Design the orchestrator as an **Event → State → Command** reducer loop (deterministic, replayable).
+
+### Requirements
+
+- Orchestrator does not “do” work directly.
+- Orchestrator consumes events, updates mission state, emits commands the engine executes.
+- Must support multiple mission styles (kanban, research, coding, ops routines).
+
+Define:
+
+- `MissionSpec` (JSON/struct): goal, success criteria, budgets, capabilities, entrypoint
+- `MissionState` (durable)
+- `WorkItem` (generic task node; kanban is just a derived view)
+- `Event` types (mission/run/tool/approval/timer/resource events)
+- `Command` types (start run, call tool, request approval, schedule timer, persist artifact, emit notice)
+
+Provide a minimal trait interface:
+
+- `init(spec) -> state`
+- `on_event(state, event) -> Vec<Command>`
+
+Output: `docs/design/ORCHESTRATOR.md`
+
+---
+
+## 4) Deliverable C: The “Pal + Nerd → Board → Specialists → Reviewer → Tester” default orchestrator
+
+Design the default mission workflow as an orchestrator implementation, but keep it configurable.
+
+### Planning stage
+
+Two agents:
+
+- Pal (PM/coach): clarify intent, define done, risk, milestones
+- Nerd (architect): file mapping, constraints, task breakdown
+
+Planning outputs structured JSON which becomes WorkItems.
+
+### Execution stage
+
+- Assign WorkItems to specialist agents by skills tags.
+- Parallel execution supported (swarm), but bounded by concurrency + budgets.
+- Every WorkItem binds to a run_id and produces artifacts.
+
+### Gates
+
+- Reviewer must approve diffs/patches before applying.
+- Tester must run checks before marking done.
+
+Output: `docs/design/DEFAULT_MISSION_FLOW.md`
+
+---
+
+## 5) Deliverable D: Shared Resources (“blackboard”) for multi-agent coordination
+
+Design a shared resource subsystem with:
+
+- namespaces: `run/*`, `mission/*`, `project/*`, `team/*`
+- resource types: `status`, `board`, `artifacts`, `notes`, `decisions`, `locks`
+- revisioning (optimistic concurrency): `rev`, `if_match_rev`
+- watchability: SSE stream for resource events by prefix
+- leases/locks with TTL (avoid conflicting edits / card assignment collisions)
+
+Key rule:
+
+- Agent status should be mostly **engine-derived** from run/tool events (not self-reported).
+
+Define minimal API surface (HTTP):
+
+- `GET /resource?prefix=...`
+- `GET /resource/{key}`
+- `PUT/PATCH /resource/{key}` (with rev constraints)
+- `GET /resource/events?prefix=...` (SSE)
+
+Output: `docs/design/SHARED_RESOURCES.md`
+
+---
+
+## 6) Deliverable E: Vector store tiers for “learning over time” (local + team LAN guardrails)
+
+Design memory tiers:
+
+- `session` (ephemeral, default, no leakage)
+- `project` (persistent per repo/workspace)
+- `team` (shared across projects on a LAN server; opt-in + guardrails)
+- `curated` (admin/reviewed; safe to auto-use)
+
+Rules:
+
+- KV/resources/event log = truth layer (deterministic)
+- vector store = knowledge layer (semantic recall)
+- promotion pipeline: session → project/team/curated must be explicit, scrubbed, reviewed
+- strict partitioning by `{org_id, workspace_id, project_id, tier}`
+- capability tokens restrict which tiers can read/write/promote
+
+Define:
+
+- what to store: “solution capsules” (small structured summaries + artifact refs)
+- what NOT to store: secrets, live status, raw sensitive logs
+- scrubber requirements + audit logging
+
+Output: `docs/design/MEMORY_TIERS.md`
+
+---
+
+## 7) Deliverable F: Internal cron (“Routines”) for long-living agents
+
+Design an engine-native scheduler for routines:
+
+- persisted RoutineSpec: cron/interval, timezone, misfire policy, caps, entrypoint, args
+- next_fire_at computed and stored durably
+- on fire: create a MissionRun (or Run) with caps + budgets
+- leases to prevent double execution (future multi-instance / team LAN)
+- routine events emitted into event bus / SSE
+
+Define:
+
+- misfire policies: skip / run_once / catch_up(n)
+- API:
+  - `POST /routines`
+  - `GET /routines`
+  - `PATCH /routines/{id}`
+  - `POST /routines/{id}/run_now`
+  - `GET /routines/events` (SSE)
+  - `GET /routines/{id}/history`
+
+Output: `docs/design/ROUTINES_CRON.md`
+
+---
+
+## 8) Packaging: ecosystem-friendly distribution (NPM + Cargo)
+
+Summarize a recommended distribution plan:
+
+- NPM scoped packages: `@frumu/tandem`, `@frumu/tandem-tui`, plus optional per-OS binary packages (optionalDependencies pattern).
+- Cargo: crates.io has no scopes; propose naming scheme that avoids `tandem` collision but stays coherent (e.g., `tandem-engine`, `tandem-client`, or `frumu-tandem-*` if needed).
+- Ensure: other devs can build their own clients by targeting stable HTTP/SSE event contracts.
+
+Output: `docs/design/PACKAGING.md`
+
+---
+
+## 9) Implementation plan (phased)
+
+Provide a practical phased plan aligned to minimal risk:
+
+- Phase 1: shared resources store + SSE + status indexer
+- Phase 2: orchestrator abstraction + default mission flow producing a board
+- Phase 3: approvals/test gates + artifact linking
+- Phase 4: memory tier promotion + team guardrails
+- Phase 5: routines scheduler (cron) + misfire + leases
+- Phase 6: polish + SDK ergonomics
+
+Include:
+
+- acceptance criteria per phase
+- what endpoints/events are “stabilized” for third-party builders
+- minimal schema snapshot tests (avoid tool schema regressions)
+
+Output: `docs/design/IMPLEMENTATION_PLAN.md`
+
+---
+
+## Output requirements
+
+- Write the docs to `tandem/docs/design/` (create folder if needed).
+- Be concrete: include JSON schemas or Rust struct sketches where helpful.
+- Reference real files/paths found in the repo during reconnaissance.
+- Prefer reusing existing naming conventions (sessionID/runID/etc).
+- Keep the proposal compatible with current Desktop + TUI clients.
+
+End with a short “Decisions summary” list: 10 bullets max.

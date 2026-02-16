@@ -27,6 +27,7 @@ struct ConfigLayers {
     project: Value,
     managed: Value,
     env: Value,
+    runtime: Value,
     cli: Value,
 }
 
@@ -50,17 +51,26 @@ impl ConfigStore {
             .join("managed_config.json");
         let global_path = resolve_global_config_path().await?;
 
+        let mut global = read_json_file(&global_path)
+            .await
+            .unwrap_or_else(|_| empty_object());
+        let mut project = read_json_file(&project_path)
+            .await
+            .unwrap_or_else(|_| empty_object());
+        let mut managed = read_json_file(&managed_path)
+            .await
+            .unwrap_or_else(|_| empty_object());
+
+        scrub_persisted_secrets(&mut global, Some(&global_path)).await?;
+        scrub_persisted_secrets(&mut project, Some(&project_path)).await?;
+        scrub_persisted_secrets(&mut managed, Some(&managed_path)).await?;
+
         let layers = ConfigLayers {
-            global: read_json_file(&global_path)
-                .await
-                .unwrap_or_else(|_| empty_object()),
-            project: read_json_file(&project_path)
-                .await
-                .unwrap_or_else(|_| empty_object()),
-            managed: read_json_file(&managed_path)
-                .await
-                .unwrap_or_else(|_| empty_object()),
+            global,
+            project,
+            managed,
             env: env_layer(),
+            runtime: empty_object(),
             cli: cli_overrides.unwrap_or_else(empty_object),
         };
 
@@ -87,6 +97,7 @@ impl ConfigStore {
         deep_merge(&mut merged, &layers.project);
         deep_merge(&mut merged, &layers.managed);
         deep_merge(&mut merged, &layers.env);
+        deep_merge(&mut merged, &layers.runtime);
         deep_merge(&mut merged, &layers.cli);
         merged
     }
@@ -106,6 +117,7 @@ impl ConfigStore {
             "project": layers.project,
             "managed": layers.managed,
             "env": layers.env,
+            "runtime": layers.runtime,
             "cli": layers.cli
         })
     }
@@ -130,6 +142,46 @@ impl ConfigStore {
             deep_merge(&mut layers.global, &patch);
         }
         self.save_global().await?;
+        Ok(self.get_effective_value().await)
+    }
+
+    pub async fn patch_runtime(&self, patch: Value) -> anyhow::Result<Value> {
+        {
+            let mut layers = self.layers.write().await;
+            deep_merge(&mut layers.runtime, &patch);
+        }
+        Ok(self.get_effective_value().await)
+    }
+
+    pub async fn delete_runtime_provider_key(&self, provider_id: &str) -> anyhow::Result<Value> {
+        let provider = provider_id.trim().to_string();
+        {
+            let mut layers = self.layers.write().await;
+            let Some(root) = layers.runtime.as_object_mut() else {
+                return Ok(self.get_effective_value().await);
+            };
+            let Some(providers) = root.get_mut("providers").and_then(|v| v.as_object_mut()) else {
+                return Ok(self.get_effective_value().await);
+            };
+            let existing_key = providers
+                .keys()
+                .find(|k| k.eq_ignore_ascii_case(&provider))
+                .cloned();
+            let Some(existing_key) = existing_key else {
+                return Ok(self.get_effective_value().await);
+            };
+            let Some(cfg) = providers
+                .get_mut(&existing_key)
+                .and_then(|v| v.as_object_mut())
+            else {
+                return Ok(self.get_effective_value().await);
+            };
+            cfg.remove("api_key");
+            cfg.remove("apiKey");
+            if cfg.is_empty() {
+                providers.remove(&existing_key);
+            }
+        }
         Ok(self.get_effective_value().await)
     }
 
@@ -163,9 +215,93 @@ async fn write_json_file(path: &Path, value: &Value) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    let raw = serde_json::to_string_pretty(value)?;
+    let mut to_write = value.clone();
+    if !is_legacy_opencode_path(path) {
+        strip_persisted_secrets(&mut to_write);
+    }
+    let raw = serde_json::to_string_pretty(&to_write)?;
     fs::write(path, raw).await?;
     Ok(())
+}
+
+fn strip_persisted_secrets(value: &mut Value) {
+    if let Value::Object(root) = value {
+        let Some(providers) = root.get_mut("providers").and_then(|v| v.as_object_mut()) else {
+            return;
+        };
+        for (provider_id, provider_cfg) in providers.iter_mut() {
+            let Value::Object(cfg) = provider_cfg else {
+                continue;
+            };
+            if !cfg.contains_key("api_key") && !cfg.contains_key("apiKey") {
+                continue;
+            }
+            if provider_has_runtime_secret(provider_id) {
+                cfg.remove("api_key");
+                cfg.remove("apiKey");
+            }
+        }
+    }
+}
+
+async fn scrub_persisted_secrets(value: &mut Value, path: Option<&Path>) -> anyhow::Result<()> {
+    if let Some(target) = path {
+        if is_legacy_opencode_path(target) {
+            return Ok(());
+        }
+    }
+    let before = value.clone();
+    strip_persisted_secrets(value);
+    if *value != before {
+        if let Some(target) = path {
+            write_json_file(target, value).await?;
+        }
+    }
+    Ok(())
+}
+
+fn is_legacy_opencode_path(path: &Path) -> bool {
+    path.to_string_lossy()
+        .to_ascii_lowercase()
+        .contains("opencode")
+}
+
+fn provider_has_runtime_secret(provider_id: &str) -> bool {
+    provider_env_candidates(provider_id).into_iter().any(|key| {
+        std::env::var(&key)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    })
+}
+
+fn provider_env_candidates(provider_id: &str) -> Vec<String> {
+    let normalized = provider_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect::<String>()
+        .to_ascii_uppercase();
+
+    let mut out = vec![format!("{}_API_KEY", normalized)];
+
+    match provider_id.to_ascii_lowercase().as_str() {
+        "openai" => out.push("OPENAI_API_KEY".to_string()),
+        "openrouter" => out.push("OPENROUTER_API_KEY".to_string()),
+        "anthropic" => out.push("ANTHROPIC_API_KEY".to_string()),
+        "groq" => out.push("GROQ_API_KEY".to_string()),
+        "mistral" => out.push("MISTRAL_API_KEY".to_string()),
+        "together" => out.push("TOGETHER_API_KEY".to_string()),
+        "azure" => out.push("AZURE_OPENAI_API_KEY".to_string()),
+        "vertex" => out.push("VERTEX_API_KEY".to_string()),
+        "bedrock" => out.push("BEDROCK_API_KEY".to_string()),
+        "copilot" => out.push("GITHUB_TOKEN".to_string()),
+        "cohere" => out.push("COHERE_API_KEY".to_string()),
+        "zen" | "opencode_zen" | "opencodezen" => out.push("OPENCODE_ZEN_API_KEY".to_string()),
+        _ => {}
+    }
+
+    out.sort();
+    out.dedup();
+    out
 }
 
 async fn read_json_file(path: &Path) -> anyhow::Result<Value> {

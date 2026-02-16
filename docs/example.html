@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tandem Engine Browser Playground</title>
+    <style>
+      :root {
+        --bg: #0b0f18;
+        --panel: #111726;
+        --panel-border: #28324a;
+        --text: #e8eefc;
+        --muted: #98a7c8;
+        --brand: #31d0aa;
+        --brand-2: #41a8ff;
+        --warn: #ffcf5a;
+        --danger: #ff6a87;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Space Grotesk", "Avenir Next", "Futura", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(1200px 600px at 10% -10%, #1e2c50 0%, transparent 60%),
+          radial-gradient(900px 500px at 100% 0%, #1a3e4f 0%, transparent 65%),
+          var(--bg);
+      }
+
+      .wrap {
+        max-width: 1100px;
+        margin: 28px auto;
+        padding: 0 16px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 30px;
+      }
+
+      .sub {
+        color: var(--muted);
+        margin-bottom: 20px;
+      }
+
+      .panel {
+        border: 1px solid var(--panel-border);
+        border-radius: 16px;
+        background: linear-gradient(180deg, #10182a 0%, #0f1626 100%);
+        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35);
+      }
+
+      .top {
+        padding: 14px;
+        display: grid;
+        grid-template-columns: 1fr 1fr auto auto;
+        gap: 10px;
+      }
+
+      .main {
+        margin-top: 14px;
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 14px;
+      }
+
+      @media (max-width: 900px) {
+        .top {
+          grid-template-columns: 1fr;
+        }
+        .main {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+
+      .field label {
+        color: var(--muted);
+        font-size: 12px;
+        letter-spacing: 0.02em;
+      }
+
+      input,
+      button {
+        border-radius: 10px;
+        border: 1px solid #334162;
+        background: #0d1322;
+        color: var(--text);
+        padding: 10px 12px;
+        font-size: 14px;
+      }
+
+      input:focus {
+        outline: none;
+        border-color: var(--brand-2);
+        box-shadow: 0 0 0 2px rgba(65, 168, 255, 0.25);
+      }
+
+      button {
+        cursor: pointer;
+        font-weight: 600;
+      }
+
+      .btn-connect {
+        background: linear-gradient(90deg, var(--brand-2), var(--brand));
+        color: #04121c;
+        border: none;
+      }
+
+      .btn-send {
+        background: linear-gradient(90deg, #43ccff, #31d0aa);
+        color: #06201a;
+        border: none;
+      }
+
+      .status {
+        align-self: end;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .chat {
+        height: 520px;
+        display: grid;
+        grid-template-rows: 1fr auto;
+        overflow: hidden;
+      }
+
+      .messages {
+        padding: 14px;
+        overflow: auto;
+        display: grid;
+        gap: 10px;
+        align-content: start;
+      }
+
+      .bubble {
+        max-width: 90%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+      }
+
+      .bubble.md {
+        white-space: normal;
+      }
+
+      .bubble.md p {
+        margin: 0 0 0.7em;
+      }
+
+      .bubble.md p:last-child {
+        margin-bottom: 0;
+      }
+
+      .bubble.md pre {
+        margin: 0.6em 0;
+        overflow: auto;
+        border: 1px solid #2b3550;
+        border-radius: 8px;
+        background: #0b1322;
+        padding: 10px;
+      }
+
+      .bubble.md code {
+        font-family: "JetBrains Mono", "Cascadia Mono", "Fira Mono", monospace;
+        font-size: 0.92em;
+      }
+
+      .bubble.md :not(pre) > code {
+        border: 1px solid #2b3550;
+        border-radius: 6px;
+        background: #0b1322;
+        padding: 1px 5px;
+      }
+
+      .bubble.md ul,
+      .bubble.md ol {
+        margin: 0.4em 0 0.7em 1.25em;
+      }
+
+      .bubble.md h1,
+      .bubble.md h2,
+      .bubble.md h3,
+      .bubble.md h4 {
+        margin: 0.2em 0 0.45em;
+        line-height: 1.2;
+      }
+
+      .bubble.md a {
+        color: #7cc7ff;
+      }
+
+      .user {
+        justify-self: end;
+        background: #1a2f5f;
+        border: 1px solid #2f4d93;
+      }
+
+      .assistant {
+        justify-self: start;
+        background: #142233;
+        border: 1px solid #29425f;
+      }
+
+      .assistant.live {
+        border-style: dashed;
+      }
+
+      .assistant.thinking {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 40px;
+      }
+
+      .assistant.thinking .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #7cc7ff;
+        opacity: 0.35;
+        animation: think-bounce 1.1s infinite ease-in-out;
+      }
+
+      .assistant.thinking .dot:nth-child(2) {
+        animation-delay: 0.15s;
+      }
+
+      .assistant.thinking .dot:nth-child(3) {
+        animation-delay: 0.3s;
+      }
+
+      @keyframes think-bounce {
+        0%,
+        80%,
+        100% {
+          transform: translateY(0);
+          opacity: 0.35;
+        }
+        40% {
+          transform: translateY(-4px);
+          opacity: 1;
+        }
+      }
+
+      .system {
+        justify-self: center;
+        max-width: 100%;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .composer {
+        border-top: 1px solid var(--panel-border);
+        padding: 12px;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+      }
+
+      .events {
+        height: 520px;
+        display: grid;
+        grid-template-rows: auto 1fr;
+        overflow: hidden;
+      }
+
+      .events-head {
+        padding: 12px;
+        border-bottom: 1px solid var(--panel-border);
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .events-log {
+        margin: 0;
+        padding: 12px;
+        list-style: none;
+        overflow: auto;
+        display: grid;
+        gap: 8px;
+        font-family: "JetBrains Mono", "Cascadia Mono", "Fira Mono", monospace;
+        font-size: 12px;
+      }
+
+      .events-log li {
+        border: 1px solid #2b3550;
+        background: #0f1525;
+        border-radius: 10px;
+        padding: 8px;
+      }
+
+      .ev-type {
+        color: var(--warn);
+      }
+
+      .ev-run {
+        color: var(--brand);
+      }
+
+      .error {
+        color: var(--danger);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Tandem Engine Browser Playground</h1>
+      <div class="sub">
+        Live chat + SSE event stream with token auth. Great for testing external integrations.
+      </div>
+
+      <div class="panel top">
+        <div class="field">
+          <label>Engine URL</label>
+          <input id="apiUrl" value="http://127.0.0.1:39731" />
+        </div>
+        <div class="field">
+          <label>API Token (X-Tandem-Token)</label>
+          <input id="token" placeholder="tk_..." />
+        </div>
+        <button id="connectBtn" class="btn-connect">Connect</button>
+        <div id="status" class="status">Not connected</div>
+      </div>
+
+      <div class="main">
+        <div class="panel chat">
+          <div id="messages" class="messages"></div>
+          <div class="composer">
+            <input id="prompt" placeholder="Ask the engine something..." />
+            <button id="sendBtn" class="btn-send" disabled>Send</button>
+          </div>
+        </div>
+
+        <div class="panel events">
+          <div class="events-head">Live SSE events</div>
+          <ul id="events" class="events-log"></ul>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const ui = {
+        apiUrl: document.getElementById("apiUrl"),
+        token: document.getElementById("token"),
+        connectBtn: document.getElementById("connectBtn"),
+        status: document.getElementById("status"),
+        prompt: document.getElementById("prompt"),
+        sendBtn: document.getElementById("sendBtn"),
+        messages: document.getElementById("messages"),
+        events: document.getElementById("events")
+      };
+
+      const state = {
+        api: "",
+        token: "",
+        sessionId: "",
+        busy: false
+      };
+
+      function authHeaders(json = true) {
+        const headers = {};
+        if (json) headers["content-type"] = "application/json";
+        if (state.token) headers["X-Tandem-Token"] = state.token;
+        return headers;
+      }
+
+      function setStatus(text, isError = false) {
+        ui.status.textContent = text;
+        ui.status.classList.toggle("error", isError);
+      }
+
+      function pushMessage(role, text, live = false) {
+        const div = document.createElement("div");
+        div.className = `bubble ${role} ${live ? "live" : ""}`;
+        div.textContent = text;
+        ui.messages.appendChild(div);
+        ui.messages.scrollTop = ui.messages.scrollHeight;
+        return div;
+      }
+
+      function escapeHtml(input) {
+        return String(input)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function renderInlineMarkdown(text) {
+        let out = text;
+        out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+        out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        out = out.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+        out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+        return out;
+      }
+
+      function renderMarkdown(text) {
+        const escaped = escapeHtml(text || "");
+        const codeBlocks = [];
+        let src = escaped.replace(/```([\s\S]*?)```/g, (_, block) => {
+          const i = codeBlocks.push(`<pre><code>${block.trim()}</code></pre>`) - 1;
+          return `@@CODEBLOCK_${i}@@`;
+        });
+
+        const lines = src.split(/\r?\n/);
+        const html = [];
+        let inUl = false;
+        let inOl = false;
+
+        const closeLists = () => {
+          if (inUl) {
+            html.push("</ul>");
+            inUl = false;
+          }
+          if (inOl) {
+            html.push("</ol>");
+            inOl = false;
+          }
+        };
+
+        for (const rawLine of lines) {
+          const line = rawLine.trimEnd();
+          const trimmed = line.trim();
+
+          if (!trimmed) {
+            closeLists();
+            continue;
+          }
+
+          const codeMatch = trimmed.match(/^@@CODEBLOCK_(\d+)@@$/);
+          if (codeMatch) {
+            closeLists();
+            html.push(codeBlocks[Number(codeMatch[1])] || "");
+            continue;
+          }
+
+          const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+          if (heading) {
+            closeLists();
+            const level = heading[1].length;
+            html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+            continue;
+          }
+
+          const ulItem = trimmed.match(/^[-*]\s+(.+)$/);
+          if (ulItem) {
+            if (inOl) {
+              html.push("</ol>");
+              inOl = false;
+            }
+            if (!inUl) {
+              html.push("<ul>");
+              inUl = true;
+            }
+            html.push(`<li>${renderInlineMarkdown(ulItem[1])}</li>`);
+            continue;
+          }
+
+          const olItem = trimmed.match(/^\d+\.\s+(.+)$/);
+          if (olItem) {
+            if (inUl) {
+              html.push("</ul>");
+              inUl = false;
+            }
+            if (!inOl) {
+              html.push("<ol>");
+              inOl = true;
+            }
+            html.push(`<li>${renderInlineMarkdown(olItem[1])}</li>`);
+            continue;
+          }
+
+          closeLists();
+          html.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
+        }
+
+        closeLists();
+        return html.join("\n");
+      }
+
+      function setMarkdownMessage(element, text) {
+        element.classList.remove("thinking");
+        element.classList.add("md");
+        element.innerHTML = renderMarkdown(text);
+      }
+
+      function pushSystem(text, isError = false) {
+        const div = document.createElement("div");
+        div.className = `system${isError ? " error" : ""}`;
+        div.textContent = text;
+        ui.messages.appendChild(div);
+        ui.messages.scrollTop = ui.messages.scrollHeight;
+      }
+
+      function makeThinkingBubble() {
+        const bubble = pushMessage("assistant", "", true);
+        bubble.classList.add("thinking");
+        bubble.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+        return bubble;
+      }
+
+      function pushEvent(evt) {
+        const li = document.createElement("li");
+        const type = evt.type || "unknown";
+        const runId = evt.properties?.runID || evt.properties?.runId || "-";
+        li.innerHTML = `<span class="ev-type">${type}</span> <span class="ev-run">run=${runId}</span>\n${JSON.stringify(evt.properties || {}, null, 2)}`;
+        ui.events.appendChild(li);
+        ui.events.scrollTop = ui.events.scrollHeight;
+      }
+
+      function extractRunId(run) {
+        return (
+          run?.id ||
+          run?.runID ||
+          run?.run_id ||
+          run?.run?.id ||
+          run?.run?.runID ||
+          run?.run?.run_id ||
+          ""
+        );
+      }
+
+      function extractAttachPath(run) {
+        return run?.attachEventStream || run?.attach_event_stream || run?.attachStream || "";
+      }
+
+      function normalizeStreamUrl(attachPath, sessionId, runId) {
+        if (attachPath) {
+          if (attachPath.startsWith("http://") || attachPath.startsWith("https://")) return attachPath;
+          return `${state.api}${attachPath}`;
+        }
+        if (runId) return `${state.api}/event?sessionID=${encodeURIComponent(sessionId)}&runID=${encodeURIComponent(runId)}`;
+        return `${state.api}/event?sessionID=${encodeURIComponent(sessionId)}`;
+      }
+
+      function messageRole(msg) {
+        const direct = (msg?.role || "").toLowerCase();
+        if (direct) return direct;
+        const nested = (msg?.info?.role || "").toLowerCase();
+        if (nested) return nested;
+        return "";
+      }
+
+      function textFromMessage(msg) {
+        if (!msg) return "";
+        const parts = Array.isArray(msg.parts) ? msg.parts : [];
+        const chunks = [];
+        for (const p of parts) {
+          if (p?.type === "text" && typeof p.text === "string") chunks.push(p.text);
+          else if (p?.type === "text" && typeof p.content === "string") chunks.push(p.content);
+          else if (typeof p?.output === "string") chunks.push(p.output);
+          else if (typeof p?.text === "string") chunks.push(p.text);
+        }
+        return chunks.join("\n").trim();
+      }
+
+      async function fetchLatestAssistantText(sessionId) {
+        const res = await fetch(`${state.api}/session/${sessionId}/message`, {
+          headers: authHeaders(false)
+        });
+        if (!res.ok) return "";
+        const json = await res.json();
+        const list = Array.isArray(json) ? json : Array.isArray(json?.messages) ? json.messages : [];
+        for (let i = list.length - 1; i >= 0; i -= 1) {
+          if (messageRole(list[i]) === "assistant") {
+            const txt = textFromMessage(list[i]);
+            if (txt) return txt;
+          }
+        }
+        return "";
+      }
+
+      async function connect() {
+        state.api = ui.apiUrl.value.trim().replace(/\/+$/, "");
+        state.token = ui.token.value.trim();
+        if (!state.api) {
+          setStatus("Missing API URL", true);
+          return;
+        }
+
+        setStatus("Connecting...");
+        try {
+          const health = await fetch(`${state.api}/global/health`, {
+            headers: authHeaders(false)
+          }).then((r) => r.json());
+
+          const session = await fetch(`${state.api}/session`, {
+            method: "POST",
+            headers: authHeaders(true),
+            body: "{}"
+          }).then(async (r) => {
+            if (!r.ok) {
+              const body = await r.text();
+              throw new Error(`Session create failed (${r.status}): ${body}`);
+            }
+            return r.json();
+          });
+
+          state.sessionId = session.id;
+          ui.sendBtn.disabled = false;
+          setStatus(`Connected | session=${state.sessionId.slice(0, 8)}... | phase=${health.phase || "ready"}`);
+          pushSystem(`session: ${state.sessionId}`);
+        } catch (err) {
+          setStatus("Connection failed", true);
+          pushSystem(String(err.message || err), true);
+        }
+      }
+
+      async function runPrompt(promptText) {
+        const msg = { parts: [{ type: "text", text: promptText }] };
+
+        await fetch(`${state.api}/session/${state.sessionId}/message`, {
+          method: "POST",
+          headers: authHeaders(true),
+          body: JSON.stringify(msg)
+        });
+
+        const runRes = await fetch(`${state.api}/session/${state.sessionId}/prompt_async?return=run`, {
+          method: "POST",
+          headers: authHeaders(true),
+          body: JSON.stringify(msg)
+        });
+        if (!runRes.ok) {
+          const body = await runRes.text();
+          throw new Error(`Run failed (${runRes.status}): ${body}`);
+        }
+        return runRes.json();
+      }
+
+      async function streamRun(streamUrl) {
+        const res = await fetch(streamUrl, {
+          headers: { ...authHeaders(false), Accept: "text/event-stream" }
+        });
+        if (!res.ok || !res.body) {
+          const body = await res.text();
+          throw new Error(`Stream failed (${res.status}): ${body}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let assistantDraft = "";
+        const liveBubble = makeThinkingBubble();
+        let gotAssistantData = false;
+
+        const takeEventBlocks = () => {
+          const normalized = buffer.replace(/\r\n/g, "\n");
+          const blocks = normalized.split("\n\n");
+          buffer = blocks.pop() || "";
+          return blocks;
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          for (const block of takeEventBlocks()) {
+            const dataLines = block
+              .split("\n")
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).trim());
+            if (!dataLines.length) continue;
+
+            const raw = dataLines.join("\n");
+            if (raw === "[DONE]") continue;
+
+            let evt;
+            try {
+              evt = JSON.parse(raw);
+            } catch {
+              continue;
+            }
+            pushEvent(evt);
+
+            const t = evt.type || "";
+            const p = evt.properties || {};
+            const maybeText =
+              p.delta || p.text || p.content || p.output || p.message || "";
+
+            if (typeof maybeText === "string" && maybeText.trim()) {
+              gotAssistantData = true;
+              assistantDraft += maybeText;
+              liveBubble.classList.remove("thinking");
+              liveBubble.textContent = assistantDraft;
+            }
+
+            if (t === "session.error") {
+              throw new Error(p.error || p.message || "Session error");
+            }
+
+            if (t === "session.run.finished") {
+              if (p.status && p.status !== "completed") {
+                throw new Error(`Run finished with status=${p.status}${p.error ? ` (${p.error})` : ""}`);
+              }
+              try {
+                await reader.cancel();
+              } catch {
+                // no-op
+              }
+              break;
+            }
+          }
+        }
+
+        if (!gotAssistantData) {
+          const fallback = await fetchLatestAssistantText(state.sessionId);
+          if (fallback) {
+            setMarkdownMessage(liveBubble, fallback);
+          } else {
+            liveBubble.classList.remove("thinking");
+            liveBubble.textContent = "(No assistant text in stream; check provider configuration.)";
+          }
+        } else {
+          setMarkdownMessage(liveBubble, assistantDraft);
+        }
+        liveBubble.classList.remove("live");
+      }
+
+      async function send() {
+        if (state.busy || !state.sessionId) return;
+        const text = ui.prompt.value.trim();
+        if (!text) return;
+
+        ui.prompt.value = "";
+        state.busy = true;
+        ui.sendBtn.disabled = true;
+        pushMessage("user", text);
+
+        try {
+          const run = await runPrompt(text);
+          const runId = extractRunId(run);
+          const attachPath = extractAttachPath(run);
+          const streamUrl = normalizeStreamUrl(attachPath, state.sessionId, runId);
+          pushSystem(`run started: ${runId || "unknown"}${attachPath ? " (attach stream)" : ""}`);
+          await streamRun(streamUrl);
+        } catch (err) {
+          pushSystem(String(err.message || err), true);
+        } finally {
+          state.busy = false;
+          ui.sendBtn.disabled = false;
+          ui.prompt.focus();
+        }
+      }
+
+      ui.connectBtn.addEventListener("click", connect);
+      ui.sendBtn.addEventListener("click", send);
+      ui.prompt.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") send();
+      });
+    </script>
+  </body>
+</html>

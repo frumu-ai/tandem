@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **Provider Secret Drift Fix**: Re-aligned engine auth flow to prevent provider API keys from being persisted via config patch APIs.
+- **Runtime Auth Source**: `PUT /auth/{provider}` now applies provider keys to runtime-only engine config state and reloads providers without writing secrets to disk.
+- **Config Secret Rejection**: `PATCH /config` and `PATCH /global/config` now reject secret-bearing fields (`api_key`, `apiKey`) with `400 CONFIG_SECRET_REJECTED`.
+- **Response Redaction**: Config API responses continue to redact secret fields so provider credentials are never returned in plaintext API payloads.
+
+### Changed
+
+- **TUI Key Sync Transport**: TUI now syncs unlocked keystore credentials to engine runtime via `/auth/{provider}` instead of writing keys through `/config`.
+- **Desktop Runtime Auth Sync**: Desktop now pushes provider credentials to sidecar runtime auth after sidecar start/restart, aligning with keystore-first secret handling.
+- **Config Layers**: Added an in-memory runtime config layer for ephemeral provider auth material (merged into effective config, never persisted).
+
+### Fixed
+
+- **Plaintext Key Persistence Gap**: Fixed a regression where provider API keys could end up in Tandem config files under `%APPDATA%/tandem` when clients used config patch flows.
+- **OpenRouter Auth Regression After Scrub**: Fixed post-scrub provider failures by wiring runtime auth to provider resolution instead of relying on persisted config secrets.
+- **Browser CORS for Engine API**: Added CORS support to engine HTTP routes so browser-based examples using `X-Tandem-Token` work with preflight requests.
+
 ## [0.3.0] - 2026-02-15
 
 ### Added

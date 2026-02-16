@@ -17,6 +17,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 tandem-core = { path = "../tandem-core" }
