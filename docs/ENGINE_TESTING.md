@@ -193,6 +193,18 @@ cargo test -p tandem sidecar::tests::mission_apply_event_posts_event_payload -- 
 cargo test -p tandem-tui cancel_run_by_id_posts_expected_endpoint -- --nocapture
 ```
 
+TUI mission quick-action commands (manual runtime validation):
+
+```text
+/missions
+/mission_create Mission Demo :: Validate quick actions :: Initial task
+/mission_get <mission_id>
+/mission_start <mission_id>
+/mission_review_ok <mission_id> <work_item_id>
+/mission_test_ok <mission_id> <work_item_id>
+/mission_review_no <mission_id> <work_item_id> needs_revision
+```
+
 ## 2) Engine smoke/runtime proof (process + HTTP + SSE + memory)
 
 This is the automated version of the manual proof steps and writes artifacts to `runtime-proof/`.
