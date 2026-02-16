@@ -231,6 +231,214 @@ RUN_ID=$(echo "$RUN" | jq -r ".id")
 curl -N "$API/event?sessionID=$SID&runID=$RUN_ID"
 ```
 
+## Live Tool Approval Walkthrough
+
+Trigger a tool that requires approval, then approve it via the HTTP endpoint while watching SSE.
+
+```bash
+API="http://127.0.0.1:39731"
+SID=$(curl -s -X POST "$API/session" -H "content-type: application/json" -d "{}" | jq -r ".id")
+MSG='{"parts":[{"type":"text","text":"/tool bash {\"command\":\"Get-Date\"}"}]}'
+curl -s -X POST "$API/session/$SID/message" -H "content-type: application/json" -d "$MSG" > /dev/null
+RUN=$(curl -s -X POST "$API/session/$SID/prompt_async?return=run" -H "content-type: application/json" -d "$MSG")
+RUN_ID=$(echo "$RUN" | jq -r ".id")
+curl -N "$API/event?sessionID=$SID&runID=$RUN_ID"
+```
+
+In a second terminal, grab the permission request ID from the SSE output and approve it:
+
+```bash
+REQUEST_ID="paste-request-id-from-permission.asked"
+curl -s -X POST "$API/sessions/$SID/tools/$REQUEST_ID/approve"
+```
+
+## Session Replay + Timeline
+
+Record the SSE stream, then extract a compact timeline of event types.
+
+```bash
+API="http://127.0.0.1:39731"
+SID=$(curl -s -X POST "$API/session" -H "content-type: application/json" -d "{}" | jq -r ".id")
+MSG='{"parts":[{"type":"text","text":"Summarize the last 3 Git commits in the repo."}]}'
+curl -s -X POST "$API/session/$SID/message" -H "content-type: application/json" -d "$MSG" > /dev/null
+RUN=$(curl -s -X POST "$API/session/$SID/prompt_async?return=run" -H "content-type: application/json" -d "$MSG")
+RUN_ID=$(echo "$RUN" | jq -r ".id")
+curl -N "$API/event?sessionID=$SID&runID=$RUN_ID" | tee sse.log
+```
+
+Extract a timeline (event type + runID):
+
+```bash
+cat sse.log \
+  | rg "^data:" \
+  | sed "s/^data: //g" \
+  | jq -r '"\(.type)\t\(.properties.runID // .properties.runId // "-")"' \
+  | uniq
+```
+
+## Server Playbook: Sessions + Run Control (HTTP)
+
+Create a session, list sessions, start a run, inspect it, then cancel.
+
+```bash
+API="http://127.0.0.1:39731"
+SID=$(curl -s -X POST "$API/session" -H "content-type: application/json" -d "{}" | jq -r ".id")
+curl -s "$API/session"
+MSG='{"parts":[{"type":"text","text":"Write a haiku about latency."}]}'
+curl -s -X POST "$API/session/$SID/message" -H "content-type: application/json" -d "$MSG" > /dev/null
+RUN=$(curl -s -X POST "$API/session/$SID/prompt_async?return=run" -H "content-type: application/json" -d "$MSG")
+RUN_ID=$(echo "$RUN" | jq -r ".id")
+curl -s "$API/session/$SID/run"
+curl -s -X POST "$API/session/$SID/run/$RUN_ID/cancel"
+```
+
+## Server Playbook: Reattach After Disconnect (HTTP + SSE)
+
+Recover an in-flight run by reattaching with the active run ID.
+
+```bash
+API="http://127.0.0.1:39731"
+SID=$(curl -s -X POST "$API/session" -H "content-type: application/json" -d "{}" | jq -r ".id")
+MSG='{"parts":[{"type":"text","text":"Explain three uses of SSE in apps."}]}'
+curl -s -X POST "$API/session/$SID/message" -H "content-type: application/json" -d "$MSG" > /dev/null
+RUN=$(curl -s -X POST "$API/session/$SID/prompt_async?return=run" -H "content-type: application/json" -d "$MSG")
+RUN_ID=$(echo "$RUN" | jq -r ".id")
+curl -N "$API/event?sessionID=$SID&runID=$RUN_ID"
+ACTIVE=$(curl -s "$API/session/$SID/run" | jq -r ".runID // .runId // .id")
+curl -N "$API/event?sessionID=$SID&runID=$ACTIVE"
+```
+
+## Server Playbook: Permissions + Questions (HTTP)
+
+Poll for pending approvals/questions and reply over HTTP.
+
+```bash
+API="http://127.0.0.1:39731"
+curl -s "$API/permission"
+curl -s -X POST "$API/permission/<id>/reply" -H "content-type: application/json" -d '{"reply":"allow"}'
+curl -s "$API/question"
+curl -s -X POST "$API/question/<id>/reply" -H "content-type: application/json" -d '{"reply":"continue"}'
+curl -s -X POST "$API/question/<id>/reject" -H "content-type: application/json" -d '{"reply":"stop"}'
+```
+
+## Server Playbook: Health + Phase (HTTP)
+
+Use health to drive readiness checks and dashboards.
+
+```bash
+API="http://127.0.0.1:39731"
+curl -s "$API/global/health" | jq
+```
+
+## Server Playbook: Mission Runtime (HTTP)
+
+Create a mission, inspect it, then apply reducer events (review/test gates) through the engine API.
+
+```bash
+API="http://127.0.0.1:39731"
+
+# Create a mission with one work item
+MISSION=$(curl -s -X POST "$API/mission" -H "content-type: application/json" -d '{
+  "title":"Ship routine policy gates",
+  "goal":"Implement and verify connector side-effect policy for routines",
+  "work_items":[
+    {"title":"Add scheduler/run_now policy checks","detail":"Block/approval/allow paths"},
+    {"title":"Add tests","detail":"HTTP + unit tests for policy outcomes"}
+  ]
+}')
+echo "$MISSION" | jq
+
+MISSION_ID=$(echo "$MISSION" | jq -r '.mission.mission_id')
+WORK_ITEM_ID=$(echo "$MISSION" | jq -r '.mission.work_items[0].work_item_id')
+echo "mission=$MISSION_ID work_item=$WORK_ITEM_ID"
+
+# List + fetch
+curl -s "$API/mission" | jq
+curl -s "$API/mission/$MISSION_ID" | jq
+
+# Simulate work item run completion -> reviewer gate
+curl -s -X POST "$API/mission/$MISSION_ID/event" -H "content-type: application/json" -d "{
+  \"event\": {
+    \"type\": \"run_finished\",
+    \"mission_id\": \"$MISSION_ID\",
+    \"work_item_id\": \"$WORK_ITEM_ID\",
+    \"run_id\": \"run-demo-1\",
+    \"status\": \"completed\"
+  }
+}" | jq
+
+# Approve reviewer -> tester gate
+curl -s -X POST "$API/mission/$MISSION_ID/event" -H "content-type: application/json" -d "{
+  \"event\": {
+    \"type\": \"approval_granted\",
+    \"mission_id\": \"$MISSION_ID\",
+    \"work_item_id\": \"$WORK_ITEM_ID\",
+    \"approval_id\": \"review-1\"
+  }
+}" | jq
+
+# Approve tester -> work item done (mission may complete when all required items are done)
+curl -s -X POST "$API/mission/$MISSION_ID/event" -H "content-type: application/json" -d "{
+  \"event\": {
+    \"type\": \"approval_granted\",
+    \"mission_id\": \"$MISSION_ID\",
+    \"work_item_id\": \"$WORK_ITEM_ID\",
+    \"approval_id\": \"test-1\"
+  }
+}" | jq
+
+curl -s "$API/mission/$MISSION_ID" | jq
+```
+
+## Server Playbook: Routine Policy Gates (HTTP)
+
+This demonstrates the tiered outcomes for connector-backed routines:
+
+- `queued`: external allowed + no approval required
+- `pending_approval`: external allowed + approval required
+- `ROUTINE_POLICY_BLOCKED`: external side effects disabled by policy
+
+```bash
+API="http://127.0.0.1:39731"
+
+# 1) Blocked by policy (default-safe)
+curl -s -X POST "$API/routines" -H "content-type: application/json" -d '{
+  "routine_id":"email-blocked",
+  "name":"Email blocked",
+  "schedule":{"interval_seconds":{"seconds":300}},
+  "entrypoint":"connector.email.reply",
+  "requires_approval":true,
+  "external_integrations_allowed":false
+}' | jq
+curl -s -X POST "$API/routines/email-blocked/run_now" -H "content-type: application/json" -d '{}' | jq
+
+# 2) Approval required
+curl -s -X POST "$API/routines" -H "content-type: application/json" -d '{
+  "routine_id":"email-approval",
+  "name":"Email approval",
+  "schedule":{"interval_seconds":{"seconds":300}},
+  "entrypoint":"connector.email.reply",
+  "requires_approval":true,
+  "external_integrations_allowed":true
+}' | jq
+curl -s -X POST "$API/routines/email-approval/run_now" -H "content-type: application/json" -d '{}' | jq
+
+# 3) Allowed and queued
+curl -s -X POST "$API/routines" -H "content-type: application/json" -d '{
+  "routine_id":"email-queued",
+  "name":"Email queued",
+  "schedule":{"interval_seconds":{"seconds":300}},
+  "entrypoint":"connector.email.reply",
+  "requires_approval":false,
+  "external_integrations_allowed":true
+}' | jq
+curl -s -X POST "$API/routines/email-queued/run_now" -H "content-type: application/json" -d '{}' | jq
+
+curl -s "$API/routines/email-blocked/history?limit=5" | jq
+curl -s "$API/routines/email-approval/history?limit=5" | jq
+curl -s "$API/routines/email-queued/history?limit=5" | jq
+```
+
 ## Multi-Agent Swarm: Parallel Specialists
 
 Create multiple role-specific tasks, then synthesize the results.
