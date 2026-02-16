@@ -151,6 +151,8 @@ Coverage includes route shape/contracts like:
 - `/global/health`
 - `/provider`
 - `/api/session` alias behavior
+- `/mission` create/list/get/apply-event
+- `/routines` create/list/patch/delete/run-now/history/events
 - `/session/{id}/message`
 - `/session/{id}/run`
 - `/session/{id}/run/{run_id}/cancel`
@@ -158,6 +160,15 @@ Coverage includes route shape/contracts like:
 - `prompt_async?return=run` (`202` with `runID` + attach stream)
 - same-session conflict (`409` with nested `activeRun`)
 - permission approve/deny compatibility routes
+
+Mission/routine policy-focused tests:
+
+```bash
+cargo test -p tandem-server mission_ -- --nocapture
+cargo test -p tandem-server routines_ -- --nocapture
+cargo test -p tandem-server routine_policy_ -- --nocapture
+cargo test -p tandem-server routines_run_now_ -- --nocapture
+```
 
 Contract-focused tests (JSON-first orchestrator parsing):
 
