@@ -208,6 +208,275 @@ pub struct UpdateSessionRequest {
     pub mode: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineSchedule {
+    IntervalSeconds { seconds: u64 },
+    Cron { expression: String },
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum RoutineMisfirePolicy {
+    Skip,
+    RunOnce,
+    CatchUp { max_runs: u32 },
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineStatus {
+    Active,
+    Paused,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct RoutineSpec {
+    pub routine_id: String,
+    pub name: String,
+    pub status: RoutineStatus,
+    pub schedule: RoutineSchedule,
+    pub timezone: String,
+    pub misfire_policy: RoutineMisfirePolicy,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+    pub creator_type: String,
+    pub creator_id: String,
+    pub requires_approval: bool,
+    pub external_integrations_allowed: bool,
+    #[serde(default)]
+    pub next_fire_at_ms: Option<u64>,
+    #[serde(default)]
+    pub last_fired_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct RoutineHistoryEvent {
+    pub routine_id: String,
+    pub trigger_type: String,
+    pub run_count: u32,
+    pub fired_at_ms: u64,
+    pub status: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct RoutineCreateRequest {
+    #[serde(default)]
+    pub routine_id: Option<String>,
+    pub name: String,
+    pub schedule: RoutineSchedule,
+    #[serde(default)]
+    pub timezone: Option<String>,
+    #[serde(default)]
+    pub misfire_policy: Option<RoutineMisfirePolicy>,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    #[serde(default)]
+    pub creator_type: Option<String>,
+    #[serde(default)]
+    pub creator_id: Option<String>,
+    #[serde(default)]
+    pub requires_approval: Option<bool>,
+    #[serde(default)]
+    pub external_integrations_allowed: Option<bool>,
+    #[serde(default)]
+    pub next_fire_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct RoutinePatchRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub status: Option<RoutineStatus>,
+    #[serde(default)]
+    pub schedule: Option<RoutineSchedule>,
+    #[serde(default)]
+    pub timezone: Option<String>,
+    #[serde(default)]
+    pub misfire_policy: Option<RoutineMisfirePolicy>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    #[serde(default)]
+    pub requires_approval: Option<bool>,
+    #[serde(default)]
+    pub external_integrations_allowed: Option<bool>,
+    #[serde(default)]
+    pub next_fire_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct RoutineRunNowRequest {
+    #[serde(default)]
+    pub run_count: Option<u32>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct RoutineRunNowResponse {
+    pub ok: bool,
+    pub status: String,
+    #[serde(rename = "routineID")]
+    pub routine_id: String,
+    #[serde(rename = "runCount")]
+    pub run_count: u32,
+    #[serde(rename = "firedAtMs", default)]
+    pub fired_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+struct RoutineListResponse {
+    routines: Vec<RoutineSpec>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+struct RoutineRecordResponse {
+    routine: RoutineSpec,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+struct RoutineDeleteResponse {
+    deleted: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+struct RoutineHistoryResponse {
+    events: Vec<RoutineHistoryEvent>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionStatus {
+    Draft,
+    Running,
+    Paused,
+    Succeeded,
+    Failed,
+    Canceled,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionWorkItemStatus {
+    Todo,
+    InProgress,
+    Blocked,
+    Review,
+    Test,
+    Rework,
+    Done,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct MissionBudget {
+    #[serde(default)]
+    pub max_steps: Option<u32>,
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default)]
+    pub max_duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct MissionCapabilities {
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub allowed_agents: Vec<String>,
+    #[serde(default)]
+    pub allowed_memory_tiers: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MissionSpec {
+    pub mission_id: String,
+    pub title: String,
+    pub goal: String,
+    #[serde(default)]
+    pub success_criteria: Vec<String>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    #[serde(default)]
+    pub budgets: MissionBudget,
+    #[serde(default)]
+    pub capabilities: MissionCapabilities,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MissionWorkItem {
+    pub work_item_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    pub status: MissionWorkItemStatus,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub assigned_agent: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub artifact_refs: Vec<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MissionState {
+    pub mission_id: String,
+    pub status: MissionStatus,
+    pub spec: MissionSpec,
+    #[serde(default)]
+    pub work_items: Vec<MissionWorkItem>,
+    pub revision: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MissionCreateWorkItem {
+    #[serde(default)]
+    pub work_item_id: Option<String>,
+    pub title: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub assigned_agent: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MissionCreateRequest {
+    pub title: String,
+    pub goal: String,
+    #[serde(default)]
+    pub work_items: Vec<MissionCreateWorkItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MissionApplyEventResult {
+    pub mission: MissionState,
+    #[serde(default)]
+    pub commands: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+struct MissionListResponse {
+    missions: Vec<MissionState>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+struct MissionRecordResponse {
+    mission: MissionState,
+}
+
 impl EngineClient {
     pub fn new(base_url: String) -> Self {
         Self::new_with_token(base_url, None)
@@ -652,6 +921,101 @@ impl EngineClient {
         let session = resp.json::<Session>().await?;
         Ok(session)
     }
+
+    pub async fn routines_list(&self) -> Result<Vec<RoutineSpec>> {
+        let url = format!("{}/routines", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        let payload = resp.json::<RoutineListResponse>().await?;
+        Ok(payload.routines)
+    }
+
+    pub async fn routines_create(&self, request: RoutineCreateRequest) -> Result<RoutineSpec> {
+        let url = format!("{}/routines", self.base_url);
+        let resp = self.client.post(&url).json(&request).send().await?;
+        let payload = resp.json::<RoutineRecordResponse>().await?;
+        Ok(payload.routine)
+    }
+
+    pub async fn routines_patch(
+        &self,
+        routine_id: &str,
+        request: RoutinePatchRequest,
+    ) -> Result<RoutineSpec> {
+        let url = format!("{}/routines/{}", self.base_url, routine_id);
+        let resp = self.client.patch(&url).json(&request).send().await?;
+        let payload = resp.json::<RoutineRecordResponse>().await?;
+        Ok(payload.routine)
+    }
+
+    pub async fn routines_delete(&self, routine_id: &str) -> Result<bool> {
+        let url = format!("{}/routines/{}", self.base_url, routine_id);
+        let resp = self.client.delete(&url).send().await?;
+        let payload = resp.json::<RoutineDeleteResponse>().await?;
+        Ok(payload.deleted)
+    }
+
+    pub async fn routines_run_now(
+        &self,
+        routine_id: &str,
+        request: RoutineRunNowRequest,
+    ) -> Result<RoutineRunNowResponse> {
+        let url = format!("{}/routines/{}/run_now", self.base_url, routine_id);
+        let resp = self.client.post(&url).json(&request).send().await?;
+        let payload = resp.json::<RoutineRunNowResponse>().await?;
+        Ok(payload)
+    }
+
+    pub async fn routines_history(
+        &self,
+        routine_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<RoutineHistoryEvent>> {
+        let url = format!("{}/routines/{}/history", self.base_url, routine_id);
+        let mut req = self.client.get(&url);
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        let resp = req.send().await?;
+        let payload = resp.json::<RoutineHistoryResponse>().await?;
+        Ok(payload.events)
+    }
+
+    pub async fn mission_list(&self) -> Result<Vec<MissionState>> {
+        let url = format!("{}/mission", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        let payload = resp.json::<MissionListResponse>().await?;
+        Ok(payload.missions)
+    }
+
+    pub async fn mission_create(&self, request: MissionCreateRequest) -> Result<MissionState> {
+        let url = format!("{}/mission", self.base_url);
+        let resp = self.client.post(&url).json(&request).send().await?;
+        let payload = resp.json::<MissionRecordResponse>().await?;
+        Ok(payload.mission)
+    }
+
+    pub async fn mission_get(&self, mission_id: &str) -> Result<MissionState> {
+        let url = format!("{}/mission/{}", self.base_url, mission_id);
+        let resp = self.client.get(&url).send().await?;
+        let payload = resp.json::<MissionRecordResponse>().await?;
+        Ok(payload.mission)
+    }
+
+    pub async fn mission_apply_event(
+        &self,
+        mission_id: &str,
+        event: serde_json::Value,
+    ) -> Result<MissionApplyEventResult> {
+        let url = format!("{}/mission/{}/event", self.base_url, mission_id);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "event": event }))
+            .send()
+            .await?;
+        let payload = resp.json::<MissionApplyEventResult>().await?;
+        Ok(payload)
+    }
 }
 
 fn normalize_workspace_path(path: &PathBuf) -> Option<String> {
@@ -1064,6 +1428,77 @@ mod tests {
             .await
             .expect("cancel");
         assert!(!cancelled);
+    }
+
+    #[tokio::test]
+    async fn mission_list_reads_engine_missions_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission",
+            "200 OK",
+            r#"{"missions":[{"mission_id":"m1","status":"draft","spec":{"mission_id":"m1","title":"Demo","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":0,"updated_at_ms":1}]}"#,
+        )
+        .await;
+        let client = EngineClient::new(base);
+        let missions = client.mission_list().await.expect("mission_list");
+        assert_eq!(missions.len(), 1);
+        assert_eq!(missions[0].mission_id, "m1");
+    }
+
+    #[tokio::test]
+    async fn mission_get_reads_engine_mission_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission/m1",
+            "200 OK",
+            r#"{"mission":{"mission_id":"m1","status":"draft","spec":{"mission_id":"m1","title":"Demo","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":0,"updated_at_ms":1}}"#,
+        )
+        .await;
+        let client = EngineClient::new(base);
+        let mission = client.mission_get("m1").await.expect("mission_get");
+        assert_eq!(mission.mission_id, "m1");
+        assert_eq!(mission.spec.title, "Demo");
+    }
+
+    #[tokio::test]
+    async fn mission_create_posts_to_engine_mission_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission",
+            "200 OK",
+            r#"{"mission":{"mission_id":"m2","status":"draft","spec":{"mission_id":"m2","title":"Create","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":0,"updated_at_ms":1}}"#,
+        )
+        .await;
+        let client = EngineClient::new(base);
+        let mission = client
+            .mission_create(MissionCreateRequest {
+                title: "Create".to_string(),
+                goal: "Test".to_string(),
+                work_items: vec![],
+            })
+            .await
+            .expect("mission_create");
+        assert_eq!(mission.mission_id, "m2");
+    }
+
+    #[tokio::test]
+    async fn mission_apply_event_posts_event_payload() {
+        let base = spawn_single_response_server(
+            "/mission/m1/event",
+            "200 OK",
+            r#"{"mission":{"mission_id":"m1","status":"running","spec":{"mission_id":"m1","title":"Demo","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":1,"updated_at_ms":2},"commands":[{"type":"emit_notice"}]}"#,
+        )
+        .await;
+        let client = EngineClient::new(base);
+        let result = client
+            .mission_apply_event(
+                "m1",
+                serde_json::json!({
+                    "type": "mission_started",
+                    "mission_id": "m1"
+                }),
+            )
+            .await
+            .expect("mission_apply_event");
+        assert_eq!(result.mission.revision, 1);
+        assert_eq!(result.commands.len(), 1);
     }
 
     #[test]
