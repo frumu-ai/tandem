@@ -930,6 +930,275 @@ pub struct TodoItem {
     pub status: String, // "pending" | "in_progress" | "completed" | "cancelled"
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineSchedule {
+    IntervalSeconds { seconds: u64 },
+    Cron { expression: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum RoutineMisfirePolicy {
+    Skip,
+    RunOnce,
+    CatchUp { max_runs: u32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineStatus {
+    Active,
+    Paused,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineSpec {
+    pub routine_id: String,
+    pub name: String,
+    pub status: RoutineStatus,
+    pub schedule: RoutineSchedule,
+    pub timezone: String,
+    pub misfire_policy: RoutineMisfirePolicy,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+    pub creator_type: String,
+    pub creator_id: String,
+    pub requires_approval: bool,
+    pub external_integrations_allowed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_fire_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_fired_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineHistoryEvent {
+    pub routine_id: String,
+    pub trigger_type: String,
+    pub run_count: u32,
+    pub fired_at_ms: u64,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineCreateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routine_id: Option<String>,
+    pub name: String,
+    pub schedule: RoutineSchedule,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub misfire_policy: Option<RoutineMisfirePolicy>,
+    pub entrypoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_approval: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_integrations_allowed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_fire_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RoutinePatchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<RoutineStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<RoutineSchedule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub misfire_policy: Option<RoutineMisfirePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_approval: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_integrations_allowed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_fire_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RoutineRunNowRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineRunNowResponse {
+    pub ok: bool,
+    pub status: String,
+    #[serde(rename = "routineID")]
+    pub routine_id: String,
+    #[serde(rename = "runCount")]
+    pub run_count: u32,
+    #[serde(rename = "firedAtMs", default, skip_serializing_if = "Option::is_none")]
+    pub fired_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineListResponse {
+    routines: Vec<RoutineSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineRecordResponse {
+    routine: RoutineSpec,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineDeleteResponse {
+    deleted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineHistoryResponse {
+    events: Vec<RoutineHistoryEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionStatus {
+    Draft,
+    Running,
+    Paused,
+    Succeeded,
+    Failed,
+    Canceled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemStatus {
+    Todo,
+    InProgress,
+    Blocked,
+    Review,
+    Test,
+    Rework,
+    Done,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MissionBudget {
+    #[serde(default)]
+    pub max_steps: Option<u32>,
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default)]
+    pub max_duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MissionCapabilities {
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub allowed_agents: Vec<String>,
+    #[serde(default)]
+    pub allowed_memory_tiers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionSpec {
+    pub mission_id: String,
+    pub title: String,
+    pub goal: String,
+    #[serde(default)]
+    pub success_criteria: Vec<String>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    #[serde(default)]
+    pub budgets: MissionBudget,
+    #[serde(default)]
+    pub capabilities: MissionCapabilities,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionWorkItem {
+    pub work_item_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    pub status: WorkItemStatus,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub assigned_agent: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub artifact_refs: Vec<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionState {
+    pub mission_id: String,
+    pub status: MissionStatus,
+    pub spec: MissionSpec,
+    #[serde(default)]
+    pub work_items: Vec<MissionWorkItem>,
+    pub revision: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionCreateWorkItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionCreateRequest {
+    pub title: String,
+    pub goal: String,
+    #[serde(default)]
+    pub work_items: Vec<MissionCreateWorkItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionApplyEventResult {
+    pub mission: MissionState,
+    #[serde(default)]
+    pub commands: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MissionListResponse {
+    missions: Vec<MissionState>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MissionRecordResponse {
+    mission: MissionState,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveRunStatusResponse {
     #[serde(rename = "runID")]
@@ -2620,6 +2889,165 @@ impl SidecarManager {
                     .unwrap_or(false))
             }
         }
+    }
+
+    // ========================================================================
+    // Routines
+    // ========================================================================
+
+    pub async fn routines_create(&self, request: RoutineCreateRequest) -> Result<RoutineSpec> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines", self.base_url().await?);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to create routine: {}", e)))?;
+        let payload: RoutineRecordResponse = self.handle_response(response).await?;
+        Ok(payload.routine)
+    }
+
+    pub async fn routines_list(&self) -> Result<Vec<RoutineSpec>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list routines: {}", e)))?;
+        let payload: RoutineListResponse = self.handle_response(response).await?;
+        Ok(payload.routines)
+    }
+
+    pub async fn routines_patch(
+        &self,
+        routine_id: &str,
+        request: RoutinePatchRequest,
+    ) -> Result<RoutineSpec> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/{}", self.base_url().await?, routine_id);
+        let response = self
+            .http_client
+            .patch(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to patch routine: {}", e)))?;
+        let payload: RoutineRecordResponse = self.handle_response(response).await?;
+        Ok(payload.routine)
+    }
+
+    pub async fn routines_delete(&self, routine_id: &str) -> Result<bool> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/{}", self.base_url().await?, routine_id);
+        let response = self
+            .http_client
+            .delete(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to delete routine: {}", e)))?;
+        let payload: RoutineDeleteResponse = self.handle_response(response).await?;
+        Ok(payload.deleted)
+    }
+
+    pub async fn routines_run_now(
+        &self,
+        routine_id: &str,
+        request: RoutineRunNowRequest,
+    ) -> Result<RoutineRunNowResponse> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/{}/run_now", self.base_url().await?, routine_id);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to trigger routine: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn routines_history(
+        &self,
+        routine_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<RoutineHistoryEvent>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/{}/history", self.base_url().await?, routine_id);
+        let mut request = self.http_client.get(&url);
+        if let Some(limit) = limit {
+            request = request.query(&[("limit", limit)]);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to load routine history: {}", e)))?;
+        let payload: RoutineHistoryResponse = self.handle_response(response).await?;
+        Ok(payload.events)
+    }
+
+    // ========================================================================
+    // Missions
+    // ========================================================================
+
+    pub async fn mission_create(&self, request: MissionCreateRequest) -> Result<MissionState> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mission", self.base_url().await?);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to create mission: {}", e)))?;
+        let payload: MissionRecordResponse = self.handle_response(response).await?;
+        Ok(payload.mission)
+    }
+
+    pub async fn mission_list(&self) -> Result<Vec<MissionState>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mission", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list missions: {}", e)))?;
+        let payload: MissionListResponse = self.handle_response(response).await?;
+        Ok(payload.missions)
+    }
+
+    pub async fn mission_get(&self, mission_id: &str) -> Result<MissionState> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mission/{}", self.base_url().await?, mission_id);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to get mission: {}", e)))?;
+        let payload: MissionRecordResponse = self.handle_response(response).await?;
+        Ok(payload.mission)
+    }
+
+    pub async fn mission_apply_event(
+        &self,
+        mission_id: &str,
+        event: serde_json::Value,
+    ) -> Result<MissionApplyEventResult> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mission/{}/event", self.base_url().await?, mission_id);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&serde_json::json!({ "event": event }))
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to apply mission event: {}", e)))?;
+        self.handle_response(response).await
     }
 
     // ========================================================================
@@ -4584,5 +5012,112 @@ mod tests {
             .await
             .expect("cancel");
         assert!(!cancelled);
+    }
+
+    #[tokio::test]
+    async fn mission_list_reads_engine_missions_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission",
+            "200 OK",
+            r#"{"missions":[{"mission_id":"m1","status":"draft","spec":{"mission_id":"m1","title":"Demo","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":0,"updated_at_ms":1}]}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let missions = manager.mission_list().await.expect("mission_list");
+        assert_eq!(missions.len(), 1);
+        assert_eq!(missions[0].mission_id, "m1");
+    }
+
+    #[tokio::test]
+    async fn mission_get_reads_engine_mission_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission/m1",
+            "200 OK",
+            r#"{"mission":{"mission_id":"m1","status":"draft","spec":{"mission_id":"m1","title":"Demo","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":0,"updated_at_ms":1}}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let mission = manager.mission_get("m1").await.expect("mission_get");
+        assert_eq!(mission.mission_id, "m1");
+        assert_eq!(mission.spec.title, "Demo");
+    }
+
+    #[tokio::test]
+    async fn mission_create_posts_to_engine_mission_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission",
+            "200 OK",
+            r#"{"mission":{"mission_id":"m2","status":"draft","spec":{"mission_id":"m2","title":"Create","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":0,"updated_at_ms":1}}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let mission = manager
+            .mission_create(MissionCreateRequest {
+                title: "Create".to_string(),
+                goal: "Test".to_string(),
+                work_items: vec![],
+            })
+            .await
+            .expect("mission_create");
+        assert_eq!(mission.mission_id, "m2");
+    }
+
+    #[tokio::test]
+    async fn mission_apply_event_posts_event_payload() {
+        let base = spawn_single_response_server(
+            "/mission/m1/event",
+            "200 OK",
+            r#"{"mission":{"mission_id":"m1","status":"running","spec":{"mission_id":"m1","title":"Demo","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":1,"updated_at_ms":2},"commands":[{"type":"emit_notice"}]}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let result = manager
+            .mission_apply_event(
+                "m1",
+                serde_json::json!({
+                    "type": "mission_started",
+                    "mission_id": "m1"
+                }),
+            )
+            .await
+            .expect("mission_apply_event");
+        assert_eq!(result.mission.revision, 1);
+        assert_eq!(result.commands.len(), 1);
     }
 }
