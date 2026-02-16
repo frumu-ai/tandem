@@ -390,6 +390,40 @@ curl -s -X POST "$API/mission/$MISSION_ID/event" -H "content-type: application/j
 curl -s "$API/mission/$MISSION_ID" | jq
 ```
 
+## Server Playbook: Mission Events via SSE (HTTP)
+
+Watch mission lifecycle events while creating and updating a mission.
+
+```bash
+API="http://127.0.0.1:39731"
+
+# Terminal 1: watch only mission events
+curl -N "$API/event" | jq -r 'select(.event_type|startswith("mission."))'
+```
+
+In a second terminal:
+
+```bash
+API="http://127.0.0.1:39731"
+MISSION=$(curl -s -X POST "$API/mission" -H "content-type: application/json" -d '{
+  "title":"SSE mission demo",
+  "goal":"Observe mission.created and mission.updated events",
+  "work_items":[{"title":"Demo item"}]
+}')
+MISSION_ID=$(echo "$MISSION" | jq -r '.mission.mission_id')
+WORK_ITEM_ID=$(echo "$MISSION" | jq -r '.mission.work_items[0].work_item_id')
+
+curl -s -X POST "$API/mission/$MISSION_ID/event" -H "content-type: application/json" -d "{
+  \"event\": {
+    \"type\": \"run_finished\",
+    \"mission_id\": \"$MISSION_ID\",
+    \"work_item_id\": \"$WORK_ITEM_ID\",
+    \"run_id\": \"run-sse-1\",
+    \"status\": \"completed\"
+  }
+}" | jq
+```
+
 ## Server Playbook: Routine Policy Gates (HTTP)
 
 This demonstrates the tiered outcomes for connector-backed routines:
@@ -437,6 +471,35 @@ curl -s -X POST "$API/routines/email-queued/run_now" -H "content-type: applicati
 curl -s "$API/routines/email-blocked/history?limit=5" | jq
 curl -s "$API/routines/email-approval/history?limit=5" | jq
 curl -s "$API/routines/email-queued/history?limit=5" | jq
+```
+
+## Server Playbook: Routine Events via SSE (HTTP)
+
+Subscribe to routine lifecycle events and trigger transitions.
+
+```bash
+API="http://127.0.0.1:39731"
+
+# Terminal 1: watch routine lifecycle stream
+curl -N "$API/routines/events"
+```
+
+In a second terminal:
+
+```bash
+API="http://127.0.0.1:39731"
+curl -s -X POST "$API/routines" -H "content-type: application/json" -d '{
+  "routine_id":"sse-routine-demo",
+  "name":"SSE routine demo",
+  "schedule":{"interval_seconds":{"seconds":120}},
+  "entrypoint":"mission.default",
+  "creator_type":"user",
+  "creator_id":"demo"
+}' | jq
+
+curl -s -X POST "$API/routines/sse-routine-demo/run_now" -H "content-type: application/json" -d '{"reason":"sse smoke"}' | jq
+curl -s -X PATCH "$API/routines/sse-routine-demo" -H "content-type: application/json" -d '{"status":"paused"}' | jq
+curl -s -X DELETE "$API/routines/sse-routine-demo" | jq
 ```
 
 ## Multi-Agent Swarm: Parallel Specialists
