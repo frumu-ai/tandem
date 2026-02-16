@@ -90,6 +90,7 @@
       }
 
       input,
+      textarea,
       button {
         border-radius: 10px;
         border: 1px solid #334162;
@@ -99,7 +100,8 @@
         font-size: 14px;
       }
 
-      input:focus {
+      input:focus,
+      textarea:focus {
         outline: none;
         border-color: var(--brand-2);
         box-shadow: 0 0 0 2px rgba(65, 168, 255, 0.25);
@@ -120,6 +122,12 @@
         background: linear-gradient(90deg, #43ccff, #31d0aa);
         color: #06201a;
         border: none;
+      }
+
+      .btn-secondary {
+        background: #0f1a2c;
+        color: var(--text);
+        border: 1px solid #2b3b5d;
       }
 
       .status {
@@ -261,12 +269,61 @@
         font-size: 12px;
       }
 
+      .approval {
+        justify-self: center;
+        max-width: 100%;
+        border: 1px solid #2b3b5d;
+        background: #0e1627;
+        border-radius: 12px;
+        padding: 10px 12px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .approval-title {
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .approval-meta {
+        font-family: "JetBrains Mono", "Cascadia Mono", "Fira Mono", monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        background: #0b1322;
+        border: 1px solid #2b3550;
+        border-radius: 8px;
+        padding: 8px;
+      }
+
+      .approval-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .btn-approve {
+        background: linear-gradient(90deg, #31d0aa, #5ad88f);
+        color: #04121c;
+        border: none;
+      }
+
+      .btn-deny {
+        background: #2a1522;
+        color: #ffb4c4;
+        border: 1px solid #5a2a3d;
+      }
+
       .composer {
         border-top: 1px solid var(--panel-border);
         padding: 12px;
         display: grid;
-        grid-template-columns: 1fr auto;
+        grid-template-columns: 1fr auto auto;
         gap: 10px;
+      }
+
+      .composer textarea {
+        resize: vertical;
+        min-height: 44px;
+        max-height: 140px;
       }
 
       .events {
@@ -274,6 +331,25 @@
         display: grid;
         grid-template-rows: auto 1fr;
         overflow: hidden;
+      }
+
+      .ops {
+        margin-top: 14px;
+        padding: 12px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .ops-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      @media (max-width: 900px) {
+        .ops-grid {
+          grid-template-columns: 1fr 1fr;
+        }
       }
 
       .events-head {
@@ -331,6 +407,8 @@
           <input id="token" placeholder="tk_..." />
         </div>
         <button id="connectBtn" class="btn-connect">Connect</button>
+        <button id="disconnectBtn" class="btn-secondary" disabled>Disconnect</button>
+        <button id="clearBtn" class="btn-secondary">Clear</button>
         <div id="status" class="status">Not connected</div>
       </div>
 
@@ -338,14 +416,28 @@
         <div class="panel chat">
           <div id="messages" class="messages"></div>
           <div class="composer">
-            <input id="prompt" placeholder="Ask the engine something..." />
+            <textarea id="prompt" placeholder="Ask the engine something..."></textarea>
             <button id="sendBtn" class="btn-send" disabled>Send</button>
+            <button id="stopBtn" class="btn-secondary" disabled>Stop</button>
           </div>
         </div>
 
         <div class="panel events">
           <div class="events-head">Live SSE events</div>
           <ul id="events" class="events-log"></ul>
+        </div>
+      </div>
+
+      <div class="panel ops">
+        <div class="field">
+          <label>Mission Event Payload (JSON for <code>/mission/{id}/event</code>)</label>
+          <textarea id="missionEventJson" rows="4" placeholder='{"type":"mission_started","mission_id":"..."}'></textarea>
+        </div>
+        <div class="ops-grid">
+          <button id="missionCreateBtn" class="btn-secondary" disabled>Create Demo Mission</button>
+          <button id="missionsListBtn" class="btn-secondary" disabled>List Missions</button>
+          <button id="missionApplyBtn" class="btn-secondary" disabled>Apply Mission Event</button>
+          <button id="routinesListBtn" class="btn-secondary" disabled>List Routines</button>
         </div>
       </div>
     </div>
@@ -355,19 +447,49 @@
         apiUrl: document.getElementById("apiUrl"),
         token: document.getElementById("token"),
         connectBtn: document.getElementById("connectBtn"),
+        disconnectBtn: document.getElementById("disconnectBtn"),
+        clearBtn: document.getElementById("clearBtn"),
         status: document.getElementById("status"),
         prompt: document.getElementById("prompt"),
         sendBtn: document.getElementById("sendBtn"),
+        stopBtn: document.getElementById("stopBtn"),
         messages: document.getElementById("messages"),
-        events: document.getElementById("events")
+        events: document.getElementById("events"),
+        missionEventJson: document.getElementById("missionEventJson"),
+        missionCreateBtn: document.getElementById("missionCreateBtn"),
+        missionsListBtn: document.getElementById("missionsListBtn"),
+        missionApplyBtn: document.getElementById("missionApplyBtn"),
+        routinesListBtn: document.getElementById("routinesListBtn")
       };
 
       const state = {
         api: "",
         token: "",
         sessionId: "",
-        busy: false
+        busy: false,
+        connected: false,
+        streamAbort: null
       };
+
+      const storageKey = "tandem-example";
+
+      function loadSettings() {
+        try {
+          const raw = localStorage.getItem(storageKey);
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (parsed?.apiUrl) ui.apiUrl.value = parsed.apiUrl;
+          if (parsed?.token) ui.token.value = parsed.token;
+        } catch {}
+      }
+
+      function saveSettings() {
+        const payload = {
+          apiUrl: ui.apiUrl.value.trim(),
+          token: ui.token.value.trim()
+        };
+        localStorage.setItem(storageKey, JSON.stringify(payload));
+      }
 
       function authHeaders(json = true) {
         const headers = {};
@@ -379,6 +501,30 @@
       function setStatus(text, isError = false) {
         ui.status.textContent = text;
         ui.status.classList.toggle("error", isError);
+      }
+
+      function setConnected(connected) {
+        state.connected = connected;
+        ui.connectBtn.disabled = connected;
+        ui.disconnectBtn.disabled = !connected;
+        ui.sendBtn.disabled = !connected || state.busy;
+        ui.missionCreateBtn.disabled = !connected;
+        ui.missionsListBtn.disabled = !connected;
+        ui.missionApplyBtn.disabled = !connected;
+        ui.routinesListBtn.disabled = !connected;
+      }
+
+      function stopStream() {
+        if (state.streamAbort) {
+          state.streamAbort.abort();
+          state.streamAbort = null;
+        }
+        ui.stopBtn.disabled = true;
+      }
+
+      function clearAll() {
+        ui.messages.innerHTML = "";
+        ui.events.innerHTML = "";
       }
 
       function pushMessage(role, text, live = false) {
@@ -506,6 +652,82 @@
         ui.messages.scrollTop = ui.messages.scrollHeight;
       }
 
+      function pushApprovalRequest(request) {
+        const div = document.createElement("div");
+        div.className = "approval";
+
+        const title = document.createElement("div");
+        title.className = "approval-title";
+        title.textContent = "Approval required";
+
+        const meta = document.createElement("div");
+        meta.className = "approval-meta";
+        const payload = {
+          sessionID: request.sessionID || request.sessionId || "",
+          requestID: request.requestID || request.requestId || "",
+          tool: request.tool || "",
+          query: request.query || undefined,
+          args: request.args || {}
+        };
+        meta.textContent = JSON.stringify(payload, null, 2);
+
+        const actions = document.createElement("div");
+        actions.className = "approval-actions";
+
+        const approveBtn = document.createElement("button");
+        approveBtn.className = "btn-approve";
+        approveBtn.textContent = "Approve";
+
+        const denyBtn = document.createElement("button");
+        denyBtn.className = "btn-deny";
+        denyBtn.textContent = "Deny";
+
+        const resolve = (label) => {
+          approveBtn.disabled = true;
+          denyBtn.disabled = true;
+          title.textContent = label;
+        };
+
+        approveBtn.addEventListener("click", async () => {
+          const sessionId = request.sessionID || request.sessionId || state.sessionId;
+          const requestId = request.requestID || request.requestId;
+          if (!sessionId || !requestId) return;
+          try {
+            await fetch(
+              `${state.api}/sessions/${encodeURIComponent(sessionId)}/tools/${encodeURIComponent(requestId)}/approve`,
+              { method: "POST", headers: authHeaders(false) }
+            );
+            resolve("Approved");
+          } catch (err) {
+            pushSystem(String(err.message || err), true);
+          }
+        });
+
+        denyBtn.addEventListener("click", async () => {
+          const sessionId = request.sessionID || request.sessionId || state.sessionId;
+          const requestId = request.requestID || request.requestId;
+          if (!sessionId || !requestId) return;
+          try {
+            await fetch(
+              `${state.api}/sessions/${encodeURIComponent(sessionId)}/tools/${encodeURIComponent(requestId)}/deny`,
+              { method: "POST", headers: authHeaders(false) }
+            );
+            resolve("Denied");
+          } catch (err) {
+            pushSystem(String(err.message || err), true);
+          }
+        });
+
+        actions.appendChild(approveBtn);
+        actions.appendChild(denyBtn);
+
+        div.appendChild(title);
+        div.appendChild(meta);
+        div.appendChild(actions);
+        ui.messages.appendChild(div);
+        ui.messages.scrollTop = ui.messages.scrollHeight;
+      }
+
       function makeThinkingBubble() {
         const bubble = pushMessage("assistant", "", true);
         bubble.classList.add("thinking");
@@ -520,6 +742,26 @@
         li.innerHTML = `<span class="ev-type">${type}</span> <span class="ev-run">run=${runId}</span>\n${JSON.stringify(evt.properties || {}, null, 2)}`;
         ui.events.appendChild(li);
         ui.events.scrollTop = ui.events.scrollHeight;
+      }
+
+      async function apiGet(path) {
+        const res = await fetch(`${state.api}${path}`, { headers: authHeaders(false) });
+        if (!res.ok) {
+          throw new Error(`${path} failed (${res.status}): ${await res.text()}`);
+        }
+        return res.json();
+      }
+
+      async function apiPost(path, body) {
+        const res = await fetch(`${state.api}${path}`, {
+          method: "POST",
+          headers: authHeaders(true),
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+          throw new Error(`${path} failed (${res.status}): ${await res.text()}`);
+        }
+        return res.json();
       }
 
       function extractRunId(run) {
@@ -594,6 +836,7 @@
 
         setStatus("Connecting...");
         try {
+          stopStream();
           const health = await fetch(`${state.api}/global/health`, {
             headers: authHeaders(false)
           }).then((r) => r.json());
@@ -611,13 +854,23 @@
           });
 
           state.sessionId = session.id;
-          ui.sendBtn.disabled = false;
+          setConnected(true);
+          saveSettings();
           setStatus(`Connected | session=${state.sessionId.slice(0, 8)}... | phase=${health.phase || "ready"}`);
           pushSystem(`session: ${state.sessionId}`);
         } catch (err) {
+          setConnected(false);
           setStatus("Connection failed", true);
           pushSystem(String(err.message || err), true);
         }
+      }
+
+      function disconnect() {
+        stopStream();
+        state.sessionId = "";
+        setConnected(false);
+        setStatus("Disconnected");
+        pushSystem("disconnected");
       }
 
       async function runPrompt(promptText) {
@@ -642,8 +895,12 @@
       }
 
       async function streamRun(streamUrl) {
+        const controller = new AbortController();
+        state.streamAbort = controller;
+        ui.stopBtn.disabled = false;
         const res = await fetch(streamUrl, {
-          headers: { ...authHeaders(false), Accept: "text/event-stream" }
+          headers: { ...authHeaders(false), Accept: "text/event-stream" },
+          signal: controller.signal
         });
         if (!res.ok || !res.body) {
           const body = await res.text();
@@ -692,6 +949,10 @@
             const maybeText =
               p.delta || p.text || p.content || p.output || p.message || "";
 
+            if (t === "permission.asked") {
+              pushApprovalRequest(p);
+            }
+
             if (typeof maybeText === "string" && maybeText.trim()) {
               gotAssistantData = true;
               assistantDraft += maybeText;
@@ -729,6 +990,7 @@
           setMarkdownMessage(liveBubble, assistantDraft);
         }
         liveBubble.classList.remove("live");
+        stopStream();
       }
 
       async function send() {
@@ -752,16 +1014,108 @@
           pushSystem(String(err.message || err), true);
         } finally {
           state.busy = false;
-          ui.sendBtn.disabled = false;
+          ui.sendBtn.disabled = !state.connected;
           ui.prompt.focus();
         }
       }
 
+      async function createDemoMission() {
+        const payload = {
+          title: "Browser demo mission",
+          goal: "Exercise mission runtime APIs from docs/example.html",
+          work_items: [
+            { title: "Kick off mission", detail: "Generated from playground", assigned_agent: "general" }
+          ]
+        };
+        const created = await apiPost("/mission", payload);
+        const mission = created?.mission || {};
+        const missionId = mission.mission_id || "";
+        const workItemId = mission.work_items?.[0]?.work_item_id || "";
+        if (missionId && workItemId) {
+          ui.missionEventJson.value = JSON.stringify(
+            {
+              type: "run_finished",
+              mission_id: missionId,
+              work_item_id: workItemId,
+              run_id: "run-browser-demo",
+              status: "completed"
+            },
+            null,
+            2
+          );
+        }
+        pushSystem(`Mission created: ${missionId || "(unknown)"}`);
+        pushEvent({ type: "mission.created", properties: mission });
+      }
+
+      async function listMissions() {
+        const data = await apiGet("/mission");
+        pushSystem(`Mission count: ${data?.count ?? 0}`);
+        pushEvent({ type: "mission.list", properties: data });
+      }
+
+      async function applyMissionEvent() {
+        const raw = ui.missionEventJson.value.trim();
+        if (!raw) {
+          throw new Error("Mission event JSON is empty");
+        }
+        const event = JSON.parse(raw);
+        const missionId = event.mission_id;
+        if (!missionId) {
+          throw new Error("mission_id is required in event payload");
+        }
+        const data = await apiPost(`/mission/${encodeURIComponent(missionId)}/event`, { event });
+        pushSystem(`Mission event applied: ${event.type || "unknown"} -> revision ${data?.mission?.revision ?? "?"}`);
+        pushEvent({ type: "mission.updated", properties: data });
+      }
+
+      async function listRoutines() {
+        const data = await apiGet("/routines");
+        pushSystem(`Routine count: ${data?.count ?? 0}`);
+        pushEvent({ type: "routine.list", properties: data });
+      }
+
       ui.connectBtn.addEventListener("click", connect);
+      ui.disconnectBtn.addEventListener("click", disconnect);
+      ui.clearBtn.addEventListener("click", clearAll);
       ui.sendBtn.addEventListener("click", send);
+      ui.stopBtn.addEventListener("click", stopStream);
       ui.prompt.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") send();
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          send();
+        }
       });
+      ui.missionCreateBtn.addEventListener("click", async () => {
+        try {
+          await createDemoMission();
+        } catch (err) {
+          pushSystem(String(err.message || err), true);
+        }
+      });
+      ui.missionsListBtn.addEventListener("click", async () => {
+        try {
+          await listMissions();
+        } catch (err) {
+          pushSystem(String(err.message || err), true);
+        }
+      });
+      ui.missionApplyBtn.addEventListener("click", async () => {
+        try {
+          await applyMissionEvent();
+        } catch (err) {
+          pushSystem(String(err.message || err), true);
+        }
+      });
+      ui.routinesListBtn.addEventListener("click", async () => {
+        try {
+          await listRoutines();
+        } catch (err) {
+          pushSystem(String(err.message || err), true);
+        }
+      });
+
+      loadSettings();
     </script>
   </body>
 </html>
