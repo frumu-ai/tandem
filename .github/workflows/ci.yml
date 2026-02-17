@@ -242,21 +242,21 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-          cache-dependency-path: tandem/guide/pnpm-lock.yaml
+          cache-dependency-path: guide/pnpm-lock.yaml
 
       - name: Install docs dependencies
-        working-directory: tandem/guide
+        working-directory: guide
         run: pnpm install --frozen-lockfile
 
       - name: Validate docs parity
         run: node scripts/verify-docs-parity.mjs
 
       - name: Build docs
-        working-directory: tandem/guide
+        working-directory: guide
         run: pnpm build
 
       - name: Type check docs
-        working-directory: tandem/guide
+        working-directory: guide
         run: pnpm check
 
   docs:
@@ -282,26 +282,26 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-          cache-dependency-path: tandem/guide/pnpm-lock.yaml
+          cache-dependency-path: guide/pnpm-lock.yaml
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
       - name: Install dependencies
-        working-directory: tandem/guide
+        working-directory: guide
         run: pnpm install --frozen-lockfile
 
       - name: Validate docs parity
         run: node scripts/verify-docs-parity.mjs
 
       - name: Build docs
-        working-directory: tandem/guide
+        working-directory: guide
         run: pnpm build
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: tandem/guide/dist
+          path: guide/dist
 
       - name: Deploy to GitHub Pages
         id: deployment
