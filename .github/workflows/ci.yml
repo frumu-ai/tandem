@@ -10,6 +10,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   lint-frontend:
     name: Lint Frontend
@@ -214,3 +219,44 @@ jobs:
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/
           if-no-files-found: ignore
+
+  docs:
+    name: Deploy Docs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [lint-frontend]
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install dependencies
+        working-directory: tandem/guide
+        run: pnpm install
+
+      - name: Build docs
+        working-directory: tandem/guide
+        run: pnpm build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: tandem/guide/dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

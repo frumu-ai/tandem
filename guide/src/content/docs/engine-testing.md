@@ -1,4 +1,6 @@
-# Engine Testing
+---
+title: Engine Testing
+---
 
 This page summarizes how to build, run, and validate Tandem Engine behavior across unit tests, smoke tests, and security checks.
 

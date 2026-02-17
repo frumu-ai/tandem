@@ -1,4 +1,6 @@
-# Protocol Matrix
+---
+title: Protocol Matrix
+---
 
 This matrix summarizes the engine-backed contracts between Desktop/TUI clients and the engine runtime.
 
