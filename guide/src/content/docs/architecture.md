@@ -10,8 +10,10 @@ This page gives a practical mental model of how Tandem components fit together.
 flowchart LR
   U[User] --> D[Desktop App]
   U --> T[TUI]
+  U --> X[Custom App / Connector]
   D -->|HTTP + SSE| E[tandem-engine]
   T -->|HTTP + SSE| E
+  X -->|HTTP + SSE| E
 
   subgraph Engine Runtime
     E --> S[Session + Run APIs]
