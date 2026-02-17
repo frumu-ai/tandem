@@ -1,4 +1,6 @@
-# Engine CLI Commands
+---
+title: Engine Commands
+---
 
 The `tandem-engine` binary supports several subcommands for running the server and executing tasks.
 

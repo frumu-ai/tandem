@@ -1,0 +1,15 @@
+{
+  "name": "tandem-guide",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.32.2",
+    "astro": "^5.5.0"
+  }
+}

@@ -1,4 +1,6 @@
-# Running Tandem
+---
+title: Running Tandem
+---
 
 Tandem consists of two main components that work together: the **Engine** (server) and the **TUI** (client).
 
@@ -11,14 +13,13 @@ The engine must be running for clients to connect.
 tandem-engine
 ```
 
-By default, the engine listens on `http://127.0.0.1:39731`. You can configure the port and other settings via environment variables (see [Configuration](./configuration.md) - _coming soon_).
+By default, the engine listens on `http://127.0.0.1:39731`. You can configure the port and other settings via environment variables (see [Configuration](./configuration/)).
 
 ## 2. Start the TUI
 
 Open a new terminal window and start the Terminal User Interface:
 
-```bash
-mermaid
+```mermaid
 graph LR
     A[User] -- TUI --> B[tandem-tui]
     B -- HTTP --> C[tandem-engine]
@@ -34,4 +35,4 @@ The TUI will attempt to connect to the local engine. If the engine is not runnin
 ## Troubleshooting
 
 - **Connection Refused**: Ensure `tandem-engine` is running in a separate terminal.
-- **Port Conflicts**: If port 39731 is in use, you may need to change the engine's port (TBD: add config instruction).
+- **Port Conflicts**: If port 39731 is in use, change the engine's port via `TANDEM_ENGINE_PORT`.
