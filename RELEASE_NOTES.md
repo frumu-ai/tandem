@@ -4,14 +4,9 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## Unreleased
 
-- Engine-native orchestration platform rollout: mission runtime APIs, shared resources blackboard, governed memory promotion/audit, and routine scheduler/policy gates.
-- Desktop and TUI now have parity mission/routine control paths against engine-hosted APIs.
-- Phase 6 contract hardening (`W-019`) completed: mission/routine lifecycle events promoted to stable after snapshot + client parity validation.
-- Design control-plane docs (`docs/design/*`) now track execution IDs (`W-###`), progress logs, decisions, and release contract matrices.
-- TUI codex-parity uplift: multiline composer editing, native paste, markdown renderer replacement (`pulldown-cmark`), and stream-tail correctness hardening.
-- TUI long-session performance uplift: transcript virtualization + bounded per-message render cache with benchmark harness (`benchmark_virtualized_vs_naive_long_transcript`).
+- No unreleased changes.
 
-## v0.3.0 (Beta) - 2026-02-15
+## v0.3.0 - 2026-02-17
 
 - Core: Added `copilot` and `cohere` providers; updated default Gemini model to `gemini-2.5-flash`.
 - Core: Implemented smart session titling to better name sessions based on user intent.
