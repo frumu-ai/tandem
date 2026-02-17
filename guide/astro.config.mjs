@@ -3,8 +3,10 @@ import starlight from "@astrojs/starlight"
 
 const [owner, repo] = (process.env.GITHUB_REPOSITORY ?? "frumu-ai/tandem").split("/")
 const isCi = process.env.GITHUB_ACTIONS === "true"
-const site = isCi ? `https://${owner}.github.io/${repo}/` : "http://localhost:4321"
-const base = isCi ? `/${repo}/` : "/"
+const explicitSite = process.env.DOCS_SITE_URL
+const explicitBase = process.env.DOCS_BASE_PATH
+const site = explicitSite ?? (isCi ? `https://${owner}.github.io/${repo}/` : "http://localhost:4321")
+const base = explicitBase ?? (isCi && !explicitSite ? `/${repo}/` : "/")
 
 export default defineConfig({
   site,

@@ -253,6 +253,9 @@ jobs:
 
       - name: Build docs
         working-directory: guide
+        env:
+          DOCS_SITE_URL: https://tandem.docs.frumu.ai/
+          DOCS_BASE_PATH: /
         run: pnpm build
 
       - name: Type check docs
