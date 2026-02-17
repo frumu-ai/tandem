@@ -2,21 +2,19 @@
 title: Tandem Engine Guide
 ---
 
-Welcome to the Tandem Engine documentation.
+Welcome to the Tandem documentation focused on the TUI and engine runtime.
 
 ## Getting Started
 
-- [Installation & Build](./installation/)
+- [Start Here](./start-here/)
+- [Install CLI Binaries](./install-cli-binaries/)
+- [First Run Checklist](./first-run/)
+- [Build from Source (Contributors)](./build-from-source/)
+- [Installation (Legacy Entry)](./installation/)
 - [Running Tandem](./usage/)
 
 ## User Guide
 
-- [Desktop App Overview](./desktop/overview/)
-- [Desktop First 10 Minutes](./desktop/first-10-minutes/)
-- [Desktop Workflows](./desktop/workflows/)
-- [Desktop Settings & Safety](./desktop/settings-and-safety/)
-- [Desktop Troubleshooting](./desktop/troubleshooting/)
-- [Desktop Learn Walkthroughs](./desktop/learn-walkthroughs/)
 - [TUI Guide](./tui-guide/)
 - [Configuration](./configuration/)
 - [Agents & Sessions](./agents-and-sessions/)

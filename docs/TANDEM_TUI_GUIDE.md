@@ -1,5 +1,8 @@
 # Tandem TUI Guide
 
+Compatibility note: This is a deep/legacy reference page.
+For the current user journey, start in `guide` at `tandem/guide/src/content/docs/tui-guide.md`.
+
 The Tandem TUI (Terminal User Interface) provides a lightweight, keyboard-driven way to interact with the Tandem Engine.
 
 ## Running the TUI

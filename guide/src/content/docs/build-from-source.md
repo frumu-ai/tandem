@@ -1,0 +1,52 @@
+---
+title: Build from Source
+---
+
+Use this path for contributors and advanced local development.
+
+## Prerequisites
+
+- Rust (stable)
+- Node.js 20+
+- `pnpm`
+
+Platform-specific dependencies are listed in the repository README.
+
+## 1. Clone
+
+```bash
+git clone https://github.com/frumu-ai/tandem.git
+cd tandem
+```
+
+## 2. Install JS dependencies
+
+```bash
+pnpm install
+```
+
+## 3. Build engine binary
+
+```bash
+cargo build -p tandem-ai
+```
+
+This produces the `tandem-engine` binary from the `tandem-ai` package.
+
+## 4. Run
+
+```bash
+cargo run -p tandem-ai -- serve --host 127.0.0.1 --port 39731
+```
+
+In another terminal:
+
+```bash
+cargo run -p tandem-tui
+```
+
+## 5. Development and testing references
+
+- [Engine Testing](./engine-testing/)
+- `docs/ENGINE_TESTING.md`
+- `docs/ENGINE_CLI.md`

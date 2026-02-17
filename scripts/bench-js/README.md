@@ -61,7 +61,7 @@ To run:
 
 ```bash
 # Build the engine first
-cargo build -p tandem-engine
+cargo build -p tandem-ai
 
 # Run the benchmark
 node bench_server.mjs ../urls.txt

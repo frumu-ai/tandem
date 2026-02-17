@@ -26,12 +26,18 @@ export default defineConfig({
       sidebar: [
         {
           label: "Getting Started",
-          items: ["installation", "usage"],
+          items: [
+            "start-here",
+            "install-cli-binaries",
+            "first-run",
+            "build-from-source",
+            "installation",
+            "usage",
+          ],
         },
         {
           label: "User Guide",
           items: [
-            "desktop/learn-walkthroughs",
             "tui-guide",
             "configuration",
             "agents-and-sessions",

@@ -144,7 +144,7 @@ This supervised loop ensures complex features are implemented correctly with hum
 3. **Build the engine binary**
 
    ```bash
-   cargo build -p tandem-engine
+   cargo build -p tandem-ai
    ```
 
    This builds the native Rust `tandem-engine` binary for your platform.
