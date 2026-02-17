@@ -284,34 +284,61 @@ impl StreamHub {
                         s
                     }
                     Err(e) => {
-                        tracing::warn!("StreamHub failed to subscribe to sidecar events: {}", e);
-                        emit_event(
-                            tracing::Level::ERROR,
-                            ProcessKind::Desktop,
-                            ObservabilityEvent {
-                                event: "stream.subscribe.error",
-                                component: "stream_hub",
-                                correlation_id: None,
-                                session_id: None,
-                                run_id: None,
-                                message_id: None,
-                                provider_id: None,
-                                model_id: None,
-                                status: Some("failed"),
-                                error_code: Some("STREAM_SUBSCRIBE_FAILED"),
-                                detail: Some("failed to subscribe to /event"),
-                            },
-                        );
-                        if !matches!(health, StreamHealthStatus::Degraded) {
-                            health = StreamHealthStatus::Degraded;
-                            emit_stream_health(
-                                StreamHealthStatus::Degraded,
-                                Some("subscribe_failed".to_string()),
-                                &app,
-                                &tx,
-                                &runtime,
-                            )
-                            .await;
+                        let err_text = e.to_string();
+                        let transient = err_text.contains("Event subscription failed: 503")
+                            || err_text.contains("Sidecar not running")
+                            || err_text.contains("Circuit breaker is open")
+                            || err_text
+                                .contains("Failed to subscribe to events: error sending request");
+                        if transient {
+                            tracing::info!(
+                                "StreamHub subscribe retry while sidecar is transitioning: {}",
+                                err_text
+                            );
+                            if !matches!(health, StreamHealthStatus::Recovering) {
+                                health = StreamHealthStatus::Recovering;
+                                emit_stream_health(
+                                    StreamHealthStatus::Recovering,
+                                    Some("sidecar_transition".to_string()),
+                                    &app,
+                                    &tx,
+                                    &runtime,
+                                )
+                                .await;
+                            }
+                        } else {
+                            tracing::warn!(
+                                "StreamHub failed to subscribe to sidecar events: {}",
+                                e
+                            );
+                            emit_event(
+                                tracing::Level::ERROR,
+                                ProcessKind::Desktop,
+                                ObservabilityEvent {
+                                    event: "stream.subscribe.error",
+                                    component: "stream_hub",
+                                    correlation_id: None,
+                                    session_id: None,
+                                    run_id: None,
+                                    message_id: None,
+                                    provider_id: None,
+                                    model_id: None,
+                                    status: Some("failed"),
+                                    error_code: Some("STREAM_SUBSCRIBE_FAILED"),
+                                    detail: Some("failed to subscribe to /event"),
+                                },
+                            );
+                            if !matches!(health, StreamHealthStatus::Degraded) {
+                                health = StreamHealthStatus::Degraded;
+                                emit_stream_health(
+                                    StreamHealthStatus::Degraded,
+                                    Some("subscribe_failed".to_string()),
+                                    &app,
+                                    &tx,
+                                    &runtime,
+                                )
+                                .await;
+                            }
                         }
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_millis(800)) => {},

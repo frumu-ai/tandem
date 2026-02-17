@@ -2731,7 +2731,18 @@ impl SidecarManager {
             .map_err(|e| TandemError::Sidecar(format!("Failed to subscribe to events: {}", e)))?;
 
         if !response.status().is_success() {
-            self.record_failure().await;
+            // During sidecar restart/startup, /event can briefly return 503.
+            // Treat this as transient so stream retries do not trip the global circuit breaker.
+            let sidecar_state = self.state().await;
+            let is_transient_startup_503 = response.status()
+                == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                && matches!(
+                    sidecar_state,
+                    SidecarState::Starting | SidecarState::Stopping
+                );
+            if !is_transient_startup_503 {
+                self.record_failure().await;
+            }
             return Err(TandemError::Sidecar(format!(
                 "Event subscription failed: {}",
                 response.status()

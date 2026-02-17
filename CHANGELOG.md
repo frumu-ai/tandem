@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - No unreleased changes.
 
+## [0.3.1] - 2026-02-17
+
+### Fixed
+
+- **TUI Provider Gating**: TUI startup/provider catalog handling now excludes the fallback `local` provider from configured-provider checks, preventing chat/session flow from starting without a real provider setup.
+- **Provider Setup UX Consistency**: Key/setup checks now consistently use sanitized provider catalogs so `/key test` and startup gating match wizard behavior.
+- **Desktop StreamHub Restart Recovery**: Sidecar `/event` subscription failures during startup/restart are now treated as transient for circuit-breaker accounting, preventing repeated `503` retries from opening the breaker and delaying recovery.
+- **Desktop StreamHub Error Noise**: StreamHub now classifies common sidecar-transition subscription failures as recovering state retries instead of emitting repeated hard error telemetry/log spam.
+
 ## [0.3.0] - 2026-02-17
 
 ### Added

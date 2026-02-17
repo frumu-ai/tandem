@@ -1,3 +1,16 @@
+# Tandem v0.3.1 Release Notes
+
+## Release Date: 2026-02-17
+
+### Highlights
+
+- **TUI provider onboarding hotfix**: TUI now requires a real configured provider before entering normal chat/session flow, and excludes fallback `local` provider from configured-provider checks.
+- **Provider setup consistency**: Startup gating, provider checks, and `/key test` now share the same sanitized provider catalog behavior.
+- **Desktop stream recovery fix**: Sidecar event-subscription failures during sidecar restart/startup are treated as transient for circuit-breaker accounting, preventing restart loops from tripping a long-lived open breaker.
+- **StreamHub log/telemetry noise reduction**: Transition-state subscription failures now report as recovering retries instead of repeated hard `STREAM_SUBSCRIBE_FAILED` spam.
+
+---
+
 # Tandem v0.3.0 Release Notes
 
 ## Release Date: 2026-02-17

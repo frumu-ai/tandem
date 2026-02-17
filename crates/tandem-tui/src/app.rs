@@ -746,6 +746,14 @@ impl TandemMode {
 }
 
 impl App {
+    fn sanitize_provider_catalog(
+        mut catalog: crate::net::client::ProviderCatalog,
+    ) -> crate::net::client::ProviderCatalog {
+        catalog.all.retain(|p| p.id != "local");
+        catalog.connected.retain(|id| id != "local");
+        catalog
+    }
+
     fn provider_is_connected(&self, provider_id: &str) -> bool {
         self.provider_catalog
             .as_ref()
@@ -1122,6 +1130,7 @@ impl App {
 
         let providers = match client.list_providers().await {
             Ok(providers) => {
+                let providers = Self::sanitize_provider_catalog(providers);
                 self.provider_catalog = Some(providers.clone());
                 providers
             }
@@ -4589,7 +4598,8 @@ impl App {
                         }
                         if self.provider_catalog.is_none() {
                             if let Ok(catalog) = client.list_providers().await {
-                                self.provider_catalog = Some(catalog);
+                                self.provider_catalog =
+                                    Some(Self::sanitize_provider_catalog(catalog));
                             }
                         }
                         if (self.current_provider.is_none() || self.current_model.is_none())
@@ -5188,6 +5198,7 @@ MULTI-AGENT KEYS:
                     let provider_id = args[1];
                     if let Some(client) = &self.client {
                         if let Ok(catalog) = client.list_providers().await {
+                            let catalog = Self::sanitize_provider_catalog(catalog);
                             let is_connected = catalog.connected.contains(&provider_id.to_string());
                             if catalog.all.iter().any(|p| p.id == provider_id) {
                                 if is_connected {

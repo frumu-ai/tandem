@@ -2164,10 +2164,6 @@ fn ensure_provider_entry<'a>(
     provider_id: &str,
     provider_name: Option<&str>,
 ) -> &'a mut WireProviderEntry {
-    if !wire.connected.iter().any(|id| id == provider_id) {
-        wire.connected.push(provider_id.to_string());
-    }
-
     if let Some(idx) = wire.all.iter().position(|entry| entry.id == provider_id) {
         return &mut wire.all[idx];
     }
@@ -4640,6 +4636,18 @@ mod tests {
         assert!(!all.is_empty());
         let first = all.first().cloned().unwrap_or_else(|| json!({}));
         assert!(first.get("id").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[test]
+    fn merge_known_provider_defaults_does_not_mark_all_connected() {
+        let mut wire = WireProviderCatalog {
+            all: Vec::new(),
+            connected: Vec::new(),
+        };
+        merge_known_provider_defaults(&mut wire);
+
+        assert!(wire.all.iter().any(|p| p.id == "openrouter"));
+        assert!(wire.connected.is_empty());
     }
 
     #[tokio::test]
