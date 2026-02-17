@@ -1,6 +1,6 @@
 # Tandem v0.3.0 Release Notes
 
-## Unreleased
+## Release Date: 2026-02-17
 
 ### Highlights
 
