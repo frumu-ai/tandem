@@ -5139,19 +5139,19 @@ Use this capability to create premium, interactive presentations that look like 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         @page { margin: 0; size: landscape; }
-        body, html { 
-            margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #020617; 
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #020617;
             -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;
         }
         #viewport { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
-        #deck { 
-            width: 1920px; height: 1080px; 
-            position: relative; 
+        #deck {
+            width: 1920px; height: 1080px;
+            position: relative;
             transform-origin: center;
         }
-        .slide { 
-            position: absolute; inset: 0; 
-            display: none; 
+        .slide {
+            position: absolute; inset: 0;
+            display: none;
             padding: 100px;
             flex-direction: column;
             overflow: hidden;
@@ -5192,7 +5192,7 @@ Use this capability to create premium, interactive presentations that look like 
         }
         function next() { current = (current + 1) % slides.length; update(); }
         function prev() { current = (current - 1 + slides.length) % slides.length; update(); }
-        window.onkeydown = (e) => { 
+        window.onkeydown = (e) => {
             if (['ArrowRight', 'Space', 'ArrowDown'].includes(e.code)) next();
             if (['ArrowLeft', 'ArrowUp'].includes(e.code)) prev();
         };
@@ -7964,6 +7964,38 @@ pub async fn orchestrator_delete_run(state: State<'_, AppState>, run_id: String)
     let _ = state.sidecar.delete_session(&run.session_id).await;
 
     store.delete_run(&run_id)?;
+    Ok(())
+}
+
+// ============================================================================
+// Language Settings
+// ============================================================================
+
+#[tauri::command]
+pub async fn get_language_setting(app: AppHandle) -> Result<String> {
+    let store = app
+        .store("store.json")
+        .map_err(|e| TandemError::InvalidConfig(format!("Failed to access store: {}", e)))?;
+
+    let language = store
+        .get("language")
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "en".to_string());
+
+    Ok(language)
+}
+
+#[tauri::command]
+pub async fn set_language_setting(app: AppHandle, language: String) -> Result<()> {
+    let store = app
+        .store("store.json")
+        .map_err(|e| TandemError::InvalidConfig(format!("Failed to access store: {}", e)))?;
+
+    store.set("language".to_string(), serde_json::json!(language));
+    store.save().map_err(|e| {
+        TandemError::InvalidConfig(format!("Failed to save language setting: {}", e))
+    })?;
+
     Ok(())
 }
 

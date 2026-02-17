@@ -1,0 +1,64 @@
+{
+  "header": {
+    "newChat": "New Chat",
+    "mode": "Mode",
+    "model": "Model",
+    "selectMode": "Select Mode",
+    "selectModel": "Select Model"
+  },
+  "input": {
+    "placeholder": "Type a message...",
+    "send": "Send",
+    "attachFile": "Attach file",
+    "attachImage": "Attach image",
+    "recording": "Recording...",
+    "stopRecording": "Stop recording"
+  },
+  "modes": {
+    "chat": "Chat",
+    "plan": "Plan",
+    "ask": "Ask",
+    "debug": "Debug",
+    "ralph": "Ralph Loop",
+    "orchestrator": "Orchestrator"
+  },
+  "messages": {
+    "thinking": "Thinking...",
+    "generating": "Generating...",
+    "error": "Failed to send message",
+    "empty": "No messages yet",
+    "deleted": "Message deleted",
+    "edited": "Edited"
+  },
+  "actions": {
+    "copy": "Copy",
+    "edit": "Edit",
+    "delete": "Delete",
+    "regenerate": "Regenerate",
+    "retry": "Retry",
+    "stop": "Stop generating"
+  },
+  "session": {
+    "new": "New Session",
+    "rename": "Rename",
+    "delete": "Delete Session",
+    "deleteConfirm": "Are you sure you want to delete this session?",
+    "export": "Export",
+    "import": "Import"
+  },
+  "memory": {
+    "title": "Memory",
+    "used": "Used",
+    "notUsed": "Not used",
+    "chunks": "{{count}} chunk",
+    "chunks_plural": "{{count}} chunks",
+    "retrieving": "Retrieving..."
+  },
+  "tools": {
+    "title": "Tools",
+    "executing": "Executing",
+    "completed": "Completed",
+    "failed": "Failed",
+    "pending": "Pending"
+  }
+}

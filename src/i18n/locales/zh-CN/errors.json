@@ -1,0 +1,41 @@
+{
+  "network": {
+    "connectionFailed": "连接失败",
+    "timeout": "请求超时",
+    "offline": "您处于离线状态",
+    "serverError": "服务器错误"
+  },
+  "auth": {
+    "invalidKey": "无效的 API 密钥",
+    "unauthorized": "未授权",
+    "forbidden": "访问被禁止",
+    "keyRequired": "需要 API 密钥"
+  },
+  "file": {
+    "notFound": "文件未找到",
+    "readError": "读取文件失败",
+    "writeError": "写入文件失败",
+    "deleteError": "删除文件失败",
+    "permissionDenied": "权限被拒绝",
+    "invalidPath": "无效的文件路径"
+  },
+  "validation": {
+    "required": "此字段为必填项",
+    "invalid": "输入无效",
+    "tooShort": "输入过短",
+    "tooLong": "输入过长",
+    "invalidFormat": "格式无效",
+    "invalidUrl": "无效的 URL"
+  },
+  "sidecar": {
+    "notInstalled": "Sidecar 未安装",
+    "startFailed": "启动 Sidecar 失败",
+    "crashed": "Sidecar 崩溃",
+    "updateRequired": "需要更新"
+  },
+  "general": {
+    "unknown": "未知错误",
+    "tryAgain": "请重试",
+    "contactSupport": "如果问题持续存在，请联系支持"
+  }
+}

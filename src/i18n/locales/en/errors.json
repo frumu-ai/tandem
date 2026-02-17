@@ -1,0 +1,41 @@
+{
+  "network": {
+    "connectionFailed": "Connection failed",
+    "timeout": "Request timeout",
+    "offline": "You are offline",
+    "serverError": "Server error"
+  },
+  "auth": {
+    "invalidKey": "Invalid API key",
+    "unauthorized": "Unauthorized",
+    "forbidden": "Access forbidden",
+    "keyRequired": "API key required"
+  },
+  "file": {
+    "notFound": "File not found",
+    "readError": "Failed to read file",
+    "writeError": "Failed to write file",
+    "deleteError": "Failed to delete file",
+    "permissionDenied": "Permission denied",
+    "invalidPath": "Invalid file path"
+  },
+  "validation": {
+    "required": "This field is required",
+    "invalid": "Invalid input",
+    "tooShort": "Input too short",
+    "tooLong": "Input too long",
+    "invalidFormat": "Invalid format",
+    "invalidUrl": "Invalid URL"
+  },
+  "sidecar": {
+    "notInstalled": "Sidecar not installed",
+    "startFailed": "Failed to start sidecar",
+    "crashed": "Sidecar crashed",
+    "updateRequired": "Update required"
+  },
+  "general": {
+    "unknown": "Unknown error",
+    "tryAgain": "Please try again",
+    "contactSupport": "Contact support if the problem persists"
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "title": "Skills",
+  "description": "Manage AI skills and capabilities",
+  "tabs": {
+    "installed": "Installed",
+    "templates": "Templates",
+    "import": "Import"
+  },
+  "installed": {
+    "title": "Installed Skills",
+    "empty": "No skills installed yet",
+    "scope": {
+      "global": "Global",
+      "workspace": "Workspace"
+    }
+  },
+  "templates": {
+    "title": "Skill Templates",
+    "description": "Quick-install starter skills",
+    "install": "Install",
+    "installed": "Installed",
+    "installing": "Installing...",
+    "requires": "Requires",
+    "category": "Category"
+  },
+  "import": {
+    "title": "Import Skill",
+    "description": "Import skills from files or URLs",
+    "fromFile": "From File",
+    "fromUrl": "From URL",
+    "selectFile": "Select SKILL.md or ZIP file",
+    "enterUrl": "Enter skill URL",
+    "importing": "Importing...",
+    "success": "Skill imported successfully",
+    "error": "Failed to import skill"
+  },
+  "actions": {
+    "install": "Install",
+    "uninstall": "Uninstall",
+    "edit": "Edit",
+    "delete": "Delete",
+    "export": "Export",
+    "duplicate": "Duplicate"
+  },
+  "conflicts": {
+    "title": "Conflict Resolution",
+    "description": "A skill with this name already exists",
+    "skip": "Skip",
+    "overwrite": "Overwrite",
+    "rename": "Rename"
+  },
+  "metadata": {
+    "name": "Name",
+    "description": "Description",
+    "author": "Author",
+    "version": "Version",
+    "category": "Category",
+    "tags": "Tags",
+    "license": "License",
+    "compatibility": "Compatibility"
+  }
+}

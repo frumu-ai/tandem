@@ -695,6 +695,9 @@ pub fn run() {
             commands::get_project_memory_stats,
             commands::clear_project_file_index,
             commands::index_workspace_command,
+            // Language Settings
+            commands::get_language_setting,
+            commands::set_language_setting,
         ]);
 
     // Add desktop-only plugins

@@ -16,6 +16,7 @@ import {
   Play,
   Square,
   RefreshCw,
+  RotateCcw,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -92,11 +93,13 @@ interface ProviderCardProps {
   name: string;
   description: string;
   endpoint: string;
+  defaultEndpoint?: string; // Default endpoint for reset functionality
   model?: string;
   isDefault?: boolean;
   enabled: boolean;
   onEnabledChange: (enabled: boolean) => void;
   onModelChange?: (model: string) => void;
+  onEndpointChange?: (endpoint: string) => void;
   onSetDefault?: () => void;
   onKeyChange?: () => void; // Called when API key is saved or deleted
   docsUrl?: string;
@@ -107,11 +110,13 @@ export function ProviderCard({
   name,
   description,
   endpoint,
+  defaultEndpoint,
   model,
   isDefault = false,
   enabled,
   onEnabledChange,
   onModelChange,
+  onEndpointChange,
   onSetDefault,
   onKeyChange,
   docsUrl,
@@ -128,6 +133,8 @@ export function ProviderCard({
   const [discoveredModels, setDiscoveredModels] = useState<ModelInfo[]>([]);
   const [runningModels, setRunningModels] = useState<ModelInfo[]>([]);
   const [loadingOllama, setLoadingOllama] = useState(false);
+  const [endpointInput, setEndpointInput] = useState(endpoint);
+  const [isEditingEndpoint, setIsEditingEndpoint] = useState(false);
 
   const isTextInputProvider = TEXT_INPUT_PROVIDERS.includes(id);
   const availableModels = PROVIDER_MODELS[id] || [];
@@ -160,6 +167,11 @@ export function ProviderCard({
   useEffect(() => {
     setModelInput(model || "");
   }, [model]);
+
+  // Sync endpointInput with endpoint prop
+  useEffect(() => {
+    setEndpointInput(endpoint);
+  }, [endpoint]);
 
   // Load Ollama data
   const loadOllamaData = async () => {
@@ -246,6 +258,22 @@ export function ProviderCard({
       console.error("Failed to open link:", err);
     }
   };
+
+  const handleSaveEndpoint = () => {
+    if (endpointInput.trim() && endpointInput !== endpoint) {
+      onEndpointChange?.(endpointInput.trim());
+    }
+    setIsEditingEndpoint(false);
+  };
+
+  const handleResetEndpoint = () => {
+    if (defaultEndpoint) {
+      setEndpointInput(defaultEndpoint);
+      onEndpointChange?.(defaultEndpoint);
+    }
+  };
+
+  const isEndpointModified = defaultEndpoint && endpoint !== defaultEndpoint;
 
   return (
     <Card className="relative overflow-hidden">
@@ -542,9 +570,74 @@ export function ProviderCard({
                 </div>
               )}
 
-              <div className="rounded-lg bg-surface-elevated p-3">
-                <p className="text-xs text-text-subtle">Endpoint</p>
-                <p className="font-mono text-sm text-text-muted">{endpoint}</p>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-text-subtle">Base URL</label>
+                  {!isEditingEndpoint && onEndpointChange && (
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingEndpoint(true)}
+                      className="text-xs text-primary hover:underline"
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+                {isEditingEndpoint ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="text"
+                        placeholder="https://api.example.com/v1"
+                        value={endpointInput}
+                        onChange={(e) => setEndpointInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            handleSaveEndpoint();
+                          } else if (e.key === "Escape") {
+                            setEndpointInput(endpoint);
+                            setIsEditingEndpoint(false);
+                          }
+                        }}
+                        className="flex-1"
+                      />
+                      {isEndpointModified && defaultEndpoint && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={handleResetEndpoint}
+                          title="Reset to default endpoint"
+                          className="shrink-0"
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        onClick={handleSaveEndpoint}
+                        disabled={!endpointInput.trim()}
+                      >
+                        Save
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setEndpointInput(endpoint);
+                          setIsEditingEndpoint(false);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-lg bg-surface-elevated p-3">
+                    <p className="font-mono text-sm text-text-muted break-all">{endpoint}</p>
+                  </div>
+                )}
               </div>
 
               {!requiresApiKey ? (
