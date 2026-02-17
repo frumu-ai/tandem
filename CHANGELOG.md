@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- No unreleased changes.
+
+## [0.3.0] - 2026-02-17
+
 ### Added
 
 - **Engine-Native Mission Runtime**: Added mission APIs (`POST /mission`, `GET /mission`, `GET /mission/{id}`, `POST /mission/{id}/event`) backed by shared orchestrator reducer state.
@@ -50,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Browser CORS for Engine API**: Added CORS support to engine HTTP routes so browser-based examples using `X-Tandem-Token` work with preflight requests.
 - **TUI Stream Merge Regression**: Prevented regressive success/failure snapshots from overwriting richer locally-finalized assistant stream tails.
 
-## [0.3.0] - 2026-02-15
+## [0.3.0-rc.2] - 2026-02-15
 
 ### Added
 
@@ -120,7 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Session Rehydration Gaps**: Fixed missing memory retrieval/storage telemetry after reload by rehydrating persisted memory rows into assistant message badges and console history.
 - **Idle Stream Health**: Stream watchdog no longer marks the desktop stream as degraded when idle without active runs or tool calls.
 
-## [0.3.0] - 2026-02-14
+## [0.3.0-rc.1] - 2026-02-14
 
 ### Added
 
