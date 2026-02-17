@@ -262,12 +262,12 @@ jobs:
   docs:
     name: Deploy Docs
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/engine')) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_docs_preview == 'true')
     runs-on: ubuntu-latest
     needs: [lint-frontend, docs-validate]
     environment:
-      name: github-pages
+      name: ${{ github.ref == 'refs/heads/main' && 'github-pages' || 'github-pages-preview' }}
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
