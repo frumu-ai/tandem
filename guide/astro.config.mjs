@@ -31,11 +31,6 @@ export default defineConfig({
         {
           label: "User Guide",
           items: [
-            "desktop/overview",
-            "desktop/first-10-minutes",
-            "desktop/workflows",
-            "desktop/settings-and-safety",
-            "desktop/troubleshooting",
             "desktop/learn-walkthroughs",
             "tui-guide",
             "configuration",
