@@ -97,3 +97,18 @@ TANDEM_ORCH_STRICT_CONTRACT=1
 ```
 
 Strict mode emits `contract_warning` or `contract_error` events when the JSON contract is degraded.
+
+## Protocol Flow Diagram
+
+```mermaid
+flowchart LR
+  FE[Frontend] -->|invoke| TAURI[Tauri Commands]
+  TAURI -->|HTTP| ENGINE[tandem-engine]
+  ENGINE -->|SSE| TAURI
+  TAURI -->|events| FE
+
+  ENGINE --> MISSIONS[Mission APIs]
+  ENGINE --> ROUTINES[Routine APIs]
+  ENGINE --> SESSION[Session/Run APIs]
+  ENGINE --> EVENTS[message.part.updated / todo.updated / question.asked]
+```

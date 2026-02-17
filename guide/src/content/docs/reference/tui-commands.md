@@ -87,3 +87,54 @@ Type `/` in the chat input to see autocomplete.
 - **/mission_test_ok**: Approve test gate
 - **/mission_review_no**: Deny review gate
 - **/config**: Show configuration
+
+## Practical TUI Flows
+
+### Set Provider and Model
+
+```text
+/providers
+/provider openrouter
+/models
+/model openai/gpt-4o-mini
+```
+
+### Fast Session Management
+
+```text
+/new
+/title Engine API smoke test
+/sessions
+/use <session-id>
+```
+
+### Handle Pending Requests
+
+```text
+/requests
+/approve <request-id>
+/deny <request-id>
+/answer <question-id> "continue"
+```
+
+### Mission Workflow
+
+```text
+/missions
+/mission_create {"title":"Release prep","goal":"Ship v0.3.0","work_items":[{"title":"Finalize docs"}]}
+/mission_get <mission-id>
+/mission_start <mission-id> <work-item-id> run-demo-1
+/mission_review_ok <mission-id> <work-item-id>
+/mission_test_ok <mission-id> <work-item-id>
+```
+
+### Routine Workflow
+
+```text
+/routines
+/routine_create {"routine_id":"nightly-summary","name":"Nightly Summary","schedule":{"interval_seconds":{"seconds":86400}},"entrypoint":"mission.default"}
+/routine_run_now nightly-summary
+/routine_history nightly-summary
+/routine_pause nightly-summary
+/routine_resume nightly-summary
+```

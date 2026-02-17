@@ -4,6 +4,25 @@ title: Engine Commands
 
 The `tandem-engine` binary supports several subcommands for running the server and executing tasks.
 
+## Command Map
+
+```mermaid
+flowchart TD
+  ROOT[tandem-engine] --> SERVE[serve]
+  ROOT --> RUN[run]
+  ROOT --> PAR[parallel]
+  ROOT --> TOOL[tool]
+  ROOT --> TOKEN[token]
+  ROOT --> PROV[providers]
+  ROOT --> CHAT[chat placeholder]
+
+  SERVE --> API[HTTP + SSE runtime]
+  RUN --> ONE[Single prompt]
+  PAR --> MANY[Concurrent prompt batch]
+  TOOL --> DIRECT[Direct tool execution]
+  TOKEN --> AUTH[API token utilities]
+```
+
 ## `serve`
 
 Starts the Tandem Engine server. This is the default mode for handling client connections.
@@ -116,3 +135,56 @@ API token utilities (used with `--api-token`).
 ```bash
 tandem-engine token generate
 ```
+
+## Practical Examples
+
+### Run Engine with API Token
+
+```bash
+TANDEM_API_TOKEN="tk_your_token_here" tandem-engine serve --hostname 127.0.0.1 --port 39731
+```
+
+### Run One Prompt with Explicit Provider and Model
+
+```bash
+tandem-engine run "Write a concise release summary." --provider openrouter --model openai/gpt-4o-mini
+```
+
+### Run a Concurrent Batch
+
+```bash
+cat > tasks.json << 'JSON'
+{
+  "tasks": [
+    { "id": "plan", "prompt": "Create a 3-step rollout plan." },
+    { "id": "risks", "prompt": "List top 5 rollout risks." },
+    { "id": "comms", "prompt": "Draft a short launch update." }
+  ]
+}
+JSON
+
+tandem-engine parallel --json @tasks.json --concurrency 3
+```
+
+### Execute Tools Directly
+
+```bash
+tandem-engine tool --json '{"tool":"workspace_list_files","args":{"path":"."}}'
+tandem-engine tool --json '{"tool":"websearch","args":{"query":"tandem engine protocol matrix","limit":5}}'
+tandem-engine tool --json '{"tool":"memory_search","args":{"query":"mission runtime","project_id":"tandem","tier":"project","limit":5}}'
+```
+
+### Browser Playground (Interactive)
+
+Use the included browser playground in `docs/example.html` to test:
+
+- session creation
+- async runs + SSE streaming
+- token-auth requests
+- mission/routine API interactions
+
+```bash
+python -m http.server 8080 --directory docs
+```
+
+Then open `http://127.0.0.1:8080/example.html`.

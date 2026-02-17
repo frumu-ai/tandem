@@ -100,6 +100,18 @@ h4 {
 .sidebar-content a[aria-current="page"] {
   background: color-mix(in srgb, var(--sl-color-accent-low) 70%, transparent);
   border-left: 2px solid var(--sl-color-accent);
+  color: #6dffb6;
+  font-weight: 600;
+  text-shadow: 0 0 14px color-mix(in srgb, var(--sl-color-accent) 36%, transparent);
+}
+
+.sidebar-content a[aria-current="page"] > span {
+  color: inherit;
+}
+
+:root[data-theme="light"] .sidebar-content a[aria-current="page"] {
+  color: #056c3d;
+  text-shadow: none;
 }
 
 .sl-markdown-content table th {

@@ -1,4 +1,5 @@
 import { defineConfig } from "astro/config"
+import mermaid from "astro-mermaid"
 import starlight from "@astrojs/starlight"
 
 const [owner, repo] = (process.env.GITHUB_REPOSITORY ?? "frumu-ai/tandem").split("/")
@@ -12,6 +13,10 @@ export default defineConfig({
   site,
   base,
   integrations: [
+    mermaid({
+      autoTheme: true,
+      theme: "forest",
+    }),
     starlight({
       title: "Tandem Engine",
       customCss: ["./src/styles/custom.css"],
