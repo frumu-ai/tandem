@@ -85,7 +85,7 @@ export function ModelSelector({
           case "openrouter":
             return "OpenRouter";
           case "opencode_zen":
-            return "OpenCode Zen";
+            return "Opencode Zen";
           case "ollama":
             return "Ollama";
           case "poe":
@@ -127,31 +127,8 @@ export function ModelSelector({
 
       setGroupedModels(
         Object.values(groups)
-          .filter((group) => {
-            // Filter: Only show "valid" providers
-            const getConf = (pid: string) => {
-              if (pid === "openai") return config.openai;
-              if (pid === "anthropic") return config.anthropic;
-              if (pid === "openrouter") return config.openrouter;
-              if (pid === "opencode_zen") return config.opencode_zen;
-              if (pid === "ollama") return config.ollama;
-              if (pid === "poe") return config.poe;
-              return undefined;
-            };
-
-            // Always show OpenCode Zen and Ollama (local/free)
-            if (group.providerId === "opencode_zen" || group.providerId === "ollama") return true;
-
-            const conf = getConf(group.providerId);
-            if (conf) {
-              // For known providers, check if they have a key or are enabled
-              return conf.has_key || conf.enabled;
-            }
-
-            // For unknown providers, trust the sidecar model catalog: if it listed models,
-            // it is a usable provider (often configured via `.opencode/config.json`).
-            return true;
-          })
+          // Trust sidecar catalog and show every provider/model it returns.
+          // This matches OpenCode's "browse all models" behavior.
           .sort((a, b) => {
             // 1. OpenCode Zen always first
             if (a.providerId === "opencode_zen") return -1;

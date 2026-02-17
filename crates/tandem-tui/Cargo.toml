@@ -1,0 +1,46 @@
+[package]
+name = "tandem-tui"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/frumu-ai/tandem"
+edition = "2021"
+
+[dependencies]
+# UI
+ratatui = "0.29"
+crossterm = "0.28"
+pulldown-cmark = "0.10"
+throbber-widgets-tui = "0.8"
+
+# Async & Networking
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto (Pin/Key management)
+argon2 = "0.5"
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
+zeroize = "1.7"
+byteorder = "1.5"
+
+# Tandem crates
+tandem-types = { path = "../tandem-types" }
+tandem-wire = { path = "../tandem-wire" }
+tandem-core = { path = "../tandem-core" }
+tandem-observability = { path = "../tandem-observability" }
+
+# Utils
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tachyonfx = "0.23.0"
+zip = "0.6"
+tar = "0.4"
+flate2 = "1.0"

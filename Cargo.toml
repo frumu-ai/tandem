@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "src-tauri",
+    "engine",
+    "crates/tandem-types",
+    "crates/tandem-wire",
+    "crates/tandem-core",
+    "crates/tandem-providers",
+    "crates/tandem-tools",
+    "crates/tandem-server",
+    "crates/tandem-runtime",
+    "crates/tandem-tui",
+    "crates/tandem-observability",
+    "crates/tandem-skills",
+    "crates/tandem-memory",
+    "crates/tandem-orchestrator",
+]
+resolver = "2"
+
+[patch.crates-io]
+esaxx-rs = { path = "third_party/esaxx-rs" }

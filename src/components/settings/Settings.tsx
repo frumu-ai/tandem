@@ -13,6 +13,13 @@ import {
   Trash2,
   Plus,
   Info,
+  Database,
+  RefreshCw,
+  FileText,
+  ScrollText,
+  Eye,
+  EyeOff,
+  Copy,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { ProviderCard } from "./ProviderCard";
@@ -23,6 +30,7 @@ import { Switch } from "@/components/ui/Switch";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
 import { MemoryStats } from "./MemoryStats";
+import { LogsDrawer } from "@/components/logs";
 import { LanguageSettings } from "./LanguageSettings";
 
 import { useUpdater } from "@/hooks/useUpdater";
@@ -48,11 +56,15 @@ import {
   storeApiKey,
   checkGitStatus,
   initializeGitRepo,
-  checkSidecarStatus,
+  getStorageMigrationStatus,
+  runStorageMigration,
+  getEngineApiToken,
+  type EngineApiTokenInfo,
   type ProvidersConfig,
   type CustomBackgroundInfo,
   type UserProject,
-  type SidecarStatus,
+  type StorageMigrationStatus,
+  type StorageMigrationRunResult,
 } from "@/lib/tauri";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -71,6 +83,7 @@ export function Settings({
   initialSection,
   onInitialSectionConsumed,
 }: SettingsProps) {
+  const [activeTab, setActiveTab] = useState<"settings" | "logs">("settings");
   const {
     status: updateStatus,
     updateInfo,
@@ -93,7 +106,9 @@ export function Settings({
 
   // Version info
   const [appVersion, setAppVersion] = useState<string>("");
-  const [sidecarStatus, setSidecarStatus] = useState<SidecarStatus | null>(null);
+  const [engineTokenInfo, setEngineTokenInfo] = useState<EngineApiTokenInfo | null>(null);
+  const [engineTokenVisible, setEngineTokenVisible] = useState(false);
+  const [tokenCopied, setTokenCopied] = useState(false);
 
   // Custom background image (global)
   const [customBg, setCustomBg] = useState<CustomBackgroundInfo | null>(null);
@@ -115,12 +130,16 @@ export function Settings({
   const [gitStatus, setGitStatus] = useState<{ git_installed: boolean; is_repo: boolean } | null>(
     null
   );
+  const [migrationStatus, setMigrationStatus] = useState<StorageMigrationStatus | null>(null);
+  const [migrationLastResult, setMigrationLastResult] = useState<StorageMigrationRunResult | null>(
+    null
+  );
+  const [migrationRunning, setMigrationRunning] = useState(false);
 
   useEffect(() => {
     loadSettings();
     void loadCustomBackground();
     getVersion().then(setAppVersion);
-    checkSidecarStatus().then(setSidecarStatus).catch(console.error);
   }, []);
 
   useEffect(() => {
@@ -172,13 +191,16 @@ export function Settings({
 
   const loadSettings = async () => {
     try {
-      const [config, userProjects, activeProj] = await Promise.all([
+      const [config, userProjects, activeProj, tokenInfo] = await Promise.all([
         getProvidersConfig(),
         getUserProjects(),
         getActiveProject(),
+        getEngineApiToken(false),
       ]);
       setProviders(config);
       setProjects(userProjects);
+      setEngineTokenInfo(tokenInfo);
+      setEngineTokenVisible(false);
 
       // Load custom provider if exists
       if (config.custom && config.custom.length > 0) {
@@ -192,10 +214,52 @@ export function Settings({
       if (activeProj) {
         setActiveProjectId(activeProj.id);
       }
+      const storageMigrationStatus = await getStorageMigrationStatus();
+      setMigrationStatus(storageMigrationStatus);
     } catch (err) {
       console.error("Failed to load settings:", err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRevealEngineToken = async () => {
+    try {
+      const tokenInfo = await getEngineApiToken(!engineTokenVisible);
+      setEngineTokenInfo(tokenInfo);
+      setEngineTokenVisible(!engineTokenVisible);
+      setTokenCopied(false);
+    } catch (err) {
+      console.error("Failed to read engine API token:", err);
+    }
+  };
+
+  const handleCopyEngineToken = async () => {
+    const token = engineTokenInfo?.token;
+    if (!token) return;
+    try {
+      await window.navigator.clipboard.writeText(token);
+      setTokenCopied(true);
+      globalThis.setTimeout(() => setTokenCopied(false), 1500);
+    } catch (err) {
+      console.error("Failed to copy engine API token:", err);
+      setTokenCopied(false);
+    }
+  };
+
+  const handleRunMigration = async (dryRun = false) => {
+    try {
+      setMigrationRunning(true);
+      const result = await runStorageMigration({ dryRun, includeWorkspaceScan: true, force: true });
+      setMigrationLastResult(result);
+      const status = await getStorageMigrationStatus();
+      setMigrationStatus(status);
+      onProjectChange?.();
+      onProviderChange?.();
+    } catch (err) {
+      console.error("Failed to run migration:", err);
+    } finally {
+      setMigrationRunning(false);
     }
   };
 
@@ -494,6 +558,59 @@ export function Settings({
 
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
 
+  if (activeTab === "logs") {
+    return (
+      <motion.div
+        className="h-full overflow-y-auto p-6"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.3 }}
+      >
+        <div className="mx-auto max-w-2xl space-y-8">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+                <SettingsIcon className="h-6 w-6 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-text">Settings</h1>
+                <p className="text-text-muted">Configure your Tandem folders and AI</p>
+              </div>
+            </div>
+            {onClose && (
+              <Button variant="ghost" onClick={onClose}>
+                Close
+              </Button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-elevated/40 p-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab("settings")}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+            >
+              <SettingsIcon className="h-4 w-4" />
+              Settings
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("logs")}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-primary/15 px-3 py-2 text-sm font-medium text-text transition-colors"
+            >
+              <ScrollText className="h-4 w-4" />
+              Logs
+            </button>
+          </div>
+
+          <div className="h-[70vh] min-h-[560px]">
+            <LogsDrawer embedded />
+          </div>
+        </div>
+      </motion.div>
+    );
+  }
+
   return (
     <motion.div
       className="h-full overflow-y-auto p-6"
@@ -520,15 +637,81 @@ export function Settings({
           )}
         </div>
 
+        <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-elevated/40 p-1">
+          <button
+            type="button"
+            onClick={() => setActiveTab("settings")}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-primary/15 px-3 py-2 text-sm font-medium text-text transition-colors"
+          >
+            <SettingsIcon className="h-4 w-4" />
+            Settings
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("logs")}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+          >
+            <ScrollText className="h-4 w-4" />
+            Logs
+          </button>
+        </div>
+
         {/* Version Info */}
         <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-surface-elevated/50 p-3 text-sm text-text-muted">
           <div className="flex items-center gap-2">
             <Info className="h-4 w-4 text-primary" />
             <span>Tandem v{appVersion || "..."}</span>
-            <span className="text-text-subtle">•</span>
-            <span>OpenCode v{sidecarStatus?.version || "..."}</span>
           </div>
         </div>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <CardTitle>Engine API Token</CardTitle>
+                <CardDescription>
+                  Hidden by default. Reveal and copy when you need to call engine HTTP endpoints.
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="ghost" onClick={handleRevealEngineToken}>
+                  {engineTokenVisible ? (
+                    <>
+                      <EyeOff className="mr-2 h-4 w-4" />
+                      Hide
+                    </>
+                  ) : (
+                    <>
+                      <Eye className="mr-2 h-4 w-4" />
+                      Reveal
+                    </>
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={handleCopyEngineToken}
+                  disabled={!engineTokenInfo?.token}
+                >
+                  <Copy className="mr-2 h-4 w-4" />
+                  {tokenCopied ? "Copied" : "Copy"}
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <Input
+              readOnly
+              value={engineTokenInfo?.token ?? engineTokenInfo?.token_masked ?? "****"}
+            />
+            {engineTokenInfo?.path && (
+              <p className="break-all text-xs text-text-subtle">Path: {engineTokenInfo.path}</p>
+            )}
+            {engineTokenInfo?.storage_backend && (
+              <p className="text-xs text-text-subtle">Storage: {engineTokenInfo.storage_backend}</p>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Updates */}
         <Card>
@@ -596,6 +779,73 @@ export function Settings({
                       : "Downloading..."}
                   </span>
                 </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <Database className="h-5 w-5 text-primary" />
+                <div>
+                  <CardTitle>Data Migration</CardTitle>
+                  <CardDescription>
+                    Import legacy OpenCode and older Tandem data into canonical Tandem storage.
+                  </CardDescription>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void handleRunMigration(true)}
+                  disabled={migrationRunning}
+                >
+                  <FileText className="mr-1 h-4 w-4" />
+                  Dry Run
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => void handleRunMigration(false)}
+                  disabled={migrationRunning}
+                >
+                  <RefreshCw className={`mr-1 h-4 w-4 ${migrationRunning ? "animate-spin" : ""}`} />
+                  Run Migration Again
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
+              <div>Canonical root: {migrationStatus?.canonical_root ?? "Unknown"}</div>
+              <div>Last reason: {migrationStatus?.migration_reason ?? "n/a"}</div>
+              <div>
+                Last run:{" "}
+                {migrationStatus?.migration_timestamp_ms
+                  ? new Date(migrationStatus.migration_timestamp_ms).toLocaleString()
+                  : "never"}
+              </div>
+              <div>
+                Sources detected:{" "}
+                {migrationStatus?.sources_detected.filter((s) => s.exists).length ?? 0}
+              </div>
+            </div>
+            {migrationLastResult && (
+              <div className="rounded-lg border border-border bg-surface p-3 text-xs text-text-muted">
+                <div>Status: {migrationLastResult.status}</div>
+                <div>
+                  Repaired sessions: {migrationLastResult.sessions_repaired}, recovered messages:{" "}
+                  {migrationLastResult.messages_recovered}
+                </div>
+                <div>
+                  Copied: {migrationLastResult.copied.length}, skipped:{" "}
+                  {migrationLastResult.skipped.length}, errors: {migrationLastResult.errors.length}
+                </div>
+                {!!migrationLastResult.report_path && (
+                  <div className="truncate">Report: {migrationLastResult.report_path}</div>
+                )}
               </div>
             )}
           </CardContent>
@@ -947,7 +1197,7 @@ export function Settings({
             <div className="space-y-4">
               <ProviderCard
                 id="opencode_zen"
-                name="OpenCode Zen"
+                name="Opencode Zen"
                 description="Access to free and premium models - includes free options"
                 endpoint={providers.opencode_zen.endpoint}
                 defaultEndpoint="https://opencode.ai/zen/v1"

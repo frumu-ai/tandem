@@ -98,6 +98,8 @@ static KNOWN_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "list",
         "read",
         "search",
+        "grep",
+        "codesearch",
         "glob",
         "write",
         "write_file",
@@ -114,9 +116,17 @@ static KNOWN_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "run_command",
         "websearch",
         "webfetch",
+        "webfetch_document",
+        "todo_write",
         "todowrite",
         "new_task",
         "update_todo_list",
+        "task",
+        "question",
+        "skill",
+        "apply_patch",
+        "batch",
+        "lsp",
         "switch_mode",
         "run_slash_command",
     ])
@@ -153,8 +163,9 @@ impl ResolvedMode {
             ModeBase::Immediate => None,
             ModeBase::Ask => Some("general".to_string()),
             ModeBase::Plan => Some("plan".to_string()),
-            ModeBase::Orchestrate => Some("orchestrate".to_string()),
-            ModeBase::Coder => Some("coder".to_string()),
+            // Engine-native agent names are build/plan/explore/general.
+            ModeBase::Orchestrate => Some("plan".to_string()),
+            ModeBase::Coder => Some("build".to_string()),
             ModeBase::Explore => Some("explore".to_string()),
         }
     }
@@ -466,11 +477,18 @@ pub fn resolve_mode_for_request(
 }
 
 pub fn is_tool_allowed(mode: &ResolvedMode, tool: &str) -> bool {
+    if is_universal_tool(tool) {
+        return true;
+    }
     let Some(allowed) = &mode.allowed_tools else {
         return true;
     };
     let requested = canonical_tool_name(tool);
     allowed.iter().any(|t| t == &requested)
+}
+
+fn is_universal_tool(tool: &str) -> bool {
+    matches!(canonical_tool_name(tool).as_str(), "skill")
 }
 
 pub fn is_edit_path_allowed(mode: &ResolvedMode, workspace: &Path, path: &Path) -> bool {
@@ -535,43 +553,14 @@ fn mode_has_any_tool(mode: &ResolvedMode, tools: &[&str]) -> bool {
 }
 
 pub fn build_permission_rules(mode: &ResolvedMode) -> Vec<PermissionRule> {
-    let mut rules = Vec::new();
-    if mode_has_any_tool(mode, &["ls", "list", "glob", "search"]) {
-        rules.push(PermissionRule {
-            permission: "ls".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    if mode_has_any_tool(mode, &["read"]) {
-        rules.push(PermissionRule {
-            permission: "read".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    if mode_has_any_tool(mode, &["todowrite", "new_task", "update_todo_list"]) {
-        rules.push(PermissionRule {
-            permission: "todowrite".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    if mode_has_any_tool(mode, &["websearch"]) {
-        rules.push(PermissionRule {
-            permission: "websearch".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    if mode_has_any_tool(mode, &["webfetch"]) {
-        rules.push(PermissionRule {
-            permission: "webfetch".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        });
-    }
-    rules
+    tandem_core::build_mode_permission_rules(mode.allowed_tools.as_deref())
+        .into_iter()
+        .map(|rule| PermissionRule {
+            permission: rule.permission,
+            pattern: rule.pattern,
+            action: rule.action,
+        })
+        .collect()
 }
 
 fn scope_path(app: &AppHandle, workspace: Option<&Path>, scope: ModeScope) -> Result<PathBuf> {
@@ -720,5 +709,21 @@ mod tests {
         };
         assert!(is_tool_allowed(&mode, "read"));
         assert!(!is_tool_allowed(&mode, "write"));
+    }
+
+    #[test]
+    fn skill_tool_is_universal_even_with_allowlist() {
+        let mode = ResolvedMode {
+            id: "safe".to_string(),
+            label: "Safe".to_string(),
+            base_mode: ModeBase::Ask,
+            icon: None,
+            system_prompt_append: None,
+            allowed_tools: Some(vec!["read".to_string()]),
+            edit_globs: None,
+            auto_approve: None,
+            source: ModeSource::User,
+        };
+        assert!(is_tool_allowed(&mode, "skill"));
     }
 }

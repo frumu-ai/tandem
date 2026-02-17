@@ -10,7 +10,6 @@ mod llm_router;
 mod logs;
 mod memory;
 mod modes;
-mod opencode_config;
 pub mod orchestrator;
 mod packs;
 mod presentation;
@@ -22,14 +21,21 @@ mod skill_templates;
 mod skills;
 mod state;
 mod stream_hub;
+mod tandem_config;
+mod tool_history;
 mod tool_policy;
 mod tool_proxy;
 mod vault;
 
 use std::sync::RwLock;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tandem_core::resolve_shared_paths;
+use tandem_observability::{emit_event, init_process_logging, ObservabilityEvent, ProcessKind};
 use tauri::Manager;
 use tauri_plugin_store::StoreExt;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+static LOG_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> =
+    std::sync::OnceLock::new();
 
 /// Vault state - tracks whether the vault is unlocked and stores the master key
 pub struct VaultState {
@@ -81,45 +87,132 @@ impl VaultState {
 
 /// Initialize tracing for logging (console + file)
 fn init_tracing(app_data_dir: &std::path::Path) {
-    use std::fs;
-    use tracing_appender::rolling;
-
-    // Create logs directory
     let logs_dir = app_data_dir.join("logs");
-    fs::create_dir_all(&logs_dir).ok();
+    if let Ok((guard, info)) = init_process_logging(ProcessKind::Desktop, &logs_dir, 14) {
+        let _ = LOG_GUARD.set(guard);
+        emit_event(
+            tracing::Level::INFO,
+            ProcessKind::Desktop,
+            ObservabilityEvent {
+                event: "logging.initialized",
+                component: "desktop.main",
+                correlation_id: None,
+                session_id: None,
+                run_id: None,
+                message_id: None,
+                provider_id: None,
+                model_id: None,
+                status: Some("ok"),
+                error_code: None,
+                detail: Some("desktop jsonl logging initialized"),
+            },
+        );
+        tracing::info!("Logging initialized (logs directory: {:?})", logs_dir);
+        tracing::info!("Desktop logging info: {:?}", info);
+    }
+}
 
-    // Use daily rotation with size limit (tracing-appender will handle rotation)
-    // Each file will be named tandem-YYYY-MM-DD.log
-    // Old files are kept for a few days before being deleted
-    let file_appender = rolling::daily(&logs_dir, "tandem");
+fn is_recoverable_memory_error(err: &memory::types::MemoryError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("vector blob")
+        || msg.contains("project_memory_vectors_vector_chunks")
+        || msg.contains("database disk image is malformed")
+        || msg.contains("malformed")
+}
 
-    // Set up both console and file logging
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(file_appender)
-        .with_ansi(false); // No ANSI colors in file
+fn memory_db_file_paths(db_path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut paths = vec![db_path.to_path_buf()];
+    if let (Some(parent), Some(name)) = (db_path.parent(), db_path.file_name()) {
+        let stem = name.to_string_lossy().to_string();
+        paths.push(parent.join(format!("{stem}-shm")));
+        paths.push(parent.join(format!("{stem}-wal")));
+    }
+    paths
+}
 
-    let console_layer = tracing_subscriber::fmt::layer();
+fn backup_and_reset_memory_db(
+    app_data_dir: &std::path::Path,
+    db_path: &std::path::Path,
+) -> std::io::Result<Option<std::path::PathBuf>> {
+    let memory_files = memory_db_file_paths(db_path)
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect::<Vec<_>>();
 
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                // Changed from "tandem=debug,tauri=info" to reduce log size
-                .unwrap_or_else(|_| "tandem=info,tauri=info".into()),
-        )
-        .with(console_layer)
-        .with(file_layer)
-        .init();
+    if memory_files.is_empty() {
+        return Ok(None);
+    }
 
-    tracing::info!("Logging initialized (logs directory: {:?})", logs_dir);
-    tracing::info!("Log level: INFO (use RUST_LOG env var to change)");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup_dir = app_data_dir
+        .join("memory_backups")
+        .join(format!("memory-corrupt-{ts}"));
+    std::fs::create_dir_all(&backup_dir)?;
+
+    for file in &memory_files {
+        if let Some(name) = file.file_name() {
+            let _ = std::fs::copy(file, backup_dir.join(name));
+        }
+    }
+    for file in &memory_files {
+        let _ = std::fs::remove_file(file);
+    }
+
+    Ok(Some(backup_dir))
+}
+
+fn init_memory_manager_with_recovery(
+    app_data_dir: &std::path::Path,
+    db_path: &std::path::Path,
+) -> Result<memory::MemoryManager, memory::types::MemoryError> {
+    match tauri::async_runtime::block_on(memory::MemoryManager::new(db_path)) {
+        Ok(manager) => return Ok(manager),
+        Err(err) if is_recoverable_memory_error(&err) => {
+            tracing::warn!(
+                "Memory DB appears incompatible/corrupt, attempting self-heal: {}",
+                err
+            );
+            match backup_and_reset_memory_db(app_data_dir, db_path) {
+                Ok(Some(backup_dir)) => {
+                    tracing::warn!(
+                        "Backed up memory DB files before reset: {}",
+                        backup_dir.display()
+                    );
+                }
+                Ok(None) => {
+                    tracing::warn!("No memory DB files found to back up before reset");
+                }
+                Err(e) => {
+                    tracing::error!("Failed to back up/reset memory DB: {}", e);
+                    return Err(err);
+                }
+            }
+
+            tauri::async_runtime::block_on(memory::MemoryManager::new(db_path))
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Initialize keystore with the given master key and load API keys
 fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .expect("Failed to get app data directory");
+    let app_data_dir = match resolve_shared_paths() {
+        Ok(paths) => paths.canonical_root,
+        Err(e) => dirs::data_dir()
+            .map(|d| d.join("tandem"))
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "Failed to resolve canonical shared paths ({}); falling back to Tauri app_data_dir",
+                    e
+                );
+                app.path()
+                    .app_data_dir()
+                    .expect("Failed to resolve app data directory")
+            }),
+    };
     let keystore_path = app_data_dir.join("tandem.keystore");
 
     // Create keystore (fast - no Argon2!)
@@ -214,15 +307,30 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
-            // Get app data directory for logging and state
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("Failed to get app data directory");
+            // Use canonical shared storage root across Tauri, engine, and TUI.
+            let app_data_dir = match resolve_shared_paths() {
+                Ok(paths) => paths.canonical_root,
+                Err(e) => dirs::data_dir()
+                    .map(|d| d.join("tandem"))
+                    .unwrap_or_else(|| {
+                        eprintln!(
+                            "Failed to resolve canonical shared paths ({}); falling back to Tauri app_data_dir",
+                            e
+                        );
+                        app.path()
+                            .app_data_dir()
+                            .expect("Failed to get app data directory")
+                    }),
+            };
 
             std::fs::create_dir_all(&app_data_dir).ok();
             init_tracing(&app_data_dir);
             tracing::debug!("Starting Tandem application");
+            tracing::info!("Canonical storage root: {}", app_data_dir.display());
+
+            tracing::info!(
+                "Storage migration is managed by frontend startup wizard (blocking overlay)."
+            );
 
             // Initialize vault state (manages PIN-based encryption)
             let vault_state = VaultState::new(app_data_dir.clone());
@@ -233,7 +341,7 @@ pub fn run() {
 
             // Initialize MemoryManager (Vector DB)
             let memory_db_path = app_data_dir.join("memory.sqlite");
-            match tauri::async_runtime::block_on(memory::MemoryManager::new(&memory_db_path)) {
+            match init_memory_manager_with_recovery(&app_data_dir, &memory_db_path) {
                 Ok(manager) => {
                     tracing::info!("Memory manager initialized at {:?}", memory_db_path);
                     app_state.memory_manager = Some(std::sync::Arc::new(manager));
@@ -333,6 +441,18 @@ pub fn run() {
                 }
             }
 
+            if let Some(workspace_path) = app_state.get_workspace_path() {
+                if let Err(e) =
+                    commands::migrate_workspace_legacy_namespace_if_needed(&workspace_path)
+                {
+                    tracing::warn!(
+                        "Workspace namespace migration check failed for {}: {}",
+                        workspace_path.display(),
+                        e
+                    );
+                }
+            }
+
             app.manage(app_state);
 
             // Sync bundled skills (like Plan agent) to global OpenCode config
@@ -377,6 +497,11 @@ pub fn run() {
             commands::greet,
             commands::log_frontend_error,
             commands::get_app_state,
+            commands::get_storage_status,
+            commands::get_storage_migration_status,
+            commands::run_storage_migration,
+            commands::run_tool_history_backfill,
+            commands::get_tool_history_backfill_status,
             commands::set_workspace_path,
             commands::get_workspace_path,
             // Project management
@@ -408,10 +533,17 @@ pub fn run() {
             commands::start_sidecar,
             commands::stop_sidecar,
             commands::get_sidecar_status,
+            commands::get_sidecar_startup_health,
+            commands::get_runtime_diagnostics,
+            commands::get_engine_api_token,
+            commands::engine_acquire_lease,
+            commands::engine_renew_lease,
+            commands::engine_release_lease,
             // Session management
             commands::create_session,
             commands::get_session,
             commands::list_sessions,
+            commands::get_session_active_run,
             commands::delete_session,
             commands::get_current_session_id,
             commands::set_current_session_id,
@@ -424,9 +556,10 @@ pub fn run() {
             commands::list_projects,
             commands::get_session_messages,
             commands::get_session_todos,
+            commands::list_tool_executions,
             // Message handling
             commands::send_message,
-            commands::send_message_streaming,
+            commands::send_message_and_start_run,
             commands::queue_message,
             commands::queue_list,
             commands::queue_remove,
@@ -464,6 +597,18 @@ pub fn run() {
             commands::list_questions,
             commands::reply_question,
             commands::reject_question,
+            // Routine controls
+            commands::routines_list,
+            commands::routines_create,
+            commands::routines_patch,
+            commands::routines_delete,
+            commands::routines_run_now,
+            commands::routines_history,
+            // Engine mission controls
+            commands::mission_list,
+            commands::mission_create,
+            commands::mission_get,
+            commands::mission_apply_event,
             // Execution planning / staging area
             commands::stage_tool_operation,
             commands::get_staged_operations,
@@ -513,6 +658,8 @@ pub fn run() {
             commands::packs_install_default,
             // Guaranteed Plan Mode
             commands::start_plan_session,
+            commands::list_plans,
+            commands::read_plan_content,
             // Ralph Loop commands
             commands::ralph_start,
             commands::ralph_cancel,

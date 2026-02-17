@@ -13,6 +13,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { resolveSessionDirectory, sessionBelongsToWorkspace } from "@/lib/sessionScope";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { UserProject } from "@/lib/tauri";
@@ -38,8 +39,8 @@ export interface SessionInfo {
   id: string;
   slug?: string;
   version?: string;
-  projectID: string;
-  directory: string;
+  projectID?: string;
+  directory?: string;
   title: string;
   time: {
     created: number;
@@ -53,11 +54,29 @@ interface DisplayItem {
   id: string;
   type: "chat" | "orchestrator";
   projectID: string;
+  groupKey: string;
   directory?: string;
   title: string;
   updatedAt: number;
   status?: string; // For orchestrator runs
   summary?: SessionSummary; // For chat sessions
+}
+
+function normalizeGroupPath(path: string | null | undefined): string | null {
+  if (!path?.trim()) return null;
+  return path.trim().replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "").toLowerCase();
+}
+
+function toProjectGroupKey(projectID: string | undefined, directory: string | undefined): string {
+  const normalizedDirectory = normalizeGroupPath(directory);
+  if (normalizedDirectory) {
+    return `dir:${normalizedDirectory}`;
+  }
+  const normalizedProject = (projectID || "").trim();
+  if (normalizedProject) {
+    return `project:${normalizedProject}`;
+  }
+  return "__workspace__";
 }
 
 interface SessionSidebarProps {
@@ -127,11 +146,14 @@ export function SessionSidebar({
       ) {
         return;
       }
+      const resolvedDirectory = resolveSessionDirectory(s.directory, activeProject?.path);
+      const projectID = s.projectID || activeProject?.id || "__workspace__";
       items.push({
         id: s.id,
         type: "chat",
-        projectID: s.projectID,
-        directory: s.directory,
+        projectID,
+        groupKey: toProjectGroupKey(projectID, resolvedDirectory),
+        directory: resolvedDirectory,
         title: s.title,
         updatedAt: s.time.updated,
         summary: s.summary,
@@ -145,13 +167,13 @@ export function SessionSidebar({
     if (activeProject) {
       // Find a matching project ID from existing sessions if possible
       // to ensure they group together under the same header.
-      const normalizedActivePath = activeProject.path.toLowerCase().replace(/\\/g, "/");
-
       const matchingSession = sessions.find(
-        (s) => s.directory && s.directory.toLowerCase().replace(/\\/g, "/") === normalizedActivePath
+        (s) =>
+          sessionBelongsToWorkspace({ directory: s.directory }, activeProject.path) &&
+          !!(s.projectID || "").trim()
       );
 
-      const targetProjectID = matchingSession ? matchingSession.projectID : activeProject.id;
+      const targetProjectID = (matchingSession?.projectID || activeProject.id).trim();
 
       // Create a Set of session IDs used by runs to filter them out of the chat list
       const runSessionIds = new Set(runs.map((r) => r.session_id));
@@ -166,11 +188,13 @@ export function SessionSidebar({
       items.push(...filteredItems);
 
       runs.forEach((r) => {
+        const runDirectory = activeProject.path;
         items.push({
           id: r.run_id,
           type: "orchestrator",
           projectID: targetProjectID, // Use matched ID to ensure grouping
-          directory: activeProject.path,
+          groupKey: toProjectGroupKey(targetProjectID, runDirectory),
+          directory: runDirectory,
           title: r.objective,
           updatedAt: new Date(r.updated_at).getTime(),
           status: r.status,
@@ -181,10 +205,10 @@ export function SessionSidebar({
     // Group by project
     const grouped = items.reduce(
       (acc, item) => {
-        if (!acc[item.projectID]) {
-          acc[item.projectID] = [];
+        if (!acc[item.groupKey]) {
+          acc[item.groupKey] = [];
         }
-        acc[item.projectID].push(item);
+        acc[item.groupKey].push(item);
         return acc;
       },
       {} as Record<string, DisplayItem[]>
@@ -204,14 +228,16 @@ export function SessionSidebar({
     if (currentSessionId) {
       const session = sessions.find((s) => s.id === currentSessionId);
       if (session) {
-        ids.add(session.projectID);
+        const resolvedDirectory = resolveSessionDirectory(session.directory, activeProject?.path);
+        const projectID = session.projectID || activeProject?.id || "__workspace__";
+        ids.add(toProjectGroupKey(projectID, resolvedDirectory));
       }
     }
 
     if (currentRunId && activeProject) {
       const run = runs.find((r) => r.run_id === currentRunId);
       if (run) {
-        ids.add(activeProject.id);
+        ids.add(toProjectGroupKey(activeProject.id, activeProject.path));
       }
     }
 

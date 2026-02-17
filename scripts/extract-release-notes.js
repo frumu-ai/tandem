@@ -3,6 +3,7 @@
  * Extract release notes for a given tag/version.
  *
  * Sources (in priority order):
+ * - docs/WHATS_NEW_vX.Y.Z.md (for focused release messaging)
  * - docs/RELEASE_NOTES.md (per-version sections)
  * - CHANGELOG.md (Keep a Changelog style)
  *
@@ -27,6 +28,7 @@ const repoRoot = path.resolve(__dirname, '..');
 
 const raw = input.replace(/^refs\/tags\//, '');
 const versionNumber = raw.replace(/^v/, '');
+const baseVersion = versionNumber.replace(/[-+].*$/, '');
 const currentTag = raw.startsWith('v') ? raw : `v${versionNumber}`;
 
 const repo =
@@ -35,17 +37,24 @@ const repo =
   // fallback for local runs
   'frumu-ai/tandem';
 
+const whatsNewPath = path.join(repoRoot, 'docs', `WHATS_NEW_v${baseVersion}.md`);
 const releaseNotesPath = path.join(repoRoot, 'docs', 'RELEASE_NOTES.md');
 const changelogPath = path.join(repoRoot, 'CHANGELOG.md');
 
 const intro = 'See the assets below to download the installer for your platform.';
 
+const fromWhatsNew = safeRead(whatsNewPath);
 const fromReleaseNotes = safeRead(releaseNotesPath);
 const fromChangelog = safeRead(changelogPath);
 
+const versionCandidates = Array.from(new Set([versionNumber, baseVersion]));
+
 const extracted =
-  (fromReleaseNotes ? extractFromReleaseNotesMd(fromReleaseNotes, versionNumber) : null) ||
-  (fromChangelog ? extractFromChangelog(fromChangelog, versionNumber) : null) ||
+  (fromWhatsNew ? extractWholeMarkdown(fromWhatsNew) : null) ||
+  (fromReleaseNotes
+    ? extractFromReleaseNotesMd(fromReleaseNotes, versionCandidates)
+    : null) ||
+  (fromChangelog ? extractFromChangelog(fromChangelog, versionCandidates) : null) ||
   null;
 
 const previousTag = getPreviousTag(currentTag);
@@ -55,7 +64,9 @@ const fullChangelogLine = previousTag
 
 const bodyParts = [
   intro,
-  extracted?.trim() ? stripLeadingTopHeader(extracted.trim()) : '## What’s Changed\n\n- Bug fixes and improvements.',
+  extracted?.trim()
+    ? stripLeadingTopHeader(extracted.trim())
+    : "## What's Changed\n\n- Bug fixes and improvements.",
   fullChangelogLine,
 ].filter(Boolean);
 
@@ -81,7 +92,19 @@ function stripLeadingTopHeader(markdown) {
   return lines.slice(start).join('\n').trim();
 }
 
-function extractFromReleaseNotesMd(markdown, version) {
+function extractWholeMarkdown(markdown) {
+  return markdown.trim();
+}
+
+function extractFromReleaseNotesMd(markdown, versions) {
+  for (const version of versions) {
+    const section = extractVersionSectionFromReleaseNotes(markdown, version);
+    if (section) return section;
+  }
+  return null;
+}
+
+function extractVersionSectionFromReleaseNotes(markdown, version) {
   // Match: "# Tandem v0.1.4 ..." (the docs file uses # for per-version sections)
   const startRe = new RegExp(`^#\\s+Tandem\\s+v${escapeRegExp(version)}\\b.*$`, 'mi');
   const startMatch = markdown.match(startRe);
@@ -99,16 +122,21 @@ function extractFromReleaseNotesMd(markdown, version) {
   return afterStart.slice(0, endIdx).trim();
 }
 
-function extractFromChangelog(markdown, version) {
-  // Prefer explicit version section.
-  const versionRe = new RegExp(`^##\\s+\\[${escapeRegExp(version)}\\]([\\s\\S]*?)(?=^##\\s+\\[|\\Z)`, 'im');
-  const match = markdown.match(versionRe);
-  if (match) return `## What’s Changed\n\n${match[1].trim()}`;
+function extractFromChangelog(markdown, versions) {
+  for (const version of versions) {
+    // Prefer explicit version section.
+    const versionRe = new RegExp(
+      `^##\\s+\\[${escapeRegExp(version)}\\]([\\s\\S]*?)(?=^##\\s+\\[|\\Z)`,
+      'im'
+    );
+    const match = markdown.match(versionRe);
+    if (match) return "## What's Changed\n\n" + match[1].trim();
+  }
 
   // Fallback to [Unreleased].
   const unreleasedRe = /^##\s+\[Unreleased\]([\s\S]*?)(?=^##\s+\[|\Z)/im;
   const unreleasedMatch = markdown.match(unreleasedRe);
-  if (unreleasedMatch) return `## What’s Changed\n\n${unreleasedMatch[1].trim()}`;
+  if (unreleasedMatch) return "## What's Changed\n\n" + unreleasedMatch[1].trim();
 
   return null;
 }

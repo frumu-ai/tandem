@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -243,6 +244,56 @@ fn default_pack_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir.join("packs"))
 }
 
+fn install_pack_skills(source_pack_dir: &Path, install_dir: &Path) -> Result<Vec<String>, String> {
+    let skill_source_candidates = [
+        source_pack_dir.join("skills"),
+        source_pack_dir.join(".tandem").join("skill"),
+        source_pack_dir.join(".opencode").join("skill"),
+    ];
+
+    let mut installed = Vec::new();
+    let mut seen = HashSet::new();
+
+    for source_root in skill_source_candidates {
+        if !source_root.exists() || !source_root.is_dir() {
+            continue;
+        }
+
+        let entries = fs::read_dir(&source_root)
+            .map_err(|e| format!("Failed to read skill source {:?}: {}", source_root, e))?;
+
+        for entry in entries.flatten() {
+            let file_type = entry
+                .file_type()
+                .map_err(|e| format!("Failed to read file type {:?}: {}", entry.path(), e))?;
+            if !file_type.is_dir() {
+                continue;
+            }
+
+            let skill_name = entry.file_name().to_string_lossy().to_string();
+            if !seen.insert(skill_name.clone()) {
+                continue;
+            }
+
+            let source_skill_dir = entry.path();
+            let source_skill_file = source_skill_dir.join("SKILL.md");
+            if !source_skill_file.exists() {
+                tracing::warn!(
+                    "Skipping pack skill without SKILL.md: {:?}",
+                    source_skill_dir
+                );
+                continue;
+            }
+
+            let destination_skill_dir = install_dir.join(".tandem").join("skill").join(&skill_name);
+            copy_dir_recursive(&source_skill_dir, &destination_skill_dir)?;
+            installed.push(skill_name);
+        }
+    }
+
+    Ok(installed)
+}
+
 pub fn install_pack(
     app: &AppHandle,
     pack_id: &str,
@@ -284,6 +335,15 @@ pub fn install_pack(
     );
 
     copy_dir_recursive(&source_pack_dir, &install_dir)?;
+    let installed_skills = install_pack_skills(&source_pack_dir, &install_dir)?;
+    if !installed_skills.is_empty() {
+        tracing::info!(
+            "Installed {} pack skills for '{}': {:?}",
+            installed_skills.len(),
+            pack_id,
+            installed_skills
+        );
+    }
 
     let start_here_source = pack_docs_root.join(pack_id).join("START_HERE.md");
     if start_here_source.exists() {

@@ -29,8 +29,9 @@ import { cn } from "@/lib/utils";
 import {
   startSidecar,
   getSidecarStatus,
+  getSidecarStartupHealth,
   createSession,
-  sendMessageStreaming,
+  sendMessageAndStartRun,
   cancelGeneration,
   onSidecarEventV2,
   queueMessage,
@@ -43,6 +44,8 @@ import {
   replyQuestion,
   rejectQuestion,
   getSessionMessages,
+  listToolExecutions,
+  type ToolExecutionRow,
   undoViaCommand,
   isGitRepo,
   getToolGuidance,
@@ -53,7 +56,10 @@ import {
   type StreamEventEnvelopeV2,
   type QueuedMessage,
   type SidecarState,
+  type SidecarStartupHealth,
   type TodoItem,
+  type QuestionChoice,
+  type QuestionInfo,
   type QuestionRequestEvent,
   type FileAttachmentInput,
   startPlanSession,
@@ -92,6 +98,232 @@ interface ChatProps {
   onDraftMessageConsumed?: () => void;
   activeOrchestrationCount?: number;
   activeChatRunningCount?: number;
+}
+
+function startupPhaseLabel(phase?: string | null): string {
+  switch ((phase || "").toLowerCase()) {
+    case "migration":
+      return "Scanning legacy data";
+    case "storage_init":
+      return "Loading sessions and storage";
+    case "config_init":
+      return "Loading provider config";
+    case "registry_init":
+      return "Initializing registries";
+    case "engine_loop_init":
+      return "Starting runtime loop";
+    case "ready":
+      return "Ready";
+    case "failed":
+      return "Startup failed";
+    default:
+      return "Starting sidecar";
+  }
+}
+
+function startupPhaseDetail(phase?: string | null): string {
+  switch ((phase || "").toLowerCase()) {
+    case "migration":
+      return "Checking legacy data and migration markers.";
+    case "storage_init":
+      return "Loading session history and workspace metadata.";
+    case "config_init":
+      return "Loading providers, models, and runtime config.";
+    case "registry_init":
+      return "Preparing tools, plugins, and registries.";
+    case "engine_loop_init":
+      return "Starting message processing and event pipeline.";
+    case "ready":
+      return "Engine startup complete.";
+    case "failed":
+      return "Startup failed. Open logs for details.";
+    default:
+      return "Preparing engine startup components.";
+  }
+}
+
+function startupPhaseProgress(phase?: string | null): number {
+  switch ((phase || "").toLowerCase()) {
+    case "migration":
+      return 12;
+    case "storage_init":
+      return 36;
+    case "config_init":
+      return 56;
+    case "registry_init":
+      return 72;
+    case "engine_loop_init":
+      return 88;
+    case "ready":
+      return 100;
+    case "failed":
+      return 100;
+    default:
+      return 6;
+  }
+}
+
+function stripInjectedMemoryContextForDisplay(content: string): string {
+  let sanitized = content.replace(/<memory_context>[\s\S]*?<\/memory_context>/gi, "").trim();
+  if (!sanitized) {
+    return content;
+  }
+
+  const extractAfterMarker = (text: string, marker: string): string | null => {
+    const idx = text.toLowerCase().indexOf(marker.toLowerCase());
+    if (idx < 0) return null;
+    return text.slice(idx + marker.length).trim();
+  };
+
+  const markerExtract =
+    extractAfterMarker(sanitized, "[User request]") ??
+    extractAfterMarker(sanitized, "User request:");
+  if (markerExtract && markerExtract.length > 0) {
+    sanitized = markerExtract;
+  }
+
+  while (sanitized.toLowerCase().startsWith("[mode instructions]")) {
+    const splitIdx = sanitized.indexOf("\n\n");
+    if (splitIdx >= 0) {
+      sanitized = sanitized.slice(splitIdx + 2).trim();
+      continue;
+    }
+    const lineIdx = sanitized.indexOf("\n");
+    if (lineIdx >= 0) {
+      sanitized = sanitized.slice(lineIdx + 1).trim();
+      continue;
+    }
+    sanitized = "";
+    break;
+  }
+
+  return sanitized.length > 0 ? sanitized : content;
+}
+
+function stringifyPermissionValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    return value
+      .map((item) => stringifyPermissionValue(item))
+      .filter((item): item is string => Boolean(item))
+      .join(", ");
+  }
+  return undefined;
+}
+
+function buildPermissionReason(
+  tool?: string,
+  args?: Record<string, unknown>
+): { reasoning: string; path?: string; command?: string } {
+  const normalizedTool = (tool || "unknown").toLowerCase();
+  const pathCandidate =
+    stringifyPermissionValue(args?.path) ||
+    stringifyPermissionValue(args?.cwd) ||
+    stringifyPermissionValue(args?.directory) ||
+    stringifyPermissionValue(args?.file_path);
+  const patternCandidate =
+    stringifyPermissionValue(args?.pattern) ||
+    stringifyPermissionValue(args?.glob) ||
+    stringifyPermissionValue(args?.query);
+  const commandCandidate =
+    stringifyPermissionValue(args?.command) || stringifyPermissionValue(args?.cmd);
+
+  switch (normalizedTool) {
+    case "glob":
+      return {
+        reasoning: patternCandidate
+          ? `AI wants to search files matching pattern: ${patternCandidate}`
+          : "AI wants to search files in your workspace.",
+        path: pathCandidate,
+      };
+    case "read":
+    case "read_file":
+      return {
+        reasoning: pathCandidate
+          ? `AI wants to read this file: ${pathCandidate}`
+          : "AI wants to read a file in your workspace.",
+        path: pathCandidate,
+      };
+    case "list":
+    case "ls":
+    case "list_directory":
+      return {
+        reasoning: pathCandidate
+          ? `AI wants to list this directory: ${pathCandidate}`
+          : "AI wants to list files in your workspace.",
+        path: pathCandidate,
+      };
+    case "bash":
+    case "run_command":
+    case "shell":
+      return {
+        reasoning: commandCandidate
+          ? `AI wants to run this command: ${commandCandidate}`
+          : "AI wants to run a shell command in your workspace.",
+        command: commandCandidate,
+        path: pathCandidate,
+      };
+    default:
+      return {
+        reasoning: `AI requests permission for tool '${tool || "unknown"}'.`,
+        path: pathCandidate,
+        command: commandCandidate,
+      };
+  }
+}
+
+function extractQuestionInfoFromPermissionArgs(
+  args?: Record<string, unknown>
+): QuestionRequestEvent["questions"] {
+  const rawQuestions = args?.questions;
+  if (!Array.isArray(rawQuestions)) {
+    return [];
+  }
+
+  return rawQuestions
+    .map((item): QuestionInfo | null => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const record = item as Record<string, unknown>;
+      const question = typeof record.question === "string" ? record.question.trim() : "";
+      if (!question) {
+        return null;
+      }
+      const header = typeof record.header === "string" ? record.header : "";
+      const options = Array.isArray(record.options)
+        ? record.options
+            .map((option): QuestionChoice | null => {
+              if (!option || typeof option !== "object") {
+                return null;
+              }
+              const opt = option as Record<string, unknown>;
+              const label = typeof opt.label === "string" ? opt.label.trim() : "";
+              if (!label) {
+                return null;
+              }
+              return {
+                label,
+                description: typeof opt.description === "string" ? opt.description : "",
+              };
+            })
+            .filter((option): option is QuestionChoice => option !== null)
+        : [];
+
+      return {
+        header,
+        question,
+        options,
+        multiple: typeof record.multiple === "boolean" ? record.multiple : undefined,
+        custom: typeof record.custom === "boolean" ? record.custom : undefined,
+      };
+    })
+    .filter((question): question is QuestionInfo => question !== null);
 }
 
 export function Chat({
@@ -173,8 +405,10 @@ export function Chat({
   );
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [streamHealth, setStreamHealth] = useState<"healthy" | "degraded" | "recovering">(
-    "recovering"
+    "healthy"
   );
+  const [startupHealth, setStartupHealth] = useState<SidecarStartupHealth | null>(null);
+  const [engineReady, setEngineReady] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   // const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -202,6 +436,19 @@ export function Chat({
   const messagesRef = useRef<MessageProps[]>([]);
   const currentAssistantMessageRef = useRef<string>("");
   const currentAssistantMessageIdRef = useRef<string | null>(null);
+  const pendingMemoryRetrievalRef = useRef<
+    Record<string, NonNullable<MessageProps["memoryRetrieval"]>>
+  >({});
+  const pendingAssistantStorageRef = useRef<
+    Record<
+      string,
+      {
+        messageId?: string;
+        session_chunks_stored: number;
+        project_chunks_stored: number;
+      }
+    >
+  >({});
   const seenEventIdsRef = useRef<Set<string>>(new Set());
   const queueDrainRef = useRef(false);
   const assistantFlushFrameRef = useRef<number | null>(null);
@@ -213,6 +460,10 @@ export function Chat({
   const currentSessionIdRef = useRef<string | null>(null);
   // If we try to load history before the sidecar is running, stash the session id and retry later.
   const deferredSessionLoadRef = useRef<string | null>(null);
+  const engineReadyRef = useRef(false);
+  useEffect(() => {
+    engineReadyRef.current = engineReady;
+  }, [engineReady]);
 
   // Staging area hook
   const {
@@ -233,6 +484,57 @@ export function Chat({
     refreshPlans,
   } = usePlans(workspacePath);
   const [showPlanView, setShowPlanView] = useState(false);
+  // Backend startup can run an extended 240s path on first-run/import repair.
+  // Keep frontend attach wait above that to avoid false reconnect churn.
+  const SIDECAR_ATTACH_TIMEOUT_MS = 250_000;
+
+  const waitForSidecarRunning = useCallback(
+    async (timeoutMs = SIDECAR_ATTACH_TIMEOUT_MS, pollIntervalMs = 500): Promise<boolean> => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        const status = await getSidecarStatus();
+        setSidecarStatus(status);
+        if (status === "running") {
+          return true;
+        }
+        await new Promise((resolve) => globalThis.setTimeout(resolve, pollIntervalMs));
+      }
+      return false;
+    },
+    []
+  );
+
+  const waitForEngineReady = useCallback(
+    async (timeoutMs = 12_000, pollIntervalMs = 200): Promise<boolean> => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        if (engineReadyRef.current) {
+          return true;
+        }
+        const status = await getSidecarStatus();
+        setSidecarStatus(status);
+        if (status !== "running" && status !== "starting") {
+          return false;
+        }
+        await new Promise((resolve) => globalThis.setTimeout(resolve, pollIntervalMs));
+      }
+      return engineReadyRef.current;
+    },
+    []
+  );
+
+  const startSidecarWithTimeout = useCallback(async () => {
+    setSidecarStatus("starting");
+    setEngineReady(false);
+    // Let backend startup logic control timeout/retries so frontend doesn't
+    // abort early while engine reports healthy-but-not-ready startup phases.
+    await startSidecar();
+
+    const isRunning = await waitForSidecarRunning(3_000, 300);
+    if (!isRunning) {
+      throw new Error("Tandem Engine start returned, but engine is not in running state.");
+    }
+  }, [waitForSidecarRunning]);
 
   // Handle creating a new frictionless plan
   const handleNewPlan = async () => {
@@ -274,6 +576,8 @@ export function Chat({
     pendingQuestionToolCallIdsRef.current = new Set();
     pendingQuestionToolMessageIdsRef.current = new Set();
     seenEventIdsRef.current = new Set();
+    pendingMemoryRetrievalRef.current = {};
+    pendingAssistantStorageRef.current = {};
   }, [currentSessionId]);
 
   useEffect(() => {
@@ -508,30 +812,75 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
         const status = await getSidecarStatus();
         setSidecarStatus(status);
 
-        // Auto-start if not already running
+        // Auto-start if not already running.
+        // If another client already started it, wait for it to transition instead of
+        // issuing duplicate start calls that can pile up behind lifecycle locks.
+        if (status === "starting") {
+          setIsConnecting(true);
+          setEngineReady(false);
+          const attached = await waitForSidecarRunning(SIDECAR_ATTACH_TIMEOUT_MS, 500);
+          if (!attached) {
+            try {
+              await startSidecarWithTimeout();
+            } catch (e) {
+              setSidecarStatus("failed");
+              setError(
+                e instanceof Error
+                  ? e.message
+                  : "Tandem Engine is still starting. Please click Connect to retry."
+              );
+              setIsConnecting(false);
+              return;
+            }
+          }
+          const ready = await waitForEngineReady();
+          if (!ready) {
+            throw new Error("Tandem Engine started but did not signal readiness on event stream.");
+          }
+          setSidecarStatus("running");
+          setStreamHealth("healthy");
+          onSidecarConnectedRef.current?.();
+          setIsConnecting(false);
+          return;
+        }
+
         if (status !== "running") {
           setIsConnecting(true);
           try {
-            await startSidecar();
+            await startSidecarWithTimeout();
+            const ready = await waitForEngineReady();
+            if (!ready) {
+              throw new Error(
+                "Tandem Engine started but did not signal readiness on event stream."
+              );
+            }
             setSidecarStatus("running");
+            setStreamHealth("healthy");
             // Notify parent that sidecar is connected
             onSidecarConnectedRef.current?.();
           } catch (e) {
             console.error("Failed to auto-start sidecar:", e);
+            setSidecarStatus("failed");
+            setError(
+              e instanceof Error ? e.message : "Failed to connect to Tandem Engine. Retry below."
+            );
             // Don't set error - user can still manually connect
           } finally {
             setIsConnecting(false);
           }
         } else {
+          setEngineReady(true);
+          setStreamHealth("healthy");
           // Already running, notify parent
           onSidecarConnectedRef.current?.();
         }
       } catch (e) {
         console.error("Failed to get sidecar status:", e);
+        setSidecarStatus("failed");
       }
     };
     autoConnect();
-  }, []); // Only run on mount
+  }, [startSidecarWithTimeout, waitForEngineReady, waitForSidecarRunning]); // Only run on mount behaviorally
 
   // Sync internal session ID with prop (only when prop truly changes)
   useEffect(() => {
@@ -647,7 +996,10 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           return;
         }
 
-        const sessionMessages = await getSessionMessages(sessionId);
+        const [sessionMessages, persistedToolRows] = await Promise.all([
+          getSessionMessages(sessionId),
+          listToolExecutions(sessionId, 500).catch(() => [] as ToolExecutionRow[]),
+        ]);
 
         console.log("[LoadHistory] Received", sessionMessages.length, "messages from OpenCode");
 
@@ -671,8 +1023,22 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           }))
         );
 
+        const isMemoryRow = (row: ToolExecutionRow) =>
+          row.tool === "memory.lookup" || row.tool === "memory.store";
+        const persistedMemoryRows = persistedToolRows.filter(isMemoryRow);
+        const persistedNonMemoryRows = persistedToolRows.filter((row) => !isMemoryRow(row));
+
+        const toolRowsByMessageId = new Map<string, ToolExecutionRow[]>();
+        for (const row of persistedNonMemoryRows) {
+          if (!row.message_id) continue;
+          const arr = toolRowsByMessageId.get(row.message_id) || [];
+          arr.push(row);
+          toolRowsByMessageId.set(row.message_id, arr);
+        }
+
         // Convert session messages to our format
         const convertedMessages: MessageProps[] = [];
+        let pendingRowsForAssistant: ToolExecutionRow[] = [];
 
         for (const msg of sessionMessages) {
           // Skip reverted or deleted messages
@@ -731,12 +1097,22 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
               // Skip finished technical tools in history to keep chat clean
               const state = partObj.state as Record<string, unknown> | undefined;
+              const explicitStatus = typeof state?.status === "string" ? state.status : undefined;
+              const hasOutput =
+                state?.output !== undefined ||
+                partObj.result !== undefined ||
+                partObj.output !== undefined;
+              const hasError = state?.error !== undefined || partObj.error !== undefined;
               const status =
-                state?.status === "completed"
+                explicitStatus === "completed"
                   ? "completed"
-                  : state?.status === "failed"
+                  : explicitStatus === "failed"
                     ? "failed"
-                    : "pending";
+                    : hasError
+                      ? "failed"
+                      : hasOutput
+                        ? "completed"
+                        : "pending";
 
               if (technicalTools.includes(toolName) && status === "completed") {
                 continue;
@@ -744,12 +1120,20 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               */
 
               const state = partObj.state as Record<string, unknown> | undefined;
-              const status =
-                state?.status === "completed"
+              const explicit = typeof state?.status === "string" ? state.status : undefined;
+              const status: "pending" | "running" | "completed" | "failed" =
+                explicit === "completed"
                   ? "completed"
-                  : state?.status === "failed"
+                  : explicit === "failed" ||
+                      explicit === "error" ||
+                      explicit === "cancelled" ||
+                      explicit === "canceled" ||
+                      explicit === "denied" ||
+                      explicit === "timeout"
                     ? "failed"
-                    : "pending";
+                    : explicit === "running" || explicit === "in_progress"
+                      ? "running"
+                      : "pending";
 
               toolCalls.push({
                 id: (partObj.id || partObj.callID || "") as string,
@@ -762,8 +1146,44 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
             }
           }
 
+          if (role === "user") {
+            pendingRowsForAssistant = toolRowsByMessageId.get(msg.info.id) || [];
+          }
+          if (role === "assistant" && pendingRowsForAssistant.length > 0) {
+            const rehydrated = pendingRowsForAssistant.map((row) => {
+              const rowStatus = (row.status || "").toLowerCase();
+              const mappedStatus: "pending" | "running" | "completed" | "failed" =
+                rowStatus === "completed"
+                  ? "completed"
+                  : rowStatus === "failed" || rowStatus === "error" || rowStatus === "cancelled"
+                    ? "failed"
+                    : rowStatus === "running"
+                      ? "running"
+                      : "pending";
+              return {
+                id: row.part_id || row.id,
+                tool: row.tool,
+                args: (row.args as Record<string, unknown>) || {},
+                result:
+                  row.error || row.result === undefined ? undefined : JSON.stringify(row.result),
+                status: mappedStatus,
+                isTechnical: false,
+              };
+            });
+
+            for (const call of rehydrated) {
+              if (!toolCalls.some((existing) => existing.id === call.id)) {
+                toolCalls.push(call);
+              }
+            }
+            pendingRowsForAssistant = [];
+          }
+
           // Only add messages that have actual text content or are user messages
           // Skip assistant messages that only have tool calls (internal OpenCode operations)
+          if (role === "user" && content.trim()) {
+            content = stripInjectedMemoryContextForDisplay(content);
+          }
           if (content.trim() || role === "user" || (toolCalls.length > 0 && role === "assistant")) {
             convertedMessages.push({
               id: msg.info.id,
@@ -776,6 +1196,156 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           } else {
             console.log(`[LoadHistory] Skipping empty/technical assistant message: ${msg.info.id}`);
           }
+        }
+
+        if (pendingRowsForAssistant.length > 0 && convertedMessages.length > 0) {
+          for (let i = convertedMessages.length - 1; i >= 0; i -= 1) {
+            const msg = convertedMessages[i];
+            if (msg.role !== "assistant") continue;
+            const existing = msg.toolCalls || [];
+            const merged = [...existing];
+            for (const row of pendingRowsForAssistant) {
+              const id = row.part_id || row.id;
+              if (merged.some((call) => call.id === id)) continue;
+              merged.push({
+                id,
+                tool: row.tool,
+                args: (row.args as Record<string, unknown>) || {},
+                result:
+                  row.error || row.result === undefined ? undefined : JSON.stringify(row.result),
+                status:
+                  row.status === "completed"
+                    ? "completed"
+                    : row.status === "running"
+                      ? "running"
+                      : row.status === "failed"
+                        ? "failed"
+                        : "pending",
+                isTechnical: false,
+              });
+            }
+            convertedMessages[i] = { ...msg, toolCalls: merged };
+            break;
+          }
+        }
+
+        const assistantIndices = convertedMessages
+          .map((message, index) => ({ message, index }))
+          .filter(({ message }) => message.role === "assistant")
+          .map(({ index }) => index);
+        const firstAssistantIdx = assistantIndices[0];
+        const lastAssistantIdx = assistantIndices[assistantIndices.length - 1];
+        const toNumber = (value: unknown, fallback = 0): number => {
+          const numeric = Number(value);
+          return Number.isFinite(numeric) ? numeric : fallback;
+        };
+
+        const lookupRowsAsc = persistedMemoryRows
+          .filter((row) => row.tool === "memory.lookup")
+          .slice()
+          .sort(
+            (a, b) =>
+              (a.ended_at_ms ?? a.started_at_ms ?? 0) - (b.ended_at_ms ?? b.started_at_ms ?? 0)
+          );
+        for (const row of lookupRowsAsc) {
+          if (assistantIndices.length === 0) break;
+          const args =
+            row.args && typeof row.args === "object" && !Array.isArray(row.args)
+              ? (row.args as Record<string, unknown>)
+              : {};
+          const rowTs = row.ended_at_ms ?? row.started_at_ms ?? 0;
+          const mappedIdx =
+            assistantIndices.find((idx) => convertedMessages[idx].timestamp.getTime() >= rowTs) ??
+            lastAssistantIdx;
+          if (mappedIdx == null) continue;
+
+          const target = convertedMessages[mappedIdx];
+          const prev = target.memoryRetrieval;
+          convertedMessages[mappedIdx] = {
+            ...target,
+            memoryRetrieval: {
+              status:
+                typeof args.status === "string"
+                  ? (args.status as
+                      | "not_attempted"
+                      | "attempted_no_hits"
+                      | "retrieved_used"
+                      | "degraded_disabled"
+                      | "error_fallback")
+                  : prev?.status,
+              used: Boolean(args.used ?? prev?.used ?? false),
+              chunks_total: toNumber(args.chunks_total, prev?.chunks_total ?? 0),
+              latency_ms: toNumber(args.latency_ms, prev?.latency_ms ?? 0),
+              embedding_status:
+                typeof args.embedding_status === "string"
+                  ? args.embedding_status
+                  : prev?.embedding_status,
+              embedding_reason:
+                typeof args.embedding_reason === "string"
+                  ? args.embedding_reason
+                  : prev?.embedding_reason,
+              session_chunks_stored: prev?.session_chunks_stored ?? 0,
+              project_chunks_stored: prev?.project_chunks_stored ?? 0,
+            },
+          };
+        }
+
+        const storageRowsAsc = persistedMemoryRows
+          .filter((row) => row.tool === "memory.store")
+          .slice()
+          .sort(
+            (a, b) =>
+              (a.ended_at_ms ?? a.started_at_ms ?? 0) - (b.ended_at_ms ?? b.started_at_ms ?? 0)
+          );
+        for (const row of storageRowsAsc) {
+          if (assistantIndices.length === 0) break;
+          const args =
+            row.args && typeof row.args === "object" && !Array.isArray(row.args)
+              ? (row.args as Record<string, unknown>)
+              : {};
+          const role = typeof args.role === "string" ? args.role : "unknown";
+          if (role !== "assistant") continue;
+
+          const rowTs = row.ended_at_ms ?? row.started_at_ms ?? 0;
+          let mappedIdx =
+            row.message_id != null
+              ? convertedMessages.findIndex(
+                  (message) => message.role === "assistant" && message.id === row.message_id
+                )
+              : -1;
+          if (mappedIdx < 0) {
+            mappedIdx =
+              assistantIndices
+                .slice()
+                .reverse()
+                .find((idx) => convertedMessages[idx].timestamp.getTime() <= rowTs) ?? -1;
+          }
+          if (mappedIdx < 0) {
+            mappedIdx = firstAssistantIdx ?? -1;
+          }
+          if (mappedIdx < 0) continue;
+
+          const target = convertedMessages[mappedIdx];
+          const prev = target.memoryRetrieval;
+          convertedMessages[mappedIdx] = {
+            ...target,
+            memoryRetrieval: {
+              status: prev?.status,
+              used: prev?.used ?? false,
+              chunks_total: prev?.chunks_total ?? 0,
+              latency_ms: prev?.latency_ms ?? 0,
+              embedding_status: prev?.embedding_status,
+              embedding_reason: prev?.embedding_reason,
+              session_chunks_stored: toNumber(
+                args.session_chunks_stored,
+                prev?.session_chunks_stored ?? 0
+              ),
+              project_chunks_stored: toNumber(
+                args.project_chunks_stored,
+                prev?.project_chunks_stored ?? 0
+              ),
+            },
+          };
         }
 
         console.log("[LoadHistory] Converted to", convertedMessages.length, "UI messages");
@@ -875,13 +1445,63 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
   const applyAssistantContent = useCallback((contentToApply: string) => {
     setMessages((prev) => {
+      const sessionId = currentSessionIdRef.current || "";
+      const mergePendingMemory = (
+        existing: MessageProps["memoryRetrieval"] | undefined,
+        messageId?: string | null
+      ): MessageProps["memoryRetrieval"] | undefined => {
+        const pendingRetrieval = pendingMemoryRetrievalRef.current[sessionId];
+        const pendingStorage = pendingAssistantStorageRef.current[sessionId];
+
+        const storageMatchesMessage =
+          pendingStorage &&
+          (!pendingStorage.messageId || !messageId || pendingStorage.messageId === messageId);
+        const hasPending = Boolean(pendingRetrieval || storageMatchesMessage);
+        if (!hasPending) {
+          return existing;
+        }
+
+        const next: NonNullable<MessageProps["memoryRetrieval"]> = {
+          status: existing?.status,
+          used: existing?.used ?? false,
+          chunks_total: existing?.chunks_total ?? 0,
+          latency_ms: existing?.latency_ms ?? 0,
+          embedding_status: existing?.embedding_status,
+          embedding_reason: existing?.embedding_reason,
+          session_chunks_stored: existing?.session_chunks_stored ?? 0,
+          project_chunks_stored: existing?.project_chunks_stored ?? 0,
+        };
+
+        if (pendingRetrieval) {
+          next.status = pendingRetrieval.status;
+          next.used = pendingRetrieval.used;
+          next.chunks_total = pendingRetrieval.chunks_total;
+          next.latency_ms = pendingRetrieval.latency_ms;
+          next.embedding_status = pendingRetrieval.embedding_status;
+          next.embedding_reason = pendingRetrieval.embedding_reason;
+          delete pendingMemoryRetrievalRef.current[sessionId];
+        }
+
+        if (storageMatchesMessage && pendingStorage) {
+          next.session_chunks_stored = pendingStorage.session_chunks_stored;
+          next.project_chunks_stored = pendingStorage.project_chunks_stored;
+          delete pendingAssistantStorageRef.current[sessionId];
+        }
+
+        return next;
+      };
+
       const targetId = currentAssistantMessageIdRef.current;
 
       if (targetId) {
         const idx = prev.findIndex((m) => m.id === targetId);
         if (idx >= 0) {
           const updated = [...prev];
-          updated[idx] = { ...updated[idx], content: contentToApply };
+          updated[idx] = {
+            ...updated[idx],
+            content: contentToApply,
+            memoryRetrieval: mergePendingMemory(updated[idx].memoryRetrieval, targetId),
+          };
           return updated;
         }
       }
@@ -894,6 +1514,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
             ...lastMessage,
             id: targetId || lastMessage.id,
             content: contentToApply,
+            memoryRetrieval: mergePendingMemory(lastMessage.memoryRetrieval, targetId),
           },
         ];
       }
@@ -905,6 +1526,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           role: "assistant",
           content: contentToApply,
           timestamp: new Date(),
+          memoryRetrieval: mergePendingMemory(undefined, targetId),
         },
       ];
     });
@@ -948,6 +1570,31 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
       setStatusBanner(null);
       statusBannerTimerRef.current = null;
     }, 2600);
+  }, []);
+
+  const finalizePendingToolCalls = useCallback((reason: string) => {
+    setMessages((prev) =>
+      prev.map((msg) => {
+        if (
+          msg.role !== "assistant" ||
+          !Array.isArray(msg.toolCalls) ||
+          msg.toolCalls.length === 0
+        ) {
+          return msg;
+        }
+        const nextToolCalls = msg.toolCalls.map((tc) => {
+          if (tc.status !== "pending") {
+            return tc;
+          }
+          return {
+            ...tc,
+            status: "failed" as const,
+            result: tc.result || reason,
+          };
+        });
+        return { ...msg, toolCalls: nextToolCalls };
+      })
+    );
   }, []);
 
   const handleApprovePermission = async (id: string, _remember?: "once" | "session" | "always") => {
@@ -1011,24 +1658,30 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
       switch (event.type) {
         case "content": {
-          // Prefer full content when available to avoid duplicate appends
-          const newContent = event.delta || event.content;
-
           // Update the message ID ref if we have one from OpenCode
           if (event.message_id && !currentAssistantMessageIdRef.current) {
             currentAssistantMessageIdRef.current = event.message_id;
           }
 
-          if (event.delta && event.content) {
-            // OpenCode often sends full content alongside delta
-            // Use full content to prevent repeated text loops
-            currentAssistantMessageRef.current = event.content;
-          } else if (event.delta) {
-            // Append delta to current message
-            currentAssistantMessageRef.current += newContent;
-          } else {
-            // Replace with full content
-            currentAssistantMessageRef.current = newContent;
+          const current = currentAssistantMessageRef.current;
+          const incoming = event.content || "";
+          const delta = event.delta || "";
+
+          if (event.delta) {
+            // Prefer full snapshots when they are clearly cumulative.
+            if (incoming && (!current || incoming.startsWith(current))) {
+              currentAssistantMessageRef.current = incoming;
+            } else {
+              currentAssistantMessageRef.current = current + delta;
+            }
+          } else if (!current) {
+            currentAssistantMessageRef.current = incoming;
+          } else if (incoming.startsWith(current)) {
+            // No explicit delta: some providers still send cumulative content.
+            currentAssistantMessageRef.current = incoming;
+          } else if (!current.startsWith(incoming)) {
+            // No delta + non-cumulative chunk: treat as append to avoid losing tokens.
+            currentAssistantMessageRef.current = current + incoming;
           }
           scheduleAssistantFlush();
           break;
@@ -1122,14 +1775,31 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           setMessages((prev) => {
             const lastMessage = prev[prev.length - 1];
             if (lastMessage && lastMessage.role === "assistant" && lastMessage.toolCalls) {
+              let matchedToolCallId = event.part_id;
+              const hasExactMatch = lastMessage.toolCalls.some((tc) => tc.id === event.part_id);
+              if (!hasExactMatch) {
+                const fallbackMatch = [...lastMessage.toolCalls]
+                  .reverse()
+                  .find(
+                    (tc) =>
+                      tc.status === "pending" &&
+                      tc.tool.toLowerCase() === (event.tool || "").toLowerCase()
+                  );
+                if (fallbackMatch) {
+                  matchedToolCallId = fallbackMatch.id;
+                }
+              }
+
               // If it's a technical tool, we might want to remove it entirely once done
               if (isTechnical && !event.error) {
-                const newToolCalls = lastMessage.toolCalls.filter((tc) => tc.id !== event.part_id);
+                const newToolCalls = lastMessage.toolCalls.filter(
+                  (tc) => tc.id !== matchedToolCallId
+                );
                 return [...prev.slice(0, -1), { ...lastMessage, toolCalls: newToolCalls }];
               }
 
               const newToolCalls = lastMessage.toolCalls.map((tc) =>
-                tc.id === event.part_id
+                tc.id === matchedToolCallId
                   ? {
                       ...tc,
                       result: event.error || String(event.result || ""),
@@ -1149,13 +1819,40 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           console.log("Session status:", event.status);
           break;
 
+        case "run_finished": {
+          if (!currentSessionId || event.session_id !== currentSessionId) {
+            break;
+          }
+          if (event.status !== "completed") {
+            finalizePendingToolCalls(event.error || `run_${event.status}`);
+          }
+          break;
+        }
+
         case "memory_retrieval": {
           if (!currentSessionId || event.session_id !== currentSessionId) {
             break;
           }
+          const nextRetrieval: NonNullable<MessageProps["memoryRetrieval"]> = {
+            status: event.status,
+            used: event.used,
+            chunks_total: event.chunks_total,
+            latency_ms: event.latency_ms,
+            embedding_status: event.embedding_status,
+            embedding_reason: event.embedding_reason,
+            session_chunks_stored: 0,
+            project_chunks_stored: 0,
+          };
           setMessages((prev) => {
             const lastMessage = prev[prev.length - 1];
             if (!lastMessage || lastMessage.role !== "assistant") {
+              pendingMemoryRetrievalRef.current[event.session_id] = {
+                ...nextRetrieval,
+                session_chunks_stored:
+                  pendingAssistantStorageRef.current[event.session_id]?.session_chunks_stored ?? 0,
+                project_chunks_stored:
+                  pendingAssistantStorageRef.current[event.session_id]?.project_chunks_stored ?? 0,
+              };
               return prev;
             }
             return [
@@ -1163,9 +1860,9 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               {
                 ...lastMessage,
                 memoryRetrieval: {
-                  used: event.used,
-                  chunks_total: event.chunks_total,
-                  latency_ms: event.latency_ms,
+                  ...nextRetrieval,
+                  session_chunks_stored: lastMessage.memoryRetrieval?.session_chunks_stored ?? 0,
+                  project_chunks_stored: lastMessage.memoryRetrieval?.project_chunks_stored ?? 0,
                 },
               },
             ];
@@ -1173,8 +1870,59 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           break;
         }
 
+        case "memory_storage": {
+          if (!currentSessionId || event.session_id !== currentSessionId) {
+            break;
+          }
+          if (event.role !== "assistant") {
+            break;
+          }
+          setMessages((prev) => {
+            if (prev.length === 0) return prev;
+            const targetIdx =
+              event.message_id != null
+                ? prev.findIndex((m) => m.id === event.message_id)
+                : prev.length - 1;
+            if (targetIdx < 0) {
+              pendingAssistantStorageRef.current[event.session_id] = {
+                messageId: event.message_id,
+                session_chunks_stored: event.session_chunks_stored,
+                project_chunks_stored: event.project_chunks_stored,
+              };
+              return prev;
+            }
+            const target = prev[targetIdx];
+            if (target.role !== "assistant") {
+              pendingAssistantStorageRef.current[event.session_id] = {
+                messageId: event.message_id,
+                session_chunks_stored: event.session_chunks_stored,
+                project_chunks_stored: event.project_chunks_stored,
+              };
+              return prev;
+            }
+
+            const next = [...prev];
+            next[targetIdx] = {
+              ...target,
+              memoryRetrieval: {
+                status: target.memoryRetrieval?.status,
+                used: target.memoryRetrieval?.used ?? false,
+                chunks_total: target.memoryRetrieval?.chunks_total ?? 0,
+                latency_ms: target.memoryRetrieval?.latency_ms ?? 0,
+                embedding_status: target.memoryRetrieval?.embedding_status,
+                embedding_reason: target.memoryRetrieval?.embedding_reason,
+                session_chunks_stored: event.session_chunks_stored,
+                project_chunks_stored: event.project_chunks_stored,
+              },
+            };
+            return next;
+          });
+          break;
+        }
+
         case "session_idle": {
           console.log("[StreamEvent] Session idle - completing generation");
+          finalizePendingToolCalls("interrupted");
 
           // Capture final content before any async operations
           const finalContent = currentAssistantMessageRef.current;
@@ -1227,10 +1975,26 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               currentAssistantMessageIdRef.current = null;
             }
 
-            // Check if we need to backfill from session history (content was empty)
+            // Check if we need to backfill from session history.
+            // Besides empty content, we also treat "assistant echoes user prompt"
+            // as suspicious (seen when stream events miss final assistant text).
             const lastMsg = messagesRef.current[messagesRef.current.length - 1];
+            const previousMsg = messagesRef.current[messagesRef.current.length - 2];
+            const echoedUserPrompt =
+              lastMsg?.role === "assistant" &&
+              previousMsg?.role === "user" &&
+              Boolean(lastMsg.content?.trim()) &&
+              lastMsg.content.trim() === previousMsg.content?.trim();
+            const hasPendingTools =
+              lastMsg?.role === "assistant" &&
+              Array.isArray(lastMsg.toolCalls) &&
+              lastMsg.toolCalls.some((tc) => tc.status === "pending");
             const needsBackfill =
-              !lastMsg || lastMsg.role !== "assistant" || !lastMsg.content?.trim();
+              !lastMsg ||
+              lastMsg.role !== "assistant" ||
+              !lastMsg.content?.trim() ||
+              echoedUserPrompt ||
+              hasPendingTools;
             if (needsBackfill && currentSessionIdRef.current) {
               console.log("[Chat] Backfilling empty assistant content from history");
               loadSessionHistory(currentSessionIdRef.current);
@@ -1277,6 +2041,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
         case "session_error": {
           console.error("[StreamEvent] Session error:", event.error);
+          finalizePendingToolCalls(event.error || "interrupted");
 
           // Display the error to the user
           setError(`Session error: ${event.error}`);
@@ -1332,6 +2097,38 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
         case "permission_asked": {
           // Handle permission requests from OpenCode
+          // Only show permission prompts for the active session.
+          if (!currentSessionId || event.session_id !== currentSessionId) {
+            break;
+          }
+          const normalizedTool = (event.tool || "").toLowerCase();
+          const permissionArgs = (event.args as Record<string, unknown>) || {};
+
+          // Normalize permission(tool=question) into the walkthrough question overlay flow.
+          if (normalizedTool === "question") {
+            const questions = extractQuestionInfoFromPermissionArgs(permissionArgs);
+            if (questions.length > 0) {
+              setPendingQuestionRequests((prev) => {
+                if (
+                  handledQuestionRequestIdsRef.current.has(event.request_id) ||
+                  prev.some((r) => r.request_id === event.request_id)
+                ) {
+                  return prev;
+                }
+
+                return [
+                  ...prev,
+                  {
+                    session_id: event.session_id,
+                    request_id: event.request_id,
+                    questions,
+                  },
+                ];
+              });
+              break;
+            }
+          }
+
           // Use the current assistant message ID so we can associate file snapshots with this message
           const currentMsgId = currentAssistantMessageIdRef.current;
           if (handledPermissionIdsRef.current.has(event.request_id)) {
@@ -1358,7 +2155,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
               event.request_id,
               event.session_id,
               event.tool || "unknown",
-              (event.args as Record<string, unknown>) || {},
+              permissionArgs,
               currentMsgId || undefined
             ).catch((err) => {
               console.error("[Permission] Failed to stage operation:", err);
@@ -1369,7 +2166,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
             if (allowAllTools) {
               approveTool(event.session_id, event.request_id, {
                 tool: event.tool || undefined,
-                args: (event.args as Record<string, unknown>) || undefined,
+                args: permissionArgs,
                 messageId: currentMsgId || undefined,
               }).catch((e) => {
                 console.error("[Permission] Auto-approve failed:", e);
@@ -1380,18 +2177,19 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
                 }
               });
             } else {
+              const summary = buildPermissionReason(event.tool || undefined, permissionArgs);
               // Immediate mode: show permission toast as before
               const permissionRequest: PermissionRequest = {
                 id: event.request_id,
                 session_id: event.session_id,
                 type: (event.tool || "unknown") as PermissionRequest["type"],
-                path: event.args?.path as string | undefined,
-                command: event.args?.command as string | undefined,
-                reasoning: "AI requests permission to perform this action",
+                path: summary.path,
+                command: summary.command,
+                reasoning: summary.reasoning,
                 riskLevel:
                   event.tool === "delete_file" || event.tool === "bash" ? "high" : "medium",
                 tool: event.tool || undefined,
-                args: (event.args as Record<string, unknown>) || undefined,
+                args: permissionArgs,
                 messageId: currentMsgId || undefined, // Associate with current message for undo
               };
               setPendingPermissions((prev) => {
@@ -1444,6 +2242,27 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
             const status = data?.status;
             if (status === "healthy" || status === "degraded" || status === "recovering") {
               setStreamHealth(status);
+              if (status === "healthy") {
+                setEngineReady(true);
+              }
+            }
+            break;
+          }
+
+          if (event.event_type === "engine.lifecycle.ready") {
+            setEngineReady(true);
+            setSidecarStatus("running");
+            setStreamHealth("healthy");
+            break;
+          }
+
+          if (event.event_type === "system.engine_restart_detected") {
+            setEngineReady(false);
+            setIsGenerating(false);
+            finalizePendingToolCalls("interrupted: engine restarted");
+            showStatusBanner("Engine restarted. Rehydrating session state...");
+            if (currentSessionIdRef.current) {
+              loadSessionHistory(currentSessionIdRef.current);
             }
             break;
           }
@@ -1480,6 +2299,8 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
       usePlanMode,
       allowAllTools,
       scheduleAssistantFlush,
+      finalizePendingToolCalls,
+      showStatusBanner,
     ]
   );
 
@@ -1517,10 +2338,26 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
   const connectSidecar = async () => {
     setIsConnecting(true);
     setError(null);
+    setStreamHealth("recovering");
+    setSidecarStatus("starting");
+    setEngineReady(false);
 
     try {
-      await startSidecar();
+      const status = await getSidecarStatus();
+      if (status === "starting") {
+        const attached = await waitForSidecarRunning(SIDECAR_ATTACH_TIMEOUT_MS, 500);
+        if (!attached) {
+          throw new Error("Tandem Engine is still starting and did not become ready in time.");
+        }
+      } else {
+        await startSidecarWithTimeout();
+      }
+      const ready = await waitForEngineReady();
+      if (!ready) {
+        throw new Error("Tandem Engine started but did not signal readiness on event stream.");
+      }
       setSidecarStatus("running");
+      setStreamHealth("healthy");
       // Don't create a session here - it will be created when user sends first message
       // Notify parent that sidecar is connected
       onSidecarConnected?.();
@@ -1548,6 +2385,13 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
           return;
         }
         if (currentStatus !== "running") {
+          return;
+        }
+      }
+      if (!engineReadyRef.current) {
+        const ready = await waitForEngineReady(8_000, 200);
+        if (!ready) {
+          setError("Tandem Engine is running but not ready to stream yet. Please retry Connect.");
           return;
         }
       }
@@ -1663,7 +2507,7 @@ ${g.example}
       if (effectivePlanMode) {
         finalContent = `${finalContent}
         
-(Please use the todowrite tool to create a structured task list. Then, ask for user approval before starting execution/completing the tasks.)`;
+(Please use the todowrite tool to create a structured task list. If you need more information, call the question tool with structured options instead of asking plain-text questions. Then, ask for user approval before starting execution/completing the tasks.)`;
         console.log("[PlanMode] Using OpenCode's Plan agent with todowrite guidance");
       }
 
@@ -1760,7 +2604,7 @@ ${g.example}
         }
 
         // Send message and stream response, with selected agent
-        await sendMessageStreaming(
+        await sendMessageAndStartRun(
           sessionId,
           messageContent,
           attachmentsToSend.length > 0 ? attachmentsToSend : undefined,
@@ -1795,7 +2639,7 @@ ${g.example}
       connectSidecar,
       getSidecarStatus,
       createSession,
-      sendMessageStreaming,
+      sendMessageAndStartRun,
       setError,
       setIsGenerating,
       setMessages,
@@ -2104,7 +2948,36 @@ ${g.example}
     }
   }, [activePlan, hasPendingQuestionOverlay, pendingQuestionRequests, showPlanView, usePlanMode]);
 
+  useEffect(() => {
+    if (!isConnecting) {
+      setStartupHealth(null);
+      return;
+    }
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const health = await getSidecarStartupHealth();
+        if (!cancelled) {
+          setStartupHealth(health);
+        }
+      } catch {
+        if (!cancelled) {
+          setStartupHealth(null);
+        }
+      }
+    };
+
+    poll();
+    const interval = globalThis.setInterval(poll, 700);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(interval);
+    };
+  }, [isConnecting]);
+
   const needsConnection = sidecarStatus !== "running" && !isConnecting;
+  const showConnectingOverlay = isConnecting;
 
   return (
     <div className="relative flex h-full flex-col">
@@ -2113,6 +2986,84 @@ ${g.example}
           {statusBanner}
         </div>
       )}
+      <AnimatePresence>
+        {showConnectingOverlay && (
+          <motion.div
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-[radial-gradient(circle_at_center,color-mix(in_srgb,var(--color-primary)_20%,transparent)_0%,color-mix(in_srgb,var(--color-background)_78%,black_22%)_68%,color-mix(in_srgb,var(--color-background)_90%,black_10%)_100%)] backdrop-blur-md"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="w-[min(440px,88vw)] rounded-2xl border border-primary/20 bg-surface-elevated/92 p-4 shadow-2xl shadow-black/35"
+              initial={{ scale: 0.97, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+            >
+              <div className="mb-2.5 flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-primary/25 bg-primary/10 shadow-lg shadow-primary/20">
+                  <Loader2 className="h-5 w-5 animate-spin text-primary/90" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-text">Connecting to Tandem Engine</h3>
+                  <p className="text-sm text-text-subtle">
+                    {startupPhaseLabel(startupHealth?.phase)}
+                    {startupHealth
+                      ? ` - ${Math.max(0, Math.round((startupHealth.startup_elapsed_ms || 0) / 1000))}s`
+                      : ""}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-lg border border-border bg-surface/70 px-2 py-2">
+                <div className="grid grid-cols-[repeat(14,minmax(0,1fr))] gap-1">
+                  {Array.from({ length: 14 }).map((_, index) => (
+                    <motion.div
+                      key={`connect-cell-${index}`}
+                      className="h-2.5 w-full rounded-[3px] border border-primary/20 bg-primary/10"
+                      animate={{
+                        opacity:
+                          index <
+                          Math.max(
+                            1,
+                            Math.round((startupPhaseProgress(startupHealth?.phase) / 100) * 14)
+                          )
+                            ? [0.35, 0.65, 1, 0.65, 0.35]
+                            : [0.12, 0.2, 0.3, 0.2, 0.12],
+                        scaleY: [0.9, 1, 1.08, 1, 0.9],
+                        backgroundColor: [
+                          "var(--color-primary-muted)",
+                          "var(--color-primary)",
+                          "var(--color-secondary)",
+                          "var(--color-primary)",
+                          "var(--color-primary-muted)",
+                        ],
+                        boxShadow: [
+                          "0 0 0px transparent",
+                          "0 0 8px color-mix(in srgb, var(--color-primary) 55%, transparent)",
+                          "0 0 12px color-mix(in srgb, var(--color-secondary) 55%, transparent)",
+                          "0 0 8px color-mix(in srgb, var(--color-primary) 45%, transparent)",
+                          "0 0 0px transparent",
+                        ],
+                      }}
+                      transition={{
+                        duration: 1.15,
+                        repeat: Infinity,
+                        repeatType: "loop",
+                        ease: "easeInOut",
+                        delay: index * 0.06,
+                      }}
+                    />
+                  ))}
+                </div>
+                <div className="mt-1.5 flex items-center justify-between text-xs text-text-muted">
+                  <span>{startupPhaseDetail(startupHealth?.phase)}</span>
+                  <span>{startupPhaseProgress(startupHealth?.phase)}% estimated</span>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* Header */}
       <header className="flex items-center justify-between border-b border-border px-6 py-4">
         <div className="flex items-center gap-3">
@@ -2664,7 +3615,7 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                 setTimeout(async () => {
                   try {
                     // Use the same agent (plan agent if in plan mode)
-                    await sendMessageStreaming(
+                    await sendMessageAndStartRun(
                       currentSessionId,
                       confirmMessage,
                       undefined,

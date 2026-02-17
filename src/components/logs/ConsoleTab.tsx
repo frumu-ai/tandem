@@ -21,9 +21,8 @@ import {
   onSidecarEvent,
   approveTool,
   denyTool,
-  getSessionMessages,
+  listToolExecutions,
   type StreamEvent,
-  type SessionMessage,
 } from "@/lib/tauri";
 
 // ---------------------------------------------------------------------------
@@ -146,6 +145,20 @@ interface PendingApproval {
 // ---------------------------------------------------------------------------
 
 function formatCommand(tool: string, args: Record<string, unknown>): string {
+  if (tool === "memory.lookup") {
+    const chunks = Number(args.chunks_total ?? 0);
+    const latency = Number(args.latency_ms ?? 0);
+    const status = String(args.status ?? "unknown");
+    return `${chunks} chunks (${latency}ms) [${status}]`;
+  }
+  if (tool === "memory.store") {
+    const role = String(args.role ?? "unknown");
+    const s = Number(args.session_chunks_stored ?? 0);
+    const p = Number(args.project_chunks_stored ?? 0);
+    const status = String(args.status ?? "unknown");
+    return `${role} S${s}/P${p} [${status}]`;
+  }
+
   // For shell commands, extract the actual command
   const shellCmd = args.command ?? args.cmd ?? args.input ?? args.script ?? args.code;
   if (typeof shellCmd === "string") return shellCmd;
@@ -196,90 +209,6 @@ function statusLabel(status: EntryStatus): string {
     case "failed":
       return "Failed";
   }
-}
-
-// ---------------------------------------------------------------------------
-// History Loading
-// ---------------------------------------------------------------------------
-
-/**
- * Extract tool execution entries from session message history.
- * Reconstructs ConsoleEntry objects from tool_start/tool_end events in message parts.
- */
-function extractToolExecutions(messages: SessionMessage[]): ConsoleEntry[] {
-  const entriesMap = new Map<string, ConsoleEntry>();
-
-  messages.forEach((msg) => {
-    msg.parts.forEach((part) => {
-      const p = part as {
-        type?: string;
-        id?: string;
-        tool?: string;
-        name?: string;
-        part_id?: string;
-        args?: Record<string, unknown>;
-        input?: Record<string, unknown>;
-        error?: string;
-        result?: unknown;
-        output?: unknown;
-      };
-      if (!p.type) return;
-
-      // Resolve the part identifier – live events use part_id, DB uses id
-      const partId = p.part_id || p.id;
-
-      // Resolve tool name – may be stored as 'tool' or 'name'
-      const toolName = p.tool || p.name;
-
-      // Resolve args – may be stored as 'args' or 'input'
-      const toolArgs = p.args || p.input || {};
-
-      // Resolve result – may be stored as 'result' or 'output'
-      const toolResult = p.result ?? p.output;
-
-      if (p.type === "tool_start" && toolName && partId) {
-        const category = categorizeTool(toolName);
-        entriesMap.set(partId, {
-          id: partId,
-          tool: toolName,
-          args: toolArgs,
-          status: "running",
-          timestamp: new Date(msg.info.time.created),
-          sessionId: msg.info.sessionID,
-          messageId: msg.info.id,
-          category,
-        });
-      } else if (p.type === "tool_end" && partId) {
-        const entry = entriesMap.get(partId);
-        if (entry) {
-          entry.status = p.error ? "failed" : "completed";
-          entry.result = toolResult ? String(toolResult) : undefined;
-          entry.error = p.error;
-        }
-      } else if (p.type === "tool" && toolName) {
-        // Persisted tool calls stored as a single combined 'tool' part
-        const id = partId || `tool-${Math.random().toString(36).slice(2)}`;
-        const category = categorizeTool(toolName);
-        entriesMap.set(id, {
-          id,
-          tool: toolName,
-          args: toolArgs,
-          status: p.error ? "failed" : "completed",
-          result: toolResult ? String(toolResult) : undefined,
-          error: p.error,
-          timestamp: new Date(msg.info.time.created),
-          sessionId: msg.info.sessionID,
-          messageId: msg.info.id,
-          category,
-        });
-      }
-    });
-  });
-
-  // Sort by timestamp
-  return Array.from(entriesMap.values()).sort(
-    (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -480,47 +409,78 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
   const [approvals, setApprovals] = useState<Map<string, PendingApproval>>(() => new Map());
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const sessionIdRef = useRef(sessionId);
-  const loadedSessionRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    sessionIdRef.current = sessionId;
-  }, [sessionId]);
 
   // Load historical tool executions when session changes
   useEffect(() => {
+    setEntries([]);
+    setApprovals(new Map());
+
     if (!sessionId) {
-      setEntries([]);
-      setApprovals(new Map());
-      loadedSessionRef.current = null;
+      setIsLoadingHistory(false);
       return;
     }
 
-    // Skip if already loaded for this session
-    if (loadedSessionRef.current === sessionId || isLoadingHistory) {
-      return;
-    }
-
+    let cancelled = false;
     const loadHistory = async () => {
       setIsLoadingHistory(true);
       try {
-        const messages = await getSessionMessages(sessionId);
-        const toolEntries = extractToolExecutions(messages);
+        const rows = await listToolExecutions(sessionId, 400);
+        if (cancelled) return;
+
+        const toolEntries = rows
+          .slice()
+          .reverse()
+          .map((row) => {
+            const status: EntryStatus =
+              row.status === "pending" || row.status === "running" || row.status === "completed"
+                ? row.status
+                : "failed";
+            const resultText =
+              row.result == null
+                ? undefined
+                : typeof row.result === "string"
+                  ? row.result
+                  : JSON.stringify(row.result, null, 2);
+            const timestamp = row.ended_at_ms ?? row.started_at_ms;
+
+            return {
+              id: row.id,
+              tool: row.tool,
+              args:
+                row.args && typeof row.args === "object" && !Array.isArray(row.args)
+                  ? (row.args as Record<string, unknown>)
+                  : {},
+              status,
+              result: resultText,
+              error: row.error,
+              timestamp: new Date(timestamp),
+              sessionId: row.session_id,
+              messageId: row.message_id,
+              category: categorizeTool(row.tool),
+            } satisfies ConsoleEntry;
+          });
+
         setEntries(toolEntries);
         setApprovals(new Map());
-        loadedSessionRef.current = sessionId;
       } catch (err) {
         console.error("[ConsoleTab] History load failed:", err);
-        // Silent fail - history loading is non-critical
-        setEntries([]);
-        setApprovals(new Map());
+        if (!cancelled) {
+          setEntries([]);
+          setApprovals(new Map());
+        }
       } finally {
-        setIsLoadingHistory(false);
+        if (!cancelled) {
+          setIsLoadingHistory(false);
+        }
       }
     };
 
-    loadHistory();
-  }, [sessionId, isLoadingHistory]);
+    void loadHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
 
   // Auto-scroll to bottom when new entries arrive
   useEffect(() => {
@@ -530,115 +490,230 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
   // -----------------------------------------------------------------------
   // SSE Listener
   // -----------------------------------------------------------------------
-  const handleEvent = useCallback((event: StreamEvent) => {
-    switch (event.type) {
-      case "tool_start": {
-        const category = categorizeTool(event.tool);
+  const handleEvent = useCallback(
+    (event: StreamEvent) => {
+      if (!sessionId) return;
 
-        setEntries((prev) => {
-          // Avoid duplicates
-          if (prev.some((e) => e.id === event.part_id)) {
-            return prev;
-          }
-          return [
-            ...prev,
-            {
-              id: event.part_id,
+      switch (event.type) {
+        case "tool_start": {
+          if (event.session_id !== sessionId) break;
+          const category = categorizeTool(event.tool);
+
+          setEntries((prev) => {
+            // Avoid duplicates
+            if (prev.some((e) => e.id === event.part_id)) {
+              return prev;
+            }
+            return [
+              ...prev,
+              {
+                id: event.part_id,
+                tool: event.tool,
+                args: event.args as Record<string, unknown>,
+                status: "running",
+                timestamp: new Date(),
+                sessionId: event.session_id,
+                messageId: event.message_id,
+                category,
+              },
+            ];
+          });
+          break;
+        }
+
+        case "tool_end": {
+          if (event.session_id !== sessionId) break;
+          setEntries((prev) => {
+            let matchedId = event.part_id;
+            const hasExact = prev.some((e) => e.id === event.part_id);
+            if (!hasExact) {
+              for (let i = prev.length - 1; i >= 0; i -= 1) {
+                const candidate = prev[i];
+                if (
+                  candidate.sessionId === event.session_id &&
+                  candidate.status === "running" &&
+                  candidate.tool.toLowerCase() === event.tool.toLowerCase() &&
+                  (!event.message_id || candidate.messageId === event.message_id)
+                ) {
+                  matchedId = candidate.id;
+                  break;
+                }
+              }
+            }
+
+            return prev.map((e) =>
+              e.id === matchedId
+                ? {
+                    ...e,
+                    status: event.error ? "failed" : "completed",
+                    result: event.result ? String(event.result) : undefined,
+                    error: event.error ?? undefined,
+                  }
+                : e
+            );
+          });
+          // Remove any approval for this tool
+          setApprovals((prev) => {
+            const next = new Map(prev);
+            for (const [key, val] of next) {
+              if (val.sessionId === event.session_id) {
+                next.delete(key);
+              }
+            }
+            return next;
+          });
+          break;
+        }
+
+        case "run_finished":
+        case "session_idle":
+        case "session_error": {
+          const sid = event.session_id;
+          if (sid !== sessionId) break;
+          const terminalError =
+            event.type === "session_error"
+              ? event.error
+              : event.type === "run_finished" && event.status !== "completed"
+                ? event.error || `run_${event.status}`
+                : "interrupted";
+          setEntries((prev) =>
+            prev.map((e) =>
+              e.sessionId === sid && e.status === "running"
+                ? {
+                    ...e,
+                    status: "failed",
+                    error: e.error || terminalError,
+                  }
+                : e
+            )
+          );
+          break;
+        }
+
+        case "permission_asked": {
+          if (event.session_id !== sessionId) break;
+          if (!event.tool) return;
+
+          const category = categorizeTool(event.tool);
+
+          // Add a pending entry if we don't have one for this request yet
+          setEntries((prev) => {
+            // Check if there's already a running entry for this tool in this session
+            const existingRunning = prev.find(
+              (e) => e.sessionId === event.session_id && e.status === "running"
+            );
+            if (existingRunning) {
+              return prev.map((e) =>
+                e.id === existingRunning.id ? { ...e, status: "pending" } : e
+              );
+            }
+
+            // Add a new pending entry
+            if (prev.some((e) => e.id === event.request_id)) return prev;
+            return [
+              ...prev,
+              {
+                id: event.request_id,
+                tool: event.tool || "unknown",
+                args: (event.args as Record<string, unknown>) || {},
+                status: "pending",
+                timestamp: new Date(),
+                sessionId: event.session_id,
+                category,
+              },
+            ];
+          });
+
+          setApprovals((prev) => {
+            const next = new Map(prev);
+            next.set(event.request_id, {
+              requestId: event.request_id,
+              sessionId: event.session_id,
               tool: event.tool,
               args: event.args as Record<string, unknown>,
-              status: "running",
+            });
+            return next;
+          });
+          break;
+        }
+
+        case "memory_retrieval": {
+          if (event.session_id !== sessionId) break;
+          const eventStatus = event.status ?? "unknown";
+          const isFailure =
+            eventStatus === "error_fallback" || eventStatus === "degraded_disabled";
+          setEntries((prev) => [
+            ...prev,
+            {
+              id: `memory.lookup:${event.session_id}:${event.query_hash}:${Date.now()}`,
+              tool: "memory.lookup",
+              args: {
+                status: eventStatus,
+                used: event.used,
+                chunks_total: event.chunks_total,
+                session_chunks: event.session_chunks,
+                history_chunks: event.history_chunks,
+                project_fact_chunks: event.project_fact_chunks,
+                latency_ms: event.latency_ms,
+                query_hash: event.query_hash,
+                embedding_status: event.embedding_status,
+                embedding_reason: event.embedding_reason,
+              },
+              status: isFailure ? "failed" : "completed",
+              result: `lookup used=${event.used} chunks=${event.chunks_total} latency=${event.latency_ms}ms`,
+              error: isFailure ? `lookup status=${eventStatus}` : undefined,
+              timestamp: new Date(),
+              sessionId: event.session_id,
+              category: "search",
+            },
+          ]);
+          break;
+        }
+
+        case "memory_storage": {
+          if (event.session_id !== sessionId) break;
+          const eventStatus = event.status ?? "unknown";
+          const isFailure = eventStatus === "error" || Boolean(event.error);
+          setEntries((prev) => [
+            ...prev,
+            {
+              id: `memory.store:${event.session_id}:${event.message_id ?? "none"}:${event.role}:${Date.now()}`,
+              tool: "memory.store",
+              args: {
+                role: event.role,
+                session_chunks_stored: event.session_chunks_stored,
+                project_chunks_stored: event.project_chunks_stored,
+                status: eventStatus,
+                message_id: event.message_id,
+              },
+              status: isFailure ? "failed" : "completed",
+              result: `store role=${event.role} session=${event.session_chunks_stored} project=${event.project_chunks_stored}`,
+              error: event.error,
               timestamp: new Date(),
               sessionId: event.session_id,
               messageId: event.message_id,
-              category,
+              category: "other",
             },
-          ];
-        });
-        break;
+          ]);
+          break;
+        }
       }
-
-      case "tool_end": {
-        setEntries((prev) =>
-          prev.map((e) =>
-            e.id === event.part_id
-              ? {
-                  ...e,
-                  status: event.error ? "failed" : "completed",
-                  result: event.result ? String(event.result) : undefined,
-                  error: event.error ?? undefined,
-                }
-              : e
-          )
-        );
-        // Remove any approval for this tool
-        setApprovals((prev) => {
-          const next = new Map(prev);
-          for (const [key, val] of next) {
-            if (val.sessionId === event.session_id) {
-              next.delete(key);
-            }
-          }
-          return next;
-        });
-        break;
-      }
-
-      case "permission_asked": {
-        if (!event.tool) return;
-
-        const category = categorizeTool(event.tool);
-
-        // Add a pending entry if we don't have one for this request yet
-        setEntries((prev) => {
-          // Check if there's already a running entry for this tool in this session
-          const existingRunning = prev.find(
-            (e) => e.sessionId === event.session_id && e.status === "running"
-          );
-          if (existingRunning) {
-            return prev.map((e) => (e.id === existingRunning.id ? { ...e, status: "pending" } : e));
-          }
-
-          // Add a new pending entry
-          if (prev.some((e) => e.id === event.request_id)) return prev;
-          return [
-            ...prev,
-            {
-              id: event.request_id,
-              tool: event.tool || "unknown",
-              args: (event.args as Record<string, unknown>) || {},
-              status: "pending",
-              timestamp: new Date(),
-              sessionId: event.session_id,
-              category,
-            },
-          ];
-        });
-
-        setApprovals((prev) => {
-          const next = new Map(prev);
-          next.set(event.request_id, {
-            requestId: event.request_id,
-            sessionId: event.session_id,
-            tool: event.tool,
-            args: event.args as Record<string, unknown>,
-          });
-          return next;
-        });
-        break;
-      }
-    }
-  }, []);
+    },
+    [sessionId]
+  );
 
   useEffect(() => {
+    if (!sessionId) return;
+
     let unlistenFn: (() => void) | null = null;
     const setup = async () => {
       unlistenFn = await onSidecarEvent(handleEvent);
     };
-    setup();
+    void setup();
     return () => {
       unlistenFn?.();
     };
-  }, [handleEvent]);
+  }, [handleEvent, sessionId]);
 
   // -----------------------------------------------------------------------
   // Approval handlers
@@ -704,6 +779,27 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
   // Render
   // -----------------------------------------------------------------------
 
+  if (!sessionId) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-text-subtle">
+        <Terminal className="h-8 w-8 opacity-40" />
+        <p className="text-sm">Select a session to view tool calls.</p>
+        <p className="text-xs text-text-muted max-w-xs text-center">
+          Console history and live tool execution events are scoped to one selected session.
+        </p>
+      </div>
+    );
+  }
+
+  if (isLoadingHistory && entries.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-text-subtle">
+        <Terminal className="h-8 w-8 opacity-40" />
+        <p className="text-sm">Loading tool history...</p>
+      </div>
+    );
+  }
+
   if (entries.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3 text-text-subtle">
@@ -721,7 +817,7 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
       {/* Header bar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
         <span className="text-xs text-text-subtle">
-          <span className="font-mono tabular-nums">{entries.length}</span> tool
+          <span className="font-mono tabular-nums">{entries.length}</span> event
           {entries.length !== 1 ? "s" : ""}
         </span>
         <button

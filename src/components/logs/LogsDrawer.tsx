@@ -28,12 +28,21 @@ const DEFAULT_TAIL_LINES = 500;
 
 type Level = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "STDOUT" | "STDERR" | "UNKNOWN";
 type LevelFilter = "ALL" | Exclude<Level, "UNKNOWN">;
+type ProvenanceFilter = "ALL" | "CURRENT" | "LEGACY";
+type Provenance = "current" | "legacy";
 
 type ParsedLine = {
   ts?: string;
+  ts_ms?: number;
   level: Level;
   target?: string;
+  process?: string;
+  component?: string;
+  event?: string;
+  correlation_id?: string;
+  session_id?: string;
   msg: string;
+  provenance: Provenance;
 };
 
 type LineItem = {
@@ -44,32 +53,108 @@ type LineItem = {
 
 function parseLine(raw: string): ParsedLine {
   const trimmed = raw.replace(/\r?\n$/, "");
+  const lower = trimmed.toLowerCase();
+  const legacy =
+    lower.includes("opencode") ||
+    lower.includes("ai.frumu.tandem") ||
+    lower.includes(".local\\share\\opencode") ||
+    lower.includes(".local/share/opencode") ||
+    lower.includes(".config\\opencode") ||
+    lower.includes(".config/opencode");
+  const provenance: Provenance = legacy ? "legacy" : "current";
+
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      const obj = JSON.parse(trimmed) as Record<string, unknown>;
+      const fieldString = (key: string, nested?: Record<string, unknown>): string | undefined => {
+        const fromNested = nested?.[key];
+        if (typeof fromNested === "string" && fromNested.trim().length > 0) {
+          return fromNested;
+        }
+        const fromTop = obj[key];
+        if (typeof fromTop === "string" && fromTop.trim().length > 0) {
+          return fromTop;
+        }
+        return undefined;
+      };
+      const levelRaw = typeof obj.level === "string" ? obj.level.toUpperCase() : "UNKNOWN";
+      const level: Level =
+        levelRaw === "TRACE" ||
+        levelRaw === "DEBUG" ||
+        levelRaw === "INFO" ||
+        levelRaw === "WARN" ||
+        levelRaw === "ERROR"
+          ? (levelRaw as Level)
+          : "UNKNOWN";
+      const ts =
+        (typeof obj.timestamp === "string" && obj.timestamp) ||
+        (typeof obj.ts === "string" && obj.ts) ||
+        undefined;
+      const parsedTs = ts ? Date.parse(ts) : NaN;
+      const target =
+        (typeof obj.target === "string" && obj.target) ||
+        (typeof obj.component === "string" && obj.component) ||
+        undefined;
+      const fields =
+        obj.fields && typeof obj.fields === "object"
+          ? (obj.fields as Record<string, unknown>)
+          : undefined;
+      const process = fieldString("process", fields);
+      const component = fieldString("component", fields);
+      const event = fieldString("event", fields);
+      const correlation_id = fieldString("correlation_id", fields);
+      const session_id = fieldString("session_id", fields);
+      const message =
+        (fields && typeof fields.message === "string" && fields.message) ||
+        (typeof obj.message === "string" && obj.message) ||
+        (fields && typeof fields.event === "string" && fields.event) ||
+        trimmed;
+      return {
+        ts,
+        ts_ms: Number.isFinite(parsedTs) ? parsedTs : undefined,
+        level,
+        target,
+        process,
+        component,
+        event,
+        correlation_id,
+        session_id,
+        msg: message,
+        provenance,
+      };
+    } catch {
+      // Fall through to text parsing
+    }
+  }
 
   const sidecar = trimmed.match(/^(STDOUT|STDERR)\s*(?:[:-])?\s*(.*)$/);
   if (sidecar) {
     const level = sidecar[1] as "STDOUT" | "STDERR";
-    return { level, msg: sidecar[2] ?? "" };
+    return { level, msg: sidecar[2] ?? "", provenance };
   }
 
   // Common tracing format:
   // 2026-02-09T15:30:55.123Z  INFO module::path: message...
   const m = trimmed.match(/^(\S+)\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+([^:]+):\s*(.*)$/);
   if (m) {
+    const parsedTs = Date.parse(m[1]);
     return {
       ts: m[1],
+      ts_ms: Number.isFinite(parsedTs) ? parsedTs : undefined,
       level: m[2] as Level,
       target: m[3],
       msg: m[4] ?? "",
+      provenance,
     };
   }
 
   // Fallback: [LEVEL] ... or LEVEL ...
   const m2 = trimmed.match(/^\[?(TRACE|DEBUG|INFO|WARN|ERROR)\]?\s+(.*)$/);
   if (m2) {
-    return { level: m2[1] as Level, msg: m2[2] ?? "" };
+    return { level: m2[1] as Level, msg: m2[2] ?? "", provenance };
   }
 
-  return { level: "UNKNOWN", msg: trimmed };
+  return { level: "UNKNOWN", msg: trimmed, provenance };
 }
 
 function levelBadgeClasses(level: Level): string {
@@ -141,9 +226,11 @@ function pickNewest(files: LogFileInfo[]): string | null {
 export function LogsDrawer({
   onClose,
   sessionId,
+  embedded = false,
 }: {
-  onClose: () => void;
+  onClose?: () => void;
   sessionId?: string | null;
+  embedded?: boolean;
 }) {
   const [tab, setTab] = useState<"tandem" | "console">("tandem");
   const [files, setFiles] = useState<LogFileInfo[]>([]);
@@ -151,6 +238,14 @@ export function LogsDrawer({
   const [paused, setPaused] = useState(false);
   const [search, setSearch] = useState("");
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("ALL");
+  // Default to current-runtime lines so migrated legacy logs do not dominate the view.
+  const [provenanceFilter, setProvenanceFilter] = useState<ProvenanceFilter>("CURRENT");
+  const [processFilter, setProcessFilter] = useState<string>("ALL");
+  const [componentFilter, setComponentFilter] = useState<string>("ALL");
+  const [eventFilter, setEventFilter] = useState<string>("ALL");
+  const [correlationFilter, setCorrelationFilter] = useState("");
+  const [sessionFilter, setSessionFilter] = useState("");
+  const [currentRuntimeOnly, setCurrentRuntimeOnly] = useState(true);
   const [follow, setFollow] = useState(true);
   const [lines, setLines] = useState<LineItem[]>([]);
   const [dropped, setDropped] = useState(0);
@@ -309,17 +404,93 @@ export function LogsDrawer({
     };
   }, [stopCurrentStream]);
 
+  const currentRuntimeCutoffMs = useMemo(() => {
+    if (!currentRuntimeOnly) return undefined;
+
+    // Identify the latest desktop startup marker in this file and use that as the runtime cutoff.
+    // This avoids the previous behavior where cutoff was "drawer open time", which could hide
+    // valid lines if the drawer was opened later.
+    let cutoff: number | undefined;
+    for (const line of lines) {
+      if (
+        line.parsed.event === "logging.initialized" &&
+        line.parsed.process === "desktop" &&
+        typeof line.parsed.ts_ms === "number"
+      ) {
+        if (cutoff === undefined || line.parsed.ts_ms > cutoff) {
+          cutoff = line.parsed.ts_ms;
+        }
+      }
+    }
+    return cutoff;
+  }, [lines, currentRuntimeOnly]);
+
   const visibleLines = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const correlationQuery = correlationFilter.trim();
+    const sessionQuery = sessionFilter.trim();
     return lines.filter((l) => {
       if (levelFilter !== "ALL") {
         const lv = l.parsed.level;
         if (lv !== levelFilter) return false;
       }
+      if (processFilter !== "ALL" && (l.parsed.process ?? "") !== processFilter) return false;
+      if (componentFilter !== "ALL" && (l.parsed.component ?? "") !== componentFilter) return false;
+      if (eventFilter !== "ALL" && (l.parsed.event ?? "") !== eventFilter) return false;
+      if (correlationQuery && !(l.parsed.correlation_id ?? "").includes(correlationQuery)) {
+        return false;
+      }
+      if (sessionQuery && !(l.parsed.session_id ?? "").includes(sessionQuery)) {
+        return false;
+      }
+      if (provenanceFilter === "CURRENT") {
+        if (l.parsed.provenance !== "current") return false;
+      }
+      if (typeof currentRuntimeCutoffMs === "number") {
+        // Keep current-process lines only after the latest desktop startup marker.
+        if (typeof l.parsed.ts_ms === "number" && l.parsed.ts_ms < currentRuntimeCutoffMs) {
+          return false;
+        }
+      }
+      if (provenanceFilter === "LEGACY" && l.parsed.provenance !== "legacy") return false;
       if (!q) return true;
       return l.raw.toLowerCase().includes(q);
     });
-  }, [lines, levelFilter, search]);
+  }, [
+    lines,
+    levelFilter,
+    processFilter,
+    componentFilter,
+    eventFilter,
+    correlationFilter,
+    sessionFilter,
+    provenanceFilter,
+    currentRuntimeOnly,
+    currentRuntimeCutoffMs,
+    search,
+  ]);
+
+  const processOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(lines.map((l) => l.parsed.process).filter((v): v is string => !!v))
+      ).sort(),
+    [lines]
+  );
+
+  const componentOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(lines.map((l) => l.parsed.component).filter((v): v is string => !!v))
+      ).sort(),
+    [lines]
+  );
+
+  const eventOptions = useMemo(
+    () =>
+      Array.from(new Set(lines.map((l) => l.parsed.event).filter((v): v is string => !!v))).sort(),
+    [lines]
+  );
 
   // Keep the view pinned to the bottom when follow is enabled.
   useEffect(() => {
@@ -371,6 +542,12 @@ export function LogsDrawer({
             <span className="shrink-0 font-mono text-[11px] text-text-muted">{p.target}</span>
           )}
 
+          {p.provenance === "legacy" && (
+            <span className="shrink-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200">
+              LEGACY
+            </span>
+          )}
+
           <span className="font-mono text-[12px] text-text whitespace-pre">
             {p.msg || item.raw}
           </span>
@@ -416,8 +593,10 @@ export function LogsDrawer({
   return (
     <div
       className={cn(
-        "fixed z-50 border-border bg-surface shadow-xl h-dvh",
-        expanded ? "inset-0" : "inset-y-0 right-0 w-full sm:w-[560px] border-l"
+        embedded
+          ? "h-full min-h-0 overflow-hidden rounded-xl border border-border bg-surface shadow-sm"
+          : "fixed z-50 h-dvh border-border bg-surface shadow-xl",
+        !embedded && (expanded ? "inset-0" : "inset-y-0 right-0 w-full border-l sm:w-[560px]")
       )}
     >
       <div className="flex h-full min-h-0 flex-col">
@@ -434,22 +613,26 @@ export function LogsDrawer({
               </div>
             </div>
 
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setExpanded((e) => !e)}
-                className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
-                title={expanded ? "Dock logs drawer" : "Expand logs to full screen"}
-              >
-                {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              </button>
-              <button
-                onClick={onClose}
-                className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
-                title="Close"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+            {!embedded && (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setExpanded((e) => !e)}
+                  className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
+                  title={expanded ? "Dock logs drawer" : "Expand logs to full screen"}
+                >
+                  {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                </button>
+                {onClose && (
+                  <button
+                    onClick={onClose}
+                    className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
+                    title="Close"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Tabs + controls */}
@@ -593,6 +776,90 @@ export function LogsDrawer({
                   </select>
                 </label>
 
+                <label className="flex items-center gap-2 text-xs text-text-subtle">
+                  <span className="hidden sm:inline">Source</span>
+                  <select
+                    className="rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
+                    value={provenanceFilter}
+                    onChange={(e) => setProvenanceFilter(e.target.value as ProvenanceFilter)}
+                  >
+                    <option value="ALL">All sources</option>
+                    <option value="CURRENT">Current runtime</option>
+                    <option value="LEGACY">Legacy imported</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-2 text-xs text-text-subtle">
+                  <span className="hidden sm:inline">Process</span>
+                  <select
+                    className="max-w-[140px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
+                    value={processFilter}
+                    onChange={(e) => setProcessFilter(e.target.value)}
+                  >
+                    <option value="ALL">All</option>
+                    {processOptions.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-2 text-xs text-text-subtle">
+                  <span className="hidden sm:inline">Component</span>
+                  <select
+                    className="max-w-[170px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
+                    value={componentFilter}
+                    onChange={(e) => setComponentFilter(e.target.value)}
+                  >
+                    <option value="ALL">All</option>
+                    {componentOptions.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-2 text-xs text-text-subtle">
+                  <span className="hidden sm:inline">Event</span>
+                  <select
+                    className="max-w-[180px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-primary"
+                    value={eventFilter}
+                    onChange={(e) => setEventFilter(e.target.value)}
+                  >
+                    <option value="ALL">All</option>
+                    {eventOptions.map((ev) => (
+                      <option key={ev} value={ev}>
+                        {ev}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <input
+                  value={correlationFilter}
+                  onChange={(e) => setCorrelationFilter(e.target.value)}
+                  className="w-[170px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text placeholder:text-text-subtle outline-none focus:border-primary"
+                  placeholder="Correlation ID"
+                />
+
+                <input
+                  value={sessionFilter}
+                  onChange={(e) => setSessionFilter(e.target.value)}
+                  className="w-[170px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text placeholder:text-text-subtle outline-none focus:border-primary"
+                  placeholder="Session ID"
+                />
+
+                <label className="flex items-center gap-1.5 text-xs text-text-subtle">
+                  <input
+                    type="checkbox"
+                    checked={currentRuntimeOnly}
+                    onChange={(e) => setCurrentRuntimeOnly(e.target.checked)}
+                  />
+                  Current runtime only
+                </label>
+
                 <div className="flex-1" />
 
                 <div className="text-xs text-text-subtle">
@@ -693,22 +960,30 @@ export function LogsDrawer({
                     <button
                       type="button"
                       onClick={() => {
-                        globalThis.navigator?.clipboard?.writeText(selectedLine.raw).then(() => {
-                          setToastMsg("Copied to clipboard");
-                          if (toastTimerRef.current) {
-                            globalThis.clearTimeout(toastTimerRef.current);
-                          }
-                          toastTimerRef.current = globalThis.setTimeout(() => {
-                            setToastMsg(null);
-                            toastTimerRef.current = null;
-                          }, 2000);
-                        });
+                        void copyText(selectedLine.raw, "Copied to clipboard");
                       }}
                       className="flex items-center gap-1 rounded px-2 py-1 text-xs text-text-subtle transition hover:bg-surface-elevated hover:text-text"
                     >
                       <Copy className="h-3 w-3" />
                       Copy
                     </button>
+                    {!!selectedLine.parsed.correlation_id && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const correlationId = selectedLine.parsed.correlation_id!;
+                          const trace = lines
+                            .filter((l) => l.parsed.correlation_id === correlationId)
+                            .map((l) => l.raw.replace(/\r?\n$/, ""))
+                            .join("\n");
+                          void copyText(trace, "Copied correlation trace");
+                        }}
+                        className="flex items-center gap-1 rounded px-2 py-1 text-xs text-text-subtle transition hover:bg-surface-elevated hover:text-text"
+                      >
+                        <Copy className="h-3 w-3" />
+                        Copy Correlation Trace
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => setSelectedLine(null)}
@@ -717,6 +992,23 @@ export function LogsDrawer({
                       <X className="h-3 w-3" />
                       Close
                     </button>
+                  </div>
+                </div>
+                <div className="border-t border-border px-3 py-2 text-[11px] text-text-subtle">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {selectedLine.parsed.process && (
+                      <span>process: {selectedLine.parsed.process}</span>
+                    )}
+                    {selectedLine.parsed.component && (
+                      <span>component: {selectedLine.parsed.component}</span>
+                    )}
+                    {selectedLine.parsed.event && <span>event: {selectedLine.parsed.event}</span>}
+                    {selectedLine.parsed.correlation_id && (
+                      <span>correlation: {selectedLine.parsed.correlation_id}</span>
+                    )}
+                    {selectedLine.parsed.session_id && (
+                      <span>session: {selectedLine.parsed.session_id}</span>
+                    )}
                   </div>
                 </div>
                 <div className="max-h-40 overflow-auto border-t border-border bg-background px-3 py-2">

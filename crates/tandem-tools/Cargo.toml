@@ -1,0 +1,27 @@
+[package]
+name = "tandem-tools"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/frumu-ai/tandem"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+glob = "0.3"
+ignore = "0.4"
+regex = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tandem-types = { path = "../tandem-types" }
+html2md = "0.2"
+tandem-skills = { path = "../tandem-skills" }
+tandem-memory = { path = "../tandem-memory" }
+
+[dev-dependencies]
+tempfile = "3"

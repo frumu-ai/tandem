@@ -1,0 +1,17 @@
+Account,Sub-Account,Amount,Period,Type
+Revenue,Product Sales,500000,2023-Q1,Actual
+Revenue,Service Revenue,120000,2023-Q1,Actual
+COGS,Material Cost,-200000,2023-Q1,Actual
+COGS,Labor Cost,-80000,2023-Q1,Actual
+OpEx,Marketing,-45000,2023-Q1,Actual
+OpEx,R&D,-60000,2023-Q1,Actual
+OpEx,G&A,-30000,2023-Q1,Actual
+Tax,Income Tax,-40000,2023-Q1,Actual
+Revenue,Product Sales,480000,2023-Q1,Budget
+Revenue,Service Revenue,110000,2023-Q1,Budget
+COGS,Material Cost,-190000,2023-Q1,Budget
+COGS,Labor Cost,-75000,2023-Q1,Budget
+OpEx,Marketing,-50000,2023-Q1,Budget
+OpEx,R&D,-55000,2023-Q1,Budget
+OpEx,G&A,-28000,2023-Q1,Budget
+Tax,Income Tax,-38000,2023-Q1,Budget

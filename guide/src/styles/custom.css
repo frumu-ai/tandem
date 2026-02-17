@@ -1,0 +1,114 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+
+:root {
+  --sl-font: "IBM Plex Sans", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  --sl-font-system: var(--sl-font);
+  --sl-font-system-mono: "IBM Plex Mono", "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sl-text-5xl: 3.2rem;
+  --sl-text-4xl: 2.6rem;
+  --sl-text-3xl: 2rem;
+  --sl-text-2xl: 1.6rem;
+  --sl-text-xl: 1.32rem;
+  --sl-content-width: 54rem;
+  --sl-color-accent-low: #102219;
+  --sl-color-accent: #2ad887;
+  --sl-color-accent-high: #97ffcf;
+  --sl-color-white: #ecf7f1;
+  --sl-color-gray-1: #d3e3dc;
+  --sl-color-gray-2: #a9b9b2;
+  --sl-color-gray-3: #73857e;
+  --sl-color-gray-4: #42564f;
+  --sl-color-gray-5: #233630;
+  --sl-color-gray-6: #121c19;
+  --sl-color-black: #0a100f;
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: #dcf9ec;
+  --sl-color-accent: #087443;
+  --sl-color-accent-high: #03492a;
+  --sl-color-white: #1b2723;
+  --sl-color-gray-1: #34423d;
+  --sl-color-gray-2: #4d5d57;
+  --sl-color-gray-3: #6f7f79;
+  --sl-color-gray-4: #aebeb7;
+  --sl-color-gray-5: #d5e0dc;
+  --sl-color-gray-6: #eef4f1;
+  --sl-color-black: #fbfdfb;
+}
+
+body {
+  background:
+    radial-gradient(circle at 88% 12%, color-mix(in srgb, var(--sl-color-accent) 19%, transparent), transparent 38%),
+    radial-gradient(circle at 10% 2%, color-mix(in srgb, #33d6ff 14%, transparent), transparent 31%),
+    linear-gradient(180deg, color-mix(in srgb, var(--sl-color-black) 96%, #000) 0%, var(--sl-color-black) 100%);
+  letter-spacing: 0.01em;
+}
+
+:root[data-theme="light"] body {
+  background:
+    radial-gradient(circle at 88% 12%, color-mix(in srgb, var(--sl-color-accent) 10%, transparent), transparent 36%),
+    radial-gradient(circle at 8% 4%, color-mix(in srgb, #0ca2b7 10%, transparent), transparent 31%),
+    linear-gradient(180deg, #fbfdfb 0%, #f5faf7 100%);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: "Space Grotesk", var(--sl-font);
+  letter-spacing: 0.015em;
+}
+
+.hero .tagline,
+.sl-markdown-content p,
+.sl-markdown-content li {
+  line-height: 1.7;
+}
+
+.sl-markdown-content :is(code, pre code) {
+  font-family: var(--sl-font-system-mono);
+}
+
+.sl-markdown-content :not(pre) > code {
+  color: color-mix(in srgb, var(--sl-color-accent-high) 82%, white 18%);
+  background: color-mix(in srgb, var(--sl-color-accent-low) 75%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sl-color-accent) 32%, transparent);
+  border-radius: 0.45rem;
+  padding: 0.12rem 0.36rem;
+}
+
+:root[data-theme="light"] .sl-markdown-content :not(pre) > code {
+  color: #064a2c;
+  background: #e9f7ef;
+}
+
+.expressive-code,
+.astro-code {
+  border: 1px solid color-mix(in srgb, var(--sl-color-accent) 24%, var(--sl-color-gray-5));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sl-color-accent) 12%, transparent), 0 12px 34px rgba(0, 0, 0, 0.32);
+}
+
+.sidebar-content {
+  background: color-mix(in srgb, var(--sl-color-black) 85%, var(--sl-color-accent-low));
+}
+
+:root[data-theme="light"] .sidebar-content {
+  background: color-mix(in srgb, white 86%, var(--sl-color-accent-low));
+}
+
+.sidebar-content a[aria-current="page"] {
+  background: color-mix(in srgb, var(--sl-color-accent-low) 70%, transparent);
+  border-left: 2px solid var(--sl-color-accent);
+}
+
+.sl-markdown-content table th {
+  font-family: "Space Grotesk", var(--sl-font);
+  font-weight: 600;
+  color: var(--sl-color-accent-high);
+}
+
+.sl-markdown-content blockquote {
+  border-inline-start: 3px solid var(--sl-color-accent);
+  background: color-mix(in srgb, var(--sl-color-accent-low) 42%, transparent);
+}

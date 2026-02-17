@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "created_at_ms": 1771113205051,
+  "last_checked_at_ms": 1771113205051,
+  "legacy_counts": {
+    "session_files": 0,
+    "message_files": 0,
+    "part_files": 0
+  },
+  "imported_counts": {
+    "sessions": 0,
+    "messages": 0,
+    "parts": 0
+  }
+}

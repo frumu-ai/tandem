@@ -212,6 +212,16 @@ pub struct QueuedMessage {
     pub created_at_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngineLease {
+    pub lease_id: String,
+    pub client_id: String,
+    pub client_type: String,
+    pub acquired_at_ms: u64,
+    pub last_renewed_at_ms: u64,
+    pub ttl_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PermissionType {
     Read,
@@ -278,6 +288,12 @@ pub struct AppState {
     pub file_tree_watcher: Arc<StdMutex<Option<crate::file_watcher::FileTreeWatcher>>>,
     /// Per-session queued messages (FIFO).
     pub message_queue: Arc<Mutex<HashMap<String, Vec<QueuedMessage>>>>,
+    /// Shared engine lease table used by Desktop + TUI/CLI.
+    pub engine_leases: Arc<Mutex<HashMap<String, EngineLease>>>,
+    /// Cached normalized permission args by requestID for resilient approvals.
+    pub permission_args_cache: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    /// Last known per-session websearch intent for best-effort recovery.
+    pub session_websearch_intent: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl AppState {
@@ -316,6 +332,9 @@ impl AppState {
             active_log_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
             file_tree_watcher: Arc::new(StdMutex::new(None)),
             message_queue: Arc::new(Mutex::new(HashMap::new())),
+            engine_leases: Arc::new(Mutex::new(HashMap::new())),
+            permission_args_cache: Arc::new(Mutex::new(HashMap::new())),
+            session_websearch_intent: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

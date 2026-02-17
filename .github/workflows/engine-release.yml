@@ -1,0 +1,128 @@
+name: Engine Release
+
+on:
+  push:
+    tags:
+      - "engine-v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to release (e.g., v0.1.0-beta.1)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-engine:
+    name: ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            artifact: tandem-engine-windows-x64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: zip
+            artifact: tandem-engine-darwin-x64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: zip
+            artifact: tandem-engine-darwin-arm64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            artifact: tandem-engine-linux-x64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            artifact: tandem-engine-linux-arm64
+        # Add TUI targets (simplified to mirror engine for now, assuming same support)
+        # Actually, let's just build both in the same job or separate jobs?
+        # Same job simplifies matrix. We can build both binaries.
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux ARM64 linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          cargo build --release -p tandem-ai --target ${{ matrix.target }}
+          cargo build --release -p tandem-tui --target ${{ matrix.target }}
+
+      - name: Package zip (Windows)
+        if: matrix.archive == 'zip' && startsWith(matrix.target, 'x86_64-pc-windows')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "dist/tandem-engine.exe" -Force
+          Copy-Item "target/${{ matrix.target }}/release/tandem-tui.exe" "dist/tandem-tui.exe" -Force
+          # Create separate zips for engine and tui to match downloader expectation: artifact-os-arch.zip
+          Compress-Archive -Path "dist/tandem-engine.exe" -DestinationPath "${{ matrix.artifact }}.zip" -Force
+          Compress-Archive -Path "dist/tandem-tui.exe" -DestinationPath "tandem-tui-${{ matrix.os == 'windows-latest' && 'windows' || 'win32' }}-x64.zip" -Force
+          # Wait, matrix.artifact is 'tandem-engine-windows-x64'.
+          # We want 'tandem-tui-windows-x64.zip'.
+          $TuiArtifact = "${{ matrix.artifact }}".Replace("engine", "tui")
+          Compress-Archive -Path "dist/tandem-tui.exe" -DestinationPath "$TuiArtifact.zip" -Force
+
+      - name: Package zip (macOS)
+        if: matrix.archive == 'zip' && !startsWith(matrix.target, 'x86_64-pc-windows')
+        shell: bash
+        run: |
+          mkdir -p dist
+           cp "target/${{ matrix.target }}/release/tandem-engine" dist/
+           cp "target/${{ matrix.target }}/release/tandem-tui" dist/
+           cd dist
+           # Zip individual binaries?
+           # Downloader expects: tandem-engine-darwin-x64.zip
+           zip -j "../${{ matrix.artifact }}.zip" tandem-engine
+           
+           # Tui artifact name construction
+           TUI_ARTIFACT=$(echo "${{ matrix.artifact }}" | sed 's/engine/tui/')
+           zip -j "../$TUI_ARTIFACT.zip" tandem-tui
+
+      - name: Package tar.gz (Linux)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir -p dist
+           cp "target/${{ matrix.target }}/release/tandem-engine" dist/
+           cp "target/${{ matrix.target }}/release/tandem-tui" dist/
+           
+           tar -czf "${{ matrix.artifact }}.tar.gz" -C dist tandem-engine
+           
+           TUI_ARTIFACT=$(echo "${{ matrix.artifact }}" | sed 's/engine/tui/')
+           tar -czf "$TUI_ARTIFACT.tar.gz" -C dist tandem-tui
+
+      - name: Upload release zip asset
+        if: matrix.archive == 'zip'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.artifact }}.zip
+            tandem-tui-*.zip
+
+      - name: Upload release tarball asset
+        if: matrix.archive == 'tar.gz'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.artifact }}.tar.gz
+            tandem-tui-*.tar.gz

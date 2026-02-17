@@ -16,12 +16,12 @@ Users can change the language in **Settings → Language**.
 ### Using Translations in Components
 
 ```tsx
-import { useTranslation } from 'react-i18next';
+import { useTranslation } from "react-i18next";
 
 function MyComponent() {
-  const { t } = useTranslation('common');
-  
-  return <div>{t('welcome')}</div>;
+  const { t } = useTranslation("common");
+
+  return <div>{t("welcome")}</div>;
 }
 ```
 
@@ -75,8 +75,8 @@ Example:
 
 ```tsx
 // In your component
-const { t } = useTranslation('common');
-<div>{t('myNewKey')}</div>
+const { t } = useTranslation("common");
+<div>{t("myNewKey")}</div>;
 ```
 
 ### Adding a New Language
@@ -87,13 +87,17 @@ const { t } = useTranslation('common');
 
 ```typescript
 const resources = {
-  en: { /* ... */ },
-  'zh-CN': { /* ... */ },
+  en: {
+    /* ... */
+  },
+  "zh-CN": {
+    /* ... */
+  },
   fr: {
     common: frCommon,
     chat: frChat,
     // ...
-  }
+  },
 };
 ```
 

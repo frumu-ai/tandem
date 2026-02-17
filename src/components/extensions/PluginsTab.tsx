@@ -127,7 +127,7 @@ export function PluginsTab({ workspacePath }: PluginsTabProps) {
             <div className="flex-1">
               <CardTitle>Configured plugins</CardTitle>
               <CardDescription>
-                Tandem edits OpenCode config only. Restart the AI engine to apply changes.
+                Tandem edits engine plugin config only. Restart the engine to apply changes.
               </CardDescription>
             </div>
             <Button
@@ -148,7 +148,7 @@ export function PluginsTab({ workspacePath }: PluginsTabProps) {
             <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
               <Plug className="mx-auto mb-2 h-8 w-8 text-text-subtle" />
               <p className="text-sm text-text-muted">No plugins configured.</p>
-              <p className="text-xs text-text-subtle">Add one below to enable it in OpenCode.</p>
+              <p className="text-xs text-text-subtle">Add one below to enable it in Tandem.</p>
             </div>
           ) : (
             <div className="space-y-2">

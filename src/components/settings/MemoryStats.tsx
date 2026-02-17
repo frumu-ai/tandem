@@ -175,6 +175,13 @@ export function MemoryStats() {
             />
           </div>
 
+          {memorySettings?.embedding_status && (
+            <div className="text-xs text-slate-500">
+              Embeddings: {memorySettings.embedding_status}
+              {memorySettings.embedding_reason ? ` (${memorySettings.embedding_reason})` : ""}
+            </div>
+          )}
+
           {scope === "project" && activeProject && (
             <div className="text-xs text-slate-500 truncate" title={activeProject.path}>
               Active folder: {activeProject.path}

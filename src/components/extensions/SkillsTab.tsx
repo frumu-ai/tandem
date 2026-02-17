@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { RefreshCw } from "lucide-react";
 import { SkillsPanel } from "@/components/skills";
-import { listSkills, startSidecar, stopSidecar, type SkillInfo } from "@/lib/tauri";
+import { listSkills, type SkillInfo } from "@/lib/tauri";
 
 interface SkillsTabProps {
   workspacePath: string | null;
@@ -53,9 +53,6 @@ export function SkillsTab({ workspacePath }: SkillsTabProps) {
         onRestartSidecar={async () => {
           setRestartingSidecar(true);
           try {
-            await stopSidecar();
-            await new Promise((resolve) => setTimeout(resolve, 500));
-            await startSidecar();
             await new Promise((resolve) => setTimeout(resolve, 1000));
           } finally {
             setRestartingSidecar(false);
@@ -94,7 +91,7 @@ export function SkillsTab({ workspacePath }: SkillsTabProps) {
                 </div>
               </div>
               <div className="text-center">
-                <h3 className="text-lg font-semibold text-text mb-1">Restarting AI Engine</h3>
+                <h3 className="text-lg font-semibold text-text mb-1">Installing skill</h3>
                 <p className="text-sm text-text-muted">Loading new skill...</p>
               </div>
               {/* Animated progress bars */}

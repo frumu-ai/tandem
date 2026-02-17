@@ -134,7 +134,7 @@ export function SidecarDownloader({
     return (
       <div className="flex items-center justify-between p-4 rounded-lg bg-surface border border-border">
         <div>
-          <p className="text-sm font-medium text-text">OpenCode AI Engine</p>
+          <p className="text-sm font-medium text-text">Tandem Engine</p>
           <p className="text-xs text-text-muted">Version {status.version} • Up to date</p>
         </div>
         <Button variant="ghost" size="sm" onClick={checkSidecar} className="gap-2">
@@ -148,14 +148,14 @@ export function SidecarDownloader({
   // Determine title and description based on sidecar status
   const title =
     status?.updateAvailable && status?.version
-      ? "OpenCode Update Available"
-      : "OpenCode AI Engine Required";
+      ? "Tandem Engine Update Available"
+      : "Tandem Engine Required";
 
   const description = status?.compatibilityMessage
     ? status.compatibilityMessage
     : status?.updateAvailable && status?.version
-      ? `OpenCode ${status.latestVersion} is available. You have ${status.version}.`
-      : "Tandem requires the OpenCode AI engine. This is a one-time download (~50MB).";
+      ? `Tandem Engine ${status.latestVersion} is available. You have ${status.version}.`
+      : "Tandem requires the Tandem engine sidecar. This is a one-time download (~50MB).";
 
   const showSkip = !!status?.installed;
 

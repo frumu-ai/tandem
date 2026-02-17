@@ -1,0 +1,41 @@
+name: Engine CI
+
+on:
+  pull_request:
+    paths:
+      - "engine/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - ".github/workflows/engine-ci.yml"
+  push:
+    branches: ["feat/engine"]
+    paths:
+      - "engine/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - ".github/workflows/engine-ci.yml"
+
+jobs:
+  engine-checks:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo check
+        run: cargo check -p tandem-ai
+
+      - name: Cargo test
+        run: cargo test -p tandem-ai
+
+      - name: Cargo clippy
+        run: cargo clippy -p tandem-ai -- -D warnings
+
+      - name: Cargo fmt
+        run: cargo fmt --check

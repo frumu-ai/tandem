@@ -1,41 +1,131 @@
-# Tandem v0.2.26 Release Notes
+# Tandem v0.3.0 Release Notes
+
+## Unreleased
+
+### Highlights
+
+- **Massive orchestration platform expansion**: Added engine-native mission runtime, shared resources blackboard, tiered governed memory promotion, routine scheduler + policy gates, and Desktop/TUI parity controls.
+- **Mission runtime now first-class**: New engine mission APIs support create/list/get/apply-event flows backed by shared reducer state and reviewer/tester rework gates.
+- **Shared resource coordination layer**: Added revisioned blackboard APIs + SSE streams and status indexer updates derived from run/tool lifecycle events.
+- **Memory learning with guardrails**: Implemented scoped `session/project/team/curated` governance with capability gating, scrub pipeline, and audit trails (`/memory/audit`).
+- **Routine automation safety model**: Added user-creatable routines with scheduler durability, misfire behavior, manual `run_now`, lifecycle SSE, and explicit connector side-effect policy enforcement.
+- **Phase 6 contract hardening complete (`W-019`)**: Mission/routine event families are now stable SDK contracts after server snapshot tests and Desktop/TUI parity consumption checks.
+- **Control-plane discipline added**: Build flow now tracks work IDs, decision log, and progress cadence in `docs/design` to keep multi-file pushes coordinated.
+
+- **Keystore/runtime auth realignment**: Provider keys now flow through runtime auth (`PUT /auth/{provider}`) instead of config-secret patch paths.
+- **Config secret write blocking**: `PATCH /config` and `PATCH /global/config` now reject `api_key`/`apiKey` with `400 CONFIG_SECRET_REJECTED`.
+- **Desktop/TUI transport update**: Desktop and TUI now push provider keys from keystore to runtime auth on connect/start rather than persisting keys via config patch payloads.
+- **Plaintext persistence regression fixed**: Closed a beta gap where provider keys could appear in Tandem config files under certain flows.
+- **Browser API compatibility**: Added CORS support on engine HTTP endpoints so browser examples with `X-Tandem-Token` can pass preflight.
+
+- **Engine CLI concurrency mode**: Added `tandem-engine parallel` to run multiple prompts concurrently with explicit JSON task batches and bounded concurrency control.
+- **Engine CLI docs overhaul**: Added a bash/WSL-first `ENGINE_CLI.md` with practical examples for `run`, `tool`, `parallel`, and full `serve` + HTTP/SSE workflows.
+- **Engine communication reference**: Added `ENGINE_COMMUNICATION.md` documenting client/runtime topology, API/run lifecycle contracts, and observability paths.
+- **Default engine port hardening**: Standardized default engine endpoint to `127.0.0.1:39731` (from `3000`) to avoid common frontend-dev collisions, with env override support across engine, desktop sidecar, and TUI.
+- **Engine API token hardening**: Added token-gated engine API auth with keychain-first token persistence (fallback file), desktop masked/reveal/copy token UX, and TUI `/engine token` commands.
+
+- **Plan mode todo-call recovery**: Fixed repeated `todowrite` no-op loops by normalizing common todo payload aliases and skipping empty todo executions.
+- **Plan mode clarification fallback**: Added engine-level structured `question.asked` fallback when planning cannot derive a concrete todo list.
+- **Todo fallback precision**: Todo extraction fallback now only accepts structured checklist/numbered lines, preventing prose clarification text from becoming fake tasks.
+- **Question modal reliability**: Desktop now normalizes `permission(tool=question)` into the question overlay flow so walkthrough prompts reappear consistently.
+- **Permission scope isolation**: Permission prompts are now scoped to the active session to avoid cross-session approval bleed when multiple clients are connected.
+- **Memory architecture consolidation**: Desktop now consumes the shared `tandem-memory` crate directly, eliminating duplicated local memory implementation paths.
+- **Strict memory search scope guarantees**: Added a dedicated `memory_search` tool with explicit session/project scope requirements and blocked global-tier queries.
+- **Embedding health visibility**: Memory retrieval telemetry and settings now expose embedding backend status and reason, surfaced in chat/settings badges.
+- **Windows memory-test link fix**: Resolved CRT mismatch (`LNK2038`) in `tandem-memory` test linking by patching vendored `esaxx-rs` CRT behavior.
+- **Idle stream health**: Stream watchdog now skips degraded status while the app is idle with no active runs or tool calls.
+
+- **Engine-owned skills system expansion**: Skills are now discovered from multiple ecosystem paths with deterministic priority and exposed through unified engine APIs/tooling for desktop + TUI parity.
+- **Per-agent skill activation**: Agents can now optionally define equipped skills (`skills`) to control which discovered skills are active for that agent.
+- **Universal skill access at mode level**: Mode allowlists no longer block the `skill` tool, preventing accidental lockout of installed skills.
+
+- **TUI multi-agent reliability pass**: fixed silent/no-response prompt runs by hardening run-scoped SSE handling and stream termination behavior.
+- **Auth/key setup flow repaired**: TUI now syncs unlocked local keystore keys into engine provider config on connect, including legacy key-name alias mapping.
+- **Key setup wizard in CLI**: added interactive key-setup routing when a provider is selected but not connected.
+- **Error visibility improvements**: stream errors (`session.error` and failed run finishes) are surfaced directly in transcript output.
+- **Transcript readability improvements**: long lines now wrap in the TUI flow renderer; added `/last_error` for quick full error recall.
+- **Working-state UX**: added active-agent spinner/status activity indicators in footer and grid pane titles.
+- **Windows dev docs fixes**: added explicit PowerShell equivalents for build/copy/tauri-dev steps and lock-file recovery guidance.
+- **Request center in TUI**: added approval/answer modal flow for pending permissions and questions (`Alt+R`, `/requests`) with keyboard-only controls.
+- **Permission context clarity**: approval modal now shows mode + tool intent and explains why a permission is needed (especially in Plan mode).
+- **Plan/question flow repair**: normalized `permission(tool=question)` events into answerable question flows and added custom-answer support with multiple-choice prompts.
+- **Startup/PIN polish**: fullscreen-centered PIN prompt, stricter digit-only PIN entry, and animated connecting screen that waits for full engine readiness before switching views.
+- **Shared permission defaults**: desktop and TUI now consume centralized permission rule defaults from `tandem-core`.
+- **TUI interaction polish**: moved grid toggle to `Alt+G`, increased scroll speed, and reduced in-transcript request noise in favor of status/request UI.
+- **TUI composer/editor upgrade**: chat input now supports multiline editing with cursor navigation, delete-forward, and native paste insertion.
+- **Markdown renderer upgrade**: assistant transcript markdown now renders through a tandem-local `pulldown-cmark` pipeline adapted from codex patterns (replacing `tui-markdown` dependency).
+- **Streaming text correctness**: whitespace-only prompt deltas are preserved during active streaming instead of being dropped.
+- **Long-transcript rendering performance**: TUI transcript rendering now virtualizes line materialization to avoid flattening full history every frame.
+- **Render cache optimization**: added bounded per-message render cache (fingerprint + width keyed) to reduce repeated markdown/wrap work for large sessions.
+- **Stream merge correctness**: fixed reducer merge paths so shorter success/failure snapshots cannot overwrite richer locally finalized stream tails.
 
 ## Highlights
 
-- **Internationalization (i18n) foundation**: Added app-wide i18n initialization and locale resources for English and Simplified Chinese.
-- **Language settings in-app**: Added a dedicated Settings section for language selection with persisted preference support.
-- **Editable provider base URLs**: Provider cards now support editing and saving custom base URLs for configured providers.
-- **Endpoint reset UX**: Added quick reset-to-default endpoint controls to make experimenting with custom endpoints safer.
-- **Community contribution**: Thanks [@iridite](https://github.com/iridite) for the full v0.2.26 contribution set, including i18n and provider base URL improvements.
-- **Version Sync**: Bumped app metadata to `0.2.26`.
+- **Major-version break for runtime API naming**: Hard-renamed legacy `send_message_streaming` naming to split-semantics names aligned with Session-linear execution.
+- **Desktop recovery contract coverage**: Added dedicated sidecar tests for reconnect recovery via `GET /session/{id}/run`.
+- **Conflict and cancel-by-runID coverage**: Added explicit tests for `409` conflict parsing (`retryAfterMs`, `attachEventStream`) and client cancel-by-runID flows for desktop + CLI.
+- **Dual-license rollout for Rust SDK/runtime**: Rust SDK and runtime packages are now `MIT OR Apache-2.0` for broader adoption and clearer patent grant coverage.
+- **App/web licensing unchanged**: This pass does not change desktop/web app licensing scope.
+- **Webpage -> Markdown extraction**: `webfetch_document` converts HTML into clean Markdown with link extraction and size stats.
+- **Tool debugging via CLI**: `tandem-engine tool --json` runs tools directly, and `mcp_debug` returns raw MCP responses for parser validation.
+- **Default web tools**: `websearch` (MCP-backed) and `webfetch_document` are now available in default modes with approval gating.
+- **Websearch reliability hardening**: Added arg normalization/recovery, query-source observability, and loop-guard protections to prevent empty-args retries.
+- **Sidecar build mismatch diagnostics**: Desktop now surfaces stale-engine mismatch details using sidecar `/global/health` build metadata.
+- **Better provider auth diagnostics**: Authentication errors now include provider-specific API key guidance.
+- **Desktop external links**: Assistant markdown links now open through Tauri opener support.
 
 ## Complete Feature List
 
-### Localization
+### Naming and Interfaces
 
-- Added i18n runtime setup and namespace-based locale resources.
-- Added English locale JSON bundles for:
-  - `common`
-  - `chat`
-  - `settings`
-  - `skills`
-  - `errors`
-- Added Simplified Chinese locale JSON bundles for:
-  - `common`
-  - `chat`
-  - `settings`
-  - `skills`
-  - `errors`
-- Added a Settings `Language` section for selecting `English` or `简体中文`.
-- Added language setting persistence behavior for user-selected locale.
-- Added `docs/I18N_GUIDE.md` for implementation and usage guidance.
+- Renamed server append handler to `post_session_message_append`.
+- Renamed Tauri command `send_message_streaming` to `send_message_and_start_run`.
+- Renamed frontend bridge export `sendMessageStreaming` to `sendMessageAndStartRun`.
+- Renamed sidecar methods to explicit split semantics:
+  - `append_message_and_start_run`
+  - `append_message_and_start_run_with_context`
 
-### Provider Settings
+### Tests
 
-- Added editable `Base URL` controls in provider settings cards.
-- Added endpoint save/cancel flow and keyboard shortcuts (`Enter` to save, `Escape` to cancel).
-- Added endpoint revert-to-default action for providers with known default endpoints.
-- Wired endpoint edits to persisted providers config updates.
+- Added sidecar tests:
+  - `test_parse_prompt_async_response_409_includes_retry_and_attach`
+  - `test_parse_prompt_async_response_202_parses_run_payload`
+  - `recover_active_run_attach_stream_uses_get_run_endpoint`
+  - `cancel_run_by_id_posts_expected_endpoint`
+  - `cancel_run_by_id_handles_non_active_run`
+- Added `tandem-tui` client tests:
+  - `cancel_run_by_id_posts_expected_endpoint`
+  - `cancel_run_by_id_returns_false_for_non_active_run`
+
+### Tools
+
+- Added `webfetch_document` for HTML -> Markdown conversion, metadata/link extraction, and size stats.
+- Added `mcp_debug` to capture raw MCP responses (status, headers, body, truncation).
+- Added `tandem-engine tool --json` for direct CLI tool execution.
+- Improved MCP tool calls to accept `text/event-stream` responses.
+- Hardened `websearch` call reliability:
+  - normalize args before permission + execution
+  - infer/recover missing query deterministically
+  - emit `query_source` + `query_hash` metadata
+  - circuit-break repeated identical search signatures
+
+### Reliability and Diagnostics
+
+- Added additive `/global/health` fields:
+  - `build_id`
+  - `binary_path` (debug)
+- Added desktop stale sidecar binary mismatch warning path in dev workflows.
+- Improved provider auth failure hints to map to the selected provider key.
+- Added Tauri-backed external link opening for assistant markdown content.
+
+### Modes and Permissions
+
+- Default mode presets now include `websearch` and `webfetch_document`.
+- Added permission rule support for `webfetch_document`.
+
+### Docs
+
+- Expanded `ENGINE_TESTING.md` with tool testing examples, size savings, and Windows quickstart.
 
 ---
 

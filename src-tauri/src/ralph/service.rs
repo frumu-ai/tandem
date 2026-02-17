@@ -332,7 +332,9 @@ impl RalphRunHandle {
 
         // Send message to sidecar
         let request = SendMessageRequest::text(prompt);
-        self.sidecar.send_message(&self.session_id, request).await?;
+        self.sidecar
+            .append_message_and_start_run(&self.session_id, request)
+            .await?;
 
         // Subscribe to events and wait for completion
         let (content, tools_used, errors) = self.wait_for_completion().await?;

@@ -1,0 +1,28 @@
+[package]
+name = "tandem-core"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/frumu-ai/tandem"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio-util = "0.7"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["serde", "v4"] }
+keyring = "2"
+tandem-types = { path = "../tandem-types" }
+tandem-wire = { path = "../tandem-wire" }
+tandem-tools = { path = "../tandem-tools" }
+tandem-providers = { path = "../tandem-providers" }
+tandem-observability = { path = "../tandem-observability" }
+
+[dev-dependencies]
+tempfile = "3"

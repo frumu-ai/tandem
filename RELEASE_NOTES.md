@@ -2,6 +2,52 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## Unreleased
+
+- Engine-native orchestration platform rollout: mission runtime APIs, shared resources blackboard, governed memory promotion/audit, and routine scheduler/policy gates.
+- Desktop and TUI now have parity mission/routine control paths against engine-hosted APIs.
+- Phase 6 contract hardening (`W-019`) completed: mission/routine lifecycle events promoted to stable after snapshot + client parity validation.
+- Design control-plane docs (`docs/design/*`) now track execution IDs (`W-###`), progress logs, decisions, and release contract matrices.
+- TUI codex-parity uplift: multiline composer editing, native paste, markdown renderer replacement (`pulldown-cmark`), and stream-tail correctness hardening.
+- TUI long-session performance uplift: transcript virtualization + bounded per-message render cache with benchmark harness (`benchmark_virtualized_vs_naive_long_transcript`).
+
+## v0.3.0 (Beta) - 2026-02-15
+
+- Core: Added `copilot` and `cohere` providers; updated default Gemini model to `gemini-2.5-flash`.
+- Core: Implemented smart session titling to better name sessions based on user intent.
+- Frontend: Debounced history refresh calls to improve performance.
+- Docs: Added `TANDEM_TUI_GUIDE.md` and initialized a new `guide` mdbook.
+- Engine CLI: Added `parallel` command for concurrent prompt execution with structured JSON task input/output.
+- Docs: Added `docs/ENGINE_CLI.md` (bash/WSL-first) and `docs/ENGINE_COMMUNICATION.md` with end-to-end serve/API/SSE flows.
+- Security: Added engine API token auth hardening with keychain-first token persistence, desktop masked/reveal/copy controls, and TUI `/engine token` commands.
+- Security: Fixed provider key drift by routing auth to runtime-only `/auth/{provider}` handling instead of config-secret persistence.
+- Security: `PATCH /config` and `PATCH /global/config` now reject `api_key`/`apiKey` fields with `400 CONFIG_SECRET_REJECTED`.
+- Security: TUI and desktop now sync provider keys from keystore to runtime auth (`/auth`) instead of writing keys through config patches.
+- Security: Fixed a beta regression where provider keys could appear in plaintext in Tandem config files in specific config-patch flows.
+- Networking: Added CORS handling to engine HTTP routes for browser clients using custom auth headers (`X-Tandem-Token`).
+
+- Plan Mode: Fixed `todowrite` empty-argument loops (`todo list updated: 0 items`) by normalizing common todo payload shapes and skipping true empty calls.
+- Plan Mode: Added structured clarification fallback (`question.asked`) when no concrete task list can be produced, instead of leaving planning in prose-only follow-up.
+- Plan Mode: Tightened todo fallback extraction to structured checklist/numbered lines only, preventing plain-text clarification prose from becoming phantom tasks.
+- Desktop UX: Restored walkthrough-question overlays when prompts arrive via `permission(tool=question)` by normalizing into the question modal flow.
+- Desktop UX: Scoped permission prompts to the active session to prevent cross-session/parallel-client approval bleed.
+- TUI Startup: Engine bootstrap now runs before PIN entry, keeping startup on the matrix/connect screen until engine availability is confirmed.
+- Engine Networking: Default engine port standardized to `39731` (instead of `3000`) to reduce frontend port conflicts; desktop/TUI honor env overrides for endpoint selection.
+- TUI Download UX: Added byte-based download progress, install-phase messaging, and surfaced last download error details in the connect view.
+- TUI Reliability: Engine download failures now support retry/backoff in-process instead of requiring a full app restart.
+- TUI Debug Flow: Debug builds now fall back to GitHub release download when no local dev engine binary is present.
+- TUI Keystore Recovery: Corrupt/unreadable keystore files now route to create/recovery flow rather than repeated unlock failure loops.
+- Skills: Expanded discovery to support multiple project/global ecosystem directories with deterministic project-over-global precedence.
+- Skills: Added per-agent `skills` activation controls and universal mode-level access for the `skill` tool.
+- Memory: Wired `src-tauri` to consume shared `crates/tandem-memory` directly and removed duplicated local memory implementation files.
+- Memory: Added strict `memory_search` tool in `tandem-tools` with enforced session/project scoping and blocked global tier access.
+- Memory UX: Added embedding health surface (`embedding_status`, `embedding_reason`) to memory retrieval events and settings, with chat/settings badges.
+- Memory UX: Persisted memory lifecycle telemetry into tool history (`memory.lookup`, `memory.store`) so chat badges and console events survive session reload.
+- Memory UX: Fixed a chat race where memory events could arrive before assistant text, causing missing badges despite console memory events being present.
+- Memory Reliability: Added startup SQLite integrity check + auto backup/reset recovery for malformed `memory.sqlite` databases.
+- Windows: Fixed `cargo test -p tandem-memory --lib` link-time CRT mismatch (`LNK2038`) between `esaxx-rs` and `ort-sys` via vendored `esaxx-rs` build patch.
+- Desktop: Stream watchdog now skips degraded status while idle with no active runs or tool calls.
+
 ## v0.2.25 (2026-02-12)
 
 - Skills: Added canonical Core 9 marketing starter templates (`product-marketing-context`, `content-strategy`, `seo-audit`, `social-content`, `copywriting`, `copy-editing`, `email-sequence`, `competitor-alternatives`, `launch-strategy`).

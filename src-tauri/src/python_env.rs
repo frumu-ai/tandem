@@ -50,7 +50,23 @@ fn now_ms() -> u64 {
 }
 
 pub fn venv_root_for_workspace(workspace: &Path) -> PathBuf {
+    workspace.join(".tandem").join(".venv")
+}
+
+pub fn legacy_venv_root_for_workspace(workspace: &Path) -> PathBuf {
     workspace.join(".opencode").join(".venv")
+}
+
+pub fn effective_venv_root_for_workspace(workspace: &Path) -> PathBuf {
+    let canonical = venv_root_for_workspace(workspace);
+    if canonical.exists() {
+        return canonical;
+    }
+    let legacy = legacy_venv_root_for_workspace(workspace);
+    if legacy.exists() {
+        return legacy;
+    }
+    canonical
 }
 
 pub fn venv_python_for_root(venv_root: &Path) -> PathBuf {
@@ -69,7 +85,7 @@ pub fn venv_python_for_root(venv_root: &Path) -> PathBuf {
 
 pub fn python_config_path(workspace: &Path) -> PathBuf {
     workspace
-        .join(".opencode")
+        .join(".tandem")
         .join("tandem")
         .join("python")
         .join("config.json")
@@ -131,8 +147,16 @@ pub fn discover_python_candidates() -> Vec<PythonCandidate> {
 }
 
 pub fn read_python_config(workspace: &Path) -> Option<PythonConfig> {
-    let p = python_config_path(workspace);
-    let bytes = fs::read(p).ok()?;
+    let canonical = python_config_path(workspace);
+    if let Ok(bytes) = fs::read(&canonical) {
+        return serde_json::from_slice(&bytes).ok();
+    }
+    let legacy = workspace
+        .join(".opencode")
+        .join("tandem")
+        .join("python")
+        .join("config.json");
+    let bytes = fs::read(legacy).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -153,7 +177,7 @@ pub fn get_status(workspace: Option<&Path>) -> PythonStatus {
     let found = !candidates.is_empty();
 
     let (venv_root, venv_python, venv_exists, config_path) = if let Some(ws) = workspace {
-        let venv_root = venv_root_for_workspace(ws);
+        let venv_root = effective_venv_root_for_workspace(ws);
         let venv_python = venv_python_for_root(&venv_root);
         (
             Some(venv_root.to_string_lossy().to_string()),
@@ -239,7 +263,7 @@ pub fn create_venv(workspace: &Path, selected_kind: Option<String>) -> Result<Py
 
     // Record config for the workspace.
     let cfg = PythonConfig {
-        venv_root: ".opencode/.venv".to_string(),
+        venv_root: ".tandem/.venv".to_string(),
         selected_python_kind: Some(chosen.kind),
         created_at_ms: Some(now_ms()),
         last_checked_ms: Some(now_ms()),
@@ -253,10 +277,10 @@ pub fn install_requirements(
     workspace: &Path,
     requirements_path: &Path,
 ) -> Result<PythonInstallResult> {
-    let venv_root = venv_root_for_workspace(workspace);
+    let venv_root = effective_venv_root_for_workspace(workspace);
     if !venv_root.exists() {
         return Err(TandemError::InvalidConfig(
-            "No workspace venv found. Create `.opencode/.venv` first.".to_string(),
+            "No workspace venv found. Create `.tandem/.venv` first.".to_string(),
         ));
     }
 
@@ -368,11 +392,18 @@ pub fn check_terminal_command_policy(workspace: &Path, command: &str) -> Option<
     }
 
     let venv_root = venv_root_for_workspace(workspace);
+    let legacy_venv_root = legacy_venv_root_for_workspace(workspace);
     let venv_python = venv_python_for_root(&venv_root);
+    let legacy_venv_python = venv_python_for_root(&legacy_venv_root);
     let venv_pip = if cfg!(windows) {
         venv_root.join("Scripts").join("pip.exe")
     } else {
         venv_root.join("bin").join("pip")
+    };
+    let legacy_venv_pip = if cfg!(windows) {
+        legacy_venv_root.join("Scripts").join("pip.exe")
+    } else {
+        legacy_venv_root.join("bin").join("pip")
     };
 
     let lc = trimmed.to_lowercase();
@@ -388,8 +419,8 @@ pub fn check_terminal_command_policy(workspace: &Path, command: &str) -> Option<
 
     // Allow venv creation targeting the allowed workspace venv.
     // Patterns:
-    // - python -m venv .opencode/.venv
-    // - py -3 -m venv .opencode/.venv
+    // - python -m venv .tandem/.venv
+    // - py -3 -m venv .tandem/.venv
     let t0 = tokens[0].to_lowercase();
     if t0 == "python" || t0 == "python3" || t0 == "py" {
         let mut idx = 1usize;
@@ -401,7 +432,7 @@ pub fn check_terminal_command_policy(workspace: &Path, command: &str) -> Option<
             && tokens.get(idx + 2).is_some()
         {
             let target = normalize_path_token(workspace, &tokens[idx + 2]);
-            if target == venv_root {
+            if target == venv_root || target == legacy_venv_root {
                 return None;
             }
         }
@@ -409,7 +440,13 @@ pub fn check_terminal_command_policy(workspace: &Path, command: &str) -> Option<
 
     // Allow if the command explicitly uses the venv python/pip binaries.
     let resolved0 = normalize_path_token(workspace, &tokens[0]);
-    if resolved0 == venv_python || resolved0 == venv_pip || is_inside(&venv_root, &resolved0) {
+    if resolved0 == venv_python
+        || resolved0 == venv_pip
+        || resolved0 == legacy_venv_python
+        || resolved0 == legacy_venv_pip
+        || is_inside(&venv_root, &resolved0)
+        || is_inside(&legacy_venv_root, &resolved0)
+    {
         return None;
     }
 
@@ -419,7 +456,7 @@ pub fn check_terminal_command_policy(workspace: &Path, command: &str) -> Option<
         || lc.contains("python -m pip install")
     {
         return Some(format!(
-            "Global Python/pip installs are blocked. Use the workspace venv at `.opencode/.venv`.\n\nRecommended:\n- Create venv: `python -m venv .opencode/.venv`\n- Install: `\"{}\" -m pip install -r requirements.txt`\n\nOr open the in-app Python setup wizard.",
+            "Global Python/pip installs are blocked. Use the workspace venv at `.tandem/.venv`.\n\nRecommended:\n- Create venv: `python -m venv .tandem/.venv`\n- Install: `\"{}\" -m pip install -r requirements.txt`\n\nOr open the in-app Python setup wizard.",
             venv_python.to_string_lossy()
         ));
     }
@@ -427,7 +464,7 @@ pub fn check_terminal_command_policy(workspace: &Path, command: &str) -> Option<
     // Block running python outside venv (scripts, -c, -m, etc).
     if t0 == "python" || t0 == "python3" || t0 == "py" {
         return Some(
-            "Running Python outside the workspace venv is blocked. Create the venv at `.opencode/.venv` and run Python via the venv interpreter, or use the in-app Python setup wizard.".to_string(),
+            "Running Python outside the workspace venv is blocked. Create the venv at `.tandem/.venv` and run Python via the venv interpreter, or use the in-app Python setup wizard.".to_string(),
         );
     }
 
@@ -449,8 +486,8 @@ mod tests {
     #[test]
     fn policy_allows_venv_creation_target() {
         let ws = PathBuf::from("/tmp/ws");
-        assert!(check_terminal_command_policy(&ws, "python -m venv .opencode/.venv").is_none());
-        assert!(check_terminal_command_policy(&ws, "py -3 -m venv .opencode/.venv").is_none());
+        assert!(check_terminal_command_policy(&ws, "python -m venv .tandem/.venv").is_none());
+        assert!(check_terminal_command_policy(&ws, "py -3 -m venv .tandem/.venv").is_none());
     }
 
     #[test]

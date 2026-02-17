@@ -66,14 +66,14 @@ What Cursor did for developers, Tandem does for everyone.
 - **🧩 Skills System** - Import and manage custom AI capabilities and instructions
 - **🏷️ Skill runtime hints** - Starter skill cards show optional runtime requirements (Python/Node/Bash)
 - **📎 Document text extraction** - Extract text from PDF/DOCX/PPTX/XLSX/RTF for skills and chat context
-- **🐍 Workspace Python venv** - Guided setup creates `.opencode/.venv` and enforces venv-only tools
+- **🐍 Workspace Python venv** - Guided setup creates `.tandem/.venv` and enforces venv-only tools
 - **🎨 Rich themes** - Enhanced background art and consistent gradient rendering across the app
 - **📋 Execution Planning** - Review and batch-approve multi-step AI operations before execution
 - **🔄 Auto-updates** - Seamless updates with code-signed releases (when using installers)
 
 ### AI Agent Modes
 
-Tandem supports multiple specialized agent modes powered by OpenCode:
+Tandem supports multiple specialized agent modes powered by the native Tandem engine:
 
 - **💬 Chat Mode** - Interactive conversation with context-aware file operations
 - **📝 Plan Mode** - Draft comprehensive implementation plans (`.md`) before executing changes
@@ -141,13 +141,13 @@ This supervised loop ensures complex features are implemented correctly with hum
    pnpm install
    ```
 
-3. **Download the sidecar binary**
+3. **Build the engine binary**
 
    ```bash
-   pnpm run download-sidecar
+   cargo build -p tandem-engine
    ```
 
-   This fetches the OpenCode binary for your platform.
+   This builds the native Rust `tandem-engine` binary for your platform.
 
 4. **Run in development mode**
    ```bash
@@ -240,7 +240,7 @@ You can manage multiple projects and switch between them easily. Each project ma
 ┌─────────────────────────────────────────────────────────────┐
 │                    Tandem Desktop App                        │
 ├─────────────────┬───────────────────┬───────────────────────┤
-│  React Frontend │   Tauri Core      │  OpenCode Sidecar     │
+│  React Frontend │   Tauri Core      │  Tandem Engine Sidecar│
 │  (TypeScript)   │   (Rust)          │  (AI Agent Runtime)   │
 │  - Modern UI    │   - Security      │  - Multi-mode agents  │
 │  - File browser │   - Permissions   │  - Tool execution     │
@@ -255,7 +255,7 @@ You can manage multiple projects and switch between them easily. Each project ma
 
 - **Frontend**: React 18, TypeScript, Tailwind CSS, Framer Motion
 - **Backend**: Rust, Tauri 2.0
-- **Agent Runtime**: OpenCode CLI (TypeScript-based sidecar)
+- **Agent Runtime**: Tandem Engine (Rust, HTTP + SSE)
 - **Encryption**: AES-256-GCM for API key storage
 - **IPC**: Tauri's secure command system
 
@@ -282,7 +282,7 @@ Tandem offers two modes for handling AI operations:
 **Plan Mode** (recommended for complex tasks):
 
 - Toggle with the **"Plan Mode"** button in the chat header
-- Uses OpenCode's native Plan agent
+- Uses Tandem's native Plan mode runtime
 - AI proposes file operations that are staged for review
 - All changes appear in the **Execution Plan panel** (bottom-right)
 - Review diffs side-by-side before applying
@@ -343,6 +343,10 @@ pnpm format
 cargo fmt
 ```
 
+Engine-specific build/run/smoke instructions (including `pnpm tauri dev` sidecar setup): see `docs/ENGINE_TESTING.md`.
+Engine CLI usage reference (commands, flags, examples): see `docs/ENGINE_CLI.md`.
+Engine runtime communication contract (desktop/TUI <-> engine): see `docs/ENGINE_COMMUNICATION.md`.
+
 ## Project Structure
 
 ```
@@ -362,7 +366,7 @@ tandem/
 ## Roadmap
 
 - [x] **Phase 1: Security Foundation** - Encrypted vault, permission system
-- [x] **Phase 2: Sidecar Integration** - OpenCode agent runtime
+- [x] **Phase 2: Sidecar Integration** - Tandem agent runtime
 - [x] **Phase 3: Glass UI** - Modern, polished interface
 - [x] **Phase 4: Provider Routing** - Multi-provider support
 - [x] **Phase 5: Agent Capabilities** - Multi-mode agents, execution planning
@@ -407,7 +411,6 @@ If Tandem saves you time or helps you keep your data private while using AI, con
 
 - [Anthropic](https://anthropic.com) for the Cowork inspiration
 - [Tauri](https://tauri.app) for the secure desktop framework
-- [OpenCode](https://opencode.ai/) for the awesome opensource cli
 - The open source community
 
 ---
@@ -416,4 +419,4 @@ If Tandem saves you time or helps you keep your data private while using AI, con
 
 ---
 
-_Note: This codebase communicates with the OpenCode sidecar binary for AI agent capabilities and routes to various LLM providers (OpenRouter, Anthropic, OpenAI, Ollama, or custom APIs). All communication stays local except for LLM provider API calls._
+_Note: This codebase communicates with the native `tandem-engine` sidecar binary for AI agent capabilities and routes to various LLM providers (OpenRouter, Anthropic, OpenAI, Ollama, or custom APIs). All communication stays local except for LLM provider API calls._

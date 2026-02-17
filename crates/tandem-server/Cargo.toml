@@ -1,0 +1,34 @@
+[package]
+name = "tandem-server"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/frumu-ai/tandem"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+ignore = "0.4"
+regex = "1"
+reqwest = { version = "0.12", default-features = true, features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+tandem-core = { path = "../tandem-core" }
+tandem-providers = { path = "../tandem-providers" }
+tandem-runtime = { path = "../tandem-runtime" }
+tandem-tools = { path = "../tandem-tools" }
+tandem-skills = { path = "../tandem-skills" }
+tandem-memory = { path = "../tandem-memory" }
+tandem-orchestrator = { path = "../tandem-orchestrator" }
+tandem-types = { path = "../tandem-types" }
+tandem-wire = { path = "../tandem-wire" }
+
+[dev-dependencies]
+tower = "0.5"

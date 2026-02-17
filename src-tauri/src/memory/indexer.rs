@@ -146,6 +146,13 @@ async fn index_workspace_impl(
     // One-time legacy cleanup: older versions may have file chunks but no file index, which
     // makes incremental indexing impossible and can cause duplication on re-index.
     let db = memory_manager.db();
+    if db.ensure_vector_tables_healthy().await.unwrap_or(false) {
+        tracing::warn!(
+            "Repaired memory vector tables before indexing project {}. Resetting file index to force reindex.",
+            project_id
+        );
+        let _ = db.clear_project_file_index(project_id, false).await;
+    }
     if db.project_file_index_count(project_id).await? == 0
         && db.project_has_file_chunks(project_id).await?
     {
@@ -266,9 +273,21 @@ async fn index_workspace_impl(
         }
 
         // Changed file: remove previous chunks for this path, then re-index and update the file index entry.
-        let _ = db
+        if let Err(err) = db
             .delete_project_file_chunks_by_path(project_id, &relative_path)
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                "Failed to delete stale chunks for {} ({}). Attempting vector repair.",
+                relative_path,
+                err
+            );
+            let _ = db.ensure_vector_tables_healthy().await;
+            let mut s = stats.lock().unwrap();
+            s.files_processed += 1;
+            s.errors += 1;
+            continue;
+        }
 
         let request = StoreMessageRequest {
             content,
@@ -331,10 +350,20 @@ async fn index_workspace_impl(
 
     if !removed.is_empty() {
         for rel in removed {
-            let _ = db
+            if let Err(err) = db
                 .delete_project_file_chunks_by_path(project_id, &rel)
-                .await?;
-            let _ = db.delete_file_index_entry(project_id, &rel).await?;
+                .await
+            {
+                tracing::warn!("Failed to delete removed file chunks for {}: {}", rel, err);
+                let _ = db.ensure_vector_tables_healthy().await;
+            }
+            if let Err(err) = db.delete_file_index_entry(project_id, &rel).await {
+                tracing::warn!(
+                    "Failed to delete removed file index entry for {}: {}",
+                    rel,
+                    err
+                );
+            }
             let mut s = stats.lock().unwrap();
             s.deleted_files += 1;
         }
@@ -354,7 +383,7 @@ async fn index_workspace_impl(
     };
 
     // Persist last run summary for UI/cooldown.
-    let _ = db
+    if let Err(err) = db
         .upsert_project_index_status(
             project_id,
             snapshot.0 as i64,
@@ -363,7 +392,10 @@ async fn index_workspace_impl(
             snapshot.3 as i64,
             snapshot.6 as i64,
         )
-        .await?;
+        .await
+    {
+        tracing::warn!("Failed to persist index status for {}: {}", project_id, err);
+    }
 
     if let Some(app) = app {
         let _ = app.emit(

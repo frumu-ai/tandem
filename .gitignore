@@ -68,5 +68,22 @@ logs.txt
 # Local scratch / vendor checkouts
 .tmp/
 
+# Fastembed Cache
+**/.fastembed_cache/
+crates/tandem-memory/.fastembed_cache/
+src-tauri/.fastembed_cache/
+
 # OpenCode workspace runtime (may be generated when the engine starts)
 .opencode/
+
+# Local engine/runtime smoke-test artifacts
+.tandem/
+.tandem-*/
+runtime-proof/
+engine/.tandem/
+
+# MdBook
+guide/book
+
+# Starlight/Astro generated cache
+guide/.astro/

@@ -1,0 +1,4 @@
+iteration	tandem_success	tandem_run_sec	tandem_fallback_sec	tandem_total_sec	opencode_attempted	opencode_success	opencode_skipped	opencode_run_sec	opencode_command	error
+1	true	5.9149356	2.9538144	8.86875	true	true	false	7.3123582	opencode.cmd	
+2	true	7.709978000000001	2.9079576000000014	10.617935600000003	true	true	false	8.824296799999997	opencode.cmd	
+3	true	5.391993999999999	2.9217291999999944	8.313723199999993	true	true	false	8.413116500000005	opencode.cmd	

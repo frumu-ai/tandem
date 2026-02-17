@@ -1,0 +1,33 @@
+{
+  "9bba3c2a-78ca-4d3a-9492-8e34c5033619": {
+    "id": "9bba3c2a-78ca-4d3a-9492-8e34c5033619",
+    "slug": null,
+    "version": "v1",
+    "project_id": null,
+    "title": "bench-e2e",
+    "directory": "\\\\?\\C:\\Users\\evang\\work\\tandem-engine\\tandem",
+    "workspace_root": "\\\\?\\C:\\Users\\evang\\work\\tandem-engine\\tandem",
+    "time": {
+      "created": "2026-02-14T23:53:27.357962400Z",
+      "updated": "2026-02-14T23:53:27.374635Z"
+    },
+    "model": {
+      "provider_id": "openrouter",
+      "model_id": "google/gemini-2.5-flash"
+    },
+    "provider": "openrouter",
+    "messages": [
+      {
+        "id": "f117dda7-4aa5-4e31-9371-c5d1d653ca35",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Create a directory named \"e2e_test_output\" and create 5 text files inside it named file1.txt to file5.txt, each containing the text \"benchmark_test\"."
+          }
+        ],
+        "created_at": "2026-02-14T23:53:27.374613Z"
+      }
+    ]
+  }
+}

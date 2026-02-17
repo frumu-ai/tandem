@@ -17,6 +17,10 @@ export interface OrchestratorConfig {
   fs_write_parallel?: number;
   shell_parallel?: number;
   network_parallel?: number;
+  strict_planner_json?: boolean;
+  strict_validator_json?: boolean;
+  allow_prose_fallback?: boolean;
+  contract_warnings_enabled?: boolean;
 }
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
@@ -35,6 +39,10 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   fs_write_parallel: 1,
   shell_parallel: 1,
   network_parallel: 2,
+  strict_planner_json: false,
+  strict_validator_json: false,
+  allow_prose_fallback: true,
+  contract_warnings_enabled: true,
 };
 
 export type RunStatus =

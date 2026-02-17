@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tandem_core::resolve_shared_paths;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 
-const OPENCODE_REPO: &str = "anomalyco/opencode";
+const ENGINE_REPO: &str = "frumu-ai/tandem";
 const GITHUB_API: &str = "https://api.github.com";
 const MIN_BINARY_SIZE: u64 = 100 * 1024; // 100KB minimum
 const SKIPPED_RELEASE_TAGS: &[&str] = &[];
@@ -18,6 +19,13 @@ const RELEASES_PER_PAGE: usize = 20;
 const MAX_RELEASE_PAGES: usize = 5;
 const RELEASE_CHECK_INTERVAL_SECS: i64 = 6 * 60 * 60;
 const RELEASE_CACHE_FILE: &str = "sidecar_release_cache.json";
+
+fn shared_app_data_dir(_app: &AppHandle) -> Option<PathBuf> {
+    resolve_shared_paths()
+        .map(|p| p.canonical_root)
+        .ok()
+        .or_else(|| dirs::data_dir().map(|d| d.join("tandem")))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidecarStatus {
@@ -83,8 +91,41 @@ struct CompatibleRelease<'a> {
 pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
     let binary_name = get_binary_name();
 
+    // In debug builds, prefer the freshly compiled engine binary first.
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(current_dir) = std::env::current_dir() {
+            let mut candidates = Vec::new();
+            candidates.push(current_dir.join("target").join("debug").join(binary_name));
+            candidates.push(
+                current_dir
+                    .join("..")
+                    .join("target")
+                    .join("debug")
+                    .join(binary_name),
+            );
+            candidates.push(
+                current_dir
+                    .join("src-tauri")
+                    .join("..")
+                    .join("target")
+                    .join("debug")
+                    .join(binary_name),
+            );
+            for candidate in candidates {
+                if candidate.exists() {
+                    tracing::debug!(
+                        "Using dev sidecar from target/debug preference: {:?}",
+                        candidate
+                    );
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
     // 1. Check AppData (user downloads/updates)
-    if let Ok(app_data_dir) = app.path().app_data_dir() {
+    if let Some(app_data_dir) = shared_app_data_dir(app) {
         let updated_binary = app_data_dir.join("binaries").join(binary_name);
         if updated_binary.exists() {
             tracing::debug!("Using updated sidecar from AppData: {:?}", updated_binary);
@@ -94,10 +135,22 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
 
     // 2. Check bundled resources (installed app)
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled_binary = resource_dir.join("binaries").join(binary_name);
-        if bundled_binary.exists() {
-            tracing::debug!("Using bundled sidecar from resources: {:?}", bundled_binary);
-            return Ok(bundled_binary);
+        // Support both resource layouts:
+        // - <resource_dir>/binaries/<binary>
+        // - <resource_dir>/resources/binaries/<binary>
+        let bundled_candidates = [
+            resource_dir.join("binaries").join(binary_name),
+            resource_dir
+                .join("resources")
+                .join("binaries")
+                .join(binary_name),
+        ];
+
+        for bundled_binary in bundled_candidates {
+            if bundled_binary.exists() {
+                tracing::debug!("Using bundled sidecar from resources: {:?}", bundled_binary);
+                return Ok(bundled_binary);
+            }
         }
     }
 
@@ -110,7 +163,7 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
             // We assume we are running from 'src-tauri' or project root
             let dev_binary = current_dir.join("binaries").join(binary_name);
             if dev_binary.exists() {
-                tracing::info!("Using dev sidecar from CWD/binaries: {:?}", dev_binary);
+                tracing::debug!("Using dev sidecar from CWD/binaries: {:?}", dev_binary);
                 return Ok(dev_binary);
             }
 
@@ -120,7 +173,7 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
                 .join("binaries")
                 .join(binary_name);
             if dev_binary_nested.exists() {
-                tracing::info!(
+                tracing::debug!(
                     "Using dev sidecar from src-tauri/binaries: {:?}",
                     dev_binary_nested
                 );
@@ -139,37 +192,37 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
 /// Get the binary name for the current platform
 fn get_binary_name() -> &'static str {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return "opencode-x86_64-pc-windows-msvc.exe";
+    return "tandem-engine.exe";
 
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "opencode-x86_64-apple-darwin";
+    return "tandem-engine";
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return "opencode-aarch64-apple-darwin";
+    return "tandem-engine";
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return "opencode-x86_64-unknown-linux-gnu";
+    return "tandem-engine";
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    return "opencode-aarch64-unknown-linux-gnu";
+    return "tandem-engine";
 }
 
 /// Get the asset name for the current platform
 fn get_asset_name() -> &'static str {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return "opencode-windows-x64.zip";
+    return "tandem-engine-windows-x64.zip";
 
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "opencode-darwin-x64.zip";
+    return "tandem-engine-darwin-x64.zip";
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return "opencode-darwin-arm64.zip";
+    return "tandem-engine-darwin-arm64.zip";
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return "opencode-linux-x64.tar.gz";
+    return "tandem-engine-linux-x64.tar.gz";
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    return "opencode-linux-arm64.tar.gz";
+    return "tandem-engine-linux-arm64.tar.gz";
 }
 
 /// Get the installed version from the store
@@ -205,6 +258,10 @@ pub async fn check_sidecar_status(app: &AppHandle) -> Result<SidecarStatus> {
             .unwrap_or(false);
 
     let binary_path = binary_path_result.ok();
+    let using_dev_sidecar = binary_path
+        .as_ref()
+        .map(|path| is_dev_sidecar_path(app, path))
+        .unwrap_or(false);
 
     let version = if installed {
         get_installed_version(app)
@@ -212,7 +269,11 @@ pub async fn check_sidecar_status(app: &AppHandle) -> Result<SidecarStatus> {
         None
     };
 
-    let release_discovery = fetch_release_discovery(app).await.ok();
+    let release_discovery = if using_dev_sidecar {
+        None
+    } else {
+        fetch_release_discovery(app).await.ok()
+    };
     let latest_version = release_discovery
         .as_ref()
         .and_then(|discovery| discovery.latest_compatible_release.as_ref())
@@ -236,6 +297,28 @@ pub async fn check_sidecar_status(app: &AppHandle) -> Result<SidecarStatus> {
         compatibility_message,
         binary_path: binary_path.map(|p| p.to_string_lossy().to_string()),
     })
+}
+
+fn is_dev_sidecar_path(app: &AppHandle, path: &Path) -> bool {
+    let in_app_data = shared_app_data_dir(app)
+        .map(|dir| path.starts_with(dir))
+        .unwrap_or(false);
+    if in_app_data {
+        return false;
+    }
+
+    let in_resources = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| path.starts_with(dir))
+        .unwrap_or(false);
+    if in_resources {
+        return false;
+    }
+
+    // Any other location (for example CWD/src-tauri/binaries) is treated as a dev sidecar.
+    true
 }
 
 struct ReleaseDiscovery {
@@ -303,7 +386,7 @@ async fn fetch_releases(
         let age = now - cache.fetched_at_unix;
         if !force_refresh && age < RELEASE_CHECK_INTERVAL_SECS {
             tracing::debug!(
-                "Using cached OpenCode releases (age={}s, freshness={}s)",
+                "Using cached tandem-engine releases (age={}s, freshness={}s)",
                 age,
                 RELEASE_CHECK_INTERVAL_SECS
             );
@@ -353,7 +436,14 @@ async fn fetch_releases(
             .text()
             .await
             .unwrap_or_else(|_| "Failed to read error response".to_string());
-        tracing::error!("GitHub API error {}: {}", status, error_text);
+        if status.as_u16() == 404 {
+            tracing::warn!(
+                "Sidecar release endpoint returned 404 (repo may be private/unpublished): {}",
+                error_text
+            );
+        } else {
+            tracing::error!("GitHub API error {}: {}", status, error_text);
+        }
 
         if let Some(cache) = &cached {
             tracing::warn!("Using cached releases after GitHub API error {}", status);
@@ -362,6 +452,8 @@ async fn fetch_releases(
 
         let message = if status.as_u16() == 403 {
             "GitHub rate limit reached. Please wait a few minutes and try again.".to_string()
+        } else if status.as_u16() == 404 {
+            "Sidecar release metadata endpoint was not found (404). This does not block local sidecar usage if a binary is already installed.".to_string()
         } else {
             format!(
                 "Unable to fetch releases (error {}). Please try again later.",
@@ -428,7 +520,7 @@ async fn fetch_releases(
 fn build_release_request(client: &reqwest::Client, page: usize) -> reqwest::RequestBuilder {
     let url = format!(
         "{}/repos/{}/releases?per_page={}&page={}",
-        GITHUB_API, OPENCODE_REPO, RELEASES_PER_PAGE, page
+        GITHUB_API, ENGINE_REPO, RELEASES_PER_PAGE, page
     );
     let mut request = client
         .get(url)
@@ -470,7 +562,7 @@ fn select_latest_compatible_release<'a>(
             tracing::debug!(
                 tag = %release.tag_name,
                 reason = %reason,
-                "Skipping OpenCode release during eligibility filtering"
+                "Skipping tandem-engine release during eligibility filtering"
             );
             skipped_count += 1;
             if first_skip_reason.is_none() {
@@ -488,7 +580,7 @@ fn select_latest_compatible_release<'a>(
 
     let reason = first_skip_reason.unwrap_or_else(|| "no releases returned".to_string());
     Err(TandemError::Sidecar(format!(
-        "No compatible OpenCode release found. First skip reason: {}",
+        "No compatible tandem-engine release found. First skip reason: {}",
         reason
     )))
 }
@@ -547,8 +639,34 @@ fn log_release_selection(context: &str, selected: &CompatibleRelease<'_>) {
         selected_tag = %selected.release.tag_name,
         skipped_count = selected.skipped_count,
         first_skip_reason = selected.first_skip_reason.as_deref().unwrap_or("none"),
-        "Selected eligible OpenCode release"
+        "Selected eligible tandem-engine release"
     );
+}
+
+fn select_release_for_download<'a>(releases: &'a [GitHubRelease]) -> Result<CompatibleRelease<'a>> {
+    let include_prerelease = beta_channel_enabled();
+
+    match select_latest_compatible_release(releases, include_prerelease) {
+        Ok(selected) => Ok(selected),
+        Err(primary_error) => {
+            if include_prerelease {
+                return Err(primary_error);
+            }
+
+            // Fallback: if stable filtering finds nothing compatible, allow prerelease releases.
+            // This keeps sidecar download functional when only prerelease artifacts are available.
+            match select_latest_compatible_release(releases, true) {
+                Ok(selected) => {
+                    tracing::warn!(
+                        selected_tag = %selected.release.tag_name,
+                        "No stable compatible tandem-engine release found; falling back to prerelease"
+                    );
+                    Ok(selected)
+                }
+                Err(_) => Err(primary_error),
+            }
+        }
+    }
 }
 
 fn should_offer_update(installed_version: Option<&str>, latest_version: Option<&str>) -> bool {
@@ -613,7 +731,7 @@ fn normalize_version_label(version: &str) -> &str {
 }
 
 fn asset_name_matches_current_target(asset_name: &str) -> bool {
-    if !asset_name.starts_with("opencode-") || asset_name.starts_with("opencode-desktop-") {
+    if !asset_name.starts_with("tandem-engine-") {
         return false;
     }
 
@@ -650,10 +768,7 @@ fn beta_channel_enabled() -> bool {
 }
 
 fn get_release_cache_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join(RELEASE_CACHE_FILE))
+    shared_app_data_dir(app).map(|dir| dir.join(RELEASE_CACHE_FILE))
 }
 
 fn load_release_cache(app: &AppHandle) -> Option<ReleaseCache> {
@@ -721,12 +836,11 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
         emit_state("error", Some(&error_msg));
         e
     })?;
-    let selected =
-        select_latest_compatible_release(&releases, beta_channel_enabled()).map_err(|e| {
-            let error_msg = e.to_string();
-            emit_state("error", Some(&error_msg));
-            e
-        })?;
+    let selected = select_release_for_download(&releases).map_err(|e| {
+        let error_msg = e.to_string();
+        emit_state("error", Some(&error_msg));
+        e
+    })?;
     log_release_selection("sidecar_download", &selected);
 
     let release = selected.release;
@@ -754,13 +868,15 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     let download_url = asset.browser_download_url.clone();
     let total_size = asset.size;
 
-    tracing::info!("Downloading OpenCode {} from {}", version, download_url);
+    tracing::info!(
+        "Downloading tandem-engine {} from {}",
+        version,
+        download_url
+    );
 
     // Download to AppData (writable), not resources (read-only)
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| TandemError::Sidecar(format!("Failed to get app data dir: {}", e)))?;
+    let app_data_dir = shared_app_data_dir(&app)
+        .ok_or_else(|| TandemError::Sidecar("Failed to get app data dir".to_string()))?;
 
     let binaries_dir = app_data_dir.join("binaries");
     fs::create_dir_all(&binaries_dir).map_err(|e| {
@@ -827,9 +943,9 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     emit_state("installing", None);
 
     let extracted_name = if cfg!(windows) {
-        "opencode.exe"
+        "tandem-engine.exe"
     } else {
-        "opencode"
+        "tandem-engine"
     };
     let extracted_path = binaries_dir.join(extracted_name);
 
@@ -844,11 +960,13 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
             {
                 use std::process::Command as StdCommand;
 
-                tracing::info!("Running taskkill to ensure all OpenCode processes are terminated");
+                tracing::info!(
+                    "Running taskkill to ensure all tandem-engine processes are terminated"
+                );
 
-                // Kill any opencode.exe processes by name
+                // Kill any tandem-engine.exe processes by name
                 let mut cmd = StdCommand::new("taskkill");
-                cmd.args(["/F", "/IM", "opencode.exe"]);
+                cmd.args(["/F", "/IM", "tandem-engine.exe"]);
 
                 // Hide console window on Windows
                 #[cfg(target_os = "windows")]
@@ -872,7 +990,7 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
 
                 // Also try killing any process with the executable name in its path
                 let mut cmd2 = StdCommand::new("taskkill");
-                cmd2.args(["/F", "/FI", "IMAGENAME eq opencode*"]);
+                cmd2.args(["/F", "/FI", "IMAGENAME eq tandem-engine*"]);
 
                 // Hide console window on Windows
                 #[cfg(target_os = "windows")]
@@ -979,7 +1097,7 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
 
     emit_state("complete", None);
 
-    tracing::info!("OpenCode {} installed successfully", version);
+    tracing::info!("tandem-engine {} installed successfully", version);
 
     Ok(())
 }
@@ -1076,12 +1194,7 @@ mod tests {
     #[test]
     fn select_latest_compatible_release_skips_missing_required_assets() {
         let releases = vec![
-            make_release(
-                "v1.1.58",
-                false,
-                false,
-                &["opencode-desktop-windows-x64.exe"],
-            ),
+            make_release("v1.1.58", false, false, &["tandem-desktop-windows-x64.exe"]),
             make_release("v1.1.57", false, false, &current_platform_assets()),
         ];
         let selected = select_latest_compatible_release(&releases, false).unwrap();
@@ -1098,9 +1211,9 @@ mod tests {
     #[test]
     fn select_latest_compatible_release_rejects_desktop_only_release() {
         let desktop_only = vec![
-            "opencode-desktop-windows-x64.exe",
-            "opencode-desktop-darwin-x64.dmg",
-            "opencode-desktop-linux-amd64.deb",
+            "tandem-desktop-windows-x64.exe",
+            "tandem-desktop-darwin-x64.dmg",
+            "tandem-desktop-linux-amd64.deb",
         ];
         let releases = vec![
             make_release("v1.1.58", false, false, &desktop_only),
@@ -1124,12 +1237,7 @@ mod tests {
     #[test]
     fn select_latest_compatible_release_errors_when_none_eligible() {
         let releases = vec![
-            make_release(
-                "v1.1.59",
-                false,
-                false,
-                &["opencode-desktop-windows-x64.exe"],
-            ),
+            make_release("v1.1.59", false, false, &["tandem-desktop-windows-x64.exe"]),
             make_release("v1.1.58", true, false, &current_platform_assets()),
         ];
         assert!(select_latest_compatible_release(&releases, false).is_err());
@@ -1138,12 +1246,7 @@ mod tests {
     #[test]
     fn release_discovery_reports_incompatible_latest() {
         let releases = vec![
-            make_release(
-                "v1.1.59",
-                false,
-                false,
-                &["opencode-desktop-windows-x64.exe"],
-            ),
+            make_release("v1.1.59", false, false, &["tandem-desktop-windows-x64.exe"]),
             make_release("v1.1.58", false, false, &current_platform_assets()),
         ];
         let discovery = build_release_discovery(&releases, false);

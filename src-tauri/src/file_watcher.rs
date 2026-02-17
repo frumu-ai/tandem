@@ -4,7 +4,7 @@ use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, WebviewWindow};
 
-/// Watches the `.opencode/plans/` directory for file changes and emits events to the frontend
+/// Watches plan directories for file changes and emits events to the frontend.
 pub struct PlanWatcher {
     _watcher: RecommendedWatcher,
 }
@@ -12,11 +12,12 @@ pub struct PlanWatcher {
 impl PlanWatcher {
     /// Create a new plan watcher for the given workspace
     pub fn new(workspace_path: &Path, app: AppHandle) -> Result<Self, notify::Error> {
-        let plans_dir = workspace_path.join(".opencode/plans");
+        let canonical_plans_dir = workspace_path.join(".tandem").join("plans");
+        let legacy_plans_dir = workspace_path.join(".opencode").join("plans");
 
-        // Create the plans directory if it doesn't exist
-        if !plans_dir.exists() {
-            std::fs::create_dir_all(&plans_dir).ok();
+        // Create canonical plans directory if it doesn't exist.
+        if !canonical_plans_dir.exists() {
+            std::fs::create_dir_all(&canonical_plans_dir).ok();
         }
 
         let (tx, rx): (
@@ -26,8 +27,12 @@ impl PlanWatcher {
 
         let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())?;
 
-        // Watch the plans directory recursively
-        watcher.watch(&plans_dir, RecursiveMode::Recursive)?;
+        // Watch canonical plans directory recursively.
+        watcher.watch(&canonical_plans_dir, RecursiveMode::Recursive)?;
+        // Also watch legacy plans dir when present for read-compatibility during migration window.
+        if legacy_plans_dir.exists() {
+            watcher.watch(&legacy_plans_dir, RecursiveMode::Recursive)?;
+        }
 
         // Spawn a task to handle events
         let app_clone = app.clone();

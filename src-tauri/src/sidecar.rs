@@ -1,16 +1,23 @@
 // Tandem Sidecar Manager
-// Handles spawning, lifecycle, and communication with the OpenCode sidecar process
+// Handles spawning, lifecycle, and communication with the tandem-engine sidecar process
 
 use crate::error::{Result, TandemError};
 use crate::logs::LogRingBuffer;
 use futures::StreamExt;
-use reqwest::Client;
+use reqwest::{header::HeaderMap, header::HeaderValue, Client};
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tandem_core::{
+    engine_api_token_file_path, load_or_create_engine_api_token, resolve_shared_paths,
+    DEFAULT_ENGINE_PORT,
+};
+use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
+use tandem_skills::{SkillContent, SkillInfo, SkillLocation, SkillTemplateInfo};
 use tokio::sync::{Mutex, RwLock};
 
 #[cfg(windows)]
@@ -117,6 +124,91 @@ pub enum CircuitState {
     HalfOpen, // Testing recovery
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SidecarCircuitSnapshot {
+    pub state: String,
+    pub failure_count: u32,
+    pub last_failure_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SidecarRuntimeSnapshot {
+    pub state: SidecarState,
+    pub shared_mode: bool,
+    pub owns_process: bool,
+    pub port: Option<u16>,
+    pub pid: Option<u32>,
+    pub binary_path: Option<String>,
+    pub circuit: SidecarCircuitSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SidecarHealthResponse {
+    healthy: bool,
+    #[serde(default = "default_health_ready")]
+    ready: bool,
+    #[serde(default)]
+    phase: String,
+    #[serde(default)]
+    startup_attempt_id: String,
+    #[serde(default)]
+    startup_elapsed_ms: u64,
+    #[serde(default)]
+    last_error: Option<String>,
+    #[serde(default)]
+    build_id: Option<String>,
+    #[serde(default)]
+    binary_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SidecarStartupHealth {
+    pub healthy: bool,
+    pub ready: bool,
+    pub phase: String,
+    pub startup_attempt_id: String,
+    pub startup_elapsed_ms: u64,
+    pub last_error: Option<String>,
+    pub build_id: Option<String>,
+    pub binary_path: Option<String>,
+}
+
+fn default_health_ready() -> bool {
+    true
+}
+
+fn default_sidecar_port() -> u16 {
+    std::env::var("TANDEM_ENGINE_PORT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u16>().ok())
+        .unwrap_or(DEFAULT_ENGINE_PORT)
+}
+
+fn build_http_client(timeout: Duration, api_token: &str) -> Client {
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(api_token) {
+        headers.insert("x-tandem-token", value);
+    }
+    Client::builder()
+        .default_headers(headers)
+        .timeout(timeout)
+        .build()
+        .expect("Failed to create HTTP client")
+}
+
+fn build_stream_client(api_token: &str) -> Client {
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(api_token) {
+        headers.insert("x-tandem-token", value);
+    }
+    Client::builder()
+        .default_headers(headers)
+        .http1_only()
+        .tcp_keepalive(Duration::from_secs(60))
+        .build()
+        .expect("Failed to create stream client")
+}
+
 /// Configuration for the sidecar manager
 #[derive(Debug, Clone)]
 pub struct SidecarConfig {
@@ -134,17 +226,20 @@ pub struct SidecarConfig {
     pub heartbeat_interval: Duration,
     /// Workspace path for OpenCode
     pub workspace_path: Option<PathBuf>,
+    /// Shared mode allows Desktop and TUI/CLI to attach to a single local engine instance.
+    pub shared_mode: bool,
 }
 
 impl Default for SidecarConfig {
     fn default() -> Self {
         Self {
-            port: 0, // Auto-assign
+            port: default_sidecar_port(),
             max_failures: 3,
             cooldown_duration: Duration::from_secs(30),
             operation_timeout: Duration::from_secs(300),
             heartbeat_interval: Duration::from_secs(5),
             workspace_path: None,
+            shared_mode: true,
         }
     }
 }
@@ -217,11 +312,15 @@ pub struct CreateSessionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub model: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission: Option<Vec<PermissionRule>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+    #[serde(rename = "workspace_root", skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -251,17 +350,73 @@ pub struct Session {
     pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
+    #[serde(rename = "workspaceRoot", skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
+    #[serde(
+        rename = "originWorkspaceRoot",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub origin_workspace_root: Option<String>,
+    #[serde(
+        rename = "attachedFromWorkspace",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attached_from_workspace: Option<String>,
+    #[serde(
+        rename = "attachedToWorkspace",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attached_to_workspace: Option<String>,
+    #[serde(rename = "attachTimestampMs", skip_serializing_if = "Option::is_none")]
+    pub attach_timestamp_ms: Option<u64>,
+    #[serde(rename = "attachReason", skip_serializing_if = "Option::is_none")]
+    pub attach_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<SessionTime>,
     // Legacy fields for compatibility
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_model_string_or_object"
+    )]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default)]
-    pub messages: Vec<Message>,
+    pub messages: Vec<serde_json::Value>,
+}
+
+fn deserialize_model_string_or_object<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    match value {
+        serde_json::Value::String(s) => Ok(Some(s)),
+        serde_json::Value::Object(map) => {
+            if let Some(model) = map
+                .get("modelID")
+                .and_then(|v| v.as_str())
+                .or_else(|| map.get("model_id").and_then(|v| v.as_str()))
+            {
+                return Ok(Some(model.to_string()));
+            }
+            Err(D::Error::custom(
+                "model object missing modelID/model_id string field",
+            ))
+        }
+        other => Err(D::Error::custom(format!(
+            "invalid type for model field: {other}"
+        ))),
+    }
 }
 
 /// Message in a session
@@ -318,9 +473,9 @@ pub enum MessagePartInput {
 /// Model specification for prompt
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelSpec {
-    #[serde(rename = "providerID")]
+    #[serde(alias = "providerID")]
     pub provider_id: String,
-    #[serde(rename = "modelID")]
+    #[serde(alias = "modelID")]
     pub model_id: String,
 }
 
@@ -401,12 +556,15 @@ pub struct Project {
     pub vcs: Option<String>,
     #[serde(default)]
     pub sandboxes: Vec<serde_json::Value>,
+    #[serde(default)]
     pub time: ProjectTime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectTime {
+    #[serde(default)]
     pub created: u64,
+    #[serde(default)]
     pub updated: u64,
 }
 
@@ -523,6 +681,11 @@ pub struct PermissionAskedProps {
     pub request_id: String,
     pub tool: Option<String>,
     pub args: Option<serde_json::Value>,
+    #[serde(rename = "argsSource")]
+    pub args_source: Option<String>,
+    #[serde(rename = "argsIntegrity")]
+    pub args_integrity: Option<String>,
+    pub query: Option<String>,
 }
 
 /// Raw OpenCode event from SSE stream
@@ -563,6 +726,28 @@ pub enum StreamEvent {
     },
     /// Session status changed
     SessionStatus { session_id: String, status: String },
+    /// Session run started
+    RunStarted {
+        session_id: String,
+        run_id: String,
+        started_at_ms: u64,
+        client_id: Option<String>,
+    },
+    /// Session run finished
+    RunFinished {
+        session_id: String,
+        run_id: String,
+        finished_at_ms: u64,
+        status: String,
+        error: Option<String>,
+    },
+    /// Session run conflict
+    RunConflict {
+        session_id: String,
+        run_id: String,
+        retry_after_ms: u64,
+        attach_event_stream: String,
+    },
     /// Session is idle (generation complete)
     SessionIdle { session_id: String },
     /// Session error
@@ -573,6 +758,9 @@ pub enum StreamEvent {
         request_id: String,
         tool: Option<String>,
         args: Option<serde_json::Value>,
+        args_source: Option<String>,
+        args_integrity: Option<String>,
+        query: Option<String>,
     },
     /// File edited (from file.edited event)
     FileEdited {
@@ -600,6 +788,8 @@ pub enum StreamEvent {
     /// Local memory retrieval telemetry for prompt-context injection.
     MemoryRetrieval {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
         used: bool,
         chunks_total: usize,
         session_chunks: usize,
@@ -609,6 +799,23 @@ pub enum StreamEvent {
         query_hash: String,
         score_min: Option<f64>,
         score_max: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        embedding_status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        embedding_reason: Option<String>,
+    },
+    /// Local memory storage telemetry for chat-turn ingestion.
+    MemoryStorage {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        role: String,
+        session_chunks_stored: usize,
+        project_chunks_stored: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
 }
 
@@ -723,6 +930,349 @@ pub struct TodoItem {
     pub status: String, // "pending" | "in_progress" | "completed" | "cancelled"
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineSchedule {
+    IntervalSeconds { seconds: u64 },
+    Cron { expression: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum RoutineMisfirePolicy {
+    Skip,
+    RunOnce,
+    CatchUp { max_runs: u32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineStatus {
+    Active,
+    Paused,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineSpec {
+    pub routine_id: String,
+    pub name: String,
+    pub status: RoutineStatus,
+    pub schedule: RoutineSchedule,
+    pub timezone: String,
+    pub misfire_policy: RoutineMisfirePolicy,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+    pub creator_type: String,
+    pub creator_id: String,
+    pub requires_approval: bool,
+    pub external_integrations_allowed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_fire_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_fired_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineHistoryEvent {
+    pub routine_id: String,
+    pub trigger_type: String,
+    pub run_count: u32,
+    pub fired_at_ms: u64,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineCreateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routine_id: Option<String>,
+    pub name: String,
+    pub schedule: RoutineSchedule,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub misfire_policy: Option<RoutineMisfirePolicy>,
+    pub entrypoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_approval: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_integrations_allowed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_fire_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RoutinePatchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<RoutineStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<RoutineSchedule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub misfire_policy: Option<RoutineMisfirePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_approval: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_integrations_allowed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_fire_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RoutineRunNowRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineRunNowResponse {
+    pub ok: bool,
+    pub status: String,
+    #[serde(rename = "routineID")]
+    pub routine_id: String,
+    #[serde(rename = "runCount")]
+    pub run_count: u32,
+    #[serde(rename = "firedAtMs", default, skip_serializing_if = "Option::is_none")]
+    pub fired_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineListResponse {
+    routines: Vec<RoutineSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineRecordResponse {
+    routine: RoutineSpec,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineDeleteResponse {
+    deleted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineHistoryResponse {
+    events: Vec<RoutineHistoryEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionStatus {
+    Draft,
+    Running,
+    Paused,
+    Succeeded,
+    Failed,
+    Canceled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemStatus {
+    Todo,
+    InProgress,
+    Blocked,
+    Review,
+    Test,
+    Rework,
+    Done,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MissionBudget {
+    #[serde(default)]
+    pub max_steps: Option<u32>,
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default)]
+    pub max_duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MissionCapabilities {
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub allowed_agents: Vec<String>,
+    #[serde(default)]
+    pub allowed_memory_tiers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionSpec {
+    pub mission_id: String,
+    pub title: String,
+    pub goal: String,
+    #[serde(default)]
+    pub success_criteria: Vec<String>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    #[serde(default)]
+    pub budgets: MissionBudget,
+    #[serde(default)]
+    pub capabilities: MissionCapabilities,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionWorkItem {
+    pub work_item_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    pub status: WorkItemStatus,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub assigned_agent: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub artifact_refs: Vec<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionState {
+    pub mission_id: String,
+    pub status: MissionStatus,
+    pub spec: MissionSpec,
+    #[serde(default)]
+    pub work_items: Vec<MissionWorkItem>,
+    pub revision: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionCreateWorkItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionCreateRequest {
+    pub title: String,
+    pub goal: String,
+    #[serde(default)]
+    pub work_items: Vec<MissionCreateWorkItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionApplyEventResult {
+    pub mission: MissionState,
+    #[serde(default)]
+    pub commands: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MissionListResponse {
+    missions: Vec<MissionState>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MissionRecordResponse {
+    mission: MissionState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveRunStatusResponse {
+    #[serde(rename = "runID")]
+    pub run_id: String,
+    #[serde(rename = "startedAtMs")]
+    pub started_at_ms: u64,
+    #[serde(rename = "lastActivityAtMs")]
+    pub last_activity_at_ms: u64,
+    #[serde(rename = "clientID")]
+    pub client_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ActiveRunEnvelope {
+    active: Option<ActiveRunStatusResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SkillsImportRequest {
+    location: SkillLocation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_or_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conflict_policy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SkillsDeleteQuery<'a> {
+    location: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SkillsTemplateInstallRequest {
+    location: SkillLocation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsImportPreviewItem {
+    pub source: String,
+    pub valid: bool,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub conflict: bool,
+    pub action: String,
+    pub target_path: Option<String>,
+    pub error: Option<String>,
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub tags: Vec<String>,
+    pub requires: Vec<String>,
+    pub compatibility: Option<String>,
+    pub triggers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsImportPreview {
+    pub items: Vec<SkillsImportPreviewItem>,
+    pub total: usize,
+    pub valid: usize,
+    pub invalid: usize,
+    pub conflicts: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsImportResult {
+    pub imported: Vec<SkillInfo>,
+    pub skipped: Vec<String>,
+    pub errors: Vec<String>,
+}
+
 // ============================================================================
 // Sidecar Manager
 // ============================================================================
@@ -734,10 +1284,12 @@ pub struct SidecarManager {
     /// Serializes start/stop lifecycle transitions to prevent duplicate spawns.
     lifecycle_lock: Mutex<()>,
     process: Mutex<Option<Child>>,
+    owns_process: RwLock<bool>,
     #[cfg(windows)]
     windows_job: Mutex<Option<WindowsJobHandle>>,
     circuit_breaker: Mutex<CircuitBreaker>,
     port: RwLock<Option<u16>>,
+    binary_path: RwLock<Option<String>>,
     http_client: Client,
     /// HTTP client without global timeout for long-lived streams
     stream_client: Client,
@@ -745,20 +1297,16 @@ pub struct SidecarManager {
     env_vars: RwLock<HashMap<String, String>>,
     /// Always-drained stdout/stderr lines from the sidecar (bounded ring buffer).
     log_buffer: Arc<LogRingBuffer>,
+    api_token: String,
+    api_token_backend: String,
 }
 
 impl SidecarManager {
     pub fn new(config: SidecarConfig) -> Self {
-        let http_client = Client::builder()
-            .timeout(config.operation_timeout)
-            .build()
-            .expect("Failed to create HTTP client");
-
-        let stream_client = Client::builder()
-            .http1_only() // SSE works best with HTTP/1.1 on many platforms
-            .tcp_keepalive(Duration::from_secs(60))
-            .build()
-            .expect("Failed to create stream client");
+        let token_material = load_or_create_engine_api_token();
+        let api_token = token_material.token;
+        let http_client = build_http_client(config.operation_timeout, &api_token);
+        let stream_client = build_stream_client(&api_token);
 
         Self {
             circuit_breaker: Mutex::new(CircuitBreaker::new(config.clone())),
@@ -766,13 +1314,17 @@ impl SidecarManager {
             state: RwLock::new(SidecarState::Stopped),
             lifecycle_lock: Mutex::new(()),
             process: Mutex::new(None),
+            owns_process: RwLock::new(false),
             #[cfg(windows)]
             windows_job: Mutex::new(None),
             port: RwLock::new(None),
+            binary_path: RwLock::new(None),
             http_client,
             stream_client,
             env_vars: RwLock::new(HashMap::new()),
             log_buffer: Arc::new(LogRingBuffer::new(2000)),
+            api_token,
+            api_token_backend: token_material.backend,
         }
     }
 
@@ -784,6 +1336,18 @@ impl SidecarManager {
             .map(|l| (l.seq, l.text))
             .collect::<Vec<_>>();
         (lines, self.log_buffer.dropped_total())
+    }
+
+    pub fn api_token(&self) -> String {
+        self.api_token.clone()
+    }
+
+    pub fn api_token_path(&self) -> PathBuf {
+        engine_api_token_file_path()
+    }
+
+    pub fn api_token_backend(&self) -> String {
+        self.api_token_backend.clone()
     }
 
     pub fn sidecar_logs_since(&self, seq: u64) -> (Vec<(u64, String)>, u64) {
@@ -801,9 +1365,61 @@ impl SidecarManager {
         *self.state.read().await
     }
 
+    pub async fn shared_mode(&self) -> bool {
+        self.config.read().await.shared_mode
+    }
+
     /// Get the port the sidecar is listening on
     pub async fn port(&self) -> Option<u16> {
         *self.port.read().await
+    }
+
+    pub async fn runtime_snapshot(&self) -> SidecarRuntimeSnapshot {
+        let state = *self.state.read().await;
+        let shared_mode = self.config.read().await.shared_mode;
+        let owns_process = *self.owns_process.read().await;
+        let port = *self.port.read().await;
+        let binary_path = self.binary_path.read().await.clone();
+        let pid = self.process.lock().await.as_ref().map(|p| p.id());
+        let cb = self.circuit_breaker.lock().await;
+        let circuit = SidecarCircuitSnapshot {
+            state: match cb.state {
+                CircuitState::Closed => "closed".to_string(),
+                CircuitState::Open => "open".to_string(),
+                CircuitState::HalfOpen => "half_open".to_string(),
+            },
+            failure_count: cb.failure_count,
+            last_failure_age_ms: cb
+                .last_failure
+                .map(|inst| inst.elapsed().as_millis() as u64),
+        };
+        SidecarRuntimeSnapshot {
+            state,
+            shared_mode,
+            owns_process,
+            port,
+            pid,
+            binary_path,
+            circuit,
+        }
+    }
+
+    pub async fn startup_health(&self) -> Result<SidecarStartupHealth> {
+        let port = self
+            .port()
+            .await
+            .ok_or_else(|| TandemError::Sidecar("Sidecar port not assigned".to_string()))?;
+        let health = self.health_check(port).await?;
+        Ok(SidecarStartupHealth {
+            healthy: health.healthy,
+            ready: health.ready,
+            phase: health.phase,
+            startup_attempt_id: health.startup_attempt_id,
+            startup_elapsed_ms: health.startup_elapsed_ms,
+            last_error: health.last_error,
+            build_id: health.build_id,
+            binary_path: health.binary_path,
+        })
     }
 
     /// Set environment variables for OpenCode
@@ -850,14 +1466,49 @@ impl SidecarManager {
             *state = SidecarState::Starting;
         }
 
-        tracing::info!("Starting OpenCode sidecar from: {}", sidecar_path);
+        tracing::info!("Starting tandem-engine sidecar from: {}", sidecar_path);
+        {
+            let mut path_guard = self.binary_path.write().await;
+            *path_guard = Some(sidecar_path.to_string());
+        }
 
-        // Find an available port
+        // Find an available/configured port.
         let port = self.find_available_port().await?;
 
         // Get config and env vars
         let config = self.config.read().await;
         let env_vars = self.env_vars.read().await;
+
+        // In shared mode, prefer attaching to an already-running engine.
+        if config.shared_mode {
+            if let Ok(health) = self.health_check(port).await {
+                if health.ready {
+                    {
+                        let mut port_guard = self.port.write().await;
+                        *port_guard = Some(port);
+                    }
+                    {
+                        let mut owns_guard = self.owns_process.write().await;
+                        *owns_guard = false;
+                    }
+                    {
+                        let mut state = self.state.write().await;
+                        *state = SidecarState::Running;
+                    }
+                    tracing::info!(
+                        "Attached to existing tandem-engine sidecar on port {}",
+                        port
+                    );
+                    return Ok(());
+                }
+                tracing::info!(
+                    "Existing tandem-engine on port {} is healthy but not ready yet (phase={} elapsed_ms={})",
+                    port,
+                    health.phase,
+                    health.startup_elapsed_ms
+                );
+            }
+        }
 
         tracing::debug!(
             "Sidecar env set: OPENROUTER_API_KEY={} OPENCODE_ZEN_API_KEY={} ANTHROPIC_API_KEY={} OPENAI_API_KEY={}",
@@ -878,7 +1529,7 @@ impl SidecarManager {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        // OpenCode 'serve' subcommand starts a headless server
+        // tandem-engine 'serve' subcommand starts a headless server
         // Use --hostname and --port flags
         cmd.args([
             "serve",
@@ -887,6 +1538,10 @@ impl SidecarManager {
             "--port",
             &port.to_string(),
         ]);
+        if let Ok(paths) = resolve_shared_paths() {
+            let state_dir = paths.engine_state_dir.to_string_lossy().to_string();
+            cmd.args(["--state-dir", &state_dir]);
+        }
 
         // Set working directory if workspace is configured
         if let Some(ref workspace) = config.workspace_path {
@@ -894,13 +1549,13 @@ impl SidecarManager {
             cmd.env("OPENCODE_DIR", workspace);
         }
 
-        // Ensure OpenCode config exists and is updated with dynamic Ollama models.
+        // Ensure sidecar config exists and is updated with dynamic Ollama models.
         //
         // IMPORTANT: Do not overwrite the entire config file; preserve unknown fields so
         // MCP/plugin settings (and any user settings) survive sidecar restarts.
-        match crate::opencode_config::global_config_path() {
+        match crate::tandem_config::global_config_path() {
             Ok(config_path) => {
-                // Make sure OpenCode actually loads the file we're managing, even if its
+                // Make sure the sidecar loads the file we're managing, even if its
                 // defaults change across versions/platforms.
                 cmd.env("OPENCODE_CONFIG", &config_path);
 
@@ -929,20 +1584,20 @@ impl SidecarManager {
 
                 let models = serde_json::Value::Object(models_map);
 
-                if let Err(e) = crate::opencode_config::update_config_at(&config_path, |cfg| {
-                    crate::opencode_config::set_provider_ollama_models(cfg, models);
+                if let Err(e) = crate::tandem_config::update_config_at(&config_path, |cfg| {
+                    crate::tandem_config::set_provider_ollama_models(cfg, models);
                     Ok(())
                 }) {
-                    tracing::warn!("Failed to update OpenCode config {:?}: {}", config_path, e);
+                    tracing::warn!("Failed to update sidecar config {:?}: {}", config_path, e);
                 } else {
                     tracing::info!(
-                        "Updated OpenCode config with Ollama models at: {:?}",
+                        "Updated sidecar config with Ollama models at: {:?}",
                         config_path
                     );
                 }
             }
             Err(e) => {
-                tracing::warn!("Could not determine OpenCode config path: {}", e);
+                tracing::warn!("Could not determine sidecar config path: {}", e);
             }
         }
 
@@ -950,6 +1605,7 @@ impl SidecarManager {
         for (key, value) in env_vars.iter() {
             cmd.env(key, value);
         }
+        cmd.env("TANDEM_API_TOKEN", &self.api_token);
 
         // OPTIMIZATION: Set Bun/JSC memory limits to avoid excessive idle usage
         // (Addresses feedback about 500MB+ idle usage)
@@ -1004,26 +1660,31 @@ impl SidecarManager {
         // where the app process may be terminated abruptly without running shutdown hooks.
         #[cfg(windows)]
         {
-            let pid = child.id();
-            let mut job_guard = self.windows_job.lock().await;
-            if job_guard.is_none() {
-                match windows_create_kill_on_close_job() {
-                    Ok(job) => *job_guard = Some(job),
-                    Err(e) => {
-                        tracing::warn!("Failed to create Windows job object for sidecar: {}", e);
+            if !config.shared_mode {
+                let pid = child.id();
+                let mut job_guard = self.windows_job.lock().await;
+                if job_guard.is_none() {
+                    match windows_create_kill_on_close_job() {
+                        Ok(job) => *job_guard = Some(job),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to create Windows job object for sidecar: {}",
+                                e
+                            );
+                        }
                     }
                 }
-            }
-            if let Some(job) = job_guard.as_ref() {
-                if let Err(e) = windows_try_assign_pid_to_job(job.as_handle(), pid) {
-                    // If Tandem itself is running inside a non-breakaway job, Windows may reject
-                    // assigning the child to another job. In that case we fall back to best-effort
-                    // shutdown hooks and manual cleanup.
-                    tracing::warn!(
-                        "Failed to assign sidecar PID {} to job object (may orphan on dev reload): {}",
-                        pid,
-                        e
-                    );
+                if let Some(job) = job_guard.as_ref() {
+                    if let Err(e) = windows_try_assign_pid_to_job(job.as_handle(), pid) {
+                        // If Tandem itself is running inside a non-breakaway job, Windows may reject
+                        // assigning the child to another job. In that case we fall back to best-effort
+                        // shutdown hooks and manual cleanup.
+                        tracing::warn!(
+                            "Failed to assign sidecar PID {} to job object (may orphan on dev reload): {}",
+                            pid,
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -1032,6 +1693,10 @@ impl SidecarManager {
         {
             let mut process_guard = self.process.lock().await;
             *process_guard = Some(child);
+        }
+        {
+            let mut owns_guard = self.owns_process.write().await;
+            *owns_guard = true;
         }
         {
             let mut port_guard = self.port.write().await;
@@ -1043,12 +1708,43 @@ impl SidecarManager {
             Ok(_) => {
                 let mut state = self.state.write().await;
                 *state = SidecarState::Running;
-                tracing::info!("OpenCode sidecar started on port {}", port);
+                tracing::info!("tandem-engine sidecar started on port {}", port);
                 Ok(())
             }
             Err(e) => {
-                // Clean up on failure
-                self.stop().await?;
+                // Clean up on failure without re-entering lifecycle lock.
+                let child = {
+                    let mut process_guard = self.process.lock().await;
+                    process_guard.take()
+                };
+                if let Some(mut child) = child {
+                    #[cfg(windows)]
+                    {
+                        use std::process::Command as StdCommand;
+                        let pid = child.id();
+                        let mut cmd = StdCommand::new("taskkill");
+                        cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+                        let _ = cmd.output();
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        let _ = child.kill();
+                    }
+                    let _ = child.wait();
+                }
+                {
+                    let mut port_guard = self.port.write().await;
+                    *port_guard = None;
+                }
+                {
+                    let mut owns_guard = self.owns_process.write().await;
+                    *owns_guard = false;
+                }
+                #[cfg(windows)]
+                {
+                    let mut job_guard = self.windows_job.lock().await;
+                    *job_guard = None;
+                }
                 let mut state = self.state.write().await;
                 *state = SidecarState::Failed;
                 Err(e)
@@ -1072,7 +1768,52 @@ impl SidecarManager {
             *state = SidecarState::Stopping;
         }
 
-        tracing::info!("Stopping OpenCode sidecar");
+        tracing::info!("Stopping tandem-engine sidecar");
+
+        let shared_mode = self.config.read().await.shared_mode;
+        let owns_process = *self.owns_process.read().await;
+
+        // Shared mode: detach only when this client does not own the process.
+        // If we own it, continue to the normal kill path below so we don't leave
+        // orphaned/stuck sidecars behind.
+        if shared_mode && !owns_process {
+            {
+                let mut process_guard = self.process.lock().await;
+                let _ = process_guard.take();
+            }
+            {
+                let mut port_guard = self.port.write().await;
+                *port_guard = None;
+            }
+            {
+                let mut owns_guard = self.owns_process.write().await;
+                *owns_guard = false;
+            }
+            {
+                let mut state = self.state.write().await;
+                *state = SidecarState::Stopped;
+            }
+            tracing::info!("Detached from shared tandem-engine sidecar");
+            return Ok(());
+        }
+
+        // If this manager didn't spawn the process, detach only.
+        if !owns_process {
+            {
+                let mut process_guard = self.process.lock().await;
+                let _ = process_guard.take();
+            }
+            {
+                let mut port_guard = self.port.write().await;
+                *port_guard = None;
+            }
+            {
+                let mut state = self.state.write().await;
+                *state = SidecarState::Stopped;
+            }
+            tracing::info!("Detached from external tandem-engine sidecar");
+            return Ok(());
+        }
 
         // Kill the process
         let child = {
@@ -1086,7 +1827,7 @@ impl SidecarManager {
                 // On Windows, try graceful termination first, then force kill
                 use std::process::Command as StdCommand;
                 let pid = child.id();
-                tracing::info!("Killing OpenCode process with PID {}", pid);
+                tracing::info!("Killing tandem-engine process with PID {}", pid);
 
                 // Try taskkill /T to terminate child processes too
                 let mut cmd = StdCommand::new("taskkill");
@@ -1152,8 +1893,12 @@ impl SidecarManager {
             let mut state = self.state.write().await;
             *state = SidecarState::Stopped;
         }
+        {
+            let mut owns_guard = self.owns_process.write().await;
+            *owns_guard = false;
+        }
 
-        tracing::info!("OpenCode sidecar stopped");
+        tracing::info!("tandem-engine sidecar stopped");
         Ok(())
     }
 
@@ -1166,9 +1911,16 @@ impl SidecarManager {
 
     /// Find an available port
     async fn find_available_port(&self) -> Result<u16> {
-        let config = self.config.read().await;
-        if config.port != 0 {
-            return Ok(config.port);
+        let preferred_port = self.config.read().await.port;
+        if preferred_port != 0 {
+            // Prefer configured port, but gracefully fall back if it is unavailable.
+            if std::net::TcpListener::bind(("127.0.0.1", preferred_port)).is_ok() {
+                return Ok(preferred_port);
+            }
+            tracing::warn!(
+                "Configured sidecar port {} is unavailable; falling back to an ephemeral port",
+                preferred_port
+            );
         }
 
         // Find a random available port
@@ -1187,16 +1939,127 @@ impl SidecarManager {
     /// Wait for the sidecar to be ready
     async fn wait_for_ready(&self, port: u16) -> Result<()> {
         let start = Instant::now();
-        let timeout = Duration::from_secs(60); // Increased timeout for slower systems
+        let timeout = self.startup_wait_timeout();
 
         tracing::debug!("Waiting for sidecar to be ready on port {}", port);
+        emit_event(
+            tracing::Level::INFO,
+            ProcessKind::Desktop,
+            ObservabilityEvent {
+                event: "sidecar.wait.start",
+                component: "sidecar",
+                correlation_id: None,
+                session_id: None,
+                run_id: None,
+                message_id: None,
+                provider_id: None,
+                model_id: None,
+                status: Some("start"),
+                error_code: None,
+                detail: Some(&format!("port={} timeout_ms={}", port, timeout.as_millis())),
+            },
+        );
 
         let mut last_error = String::new();
+        let mut last_health: Option<SidecarHealthResponse> = None;
+        let mut last_progress_emit = Instant::now() - Duration::from_secs(5);
         while start.elapsed() < timeout {
+            // If the child exited before becoming healthy, fail fast with useful logs.
+            {
+                let mut process_guard = self.process.lock().await;
+                if let Some(child) = process_guard.as_mut() {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            let tail = self
+                                .log_buffer
+                                .snapshot(40)
+                                .into_iter()
+                                .map(|l| l.text)
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let detail = if tail.trim().is_empty() {
+                                format!("sidecar process exited early with status {}", status)
+                            } else {
+                                format!(
+                                    "sidecar process exited early with status {}\nrecent logs:\n{}",
+                                    status, tail
+                                )
+                            };
+                            return Err(TandemError::Sidecar(detail));
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!("Failed to query sidecar process status: {}", e);
+                        }
+                    }
+                }
+            }
+
             match self.health_check(port).await {
-                Ok(_) => {
+                Ok(health) if health.ready => {
                     tracing::info!("Sidecar is ready after {:?}", start.elapsed());
+                    emit_event(
+                        tracing::Level::INFO,
+                        ProcessKind::Desktop,
+                        ObservabilityEvent {
+                            event: "sidecar.wait.ready",
+                            component: "sidecar",
+                            correlation_id: None,
+                            session_id: None,
+                            run_id: None,
+                            message_id: None,
+                            provider_id: None,
+                            model_id: None,
+                            status: Some("ok"),
+                            error_code: None,
+                            detail: Some(&format!(
+                                "port={} elapsed_ms={}",
+                                port,
+                                start.elapsed().as_millis()
+                            )),
+                        },
+                    );
                     return Ok(());
+                }
+                Ok(health) => {
+                    last_error = format!(
+                        "Engine starting: phase={} attempt_id={} elapsed_ms={}{}",
+                        health.phase,
+                        health.startup_attempt_id,
+                        health.startup_elapsed_ms,
+                        health
+                            .last_error
+                            .as_ref()
+                            .map(|e| format!(" last_error={}", e))
+                            .unwrap_or_default()
+                    );
+                    last_health = Some(health.clone());
+                    if last_progress_emit.elapsed() >= Duration::from_secs(3) {
+                        emit_event(
+                            tracing::Level::INFO,
+                            ProcessKind::Desktop,
+                            ObservabilityEvent {
+                                event: "sidecar.wait.progress",
+                                component: "sidecar",
+                                correlation_id: None,
+                                session_id: None,
+                                run_id: None,
+                                message_id: None,
+                                provider_id: None,
+                                model_id: None,
+                                status: Some("starting"),
+                                error_code: None,
+                                detail: Some(&format!(
+                                    "port={} phase={} attempt_id={} elapsed_ms={}",
+                                    port,
+                                    health.phase,
+                                    health.startup_attempt_id,
+                                    health.startup_elapsed_ms
+                                )),
+                            },
+                        );
+                        last_progress_emit = Instant::now();
+                    }
                 }
                 Err(e) => {
                     last_error = e.to_string();
@@ -1206,39 +2069,86 @@ impl SidecarManager {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
+        if let Some(health) = &last_health {
+            last_error = format!(
+                "{}; final_health={{ready:{},phase:{},attempt_id:{},elapsed_ms:{},last_error:{}}}",
+                last_error,
+                health.ready,
+                health.phase,
+                health.startup_attempt_id,
+                health.startup_elapsed_ms,
+                health.last_error.clone().unwrap_or_default()
+            );
+        }
+        emit_event(
+            tracing::Level::WARN,
+            ProcessKind::Desktop,
+            ObservabilityEvent {
+                event: "sidecar.wait.timeout",
+                component: "sidecar",
+                correlation_id: None,
+                session_id: None,
+                run_id: None,
+                message_id: None,
+                provider_id: None,
+                model_id: None,
+                status: Some("timeout"),
+                error_code: Some("ENGINE_START_TIMEOUT"),
+                detail: Some(&format!(
+                    "port={} timeout_ms={} last_error={}",
+                    port,
+                    timeout.as_millis(),
+                    last_error
+                )),
+            },
+        );
         tracing::error!("Sidecar failed to start. Last error: {}", last_error);
         Err(TandemError::Sidecar(format!(
-            "Sidecar failed to start within 60s timeout. Last error: {}",
+            "Sidecar failed to start within {}s timeout. Last error: {}",
+            timeout.as_secs(),
             last_error
         )))
     }
 
     /// Health check for the sidecar
-    /// OpenCode exposes /global/health endpoint that returns JSON
-    async fn health_check(&self, port: u16) -> Result<()> {
+    /// tandem-engine exposes /global/health endpoint that returns JSON
+    async fn health_check(&self, port: u16) -> Result<SidecarHealthResponse> {
         let url = format!("http://127.0.0.1:{}/global/health", port);
 
         let response = self
             .http_client
             .get(&url)
-            .timeout(Duration::from_secs(30)) // Longer timeout for first request (plugin installation)
+            // Keep connect/read timeout short so startup retries remain responsive even when
+            // localhost connect attempts linger in SYN_SENT on Windows.
+            .timeout(Duration::from_secs(5))
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Health check request failed: {}", e)))?;
 
         if response.status().is_success() {
-            // Verify it returns valid JSON with healthy: true
-            let body: serde_json::Value = response.json().await.map_err(|e| {
-                TandemError::Sidecar(format!("Health check returned invalid JSON: {}", e))
-            })?;
+            let body = response
+                .json::<SidecarHealthResponse>()
+                .await
+                .map_err(|e| {
+                    TandemError::Sidecar(format!("Health check returned invalid JSON: {}", e))
+                })?;
 
-            if body.get("healthy").and_then(|v| v.as_bool()) == Some(true) {
-                tracing::debug!("OpenCode health check passed: {:?}", body);
-                Ok(())
+            if body.healthy {
+                tracing::debug!(
+                    "tandem-engine health check passed: ready={} phase={} attempt_id={} elapsed_ms={}",
+                    body.ready,
+                    body.phase,
+                    body.startup_attempt_id,
+                    body.startup_elapsed_ms
+                );
+                Ok(body)
             } else {
                 Err(TandemError::Sidecar(format!(
-                    "Health check returned unhealthy: {:?}",
-                    body
+                    "Health check returned unhealthy: ready={} phase={} attempt_id={} elapsed_ms={}",
+                    body.ready,
+                    body.phase,
+                    body.startup_attempt_id,
+                    body.startup_elapsed_ms
                 )))
             }
         } else {
@@ -1247,6 +2157,31 @@ impl SidecarManager {
                 response.status()
             )))
         }
+    }
+
+    fn startup_wait_timeout(&self) -> Duration {
+        let normal = Duration::from_secs(120);
+        let extended = Duration::from_secs(240);
+        let force_repair = std::env::var("TANDEM_FORCE_LEGACY_REPAIR")
+            .map(|v| {
+                let lower = v.trim().to_ascii_lowercase();
+                matches!(lower.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false);
+        if force_repair {
+            return extended;
+        }
+
+        if let Ok(paths) = resolve_shared_paths() {
+            let marker = paths
+                .engine_state_dir
+                .join("storage")
+                .join("legacy_import_marker.json");
+            if !marker.exists() {
+                return extended;
+            }
+        }
+        normal
     }
 
     // ========================================================================
@@ -1286,7 +2221,11 @@ impl SidecarManager {
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to get session: {}", e)))?;
 
-        self.handle_response(response).await
+        let session: Session = self.handle_response(response).await?;
+        Ok(normalize_session_for_workspace(
+            session,
+            self.workspace_directory().await.as_deref(),
+        ))
     }
 
     /// List all sessions
@@ -1294,41 +2233,39 @@ impl SidecarManager {
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
         self.check_circuit_breaker().await?;
 
-        // Prefer root sessions only, to avoid flooding the UI with internal child sessions
-        // created by orchestration and other features. If the sidecar doesn't support the
-        // `roots` param, fall back to the unfiltered endpoint.
         let base_url = self.base_url().await?;
-
-        let try_roots = async {
-            let url = format!("{}/session", base_url);
-            let mut req = self.http_client.get(&url).query(&[("roots", "true")]);
-            if let Some(directory) = self.workspace_directory().await {
-                req = req.query(&[("directory", directory)]);
-            }
-            let response = req
-                .send()
-                .await
-                .map_err(|e| TandemError::Sidecar(format!("Failed to list sessions: {}", e)))?;
-            self.handle_response(response).await
+        let workspace_directory = self.workspace_directory().await;
+        let url = format!("{}/session", base_url);
+        let mut req = self.http_client.get(&url).query(&[("scope", "workspace")]);
+        if let Some(directory) = workspace_directory.as_deref() {
+            req = req.query(&[("workspace", directory)]);
         }
-        .await;
 
-        match try_roots {
-            Ok(sessions) => Ok(sessions),
-            Err(e) => {
-                tracing::warn!("Failed to list root sessions (falling back): {}", e);
-                let url = format!("{}/session", base_url);
-                let mut req = self.http_client.get(&url);
-                if let Some(directory) = self.workspace_directory().await {
-                    req = req.query(&[("directory", directory)]);
+        let response = match req.send().await {
+            Ok(resp) => resp,
+            Err(primary_err) => {
+                // Compatibility fallback for older sidecar builds that do not support scope/workspace.
+                let mut compat_req = self.http_client.get(&url).query(&[("roots", "true")]);
+                if let Some(directory) = workspace_directory.as_deref() {
+                    compat_req = compat_req.query(&[("directory", directory)]);
                 }
-                let response = req
-                    .send()
-                    .await
-                    .map_err(|e| TandemError::Sidecar(format!("Failed to list sessions: {}", e)))?;
-                self.handle_response(response).await
+                compat_req.send().await.map_err(|compat_err| {
+                    TandemError::Sidecar(format!(
+                        "Failed to list sessions (primary: {}; compat: {})",
+                        primary_err, compat_err
+                    ))
+                })?
             }
-        }
+        };
+
+        let raw: serde_json::Value = self.handle_response(response).await?;
+        parse_sessions_response(raw)
+            .map(|sessions| {
+                normalize_sessions_for_workspace(sessions, workspace_directory.as_deref())
+            })
+            .ok_or_else(|| {
+                TandemError::Sidecar("Failed to parse sessions response shape".to_string())
+            })
     }
 
     /// Delete a session
@@ -1372,8 +2309,89 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to list projects: {}", e)))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to read projects body: {}", e)))?;
 
-        self.handle_response(response).await
+        if !status.is_success() {
+            self.record_failure().await;
+            return Err(TandemError::Sidecar(format!(
+                "Failed to list projects ({}): {}",
+                status, body
+            )));
+        }
+
+        self.record_success().await;
+
+        let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            TandemError::Sidecar(format!(
+                "Failed to parse projects payload: {}. Body: {}",
+                e,
+                &body[..body.len().min(200)]
+            ))
+        })?;
+
+        let mut projects = Vec::new();
+        if let Some(items) = value.as_array() {
+            for item in items {
+                if let Some(path) = item.as_str() {
+                    projects.push(Project {
+                        id: path.to_string(),
+                        worktree: path.to_string(),
+                        vcs: None,
+                        sandboxes: Vec::new(),
+                        time: ProjectTime {
+                            created: 0,
+                            updated: 0,
+                        },
+                    });
+                    continue;
+                }
+                if let Ok(project) = serde_json::from_value::<Project>(item.clone()) {
+                    projects.push(project);
+                    continue;
+                }
+                if let Some(obj) = item.as_object() {
+                    let worktree = obj
+                        .get("worktree")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| obj.get("directory").and_then(|v| v.as_str()))
+                        .unwrap_or(".")
+                        .to_string();
+                    let id = obj
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&worktree)
+                        .to_string();
+                    projects.push(Project {
+                        id,
+                        worktree,
+                        vcs: obj.get("vcs").and_then(|v| v.as_str()).map(str::to_string),
+                        sandboxes: obj
+                            .get("sandboxes")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default(),
+                        time: ProjectTime {
+                            created: obj
+                                .get("time")
+                                .and_then(|t| t.get("created"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                            updated: obj
+                                .get("time")
+                                .and_then(|t| t.get("updated"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                        },
+                    });
+                }
+            }
+        }
+
+        Ok(projects)
     }
 
     /// Get messages for a session
@@ -1421,12 +2439,32 @@ impl SidecarManager {
     /// Send a message to a session (async, non-blocking)
     /// OpenCode API: POST /session/{id}/prompt_async
     /// Returns 204 No Content - actual response comes via /event SSE stream
-    pub async fn send_message(&self, session_id: &str, request: SendMessageRequest) -> Result<()> {
+    pub async fn append_message_and_start_run(
+        &self,
+        session_id: &str,
+        request: SendMessageRequest,
+    ) -> Result<()> {
+        self.append_message_and_start_run_with_context(session_id, request, None)
+            .await
+    }
+
+    pub async fn append_message_and_start_run_with_context(
+        &self,
+        session_id: &str,
+        request: SendMessageRequest,
+        correlation_id: Option<&str>,
+    ) -> Result<()> {
         self.check_circuit_breaker().await?;
 
         let base = self.base_url().await?;
-        let url = format!("{}/session/{}/prompt_async", base, session_id);
-        let fallback_url = format!("{}/api/session/{}/prompt_async", base, session_id);
+        let append_url = format!("{}/session/{}/message?mode=append", base, session_id);
+        let append_fallback_url =
+            format!("{}/api/session/{}/message?mode=append", base, session_id);
+        let url = format!("{}/session/{}/prompt_async?return=run", base, session_id);
+        let fallback_url = format!(
+            "{}/api/session/{}/prompt_async?return=run",
+            base, session_id
+        );
 
         if let Some(model) = &request.model {
             tracing::debug!(
@@ -1444,101 +2482,168 @@ impl SidecarManager {
 
         tracing::debug!("Sending prompt to: {} with {:?}", url, request);
 
-        let response = self
-            .http_client
-            .post(&url)
+        let mut append_builder = self.http_client.post(&append_url);
+        if let Some(cid) = correlation_id {
+            append_builder = append_builder
+                .header("x-tandem-correlation-id", cid)
+                .header("x-tandem-session-id", session_id);
+        }
+        let append_response = append_builder
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to append message: {}", e)))?;
+        if !append_response.status().is_success() {
+            tracing::warn!(
+                "append message failed on primary URL {}, retrying via {}",
+                append_url,
+                append_fallback_url
+            );
+            let mut append_fallback_builder = self.http_client.post(&append_fallback_url);
+            if let Some(cid) = correlation_id {
+                append_fallback_builder = append_fallback_builder
+                    .header("x-tandem-correlation-id", cid)
+                    .header("x-tandem-session-id", session_id);
+            }
+            let append_fallback_response = append_fallback_builder
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| TandemError::Sidecar(format!("Failed to append message: {}", e)))?;
+            if !append_fallback_response.status().is_success() {
+                let status = append_fallback_response.status();
+                let body = append_fallback_response.text().await.unwrap_or_default();
+                self.record_failure().await;
+                return Err(TandemError::Sidecar(format!(
+                    "Failed to append message: {} {}",
+                    status, body
+                )));
+            }
+        }
+
+        let mut request_builder = self.http_client.post(&url);
+        if let Some(cid) = correlation_id {
+            request_builder = request_builder
+                .header("x-tandem-correlation-id", cid)
+                .header("x-tandem-session-id", session_id);
+        }
+        let response = request_builder
             .json(&request)
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
 
+        match Self::handle_prompt_async_response(response).await {
+            Ok(()) => {
+                self.record_success().await;
+                Ok(())
+            }
+            Err(err) if err.starts_with("html_response") => {
+                tracing::warn!(
+                    "prompt_async returned HTML from {}, retrying via {}",
+                    url,
+                    fallback_url
+                );
+                let mut fallback_builder = self.http_client.post(&fallback_url);
+                if let Some(cid) = correlation_id {
+                    fallback_builder = fallback_builder
+                        .header("x-tandem-correlation-id", cid)
+                        .header("x-tandem-session-id", session_id);
+                }
+                let response =
+                    fallback_builder.json(&request).send().await.map_err(|e| {
+                        TandemError::Sidecar(format!("Failed to send message: {}", e))
+                    })?;
+                match Self::handle_prompt_async_response(response).await {
+                    Ok(()) => {
+                        self.record_success().await;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        self.record_failure().await;
+                        Err(TandemError::Sidecar(format!(
+                            "Failed to send message: {}",
+                            err
+                        )))
+                    }
+                }
+            }
+            Err(err) => {
+                self.record_failure().await;
+                Err(TandemError::Sidecar(format!(
+                    "Failed to send message: {}",
+                    err
+                )))
+            }
+        }
+    }
+
+    async fn handle_prompt_async_response(
+        response: reqwest::Response,
+    ) -> std::result::Result<(), String> {
         let status = response.status();
-        let content_type = response
-            .headers()
+        let headers = response.headers().clone();
+        let content_type = headers
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
+        let body = response.text().await.unwrap_or_default();
+        parse_prompt_async_response(status.as_u16(), &headers, &content_type, &body)
+    }
 
-        // prompt_async should return 204 No Content on success
-        if status.as_u16() == 204 {
-            self.record_success().await;
-            return Ok(());
-        }
+    pub async fn get_active_run(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ActiveRunStatusResponse>> {
+        self.check_circuit_breaker().await?;
 
-        if status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let is_html = content_type.contains("text/html")
-                || body.trim_start().starts_with("<!doctype html")
-                || body.trim_start().starts_with("<html");
+        let base = self.base_url().await?;
+        let url = format!("{}/session/{}/run", base, session_id);
+        let fallback_url = format!("{}/api/session/{}/run", base, session_id);
 
-            if is_html {
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to get active run: {}", e)))?;
+
+        match self.handle_response::<ActiveRunEnvelope>(response).await {
+            Ok(payload) => Ok(payload.active),
+            Err(err) => {
                 tracing::warn!(
-                    "prompt_async returned HTML from {} (status {}), retrying via {}",
+                    "Failed to read active run from {}, retrying {}: {}",
                     url,
-                    status,
-                    fallback_url
+                    fallback_url,
+                    err
                 );
-
-                let response = self
+                let fallback = self
                     .http_client
-                    .post(&fallback_url)
-                    .json(&request)
+                    .get(&fallback_url)
                     .send()
                     .await
-                    .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
-
-                let status = response.status();
-                let content_type = response
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("")
-                    .to_string();
-
-                if status.as_u16() == 204 {
-                    self.record_success().await;
-                    return Ok(());
-                }
-
-                let body = response.text().await.unwrap_or_default();
-                tracing::warn!(
-                    "Sidecar prompt_async failed (fallback): status={} content_type={} body={}",
-                    status,
-                    content_type,
-                    body
-                );
-                self.record_failure().await;
-                return Err(TandemError::Sidecar(format!(
-                    "Failed to send message: {}",
-                    body
-                )));
+                    .map_err(|e| {
+                        TandemError::Sidecar(format!("Failed to get active run: {}", e))
+                    })?;
+                let payload: ActiveRunEnvelope = self.handle_response(fallback).await?;
+                Ok(payload.active)
             }
-
-            tracing::warn!(
-                "Sidecar prompt_async unexpected success status: status={} content_type={} body={}",
-                status,
-                content_type,
-                body
-            );
-            self.record_failure().await;
-            return Err(TandemError::Sidecar(format!(
-                "Failed to send message: {}",
-                body
-            )));
         }
+    }
 
-        self.record_failure().await;
-        let body = response.text().await.unwrap_or_default();
-        tracing::warn!(
-            "Sidecar prompt_async failed: status={} body={}",
-            status,
-            body
-        );
-        Err(TandemError::Sidecar(format!(
-            "Failed to send message: {}",
-            body
-        )))
+    pub async fn recover_active_run_attach_stream(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>> {
+        let active = self.get_active_run(session_id).await?;
+        Ok(active.map(|run| {
+            format!(
+                "/event?sessionID={}&runID={}",
+                session_id,
+                run.run_id.as_str()
+            )
+        }))
     }
 
     /// Revert a message (undo)
@@ -1744,6 +2849,207 @@ impl SidecarManager {
         }
     }
 
+    pub async fn cancel_run_by_id(&self, session_id: &str, run_id: &str) -> Result<bool> {
+        self.check_circuit_breaker().await?;
+
+        let base = self.base_url().await?;
+        let url = format!("{}/session/{}/run/{}/cancel", base, session_id, run_id);
+        let fallback_url = format!("{}/api/session/{}/run/{}/cancel", base, session_id, run_id);
+        let response = self
+            .http_client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to cancel run by id: {}", e)))?;
+
+        match self.handle_response::<serde_json::Value>(response).await {
+            Ok(payload) => Ok(payload
+                .get("cancelled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)),
+            Err(err) => {
+                tracing::warn!(
+                    "Cancel run by id failed on {}, retrying {}: {}",
+                    url,
+                    fallback_url,
+                    err
+                );
+                let fallback = self
+                    .http_client
+                    .post(&fallback_url)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        TandemError::Sidecar(format!("Failed to cancel run by id: {}", e))
+                    })?;
+                let payload: serde_json::Value = self.handle_response(fallback).await?;
+                Ok(payload
+                    .get("cancelled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false))
+            }
+        }
+    }
+
+    // ========================================================================
+    // Routines
+    // ========================================================================
+
+    pub async fn routines_create(&self, request: RoutineCreateRequest) -> Result<RoutineSpec> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines", self.base_url().await?);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to create routine: {}", e)))?;
+        let payload: RoutineRecordResponse = self.handle_response(response).await?;
+        Ok(payload.routine)
+    }
+
+    pub async fn routines_list(&self) -> Result<Vec<RoutineSpec>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list routines: {}", e)))?;
+        let payload: RoutineListResponse = self.handle_response(response).await?;
+        Ok(payload.routines)
+    }
+
+    pub async fn routines_patch(
+        &self,
+        routine_id: &str,
+        request: RoutinePatchRequest,
+    ) -> Result<RoutineSpec> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/{}", self.base_url().await?, routine_id);
+        let response = self
+            .http_client
+            .patch(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to patch routine: {}", e)))?;
+        let payload: RoutineRecordResponse = self.handle_response(response).await?;
+        Ok(payload.routine)
+    }
+
+    pub async fn routines_delete(&self, routine_id: &str) -> Result<bool> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/{}", self.base_url().await?, routine_id);
+        let response = self
+            .http_client
+            .delete(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to delete routine: {}", e)))?;
+        let payload: RoutineDeleteResponse = self.handle_response(response).await?;
+        Ok(payload.deleted)
+    }
+
+    pub async fn routines_run_now(
+        &self,
+        routine_id: &str,
+        request: RoutineRunNowRequest,
+    ) -> Result<RoutineRunNowResponse> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/{}/run_now", self.base_url().await?, routine_id);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to trigger routine: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn routines_history(
+        &self,
+        routine_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<RoutineHistoryEvent>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/{}/history", self.base_url().await?, routine_id);
+        let mut request = self.http_client.get(&url);
+        if let Some(limit) = limit {
+            request = request.query(&[("limit", limit)]);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to load routine history: {}", e)))?;
+        let payload: RoutineHistoryResponse = self.handle_response(response).await?;
+        Ok(payload.events)
+    }
+
+    // ========================================================================
+    // Missions
+    // ========================================================================
+
+    pub async fn mission_create(&self, request: MissionCreateRequest) -> Result<MissionState> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mission", self.base_url().await?);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to create mission: {}", e)))?;
+        let payload: MissionRecordResponse = self.handle_response(response).await?;
+        Ok(payload.mission)
+    }
+
+    pub async fn mission_list(&self) -> Result<Vec<MissionState>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mission", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list missions: {}", e)))?;
+        let payload: MissionListResponse = self.handle_response(response).await?;
+        Ok(payload.missions)
+    }
+
+    pub async fn mission_get(&self, mission_id: &str) -> Result<MissionState> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mission/{}", self.base_url().await?, mission_id);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to get mission: {}", e)))?;
+        let payload: MissionRecordResponse = self.handle_response(response).await?;
+        Ok(payload.mission)
+    }
+
+    pub async fn mission_apply_event(
+        &self,
+        mission_id: &str,
+        event: serde_json::Value,
+    ) -> Result<MissionApplyEventResult> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mission/{}/event", self.base_url().await?, mission_id);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&serde_json::json!({ "event": event }))
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to apply mission event: {}", e)))?;
+        self.handle_response(response).await
+    }
+
     // ========================================================================
     // Model & Provider Info
     // ========================================================================
@@ -1828,6 +3134,178 @@ impl SidecarManager {
                 self.handle_response(response).await
             }
         }
+    }
+
+    /// Set runtime-only auth token for a provider on the engine sidecar.
+    pub async fn set_provider_auth(&self, provider_id: &str, api_key: &str) -> Result<()> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/auth/{}", self.base_url().await?, provider_id);
+        let response = self
+            .http_client
+            .put(&url)
+            .json(&serde_json::json!({ "apiKey": api_key }))
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to set provider auth: {}", e)))?;
+        let _: serde_json::Value = self.handle_response(response).await?;
+        Ok(())
+    }
+
+    // ========================================================================
+    // Skills
+    // ========================================================================
+
+    pub async fn list_skills(&self) -> Result<Vec<SkillInfo>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/skills", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list skills: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn get_skill(&self, name: &str) -> Result<SkillContent> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/skills/{}", self.base_url().await?, name);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to load skill: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn import_skill_content(
+        &self,
+        content: String,
+        location: SkillLocation,
+    ) -> Result<SkillInfo> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/skills/import", self.base_url().await?);
+        let body = SkillsImportRequest {
+            location,
+            content: Some(content),
+            file_or_path: None,
+            namespace: None,
+            conflict_policy: None,
+        };
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to import skill: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn skills_import_preview(
+        &self,
+        file_or_path: String,
+        location: SkillLocation,
+        namespace: Option<String>,
+        conflict_policy: String,
+    ) -> Result<SkillsImportPreview> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/skills/import/preview", self.base_url().await?);
+        let body = SkillsImportRequest {
+            location,
+            content: None,
+            file_or_path: Some(file_or_path),
+            namespace,
+            conflict_policy: Some(conflict_policy),
+        };
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to preview skill import: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn skills_import(
+        &self,
+        file_or_path: String,
+        location: SkillLocation,
+        namespace: Option<String>,
+        conflict_policy: String,
+    ) -> Result<SkillsImportResult> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/skills/import", self.base_url().await?);
+        let body = SkillsImportRequest {
+            location,
+            content: None,
+            file_or_path: Some(file_or_path),
+            namespace,
+            conflict_policy: Some(conflict_policy),
+        };
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to import skills: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn delete_skill(&self, name: String, location: SkillLocation) -> Result<()> {
+        self.check_circuit_breaker().await?;
+        let base = self.base_url().await?;
+        let location_text = match location {
+            SkillLocation::Project => "project",
+            SkillLocation::Global => "global",
+        };
+        let url = format!("{}/skills/{}", base, name);
+        let response = self
+            .http_client
+            .delete(&url)
+            .query(&[SkillsDeleteQuery {
+                location: location_text,
+            }])
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to delete skill: {}", e)))?;
+        let _: serde_json::Value = self.handle_response(response).await?;
+        Ok(())
+    }
+
+    pub async fn list_skill_templates(&self) -> Result<Vec<SkillTemplateInfo>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/skills/templates", self.base_url().await?);
+        let response =
+            self.http_client.get(&url).send().await.map_err(|e| {
+                TandemError::Sidecar(format!("Failed to list skill templates: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn install_skill_template(
+        &self,
+        template_id: String,
+        location: SkillLocation,
+    ) -> Result<SkillInfo> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/skills/templates/{}/install",
+            self.base_url().await?,
+            template_id
+        );
+        let body = SkillsTemplateInstallRequest { location };
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to install template: {}", e)))?;
+        self.handle_response(response).await
     }
 
     // ========================================================================
@@ -2039,10 +3517,15 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to list providers: {}", e)))?;
-
-        self.handle_response(response).await.map_err(|e| {
+        let raw: serde_json::Value = self.handle_response(response).await.map_err(|e| {
             tracing::warn!("Failed to parse providers from {}: {}", url, e);
             e
+        })?;
+        parse_provider_catalog_response(raw).ok_or_else(|| {
+            TandemError::Sidecar(format!(
+                "Failed to parse provider catalog shape from {}",
+                url
+            ))
         })
     }
 
@@ -2135,7 +3618,7 @@ impl Drop for SidecarManager {
         // Note: This is blocking, but Drop can't be async
         if let Ok(mut process_guard) = self.process.try_lock() {
             if let Some(mut child) = process_guard.take() {
-                tracing::info!("Killing OpenCode sidecar on drop");
+                tracing::info!("Killing tandem-engine sidecar on drop");
                 let _ = child.kill();
             }
         }
@@ -2326,15 +3809,28 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                             .and_then(|r| r.as_str())
                             .unwrap_or("");
                         if role != "assistant" {
-                            tracing::debug!(
-                                "Skipping text/reasoning part without delta (likely user message)"
-                            );
-                            return None;
+                            // Tandem engine final text snapshots may omit role metadata.
+                            // If this is a non-empty text snapshot without delta and without
+                            // message role envelope, pass it through so final answer is visible.
+                            let has_text = part
+                                .get("text")
+                                .and_then(|s| s.as_str())
+                                .map(|s| !s.trim().is_empty())
+                                .unwrap_or(false);
+                            let has_message_envelope = props.get("message").is_some();
+                            if has_text && !has_message_envelope {
+                                tracing::debug!(
+                                    "Emitting text part without delta based on text snapshot fallback"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "Skipping text/reasoning part without delta (likely user message)"
+                                );
+                                return None;
+                            }
+                        } else {
+                            tracing::debug!("Emitting text part without delta for assistant");
                         }
-
-                        // If it's an assistant message with text but no delta, we should probably emit it
-                        // to ensure we don't miss content.
-                        tracing::debug!("Emitting text part without delta for assistant");
                     }
 
                     let text = part
@@ -2364,19 +3860,29 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                         .unwrap_or("unknown")
                         .to_string();
                     let state_value = part.get("state");
-                    let state = state_value
+                    let explicit_state = state_value
                         .and_then(|s| s.get("status"))
                         .and_then(|s| s.as_str())
-                        .unwrap_or_else(|| {
-                            part.get("state")
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("pending")
-                        });
+                        .or_else(|| part.get("state").and_then(|s| s.as_str()));
                     let args = state_value
                         .and_then(|s| s.get("input"))
                         .cloned()
                         .or_else(|| part.get("args").cloned())
                         .unwrap_or(serde_json::Value::Null);
+                    let has_output = state_value.and_then(|s| s.get("output")).is_some()
+                        || part.get("result").is_some()
+                        || part.get("output").is_some();
+                    let has_error = state_value.and_then(|s| s.get("error")).is_some()
+                        || part.get("error").is_some();
+                    let state = explicit_state.unwrap_or_else(|| {
+                        if has_error {
+                            "failed"
+                        } else if has_output {
+                            "completed"
+                        } else {
+                            "pending"
+                        }
+                    });
 
                     match state {
                         // OpenCode has used multiple spellings across builds.
@@ -2510,6 +4016,64 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
             let status = props.get("status").and_then(|s| s.as_str())?.to_string();
             Some(StreamEvent::SessionStatus { session_id, status })
         }
+        "session.run.started" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let run_id = props.get("runID").and_then(|s| s.as_str())?.to_string();
+            let started_at_ms = props
+                .get("startedAtMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let client_id = props
+                .get("clientID")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+            Some(StreamEvent::RunStarted {
+                session_id,
+                run_id,
+                started_at_ms,
+                client_id,
+            })
+        }
+        "session.run.finished" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let run_id = props.get("runID").and_then(|s| s.as_str())?.to_string();
+            let finished_at_ms = props
+                .get("finishedAtMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let status = props
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("completed")
+                .to_string();
+            let error = props.get("error").and_then(extract_error_message);
+            Some(StreamEvent::RunFinished {
+                session_id,
+                run_id,
+                finished_at_ms,
+                status,
+                error,
+            })
+        }
+        "session.run.conflict" => {
+            let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
+            let run_id = props.get("runID").and_then(|s| s.as_str())?.to_string();
+            let retry_after_ms = props
+                .get("retryAfterMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(500);
+            let attach_event_stream = props
+                .get("attachEventStream")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(StreamEvent::RunConflict {
+                session_id,
+                run_id,
+                retry_after_ms,
+                attach_event_stream,
+            })
+        }
         "session.idle" => {
             let session_id = props.get("sessionID").and_then(|s| s.as_str())?.to_string();
             Some(StreamEvent::SessionIdle { session_id })
@@ -2536,11 +4100,26 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                 .and_then(|s| s.as_str())
                 .map(|s| s.to_string());
             let args = props.get("args").cloned();
+            let args_source = props
+                .get("argsSource")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+            let args_integrity = props
+                .get("argsIntegrity")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+            let query = props
+                .get("query")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
             Some(StreamEvent::PermissionAsked {
                 session_id,
                 request_id,
                 tool,
                 args,
+                args_source,
+                args_integrity,
+                query,
             })
         }
         "question.asked" => {
@@ -2663,6 +4242,82 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
     }
 }
 
+fn parse_prompt_async_response(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    content_type: &str,
+    body: &str,
+) -> std::result::Result<(), String> {
+    if status == 204 {
+        let run_id = headers
+            .get("x-tandem-run-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !run_id.is_empty() {
+            tracing::debug!("prompt_async accepted with header run_id={}", run_id);
+        }
+        return Ok(());
+    }
+
+    if status == 202 {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+            let run_id = json.get("runID").and_then(|v| v.as_str()).unwrap_or("");
+            let attach = json
+                .get("attachEventStream")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            tracing::debug!(
+                "prompt_async accepted with body run_id={} attach_event_stream={}",
+                run_id,
+                attach
+            );
+            return Ok(());
+        }
+        return Err(format!("202 response had invalid JSON body: {}", body));
+    }
+
+    if status == 409 {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+            let retry_after_ms = json
+                .get("retryAfterMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(500);
+            let attach = json
+                .get("attachEventStream")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let active_run = json
+                .get("activeRun")
+                .and_then(|v| v.get("runID"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            return Err(format!(
+                "run_conflict retryAfterMs={} activeRun={} attachEventStream={}",
+                retry_after_ms, active_run, attach
+            ));
+        }
+        return Err(format!("run_conflict body={}", body));
+    }
+
+    if (200..300).contains(&status) {
+        let is_html = content_type.contains("text/html")
+            || body.trim_start().starts_with("<!doctype html")
+            || body.trim_start().starts_with("<html");
+        if is_html {
+            return Err(format!(
+                "html_response status={} content_type={}",
+                status, content_type
+            ));
+        }
+        return Err(format!(
+            "unexpected_success status={} content_type={} body={}",
+            status, content_type, body
+        ));
+    }
+
+    Err(format!("status={} body={}", status, body))
+}
+
 fn extract_error_message(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(message) => Some(message.clone()),
@@ -2718,9 +4373,276 @@ fn extract_error_message(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+fn parse_provider_catalog_response(raw: serde_json::Value) -> Option<ProviderCatalogResponse> {
+    fn parse_model_map(
+        raw_models: Option<&serde_json::Value>,
+    ) -> HashMap<String, ProviderCatalogModel> {
+        let mut models = HashMap::new();
+        let Some(raw_models) = raw_models else {
+            return models;
+        };
+
+        if let Some(map) = raw_models.as_object() {
+            for (id, value) in map {
+                let name = value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let context = value
+                    .get("limit")
+                    .and_then(|v| v.get("context"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .or_else(|| {
+                        value
+                            .get("context")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32)
+                    })
+                    .or_else(|| {
+                        value
+                            .get("context_length")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32)
+                    });
+                models.insert(
+                    id.to_string(),
+                    ProviderCatalogModel {
+                        name,
+                        limit: context.map(|context| ProviderCatalogLimit {
+                            context: Some(context),
+                        }),
+                    },
+                );
+            }
+            return models;
+        }
+
+        if let Some(items) = raw_models.as_array() {
+            for item in items {
+                if let Some(id) = item.as_str() {
+                    models.insert(
+                        id.to_string(),
+                        ProviderCatalogModel {
+                            name: Some(id.to_string()),
+                            limit: None,
+                        },
+                    );
+                    continue;
+                }
+                if let Some(obj) = item.as_object() {
+                    let id = obj
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| obj.get("model").and_then(|v| v.as_str()));
+                    if let Some(id) = id {
+                        let name = obj
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .or_else(|| Some(id.to_string()));
+                        let context = obj
+                            .get("context_length")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32);
+                        models.insert(
+                            id.to_string(),
+                            ProviderCatalogModel {
+                                name,
+                                limit: context.map(|context| ProviderCatalogLimit {
+                                    context: Some(context),
+                                }),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        models
+    }
+
+    fn parse_provider_entry(value: &serde_json::Value) -> Option<(ProviderCatalogEntry, bool)> {
+        let obj = value.as_object()?;
+        let id = obj.get("id").and_then(|v| v.as_str())?.to_string();
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let configured = obj
+            .get("configured")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let models = parse_model_map(obj.get("models"));
+        Some((ProviderCatalogEntry { id, name, models }, configured))
+    }
+
+    if let Some(obj) = raw.as_object() {
+        let connected = obj
+            .get("connected")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let source_entries = obj
+            .get("all")
+            .and_then(|v| v.as_array())
+            .or_else(|| obj.get("providers").and_then(|v| v.as_array()));
+        if let Some(entries) = source_entries {
+            let mut all = Vec::new();
+            let mut connected_out = connected;
+            for entry in entries {
+                if let Some((parsed, configured)) = parse_provider_entry(entry) {
+                    if configured && !connected_out.contains(&parsed.id) {
+                        connected_out.push(parsed.id.clone());
+                    }
+                    all.push(parsed);
+                }
+            }
+            return Some(ProviderCatalogResponse {
+                all,
+                connected: connected_out,
+            });
+        }
+    }
+
+    if let Some(arr) = raw.as_array() {
+        let mut all = Vec::new();
+        let mut connected = Vec::new();
+        for entry in arr {
+            if let Some((parsed, configured)) = parse_provider_entry(entry) {
+                if configured {
+                    connected.push(parsed.id.clone());
+                }
+                all.push(parsed);
+            }
+        }
+        return Some(ProviderCatalogResponse { all, connected });
+    }
+
+    None
+}
+
+fn parse_sessions_response(raw: serde_json::Value) -> Option<Vec<Session>> {
+    fn decode_array(items: &[serde_json::Value]) -> Vec<Session> {
+        let mut sessions = Vec::new();
+        for item in items {
+            match serde_json::from_value::<Session>(item.clone()) {
+                Ok(session) => sessions.push(session),
+                Err(err) => {
+                    tracing::debug!("Skipping malformed session entry: {}", err);
+                }
+            }
+        }
+        sessions
+    }
+
+    if let Some(items) = raw.as_array() {
+        return Some(decode_array(items));
+    }
+
+    if let Some(obj) = raw.as_object() {
+        if let Some(items) = obj.get("items").and_then(|v| v.as_array()) {
+            return Some(decode_array(items));
+        }
+        if let Some(items) = obj.get("sessions").and_then(|v| v.as_array()) {
+            return Some(decode_array(items));
+        }
+        if let Some(items) = obj.get("data").and_then(|v| v.as_array()) {
+            return Some(decode_array(items));
+        }
+    }
+
+    None
+}
+
+fn normalize_session_for_workspace(
+    mut session: Session,
+    workspace_directory: Option<&str>,
+) -> Session {
+    if session
+        .workspace_root
+        .as_deref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        session.workspace_root = session.directory.clone();
+    }
+
+    let has_real_directory = session
+        .directory
+        .as_deref()
+        .map(|d| {
+            let trimmed = d.trim();
+            !trimmed.is_empty() && trimmed != "." && trimmed != "./" && trimmed != ".\\"
+        })
+        .unwrap_or(false);
+
+    if !has_real_directory {
+        if let Some(workspace) = workspace_directory {
+            if !workspace.trim().is_empty() {
+                session.directory = Some(workspace.to_string());
+                if session.workspace_root.is_none() {
+                    session.workspace_root = Some(workspace.to_string());
+                }
+            }
+        }
+    }
+
+    session
+}
+
+fn normalize_sessions_for_workspace(
+    sessions: Vec<Session>,
+    workspace_directory: Option<&str>,
+) -> Vec<Session> {
+    sessions
+        .into_iter()
+        .map(|session| normalize_session_for_workspace(session, workspace_directory))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn spawn_single_response_server(
+        expected_path: &'static str,
+        response_status: &'static str,
+        response_body: &'static str,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 4096];
+            let n = socket.read(&mut buf).await.expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let first_line = req.lines().next().unwrap_or("");
+            assert!(
+                first_line.contains(expected_path),
+                "expected path {}, got request line {}",
+                expected_path,
+                first_line
+            );
+            let response = format!(
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_status,
+                response_body.len(),
+                response_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write_all");
+        });
+        format!("http://{}", addr)
+    }
 
     #[test]
     fn test_circuit_breaker() {
@@ -2807,9 +4729,242 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_sse_tool_lifecycle_with_structured_state() {
+        let mut start_buffer = String::from(
+            "data: {\"type\":\"message.part.updated\",\"properties\":{\"part\":{\"id\":\"call_1\",\"sessionID\":\"ses_123\",\"messageID\":\"msg_456\",\"type\":\"tool\",\"tool\":\"todo_write\",\"state\":{\"status\":\"running\",\"input\":{\"todos\":[{\"content\":\"task\"}]}}}}}\n\n",
+        );
+        let start = parse_sse_event(&mut start_buffer);
+        match start {
+            Some(StreamEvent::ToolStart {
+                session_id,
+                message_id,
+                part_id,
+                tool,
+                args,
+            }) => {
+                assert_eq!(session_id, "ses_123");
+                assert_eq!(message_id, "msg_456");
+                assert_eq!(part_id, "call_1");
+                assert_eq!(tool, "todo_write");
+                assert_eq!(
+                    args.get("todos")
+                        .and_then(|t| t.as_array())
+                        .map(|v| v.len()),
+                    Some(1)
+                );
+            }
+            other => panic!("Unexpected start event: {:?}", other),
+        }
+
+        let mut end_buffer = String::from(
+            "data: {\"type\":\"message.part.updated\",\"properties\":{\"part\":{\"id\":\"call_1\",\"sessionID\":\"ses_123\",\"messageID\":\"msg_456\",\"type\":\"tool\",\"tool\":\"todo_write\",\"state\":{\"status\":\"completed\",\"output\":{\"todos\":[{\"id\":\"t1\",\"content\":\"task\",\"status\":\"open\"}]}}}}}\n\n",
+        );
+        let end = parse_sse_event(&mut end_buffer);
+        match end {
+            Some(StreamEvent::ToolEnd {
+                session_id,
+                message_id,
+                part_id,
+                tool,
+                result,
+                error,
+            }) => {
+                assert_eq!(session_id, "ses_123");
+                assert_eq!(message_id, "msg_456");
+                assert_eq!(part_id, "call_1");
+                assert_eq!(tool, "todo_write");
+                assert!(error.is_none());
+                let result = result.unwrap_or_default();
+                assert_eq!(
+                    result
+                        .get("todos")
+                        .and_then(|t| t.as_array())
+                        .map(|v| v.len()),
+                    Some(1)
+                );
+            }
+            other => panic!("Unexpected end event: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_sse_todo_updated_tolerates_invalid_entries() {
+        let mut buffer = String::from(
+            "data: {\"type\":\"todo.updated\",\"properties\":{\"sessionID\":\"ses_123\",\"todos\":[{\"id\":\"1\",\"content\":\"good\",\"status\":\"open\"},{\"content\":\"missing id\"}]}}\n\n",
+        );
+        let event = parse_sse_event(&mut buffer);
+        match event {
+            Some(StreamEvent::TodoUpdated { session_id, todos }) => {
+                assert_eq!(session_id, "ses_123");
+                assert_eq!(todos.len(), 1);
+                assert_eq!(todos[0].id, "1");
+                assert_eq!(todos[0].content, "good");
+                assert_eq!(todos[0].status, "open");
+            }
+            other => panic!("Unexpected event: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_sse_mission_event_surfaces_raw_contract_payload() {
+        let mut buffer = String::from(
+            "data: {\"type\":\"mission.created\",\"properties\":{\"missionID\":\"m-123\",\"workItemCount\":2}}\n\n",
+        );
+        let event = parse_sse_event(&mut buffer);
+        match event {
+            Some(StreamEvent::Raw { event_type, data }) => {
+                assert_eq!(event_type, "mission.created");
+                assert_eq!(
+                    data.get("missionID").and_then(|v| v.as_str()),
+                    Some("m-123")
+                );
+                assert_eq!(data.get("workItemCount").and_then(|v| v.as_u64()), Some(2));
+            }
+            other => panic!("Unexpected event: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_sse_routine_events_surface_raw_contract_payload() {
+        let cases = [
+            (
+                "routine.fired",
+                serde_json::json!({
+                    "routineID":"r-1",
+                    "runCount":1,
+                    "triggerType":"manual",
+                    "firedAtMs":123
+                }),
+            ),
+            (
+                "routine.approval_required",
+                serde_json::json!({
+                    "routineID":"r-2",
+                    "runCount":1,
+                    "triggerType":"manual",
+                    "reason":"manual approval required before external side effects (manual)"
+                }),
+            ),
+            (
+                "routine.blocked",
+                serde_json::json!({
+                    "routineID":"r-3",
+                    "runCount":1,
+                    "triggerType":"manual",
+                    "reason":"external integrations are disabled by policy"
+                }),
+            ),
+        ];
+
+        for (event_type, properties) in cases {
+            let payload = serde_json::json!({
+                "type": event_type,
+                "properties": properties
+            })
+            .to_string();
+            let mut buffer = format!("data: {payload}\n\n");
+            let event = parse_sse_event(&mut buffer);
+            match event {
+                Some(StreamEvent::Raw {
+                    event_type: parsed_type,
+                    data,
+                }) => {
+                    assert_eq!(parsed_type, event_type);
+                    assert_eq!(data.get("runCount").and_then(|v| v.as_u64()), Some(1));
+                    assert_eq!(
+                        data.get("routineID").and_then(|v| v.as_str()),
+                        Some(
+                            properties
+                                .get("routineID")
+                                .and_then(|v| v.as_str())
+                                .expect("routineID")
+                        )
+                    );
+                }
+                other => panic!("Unexpected event: {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_provider_catalog_legacy_array_shape() {
+        let raw = serde_json::json!([
+            {
+                "id": "openrouter",
+                "name": "OpenRouter",
+                "models": ["openai/gpt-4o-mini", "z-ai/glm-5"],
+                "configured": true
+            },
+            {
+                "id": "ollama",
+                "name": "Ollama",
+                "models": [{"id":"llama3.1:8b","name":"llama3.1:8b","context_length":8192}],
+                "configured": false
+            }
+        ]);
+        let parsed = parse_provider_catalog_response(raw).expect("catalog");
+        assert_eq!(parsed.all.len(), 2);
+        assert_eq!(parsed.connected, vec!["openrouter".to_string()]);
+        let openrouter = parsed
+            .all
+            .iter()
+            .find(|p| p.id == "openrouter")
+            .expect("openrouter");
+        assert_eq!(openrouter.models.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_provider_catalog_all_shape() {
+        let raw = serde_json::json!({
+            "all": [
+                {
+                    "id": "openai",
+                    "name": "OpenAI",
+                    "models": {
+                        "gpt-4o-mini": {"name":"gpt-4o-mini","limit":{"context":128000}}
+                    }
+                }
+            ],
+            "connected": ["openai"]
+        });
+        let parsed = parse_provider_catalog_response(raw).expect("catalog");
+        assert_eq!(parsed.all.len(), 1);
+        assert_eq!(parsed.connected, vec!["openai".to_string()]);
+        let openai = &parsed.all[0];
+        assert!(openai.models.contains_key("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn test_parse_sessions_response_object_items_shape() {
+        let raw = serde_json::json!({
+            "items": [
+                {"id":"ses_1","title":"Chat 1","directory":".","time":{"created":1,"updated":1}},
+                {"id":"ses_2","title":"Chat 2","directory":".","time":{"created":2,"updated":2}}
+            ]
+        });
+        let sessions = parse_sessions_response(raw).expect("sessions");
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].id, "ses_1");
+    }
+
+    #[test]
+    fn test_parse_sessions_response_skips_malformed_entries() {
+        let raw = serde_json::json!([
+            {"id":"ses_ok","title":"OK","directory":".","time":{"created":1,"updated":1}},
+            {"title":"bad missing id"},
+            {"id":"ses_ok2","title":"OK 2","directory":".","time":{"created":2,"updated":2}}
+        ]);
+        let sessions = parse_sessions_response(raw).expect("sessions");
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].id, "ses_ok");
+        assert_eq!(sessions[1].id, "ses_ok2");
+    }
+
+    #[test]
     fn test_memory_retrieval_event_serialization_tag() {
         let event = StreamEvent::MemoryRetrieval {
             session_id: "ses_123".to_string(),
+            status: Some("retrieved_used".to_string()),
             used: true,
             chunks_total: 5,
             session_chunks: 1,
@@ -2819,6 +4974,8 @@ mod tests {
             query_hash: "abc123def456".to_string(),
             score_min: Some(0.1),
             score_max: Some(0.8),
+            embedding_status: Some("ok".to_string()),
+            embedding_reason: None,
         };
 
         let value = serde_json::to_value(event).unwrap();
@@ -2831,5 +4988,217 @@ mod tests {
             Some("ses_123")
         );
         assert_eq!(value.get("chunks_total").and_then(|v| v.as_u64()), Some(5));
+    }
+
+    #[test]
+    fn test_parse_prompt_async_response_409_includes_retry_and_attach() {
+        let headers = reqwest::header::HeaderMap::new();
+        let content_type = "application/json";
+        let body = r#"{
+            "code":"SESSION_RUN_CONFLICT",
+            "activeRun":{"runID":"run_123"},
+            "retryAfterMs":500,
+            "attachEventStream":"/event?sessionID=s1&runID=run_123"
+        }"#;
+        let err = parse_prompt_async_response(409, &headers, content_type, body)
+            .expect_err("should be conflict");
+        assert!(err.contains("run_conflict"));
+        assert!(err.contains("retryAfterMs=500"));
+        assert!(err.contains("activeRun=run_123"));
+        assert!(err.contains("attachEventStream=/event?sessionID=s1&runID=run_123"));
+    }
+
+    #[test]
+    fn test_parse_prompt_async_response_202_parses_run_payload() {
+        let headers = reqwest::header::HeaderMap::new();
+        let content_type = "application/json";
+        let body = r#"{
+            "runID":"run_abc",
+            "attachEventStream":"/event?sessionID=s1&runID=run_abc"
+        }"#;
+        let result = parse_prompt_async_response(202, &headers, content_type, body);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn recover_active_run_attach_stream_uses_get_run_endpoint() {
+        let base = spawn_single_response_server(
+            "/session/s1/run",
+            "200 OK",
+            r#"{"active":{"runID":"run_42","startedAtMs":1,"lastActivityAtMs":2,"clientID":null}}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let attach = manager
+            .recover_active_run_attach_stream("s1")
+            .await
+            .expect("recover");
+        assert_eq!(attach, Some("/event?sessionID=s1&runID=run_42".to_string()));
+    }
+
+    #[tokio::test]
+    async fn cancel_run_by_id_posts_expected_endpoint() {
+        let base = spawn_single_response_server(
+            "/session/s1/run/run_42/cancel",
+            "200 OK",
+            r#"{"ok":true,"cancelled":true}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let cancelled = manager
+            .cancel_run_by_id("s1", "run_42")
+            .await
+            .expect("cancel");
+        assert!(cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancel_run_by_id_handles_non_active_run() {
+        let base = spawn_single_response_server(
+            "/session/s1/run/run_missing/cancel",
+            "200 OK",
+            r#"{"ok":true,"cancelled":false}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let cancelled = manager
+            .cancel_run_by_id("s1", "run_missing")
+            .await
+            .expect("cancel");
+        assert!(!cancelled);
+    }
+
+    #[tokio::test]
+    async fn mission_list_reads_engine_missions_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission",
+            "200 OK",
+            r#"{"missions":[{"mission_id":"m1","status":"draft","spec":{"mission_id":"m1","title":"Demo","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":0,"updated_at_ms":1}]}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let missions = manager.mission_list().await.expect("mission_list");
+        assert_eq!(missions.len(), 1);
+        assert_eq!(missions[0].mission_id, "m1");
+    }
+
+    #[tokio::test]
+    async fn mission_get_reads_engine_mission_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission/m1",
+            "200 OK",
+            r#"{"mission":{"mission_id":"m1","status":"draft","spec":{"mission_id":"m1","title":"Demo","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":0,"updated_at_ms":1}}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let mission = manager.mission_get("m1").await.expect("mission_get");
+        assert_eq!(mission.mission_id, "m1");
+        assert_eq!(mission.spec.title, "Demo");
+    }
+
+    #[tokio::test]
+    async fn mission_create_posts_to_engine_mission_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission",
+            "200 OK",
+            r#"{"mission":{"mission_id":"m2","status":"draft","spec":{"mission_id":"m2","title":"Create","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":0,"updated_at_ms":1}}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let mission = manager
+            .mission_create(MissionCreateRequest {
+                title: "Create".to_string(),
+                goal: "Test".to_string(),
+                work_items: vec![],
+            })
+            .await
+            .expect("mission_create");
+        assert_eq!(mission.mission_id, "m2");
+    }
+
+    #[tokio::test]
+    async fn mission_apply_event_posts_event_payload() {
+        let base = spawn_single_response_server(
+            "/mission/m1/event",
+            "200 OK",
+            r#"{"mission":{"mission_id":"m1","status":"running","spec":{"mission_id":"m1","title":"Demo","goal":"Test","success_criteria":[],"entrypoint":null,"budgets":{},"capabilities":{},"metadata":null},"work_items":[],"revision":1,"updated_at_ms":2},"commands":[{"type":"emit_notice"}]}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let result = manager
+            .mission_apply_event(
+                "m1",
+                serde_json::json!({
+                    "type": "mission_started",
+                    "mission_id": "m1"
+                }),
+            )
+            .await
+            .expect("mission_apply_event");
+        assert_eq!(result.mission.revision, 1);
+        assert_eq!(result.commands.len(), 1);
     }
 }

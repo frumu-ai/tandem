@@ -22,8 +22,10 @@ import {
   ChevronUp,
   Brain,
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import React, {
   startTransition,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -236,9 +238,19 @@ export interface MessageProps {
   onOpenQuestionToolCall?: (args: { messageId: string; toolCallId: string }) => void;
   isQuestionToolCallPending?: (args: { messageId: string; toolCallId: string }) => boolean;
   memoryRetrieval?: {
+    status?:
+      | "not_attempted"
+      | "attempted_no_hits"
+      | "retrieved_used"
+      | "degraded_disabled"
+      | "error_fallback";
     used: boolean;
     chunks_total: number;
     latency_ms: number;
+    embedding_status?: string;
+    embedding_reason?: string;
+    session_chunks_stored?: number;
+    project_chunks_stored?: number;
   } | null;
   renderMode?: "full" | "streaming-lite";
   disableMountAnimation?: boolean;
@@ -354,6 +366,23 @@ function MessageComponent({
   const [editedContent, setEditedContent] = useState(content);
   const [copied, setCopied] = useState(false);
 
+  const handleExternalLinkOpen = useCallback(async (href: string) => {
+    if (!href) return;
+    try {
+      await openUrl(href);
+      return;
+    } catch (error) {
+      console.warn("[Message] Failed to open external URL via Tauri opener:", error);
+    }
+
+    // Browser fallback for web/non-tauri environments.
+    try {
+      globalThis.open(href, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error("[Message] Failed to open external URL fallback:", error);
+    }
+  }, []);
+
   // Memoize markdown components to prevent re-creation on every render
   const markdownComponents = React.useMemo(
     () => ({
@@ -383,8 +412,11 @@ function MessageComponent({
         return (
           <a
             href={href}
-            target="_blank"
-            rel="noopener noreferrer"
+            onClick={(event) => {
+              if (!href) return;
+              event.preventDefault();
+              void handleExternalLinkOpen(href);
+            }}
             className="text-primary hover:underline"
             {...props}
           >
@@ -456,7 +488,7 @@ function MessageComponent({
         </li>
       ),
     }),
-    [onFileOpen, renderMode]
+    [handleExternalLinkOpen, onFileOpen, renderMode]
   );
 
   const handleCopy = () => {
@@ -525,19 +557,46 @@ function MessageComponent({
             </span>
           )}
           {!isUser && !isSystem && memoryRetrieval && (
-            <span
-              className={cn(
-                "inline-flex items-center gap-1 text-[11px] rounded-md px-2 py-0.5 border",
-                memoryRetrieval.used
-                  ? "bg-primary/15 border-primary/40 text-primary"
-                  : "bg-warning/15 border-warning/40 text-warning"
+            <>
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 text-[11px] rounded-md px-2 py-0.5 border",
+                  memoryRetrieval.used
+                    ? "bg-primary/15 border-primary/40 text-primary"
+                    : "bg-warning/15 border-warning/40 text-warning"
+                )}
+              >
+                <Brain className="h-3 w-3" />
+                {memoryRetrieval.status === "retrieved_used" || memoryRetrieval.used
+                  ? `Memory: ${memoryRetrieval.chunks_total} chunks (${memoryRetrieval.latency_ms}ms)`
+                  : memoryRetrieval.status === "error_fallback"
+                    ? "Memory: fallback"
+                    : memoryRetrieval.status === "attempted_no_hits"
+                      ? "Memory: no hits"
+                      : memoryRetrieval.status === "degraded_disabled"
+                        ? "Memory: degraded"
+                        : "Memory: not attempted"}
+              </span>
+              {memoryRetrieval.embedding_status && (
+                <span
+                  title={memoryRetrieval.embedding_reason}
+                  className={cn(
+                    "inline-flex items-center gap-1 text-[11px] rounded-md px-2 py-0.5 border",
+                    memoryRetrieval.embedding_status === "ok"
+                      ? "bg-success/15 border-success/40 text-success"
+                      : "bg-warning/15 border-warning/40 text-warning"
+                  )}
+                >
+                  Embeddings: {memoryRetrieval.embedding_status}
+                </span>
               )}
-            >
-              <Brain className="h-3 w-3" />
-              {memoryRetrieval.used
-                ? `Memory: ${memoryRetrieval.chunks_total} chunks (${memoryRetrieval.latency_ms}ms)`
-                : "Memory: not used"}
-            </span>
+              {(memoryRetrieval.session_chunks_stored || memoryRetrieval.project_chunks_stored) && (
+                <span className="inline-flex items-center gap-1 text-[11px] rounded-md px-2 py-0.5 border bg-sky-500/10 border-sky-500/30 text-sky-300">
+                  Store: S{memoryRetrieval.session_chunks_stored ?? 0} / P
+                  {memoryRetrieval.project_chunks_stored ?? 0}
+                </span>
+              )}
+            </>
           )}
         </div>
 
@@ -724,13 +783,6 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
   const [isExpanded, setIsExpanded] = useState(false);
   const [nowMs, setNowMs] = useState<number>(() => new Date().getTime());
 
-  useEffect(() => {
-    const id = globalThis.setInterval(() => {
-      setNowMs(new Date().getTime());
-    }, 1000);
-    return () => globalThis.clearInterval(id);
-  }, []);
-
   const runningCount = useMemo(
     () => toolCalls.filter((t) => t.status === "running").length,
     [toolCalls]
@@ -747,6 +799,16 @@ const CollapsedToolCalls = React.memo(function CollapsedToolCalls({
     () => toolCalls.filter((t) => t.status === "failed").length,
     [toolCalls]
   );
+  const isTerminal = runningCount === 0 && pendingCount === 0 && toolCalls.length > 0;
+
+  useEffect(() => {
+    if (isTerminal) return;
+    const id = globalThis.setInterval(() => {
+      setNowMs(new Date().getTime());
+    }, 1000);
+    return () => globalThis.clearInterval(id);
+  }, [isTerminal]);
+
   const durationSec = Math.max(1, Math.round((nowMs - messageTimestamp.getTime()) / 1000));
 
   // Group by tool type for summary

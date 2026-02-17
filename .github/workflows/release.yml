@@ -41,14 +41,17 @@ jobs:
           script: |
             const fs = require('fs');
             const releaseNotes = fs.readFileSync('release_notes.md', 'utf8');
+            const tag = context.ref.replace('refs/tags/', '');
+            const isPrerelease = /-(alpha|beta|rc)(?:[.-]\d+)?$/i.test(tag);
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag_name: context.ref.replace('refs/tags/', ''),
-              name: `Tandem ${context.ref.replace('refs/tags/', '')}`,
+              tag_name: tag,
+              name: `Tandem ${tag}`,
               body: releaseNotes,
               draft: true,
-              prerelease: false,
+              prerelease: isPrerelease,
+              make_latest: isPrerelease ? 'false' : 'true',
               generate_release_notes: false
             });
             return data.id;
@@ -62,12 +65,24 @@ jobs:
         include:
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            engine_asset: tandem-engine-linux-x64.tar.gz
+            tui_asset: tandem-tui-linux-x64.tar.gz
+            standalone_archive: tar.gz
           - platform: macos-latest
             target: x86_64-apple-darwin
+            engine_asset: tandem-engine-darwin-x64.zip
+            tui_asset: tandem-tui-darwin-x64.zip
+            standalone_archive: zip
           - platform: macos-latest
             target: aarch64-apple-darwin
+            engine_asset: tandem-engine-darwin-arm64.zip
+            tui_asset: tandem-tui-darwin-arm64.zip
+            standalone_archive: zip
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
+            engine_asset: tandem-engine-windows-x64.zip
+            tui_asset: tandem-tui-windows-x64.zip
+            standalone_archive: zip
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -108,6 +123,26 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install
+
+      - name: Build bundled engine sidecar (Unix)
+        if: ${{ matrix.platform != 'windows-latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p tandem-ai --target ${{ matrix.target }}
+          cargo build --release -p tandem-tui --target ${{ matrix.target }}
+          mkdir -p src-tauri/resources/binaries
+          cp "target/${{ matrix.target }}/release/tandem-engine" "src-tauri/resources/binaries/tandem-engine"
+          chmod +x "src-tauri/resources/binaries/tandem-engine"
+
+      - name: Build bundled engine sidecar (Windows)
+        if: ${{ matrix.platform == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          cargo build --release -p tandem-ai --target ${{ matrix.target }}
+          cargo build --release -p tandem-tui --target ${{ matrix.target }}
+          New-Item -ItemType Directory -Path "src-tauri/resources/binaries" -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "src-tauri/resources/binaries/tandem-engine.exe" -Force
 
       # NOTE: We only attempt macOS signing/notarization when explicitly enabled via
       # `MACOS_SIGNING_ENABLED=true` (repo variable). This prevents release builds from
@@ -257,6 +292,87 @@ jobs:
           retryAttempts: 3
           args: --target ${{ matrix.target }}
           updaterJsonPreferNsis: true
+
+      - name: Package standalone engine/tui assets (Windows)
+        if: ${{ matrix.platform == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "dist/tandem-engine.exe" -Force
+          Copy-Item "target/${{ matrix.target }}/release/tandem-tui.exe" "dist/tandem-tui.exe" -Force
+          Compress-Archive -Path "dist/tandem-engine.exe" -DestinationPath "dist/${{ matrix.engine_asset }}" -Force
+          Compress-Archive -Path "dist/tandem-tui.exe" -DestinationPath "dist/${{ matrix.tui_asset }}" -Force
+
+      - name: Package standalone engine/tui assets (Unix)
+        if: ${{ matrix.platform != 'windows-latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/tandem-engine" dist/tandem-engine
+          cp "target/${{ matrix.target }}/release/tandem-tui" dist/tandem-tui
+          chmod +x dist/tandem-engine dist/tandem-tui
+
+          if [ "${{ matrix.standalone_archive }}" = "zip" ]; then
+            zip -j "dist/${{ matrix.engine_asset }}" dist/tandem-engine
+            zip -j "dist/${{ matrix.tui_asset }}" dist/tandem-tui
+          else
+            tar -czf "dist/${{ matrix.engine_asset }}" -C dist tandem-engine
+            tar -czf "dist/${{ matrix.tui_asset }}" -C dist tandem-tui
+          fi
+
+      - name: Upload standalone engine/tui assets to release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          ENGINE_ASSET: ${{ matrix.engine_asset }}
+          TUI_ASSET: ${{ matrix.tui_asset }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const releaseId = Number(process.env.RELEASE_ID);
+            const assets = [
+              process.env.ENGINE_ASSET,
+              process.env.TUI_ASSET,
+            ].filter(Boolean);
+
+            const existing = await github.rest.repos.listReleaseAssets({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: releaseId,
+              per_page: 100,
+            });
+
+            for (const assetName of assets) {
+              const assetPath = path.join(process.cwd(), 'dist', assetName);
+              const data = fs.readFileSync(assetPath);
+              const contentType = assetName.endsWith('.zip')
+                ? 'application/zip'
+                : 'application/gzip';
+
+              const duplicate = existing.data.find((asset) => asset.name === assetName);
+              if (duplicate) {
+                await github.rest.repos.deleteReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  asset_id: duplicate.id,
+                });
+              }
+
+              await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: releaseId,
+                name: assetName,
+                data,
+                headers: {
+                  'content-type': contentType,
+                  'content-length': data.length,
+                },
+              });
+            }
 
   publish-release:
     name: Publish Release

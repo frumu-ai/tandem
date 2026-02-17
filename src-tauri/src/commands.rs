@@ -6,7 +6,8 @@ use crate::keystore::{validate_api_key, validate_key_type, ApiKeyType, SecureKey
 use crate::logs::{self, LogFileInfo};
 use crate::memory::indexer::{index_workspace, IndexingStats};
 use crate::memory::types::{
-    ClearFileIndexResult, MemoryRetrievalMeta, MemoryStats, ProjectMemoryStats,
+    ClearFileIndexResult, EmbeddingHealth, MemoryRetrievalMeta, MemoryStats, MemoryTier,
+    ProjectMemoryStats, StoreMessageRequest,
 };
 use crate::modes::{ModeDefinition, ModeResolution, ModeScope, ResolvedMode};
 use crate::orchestrator::{
@@ -17,12 +18,16 @@ use crate::orchestrator::{
 };
 use crate::python_env;
 use crate::sidecar::{
-    CreateSessionRequest, FilePartInput, ModelInfo, ModelSpec, Project, ProviderInfo,
-    SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent, TodoItem,
+    ActiveRunStatusResponse, CreateSessionRequest, FilePartInput, MissionApplyEventResult,
+    MissionCreateRequest, MissionState, ModelInfo, ModelSpec, Project, ProviderInfo,
+    RoutineCreateRequest, RoutineHistoryEvent, RoutinePatchRequest, RoutineRunNowRequest,
+    RoutineRunNowResponse, RoutineSpec, SendMessageRequest, Session, SessionMessage, SidecarState,
+    StreamEvent, TodoItem,
 };
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
 use crate::stream_hub::{StreamEventEnvelopeV2, StreamEventSource};
+use crate::tool_history::ToolExecutionRow;
 use crate::tool_policy;
 use crate::tool_proxy::{FileSnapshot, JournalEntry, OperationStatus, UndoAction};
 use crate::vault::{self, EncryptedVaultKey, VaultStatus};
@@ -30,14 +35,30 @@ use crate::VaultState;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tandem_core::{
+    migrate_legacy_storage_if_needed, normalize_workspace_path, resolve_shared_paths,
+    SessionRepairStats, Storage,
+};
+use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_store::StoreExt;
 use uuid::Uuid;
+
+fn shared_app_data_dir(_app: &AppHandle) -> Result<PathBuf> {
+    match resolve_shared_paths() {
+        Ok(paths) => Ok(paths.canonical_root),
+        Err(e) => dirs::data_dir().map(|d| d.join("tandem")).ok_or_else(|| {
+            TandemError::InvalidConfig(format!(
+                "Failed to resolve canonical shared app data dir: {}",
+                e
+            ))
+        }),
+    }
+}
 
 // ============================================================================
 // Packs (guided workflows)
@@ -60,8 +81,14 @@ pub fn packs_install(
 #[tauri::command]
 pub fn packs_install_default(
     app: AppHandle,
+    state: State<'_, AppState>,
     pack_id: String,
 ) -> Result<crate::packs::PackInstallResult> {
+    if let Some(workspace_path) = state.get_workspace_path() {
+        let workspace_packs_root = PathBuf::from(workspace_path).join("workspace-packs");
+        return crate::packs::install_pack(&app, &pack_id, &workspace_packs_root.to_string_lossy())
+            .map_err(TandemError::InvalidConfig);
+    }
     crate::packs::install_pack_default(&app, &pack_id).map_err(TandemError::InvalidConfig)
 }
 
@@ -126,6 +153,7 @@ pub fn get_vault_status(vault_state: State<'_, VaultState>) -> VaultStatus {
 pub async fn create_vault(
     app: AppHandle,
     vault_state: State<'_, VaultState>,
+    state: State<'_, AppState>,
     pin: String,
 ) -> Result<()> {
     // Validate PIN
@@ -163,6 +191,15 @@ pub async fn create_vault(
         tracing::info!("Keystore initialization complete");
     });
 
+    // Start the sidecar as part of lock-screen unlock/create flow.
+    // Startup failures must not block vault creation.
+    if let Err(err) = start_sidecar(app.clone(), state).await {
+        tracing::warn!(
+            "Vault created but failed to auto-start tandem-engine sidecar: {}",
+            err
+        );
+    }
+
     Ok(())
 }
 
@@ -188,12 +225,18 @@ pub async fn get_memory_stats(state: State<'_, AppState>) -> Result<MemoryStats>
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemorySettings {
     pub auto_index_on_project_load: bool,
+    #[serde(default = "default_memory_embedding_status")]
+    pub embedding_status: String,
+    #[serde(default)]
+    pub embedding_reason: Option<String>,
 }
 
 #[tauri::command]
-pub fn get_memory_settings(app: AppHandle) -> MemorySettings {
+pub fn get_memory_settings(app: AppHandle, state: State<'_, AppState>) -> MemorySettings {
     let mut settings = MemorySettings {
         auto_index_on_project_load: true,
+        embedding_status: default_memory_embedding_status(),
+        embedding_reason: None,
     };
 
     if let Ok(store) = app.store("settings.json") {
@@ -204,7 +247,22 @@ pub fn get_memory_settings(app: AppHandle) -> MemorySettings {
         }
     }
 
+    let embedding_health = if let Some(manager) = &state.memory_manager {
+        tauri::async_runtime::block_on(manager.embedding_health())
+    } else {
+        EmbeddingHealth {
+            status: "unavailable".to_string(),
+            reason: Some("memory manager not initialized".to_string()),
+        }
+    };
+    settings.embedding_status = embedding_health.status;
+    settings.embedding_reason = embedding_health.reason;
+
     settings
+}
+
+fn default_memory_embedding_status() -> String {
+    "unknown".to_string()
 }
 
 #[tauri::command]
@@ -263,11 +321,70 @@ pub async fn index_workspace_command(
     state: State<'_, AppState>,
     project_id: String,
 ) -> Result<IndexingStats> {
+    let correlation_id = Uuid::new_v4().to_string();
+    emit_event(
+        tracing::Level::INFO,
+        ProcessKind::Desktop,
+        ObservabilityEvent {
+            event: "index.workspace.start",
+            component: "tauri.commands",
+            correlation_id: Some(&correlation_id),
+            session_id: None,
+            run_id: None,
+            message_id: None,
+            provider_id: None,
+            model_id: None,
+            status: Some("start"),
+            error_code: None,
+            detail: Some("index_workspace_command"),
+        },
+    );
     if let Some(manager) = &state.memory_manager {
         let workspace_path = state
             .get_workspace_path()
             .ok_or_else(|| TandemError::IoError("No workspace selected".to_string()))?;
-        index_workspace(&app, &workspace_path, &project_id, manager).await
+        match index_workspace(&app, &workspace_path, &project_id, manager).await {
+            Ok(stats) => {
+                emit_event(
+                    tracing::Level::INFO,
+                    ProcessKind::Desktop,
+                    ObservabilityEvent {
+                        event: "index.workspace.complete",
+                        component: "tauri.commands",
+                        correlation_id: Some(&correlation_id),
+                        session_id: None,
+                        run_id: None,
+                        message_id: None,
+                        provider_id: None,
+                        model_id: None,
+                        status: Some("ok"),
+                        error_code: None,
+                        detail: Some("index complete"),
+                    },
+                );
+                Ok(stats)
+            }
+            Err(err) => {
+                emit_event(
+                    tracing::Level::ERROR,
+                    ProcessKind::Desktop,
+                    ObservabilityEvent {
+                        event: "index.workspace.failed",
+                        component: "tauri.commands",
+                        correlation_id: Some(&correlation_id),
+                        session_id: None,
+                        run_id: None,
+                        message_id: None,
+                        provider_id: None,
+                        model_id: None,
+                        status: Some("failed"),
+                        error_code: Some("INDEX_WORKSPACE_FAILED"),
+                        detail: Some("index command failed"),
+                    },
+                );
+                Err(err)
+            }
+        }
     } else {
         Err(TandemError::Memory(
             "Memory manager not initialized".to_string(),
@@ -280,6 +397,7 @@ pub async fn index_workspace_command(
 pub async fn unlock_vault(
     app: AppHandle,
     vault_state: State<'_, VaultState>,
+    state: State<'_, AppState>,
     pin: String,
 ) -> Result<()> {
     // Check if vault exists
@@ -313,6 +431,15 @@ pub async fn unlock_vault(
         crate::init_keystore_and_keys(&app_clone, &master_key_clone);
         tracing::info!("Keystore initialization complete");
     });
+
+    // Start the sidecar as part of lock-screen unlock flow.
+    // Startup failures must not block vault unlock.
+    if let Err(err) = start_sidecar(app.clone(), state).await {
+        tracing::warn!(
+            "Vault unlocked but failed to auto-start tandem-engine sidecar: {}",
+            err
+        );
+    }
 
     Ok(())
 }
@@ -459,18 +586,125 @@ fn env_var_for_key(key_type: &ApiKeyType) -> Option<&'static str> {
 }
 
 /// Check if a file operation should be auto-approved based on path
-/// Auto-approve writes to .opencode/plans/ for real-time plan updates
+/// Auto-approve writes to .tandem/plans/ (canonical) and legacy .opencode/plans/.
+fn workspace_plans_dirs(workspace_path: &Path) -> (PathBuf, PathBuf) {
+    (
+        workspace_path.join(".tandem").join("plans"),
+        workspace_path.join(".opencode").join("plans"),
+    )
+}
+
+fn workspace_skill_dirs(workspace_path: &Path) -> (PathBuf, PathBuf) {
+    (
+        workspace_path.join(".tandem").join("skill"),
+        workspace_path.join(".opencode").join("skill"),
+    )
+}
+
+fn normalize_path_for_match(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn copy_workspace_tree_if_missing(src: &Path, dst: &Path) -> Result<(usize, usize)> {
+    if !src.exists() {
+        return Ok((0, 0));
+    }
+    fs::create_dir_all(dst).map_err(TandemError::Io)?;
+    let mut copied = 0usize;
+    let mut skipped = 0usize;
+
+    for entry in fs::read_dir(src).map_err(TandemError::Io)? {
+        let entry = entry.map_err(TandemError::Io)?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let ty = entry.file_type().map_err(TandemError::Io)?;
+        if ty.is_dir() {
+            let (c, s) = copy_workspace_tree_if_missing(&src_path, &dst_path)?;
+            copied += c;
+            skipped += s;
+        } else if ty.is_file() {
+            if dst_path.exists() {
+                skipped += 1;
+                continue;
+            }
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent).map_err(TandemError::Io)?;
+            }
+            fs::copy(&src_path, &dst_path).map_err(TandemError::Io)?;
+            copied += 1;
+        }
+    }
+
+    Ok((copied, skipped))
+}
+
+pub(crate) fn migrate_workspace_legacy_namespace_if_needed(workspace_path: &Path) -> Result<()> {
+    let canonical_root = workspace_path.join(".tandem");
+    let legacy_root = workspace_path.join(".opencode");
+    if !legacy_root.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&canonical_root).map_err(TandemError::Io)?;
+
+    let (canonical_plans, legacy_plans) = workspace_plans_dirs(workspace_path);
+    let (copied_plans, skipped_plans) =
+        copy_workspace_tree_if_missing(&legacy_plans, &canonical_plans)?;
+
+    let (canonical_skills, legacy_skills) = workspace_skill_dirs(workspace_path);
+    let (copied_skills, skipped_skills) =
+        copy_workspace_tree_if_missing(&legacy_skills, &canonical_skills)?;
+
+    let legacy_python_cfg = legacy_root
+        .join("tandem")
+        .join("python")
+        .join("config.json");
+    let canonical_python_cfg = canonical_root
+        .join("tandem")
+        .join("python")
+        .join("config.json");
+    let mut copied_python = 0usize;
+    let mut skipped_python = 0usize;
+    if legacy_python_cfg.exists() {
+        if canonical_python_cfg.exists() {
+            skipped_python = 1;
+        } else {
+            if let Some(parent) = canonical_python_cfg.parent() {
+                fs::create_dir_all(parent).map_err(TandemError::Io)?;
+            }
+            fs::copy(&legacy_python_cfg, &canonical_python_cfg).map_err(TandemError::Io)?;
+            copied_python = 1;
+        }
+    }
+
+    if copied_plans + copied_skills + copied_python > 0 {
+        tracing::info!(
+            "Workspace namespace migration (.opencode -> .tandem): copied plans={} skills={} python_cfg={} skipped plans={} skills={} python_cfg={} workspace={}",
+            copied_plans,
+            copied_skills,
+            copied_python,
+            skipped_plans,
+            skipped_skills,
+            skipped_python,
+            workspace_path.display()
+        );
+    }
+
+    Ok(())
+}
+
 fn is_plan_file_operation(path: &str, tool: &str) -> bool {
     // Only auto-approve write operations
     if tool != "write" && tool != "write_file" {
         return false;
     }
 
-    // Normalize path separators for Windows/Unix compatibility
-    let normalized_path = path.replace('\\', "/");
+    let normalized_path = normalize_path_for_match(path);
 
-    // Check if the path is within .opencode/plans/
-    normalized_path.contains("/.opencode/plans/") || normalized_path.starts_with(".opencode/plans/")
+    normalized_path.contains("/.tandem/plans/")
+        || normalized_path.starts_with(".tandem/plans/")
+        || normalized_path.contains("/.opencode/plans/")
+        || normalized_path.starts_with(".opencode/plans/")
 }
 
 // ============================================================================
@@ -525,6 +759,7 @@ pub fn set_workspace_path(app: AppHandle, path: String, state: State<'_, AppStat
         )));
     }
 
+    migrate_workspace_legacy_namespace_if_needed(&path_buf)?;
     state.set_workspace(path_buf);
     tracing::info!("Workspace set to: {}", path);
 
@@ -663,6 +898,8 @@ pub fn add_project(
         )));
     }
 
+    migrate_workspace_legacy_namespace_if_needed(&path_buf)?;
+
     // Create new project
     let project = UserProject::new(path_buf, name);
 
@@ -771,40 +1008,48 @@ pub async fn set_active_project(
 
     // Set workspace path
     let path_buf = project.path_buf();
+    migrate_workspace_legacy_namespace_if_needed(&path_buf)?;
     state.set_workspace(path_buf.clone());
 
     // Update sidecar workspace - this sets it for when sidecar restarts
     state.sidecar.set_workspace(path_buf.clone()).await;
 
-    // Restart the sidecar if it's running so it picks up the new workspace
+    // Restart the sidecar if it's running so it picks up the new workspace.
+    // In shared-engine mode we do not restart, because other clients (Desktop/TUI) may be attached.
     let sidecar_state = state.sidecar.state().await;
     if sidecar_state == crate::sidecar::SidecarState::Running {
-        tracing::info!("Restarting sidecar with new workspace: {}", project.path);
+        if state.sidecar.shared_mode().await {
+            tracing::info!(
+                "Shared sidecar mode enabled; skipping sidecar restart on workspace switch"
+            );
+        } else {
+            tracing::info!("Restarting sidecar with new workspace: {}", project.path);
 
-        // Stop the sidecar
-        let _ = state.sidecar.stop().await;
+            // Stop the sidecar
+            let _ = state.sidecar.stop().await;
 
-        // Wait a moment for cleanup
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            // Wait a moment for cleanup
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        // Get the sidecar path (checks AppData first, then resources)
-        let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
+            // Get the sidecar path (checks AppData first, then resources)
+            let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
 
-        // Sync env vars BEFORE starting so the sidecar actually picks them up.
-        let providers = {
-            let config = state.providers_config.read().unwrap();
-            config.clone()
-        };
-        sync_ollama_env(&state, &providers).await;
-        sync_provider_keys_env(&app, &state, &providers).await;
+            // Sync env vars BEFORE starting so the sidecar actually picks them up.
+            let providers = {
+                let config = state.providers_config.read().unwrap();
+                config.clone()
+            };
+            sync_ollama_env(&state, &providers).await;
+            sync_provider_keys_env(&app, &state, &providers).await;
 
-        // Restart with new workspace
-        state
-            .sidecar
-            .start(sidecar_path.to_string_lossy().as_ref())
-            .await?;
+            // Restart with new workspace
+            state
+                .sidecar
+                .start(sidecar_path.to_string_lossy().as_ref())
+                .await?;
 
-        tracing::info!("Sidecar restarted successfully");
+            tracing::info!("Sidecar restarted successfully");
+        }
     }
 
     // Save to store
@@ -1286,7 +1531,7 @@ pub fn populate_provider_keys(app: &AppHandle, config: &mut ProvidersConfig) {
             keystore.has(&openrouter_key)
         );
         tracing::info!(
-            "  OpenCodeZen key '{}': {}",
+            "  TandemZen key '{}': {}",
             opencode_zen_key,
             keystore.has(&opencode_zen_key)
         );
@@ -1390,6 +1635,42 @@ async fn sync_provider_keys_env(app: &AppHandle, state: &AppState, config: &Prov
     }
 }
 
+async fn sync_provider_keys_runtime_auth(
+    app: &AppHandle,
+    state: &AppState,
+    config: &ProvidersConfig,
+) {
+    if !matches!(state.sidecar.state().await, SidecarState::Running) {
+        return;
+    }
+
+    if config.openrouter.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "openrouter").await {
+            let _ = state.sidecar.set_provider_auth("openrouter", &key).await;
+        }
+    }
+    if config.opencode_zen.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "opencode_zen").await {
+            let _ = state.sidecar.set_provider_auth("zen", &key).await;
+        }
+    }
+    if config.anthropic.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "anthropic").await {
+            let _ = state.sidecar.set_provider_auth("anthropic", &key).await;
+        }
+    }
+    if config.openai.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "openai").await {
+            let _ = state.sidecar.set_provider_auth("openai", &key).await;
+        }
+    }
+    if config.poe.enabled {
+        if let Ok(Some(key)) = get_api_key(app, "poe").await {
+            let _ = state.sidecar.set_provider_auth("poe", &key).await;
+        }
+    }
+}
+
 /// Set the providers configuration
 #[tauri::command]
 pub async fn set_providers_config(
@@ -1437,6 +1718,7 @@ pub async fn set_providers_config(
                 .sidecar
                 .restart(sidecar_path.to_string_lossy().as_ref())
                 .await?;
+            sync_provider_keys_runtime_auth(&app, &state, &config).await;
         }
     }
 
@@ -1447,9 +1729,35 @@ pub async fn set_providers_config(
 // Sidecar Management
 // ============================================================================
 
-/// Start the OpenCode sidecar
+/// Start the tandem-engine sidecar
 #[tauri::command]
 pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<u16> {
+    let initial_state = state.sidecar.state().await;
+    if initial_state == SidecarState::Running {
+        state
+            .stream_hub
+            .start(app.clone(), state.sidecar.clone())
+            .await?;
+        return state.sidecar.port().await.ok_or_else(|| {
+            TandemError::Sidecar("Sidecar running but no port assigned".to_string())
+        });
+    }
+    if initial_state == SidecarState::Starting {
+        // Another caller is already starting it; wait briefly for port assignment.
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if state.sidecar.state().await == SidecarState::Running {
+                state
+                    .stream_hub
+                    .start(app.clone(), state.sidecar.clone())
+                    .await?;
+                return state.sidecar.port().await.ok_or_else(|| {
+                    TandemError::Sidecar("Sidecar running but no port assigned".to_string())
+                });
+            }
+        }
+    }
+
     // Get the sidecar path (checks AppData first, then resources)
     let sidecar_path = sidecar_manager::get_sidecar_binary_path(&app)?;
 
@@ -1480,6 +1788,66 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
         .sidecar
         .start(sidecar_path.to_string_lossy().as_ref())
         .await?;
+
+    // Push runtime-only provider auth immediately after sidecar startup.
+    sync_provider_keys_runtime_auth(&app, &state, &providers).await;
+
+    if let Ok(health) = state.sidecar.startup_health().await {
+        let expected_build_id = expected_engine_build_id();
+        let selected_binary = sidecar_path.to_string_lossy().to_string();
+        let mut mismatch_reason: Option<String> = None;
+
+        if let Some(actual_build_id) = health.build_id.clone() {
+            if !expected_build_id.is_empty() && actual_build_id != expected_build_id {
+                mismatch_reason = Some(format!(
+                    "build_id mismatch expected={} actual={}",
+                    expected_build_id, actual_build_id
+                ));
+            }
+        }
+        if mismatch_reason.is_none() {
+            if let Some(actual_binary) = health.binary_path.clone() {
+                if !same_binary_path(&selected_binary, &actual_binary) {
+                    mismatch_reason = Some(format!(
+                        "binary_path mismatch selected={} running={}",
+                        selected_binary, actual_binary
+                    ));
+                }
+            }
+        }
+
+        if let Some(reason) = mismatch_reason {
+            let _ = app.emit(
+                "sidecar-binary-mismatch",
+                serde_json::json!({
+                    "warning": "Running stale engine binary",
+                    "reason": reason,
+                    "selectedBinary": selected_binary,
+                    "buildIDExpected": expected_build_id,
+                    "buildIDActual": health.build_id,
+                    "binaryPathActual": health.binary_path
+                }),
+            );
+            emit_event(
+                tracing::Level::WARN,
+                ProcessKind::Desktop,
+                ObservabilityEvent {
+                    event: "sidecar.binary.mismatch",
+                    component: "tauri.commands",
+                    correlation_id: None,
+                    session_id: None,
+                    run_id: None,
+                    message_id: None,
+                    provider_id: None,
+                    model_id: None,
+                    status: Some("degraded"),
+                    error_code: Some("STALE_ENGINE_BINARY"),
+                    detail: Some("sidecar /global/health build/path mismatch detected"),
+                },
+            );
+        }
+    }
+
     state
         .stream_hub
         .start(app.clone(), state.sidecar.clone())
@@ -1524,7 +1892,29 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
         .ok_or_else(|| TandemError::Sidecar("Sidecar started but no port assigned".to_string()))
 }
 
-/// Stop the OpenCode sidecar
+fn expected_engine_build_id() -> String {
+    if let Some(explicit) = option_env!("TANDEM_BUILD_ID") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Some(git_sha) = option_env!("VERGEN_GIT_SHA") {
+        let trimmed = git_sha.trim();
+        if !trimmed.is_empty() {
+            return format!("{}+{}", env!("CARGO_PKG_VERSION"), trimmed);
+        }
+    }
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+fn same_binary_path(selected: &str, running: &str) -> bool {
+    let selected_norm = selected.replace('\\', "/").to_ascii_lowercase();
+    let running_norm = running.replace('\\', "/").to_ascii_lowercase();
+    selected_norm == running_norm
+}
+
+/// Stop the tandem-engine sidecar
 #[tauri::command]
 pub async fn stop_sidecar(state: State<'_, AppState>) -> Result<()> {
     state.stream_hub.stop().await;
@@ -1535,6 +1925,192 @@ pub async fn stop_sidecar(state: State<'_, AppState>) -> Result<()> {
 #[tauri::command]
 pub async fn get_sidecar_status(state: State<'_, AppState>) -> Result<SidecarState> {
     Ok(state.sidecar.state().await)
+}
+
+#[tauri::command]
+pub async fn get_sidecar_startup_health(
+    state: State<'_, AppState>,
+) -> Result<Option<crate::sidecar::SidecarStartupHealth>> {
+    let sidecar_state = state.sidecar.state().await;
+    if matches!(sidecar_state, SidecarState::Stopped | SidecarState::Failed) {
+        return Ok(None);
+    }
+    match state.sidecar.startup_health().await {
+        Ok(health) => Ok(Some(health)),
+        Err(err) => {
+            tracing::debug!("get_sidecar_startup_health unavailable: {}", err);
+            Ok(None)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeDiagnostics {
+    pub sidecar: crate::sidecar::SidecarRuntimeSnapshot,
+    pub stream: crate::stream_hub::StreamRuntimeSnapshot,
+    pub lease_count: usize,
+    pub logging: RuntimeLoggingDiagnostics,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeLoggingDiagnostics {
+    pub initialized: bool,
+    pub process: String,
+    pub active_files: Vec<String>,
+    pub last_write_ts_ms: Option<u64>,
+    pub dropped_events: u64,
+}
+
+#[tauri::command]
+pub async fn get_runtime_diagnostics(state: State<'_, AppState>) -> Result<RuntimeDiagnostics> {
+    let sidecar = state.sidecar.runtime_snapshot().await;
+    let stream = state.stream_hub.runtime_snapshot().await;
+    let leases = state.engine_leases.lock().await;
+    let logging = match resolve_shared_paths() {
+        Ok(paths) => {
+            let logs_dir = paths.canonical_root.join("logs");
+            let files = logs::list_log_files(&logs_dir).unwrap_or_default();
+            let active_files = files.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+            let last_write_ts_ms = files.iter().map(|f| f.modified_ms).max();
+            RuntimeLoggingDiagnostics {
+                initialized: true,
+                process: "desktop".to_string(),
+                active_files,
+                last_write_ts_ms,
+                dropped_events: 0,
+            }
+        }
+        Err(_) => RuntimeLoggingDiagnostics {
+            initialized: false,
+            process: "desktop".to_string(),
+            active_files: Vec::new(),
+            last_write_ts_ms: None,
+            dropped_events: 0,
+        },
+    };
+    Ok(RuntimeDiagnostics {
+        sidecar,
+        stream,
+        lease_count: leases.len(),
+        logging,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineApiTokenInfo {
+    pub token_masked: String,
+    pub token: Option<String>,
+    pub path: String,
+    pub storage_backend: String,
+}
+
+fn mask_engine_token(token: &str) -> String {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return "****".to_string();
+    }
+    if trimmed.len() <= 8 {
+        return "****".to_string();
+    }
+    format!("{}****{}", &trimmed[..4], &trimmed[trimmed.len() - 4..])
+}
+
+#[tauri::command]
+pub async fn get_engine_api_token(
+    state: State<'_, AppState>,
+    reveal: Option<bool>,
+) -> Result<EngineApiTokenInfo> {
+    let token = state.sidecar.api_token();
+    let masked = mask_engine_token(&token);
+    let path = state.sidecar.api_token_path().to_string_lossy().to_string();
+    Ok(EngineApiTokenInfo {
+        token_masked: masked,
+        token: if reveal.unwrap_or(false) {
+            Some(token)
+        } else {
+            None
+        },
+        path,
+        storage_backend: state.sidecar.api_token_backend(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineLeaseInfo {
+    pub lease_id: String,
+    pub client_id: String,
+    pub client_type: String,
+    pub acquired_at_ms: u64,
+    pub last_renewed_at_ms: u64,
+    pub ttl_ms: u64,
+}
+
+fn prune_expired_leases(
+    leases: &mut std::collections::HashMap<String, crate::state::EngineLease>,
+    now: u64,
+) {
+    leases.retain(|_, lease| now.saturating_sub(lease.last_renewed_at_ms) <= lease.ttl_ms);
+}
+
+#[tauri::command]
+pub async fn engine_acquire_lease(
+    state: State<'_, AppState>,
+    client_id: String,
+    client_type: String,
+    ttl_ms: Option<u64>,
+) -> Result<EngineLeaseInfo> {
+    let ttl_ms = ttl_ms.unwrap_or(45_000).clamp(10_000, 600_000);
+    let now = now_ms();
+    let lease_id = Uuid::new_v4().to_string();
+
+    let mut leases = state.engine_leases.lock().await;
+    prune_expired_leases(&mut leases, now);
+    let lease = crate::state::EngineLease {
+        lease_id: lease_id.clone(),
+        client_id: client_id.clone(),
+        client_type: client_type.clone(),
+        acquired_at_ms: now,
+        last_renewed_at_ms: now,
+        ttl_ms,
+    };
+    leases.insert(lease_id.clone(), lease.clone());
+    Ok(EngineLeaseInfo {
+        lease_id,
+        client_id,
+        client_type,
+        acquired_at_ms: lease.acquired_at_ms,
+        last_renewed_at_ms: lease.last_renewed_at_ms,
+        ttl_ms: lease.ttl_ms,
+    })
+}
+
+#[tauri::command]
+pub async fn engine_renew_lease(state: State<'_, AppState>, lease_id: String) -> Result<bool> {
+    let now = now_ms();
+    let mut leases = state.engine_leases.lock().await;
+    prune_expired_leases(&mut leases, now);
+    if let Some(lease) = leases.get_mut(&lease_id) {
+        lease.last_renewed_at_ms = now;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+#[tauri::command]
+pub async fn engine_release_lease(state: State<'_, AppState>, lease_id: String) -> Result<bool> {
+    let now = now_ms();
+    let mut leases = state.engine_leases.lock().await;
+    prune_expired_leases(&mut leases, now);
+    let removed = leases.remove(&lease_id).is_some();
+    let empty = leases.is_empty();
+    drop(leases);
+
+    // Shared-engine behavior: if no clients remain, stop sidecar + stream hub.
+    if empty {
+        state.stream_hub.stop().await;
+        let _ = state.sidecar.stop().await;
+    }
+    Ok(removed)
 }
 
 // ============================================================================
@@ -1668,12 +2244,20 @@ pub async fn create_session(
         Some(permissions)
     };
 
+    let selected_provider = normalize_provider_id_for_sidecar(provider.or(default_provider));
+    let selected_model = model.or(default_model);
     let request = CreateSessionRequest {
         parent_id: None,
         title,
-        model: model.or(default_model),
-        provider: provider.or(default_provider),
+        model: build_sidecar_session_model(selected_model, selected_provider.clone()),
+        provider: selected_provider,
         permission,
+        directory: state
+            .get_workspace_path()
+            .map(|p| p.to_string_lossy().to_string()),
+        workspace_root: state
+            .get_workspace_path()
+            .map(|p| p.to_string_lossy().to_string()),
     };
 
     let session = state.sidecar.create_session(request).await?;
@@ -1700,6 +2284,15 @@ pub async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
     state.sidecar.list_sessions().await
 }
 
+/// Get currently active run for a session.
+#[tauri::command]
+pub async fn get_session_active_run(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<ActiveRunStatusResponse>> {
+    state.sidecar.get_active_run(&session_id).await
+}
+
 /// Delete a session
 #[tauri::command]
 pub async fn delete_session(state: State<'_, AppState>, session_id: String) -> Result<()> {
@@ -1722,6 +2315,17 @@ pub async fn get_session_messages(
     session_id: String,
 ) -> Result<Vec<SessionMessage>> {
     state.sidecar.get_session_messages(&session_id).await
+}
+
+/// List persisted tool executions for a session (session-scoped only)
+#[tauri::command]
+pub fn list_tool_executions(
+    app: AppHandle,
+    session_id: String,
+    limit: Option<u32>,
+    before_ts_ms: Option<u64>,
+) -> Result<Vec<ToolExecutionRow>> {
+    crate::tool_history::list_tool_executions(&app, &session_id, limit.unwrap_or(200), before_ts_ms)
 }
 
 /// Get todos for a session
@@ -1799,12 +2403,16 @@ fn build_message_content_with_memory_context(original: &str, memory_context: &st
 
 fn memory_retrieval_event(
     session_id: &str,
+    status: &str,
     meta: &MemoryRetrievalMeta,
     latency_ms: u128,
     query_hash: String,
+    embedding_status: Option<String>,
+    embedding_reason: Option<String>,
 ) -> StreamEvent {
     StreamEvent::MemoryRetrieval {
         session_id: session_id.to_string(),
+        status: Some(status.to_string()),
         used: meta.used,
         chunks_total: meta.chunks_total,
         session_chunks: meta.session_chunks,
@@ -1814,6 +2422,28 @@ fn memory_retrieval_event(
         query_hash,
         score_min: meta.score_min,
         score_max: meta.score_max,
+        embedding_status,
+        embedding_reason,
+    }
+}
+
+fn memory_storage_event(
+    session_id: &str,
+    message_id: Option<String>,
+    role: &str,
+    session_chunks_stored: usize,
+    project_chunks_stored: usize,
+    status: Option<String>,
+    error: Option<String>,
+) -> StreamEvent {
+    StreamEvent::MemoryStorage {
+        session_id: session_id.to_string(),
+        message_id,
+        role: role.to_string(),
+        session_chunks_stored,
+        project_chunks_stored,
+        status,
+        error,
     }
 }
 
@@ -1855,6 +2485,9 @@ fn emit_stream_event_pair(
     source: StreamEventSource,
     correlation_id: String,
 ) {
+    if let Err(err) = crate::tool_history::record_stream_event(app, event) {
+        tracing::warn!("Failed to persist stream event to tool history: {}", err);
+    }
     let _ = app.emit("sidecar_event", event);
     let envelope = StreamEventEnvelopeV2 {
         event_id: Uuid::new_v4().to_string(),
@@ -1865,13 +2498,17 @@ fn emit_stream_event_pair(
             | StreamEvent::ToolStart { session_id, .. }
             | StreamEvent::ToolEnd { session_id, .. }
             | StreamEvent::SessionStatus { session_id, .. }
+            | StreamEvent::RunStarted { session_id, .. }
+            | StreamEvent::RunFinished { session_id, .. }
+            | StreamEvent::RunConflict { session_id, .. }
             | StreamEvent::SessionIdle { session_id }
             | StreamEvent::SessionError { session_id, .. }
             | StreamEvent::PermissionAsked { session_id, .. }
             | StreamEvent::QuestionAsked { session_id, .. }
             | StreamEvent::TodoUpdated { session_id, .. }
             | StreamEvent::FileEdited { session_id, .. }
-            | StreamEvent::MemoryRetrieval { session_id, .. } => Some(session_id.clone()),
+            | StreamEvent::MemoryRetrieval { session_id, .. }
+            | StreamEvent::MemoryStorage { session_id, .. } => Some(session_id.clone()),
             StreamEvent::Raw { .. } => None,
         },
         source,
@@ -1883,11 +2520,21 @@ fn emit_stream_event_pair(
 async fn prepare_prompt_with_memory_context(
     state: &AppState,
     session_id: &str,
-    content: &str,
+    prompt_content: &str,
+    retrieval_query: &str,
 ) -> (String, StreamEvent) {
-    let query_hash = short_query_hash(content);
+    let query_hash = short_query_hash(retrieval_query);
+    let embedding_health = if let Some(manager) = &state.memory_manager {
+        let health = manager.embedding_health().await;
+        (Some(health.status), health.reason)
+    } else {
+        (
+            Some("unavailable".to_string()),
+            Some("memory manager not initialized".to_string()),
+        )
+    };
 
-    if should_skip_memory_retrieval(content) {
+    if should_skip_memory_retrieval(retrieval_query) {
         let meta = default_memory_retrieval_meta();
         tracing::info!(
             target: "tandem.memory",
@@ -1903,8 +2550,16 @@ async fn prepare_prompt_with_memory_context(
             meta.score_max
         );
         return (
-            content.to_string(),
-            memory_retrieval_event(session_id, &meta, 0, query_hash),
+            prompt_content.to_string(),
+            memory_retrieval_event(
+                session_id,
+                "not_attempted",
+                &meta,
+                0,
+                query_hash,
+                embedding_health.0,
+                embedding_health.1,
+            ),
         );
     }
 
@@ -1924,17 +2579,25 @@ async fn prepare_prompt_with_memory_context(
             meta.score_max
         );
         return (
-            content.to_string(),
-            memory_retrieval_event(session_id, &meta, 0, query_hash),
+            prompt_content.to_string(),
+            memory_retrieval_event(
+                session_id,
+                "error_fallback",
+                &meta,
+                0,
+                query_hash,
+                embedding_health.0,
+                embedding_health.1,
+            ),
         );
     };
 
-    let active_project_id = state.active_project_id.read().unwrap().clone();
+    let resolved_project_id = resolve_memory_project_id_for_session(state, session_id).await;
     let started = Instant::now();
-    let (final_content, meta, latency_ms) = match manager
+    let (final_content, meta, latency_ms, retrieval_status) = match manager
         .retrieve_context_with_meta(
-            content,
-            active_project_id.as_deref(),
+            retrieval_query,
+            resolved_project_id.as_deref(),
             Some(session_id),
             None,
         )
@@ -1942,10 +2605,28 @@ async fn prepare_prompt_with_memory_context(
     {
         Ok((context, meta)) => {
             let context_text = context.format_for_injection();
-            let merged = build_message_content_with_memory_context(content, &context_text);
-            (merged, meta, started.elapsed().as_millis())
+            let merged = build_message_content_with_memory_context(prompt_content, &context_text);
+            (
+                merged,
+                meta.clone(),
+                started.elapsed().as_millis(),
+                if meta.used {
+                    "retrieved_used"
+                } else {
+                    "attempted_no_hits"
+                },
+            )
         }
         Err(e) => {
+            let status = if e
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("embeddings disabled")
+            {
+                "degraded_disabled"
+            } else {
+                "error_fallback"
+            };
             tracing::warn!(
                 target: "tandem.memory",
                 "🧠 memory_retrieval status=error session_id={} error={}",
@@ -1953,9 +2634,10 @@ async fn prepare_prompt_with_memory_context(
                 e
             );
             (
-                content.to_string(),
+                prompt_content.to_string(),
                 default_memory_retrieval_meta(),
                 started.elapsed().as_millis(),
+                status,
             )
         }
     };
@@ -1976,8 +2658,141 @@ async fn prepare_prompt_with_memory_context(
 
     (
         final_content,
-        memory_retrieval_event(session_id, &meta, latency_ms, query_hash),
+        memory_retrieval_event(
+            session_id,
+            retrieval_status,
+            &meta,
+            latency_ms,
+            query_hash,
+            embedding_health.0,
+            embedding_health.1,
+        ),
     )
+}
+
+async fn resolve_memory_project_id_for_session(
+    state: &AppState,
+    session_id: &str,
+) -> Option<String> {
+    if let Ok(session) = state.sidecar.get_session(session_id).await {
+        if let Some(pid) = session.project_id {
+            let trimmed = pid.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        if let Some(workspace_root) = session.workspace_root {
+            let normalized = normalize_workspace_path(&workspace_root)?;
+            let projects = state.user_projects.read().unwrap();
+            if let Some(project) = projects.iter().find(|p| {
+                normalize_workspace_path(&p.path)
+                    .map(|candidate| candidate == normalized)
+                    .unwrap_or(false)
+            }) {
+                return Some(project.id.clone());
+            }
+        }
+    }
+    state.active_project_id.read().unwrap().clone()
+}
+
+async fn store_user_message_in_memory(
+    app: &AppHandle,
+    state: &AppState,
+    session_id: &str,
+    content: &str,
+) {
+    if should_skip_memory_retrieval(content) {
+        return;
+    }
+    let Some(manager) = &state.memory_manager else {
+        return;
+    };
+    let active_project_id = resolve_memory_project_id_for_session(state, session_id).await;
+    let base_metadata = serde_json::json!({
+        "role": "user",
+        "source_kind": "chat_turn"
+    });
+
+    let session_req = StoreMessageRequest {
+        content: content.to_string(),
+        tier: MemoryTier::Session,
+        session_id: Some(session_id.to_string()),
+        project_id: active_project_id.clone(),
+        source: "user_message".to_string(),
+        source_path: None,
+        source_mtime: None,
+        source_size: None,
+        source_hash: None,
+        metadata: Some(base_metadata.clone()),
+    };
+    let mut session_chunks_stored = 0usize;
+    let mut project_chunks_stored = 0usize;
+    let mut storage_error: Option<String> = None;
+
+    match manager.store_message(session_req).await {
+        Ok(ids) => {
+            session_chunks_stored = ids.len();
+        }
+        Err(err) => {
+            tracing::warn!(
+                target: "tandem.memory",
+                "Failed to store user session memory chunk: session_id={} error={}",
+                session_id,
+                err
+            );
+            storage_error.get_or_insert_with(|| err.to_string());
+        }
+    }
+
+    if let Some(project_id) = active_project_id {
+        let project_req = StoreMessageRequest {
+            content: content.to_string(),
+            tier: MemoryTier::Project,
+            session_id: Some(session_id.to_string()),
+            project_id: Some(project_id.clone()),
+            source: "user_message".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: None,
+            metadata: Some(base_metadata),
+        };
+        match manager.store_message(project_req).await {
+            Ok(ids) => {
+                project_chunks_stored = ids.len();
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "tandem.memory",
+                    "Failed to store user project memory chunk: session_id={} project_id={} error={}",
+                    session_id,
+                    project_id,
+                    err
+                );
+                storage_error.get_or_insert_with(|| err.to_string());
+            }
+        }
+    }
+
+    emit_stream_event_pair(
+        app,
+        &memory_storage_event(
+            session_id,
+            None,
+            "user",
+            session_chunks_stored,
+            project_chunks_stored,
+            Some(if storage_error.is_some() {
+                "error".to_string()
+            } else {
+                "ok".to_string()
+            }),
+            storage_error,
+        ),
+        StreamEventSource::Memory,
+        format!("{}:memory-store:user:{}", session_id, Uuid::new_v4()),
+    );
 }
 
 /// Send a message to a session (async, starts generation)
@@ -1990,7 +2805,7 @@ pub async fn send_message(
     content: String,
     attachments: Option<Vec<FileAttachmentInput>>,
 ) -> Result<()> {
-    send_message_streaming_internal(
+    send_message_and_start_run_internal(
         &app,
         &state,
         session_id,
@@ -2006,7 +2821,7 @@ pub async fn send_message(
 /// Send a message and subscribe to events for the response
 /// This emits events to the frontend as chunks arrive
 #[tauri::command]
-pub async fn send_message_streaming(
+pub async fn send_message_and_start_run(
     app: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
@@ -2015,7 +2830,7 @@ pub async fn send_message_streaming(
     agent: Option<String>,
     mode_id: Option<String>,
 ) -> Result<()> {
-    send_message_streaming_internal(
+    send_message_and_start_run_internal(
         &app,
         &state,
         session_id,
@@ -2028,7 +2843,7 @@ pub async fn send_message_streaming(
     .await
 }
 
-async fn send_message_streaming_internal(
+async fn send_message_and_start_run_internal(
     app: &AppHandle,
     state: &AppState,
     session_id: String,
@@ -2038,12 +2853,40 @@ async fn send_message_streaming_internal(
     mode_id: Option<String>,
     streaming_label: bool,
 ) -> Result<()> {
+    let correlation_id = Uuid::new_v4().to_string();
+    emit_event(
+        tracing::Level::INFO,
+        ProcessKind::Desktop,
+        ObservabilityEvent {
+            event: "chat.dispatch.start",
+            component: "tauri.commands",
+            correlation_id: Some(&correlation_id),
+            session_id: Some(&session_id),
+            run_id: None,
+            message_id: None,
+            provider_id: None,
+            model_id: None,
+            status: Some("start"),
+            error_code: None,
+            detail: Some("send_message_and_start_run_internal"),
+        },
+    );
     let mode_resolution = resolve_effective_mode(app, state, mode_id.as_deref(), agent.as_deref())?;
     if let Some(reason) = mode_resolution.fallback_reason.as_ref() {
-        tracing::warn!("[send_message_streaming] {}", reason);
+        tracing::warn!("[send_message_and_start_run] {}", reason);
     }
+    tracing::info!(
+        "[send_message_and_start_run] session={} mode_id={} base_mode={:?} requested_agent={:?} resolved_sidecar_agent={:?}",
+        session_id,
+        mode_resolution.mode.id,
+        mode_resolution.mode.base_mode,
+        agent,
+        mode_resolution.mode.sidecar_agent()
+    );
     set_session_mode(state, &session_id, mode_resolution.mode.clone());
 
+    store_user_message_in_memory(app, state, &session_id, &content).await;
+    let retrieval_query = content.clone();
     let base_prompt = if let Some(extra) = mode_resolution.mode.system_prompt_append.as_deref() {
         format!(
             "[Mode instructions]\n{}\n\n[User request]\n{}",
@@ -2054,7 +2897,8 @@ async fn send_message_streaming_internal(
     };
 
     let (prepared_content, retrieval_event) =
-        prepare_prompt_with_memory_context(state, &session_id, &base_prompt).await;
+        prepare_prompt_with_memory_context(state, &session_id, &base_prompt, &retrieval_query)
+            .await;
     emit_stream_event_pair(
         app,
         &retrieval_event,
@@ -2110,7 +2954,52 @@ async fn send_message_streaming_internal(
         request.agent = Some(agent_name);
     }
 
-    state.sidecar.send_message(&session_id, request).await
+    match state
+        .sidecar
+        .append_message_and_start_run_with_context(&session_id, request, Some(&correlation_id))
+        .await
+    {
+        Ok(()) => {
+            emit_event(
+                tracing::Level::INFO,
+                ProcessKind::Desktop,
+                ObservabilityEvent {
+                    event: "chat.dispatch.sent",
+                    component: "tauri.commands",
+                    correlation_id: Some(&correlation_id),
+                    session_id: Some(&session_id),
+                    run_id: None,
+                    message_id: None,
+                    provider_id: None,
+                    model_id: None,
+                    status: Some("ok"),
+                    error_code: None,
+                    detail: Some("prompt_async accepted"),
+                },
+            );
+            Ok(())
+        }
+        Err(err) => {
+            emit_event(
+                tracing::Level::ERROR,
+                ProcessKind::Desktop,
+                ObservabilityEvent {
+                    event: "chat.dispatch.failed",
+                    component: "tauri.commands",
+                    correlation_id: Some(&correlation_id),
+                    session_id: Some(&session_id),
+                    run_id: None,
+                    message_id: None,
+                    provider_id: None,
+                    model_id: None,
+                    status: Some("failed"),
+                    error_code: Some("ENGINE_DISPATCH_FAILED"),
+                    detail: Some("prompt_async request failed"),
+                },
+            );
+            Err(err)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2227,7 +3116,7 @@ async fn queue_send_next_internal(
     };
 
     let attachments = queued_to_attachment_inputs(next.attachments.clone());
-    let send_res = send_message_streaming_internal(
+    let send_res = send_message_and_start_run_internal(
         app,
         state,
         session_id.to_string(),
@@ -2271,6 +3160,359 @@ pub async fn list_providers_from_sidecar(state: State<'_, AppState>) -> Result<V
     state.sidecar.list_providers().await
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageStatus {
+    pub canonical_root: String,
+    pub legacy_root: String,
+    pub migration_report_exists: bool,
+    pub storage_version_exists: bool,
+    pub migration_reason: Option<String>,
+    pub migration_timestamp_ms: Option<u64>,
+}
+
+#[tauri::command]
+pub fn get_storage_status() -> Result<StorageStatus> {
+    let paths = resolve_shared_paths().map_err(|e| {
+        TandemError::InvalidConfig(format!("Failed to resolve shared paths: {}", e))
+    })?;
+
+    let report_value = fs::read_to_string(&paths.migration_report_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+
+    let migration_reason = report_value
+        .as_ref()
+        .and_then(|v| v.get("reason"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let migration_timestamp_ms = report_value
+        .as_ref()
+        .and_then(|v| v.get("timestamp_ms"))
+        .and_then(|v| v.as_u64());
+
+    Ok(StorageStatus {
+        canonical_root: paths.canonical_root.to_string_lossy().to_string(),
+        legacy_root: paths.legacy_root.to_string_lossy().to_string(),
+        migration_report_exists: paths.migration_report_path.exists(),
+        storage_version_exists: paths.storage_version_path.exists(),
+        migration_reason,
+        migration_timestamp_ms,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageMigrationOptions {
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub force: bool,
+    #[serde(default)]
+    pub include_workspace_scan: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageMigrationSource {
+    pub id: String,
+    pub path: String,
+    pub exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageMigrationStatus {
+    pub canonical_root: String,
+    pub migration_report_exists: bool,
+    pub storage_version_exists: bool,
+    pub migration_reason: Option<String>,
+    pub migration_timestamp_ms: Option<u64>,
+    pub migration_needed: bool,
+    pub sources_detected: Vec<StorageMigrationSource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageMigrationProgressEvent {
+    pub phase: String,
+    pub phase_percent: u8,
+    pub overall_percent: u8,
+    pub sessions_imported: u64,
+    pub sessions_repaired: u64,
+    pub messages_recovered: u64,
+    pub parts_recovered: u64,
+    pub conflicts_merged: u64,
+    pub copied_count: usize,
+    pub skipped_count: usize,
+    pub error_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageMigrationRunResult {
+    pub status: String,
+    pub started_at_ms: u64,
+    pub ended_at_ms: u64,
+    pub duration_ms: u64,
+    pub sources_detected: Vec<StorageMigrationSource>,
+    pub copied: Vec<String>,
+    pub skipped: Vec<String>,
+    pub errors: Vec<String>,
+    pub sessions_imported: u64,
+    pub sessions_repaired: u64,
+    pub messages_recovered: u64,
+    pub parts_recovered: u64,
+    pub conflicts_merged: u64,
+    pub tool_rows_upserted: u64,
+    pub report_path: String,
+    pub reason: String,
+    pub dry_run: bool,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn detect_migration_sources() -> Vec<StorageMigrationSource> {
+    let mut out = Vec::new();
+    if let Ok(paths) = resolve_shared_paths() {
+        out.push(StorageMigrationSource {
+            id: "legacy_tandem_appdata".to_string(),
+            path: paths.legacy_root.to_string_lossy().to_string(),
+            exists: paths.legacy_root.exists(),
+        });
+    }
+    if let Some(app_data) = dirs::data_dir() {
+        let opencode_appdata = app_data.join("opencode");
+        out.push(StorageMigrationSource {
+            id: "opencode_appdata".to_string(),
+            path: opencode_appdata.to_string_lossy().to_string(),
+            exists: opencode_appdata.exists(),
+        });
+    }
+    if let Some(home) = dirs::home_dir() {
+        let opencode_local = home.join(".local").join("share").join("opencode");
+        out.push(StorageMigrationSource {
+            id: "opencode_local_share".to_string(),
+            path: opencode_local.to_string_lossy().to_string(),
+            exists: opencode_local.exists(),
+        });
+    }
+    out
+}
+
+fn read_migration_report_value(paths: &tandem_core::SharedPaths) -> Option<serde_json::Value> {
+    fs::read_to_string(&paths.migration_report_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+}
+
+#[tauri::command]
+pub fn get_storage_migration_status() -> Result<StorageMigrationStatus> {
+    let paths = resolve_shared_paths().map_err(|e| {
+        TandemError::InvalidConfig(format!("Failed to resolve shared paths: {}", e))
+    })?;
+    let report_value = read_migration_report_value(&paths);
+    let migration_reason = report_value
+        .as_ref()
+        .and_then(|v| v.get("reason"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let migration_timestamp_ms = report_value
+        .as_ref()
+        .and_then(|v| v.get("timestamp_ms"))
+        .and_then(|v| v.as_u64());
+    let sources_detected = detect_migration_sources();
+    let migration_needed = sources_detected.iter().any(|s| s.exists)
+        && (!paths.migration_report_path.exists() || !paths.storage_version_path.exists());
+
+    Ok(StorageMigrationStatus {
+        canonical_root: paths.canonical_root.to_string_lossy().to_string(),
+        migration_report_exists: paths.migration_report_path.exists(),
+        storage_version_exists: paths.storage_version_path.exists(),
+        migration_reason,
+        migration_timestamp_ms,
+        migration_needed,
+        sources_detected,
+    })
+}
+
+#[tauri::command]
+pub async fn run_storage_migration(
+    app: AppHandle,
+    options: Option<StorageMigrationOptions>,
+) -> Result<StorageMigrationRunResult> {
+    let opts = options.unwrap_or(StorageMigrationOptions {
+        dry_run: false,
+        force: false,
+        include_workspace_scan: false,
+    });
+    let started_at_ms = now_ms();
+    let paths = resolve_shared_paths().map_err(|e| {
+        TandemError::InvalidConfig(format!("Failed to resolve shared paths: {}", e))
+    })?;
+    let sources_detected = detect_migration_sources();
+
+    let mut progress = StorageMigrationProgressEvent {
+        phase: "scanning_sources".to_string(),
+        phase_percent: 100,
+        overall_percent: 10,
+        sessions_imported: 0,
+        sessions_repaired: 0,
+        messages_recovered: 0,
+        parts_recovered: 0,
+        conflicts_merged: 0,
+        copied_count: 0,
+        skipped_count: 0,
+        error_count: 0,
+    };
+    let _ = app.emit("storage-migration-progress", &progress);
+
+    if opts.dry_run {
+        let ended_at_ms = now_ms();
+        let result = StorageMigrationRunResult {
+            status: "success".to_string(),
+            started_at_ms,
+            ended_at_ms,
+            duration_ms: ended_at_ms.saturating_sub(started_at_ms),
+            sources_detected,
+            copied: Vec::new(),
+            skipped: Vec::new(),
+            errors: Vec::new(),
+            sessions_imported: 0,
+            sessions_repaired: 0,
+            messages_recovered: 0,
+            parts_recovered: 0,
+            conflicts_merged: 0,
+            tool_rows_upserted: 0,
+            report_path: paths.migration_report_path.to_string_lossy().to_string(),
+            reason: "dry_run".to_string(),
+            dry_run: true,
+        };
+        let _ = app.emit("storage-migration-complete", &result);
+        return Ok(result);
+    }
+
+    progress.phase = "copying_secure_artifacts".to_string();
+    progress.overall_percent = 35;
+    let _ = app.emit("storage-migration-progress", &progress);
+
+    let migration = migrate_legacy_storage_if_needed(&paths)
+        .map_err(|e| TandemError::InvalidConfig(format!("Storage migration failed: {}", e)))?;
+
+    progress.copied_count = migration.copied.len();
+    progress.skipped_count = migration.skipped.len();
+    progress.error_count = migration.errors.len();
+    progress.phase = "rehydrating_chat_history".to_string();
+    progress.overall_percent = 70;
+    let _ = app.emit("storage-migration-progress", &progress);
+
+    let storage_root = paths.engine_state_dir.join("storage");
+    let storage = Storage::new(&storage_root)
+        .await
+        .map_err(|e| TandemError::InvalidConfig(format!("Storage open failed: {}", e)))?;
+    let repair_stats: SessionRepairStats = storage
+        .repair_sessions_from_file_store()
+        .await
+        .map_err(|e| TandemError::InvalidConfig(format!("Storage repair failed: {}", e)))?;
+    let sessions_for_backfill = storage.list_sessions().await;
+    let backfill = crate::tool_history::backfill_tool_executions_from_sessions(
+        &app,
+        &sessions_for_backfill,
+    )
+    .map_err(|e| TandemError::InvalidConfig(format!("Tool history backfill failed: {}", e)))?;
+
+    progress.sessions_repaired = repair_stats.sessions_repaired;
+    progress.messages_recovered = repair_stats.messages_recovered;
+    progress.parts_recovered = repair_stats.parts_recovered;
+    progress.conflicts_merged = repair_stats.conflicts_merged;
+    progress.phase = "validating_and_finalizing".to_string();
+    progress.overall_percent = 100;
+    let _ = app.emit("storage-migration-progress", &progress);
+
+    let status = if migration.errors.is_empty() {
+        "success"
+    } else {
+        "partial"
+    }
+    .to_string();
+    let ended_at_ms = now_ms();
+    let result = StorageMigrationRunResult {
+        status,
+        started_at_ms,
+        ended_at_ms,
+        duration_ms: ended_at_ms.saturating_sub(started_at_ms),
+        sources_detected,
+        copied: migration.copied,
+        skipped: migration.skipped,
+        errors: migration.errors,
+        sessions_imported: 0,
+        sessions_repaired: repair_stats.sessions_repaired,
+        messages_recovered: repair_stats.messages_recovered,
+        parts_recovered: repair_stats.parts_recovered,
+        conflicts_merged: repair_stats.conflicts_merged,
+        tool_rows_upserted: backfill.tool_rows_upserted,
+        report_path: paths.migration_report_path.to_string_lossy().to_string(),
+        reason: migration.reason,
+        dry_run: false,
+    };
+    let _ = app.emit("storage-migration-complete", &result);
+    Ok(result)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolHistoryBackfillResult {
+    pub sessions_scanned: u64,
+    pub tool_rows_upserted: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolHistoryBackfillStatus {
+    pub tool_rows_total: u64,
+    pub sessions_with_tool_rows: u64,
+}
+
+#[tauri::command]
+pub async fn run_tool_history_backfill(app: AppHandle) -> Result<ToolHistoryBackfillResult> {
+    let paths = resolve_shared_paths().map_err(|e| {
+        TandemError::InvalidConfig(format!("Failed to resolve shared paths: {}", e))
+    })?;
+    let storage_root = paths.engine_state_dir.join("storage");
+    let storage = Storage::new(&storage_root)
+        .await
+        .map_err(|e| TandemError::InvalidConfig(format!("Storage open failed: {}", e)))?;
+    let sessions = storage.list_sessions().await;
+    let stats = crate::tool_history::backfill_tool_executions_from_sessions(&app, &sessions)?;
+    Ok(ToolHistoryBackfillResult {
+        sessions_scanned: stats.sessions_scanned,
+        tool_rows_upserted: stats.tool_rows_upserted,
+    })
+}
+
+#[tauri::command]
+pub fn get_tool_history_backfill_status(app: AppHandle) -> Result<ToolHistoryBackfillStatus> {
+    let db_path = crate::tool_history::app_memory_db_path_for_commands(&app)?;
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| TandemError::Memory(format!("open tool history db: {}", e)))?;
+    let tool_rows_total: u64 = conn
+        .query_row("SELECT COUNT(*) FROM tool_executions", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|v| u64::try_from(v).unwrap_or_default())
+        .unwrap_or_default();
+    let sessions_with_tool_rows: u64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT session_id) FROM tool_executions",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|v| u64::try_from(v).unwrap_or_default())
+        .unwrap_or_default();
+    Ok(ToolHistoryBackfillStatus {
+        tool_rows_total,
+        sessions_with_tool_rows,
+    })
+}
+
 // ============================================================================
 // Logs (on-demand streaming)
 // ============================================================================
@@ -2287,10 +3529,7 @@ pub struct LogStreamBatch {
 
 #[tauri::command]
 pub async fn list_app_log_files(app: AppHandle) -> Result<Vec<LogFileInfo>> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| TandemError::InvalidConfig(format!("Failed to get app data dir: {}", e)))?;
+    let app_data_dir = shared_app_data_dir(&app)?;
     let logs_dir = app_data_dir.join("logs");
     logs::list_log_files(&logs_dir)
 }
@@ -2380,7 +3619,7 @@ pub async fn start_log_stream(
                 }
             }
             "tandem" => {
-                let app_data_dir = match app.path().app_data_dir() {
+                let app_data_dir = match shared_app_data_dir(&app) {
                     Ok(d) => d,
                     Err(e) => {
                         let _ = send_batch(
@@ -2696,7 +3935,7 @@ pub async fn rewind_to_message(
         .create_session(CreateSessionRequest {
             parent_id: None,
             title: Some(format!("Rewind from {}", session_id)),
-            model: default_model,
+            model: build_sidecar_session_model(default_model, default_provider.clone()),
             provider: default_provider,
             permission: Some(vec![
                 crate::sidecar::PermissionRule {
@@ -2725,6 +3964,12 @@ pub async fn rewind_to_message(
                     action: "allow".to_string(),
                 },
             ]),
+            directory: state
+                .get_workspace_path()
+                .map(|p| p.to_string_lossy().to_string()),
+            workspace_root: state
+                .get_workspace_path()
+                .map(|p| p.to_string_lossy().to_string()),
         })
         .await?;
 
@@ -2741,7 +3986,10 @@ pub async fn rewind_to_message(
     if let Some(content) = edited_content {
         tracing::info!("Sending edited message to new session");
         let request = SendMessageRequest::text(content);
-        state.sidecar.send_message(&new_session.id, request).await?;
+        state
+            .sidecar
+            .append_message_and_start_run(&new_session.id, request)
+            .await?;
     }
 
     // Update current session
@@ -2823,7 +4071,10 @@ pub async fn undo_via_command(state: State<'_, AppState>, session_id: String) ->
     // Send "/undo" as a regular prompt - same as typing it in the TUI
     // OpenCode intercepts slash commands and handles them specially
     let request = crate::sidecar::SendMessageRequest::text("/undo".to_string());
-    state.sidecar.send_message(&session_id, request).await
+    state
+        .sidecar
+        .append_message_and_start_run(&session_id, request)
+        .await
 }
 
 // ============================================================================
@@ -2928,6 +4179,136 @@ fn effective_session_mode(state: &AppState, session_id: &str) -> ResolvedMode {
         })
 }
 
+fn normalize_tool_name_for_approval(name: &str) -> String {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn extract_websearch_query(args: &serde_json::Value) -> Option<String> {
+    const QUERY_KEYS: [&str; 5] = ["query", "q", "search_query", "searchQuery", "keywords"];
+    for key in QUERY_KEYS {
+        if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    for container in ["arguments", "args", "input", "params"] {
+        if let Some(obj) = args.get(container) {
+            for key in QUERY_KEYS {
+                if let Some(value) = obj.get(key).and_then(|v| v.as_str()) {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn websearch_query_present(args: Option<&serde_json::Value>) -> bool {
+    args.and_then(extract_websearch_query).is_some()
+}
+
+fn set_websearch_query(
+    args: Option<serde_json::Value>,
+    query: &str,
+    query_source: &str,
+) -> serde_json::Value {
+    let mut obj = args
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    obj.insert(
+        "query".to_string(),
+        serde_json::Value::String(query.to_string()),
+    );
+    obj.insert(
+        "__query_source".to_string(),
+        serde_json::Value::String(query_source.to_string()),
+    );
+    serde_json::Value::Object(obj)
+}
+
+fn infer_websearch_query_from_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_lowercase();
+    const PREFIXES: [&str; 10] = [
+        "web search",
+        "websearch",
+        "search web",
+        "search for",
+        "search",
+        "look up",
+        "lookup",
+        "find",
+        "web lookup",
+        "query",
+    ];
+
+    let mut candidate = trimmed;
+    for prefix in PREFIXES {
+        if lower.starts_with(prefix) && lower.len() >= prefix.len() {
+            candidate = trimmed[prefix.len()..]
+                .trim_start_matches(|c: char| c.is_whitespace() || c == ':' || c == '-');
+            break;
+        }
+    }
+
+    let normalized = candidate
+        .trim()
+        .trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace())
+        .trim_matches(|c: char| matches!(c, '.' | ',' | '!' | '?'))
+        .trim()
+        .to_string();
+    if normalized.split_whitespace().count() < 2 {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn latest_user_text_from_messages(messages: &[SessionMessage]) -> Option<String> {
+    messages.iter().rev().find_map(|message| {
+        if !message.info.role.eq_ignore_ascii_case("user") {
+            return None;
+        }
+        let mut out = String::new();
+        for part in &message.parts {
+            let text = part
+                .get("text")
+                .and_then(|v| v.as_str())
+                .or_else(|| part.get("content").and_then(|v| v.as_str()))
+                .or_else(|| {
+                    part.get("type")
+                        .and_then(|v| v.as_str())
+                        .filter(|t| *t == "text")
+                        .and_then(|_| part.get("text"))
+                        .and_then(|v| v.as_str())
+                });
+            if let Some(text) = text {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(text);
+            }
+        }
+        let trimmed = out.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 /// Approve a pending tool execution
 #[tauri::command]
 pub async fn approve_tool(
@@ -2946,7 +4327,108 @@ pub async fn approve_tool(
         args
     );
 
-    if let (Some(tool_name), Some(args_val)) = (tool.clone(), args.clone()) {
+    let effective_tool = tool.clone();
+    let mut effective_args = args.clone();
+    let normalized_tool = effective_tool
+        .as_deref()
+        .map(normalize_tool_name_for_approval);
+
+    if normalized_tool.as_deref() == Some("websearch")
+        && !websearch_query_present(effective_args.as_ref())
+    {
+        // Try request-scoped cache first.
+        if let Some(cached_args) = state
+            .permission_args_cache
+            .lock()
+            .await
+            .get(&tool_call_id)
+            .cloned()
+        {
+            if let Some(query) = extract_websearch_query(&cached_args) {
+                tracing::warn!(
+                    "[approve_tool] recovered websearch query from request cache request_id={} query={}",
+                    tool_call_id,
+                    query
+                );
+                effective_args = Some(set_websearch_query(
+                    Some(cached_args),
+                    &query,
+                    "recovered_from_context",
+                ));
+            }
+        }
+    }
+    if normalized_tool.as_deref() == Some("websearch")
+        && !websearch_query_present(effective_args.as_ref())
+    {
+        // Then per-session recovered intent cache.
+        if let Some(query) = state
+            .session_websearch_intent
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+        {
+            tracing::warn!(
+                "[approve_tool] recovered websearch query from session intent session_id={} query={}",
+                session_id,
+                query
+            );
+            effective_args = Some(set_websearch_query(
+                effective_args.clone(),
+                &query,
+                "recovered_from_context",
+            ));
+        }
+    }
+    if normalized_tool.as_deref() == Some("websearch")
+        && !websearch_query_present(effective_args.as_ref())
+    {
+        // Last resort: infer from latest user message text in session history.
+        if let Ok(messages) = state.sidecar.get_session_messages(&session_id).await {
+            if let Some(user_text) = latest_user_text_from_messages(&messages) {
+                if let Some(query) = infer_websearch_query_from_text(&user_text) {
+                    tracing::warn!(
+                        "[approve_tool] inferred websearch query from latest user text session_id={} query={}",
+                        session_id,
+                        query
+                    );
+                    effective_args = Some(set_websearch_query(
+                        effective_args.clone(),
+                        &query,
+                        "inferred_from_user",
+                    ));
+                }
+            }
+        }
+    }
+    if normalized_tool.as_deref() == Some("websearch")
+        && !websearch_query_present(effective_args.as_ref())
+    {
+        tracing::warn!(
+            "[approve_tool] denying websearch due to missing query after recovery attempts request_id={}",
+            tool_call_id
+        );
+        let _ = state.sidecar.deny_tool(&session_id, &tool_call_id).await;
+        return Err(TandemError::PermissionDenied(
+            "WEBSEARCH_QUERY_MISSING_APPROVAL".to_string(),
+        ));
+    }
+
+    // Keep session-level intent fresh once query is present.
+    if normalized_tool.as_deref() == Some("websearch") {
+        if let Some(args_val) = effective_args.as_ref() {
+            if let Some(query) = extract_websearch_query(args_val) {
+                state
+                    .session_websearch_intent
+                    .lock()
+                    .await
+                    .insert(session_id.clone(), query);
+            }
+        }
+    }
+
+    if let (Some(tool_name), Some(args_val)) = (effective_tool.clone(), effective_args.clone()) {
         let mode = effective_session_mode(&state, &session_id);
         if let Err(e) = crate::modes::mode_allows_tool_execution(
             &mode,
@@ -2960,8 +4442,8 @@ pub async fn approve_tool(
     }
 
     // Strict Python venv enforcement for AI terminal-like tools.
-    // Goal: prevent global pip installs and python runs outside `.opencode/.venv`.
-    if let (Some(tool_name), Some(args_val)) = (tool.clone(), args.clone()) {
+    // Goal: prevent global pip installs and python runs outside workspace venv.
+    if let (Some(tool_name), Some(args_val)) = (effective_tool.clone(), effective_args.clone()) {
         let ws = state
             .get_workspace_path()
             .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
@@ -2990,7 +4472,7 @@ pub async fn approve_tool(
     // Capture a snapshot BEFORE allowing the tool to run, so we can undo file changes later.
     // We only snapshot direct file tools (write/delete). Shell commands and reads are too broad.
     // Note: OpenCode's tool names are "write", "delete", "read", "bash", "list", "search", etc.
-    if let (Some(tool_name), Some(args_val)) = (tool.clone(), args.clone()) {
+    if let (Some(tool_name), Some(args_val)) = (effective_tool.clone(), effective_args.clone()) {
         let is_file_tool = matches!(
             tool_name.as_str(),
             "write" | "write_file" | "create_file" | "delete" | "delete_file"
@@ -3087,6 +4569,13 @@ pub async fn approve_tool(
         tracing::info!("[approve_tool] No tool/args provided, skipping snapshot");
     }
 
+    // Clear request-scoped cache after approval resolution.
+    state
+        .permission_args_cache
+        .lock()
+        .await
+        .remove(&tool_call_id);
+
     state.sidecar.approve_tool(&session_id, &tool_call_id).await
 }
 
@@ -3114,6 +4603,12 @@ pub async fn deny_tool(
         };
         state.operation_journal.record(entry, None);
     }
+
+    state
+        .permission_args_cache
+        .lock()
+        .await
+        .remove(&tool_call_id);
 
     state.sidecar.deny_tool(&session_id, &tool_call_id).await
 }
@@ -3154,6 +4649,85 @@ pub async fn reply_question(
 #[tauri::command]
 pub async fn reject_question(state: State<'_, AppState>, request_id: String) -> Result<()> {
     state.sidecar.reject_question(&request_id).await
+}
+
+// ============================================================================
+// Routines
+// ============================================================================
+
+#[tauri::command]
+pub async fn routines_list(state: State<'_, AppState>) -> Result<Vec<RoutineSpec>> {
+    state.sidecar.routines_list().await
+}
+
+#[tauri::command]
+pub async fn routines_create(
+    state: State<'_, AppState>,
+    request: RoutineCreateRequest,
+) -> Result<RoutineSpec> {
+    state.sidecar.routines_create(request).await
+}
+
+#[tauri::command]
+pub async fn routines_patch(
+    state: State<'_, AppState>,
+    routine_id: String,
+    request: RoutinePatchRequest,
+) -> Result<RoutineSpec> {
+    state.sidecar.routines_patch(&routine_id, request).await
+}
+
+#[tauri::command]
+pub async fn routines_delete(state: State<'_, AppState>, routine_id: String) -> Result<bool> {
+    state.sidecar.routines_delete(&routine_id).await
+}
+
+#[tauri::command]
+pub async fn routines_run_now(
+    state: State<'_, AppState>,
+    routine_id: String,
+    request: Option<RoutineRunNowRequest>,
+) -> Result<RoutineRunNowResponse> {
+    state
+        .sidecar
+        .routines_run_now(&routine_id, request.unwrap_or_default())
+        .await
+}
+
+#[tauri::command]
+pub async fn routines_history(
+    state: State<'_, AppState>,
+    routine_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<RoutineHistoryEvent>> {
+    state.sidecar.routines_history(&routine_id, limit).await
+}
+
+#[tauri::command]
+pub async fn mission_list(state: State<'_, AppState>) -> Result<Vec<MissionState>> {
+    state.sidecar.mission_list().await
+}
+
+#[tauri::command]
+pub async fn mission_create(
+    state: State<'_, AppState>,
+    request: MissionCreateRequest,
+) -> Result<MissionState> {
+    state.sidecar.mission_create(request).await
+}
+
+#[tauri::command]
+pub async fn mission_get(state: State<'_, AppState>, mission_id: String) -> Result<MissionState> {
+    state.sidecar.mission_get(&mission_id).await
+}
+
+#[tauri::command]
+pub async fn mission_apply_event(
+    state: State<'_, AppState>,
+    mission_id: String,
+    event: serde_json::Value,
+) -> Result<MissionApplyEventResult> {
+    state.sidecar.mission_apply_event(&mission_id, event).await
 }
 
 // ============================================================================
@@ -3704,15 +5278,15 @@ You can create rich, interactive HTML files that render directly in Tandem's pre
                     category: "python".to_string(),
                     instructions: r#"# Workspace Python (Venv-Only)
 
-Tandem enforces a workspace-scoped Python virtual environment at `.opencode/.venv`.
+Tandem enforces a workspace-scoped Python virtual environment at `.tandem/.venv`.
 
 ## Rules (STRICT)
 
 1. Do NOT run `python`, `python3`, `py`, or `pip install` directly.
 2. If you need Python packages, instruct the user to open **Python Setup (Workspace Venv)** and click **Create venv in workspace**.
 3. Only run Python via the workspace venv interpreter, e.g.:
-   - Windows: `.opencode\.venv\Scripts\python.exe ...`
-   - macOS/Linux: `.opencode/.venv/bin/python3 ...`
+   - Windows: `.tandem\.venv\Scripts\python.exe ...`
+   - macOS/Linux: `.tandem/.venv/bin/python3 ...`
 4. Install dependencies using:
    - `-m pip install -r requirements.txt` (preferred) or `-m pip install <pkgs>`
 
@@ -3721,11 +5295,11 @@ Tandem enforces a workspace-scoped Python virtual environment at `.opencode/.ven
 Explain that Tandem will block Python until the venv exists, and the wizard may open automatically when a blocked command is attempted.
 "#.to_string(),
                     json_schema: serde_json::json!({
-                        "venv_root": ".opencode/.venv",
+                        "venv_root": ".tandem/.venv",
                         "allowed_python": "workspace venv interpreter only",
                         "install": "venv python -m pip install -r requirements.txt"
                     }),
-                    example: "Use `.opencode/.venv/bin/python3 -m pip install -r requirements.txt` then run `.opencode/.venv/bin/python3 script.py`.".to_string(),
+                    example: "Use `.tandem/.venv/bin/python3 -m pip install -r requirements.txt` then run `.tandem/.venv/bin/python3 script.py`.".to_string(),
                 });
             }
             "research" => {
@@ -4488,72 +6062,46 @@ pub async fn python_install_requirements(
 // Skills Management Commands
 // ============================================================================
 
-fn import_skill_from_content(
-    state: &State<'_, AppState>,
-    content: &str,
+fn to_engine_skill_location(
     location: crate::skills::SkillLocation,
-) -> Result<crate::skills::SkillInfo> {
-    // Parse content to get name
-    let (name, description, _body, metadata) =
-        crate::skills::parse_skill_content_with_metadata(content)?;
-
-    // Determine target directory
-    let target_dir = match location {
-        crate::skills::SkillLocation::Project => {
-            let ws = state.workspace_path.read().unwrap();
-            let workspace = ws
-                .as_ref()
-                .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
-            workspace.join(".opencode").join("skill").join(&name)
-        }
-        crate::skills::SkillLocation::Global => {
-            let config_dir = dirs::config_dir()
-                .ok_or_else(|| TandemError::InvalidConfig("No config directory".to_string()))?;
-            config_dir.join("opencode").join("skills").join(&name)
-        }
-    };
-
-    // Create directory and write file
-    fs::create_dir_all(&target_dir).map_err(TandemError::Io)?;
-
-    // Write original content directly (don't reconstruct to avoid formatting issues)
-    fs::write(target_dir.join("SKILL.md"), content).map_err(TandemError::Io)?;
-
-    tracing::info!("Imported skill '{}' to {:?}", name, location);
-
-    Ok(crate::skills::SkillInfo {
-        name,
-        description,
-        location,
-        path: target_dir.to_string_lossy().to_string(),
-        version: metadata.version,
-        author: metadata.author,
-        tags: metadata.tags,
-        requires: metadata.requires,
-        compatibility: metadata.compatibility,
-        triggers: metadata.triggers,
-        parse_error: None,
-    })
+) -> tandem_skills::SkillLocation {
+    match location {
+        crate::skills::SkillLocation::Project => tandem_skills::SkillLocation::Project,
+        crate::skills::SkillLocation::Global => tandem_skills::SkillLocation::Global,
+    }
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst).map_err(TandemError::Io)?;
-    let entries = fs::read_dir(src).map_err(TandemError::Io)?;
-
-    for entry_res in entries {
-        let entry = entry_res.map_err(TandemError::Io)?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        let file_type = entry.file_type().map_err(TandemError::Io)?;
-
-        if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else if file_type.is_file() {
-            fs::copy(&src_path, &dst_path).map_err(TandemError::Io)?;
-        }
+fn from_engine_skill_location(
+    location: tandem_skills::SkillLocation,
+) -> crate::skills::SkillLocation {
+    match location {
+        tandem_skills::SkillLocation::Project => crate::skills::SkillLocation::Project,
+        tandem_skills::SkillLocation::Global => crate::skills::SkillLocation::Global,
     }
+}
 
-    Ok(())
+fn from_engine_skill_info(info: tandem_skills::SkillInfo) -> crate::skills::SkillInfo {
+    crate::skills::SkillInfo {
+        name: info.name,
+        description: info.description,
+        location: from_engine_skill_location(info.location),
+        path: info.path,
+        version: info.version,
+        author: info.author,
+        tags: info.tags,
+        requires: info.requires,
+        compatibility: info.compatibility,
+        triggers: info.triggers,
+        parse_error: info.parse_error,
+    }
+}
+
+fn conflict_policy_text(policy: &SkillsConflictPolicy) -> String {
+    match policy {
+        SkillsConflictPolicy::Skip => "skip".to_string(),
+        SkillsConflictPolicy::Overwrite => "overwrite".to_string(),
+        SkillsConflictPolicy::Rename => "rename".to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -4564,7 +6112,7 @@ pub enum SkillsConflictPolicy {
     Rename,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct SkillsImportPreviewItem {
     pub source: String,
     pub valid: bool,
@@ -4582,7 +6130,7 @@ pub struct SkillsImportPreviewItem {
     pub triggers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct SkillsImportPreview {
     pub items: Vec<SkillsImportPreviewItem>,
     pub total: usize,
@@ -4591,348 +6139,118 @@ pub struct SkillsImportPreview {
     pub conflicts: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct SkillsImportResult {
     pub imported: Vec<crate::skills::SkillInfo>,
     pub skipped: Vec<String>,
     pub errors: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-struct SkillCandidate {
-    source: String,
-    content: String,
-}
-
-fn normalize_namespace(namespace: Option<String>) -> Option<String> {
-    namespace.and_then(|ns| {
-        let clean = ns.trim().replace('\\', "/");
-        let parts: Vec<String> = clean
-            .split('/')
-            .map(|p| p.trim())
-            .filter(|p| !p.is_empty() && *p != "." && *p != "..")
-            .map(|p| {
-                p.chars()
-                    .map(|c| {
-                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                            c
-                        } else {
-                            '-'
-                        }
-                    })
-                    .collect::<String>()
-            })
-            .collect();
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join("/"))
-        }
-    })
-}
-
-fn skill_base_dir(
-    state: &State<'_, AppState>,
-    location: crate::skills::SkillLocation,
-    namespace: Option<&str>,
-) -> Result<PathBuf> {
-    let mut base = match location {
-        crate::skills::SkillLocation::Project => {
-            let ws = state.workspace_path.read().unwrap();
-            let workspace = ws
-                .as_ref()
-                .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
-            workspace.join(".opencode").join("skill")
-        }
-        crate::skills::SkillLocation::Global => {
-            let config_dir = dirs::config_dir()
-                .ok_or_else(|| TandemError::InvalidConfig("No config directory".to_string()))?;
-            config_dir.join("opencode").join("skills")
-        }
-    };
-    if let Some(ns) = namespace {
-        for segment in ns.split('/') {
-            base.push(segment);
-        }
-    }
-    Ok(base)
-}
-
-fn resolve_conflict_name(base: &PathBuf, name: &str) -> String {
-    if !base.join(name).exists() {
-        return name.to_string();
-    }
-    for i in 2..=10_000 {
-        let candidate = format!("{}-{}", name, i);
-        if !base.join(&candidate).exists() {
-            return candidate;
-        }
-    }
-    format!("{}-{}", name, Uuid::new_v4().simple())
-}
-
-fn load_skill_candidates(file_or_path: &str) -> Result<Vec<SkillCandidate>> {
-    let path = PathBuf::from(file_or_path);
-    if path.exists() {
-        if path.extension().and_then(|e| e.to_str()) == Some("zip") {
-            let file = fs::File::open(&path).map_err(TandemError::Io)?;
-            let mut zip = zip::ZipArchive::new(file)
-                .map_err(|e| TandemError::InvalidConfig(format!("Invalid zip archive: {}", e)))?;
-            let mut out = Vec::new();
-            for i in 0..zip.len() {
-                let mut entry = zip.by_index(i).map_err(|e| {
-                    TandemError::InvalidConfig(format!("Failed to read zip entry: {}", e))
-                })?;
-                if entry.is_dir() {
-                    continue;
-                }
-                let name = entry.name().replace('\\', "/");
-                if !name.to_ascii_lowercase().ends_with("skill.md") {
-                    continue;
-                }
-                let mut content = String::new();
-                entry.read_to_string(&mut content).map_err(|e| {
-                    TandemError::InvalidConfig(format!(
-                        "Non-UTF8 SKILL.md in zip entry {}: {}",
-                        name, e
-                    ))
-                })?;
-                out.push(SkillCandidate {
-                    source: name,
-                    content,
-                });
-            }
-            if out.is_empty() {
-                return Err(TandemError::InvalidConfig(
-                    "No SKILL.md files found in zip".to_string(),
-                ));
-            }
-            return Ok(out);
-        }
-        let content = fs::read_to_string(&path).map_err(TandemError::Io)?;
-        return Ok(vec![SkillCandidate {
-            source: path.to_string_lossy().to_string(),
-            content,
-        }]);
-    }
-
-    Ok(vec![SkillCandidate {
-        source: "inline".to_string(),
-        content: file_or_path.to_string(),
-    }])
-}
-
 #[tauri::command]
-pub fn skills_import_preview(
+pub async fn skills_import_preview(
     state: State<'_, AppState>,
     file_or_path: String,
     location: crate::skills::SkillLocation,
     namespace: Option<String>,
     conflict_policy: SkillsConflictPolicy,
 ) -> Result<SkillsImportPreview> {
-    let namespace = normalize_namespace(namespace);
-    let base_dir = skill_base_dir(&state, location.clone(), namespace.as_deref())?;
-    let candidates = load_skill_candidates(&file_or_path)?;
-    let mut items = Vec::new();
-    let mut valid = 0usize;
-    let mut invalid = 0usize;
-    let mut conflicts = 0usize;
-
-    for c in candidates {
-        match crate::skills::parse_skill_content_with_metadata(&c.content) {
-            Ok((name, description, _, metadata)) => {
-                let conflict = base_dir.join(&name).exists();
-                if conflict {
-                    conflicts += 1;
-                }
-                let resolved_name =
-                    if conflict && matches!(conflict_policy, SkillsConflictPolicy::Rename) {
-                        resolve_conflict_name(&base_dir, &name)
-                    } else {
-                        name.clone()
-                    };
-                let action = if !conflict {
-                    "create".to_string()
-                } else {
-                    match conflict_policy {
-                        SkillsConflictPolicy::Skip => "skip".to_string(),
-                        SkillsConflictPolicy::Overwrite => "overwrite".to_string(),
-                        SkillsConflictPolicy::Rename => "rename".to_string(),
-                    }
-                };
-                items.push(SkillsImportPreviewItem {
-                    source: c.source,
-                    valid: true,
-                    name: Some(resolved_name.clone()),
-                    description: Some(description),
-                    conflict,
-                    action,
-                    target_path: Some(base_dir.join(&resolved_name).to_string_lossy().to_string()),
-                    error: None,
-                    version: metadata.version,
-                    author: metadata.author,
-                    tags: metadata.tags,
-                    requires: metadata.requires,
-                    compatibility: metadata.compatibility,
-                    triggers: metadata.triggers,
-                });
-                valid += 1;
-            }
-            Err(e) => {
-                items.push(SkillsImportPreviewItem {
-                    source: c.source,
-                    valid: false,
-                    name: None,
-                    description: None,
-                    conflict: false,
-                    action: "invalid".to_string(),
-                    target_path: None,
-                    error: Some(e),
-                    version: None,
-                    author: None,
-                    tags: Vec::new(),
-                    requires: Vec::new(),
-                    compatibility: None,
-                    triggers: Vec::new(),
-                });
-                invalid += 1;
-            }
-        }
-    }
-
+    let preview = state
+        .sidecar
+        .skills_import_preview(
+            file_or_path,
+            to_engine_skill_location(location),
+            namespace,
+            conflict_policy_text(&conflict_policy),
+        )
+        .await?;
     Ok(SkillsImportPreview {
-        total: items.len(),
-        valid,
-        invalid,
-        conflicts,
-        items,
+        items: preview
+            .items
+            .into_iter()
+            .map(|item| SkillsImportPreviewItem {
+                source: item.source,
+                valid: item.valid,
+                name: item.name,
+                description: item.description,
+                conflict: item.conflict,
+                action: item.action,
+                target_path: item.target_path,
+                error: item.error,
+                version: item.version,
+                author: item.author,
+                tags: item.tags,
+                requires: item.requires,
+                compatibility: item.compatibility,
+                triggers: item.triggers,
+            })
+            .collect(),
+        total: preview.total,
+        valid: preview.valid,
+        invalid: preview.invalid,
+        conflicts: preview.conflicts,
     })
 }
 
 #[tauri::command]
-pub fn skills_import(
+pub async fn skills_import(
     state: State<'_, AppState>,
     file_or_path: String,
     location: crate::skills::SkillLocation,
     namespace: Option<String>,
     conflict_policy: SkillsConflictPolicy,
 ) -> Result<SkillsImportResult> {
-    let namespace = normalize_namespace(namespace);
-    let base_dir = skill_base_dir(&state, location.clone(), namespace.as_deref())?;
-    fs::create_dir_all(&base_dir).map_err(TandemError::Io)?;
-    let candidates = load_skill_candidates(&file_or_path)?;
-
-    let mut imported = Vec::new();
-    let mut skipped = Vec::new();
-    let mut errors = Vec::new();
-
-    for c in candidates {
-        let parsed = crate::skills::parse_skill_content_with_metadata(&c.content);
-        let (name, description, _body, metadata) = match parsed {
-            Ok(v) => v,
-            Err(e) => {
-                errors.push(format!("{}: {}", c.source, e));
-                continue;
-            }
-        };
-
-        let existing = base_dir.join(&name);
-        let final_name = if existing.exists() {
-            match conflict_policy {
-                SkillsConflictPolicy::Skip => {
-                    skipped.push(name.clone());
-                    continue;
-                }
-                SkillsConflictPolicy::Overwrite => name.clone(),
-                SkillsConflictPolicy::Rename => resolve_conflict_name(&base_dir, &name),
-            }
-        } else {
-            name.clone()
-        };
-
-        let target_dir = base_dir.join(&final_name);
-        if target_dir.exists() {
-            fs::remove_dir_all(&target_dir).map_err(TandemError::Io)?;
-        }
-        fs::create_dir_all(&target_dir).map_err(TandemError::Io)?;
-        fs::write(target_dir.join("SKILL.md"), &c.content).map_err(TandemError::Io)?;
-
-        imported.push(crate::skills::SkillInfo {
-            name: final_name,
-            description,
-            location: location.clone(),
-            path: target_dir.to_string_lossy().to_string(),
-            version: metadata.version,
-            author: metadata.author,
-            tags: metadata.tags,
-            requires: metadata.requires,
-            compatibility: metadata.compatibility,
-            triggers: metadata.triggers,
-            parse_error: None,
-        });
-    }
-
+    let result = state
+        .sidecar
+        .skills_import(
+            file_or_path,
+            to_engine_skill_location(location),
+            namespace,
+            conflict_policy_text(&conflict_policy),
+        )
+        .await?;
     Ok(SkillsImportResult {
-        imported,
-        skipped,
-        errors,
+        imported: result
+            .imported
+            .into_iter()
+            .map(from_engine_skill_info)
+            .collect(),
+        skipped: result.skipped,
+        errors: result.errors,
     })
 }
 
 /// List all installed skills
 #[tauri::command]
-pub fn list_skills(state: State<'_, AppState>) -> Result<Vec<crate::skills::SkillInfo>> {
-    let workspace = state.workspace_path.read().unwrap();
-    let workspace_str = workspace.as_ref().map(|p| p.to_str().unwrap());
-
-    tracing::info!("Listing skills for workspace: {:?}", workspace_str);
-    let skills = crate::skills::discover_skills(workspace_str);
-    tracing::info!("Found {} skills", skills.len());
-    for skill in &skills {
-        tracing::info!("  - {} ({:?}): {}", skill.name, skill.location, skill.path);
-    }
-
-    Ok(skills)
+pub async fn list_skills(state: State<'_, AppState>) -> Result<Vec<crate::skills::SkillInfo>> {
+    let skills = state.sidecar.list_skills().await?;
+    Ok(skills.into_iter().map(from_engine_skill_info).collect())
 }
 
 /// Import a skill from raw SKILL.md content
 #[tauri::command]
-pub fn import_skill(
+pub async fn import_skill(
     state: State<'_, AppState>,
     content: String,
     location: crate::skills::SkillLocation,
 ) -> Result<crate::skills::SkillInfo> {
-    import_skill_from_content(&state, &content, location)
+    let skill = state
+        .sidecar
+        .import_skill_content(content, to_engine_skill_location(location))
+        .await?;
+    Ok(from_engine_skill_info(skill))
 }
 
 /// Delete a skill
 #[tauri::command]
-pub fn delete_skill(
+pub async fn delete_skill(
     state: State<'_, AppState>,
     name: String,
     location: crate::skills::SkillLocation,
 ) -> Result<()> {
-    let target_dir = match location {
-        crate::skills::SkillLocation::Project => {
-            let ws = state.workspace_path.read().unwrap();
-            let workspace = ws
-                .as_ref()
-                .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
-            workspace.join(".opencode").join("skill").join(&name)
-        }
-        crate::skills::SkillLocation::Global => {
-            let config_dir = dirs::config_dir()
-                .ok_or_else(|| TandemError::InvalidConfig("No config directory".to_string()))?;
-            config_dir.join("opencode").join("skills").join(&name)
-        }
-    };
-
-    if target_dir.exists() {
-        fs::remove_dir_all(&target_dir).map_err(TandemError::Io)?;
-        tracing::info!("Deleted skill '{}' from {:?}", name, location);
-    }
-
-    Ok(())
+    state
+        .sidecar
+        .delete_skill(name, to_engine_skill_location(location))
+        .await
 }
 
 // ============================================================================
@@ -4940,67 +6258,34 @@ pub fn delete_skill(
 // ============================================================================
 
 #[tauri::command]
-pub fn skills_list_templates(
-    app: AppHandle,
+pub async fn skills_list_templates(
+    state: State<'_, AppState>,
+    _app: AppHandle,
 ) -> Result<Vec<crate::skill_templates::SkillTemplateInfo>> {
-    crate::skill_templates::list_skill_templates(&app).map_err(TandemError::InvalidConfig)
+    let templates = state.sidecar.list_skill_templates().await?;
+    Ok(templates
+        .into_iter()
+        .map(|t| crate::skill_templates::SkillTemplateInfo {
+            id: t.id,
+            name: t.name,
+            description: t.description,
+            requires: t.requires,
+        })
+        .collect())
 }
 
 #[tauri::command]
-pub fn skills_install_template(
+pub async fn skills_install_template(
     state: State<'_, AppState>,
-    app: AppHandle,
+    _app: AppHandle,
     template_id: String,
     location: crate::skills::SkillLocation,
 ) -> Result<crate::skills::SkillInfo> {
-    let template_dir = crate::skill_templates::get_skill_template_dir(&app, &template_id)
-        .map_err(TandemError::InvalidConfig)?;
-    let skill_file = template_dir.join("SKILL.md");
-    let content = fs::read_to_string(&skill_file).map_err(TandemError::Io)?;
-
-    let (name, description, _body, metadata) =
-        crate::skills::parse_skill_content_with_metadata(&content)?;
-
-    let target_dir = match location {
-        crate::skills::SkillLocation::Project => {
-            let ws = state.workspace_path.read().unwrap();
-            let workspace = ws
-                .as_ref()
-                .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
-            workspace.join(".opencode").join("skill").join(&name)
-        }
-        crate::skills::SkillLocation::Global => {
-            let config_dir = dirs::config_dir()
-                .ok_or_else(|| TandemError::InvalidConfig("No config directory".to_string()))?;
-            config_dir.join("opencode").join("skills").join(&name)
-        }
-    };
-
-    if target_dir.exists() {
-        fs::remove_dir_all(&target_dir).map_err(TandemError::Io)?;
-    }
-    copy_dir_recursive(&template_dir, &target_dir)?;
-
-    tracing::info!(
-        "Installed skill template '{}' as '{}' to {:?}",
-        template_id,
-        name,
-        location
-    );
-
-    Ok(crate::skills::SkillInfo {
-        name,
-        description,
-        location,
-        path: target_dir.to_string_lossy().to_string(),
-        version: metadata.version,
-        author: metadata.author,
-        tags: metadata.tags,
-        requires: metadata.requires,
-        compatibility: metadata.compatibility,
-        triggers: metadata.triggers,
-        parse_error: None,
-    })
+    let installed = state
+        .sidecar
+        .install_skill_template(template_id, to_engine_skill_location(location))
+        .await?;
+    Ok(from_engine_skill_info(installed))
 }
 
 // ============================================================================
@@ -5011,13 +6296,13 @@ pub fn skills_install_template(
 #[tauri::command]
 pub fn opencode_list_plugins(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
 ) -> Result<Vec<String>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
-    let path = crate::opencode_config::get_config_path(scope, ws)?;
+    let path = crate::tandem_config::get_config_path(scope, ws)?;
 
-    let cfg = crate::opencode_config::read_config(&path)?;
+    let cfg = crate::tandem_config::read_config(&path)?;
     let plugins = cfg
         .get("plugin")
         .and_then(|v| v.as_array())
@@ -5035,14 +6320,14 @@ pub fn opencode_list_plugins(
 #[tauri::command]
 pub fn opencode_add_plugin(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
     name: String,
 ) -> Result<Vec<String>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
 
-    let updated = crate::opencode_config::update_config(scope, ws, |cfg| {
-        crate::opencode_config::ensure_schema(cfg);
+    let updated = crate::tandem_config::update_config(scope, ws, |cfg| {
+        crate::tandem_config::ensure_schema(cfg);
 
         let root = cfg.as_object_mut().ok_or_else(|| {
             TandemError::InvalidConfig("OpenCode config must be an object".into())
@@ -5080,13 +6365,13 @@ pub fn opencode_add_plugin(
 #[tauri::command]
 pub fn opencode_remove_plugin(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
     name: String,
 ) -> Result<Vec<String>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
 
-    let updated = crate::opencode_config::update_config(scope, ws, |cfg| {
+    let updated = crate::tandem_config::update_config(scope, ws, |cfg| {
         let root = cfg.as_object_mut().ok_or_else(|| {
             TandemError::InvalidConfig("OpenCode config must be an object".into())
         })?;
@@ -5119,13 +6404,13 @@ pub struct OpencodeMcpServerEntry {
 #[tauri::command]
 pub fn opencode_list_mcp_servers(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
 ) -> Result<Vec<OpencodeMcpServerEntry>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
-    let path = crate::opencode_config::get_config_path(scope, ws)?;
+    let path = crate::tandem_config::get_config_path(scope, ws)?;
 
-    let cfg = crate::opencode_config::read_config(&path)?;
+    let cfg = crate::tandem_config::read_config(&path)?;
     let mut out: Vec<OpencodeMcpServerEntry> = Vec::new();
 
     if let Some(mcp) = cfg.get("mcp").and_then(|v| v.as_object()) {
@@ -5145,15 +6430,15 @@ pub fn opencode_list_mcp_servers(
 #[tauri::command]
 pub fn opencode_add_mcp_server(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
     name: String,
     config: serde_json::Value,
 ) -> Result<Vec<OpencodeMcpServerEntry>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
 
-    crate::opencode_config::update_config(scope, ws, |cfg| {
-        crate::opencode_config::ensure_schema(cfg);
+    crate::tandem_config::update_config(scope, ws, |cfg| {
+        crate::tandem_config::ensure_schema(cfg);
 
         let root = cfg.as_object_mut().ok_or_else(|| {
             TandemError::InvalidConfig("OpenCode config must be an object".into())
@@ -5176,13 +6461,13 @@ pub fn opencode_add_mcp_server(
 #[tauri::command]
 pub fn opencode_remove_mcp_server(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
     name: String,
 ) -> Result<Vec<OpencodeMcpServerEntry>> {
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
 
-    crate::opencode_config::update_config(scope, ws, |cfg| {
+    crate::tandem_config::update_config(scope, ws, |cfg| {
         let root = cfg.as_object_mut().ok_or_else(|| {
             TandemError::InvalidConfig("OpenCode config must be an object".into())
         })?;
@@ -5211,7 +6496,7 @@ pub struct OpencodeMcpTestResult {
 #[tauri::command]
 pub async fn opencode_test_mcp_connection(
     state: State<'_, AppState>,
-    scope: crate::opencode_config::OpenCodeConfigScope,
+    scope: crate::tandem_config::TandemConfigScope,
     name: String,
 ) -> Result<OpencodeMcpTestResult> {
     use futures::StreamExt;
@@ -5220,8 +6505,8 @@ pub async fn opencode_test_mcp_connection(
 
     let workspace = state.get_workspace_path();
     let ws = workspace.as_ref().map(|p| p.as_path());
-    let path = crate::opencode_config::get_config_path(scope, ws)?;
-    let cfg = crate::opencode_config::read_config(&path)?;
+    let path = crate::tandem_config::get_config_path(scope, ws)?;
+    let cfg = crate::tandem_config::read_config(&path)?;
 
     let server = match cfg
         .get("mcp")
@@ -5610,62 +6895,66 @@ pub fn list_plans(state: State<'_, AppState>) -> Result<Vec<PlanInfo>> {
         .as_ref()
         .ok_or_else(|| TandemError::InvalidConfig("No active workspace".to_string()))?;
 
-    let plans_dir = workspace_path.join(".opencode").join("plans");
+    let (canonical_plans_dir, legacy_plans_dir) = workspace_plans_dirs(workspace_path);
 
-    // Create plans directory if it doesn't exist
-    if !plans_dir.exists() {
+    // Create canonical plans directory if it doesn't exist
+    if !canonical_plans_dir.exists() {
         tracing::debug!(
-            "[list_plans] Plans directory doesn't exist, creating: {:?}",
-            plans_dir
+            "[list_plans] Canonical plans directory doesn't exist, creating: {:?}",
+            canonical_plans_dir
         );
-        fs::create_dir_all(&plans_dir).map_err(TandemError::Io)?;
-        return Ok(Vec::new());
+        fs::create_dir_all(&canonical_plans_dir).map_err(TandemError::Io)?;
     }
 
     let mut plans = Vec::new();
 
-    // Recursively scan for .md files in session subdirectories
-    for session_entry in fs::read_dir(&plans_dir).map_err(TandemError::Io)? {
-        let session_entry = session_entry.map_err(TandemError::Io)?;
-        let session_path = session_entry.path();
-
-        // Skip if not a directory
-        if !session_path.is_dir() {
-            continue;
+    let mut scan_plan_root = |plans_root: &Path| -> Result<()> {
+        if !plans_root.exists() {
+            return Ok(());
         }
+        for session_entry in fs::read_dir(plans_root).map_err(TandemError::Io)? {
+            let session_entry = session_entry.map_err(TandemError::Io)?;
+            let session_path = session_entry.path();
 
-        let session_name = session_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+            if !session_path.is_dir() {
+                continue;
+            }
 
-        // Scan for plan files in this session directory
-        for plan_entry in fs::read_dir(&session_path).map_err(TandemError::Io)? {
-            let plan_entry = plan_entry.map_err(TandemError::Io)?;
-            let plan_path = plan_entry.path();
+            let session_name = session_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
 
-            // Only include .md files that start with "PLAN_"
-            if let Some(file_name) = plan_path.file_name().and_then(|n| n.to_str()) {
-                if file_name.ends_with(".md") && file_name.starts_with("PLAN_") {
-                    let metadata = fs::metadata(&plan_path).map_err(TandemError::Io)?;
-                    let last_modified = metadata
-                        .modified()
-                        .map_err(TandemError::Io)?
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
+            for plan_entry in fs::read_dir(&session_path).map_err(TandemError::Io)? {
+                let plan_entry = plan_entry.map_err(TandemError::Io)?;
+                let plan_path = plan_entry.path();
 
-                    plans.push(PlanInfo {
-                        session_name: session_name.clone(),
-                        file_name: file_name.to_string(),
-                        full_path: plan_path.to_string_lossy().to_string(),
-                        last_modified,
-                    });
+                if let Some(file_name) = plan_path.file_name().and_then(|n| n.to_str()) {
+                    if file_name.ends_with(".md") && file_name.starts_with("PLAN_") {
+                        let metadata = fs::metadata(&plan_path).map_err(TandemError::Io)?;
+                        let last_modified = metadata
+                            .modified()
+                            .map_err(TandemError::Io)?
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+
+                        plans.push(PlanInfo {
+                            session_name: session_name.clone(),
+                            file_name: file_name.to_string(),
+                            full_path: plan_path.to_string_lossy().to_string(),
+                            last_modified,
+                        });
+                    }
                 }
             }
         }
-    }
+        Ok(())
+    };
+
+    scan_plan_root(&canonical_plans_dir)?;
+    scan_plan_root(&legacy_plans_dir)?;
 
     // Sort by last modified (newest first)
     plans.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
@@ -5678,11 +6967,20 @@ pub fn list_plans(state: State<'_, AppState>) -> Result<Vec<PlanInfo>> {
 #[tauri::command]
 pub fn read_plan_content(plan_path: String) -> Result<String> {
     let path = PathBuf::from(&plan_path);
+    let normalized_path = normalize_path_for_match(&plan_path);
 
-    // Security check: ensure the path is within .opencode/plans/
-    if !path.components().any(|c| c.as_os_str() == ".opencode") {
+    // Security check: ensure the path is within .tandem/plans/ or legacy .opencode/plans/
+    let is_allowed = path.components().any(|c| c.as_os_str() == ".tandem")
+        || path.components().any(|c| c.as_os_str() == ".opencode");
+    let in_plans = normalized_path.contains("/.tandem/plans/")
+        || normalized_path.starts_with(".tandem/plans/")
+        || normalized_path.contains("/.opencode/plans/")
+        || normalized_path.starts_with(".opencode/plans/")
+        || normalized_path.ends_with("/.tandem/plans")
+        || normalized_path.ends_with("/.opencode/plans");
+    if !is_allowed || !in_plans {
         return Err(TandemError::InvalidConfig(
-            "Plan path must be within .opencode/plans/".to_string(),
+            "Plan path must be within .tandem/plans/ or .opencode/plans/".to_string(),
         ));
     }
 
@@ -5723,14 +7021,14 @@ pub async fn start_plan_session(
         "PLAN_draft".to_string()
     };
 
-    // 2. Prepare Directory structure: .opencode/plans/{session_id}/
+    // 2. Prepare directory structure: .tandem/plans/{session_id}/
     // We use session_id for the folder to ensure uniqueness and "frictionless" start (no name collision)
     let workspace_path = state
         .get_workspace_path()
         .ok_or_else(|| TandemError::InvalidConfig("No workspace selected".to_string()))?;
 
-    let plans_dir = PathBuf::from(workspace_path)
-        .join(".opencode")
+    let plans_dir = PathBuf::from(&workspace_path)
+        .join(".tandem")
         .join("plans")
         .join(&session_id);
     let plan_file_path = plans_dir.join(format!("{}.md", plan_name));
@@ -5765,9 +7063,11 @@ pub async fn start_plan_session(
         .create_session(CreateSessionRequest {
             parent_id: None,
             title: Some(goal.clone().unwrap_or_else(|| "Plan Mode".to_string())),
-            model: default_model,
+            model: build_sidecar_session_model(default_model, default_provider.clone()),
             provider: default_provider,
             permission: None,
+            directory: Some(workspace_path.to_string_lossy().to_string()),
+            workspace_root: Some(workspace_path.to_string_lossy().to_string()),
         })
         .await?;
 
@@ -5784,7 +7084,11 @@ pub async fn start_plan_session(
     let request = SendMessageRequest::text(system_directive);
 
     // We ignore the result of the message send itself, as long as session exists
-    if let Err(e) = state.sidecar.send_message(&session.id, request).await {
+    if let Err(e) = state
+        .sidecar
+        .append_message_and_start_run(&session.id, request)
+        .await
+    {
         tracing::warn!("Failed to inject plan directive: {}", e);
     } else {
         tracing::info!("Injected plan directive into session {}", session.id);
@@ -5948,6 +7252,29 @@ fn normalize_provider_id_for_sidecar(provider: Option<String>) -> Option<String>
     })
 }
 
+fn build_sidecar_session_model(
+    model: Option<String>,
+    provider: Option<String>,
+) -> Option<serde_json::Value> {
+    match (model, provider) {
+        (Some(model_id), Some(provider_id)) => Some(serde_json::json!({
+            "provider_id": provider_id,
+            "model_id": model_id
+        })),
+        _ => None,
+    }
+}
+
+fn orchestrator_strict_contract_flag() -> bool {
+    match std::env::var("TANDEM_ORCH_STRICT_CONTRACT") {
+        Ok(v) => matches!(
+            v.trim().to_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => cfg!(debug_assertions),
+    }
+}
+
 /// Create a new orchestration run
 #[tauri::command]
 pub async fn orchestrator_create_run(
@@ -5980,9 +7307,15 @@ pub async fn orchestrator_create_run(
             &objective[..objective.len().min(50)]
         )),
         // Clone so we can also persist the selection onto the Run object below.
-        model: final_model.clone(),
+        model: build_sidecar_session_model(final_model.clone(), final_provider.clone()),
         provider: final_provider.clone(),
         permission: Some(orchestrator_permission_rules()),
+        directory: state
+            .get_workspace_path()
+            .map(|p| p.to_string_lossy().to_string()),
+        workspace_root: state
+            .get_workspace_path()
+            .map(|p| p.to_string_lossy().to_string()),
     };
 
     let session = state
@@ -6014,6 +7347,17 @@ pub async fn orchestrator_create_run(
     }
     if config.max_wall_time_secs == 20 * 60 {
         config.max_wall_time_secs = 60 * 60;
+    }
+    if orchestrator_strict_contract_flag() {
+        config.strict_planner_json = true;
+        config.strict_validator_json = true;
+        config.contract_warnings_enabled = true;
+        // Keep fallback enabled in phase 1 unless explicitly disabled by user config later.
+        if !config.allow_prose_fallback {
+            tracing::warn!(
+                "orchestrator strict contract flag enabled with prose fallback disabled via config"
+            );
+        }
     }
 
     // Create the run object
@@ -6253,9 +7597,15 @@ pub async fn orchestrator_set_resume_model(
             "Orchestrator Resume: {}",
             &snapshot.objective[..snapshot.objective.len().min(50)]
         )),
-        model: Some(model.clone()),
+        model: build_sidecar_session_model(Some(model.clone()), normalized_provider.clone()),
         provider: normalized_provider.clone(),
         permission: Some(orchestrator_permission_rules()),
+        directory: state
+            .get_workspace_path()
+            .map(|p| p.to_string_lossy().to_string()),
+        workspace_root: state
+            .get_workspace_path()
+            .map(|p| p.to_string_lossy().to_string()),
     };
 
     let session = state.sidecar.create_session(request).await?;
@@ -6686,11 +8036,20 @@ mod tests {
             score_min: Some(0.2),
             score_max: Some(0.9),
         };
-        let event = memory_retrieval_event("session-1", &meta, 42, "abcdef123456".to_string());
+        let event = memory_retrieval_event(
+            "session-1",
+            "retrieved_used",
+            &meta,
+            42,
+            "abcdef123456".to_string(),
+            Some("ok".to_string()),
+            None,
+        );
 
         match event {
             StreamEvent::MemoryRetrieval {
                 session_id,
+                status,
                 used,
                 chunks_total,
                 session_chunks,
@@ -6700,8 +8059,11 @@ mod tests {
                 query_hash,
                 score_min,
                 score_max,
+                embedding_status,
+                embedding_reason,
             } => {
                 assert_eq!(session_id, "session-1");
+                assert_eq!(status.as_deref(), Some("retrieved_used"));
                 assert!(used);
                 assert_eq!(chunks_total, 7);
                 assert_eq!(session_chunks, 2);
@@ -6711,6 +8073,8 @@ mod tests {
                 assert_eq!(query_hash, "abcdef123456");
                 assert_eq!(score_min, Some(0.2));
                 assert_eq!(score_max, Some(0.9));
+                assert_eq!(embedding_status.as_deref(), Some("ok"));
+                assert_eq!(embedding_reason, None);
             }
             other => panic!("Unexpected event variant: {:?}", other),
         }

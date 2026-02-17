@@ -1,0 +1,92 @@
+{
+  "timestamp": "2026-02-14T23:48:14.542Z",
+  "config": {
+    "provider": "openrouter",
+    "model": "google/gemini-2.5-flash",
+    "runs": 3,
+    "tandemBin": "C:\\Users\\evang\\work\\tandem-engine\\tandem\\target\\debug\\tandem-engine.exe",
+    "opencodeEnabled": true,
+    "opencodeBin": "opencode",
+    "strictCompare": false,
+    "tandemFallbackTool": true
+  },
+  "metrics": {
+    "tandem": {
+      "successCount": 3,
+      "failCount": 0,
+      "avgTotalSec": 9.26680293333333,
+      "medianTotalSec": 8.86875,
+      "p95TotalSec": 10.617935600000003
+    },
+    "opencode": {
+      "successCount": 3,
+      "failCount": 0,
+      "skippedCount": 0,
+      "avgRunSec": 8.183257166666667,
+      "medianRunSec": 8.413116500000005,
+      "p95RunSec": 8.824296799999997
+    }
+  },
+  "iterations": [
+    {
+      "iteration": 1,
+      "tandem": {
+        "attempted": true,
+        "success": true,
+        "timeSec": 5.9149356,
+        "fallbackTimeSec": 2.9538144,
+        "totalSec": 8.86875,
+        "error": null
+      },
+      "opencode": {
+        "attempted": true,
+        "success": true,
+        "timeSec": 7.3123582,
+        "error": null,
+        "skipped": false,
+        "command": "opencode.cmd"
+      },
+      "error": null
+    },
+    {
+      "iteration": 2,
+      "tandem": {
+        "attempted": true,
+        "success": true,
+        "timeSec": 7.709978000000001,
+        "fallbackTimeSec": 2.9079576000000014,
+        "totalSec": 10.617935600000003,
+        "error": null
+      },
+      "opencode": {
+        "attempted": true,
+        "success": true,
+        "timeSec": 8.824296799999997,
+        "error": null,
+        "skipped": false,
+        "command": "opencode.cmd"
+      },
+      "error": null
+    },
+    {
+      "iteration": 3,
+      "tandem": {
+        "attempted": true,
+        "success": true,
+        "timeSec": 5.391993999999999,
+        "fallbackTimeSec": 2.9217291999999944,
+        "totalSec": 8.313723199999993,
+        "error": null
+      },
+      "opencode": {
+        "attempted": true,
+        "success": true,
+        "timeSec": 8.413116500000005,
+        "error": null,
+        "skipped": false,
+        "command": "opencode.cmd"
+      },
+      "error": null
+    }
+  ]
+}
