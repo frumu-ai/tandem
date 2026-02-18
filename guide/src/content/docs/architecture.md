@@ -18,6 +18,7 @@ flowchart LR
   subgraph Engine Runtime
     E --> S[Session + Run APIs]
     E --> M[Mission Runtime]
+    E --> AT[Agent Team Runtime]
     E --> R[Routine Scheduler]
     E --> P[Provider Gateway]
     E --> TOOLS[Tool Router]
@@ -25,6 +26,7 @@ flowchart LR
   end
 
   TOOLS --> FS[Workspace / Shell / Web / MCP Tools]
+  AT --> S[Spawn Policy + Template Registry]
   MEM --> DB[(memory.sqlite)]
   P --> LLM[(LLM Providers)]
 ```

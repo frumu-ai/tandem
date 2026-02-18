@@ -136,6 +136,18 @@ API token utilities (used with `--api-token`).
 tandem-engine token generate
 ```
 
+## Agent Team HTTP Examples
+
+These are HTTP endpoints exposed by the running engine (not CLI subcommands).
+
+```bash
+curl -s http://127.0.0.1:39731/agent-team/templates | jq .
+curl -s http://127.0.0.1:39731/agent-team/instances | jq .
+curl -s -X POST http://127.0.0.1:39731/agent-team/spawn \
+  -H "content-type: application/json" \
+  -d '{"missionID":"m1","role":"worker","templateID":"worker-default","source":"ui_action","justification":"parallelize implementation"}' | jq .
+```
+
 ## Practical Examples
 
 ### Run Engine with API Token
@@ -172,6 +184,14 @@ tandem-engine parallel --json @tasks.json --concurrency 3
 tandem-engine tool --json '{"tool":"workspace_list_files","args":{"path":"."}}'
 tandem-engine tool --json '{"tool":"websearch","args":{"query":"tandem engine protocol matrix","limit":5}}'
 tandem-engine tool --json '{"tool":"memory_search","args":{"query":"mission runtime","project_id":"tandem","tier":"project","limit":5}}'
+```
+
+`spawn_agent` is runtime-gated and should be called from a session prompt (not `tandem-engine tool` direct mode):
+
+```bash
+curl -s -X POST http://127.0.0.1:39731/session/<session_id>/prompt_async \
+  -H "content-type: application/json" \
+  -d '{"parts":[{"type":"text","text":"/tool spawn_agent {\"missionID\":\"m1\",\"role\":\"worker\",\"templateID\":\"worker-default\",\"source\":\"tool_call\",\"justification\":\"parallelize implementation\"}"}]}'
 ```
 
 ### Browser Playground (Interactive)

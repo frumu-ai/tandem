@@ -1,10 +1,10 @@
 {
-  "name": "@frumu/tandem",
+  "name": "@frumu/tandem-tui",
   "version": "0.3.3",
-  "description": "Tandem Engine binary distribution",
+  "description": "Tandem TUI binary distribution",
   "homepage": "https://tandem.frumu.ai",
   "bin": {
-    "tandem-engine": "bin/tandem-engine"
+    "tandem-tui": "bin/tandem-tui"
   },
   "scripts": {
     "postinstall": "node scripts/install.js"

@@ -22,8 +22,10 @@ use tandem_providers::ProviderRegistry;
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::ToolRegistry;
 
+mod agent_teams;
 mod http;
 
+pub use agent_teams::AgentTeamRuntime;
 pub use http::serve;
 
 #[derive(Debug, Clone)]
@@ -368,6 +370,7 @@ pub struct AppState {
     pub routines: Arc<RwLock<std::collections::HashMap<String, RoutineSpec>>>,
     pub routine_history: Arc<RwLock<std::collections::HashMap<String, Vec<RoutineHistoryEvent>>>>,
     pub routines_path: PathBuf,
+    pub agent_teams: AgentTeamRuntime,
 }
 
 #[derive(Debug, Clone)]
@@ -400,6 +403,7 @@ impl AppState {
             routines: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_history: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routines_path: resolve_routines_path(),
+            agent_teams: AgentTeamRuntime::new(resolve_agent_team_audit_path()),
         }
     }
 
@@ -444,8 +448,23 @@ impl AppState {
         self.runtime
             .set(runtime)
             .map_err(|_| anyhow::anyhow!("runtime already initialized"))?;
+        self.engine_loop
+            .set_spawn_agent_hook(std::sync::Arc::new(
+                crate::agent_teams::ServerSpawnAgentHook::new(self.clone()),
+            ))
+            .await;
+        self.engine_loop
+            .set_tool_policy_hook(std::sync::Arc::new(
+                crate::agent_teams::ServerToolPolicyHook::new(self.clone()),
+            ))
+            .await;
         let _ = self.load_shared_resources().await;
         let _ = self.load_routines().await;
+        let workspace_root = self.workspace_index.snapshot().await.root;
+        let _ = self
+            .agent_teams
+            .ensure_loaded_for_workspace(&workspace_root)
+            .await;
         let mut startup = self.startup.write().await;
         startup.status = StartupStatus::Ready;
         startup.phase = "ready".to_string();
@@ -828,6 +847,20 @@ fn resolve_routines_path() -> PathBuf {
     PathBuf::from(".tandem").join("routines.json")
 }
 
+fn resolve_agent_team_audit_path() -> PathBuf {
+    if let Ok(base) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = base.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed)
+                .join("agent-team")
+                .join("audit.log.jsonl");
+        }
+    }
+    PathBuf::from(".tandem")
+        .join("agent-team")
+        .join("audit.log.jsonl")
+}
+
 fn routine_interval_ms(schedule: &RoutineSchedule) -> Option<u64> {
     match schedule {
         RoutineSchedule::IntervalSeconds { seconds } => Some(seconds.saturating_mul(1000)),
@@ -1041,6 +1074,19 @@ pub async fn run_status_indexer(state: AppState) {
                         tracing::warn!("status indexer failed to persist update: {error:?}");
                     }
                 }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+        }
+    }
+}
+
+pub async fn run_agent_team_supervisor(state: AppState) {
+    let mut rx = state.event_bus.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                state.agent_teams.handle_engine_event(&state, &event).await;
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,

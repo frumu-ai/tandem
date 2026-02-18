@@ -4,17 +4,24 @@
 use crate::types::{
     MemoryError, MemoryResult, DEFAULT_EMBEDDING_DIMENSION, DEFAULT_EMBEDDING_MODEL,
 };
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use once_cell::sync::OnceCell;
+#[cfg(feature = "local-embeddings")]
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+#[cfg(feature = "local-embeddings")]
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+#[cfg(feature = "local-embeddings")]
+type EmbeddingBackend = TextEmbedding;
+#[cfg(not(feature = "local-embeddings"))]
+type EmbeddingBackend = ();
 
 /// Embedding service for generating vector representations.
 pub struct EmbeddingService {
     model_name: String,
     dimension: usize,
-    model: Option<TextEmbedding>,
+    model: Option<EmbeddingBackend>,
     disabled_reason: Option<String>,
 }
 
@@ -55,7 +62,18 @@ impl EmbeddingService {
         }
     }
 
-    fn init_model(model_name: &str) -> (Option<TextEmbedding>, Option<String>) {
+    fn init_model(model_name: &str) -> (Option<EmbeddingBackend>, Option<String>) {
+        #[cfg(not(feature = "local-embeddings"))]
+        {
+            let _ = model_name;
+            return (
+                None,
+                Some("local embeddings are disabled at build time".to_string()),
+            );
+        }
+
+        #[cfg(feature = "local-embeddings")]
+        {
         let Some(parsed_model) = Self::parse_model_id(model_name) else {
             return (
                 None,
@@ -85,8 +103,10 @@ impl EmbeddingService {
                 )),
             ),
         }
+        }
     }
 
+    #[cfg(feature = "local-embeddings")]
     fn parse_model_id(model_name: &str) -> Option<EmbeddingModel> {
         match model_name.trim().to_ascii_lowercase().as_str() {
             "all-minilm-l6-v2" | "all_minilm_l6_v2" => Some(EmbeddingModel::AllMiniLML6V2),
@@ -122,6 +142,7 @@ impl EmbeddingService {
         MemoryError::Embedding(format!("embeddings disabled: {reason}"))
     }
 
+    #[cfg(feature = "local-embeddings")]
     fn ensure_dimension(&self, embedding: &[f32]) -> MemoryResult<()> {
         if embedding.len() != self.dimension {
             return Err(MemoryError::Embedding(format!(
@@ -135,6 +156,14 @@ impl EmbeddingService {
 
     /// Generate embeddings for a single text.
     pub async fn embed(&self, text: &str) -> MemoryResult<Vec<f32>> {
+        #[cfg(not(feature = "local-embeddings"))]
+        {
+            let _ = text;
+            return Err(self.unavailable_error());
+        }
+
+        #[cfg(feature = "local-embeddings")]
+        {
         let Some(model) = self.model.as_ref() else {
             return Err(self.unavailable_error());
         };
@@ -147,10 +176,19 @@ impl EmbeddingService {
             .ok_or_else(|| MemoryError::Embedding("no embedding generated".to_string()))?;
         self.ensure_dimension(&embedding)?;
         Ok(embedding)
+        }
     }
 
     /// Generate embeddings for multiple texts.
     pub async fn embed_batch(&self, texts: &[String]) -> MemoryResult<Vec<Vec<f32>>> {
+        #[cfg(not(feature = "local-embeddings"))]
+        {
+            let _ = texts;
+            return Err(self.unavailable_error());
+        }
+
+        #[cfg(feature = "local-embeddings")]
+        {
         let Some(model) = self.model.as_ref() else {
             return Err(self.unavailable_error());
         };
@@ -164,6 +202,7 @@ impl EmbeddingService {
         }
 
         Ok(embeddings)
+        }
     }
 
     /// Calculate cosine similarity between two vectors.
@@ -193,6 +232,7 @@ impl EmbeddingService {
     }
 }
 
+#[cfg(feature = "local-embeddings")]
 fn resolve_embedding_cache_dir() -> PathBuf {
     if let Ok(explicit) = std::env::var("FASTEMBED_CACHE_DIR") {
         let explicit_path = PathBuf::from(explicit);

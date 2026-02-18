@@ -6,6 +6,15 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 - No unreleased changes.
 
+## v0.3.3 - 2026-02-18
+
+- Agent Teams: Added server-side Agent Teams foundations in `tandem-server` with shared spawn-policy gating across orchestrator/UI/tool entrypoints.
+- Agent Teams: Added role-edge enforcement, budget/cap checks, capability scoping, SKILL.md hash validation/audit wiring, and structured SSE event surfaces for instance/mission visibility.
+- Docs: Added Agent Teams rollout/spec docs and API/event references in `guide/src/content/docs`.
+- Publishing: Fixed Rust crate publish chain/version coupling to unblock sequential publishes after dependency/version changes.
+- Windows publishing: Removed dependency on publish `--no-verify` workaround path by hardening memory crate publish-verify behavior.
+- Docs quality: Added crate READMEs (`engine/README.md`, `crates/tandem-tui/README.md`) and clarified npm wrapper README scope.
+
 ## v0.3.2 - 2026-02-17
 
 - TUI: Fixed startup PIN flow to unlock existing vaults instead of forcing create-PIN when keystore is empty.

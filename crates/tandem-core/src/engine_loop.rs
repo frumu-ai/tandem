@@ -1,11 +1,12 @@
 use chrono::Utc;
+use futures::future::BoxFuture;
 use futures::StreamExt;
 use serde_json::{json, Map, Number, Value};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
-use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk};
+use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk, TokenUsage};
 use tandem_tools::{validate_tool_schemas, ToolRegistry};
 use tandem_types::{
     EngineEvent, Message, MessagePart, MessagePartInput, MessageRole, SendMessageRequest,
@@ -26,6 +27,48 @@ struct StreamedToolCall {
     args: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SpawnAgentToolContext {
+    pub session_id: String,
+    pub message_id: String,
+    pub tool_call_id: Option<String>,
+    pub args: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpawnAgentToolResult {
+    pub output: String,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolPolicyContext {
+    pub session_id: String,
+    pub message_id: String,
+    pub tool: String,
+    pub args: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolPolicyDecision {
+    pub allowed: bool,
+    pub reason: Option<String>,
+}
+
+pub trait SpawnAgentHook: Send + Sync {
+    fn spawn_agent(
+        &self,
+        ctx: SpawnAgentToolContext,
+    ) -> BoxFuture<'static, anyhow::Result<SpawnAgentToolResult>>;
+}
+
+pub trait ToolPolicyHook: Send + Sync {
+    fn evaluate_tool(
+        &self,
+        ctx: ToolPolicyContext,
+    ) -> BoxFuture<'static, anyhow::Result<ToolPolicyDecision>>;
+}
+
 #[derive(Clone)]
 pub struct EngineLoop {
     storage: std::sync::Arc<Storage>,
@@ -37,6 +80,8 @@ pub struct EngineLoop {
     tools: ToolRegistry,
     cancellations: CancellationRegistry,
     workspace_overrides: std::sync::Arc<RwLock<HashMap<String, u64>>>,
+    spawn_agent_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn SpawnAgentHook>>>>,
+    tool_policy_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn ToolPolicyHook>>>>,
 }
 
 impl EngineLoop {
@@ -61,7 +106,17 @@ impl EngineLoop {
             tools,
             cancellations,
             workspace_overrides: std::sync::Arc::new(RwLock::new(HashMap::new())),
+            spawn_agent_hook: std::sync::Arc::new(RwLock::new(None)),
+            tool_policy_hook: std::sync::Arc::new(RwLock::new(None)),
         }
+    }
+
+    pub async fn set_spawn_agent_hook(&self, hook: std::sync::Arc<dyn SpawnAgentHook>) {
+        *self.spawn_agent_hook.write().await = Some(hook);
+    }
+
+    pub async fn set_tool_policy_hook(&self, hook: std::sync::Arc<dyn ToolPolicyHook>) {
+        *self.tool_policy_hook.write().await = Some(hook);
     }
 
     pub async fn grant_workspace_override_for_session(
@@ -297,6 +352,7 @@ impl EngineLoop {
                 tokio::pin!(stream);
                 completion.clear();
                 let mut streamed_tool_calls: HashMap<String, StreamedToolCall> = HashMap::new();
+                let mut provider_usage: Option<TokenUsage> = None;
                 while let Some(chunk) = stream.next().await {
                     let chunk = match chunk {
                         Ok(chunk) => chunk,
@@ -357,7 +413,15 @@ impl EngineLoop {
                             ));
                         }
                         StreamChunk::ReasoningDelta(_reasoning) => {}
-                        StreamChunk::Done { .. } => break,
+                        StreamChunk::Done {
+                            finish_reason: _,
+                            usage,
+                        } => {
+                            if usage.is_some() {
+                                provider_usage = usage;
+                            }
+                            break;
+                        }
                         StreamChunk::ToolCallStart { id, name } => {
                             let entry = streamed_tool_calls.entry(id).or_default();
                             if entry.name.is_empty() {
@@ -505,6 +569,19 @@ impl EngineLoop {
                         ));
                         continue;
                     }
+                }
+
+                if let Some(usage) = provider_usage {
+                    self.event_bus.publish(EngineEvent::new(
+                        "provider.usage",
+                        json!({
+                            "sessionID": session_id,
+                            "messageID": user_message_id,
+                            "promptTokens": usage.prompt_tokens,
+                            "completionTokens": usage.completion_tokens,
+                            "totalTokens": usage.total_tokens,
+                        }),
+                    ));
                 }
 
                 break;
@@ -700,6 +777,30 @@ impl EngineLoop {
             Ok(args) => args,
             Err(message) => return Ok(Some(message)),
         };
+        if let Some(hook) = self.tool_policy_hook.read().await.clone() {
+            let decision = hook
+                .evaluate_tool(ToolPolicyContext {
+                    session_id: session_id.to_string(),
+                    message_id: message_id.to_string(),
+                    tool: tool.clone(),
+                    args: args.clone(),
+                })
+                .await?;
+            if !decision.allowed {
+                let reason = decision
+                    .reason
+                    .unwrap_or_else(|| "Tool denied by runtime policy".to_string());
+                let mut blocked_part =
+                    WireMessagePart::tool_result(session_id, message_id, tool.clone(), json!(null));
+                blocked_part.state = Some("failed".to_string());
+                blocked_part.error = Some(reason.clone());
+                self.event_bus.publish(EngineEvent::new(
+                    "message.part.updated",
+                    json!({"part": blocked_part}),
+                ));
+                return Ok(Some(reason));
+            }
+        }
         let mut tool_call_id: Option<String> = None;
         if let Some(violation) = self
             .workspace_sandbox_violation(session_id, &tool, &args)
@@ -791,6 +892,57 @@ impl EngineLoop {
             json!({"part": invoke_part}),
         ));
         let args_for_side_events = args.clone();
+        if tool == "spawn_agent" {
+            let hook = self.spawn_agent_hook.read().await.clone();
+            if let Some(hook) = hook {
+                let spawned = hook
+                    .spawn_agent(SpawnAgentToolContext {
+                        session_id: session_id.to_string(),
+                        message_id: message_id.to_string(),
+                        tool_call_id: invoke_part_id.clone(),
+                        args: args_for_side_events.clone(),
+                    })
+                    .await?;
+                let output = self.plugins.transform_tool_output(spawned.output).await;
+                let output = truncate_text(&output, 16_000);
+                emit_tool_side_events(
+                    self.storage.clone(),
+                    &self.event_bus,
+                    session_id,
+                    message_id,
+                    &tool,
+                    &args_for_side_events,
+                    &spawned.metadata,
+                )
+                .await;
+                let mut result_part = WireMessagePart::tool_result(
+                    session_id,
+                    message_id,
+                    tool.clone(),
+                    json!(output.clone()),
+                );
+                result_part.id = invoke_part_id;
+                self.event_bus.publish(EngineEvent::new(
+                    "message.part.updated",
+                    json!({"part": result_part}),
+                ));
+                return Ok(Some(truncate_text(
+                    &format!("Tool `{tool}` result:\n{output}"),
+                    16_000,
+                )));
+            }
+            let output = "spawn_agent is unavailable in this runtime (no spawn hook installed).";
+            let mut failed_part =
+                WireMessagePart::tool_result(session_id, message_id, tool.clone(), json!(null));
+            failed_part.id = invoke_part_id.clone();
+            failed_part.state = Some("failed".to_string());
+            failed_part.error = Some(output.to_string());
+            self.event_bus.publish(EngineEvent::new(
+                "message.part.updated",
+                json!({"part": failed_part}),
+            ));
+            return Ok(Some(output.to_string()));
+        }
         let result = match self
             .tools
             .execute_with_cancel(&tool, args, cancel.clone())

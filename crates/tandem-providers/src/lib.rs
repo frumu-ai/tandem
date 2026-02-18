@@ -40,7 +40,17 @@ pub enum StreamChunk {
     ToolCallStart { id: String, name: String },
     ToolCallDelta { id: String, args_delta: String },
     ToolCallEnd { id: String },
-    Done { finish_reason: String },
+    Done {
+        finish_reason: String,
+        usage: Option<TokenUsage>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TokenUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
 }
 
 #[async_trait]
@@ -63,6 +73,7 @@ pub trait Provider: Send + Sync {
             Ok(StreamChunk::TextDelta(response)),
             Ok(StreamChunk::Done {
                 finish_reason: "stop".to_string(),
+                usage: None,
             }),
         ]);
         Ok(Box::pin(stream))
@@ -527,7 +538,10 @@ impl Provider for OpenAICompatibleProvider {
             let mut buffer = String::new();
             while let Some(chunk) = bytes.next().await {
                 if cancel.is_cancelled() {
-                    yield StreamChunk::Done { finish_reason: "cancelled".to_string() };
+                    yield StreamChunk::Done {
+                        finish_reason: "cancelled".to_string(),
+                        usage: None,
+                    };
                     break;
                 }
 
@@ -543,7 +557,10 @@ impl Provider for OpenAICompatibleProvider {
                         }
                         let payload = line.trim_start_matches("data: ").trim();
                         if payload == "[DONE]" {
-                            yield StreamChunk::Done { finish_reason: "stop".to_string() };
+                            yield StreamChunk::Done {
+                                finish_reason: "stop".to_string(),
+                                usage: None,
+                            };
                             continue;
                         }
 
@@ -608,8 +625,10 @@ impl Provider for OpenAICompatibleProvider {
 
                             if let Some(reason) = choice.get("finish_reason").and_then(|v| v.as_str()) {
                                 if !reason.is_empty() {
+                                    let usage = extract_usage(&value);
                                     yield StreamChunk::Done {
                                         finish_reason: reason.to_string(),
+                                        usage,
                                     };
                                 }
                             }
@@ -701,7 +720,10 @@ impl Provider for AnthropicProvider {
             let mut buffer = String::new();
             while let Some(chunk) = bytes.next().await {
                 if cancel.is_cancelled() {
-                    yield StreamChunk::Done { finish_reason: "cancelled".to_string() };
+                    yield StreamChunk::Done {
+                        finish_reason: "cancelled".to_string(),
+                        usage: None,
+                    };
                     break;
                 }
                 let chunk = chunk?;
@@ -716,7 +738,10 @@ impl Provider for AnthropicProvider {
                         }
                         let payload = line.trim_start_matches("data: ").trim();
                         if payload == "[DONE]" {
-                            yield StreamChunk::Done { finish_reason: "stop".to_string() };
+                            yield StreamChunk::Done {
+                                finish_reason: "stop".to_string(),
+                                usage: None,
+                            };
                             continue;
                         }
                         let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
@@ -732,7 +757,10 @@ impl Provider for AnthropicProvider {
                                 }
                             }
                             "message_stop" => {
-                                yield StreamChunk::Done { finish_reason: "stop".to_string() };
+                                yield StreamChunk::Done {
+                                    finish_reason: "stop".to_string(),
+                                    usage: None,
+                                };
                             }
                             _ => {}
                         }
@@ -798,6 +826,27 @@ fn truncate_for_error(input: &str, max_len: usize) -> String {
     } else {
         format!("{}...", &input[..max_len])
     }
+}
+
+fn extract_usage(value: &serde_json::Value) -> Option<TokenUsage> {
+    let usage = value.get("usage")?;
+    let prompt_tokens = usage
+        .get("prompt_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let completion_tokens = usage
+        .get("completion_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total_tokens = usage
+        .get("total_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(prompt_tokens.saturating_add(completion_tokens));
+    Some(TokenUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+    })
 }
 
 fn collect_text_fragments(value: &serde_json::Value, out: &mut String) {

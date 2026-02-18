@@ -1,3 +1,16 @@
+# Tandem v0.3.3 Release Notes
+
+## Release Date: 2026-02-18
+
+### Highlights
+
+- **Agent Teams MVP foundation shipped**: Engine/server now includes Agent Teams primitives with unified server-enforced spawn policy gates across orchestrator, UI, and tool-triggered spawns.
+- **Safety + audit contract strengthened**: Added role-edge enforcement, budget/cap controls, capability scoping, SKILL.md hash validation/audit wiring, and richer Agent Teams SSE event surfaces.
+- **Publish/release pipeline stabilization**: Fixed crate dependency/version publish chain coupling and removed dependence on the Windows `--no-verify` workaround path for release flow continuity.
+- **Docs + packaging clarity pass**: Added crate-level README guides and clarified npm wrapper package docs.
+
+---
+
 # Tandem v0.3.2 Release Notes
 
 ## Release Date: 2026-02-17

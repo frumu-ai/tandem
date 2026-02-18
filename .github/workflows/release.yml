@@ -16,8 +16,103 @@ env:
   MACOS_SIGNING_ENABLED: ${{ vars.MACOS_SIGNING_ENABLED }}
 
 jobs:
+  sync-versions:
+    name: Sync Versions From Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag_updated: ${{ steps.sync.outputs.tag_updated }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync versions with tag
+        id: sync
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$TAG_NAME" =~ ^v ]]; then
+            VERSION="${TAG_NAME#v}"
+          else
+            VERSION="$TAG_NAME"
+          fi
+          export VERSION
+          echo "Using version: $VERSION"
+
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          root = Path(".")
+
+          def update_json(path: Path, key: str = "version") -> None:
+            data = json.loads(path.read_text())
+            if data.get(key) != version:
+              data[key] = version
+              path.write_text(json.dumps(data, indent=2) + "\n")
+
+          def update_cargo_toml(path: Path) -> None:
+            lines = path.read_text().splitlines()
+            out = []
+            section = None
+            for line in lines:
+              header = re.match(r"\s*\[(.+?)\]\s*$", line)
+              if header:
+                section = header.group(1)
+              if section == "package":
+                line = re.sub(r'^(\s*version\s*=\s*)"[^"]+"', rf'\1"{version}"', line)
+              if "path" in line and "version" in line:
+                line = re.sub(r'(version\s*=\s*)"[^"]+"', rf'\1"{version}"', line)
+              out.append(line)
+            path.write_text("\n".join(out) + "\n")
+
+          cargo_paths = []
+          cargo_paths.extend(root.glob("crates/*/Cargo.toml"))
+          cargo_paths.append(root / "engine" / "Cargo.toml")
+          cargo_paths.append(root / "src-tauri" / "Cargo.toml")
+
+          for cargo in cargo_paths:
+            update_cargo_toml(cargo)
+
+          update_json(root / "package.json")
+          update_json(root / "packages" / "tandem-engine" / "package.json")
+          update_json(root / "packages" / "tandem-tui" / "package.json")
+          update_json(root / "packages" / "tandem-ai" / "package.json")
+          update_json(root / "src-tauri" / "tauri.conf.json")
+          PY
+
+          if git diff --quiet; then
+            echo "tag_updated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            crates/*/Cargo.toml \
+            engine/Cargo.toml \
+            src-tauri/Cargo.toml \
+            src-tauri/tauri.conf.json \
+            package.json \
+            packages/tandem-engine/package.json \
+            packages/tandem-tui/package.json \
+            packages/tandem-ai/package.json
+          git commit -m "chore(release): bump versions to ${VERSION}"
+          git tag -f "${TAG_NAME}"
+          git push origin HEAD:main
+          git push --force origin "refs/tags/${TAG_NAME}"
+          echo "tag_updated=true" >> "$GITHUB_OUTPUT"
+
   create-release:
     name: Create Release
+    needs: sync-versions
+    if: needs.sync-versions.outputs.tag_updated != 'true'
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}

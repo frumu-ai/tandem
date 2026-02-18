@@ -1,6 +1,7 @@
 [package]
 name = "tandem-server"
-version = "0.1.0"
+version = "0.1.2"
+description = "HTTP server for Tandem engine APIs"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
 edition = "2021"
@@ -15,20 +16,22 @@ regex = "1"
 reqwest = { version = "0.12", default-features = true, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
-tandem-core = { path = "../tandem-core" }
-tandem-providers = { path = "../tandem-providers" }
-tandem-runtime = { path = "../tandem-runtime" }
-tandem-tools = { path = "../tandem-tools" }
-tandem-skills = { path = "../tandem-skills" }
-tandem-memory = { path = "../tandem-memory" }
-tandem-orchestrator = { path = "../tandem-orchestrator" }
-tandem-types = { path = "../tandem-types" }
-tandem-wire = { path = "../tandem-wire" }
+tandem-core = { path = "../tandem-core", version = "0.1.2" }
+tandem-providers = { path = "../tandem-providers", version = "0.1.1" }
+tandem-runtime = { path = "../tandem-runtime", version = "0.1.0" }
+tandem-tools = { path = "../tandem-tools", version = "0.1.1" }
+tandem-skills = { path = "../tandem-skills", version = "0.1.0" }
+tandem-memory = { path = "../tandem-memory", version = "0.1.1" }
+tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.1.1" }
+tandem-types = { path = "../tandem-types", version = "0.1.0" }
+tandem-wire = { path = "../tandem-wire", version = "0.1.0" }
 
 [dev-dependencies]
 tower = "0.5"

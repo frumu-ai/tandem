@@ -24,8 +24,8 @@ use tandem_memory::{
     ScrubStatus,
 };
 use tandem_orchestrator::{
-    DefaultMissionReducer, MissionEvent, MissionReducer, MissionSpec, NoopMissionReducer, WorkItem,
-    WorkItemStatus,
+    AgentInstanceStatus, DefaultMissionReducer, MissionEvent, MissionReducer, MissionSpec,
+    NoopMissionReducer, SpawnRequest, SpawnSource, WorkItem, WorkItemStatus,
 };
 use tandem_skills::{SkillLocation, SkillService, SkillsConflictPolicy};
 use tokio::process::Command;
@@ -45,6 +45,7 @@ use tandem_wire::{
 
 use crate::ResourceStoreError;
 use crate::{
+    agent_teams::{emit_spawn_approved, emit_spawn_denied, emit_spawn_requested},
     evaluate_routine_execution_policy, ActiveRun, AppState, RoutineExecutionDecision,
     RoutineHistoryEvent, RoutineMisfirePolicy, RoutineSchedule, RoutineSpec, RoutineStatus,
     RoutineStoreError, StartupStatus,
@@ -289,6 +290,35 @@ struct MissionEventInput {
 }
 
 #[derive(Debug, Deserialize)]
+struct AgentTeamSpawnInput {
+    #[serde(rename = "missionID")]
+    mission_id: Option<String>,
+    #[serde(rename = "parentInstanceID")]
+    parent_instance_id: Option<String>,
+    #[serde(rename = "templateID")]
+    template_id: Option<String>,
+    role: tandem_orchestrator::AgentRole,
+    source: Option<SpawnSource>,
+    justification: String,
+    #[serde(default)]
+    budget_override: Option<tandem_orchestrator::BudgetLimit>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AgentTeamInstancesQuery {
+    #[serde(rename = "missionID")]
+    mission_id: Option<String>,
+    #[serde(rename = "parentInstanceID")]
+    parent_instance_id: Option<String>,
+    status: Option<AgentInstanceStatus>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AgentTeamCancelInput {
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RoutineCreateInput {
     routine_id: Option<String>,
     name: String,
@@ -378,6 +408,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let reaper_state = state.clone();
     let status_indexer_state = state.clone();
     let routine_scheduler_state = state.clone();
+    let agent_team_supervisor_state = state.clone();
     let app = app_router(state);
     let reaper = tokio::spawn(async move {
         loop {
@@ -402,6 +433,9 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     });
     let status_indexer = tokio::spawn(crate::run_status_indexer(status_indexer_state));
     let routine_scheduler = tokio::spawn(crate::run_routine_scheduler(routine_scheduler_state));
+    let agent_team_supervisor = tokio::spawn(crate::run_agent_team_supervisor(
+        agent_team_supervisor_state,
+    ));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let result = axum::serve(listener, app)
@@ -414,6 +448,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     reaper.abort();
     status_indexer.abort();
     routine_scheduler.abort();
+    agent_team_supervisor.abort();
     result?;
     Ok(())
 }
@@ -603,6 +638,19 @@ fn app_router(state: AppState) -> Router {
         .route("/mission", get(mission_list).post(mission_create))
         .route("/mission/{id}", get(mission_get))
         .route("/mission/{id}/event", post(mission_apply_event))
+        .route("/agent-team/templates", get(agent_team_templates))
+        .route("/agent-team/instances", get(agent_team_instances))
+        .route("/agent-team/missions", get(agent_team_missions))
+        .route("/agent-team/approvals", get(agent_team_approvals))
+        .route("/agent-team/spawn", post(agent_team_spawn))
+        .route(
+            "/agent-team/instance/{id}/cancel",
+            post(agent_team_cancel_instance),
+        )
+        .route(
+            "/agent-team/mission/{id}/cancel",
+            post(agent_team_cancel_mission),
+        )
         .route("/routines", get(routines_list).post(routines_create))
         .route("/routines/events", get(routines_events))
         .route(
@@ -3639,6 +3687,7 @@ async fn mission_apply_event(
     Json(input): Json<MissionEventInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let event = input.event;
+    let event_for_runtime = event.clone();
     if mission_event_id(&event) != id {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -3685,11 +3734,271 @@ async fn mission_apply_event(
             "commandCount": commands.len(),
         }),
     ));
+    let orchestrator_spawns =
+        run_orchestrator_runtime_spawns(&state, &next, &event_for_runtime).await;
+    let orchestrator_cancellations =
+        run_orchestrator_runtime_cancellations(&state, &next, &event_for_runtime).await;
 
     Ok(Json(json!({
         "mission": next,
         "commands": commands,
+        "orchestratorSpawns": orchestrator_spawns,
+        "orchestratorCancellations": orchestrator_cancellations,
     })))
+}
+
+async fn run_orchestrator_runtime_spawns(
+    state: &AppState,
+    mission: &tandem_orchestrator::MissionState,
+    event: &MissionEvent,
+) -> Vec<Value> {
+    let MissionEvent::MissionStarted { mission_id } = event else {
+        return Vec::new();
+    };
+    if mission_id != &mission.mission_id {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    for item in &mission.work_items {
+        let Some(agent_name) = item.assigned_agent.as_deref() else {
+            continue;
+        };
+        let Some(role) = parse_agent_role(agent_name) else {
+            rows.push(json!({
+                "workItemID": item.work_item_id,
+                "agent": agent_name,
+                "ok": false,
+                "code": "UNSUPPORTED_ASSIGNED_AGENT",
+                "error": "assigned_agent does not map to an agent-team role"
+            }));
+            continue;
+        };
+        let req = SpawnRequest {
+            mission_id: Some(mission.mission_id.clone()),
+            parent_instance_id: None,
+            source: SpawnSource::OrchestratorRuntime,
+            parent_role: Some(tandem_orchestrator::AgentRole::Orchestrator),
+            role,
+            template_id: None,
+            justification: format!("mission work item {}", item.work_item_id),
+            budget_override: None,
+        };
+        emit_spawn_requested(&state, &req);
+        let result = state.agent_teams.spawn(state, req.clone()).await;
+        if !result.decision.allowed || result.instance.is_none() {
+            emit_spawn_denied(state, &req, &result.decision);
+            rows.push(json!({
+                "workItemID": item.work_item_id,
+                "agent": agent_name,
+                "ok": false,
+                "code": result.decision.code,
+                "error": result.decision.reason,
+            }));
+            continue;
+        }
+        let instance = result.instance.expect("checked is_some");
+        emit_spawn_approved(state, &req, &instance);
+        rows.push(json!({
+            "workItemID": item.work_item_id,
+            "agent": agent_name,
+            "ok": true,
+            "instanceID": instance.instance_id,
+            "sessionID": instance.session_id,
+            "status": instance.status,
+        }));
+    }
+    rows
+}
+
+fn parse_agent_role(agent_name: &str) -> Option<tandem_orchestrator::AgentRole> {
+    match agent_name.trim().to_ascii_lowercase().as_str() {
+        "orchestrator" => Some(tandem_orchestrator::AgentRole::Orchestrator),
+        "delegator" => Some(tandem_orchestrator::AgentRole::Delegator),
+        "worker" => Some(tandem_orchestrator::AgentRole::Worker),
+        "watcher" => Some(tandem_orchestrator::AgentRole::Watcher),
+        "reviewer" => Some(tandem_orchestrator::AgentRole::Reviewer),
+        "tester" => Some(tandem_orchestrator::AgentRole::Tester),
+        "committer" => Some(tandem_orchestrator::AgentRole::Committer),
+        _ => None,
+    }
+}
+
+async fn run_orchestrator_runtime_cancellations(
+    state: &AppState,
+    mission: &tandem_orchestrator::MissionState,
+    event: &MissionEvent,
+) -> Value {
+    let MissionEvent::MissionCanceled { mission_id, reason } = event else {
+        return json!({
+            "triggered": false,
+            "cancelledInstances": 0u64
+        });
+    };
+    if mission_id != &mission.mission_id {
+        return json!({
+            "triggered": false,
+            "cancelledInstances": 0u64
+        });
+    }
+    let cancelled = state
+        .agent_teams
+        .cancel_mission(state, &mission.mission_id, reason)
+        .await;
+    json!({
+        "triggered": true,
+        "reason": reason,
+        "cancelledInstances": cancelled,
+    })
+}
+
+async fn agent_team_templates(State(state): State<AppState>) -> Json<Value> {
+    let templates = state.agent_teams.list_templates().await;
+    Json(json!({
+        "templates": templates,
+        "count": templates.len(),
+    }))
+}
+
+async fn agent_team_instances(
+    State(state): State<AppState>,
+    Query(query): Query<AgentTeamInstancesQuery>,
+) -> Json<Value> {
+    let instances = state
+        .agent_teams
+        .list_instances(
+            query.mission_id.as_deref(),
+            query.parent_instance_id.as_deref(),
+            query.status,
+        )
+        .await;
+    Json(json!({
+        "instances": instances,
+        "count": instances.len(),
+    }))
+}
+
+async fn agent_team_missions(State(state): State<AppState>) -> Json<Value> {
+    let missions = state.agent_teams.list_mission_summaries().await;
+    Json(json!({
+        "missions": missions,
+        "count": missions.len(),
+    }))
+}
+
+async fn agent_team_approvals(State(state): State<AppState>) -> Json<Value> {
+    let spawn = state.agent_teams.list_spawn_approvals().await;
+    let session_ids = state
+        .agent_teams
+        .list_instances(None, None, None)
+        .await
+        .into_iter()
+        .map(|instance| instance.session_id)
+        .collect::<std::collections::HashSet<_>>();
+    let permissions = state
+        .permissions
+        .list()
+        .await
+        .into_iter()
+        .filter(|req| {
+            req.session_id
+                .as_ref()
+                .map(|sid| session_ids.contains(sid))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    Json(json!({
+        "spawnApprovals": spawn,
+        "toolApprovals": permissions,
+        "count": spawn.len() + permissions.len(),
+    }))
+}
+
+async fn agent_team_spawn(
+    State(state): State<AppState>,
+    Json(input): Json<AgentTeamSpawnInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let req = SpawnRequest {
+        mission_id: input.mission_id.clone(),
+        parent_instance_id: input.parent_instance_id.clone(),
+        source: input.source.unwrap_or(SpawnSource::UiAction),
+        parent_role: None,
+        role: input.role,
+        template_id: input.template_id.clone(),
+        justification: input.justification.clone(),
+        budget_override: input.budget_override,
+    };
+    emit_spawn_requested(&state, &req);
+    let result = state.agent_teams.spawn(&state, req.clone()).await;
+    if !result.decision.allowed || result.instance.is_none() {
+        emit_spawn_denied(&state, &req, &result.decision);
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "ok": false,
+                "code": result.decision.code,
+                "error": result.decision.reason,
+                "requiresUserApproval": result.decision.requires_user_approval,
+            })),
+        ));
+    }
+    let instance = result.instance.expect("checked is_some");
+    emit_spawn_approved(&state, &req, &instance);
+    Ok(Json(json!({
+        "ok": true,
+        "missionID": instance.mission_id,
+        "instanceID": instance.instance_id,
+        "sessionID": instance.session_id,
+        "runID": instance.run_id,
+        "status": instance.status,
+        "skillHash": instance.skill_hash,
+    })))
+}
+
+async fn agent_team_cancel_instance(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<AgentTeamCancelInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let reason = input
+        .reason
+        .unwrap_or_else(|| "cancelled by user".to_string());
+    let Some(instance) = state
+        .agent_teams
+        .cancel_instance(&state, &id, &reason)
+        .await
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "ok": false,
+                "code": "INSTANCE_NOT_FOUND",
+                "error": "Agent instance not found",
+                "instanceID": id,
+            })),
+        ));
+    };
+    Ok(Json(json!({
+        "ok": true,
+        "instanceID": instance.instance_id,
+        "sessionID": instance.session_id,
+        "status": instance.status,
+    })))
+}
+
+async fn agent_team_cancel_mission(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<AgentTeamCancelInput>,
+) -> Json<Value> {
+    let reason = input
+        .reason
+        .unwrap_or_else(|| "mission cancelled by user".to_string());
+    let cancelled = state.agent_teams.cancel_mission(&state, &id, &reason).await;
+    Json(json!({
+        "ok": true,
+        "missionID": id,
+        "cancelledInstances": cancelled,
+    }))
 }
 
 fn routine_error_response(error: RoutineStoreError) -> (StatusCode, Json<Value>) {
@@ -4314,6 +4623,13 @@ async fn openapi_doc() -> Json<Value> {
             "/mission":{"get":{"summary":"List missions"},"post":{"summary":"Create mission"}},
             "/mission/{id}":{"get":{"summary":"Get mission"}},
             "/mission/{id}/event":{"post":{"summary":"Apply mission event through reducer"}},
+            "/agent-team/templates":{"get":{"summary":"List agent team templates"}},
+            "/agent-team/instances":{"get":{"summary":"List agent team instances"}},
+            "/agent-team/missions":{"get":{"summary":"List agent team mission summaries"}},
+            "/agent-team/approvals":{"get":{"summary":"List pending approvals for agent-team actions"}},
+            "/agent-team/spawn":{"post":{"summary":"Spawn an agent team instance with server policy gating"}},
+            "/agent-team/instance/{id}/cancel":{"post":{"summary":"Cancel an agent team instance"}},
+            "/agent-team/mission/{id}/cancel":{"post":{"summary":"Cancel all instances for a mission"}},
             "/routines":{"get":{"summary":"List routines"},"post":{"summary":"Create routine"}},
             "/routines/{id}":{"patch":{"summary":"Update routine"},"delete":{"summary":"Delete routine"}},
             "/routines/{id}/run_now":{"post":{"summary":"Trigger routine immediately"}},
@@ -5734,6 +6050,442 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_team_spawn_denied_when_policy_missing() {
+        let state = test_state().await;
+        let app = app_router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/agent-team/spawn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "role": "worker",
+                    "source": "ui_action",
+                    "justification": "need parallel implementation"
+                })
+                .to_string(),
+            ))
+            .expect("spawn request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("spawn_policy_missing")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_team_spawn_approved_with_policy_and_template() {
+        let state = test_state().await;
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        state
+            .agent_teams
+            .set_for_test(
+                Some(workspace_root),
+                Some(tandem_orchestrator::SpawnPolicy {
+                    enabled: true,
+                    require_justification: true,
+                    max_agents: Some(20),
+                    max_concurrent: Some(10),
+                    child_budget_percent_of_parent_remaining: Some(50),
+                    spawn_edges: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Orchestrator,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                            },
+                        );
+                        map
+                    },
+                    required_skills: std::collections::HashMap::new(),
+                    role_defaults: std::collections::HashMap::new(),
+                    mission_total_budget: None,
+                    cost_per_1k_tokens_usd: None,
+                    skill_sources: Default::default(),
+                }),
+                vec![tandem_orchestrator::AgentTemplate {
+                    template_id: "worker-default".to_string(),
+                    role: tandem_orchestrator::AgentRole::Worker,
+                    system_prompt: Some("You are a worker".to_string()),
+                    skills: vec![],
+                    default_budget: tandem_orchestrator::BudgetLimit::default(),
+                    capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                }],
+            )
+            .await;
+        let app = app_router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/agent-team/spawn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "missionID": "m1",
+                    "role": "worker",
+                    "templateID": "worker-default",
+                    "source": "ui_action",
+                    "justification": "implement split test coverage"
+                })
+                .to_string(),
+            ))
+            .expect("spawn request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload.get("ok").and_then(|v| v.as_bool()), Some(true));
+        assert!(payload.get("instanceID").and_then(|v| v.as_str()).is_some());
+        let skill_hash = payload
+            .get("skillHash")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(skill_hash.starts_with("sha256:"));
+    }
+
+    #[tokio::test]
+    async fn agent_team_spawn_agent_tool_uses_same_policy_gate() {
+        let state = test_state().await;
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        state
+            .agent_teams
+            .set_for_test(
+                Some(workspace_root),
+                Some(tandem_orchestrator::SpawnPolicy {
+                    enabled: true,
+                    require_justification: true,
+                    max_agents: Some(20),
+                    max_concurrent: Some(10),
+                    child_budget_percent_of_parent_remaining: Some(50),
+                    spawn_edges: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Orchestrator,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                            },
+                        );
+                        map
+                    },
+                    required_skills: std::collections::HashMap::new(),
+                    role_defaults: std::collections::HashMap::new(),
+                    mission_total_budget: None,
+                    cost_per_1k_tokens_usd: None,
+                    skill_sources: Default::default(),
+                }),
+                vec![tandem_orchestrator::AgentTemplate {
+                    template_id: "worker-default".to_string(),
+                    role: tandem_orchestrator::AgentRole::Worker,
+                    system_prompt: Some("You are a worker".to_string()),
+                    skills: vec![],
+                    default_budget: tandem_orchestrator::BudgetLimit::default(),
+                    capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                }],
+            )
+            .await;
+        let session = Session::new(Some("spawn tool".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        state
+            .storage
+            .save_session(session)
+            .await
+            .expect("save session");
+        let mut rx = state.event_bus.subscribe();
+        let app = app_router(state.clone());
+
+        let prompt_body = json!({
+            "parts": [
+                {
+                    "type": "text",
+                    "text": "/tool spawn_agent {\"missionID\":\"m2\",\"role\":\"worker\",\"templateID\":\"worker-default\",\"source\":\"tool_call\",\"justification\":\"parallelize task\"}"
+                }
+            ]
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{session_id}/prompt_async"))
+            .header("content-type", "application/json")
+            .body(Body::from(prompt_body.to_string()))
+            .expect("request");
+        let resp = app.clone().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let request_id = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = rx.recv().await.expect("event");
+                if event.event_type == "permission.asked" {
+                    let id = event
+                        .properties
+                        .get("requestID")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !id.is_empty() {
+                        return id;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("permission asked timeout");
+
+        let approve_req = Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/sessions/{}/tools/{}/approve",
+                session_id, request_id
+            ))
+            .body(Body::empty())
+            .expect("approve request");
+        let approve_resp = app.clone().oneshot(approve_req).await.expect("approve");
+        assert_eq!(approve_resp.status(), StatusCode::OK);
+
+        let spawn_event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = rx.recv().await.expect("event");
+                if event.event_type == "agent_team.spawn.approved" {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("spawn event timeout");
+        assert_eq!(
+            spawn_event
+                .properties
+                .get("sessionID")
+                .and_then(|v| v.as_str()),
+            Some(session_id.as_str())
+        );
+        assert_eq!(
+            spawn_event
+                .properties
+                .get("source")
+                .and_then(|v| v.as_str()),
+            Some("tool_call")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_team_cancel_instance_endpoint_updates_status() {
+        let state = test_state().await;
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        state
+            .agent_teams
+            .set_for_test(
+                Some(workspace_root),
+                Some(tandem_orchestrator::SpawnPolicy {
+                    enabled: true,
+                    require_justification: true,
+                    max_agents: Some(20),
+                    max_concurrent: Some(10),
+                    child_budget_percent_of_parent_remaining: Some(50),
+                    spawn_edges: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Orchestrator,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                            },
+                        );
+                        map
+                    },
+                    required_skills: std::collections::HashMap::new(),
+                    role_defaults: std::collections::HashMap::new(),
+                    mission_total_budget: None,
+                    cost_per_1k_tokens_usd: None,
+                    skill_sources: Default::default(),
+                }),
+                vec![tandem_orchestrator::AgentTemplate {
+                    template_id: "worker-default".to_string(),
+                    role: tandem_orchestrator::AgentRole::Worker,
+                    system_prompt: Some("You are a worker".to_string()),
+                    skills: vec![],
+                    default_budget: tandem_orchestrator::BudgetLimit::default(),
+                    capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                }],
+            )
+            .await;
+        let app = app_router(state.clone());
+
+        let spawn_req = Request::builder()
+            .method("POST")
+            .uri("/agent-team/spawn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "missionID": "m3",
+                    "role": "worker",
+                    "templateID": "worker-default",
+                    "source": "ui_action",
+                    "justification": "work chunk"
+                })
+                .to_string(),
+            ))
+            .expect("spawn request");
+        let spawn_resp = app
+            .clone()
+            .oneshot(spawn_req)
+            .await
+            .expect("spawn response");
+        assert_eq!(spawn_resp.status(), StatusCode::OK);
+        let spawn_body = to_bytes(spawn_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let spawn_payload: Value = serde_json::from_slice(&spawn_body).expect("json");
+        let instance_id = spawn_payload
+            .get("instanceID")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        assert!(!instance_id.is_empty());
+
+        let cancel_req = Request::builder()
+            .method("POST")
+            .uri(format!("/agent-team/instance/{instance_id}/cancel"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "reason": "manual stop"
+                })
+                .to_string(),
+            ))
+            .expect("cancel request");
+        let cancel_resp = app.oneshot(cancel_req).await.expect("cancel response");
+        assert_eq!(cancel_resp.status(), StatusCode::OK);
+        let cancel_body = to_bytes(cancel_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let cancel_payload: Value = serde_json::from_slice(&cancel_body).expect("json");
+        assert_eq!(
+            cancel_payload.get("status").and_then(|v| v.as_str()),
+            Some("cancelled")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_team_capability_policy_denies_network_tool_by_default() {
+        let state = test_state().await;
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        state
+            .agent_teams
+            .set_for_test(
+                Some(workspace_root),
+                Some(tandem_orchestrator::SpawnPolicy {
+                    enabled: true,
+                    require_justification: true,
+                    max_agents: Some(20),
+                    max_concurrent: Some(10),
+                    child_budget_percent_of_parent_remaining: Some(50),
+                    spawn_edges: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Orchestrator,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                            },
+                        );
+                        map
+                    },
+                    required_skills: std::collections::HashMap::new(),
+                    role_defaults: std::collections::HashMap::new(),
+                    mission_total_budget: None,
+                    cost_per_1k_tokens_usd: None,
+                    skill_sources: Default::default(),
+                }),
+                vec![tandem_orchestrator::AgentTemplate {
+                    template_id: "worker-default".to_string(),
+                    role: tandem_orchestrator::AgentRole::Worker,
+                    system_prompt: Some("You are a worker".to_string()),
+                    skills: vec![],
+                    default_budget: tandem_orchestrator::BudgetLimit::default(),
+                    capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                }],
+            )
+            .await;
+        let mut rx = state.event_bus.subscribe();
+        let app = app_router(state.clone());
+
+        let spawn_req = Request::builder()
+            .method("POST")
+            .uri("/agent-team/spawn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "missionID": "m4",
+                    "role": "worker",
+                    "templateID": "worker-default",
+                    "source": "ui_action",
+                    "justification": "run safe task"
+                })
+                .to_string(),
+            ))
+            .expect("spawn request");
+        let spawn_resp = app.clone().oneshot(spawn_req).await.expect("spawn response");
+        assert_eq!(spawn_resp.status(), StatusCode::OK);
+        let spawn_body = to_bytes(spawn_resp.into_body(), usize::MAX).await.expect("body");
+        let spawn_payload: Value = serde_json::from_slice(&spawn_body).expect("json");
+        let child_session_id = spawn_payload
+            .get("sessionID")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        assert!(!child_session_id.is_empty());
+
+        let prompt_req = Request::builder()
+            .method("POST")
+            .uri(format!("/session/{child_session_id}/prompt_async"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": "/tool websearch {\"query\":\"rust async\"}"
+                        }
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("prompt request");
+        let prompt_resp = app.clone().oneshot(prompt_req).await.expect("prompt response");
+        assert_eq!(prompt_resp.status(), StatusCode::NO_CONTENT);
+
+        let denied_event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = rx.recv().await.expect("event");
+                if event.event_type == "agent_team.capability.denied" {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("capability denied timeout");
+        assert_eq!(
+            denied_event
+                .properties
+                .get("sessionID")
+                .and_then(|v| v.as_str()),
+            Some(child_session_id.as_str())
+        );
+        assert_eq!(
+            denied_event
+                .properties
+                .get("tool")
+                .and_then(|v| v.as_str()),
+            Some("websearch")
+        );
+    }
+
+    #[tokio::test]
     async fn mission_created_event_contract_snapshot() {
         let state = test_state().await;
         let mut rx = state.event_bus.subscribe();
@@ -5946,6 +6698,756 @@ mod tests {
                 .and_then(|v| v.get("status"))
                 .and_then(|v| v.as_str()),
             Some("rework")
+        );
+    }
+
+    #[tokio::test]
+    async fn mission_started_triggers_orchestrator_runtime_spawn_for_assigned_agent() {
+        let state = test_state().await;
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        state
+            .agent_teams
+            .set_for_test(
+                Some(workspace_root),
+                Some(tandem_orchestrator::SpawnPolicy {
+                    enabled: true,
+                    require_justification: true,
+                    max_agents: Some(20),
+                    max_concurrent: Some(10),
+                    child_budget_percent_of_parent_remaining: Some(50),
+                    spawn_edges: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Orchestrator,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                            },
+                        );
+                        map
+                    },
+                    required_skills: std::collections::HashMap::new(),
+                    role_defaults: std::collections::HashMap::new(),
+                    mission_total_budget: None,
+                    cost_per_1k_tokens_usd: None,
+                    skill_sources: Default::default(),
+                }),
+                vec![tandem_orchestrator::AgentTemplate {
+                    template_id: "worker-default".to_string(),
+                    role: tandem_orchestrator::AgentRole::Worker,
+                    system_prompt: Some("You are a worker".to_string()),
+                    skills: vec![],
+                    default_budget: tandem_orchestrator::BudgetLimit::default(),
+                    capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                }],
+            )
+            .await;
+        let mut rx = state.event_bus.subscribe();
+        let app = app_router(state.clone());
+
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/mission")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "title": "Mission with assigned worker",
+                    "goal": "exercise orchestrator runtime spawn",
+                    "work_items": [{
+                        "work_item_id":"w-assign-1",
+                        "title":"Ship patch",
+                        "assigned_agent":"worker"
+                    }]
+                })
+                .to_string(),
+            ))
+            .expect("create request");
+        let create_resp = app
+            .clone()
+            .oneshot(create_req)
+            .await
+            .expect("create response");
+        assert_eq!(create_resp.status(), StatusCode::OK);
+        let create_body = to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body");
+        let create_payload: Value = serde_json::from_slice(&create_body).expect("json");
+        let mission_id = create_payload
+            .get("mission")
+            .and_then(|v| v.get("mission_id"))
+            .and_then(|v| v.as_str())
+            .expect("mission id")
+            .to_string();
+
+        let start_req = Request::builder()
+            .method("POST")
+            .uri(format!("/mission/{mission_id}/event"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "event": {
+                        "type": "mission_started",
+                        "mission_id": mission_id
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("start request");
+        let start_resp = app.clone().oneshot(start_req).await.expect("start response");
+        assert_eq!(start_resp.status(), StatusCode::OK);
+        let start_body = to_bytes(start_resp.into_body(), usize::MAX)
+            .await
+            .expect("start body");
+        let start_payload: Value = serde_json::from_slice(&start_body).expect("json");
+        assert_eq!(
+            start_payload
+                .get("orchestratorSpawns")
+                .and_then(|v| v.as_array())
+                .map(|rows| !rows.is_empty()),
+            Some(true)
+        );
+        assert_eq!(
+            start_payload
+                .get("orchestratorSpawns")
+                .and_then(|v| v.get(0))
+                .and_then(|v| v.get("ok"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let spawn_event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = rx.recv().await.expect("event");
+                if event.event_type == "agent_team.spawn.approved" {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("spawn event timeout");
+        assert_eq!(
+            spawn_event
+                .properties
+                .get("source")
+                .and_then(|v| v.as_str()),
+            Some("orchestrator_runtime")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_team_provider_usage_event_updates_token_usage() {
+        let state = test_state().await;
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        state
+            .agent_teams
+            .set_for_test(
+                Some(workspace_root),
+                Some(tandem_orchestrator::SpawnPolicy {
+                    enabled: true,
+                    require_justification: true,
+                    max_agents: Some(20),
+                    max_concurrent: Some(10),
+                    child_budget_percent_of_parent_remaining: Some(50),
+                    spawn_edges: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Orchestrator,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                            },
+                        );
+                        map
+                    },
+                    required_skills: std::collections::HashMap::new(),
+                    role_defaults: std::collections::HashMap::new(),
+                    mission_total_budget: None,
+                    cost_per_1k_tokens_usd: None,
+                    skill_sources: Default::default(),
+                }),
+                vec![tandem_orchestrator::AgentTemplate {
+                    template_id: "worker-default".to_string(),
+                    role: tandem_orchestrator::AgentRole::Worker,
+                    system_prompt: Some("You are a worker".to_string()),
+                    skills: vec![],
+                    default_budget: tandem_orchestrator::BudgetLimit {
+                        max_tokens: Some(10_000),
+                        max_steps: None,
+                        max_tool_calls: None,
+                        max_duration_ms: None,
+                        max_cost_usd: None,
+                    },
+                    capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                }],
+            )
+            .await;
+        let app = app_router(state.clone());
+
+        let spawn_req = Request::builder()
+            .method("POST")
+            .uri("/agent-team/spawn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "missionID": "m5",
+                    "role": "worker",
+                    "templateID": "worker-default",
+                    "source": "ui_action",
+                    "justification": "usage update test"
+                })
+                .to_string(),
+            ))
+            .expect("spawn request");
+        let spawn_resp = app.clone().oneshot(spawn_req).await.expect("spawn response");
+        assert_eq!(spawn_resp.status(), StatusCode::OK);
+        let spawn_body = to_bytes(spawn_resp.into_body(), usize::MAX).await.expect("spawn body");
+        let spawn_payload: Value = serde_json::from_slice(&spawn_body).expect("json");
+        let session_id = spawn_payload
+            .get("sessionID")
+            .and_then(|v| v.as_str())
+            .expect("session id")
+            .to_string();
+
+        let usage_event = EngineEvent::new(
+            "provider.usage",
+            json!({
+                "sessionID": session_id,
+                "messageID": "msg-1",
+                "promptTokens": 12,
+                "completionTokens": 34,
+                "totalTokens": 46
+            }),
+        );
+        state
+            .agent_teams
+            .handle_engine_event(&state, &usage_event)
+            .await;
+
+        let list_req = Request::builder()
+            .method("GET")
+            .uri("/agent-team/instances?missionID=m5")
+            .body(Body::empty())
+            .expect("list request");
+        let list_resp = app.oneshot(list_req).await.expect("list response");
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let list_body = to_bytes(list_resp.into_body(), usize::MAX).await.expect("list body");
+        let list_payload: Value = serde_json::from_slice(&list_body).expect("json");
+        assert_eq!(
+            list_payload
+                .get("instances")
+                .and_then(|v| v.get(0))
+                .and_then(|v| v.get("metadata"))
+                .and_then(|v| v.get("budgetUsage"))
+                .and_then(|v| v.get("tokensUsed"))
+                .and_then(|v| v.as_u64()),
+            Some(46)
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_team_request_only_spawn_surfaces_in_approvals_endpoint() {
+        let state = test_state().await;
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        state
+            .agent_teams
+            .set_for_test(
+                Some(workspace_root),
+                Some(tandem_orchestrator::SpawnPolicy {
+                    enabled: true,
+                    require_justification: true,
+                    max_agents: Some(20),
+                    max_concurrent: Some(10),
+                    child_budget_percent_of_parent_remaining: Some(50),
+                    spawn_edges: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Orchestrator,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                            },
+                        );
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Worker,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::RequestOnly),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Tester],
+                            },
+                        );
+                        map
+                    },
+                    required_skills: std::collections::HashMap::new(),
+                    role_defaults: std::collections::HashMap::new(),
+                    mission_total_budget: None,
+                    cost_per_1k_tokens_usd: None,
+                    skill_sources: Default::default(),
+                }),
+                vec![
+                    tandem_orchestrator::AgentTemplate {
+                        template_id: "worker-default".to_string(),
+                        role: tandem_orchestrator::AgentRole::Worker,
+                        system_prompt: None,
+                        skills: vec![],
+                        default_budget: tandem_orchestrator::BudgetLimit::default(),
+                        capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                    },
+                    tandem_orchestrator::AgentTemplate {
+                        template_id: "tester-default".to_string(),
+                        role: tandem_orchestrator::AgentRole::Tester,
+                        system_prompt: None,
+                        skills: vec![],
+                        default_budget: tandem_orchestrator::BudgetLimit::default(),
+                        capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                    },
+                ],
+            )
+            .await;
+        let app = app_router(state.clone());
+
+        let spawn_worker_req = Request::builder()
+            .method("POST")
+            .uri("/agent-team/spawn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "missionID": "m-approval",
+                    "role": "worker",
+                    "templateID": "worker-default",
+                    "source": "ui_action",
+                    "justification": "primary worker"
+                })
+                .to_string(),
+            ))
+            .expect("spawn worker");
+        let spawn_worker_resp = app
+            .clone()
+            .oneshot(spawn_worker_req)
+            .await
+            .expect("spawn worker response");
+        assert_eq!(spawn_worker_resp.status(), StatusCode::OK);
+        let worker_body = to_bytes(spawn_worker_resp.into_body(), usize::MAX)
+            .await
+            .expect("worker body");
+        let worker_payload: Value = serde_json::from_slice(&worker_body).expect("worker json");
+        let worker_instance_id = worker_payload
+            .get("instanceID")
+            .and_then(|v| v.as_str())
+            .expect("worker instance id")
+            .to_string();
+
+        let spawn_tester_req = Request::builder()
+            .method("POST")
+            .uri("/agent-team/spawn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "missionID": "m-approval",
+                    "parentInstanceID": worker_instance_id,
+                    "role": "tester",
+                    "templateID": "tester-default",
+                    "source": "ui_action",
+                    "justification": "needs approval edge"
+                })
+                .to_string(),
+            ))
+            .expect("spawn tester");
+        let spawn_tester_resp = app
+            .clone()
+            .oneshot(spawn_tester_req)
+            .await
+            .expect("spawn tester response");
+        assert_eq!(spawn_tester_resp.status(), StatusCode::FORBIDDEN);
+        let tester_body = to_bytes(spawn_tester_resp.into_body(), usize::MAX)
+            .await
+            .expect("tester body");
+        let tester_payload: Value = serde_json::from_slice(&tester_body).expect("tester json");
+        assert_eq!(
+            tester_payload
+                .get("requiresUserApproval")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let approvals_req = Request::builder()
+            .method("GET")
+            .uri("/agent-team/approvals")
+            .body(Body::empty())
+            .expect("approvals request");
+        let approvals_resp = app.oneshot(approvals_req).await.expect("approvals response");
+        assert_eq!(approvals_resp.status(), StatusCode::OK);
+        let approvals_body = to_bytes(approvals_resp.into_body(), usize::MAX)
+            .await
+            .expect("approvals body");
+        let approvals_payload: Value =
+            serde_json::from_slice(&approvals_body).expect("approvals json");
+        assert_eq!(
+            approvals_payload
+                .get("spawnApprovals")
+                .and_then(|v| v.as_array())
+                .map(|v| !v.is_empty()),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn mission_total_budget_exhaustion_blocks_followup_spawn() {
+        let state = test_state().await;
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        state
+            .agent_teams
+            .set_for_test(
+                Some(workspace_root),
+                Some(tandem_orchestrator::SpawnPolicy {
+                    enabled: true,
+                    require_justification: true,
+                    max_agents: Some(20),
+                    max_concurrent: Some(10),
+                    child_budget_percent_of_parent_remaining: Some(50),
+                    mission_total_budget: Some(tandem_orchestrator::BudgetLimit {
+                        max_tokens: Some(40),
+                        max_steps: None,
+                        max_tool_calls: None,
+                        max_duration_ms: None,
+                        max_cost_usd: None,
+                    }),
+                    cost_per_1k_tokens_usd: None,
+                    spawn_edges: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Orchestrator,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                            },
+                        );
+                        map
+                    },
+                    required_skills: std::collections::HashMap::new(),
+                    role_defaults: std::collections::HashMap::new(),
+                    skill_sources: Default::default(),
+                }),
+                vec![tandem_orchestrator::AgentTemplate {
+                    template_id: "worker-default".to_string(),
+                    role: tandem_orchestrator::AgentRole::Worker,
+                    system_prompt: None,
+                    skills: vec![],
+                    default_budget: tandem_orchestrator::BudgetLimit::default(),
+                    capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                }],
+            )
+            .await;
+        let app = app_router(state.clone());
+
+        let spawn_1_req = Request::builder()
+            .method("POST")
+            .uri("/agent-team/spawn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "missionID": "m-budget",
+                    "role": "worker",
+                    "templateID": "worker-default",
+                    "source": "ui_action",
+                    "justification": "initial worker"
+                })
+                .to_string(),
+            ))
+            .expect("spawn 1");
+        let spawn_1_resp = app.clone().oneshot(spawn_1_req).await.expect("spawn 1 response");
+        assert_eq!(spawn_1_resp.status(), StatusCode::OK);
+        let spawn_1_body = to_bytes(spawn_1_resp.into_body(), usize::MAX)
+            .await
+            .expect("spawn 1 body");
+        let spawn_1_payload: Value = serde_json::from_slice(&spawn_1_body).expect("spawn 1 json");
+        let session_id = spawn_1_payload
+            .get("sessionID")
+            .and_then(|v| v.as_str())
+            .expect("session id")
+            .to_string();
+
+        state
+            .agent_teams
+            .handle_engine_event(
+                &state,
+                &EngineEvent::new(
+                    "provider.usage",
+                    json!({
+                        "sessionID": session_id,
+                        "totalTokens": 50
+                    }),
+                ),
+            )
+            .await;
+
+        let spawn_2_req = Request::builder()
+            .method("POST")
+            .uri("/agent-team/spawn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "missionID": "m-budget",
+                    "role": "worker",
+                    "templateID": "worker-default",
+                    "source": "ui_action",
+                    "justification": "follow-up worker"
+                })
+                .to_string(),
+            ))
+            .expect("spawn 2");
+        let spawn_2_resp = app.clone().oneshot(spawn_2_req).await.expect("spawn 2 response");
+        assert_eq!(spawn_2_resp.status(), StatusCode::FORBIDDEN);
+        let spawn_2_body = to_bytes(spawn_2_resp.into_body(), usize::MAX)
+            .await
+            .expect("spawn 2 body");
+        let spawn_2_payload: Value = serde_json::from_slice(&spawn_2_body).expect("spawn 2 json");
+        assert_eq!(
+            spawn_2_payload.get("code").and_then(|v| v.as_str()),
+            Some("spawn_mission_budget_exceeded")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_team_missions_endpoint_returns_rollup_counts() {
+        let state = test_state().await;
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        state
+            .agent_teams
+            .set_for_test(
+                Some(workspace_root),
+                Some(tandem_orchestrator::SpawnPolicy {
+                    enabled: true,
+                    require_justification: true,
+                    max_agents: Some(20),
+                    max_concurrent: Some(10),
+                    child_budget_percent_of_parent_remaining: Some(50),
+                    spawn_edges: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Orchestrator,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                            },
+                        );
+                        map
+                    },
+                    required_skills: std::collections::HashMap::new(),
+                    role_defaults: std::collections::HashMap::new(),
+                    mission_total_budget: None,
+                    cost_per_1k_tokens_usd: None,
+                    skill_sources: Default::default(),
+                }),
+                vec![tandem_orchestrator::AgentTemplate {
+                    template_id: "worker-default".to_string(),
+                    role: tandem_orchestrator::AgentRole::Worker,
+                    system_prompt: Some("You are a worker".to_string()),
+                    skills: vec![],
+                    default_budget: tandem_orchestrator::BudgetLimit::default(),
+                    capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                }],
+            )
+            .await;
+        let app = app_router(state.clone());
+
+        for mission_id in ["m6", "m6", "m7"] {
+            let spawn_req = Request::builder()
+                .method("POST")
+                .uri("/agent-team/spawn")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "missionID": mission_id,
+                        "role": "worker",
+                        "templateID": "worker-default",
+                        "source": "ui_action",
+                        "justification": "rollup"
+                    })
+                    .to_string(),
+                ))
+                .expect("spawn request");
+            let spawn_resp = app.clone().oneshot(spawn_req).await.expect("spawn response");
+            assert_eq!(spawn_resp.status(), StatusCode::OK);
+        }
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/agent-team/missions")
+            .body(Body::empty())
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload.get("count").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            payload
+                .get("missions")
+                .and_then(|v| v.get(0))
+                .and_then(|v| v.get("missionID"))
+                .and_then(|v| v.as_str()),
+            Some("m6")
+        );
+        assert_eq!(
+            payload
+                .get("missions")
+                .and_then(|v| v.get(0))
+                .and_then(|v| v.get("instanceCount"))
+                .and_then(|v| v.as_u64()),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn mission_canceled_triggers_orchestrator_runtime_instance_cancellation() {
+        let state = test_state().await;
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        state
+            .agent_teams
+            .set_for_test(
+                Some(workspace_root),
+                Some(tandem_orchestrator::SpawnPolicy {
+                    enabled: true,
+                    require_justification: true,
+                    max_agents: Some(20),
+                    max_concurrent: Some(10),
+                    child_budget_percent_of_parent_remaining: Some(50),
+                    spawn_edges: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            tandem_orchestrator::AgentRole::Orchestrator,
+                            tandem_orchestrator::RoleSpawnRule {
+                                behavior: Some(tandem_orchestrator::SpawnBehavior::Allow),
+                                can_spawn: vec![tandem_orchestrator::AgentRole::Worker],
+                            },
+                        );
+                        map
+                    },
+                    required_skills: std::collections::HashMap::new(),
+                    role_defaults: std::collections::HashMap::new(),
+                    mission_total_budget: None,
+                    cost_per_1k_tokens_usd: None,
+                    skill_sources: Default::default(),
+                }),
+                vec![tandem_orchestrator::AgentTemplate {
+                    template_id: "worker-default".to_string(),
+                    role: tandem_orchestrator::AgentRole::Worker,
+                    system_prompt: Some("You are a worker".to_string()),
+                    skills: vec![],
+                    default_budget: tandem_orchestrator::BudgetLimit::default(),
+                    capabilities: tandem_orchestrator::CapabilitySpec::default(),
+                }],
+            )
+            .await;
+        let app = app_router(state.clone());
+
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/mission")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "title": "Cancel mission bridge",
+                    "goal": "validate cancellation propagation",
+                    "work_items": [{
+                        "work_item_id":"w-cancel-1",
+                        "title":"Do work",
+                        "assigned_agent":"worker"
+                    }]
+                })
+                .to_string(),
+            ))
+            .expect("create request");
+        let create_resp = app
+            .clone()
+            .oneshot(create_req)
+            .await
+            .expect("create response");
+        assert_eq!(create_resp.status(), StatusCode::OK);
+        let create_body = to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body");
+        let create_payload: Value = serde_json::from_slice(&create_body).expect("json");
+        let mission_id = create_payload
+            .get("mission")
+            .and_then(|v| v.get("mission_id"))
+            .and_then(|v| v.as_str())
+            .expect("mission id")
+            .to_string();
+
+        let start_req = Request::builder()
+            .method("POST")
+            .uri(format!("/mission/{mission_id}/event"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "event": {
+                        "type": "mission_started",
+                        "mission_id": mission_id
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("start request");
+        let start_resp = app.clone().oneshot(start_req).await.expect("start response");
+        assert_eq!(start_resp.status(), StatusCode::OK);
+
+        let cancel_req = Request::builder()
+            .method("POST")
+            .uri(format!("/mission/{mission_id}/event"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "event": {
+                        "type": "mission_canceled",
+                        "mission_id": mission_id,
+                        "reason": "user stop"
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("cancel request");
+        let cancel_resp = app.clone().oneshot(cancel_req).await.expect("cancel response");
+        assert_eq!(cancel_resp.status(), StatusCode::OK);
+        let cancel_body = to_bytes(cancel_resp.into_body(), usize::MAX)
+            .await
+            .expect("cancel body");
+        let cancel_payload: Value = serde_json::from_slice(&cancel_body).expect("json");
+        assert_eq!(
+            cancel_payload
+                .get("orchestratorCancellations")
+                .and_then(|v| v.get("triggered"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            cancel_payload
+                .get("orchestratorCancellations")
+                .and_then(|v| v.get("cancelledInstances"))
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+
+        let instances_req = Request::builder()
+            .method("GET")
+            .uri(format!("/agent-team/instances?missionID={mission_id}"))
+            .body(Body::empty())
+            .expect("instances request");
+        let instances_resp = app
+            .oneshot(instances_req)
+            .await
+            .expect("instances response");
+        assert_eq!(instances_resp.status(), StatusCode::OK);
+        let instances_body = to_bytes(instances_resp.into_body(), usize::MAX)
+            .await
+            .expect("instances body");
+        let instances_payload: Value = serde_json::from_slice(&instances_body).expect("json");
+        assert_eq!(
+            instances_payload
+                .get("instances")
+                .and_then(|v| v.get(0))
+                .and_then(|v| v.get("status"))
+                .and_then(|v| v.as_str()),
+            Some("cancelled")
         );
     }
 
@@ -6534,7 +8036,7 @@ mod tests {
                         "tier": "session"
                     },
                     "kind": "solution_capsule",
-                    "content": ["-----BEGIN PRIVATE ", "KEY-----"].concat(),
+                    "content": "-----BEGIN PRIVATE KEY-----",
                     "classification": "restricted",
                     "capability": capability
                 })
@@ -6630,3 +8132,5 @@ mod tests {
         assert!(blocked_promote_exists);
     }
 }
+
+

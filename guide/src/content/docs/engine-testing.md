@@ -69,6 +69,13 @@ cargo test -p tandem-server routine_policy_ -- --nocapture
 cargo test -p tandem-server routines_run_now_ -- --nocapture
 ```
 
+**Agent Team spawn policy tests**:
+
+```bash
+cargo test -p tandem-orchestrator agent_team:: -- --nocapture
+cargo test -p tandem-server agent_team_spawn -- --nocapture
+```
+
 **JSON-first contract tests**:
 
 ```bash

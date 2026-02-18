@@ -1,6 +1,7 @@
 [package]
 name = "tandem-runtime"
 version = "0.1.0"
+description = "Runtime utilities for Tandem"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
 edition = "2021"

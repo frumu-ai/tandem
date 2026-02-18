@@ -13,21 +13,14 @@ CRATES=(
     "crates/tandem-types"
     "crates/tandem-wire"
     "crates/tandem-observability"
-    "crates/tandem-utils" # If exists? Checking list... tandem-tools? tandem-core?
-    # Based on Cargo.toml files seen:
-    # tandem-core depends on: types, wire, tools, providers, observability
-    # tandem-tools depends on: types, skills, memory
-    # tandem-skills?
-    # tandem-memory?
-    
-    # We need to list valid crates.
     "crates/tandem-memory"
     "crates/tandem-skills"
     "crates/tandem-tools"
     "crates/tandem-providers"
+    "crates/tandem-orchestrator"
     "crates/tandem-core"
-    "crates/tandem-server"
     "crates/tandem-runtime"
+    "crates/tandem-server"
     "crates/tandem-tui" # Binary, can publish if lib? It's binary.
     "engine" # tandem-engine binary
 )

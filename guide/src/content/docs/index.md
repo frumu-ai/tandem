@@ -18,6 +18,8 @@ Welcome to the Tandem documentation focused on the TUI and engine runtime.
 - [TUI Guide](./tui-guide/)
 - [Configuration](./configuration/)
 - [Agents & Sessions](./agents-and-sessions/)
+- [Agent Teams](./agent-teams/)
+- [Agent Teams Rollout Plan](./agent-teams-rollout/)
 - [Design System](./design-system/)
 
 ## Reference
@@ -25,6 +27,9 @@ Welcome to the Tandem documentation focused on the TUI and engine runtime.
 - [Engine Commands](./reference/engine-commands/)
 - [TUI Commands](./reference/tui-commands/)
 - [Tools Reference](./reference/tools/)
+- [Spawn Policy Reference](./reference/spawn-policy/)
+- [Agent Team API](./reference/agent-team-api/)
+- [Agent Team Events](./reference/agent-team-events/)
 - [Protocol Matrix](./protocol-matrix/)
 
 ## Developer Documentation

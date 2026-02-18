@@ -60,6 +60,7 @@ impl ToolRegistry {
         map.insert("update_todo_list".to_string(), todo_tool);
         map.insert("task".to_string(), Arc::new(TaskTool));
         map.insert("question".to_string(), Arc::new(QuestionTool));
+        map.insert("spawn_agent".to_string(), Arc::new(SpawnAgentTool));
         map.insert("skill".to_string(), Arc::new(SkillTool));
         map.insert("memory_search".to_string(), Arc::new(MemorySearchTool));
         map.insert("apply_patch".to_string(), Arc::new(ApplyPatchTool));
@@ -1160,6 +1161,41 @@ impl Tool for QuestionTool {
         Ok(ToolResult {
             output: "Question requested. Use /question endpoints to respond.".to_string(),
             metadata: json!({"questions": args["questions"]}),
+        })
+    }
+}
+
+struct SpawnAgentTool;
+#[async_trait]
+impl Tool for SpawnAgentTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "spawn_agent".to_string(),
+            description: "Spawn an agent-team instance through server policy enforcement."
+                .to_string(),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "missionID":{"type":"string"},
+                    "parentInstanceID":{"type":"string"},
+                    "templateID":{"type":"string"},
+                    "role":{"type":"string","enum":["orchestrator","delegator","worker","watcher","reviewer","tester","committer"]},
+                    "source":{"type":"string","enum":["tool_call"]},
+                    "justification":{"type":"string"},
+                    "budgetOverride":{"type":"object"}
+                },
+                "required":["role","justification"]
+            }),
+        }
+    }
+
+    async fn execute(&self, _args: Value) -> anyhow::Result<ToolResult> {
+        Ok(ToolResult {
+            output: "spawn_agent must be executed through the engine runtime.".to_string(),
+            metadata: json!({
+                "ok": false,
+                "code": "SPAWN_HOOK_UNAVAILABLE"
+            }),
         })
     }
 }

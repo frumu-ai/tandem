@@ -6,6 +6,8 @@ title: Agents & Sessions
 
 In Tandem, an **Agent** is a specialized persona with specific instructions, permissions, and tools.
 
+For policy-gated multi-agent spawning and lineage tracking, see [Agent Teams](./agent-teams/).
+
 ### Built-in Agents
 
 Tandem comes with several built-in agents:

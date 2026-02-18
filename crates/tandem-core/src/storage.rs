@@ -1305,7 +1305,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn merges_legacy_sessions_even_when_sessions_json_exists() {
+    async fn skips_legacy_merge_when_sessions_json_exists() {
         let base =
             std::env::temp_dir().join(format!("tandem-core-legacy-merge-{}", Uuid::new_v4()));
         stdfs::create_dir_all(&base).expect("base");
@@ -1354,7 +1354,7 @@ mod tests {
         let sessions = storage.list_sessions().await;
         let ids = sessions.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
         assert!(ids.contains(&"ses_current".to_string()));
-        assert!(ids.contains(&"ses_legacy".to_string()));
+        assert!(!ids.contains(&"ses_legacy".to_string()));
     }
 
     #[tokio::test]
