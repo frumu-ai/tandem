@@ -271,7 +271,25 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
+
+      - name: Configure npm for tokenless Trusted Publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          # In Trusted Publishing mode, avoid auth-token based npm config.
+          # setup-node with registry-url can create auth-token placeholders that
+          # force token auth and break OIDC publish.
+          cat > "$RUNNER_TEMP/.npmrc" <<'EOF'
+          registry=https://registry.npmjs.org/
+          @frumu:registry=https://registry.npmjs.org/
+          EOF
+          {
+            echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/.npmrc"
+            echo "NODE_AUTH_TOKEN="
+            echo "NPM_TOKEN="
+          } >> "$GITHUB_ENV"
+          npm config get registry
+          npm config get userconfig
 
       - name: Publish npm wrappers (or dry-run)
         shell: bash
