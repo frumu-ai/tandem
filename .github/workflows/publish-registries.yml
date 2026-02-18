@@ -259,6 +259,7 @@ jobs:
     name: Publish npm Wrappers
     needs: [preflight, publish_crates]
     if: |
+      always() &&
       needs.preflight.outputs.npm_enabled == 'true' &&
       (needs.preflight.outputs.crates_enabled != 'true' || needs.publish_crates.result == 'success')
     runs-on: ubuntu-latest
