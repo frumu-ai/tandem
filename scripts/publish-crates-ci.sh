@@ -54,9 +54,6 @@ if [[ "$DRY_RUN" == "true" ]]; then
 fi
 
 publish_args=()
-if [[ "$DRY_RUN" == "true" ]]; then
-  publish_args+=(--dry-run)
-fi
 if [[ "$ALLOW_DIRTY" == "true" ]]; then
   publish_args+=(--allow-dirty)
 fi
@@ -70,13 +67,23 @@ for crate in "${CRATES[@]}"; do
   echo "---------------------------------------------------" | tee -a "$LOG_FILE"
   echo "Processing $crate" | tee -a "$LOG_FILE"
 
-  set +e
-  output="$(
-    cd "$crate" &&
-      cargo publish "${publish_args[@]}" 2>&1
-  )"
-  code=$?
-  set -e
+  if [[ "$DRY_RUN" == "true" ]]; then
+    set +e
+    output="$(
+      cd "$crate" &&
+        cargo package --allow-dirty --no-verify 2>&1
+    )"
+    code=$?
+    set -e
+  else
+    set +e
+    output="$(
+      cd "$crate" &&
+        cargo publish "${publish_args[@]}" 2>&1
+    )"
+    code=$?
+    set -e
+  fi
 
   echo "$output" | tee -a "$LOG_FILE"
 

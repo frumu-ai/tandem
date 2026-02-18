@@ -162,7 +162,10 @@ jobs:
           )
           for crate in "${crates[@]}"; do
             echo "Packaging precheck: $crate"
-            (cd "$crate" && cargo package --allow-dirty >/dev/null)
+            # Use --no-verify here so preflight doesn't require crates.io to
+            # already contain intra-workspace versions that will be published
+            # later in this same ordered flow.
+            (cd "$crate" && cargo package --allow-dirty --no-verify >/dev/null)
           done
 
   publish_crates:
