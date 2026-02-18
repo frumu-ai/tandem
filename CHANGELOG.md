@@ -13,36 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent Teams MVP in engine server**: Added mission/instance spawning foundations with shared server-side spawn policy enforcement, role edges, budget/cap controls, capability scopes, SKILL.md hashing, and structured agent-team SSE events for command-center style observability.
+- **Agent Teams API/docs surface**: Added new guide docs for rollout, API/events, spawn policy, and protocol matrix updates; added crate-level READMEs for `tandem-ai` and `tandem-tui` with cargo-first usage.
 - **Separate Registry Publish Workflow**: Added isolated GitHub Actions registry workflow (`publish-registries.yml`) for crates.io + npm publishing with dedicated triggers, environment gates, and dry-run support.
 - **CI Publish Scripts**: Added CI-safe publish helpers for crates and npm (`scripts/publish-crates-ci.sh`, `scripts/publish-npm-ci.sh`, `scripts/publish-npm-ci.ps1`) with idempotent skip behavior for already-published versions.
 
 ### Changed
 
+- **Publish chain hardening**: Reworked crate publish/version dependency chain so new crate releases resolve correctly in order, including updated crate versions for `tandem-memory`, `tandem-tools`, `tandem-core`, `tandem-server`, `tandem-tui`, and `tandem-ai`.
+- **Release metadata bump**: Bumped app/wrapper versions to `0.3.5` across `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and npm wrapper package manifests.
 - **npm Wrapper Bin Layout**: Updated `@frumu/tandem` and `@frumu/tandem-tui` wrappers to ship stable JS bin launchers (`bin/*.js`) and use `bin/native/*` for downloaded binaries, improving npm/pnpm shim generation reliability.
 - **npm Wrapper Postinstall**: Simplified wrapper postinstall command to `node scripts/install.js` to avoid package-manager-specific env var path issues.
 - **Release Docs**: Expanded release process docs to include the new separate registry publish flow.
 
 ### Fixed
 
-- **Cross-platform Wrapper Install Reliability**: Fixed Windows/pnpm failures where bin shims were not created before postinstall and where postinstall path resolution could fail in some package-manager environments.
-- **TUI Sidecar Engine Freshness**: TUI now detects stale cached/bundled sidecar engine binaries and auto-refreshes them based on version comparison, preventing old sidecar versions from being reused.
-
-## [0.3.3] - 2026-02-18
-
-### Added
-
-- **Agent Teams MVP in engine server**: Added mission/instance spawning foundations with shared server-side spawn policy enforcement, role edges, budget/cap controls, capability scopes, SKILL.md hashing, and structured agent-team SSE events for command-center style observability.
-- **Agent Teams API/docs surface**: Added new guide docs for rollout, API/events, spawn policy, and protocol matrix updates; added crate-level READMEs for `tandem-ai` and `tandem-tui` with cargo-first usage.
-
-### Changed
-
-- **Publish chain hardening**: Reworked crate publish/version dependency chain so new crate releases resolve correctly in order, including updated crate versions for `tandem-memory`, `tandem-tools`, `tandem-core`, `tandem-server`, `tandem-tui`, and `tandem-ai`.
-- **Release metadata bump**: Bumped app/wrapper versions to `0.3.3` across `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and npm wrapper package manifests.
-
-### Fixed
-
 - **Windows publish-verify blocker**: Removed reliance on `--no-verify` workaround path by making `tandem-memory` publish verification resilient without dragging problematic static-CRT tokenizer/embedder linkage into default verification builds.
 - **Wrapper/crate docs mismatch**: Clarified npm wrapper READMEs and added proper crate README instructions to prevent `npm install` guidance from leaking into crate-level workflows.
+- **Cross-platform Wrapper Install Reliability**: Fixed Windows/pnpm failures where bin shims were not created before postinstall and where postinstall path resolution could fail in some package-manager environments.
+- **TUI Sidecar Engine Freshness**: TUI now detects stale cached/bundled sidecar engine binaries and auto-refreshes them based on version comparison, preventing old sidecar versions from being reused.
 
 ## [0.3.2] - 2026-02-17
 
@@ -809,8 +798,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.3.3...HEAD
-[0.3.3]: https://github.com/frumu-ai/tandem/compare/v0.3.2...v0.3.3
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/frumu-ai/tandem/compare/v0.3.2...v0.3.5
 [0.3.2]: https://github.com/frumu-ai/tandem/compare/v0.3.1...v0.3.2
 [0.2.25]: https://github.com/frumu-ai/tandem/compare/v0.2.24...v0.2.25
 [0.2.24]: https://github.com/frumu-ai/tandem/compare/v0.2.23...v0.2.24
