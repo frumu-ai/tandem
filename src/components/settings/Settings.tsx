@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+﻿import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useTranslation } from "react-i18next";
 import {
   Settings as SettingsIcon,
   FolderOpen,
@@ -83,6 +84,7 @@ export function Settings({
   initialSection,
   onInitialSectionConsumed,
 }: SettingsProps) {
+  const { t } = useTranslation(["common", "settings"]);
   const [activeTab, setActiveTab] = useState<"settings" | "logs">("settings");
   const {
     status: updateStatus,
@@ -161,7 +163,7 @@ export function Settings({
       mirrorCustomBackgroundToLocalStorage(info);
     } catch (err) {
       console.error("Failed to load custom background:", err);
-      setCustomBgError("Failed to load custom background settings.");
+      setCustomBgError(t("appearance.errors.loadSettings", { ns: "settings" }));
       setCustomBg(null);
     } finally {
       setCustomBgLoading(false);
@@ -369,7 +371,7 @@ export function Settings({
       const selected = await open({
         directory: true,
         multiple: false,
-        title: "Select Folder",
+        title: t("projects.selectFolder", { ns: "settings" }),
       });
 
       if (selected && typeof selected === "string") {
@@ -573,13 +575,13 @@ export function Settings({
                 <SettingsIcon className="h-6 w-6 text-primary" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold text-text">Settings</h1>
-                <p className="text-text-muted">Configure your Tandem folders and AI</p>
+                <h1 className="text-2xl font-bold text-text">{t("title", { ns: "settings" })}</h1>
+                <p className="text-text-muted">{t("settings.subtitle", { ns: "common" })}</p>
               </div>
             </div>
             {onClose && (
               <Button variant="ghost" onClick={onClose}>
-                Close
+                {t("actions.close", { ns: "common" })}
               </Button>
             )}
           </div>
@@ -591,7 +593,7 @@ export function Settings({
               className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
             >
               <SettingsIcon className="h-4 w-4" />
-              Settings
+              {t("title", { ns: "settings" })}
             </button>
             <button
               type="button"
@@ -599,7 +601,7 @@ export function Settings({
               className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-primary/15 px-3 py-2 text-sm font-medium text-text transition-colors"
             >
               <ScrollText className="h-4 w-4" />
-              Logs
+              {t("navigation.logs", { ns: "common" })}
             </button>
           </div>
 
@@ -626,13 +628,13 @@ export function Settings({
               <SettingsIcon className="h-6 w-6 text-primary" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-text">Settings</h1>
-              <p className="text-text-muted">Configure your Tandem folders and AI</p>
+              <h1 className="text-2xl font-bold text-text">{t("title", { ns: "settings" })}</h1>
+              <p className="text-text-muted">{t("settings.subtitle", { ns: "common" })}</p>
             </div>
           </div>
           {onClose && (
             <Button variant="ghost" onClick={onClose}>
-              Close
+              {t("actions.close", { ns: "common" })}
             </Button>
           )}
         </div>
@@ -644,7 +646,7 @@ export function Settings({
             className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-primary/15 px-3 py-2 text-sm font-medium text-text transition-colors"
           >
             <SettingsIcon className="h-4 w-4" />
-            Settings
+            {t("title", { ns: "settings" })}
           </button>
           <button
             type="button"
@@ -652,7 +654,7 @@ export function Settings({
             className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
           >
             <ScrollText className="h-4 w-4" />
-            Logs
+            {t("navigation.logs", { ns: "common" })}
           </button>
         </div>
 
@@ -668,22 +670,20 @@ export function Settings({
           <CardHeader>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <CardTitle>Engine API Token</CardTitle>
-                <CardDescription>
-                  Hidden by default. Reveal and copy when you need to call engine HTTP endpoints.
-                </CardDescription>
+                <CardTitle>{t("token.title", { ns: "settings" })}</CardTitle>
+                <CardDescription>{t("token.description", { ns: "settings" })}</CardDescription>
               </div>
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="ghost" onClick={handleRevealEngineToken}>
                   {engineTokenVisible ? (
                     <>
                       <EyeOff className="mr-2 h-4 w-4" />
-                      Hide
+                      {t("token.hide", { ns: "settings" })}
                     </>
                   ) : (
                     <>
                       <Eye className="mr-2 h-4 w-4" />
-                      Reveal
+                      {t("token.reveal", { ns: "settings" })}
                     </>
                   )}
                 </Button>
@@ -694,7 +694,9 @@ export function Settings({
                   disabled={!engineTokenInfo?.token}
                 >
                   <Copy className="mr-2 h-4 w-4" />
-                  {tokenCopied ? "Copied" : "Copy"}
+                  {tokenCopied
+                    ? t("token.copied", { ns: "settings" })
+                    : t("token.copy", { ns: "settings" })}
                 </Button>
               </div>
             </div>
@@ -705,10 +707,14 @@ export function Settings({
               value={engineTokenInfo?.token ?? engineTokenInfo?.token_masked ?? "****"}
             />
             {engineTokenInfo?.path && (
-              <p className="break-all text-xs text-text-subtle">Path: {engineTokenInfo.path}</p>
+              <p className="break-all text-xs text-text-subtle">
+                {t("token.path", { ns: "settings" })}: {engineTokenInfo.path}
+              </p>
             )}
             {engineTokenInfo?.storage_backend && (
-              <p className="text-xs text-text-subtle">Storage: {engineTokenInfo.storage_backend}</p>
+              <p className="text-xs text-text-subtle">
+                {t("token.storage", { ns: "settings" })}: {engineTokenInfo.storage_backend}
+              </p>
             )}
           </CardContent>
         </Card>
@@ -718,8 +724,8 @@ export function Settings({
           <CardHeader>
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">
-                <CardTitle>Updates</CardTitle>
-                <CardDescription>Keep Tandem up to date.</CardDescription>
+                <CardTitle>{t("updates.title", { ns: "settings" })}</CardTitle>
+                <CardDescription>{t("updates.description", { ns: "settings" })}</CardDescription>
               </div>
               <Button
                 size="sm"
@@ -730,34 +736,35 @@ export function Settings({
                   updateStatus === "installing"
                 }
               >
-                {updateStatus === "checking" && "Checking..."}
-                {updateStatus === "downloading" && "Downloading..."}
-                {updateStatus === "installing" && "Installing..."}
-                {updateStatus === "available" && "Download & Install"}
+                {updateStatus === "checking" && t("updates.checking", { ns: "settings" })}
+                {updateStatus === "downloading" && t("updates.downloading", { ns: "settings" })}
+                {updateStatus === "installing" && t("updates.installing", { ns: "settings" })}
+                {updateStatus === "available" &&
+                  t("updates.downloadAndInstall", { ns: "settings" })}
                 {(updateStatus === "idle" ||
                   updateStatus === "upToDate" ||
                   updateStatus === "installed" ||
                   updateStatus === "error") &&
-                  "Check for Updates"}
+                  t("updates.checkForUpdates", { ns: "settings" })}
               </Button>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="text-sm text-text-muted">
               {updateStatus === "available" && updateInfo
-                ? `Update available: v${updateInfo.version} `
+                ? t("updates.updateAvailable", { ns: "settings", version: updateInfo.version })
                 : updateStatus === "upToDate"
-                  ? "You're on the latest version."
+                  ? t("updates.upToDate", { ns: "settings" })
                   : updateStatus === "installed"
-                    ? "Update installed. Relaunching..."
+                    ? t("updates.installedRelaunching", { ns: "settings" })
                     : updateStatus === "error"
-                      ? updateError || "Update failed."
+                      ? updateError || t("updates.failed", { ns: "settings" })
                       : updateStatus === "checking"
-                        ? "Checking for updates..."
+                        ? t("updates.checkingForUpdates", { ns: "settings" })
                         : updateStatus === "installing"
-                          ? "Installing update..."
+                          ? t("updates.installingUpdate", { ns: "settings" })
                           : updateStatus === "downloading"
-                            ? "Downloading update..."
+                            ? t("updates.downloadingUpdate", { ns: "settings" })
                             : ""}
             </div>
 
@@ -776,7 +783,7 @@ export function Settings({
                   <span>
                     {updateProgress.total > 0
                       ? `${Math.round(updateProgress.downloaded / 1024 / 1024)} MB / ${Math.round(updateProgress.total / 1024 / 1024)} MB`
-                      : "Downloading..."}
+                      : t("updates.downloading", { ns: "settings" })}
                   </span>
                 </div>
               </div>
@@ -790,9 +797,9 @@ export function Settings({
               <div className="flex items-center gap-3">
                 <Database className="h-5 w-5 text-primary" />
                 <div>
-                  <CardTitle>Data Migration</CardTitle>
+                  <CardTitle>{t("migration.title", { ns: "settings" })}</CardTitle>
                   <CardDescription>
-                    Import legacy OpenCode and older Tandem data into canonical Tandem storage.
+                    {t("migration.description", { ns: "settings" })}
                   </CardDescription>
                 </div>
               </div>
@@ -804,7 +811,7 @@ export function Settings({
                   disabled={migrationRunning}
                 >
                   <FileText className="mr-1 h-4 w-4" />
-                  Dry Run
+                  {t("migration.dryRun", { ns: "settings" })}
                 </Button>
                 <Button
                   size="sm"
@@ -812,39 +819,57 @@ export function Settings({
                   disabled={migrationRunning}
                 >
                   <RefreshCw className={`mr-1 h-4 w-4 ${migrationRunning ? "animate-spin" : ""}`} />
-                  Run Migration Again
+                  {t("migration.runAgain", { ns: "settings" })}
                 </Button>
               </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
-              <div>Canonical root: {migrationStatus?.canonical_root ?? "Unknown"}</div>
-              <div>Last reason: {migrationStatus?.migration_reason ?? "n/a"}</div>
               <div>
-                Last run:{" "}
-                {migrationStatus?.migration_timestamp_ms
-                  ? new Date(migrationStatus.migration_timestamp_ms).toLocaleString()
-                  : "never"}
+                {t("migration.canonicalRoot", { ns: "settings" })}:{" "}
+                {migrationStatus?.canonical_root ?? t("migration.unknown", { ns: "settings" })}
               </div>
               <div>
-                Sources detected:{" "}
+                {t("migration.lastReason", { ns: "settings" })}:{" "}
+                {migrationStatus?.migration_reason ?? t("migration.na", { ns: "settings" })}
+              </div>
+              <div>
+                {t("migration.lastRun", { ns: "settings" })}:{" "}
+                {migrationStatus?.migration_timestamp_ms
+                  ? new Date(migrationStatus.migration_timestamp_ms).toLocaleString()
+                  : t("migration.never", { ns: "settings" })}
+              </div>
+              <div>
+                {t("migration.sourcesDetected", { ns: "settings" })}:{" "}
                 {migrationStatus?.sources_detected.filter((s) => s.exists).length ?? 0}
               </div>
             </div>
             {migrationLastResult && (
               <div className="rounded-lg border border-border bg-surface p-3 text-xs text-text-muted">
-                <div>Status: {migrationLastResult.status}</div>
                 <div>
-                  Repaired sessions: {migrationLastResult.sessions_repaired}, recovered messages:{" "}
-                  {migrationLastResult.messages_recovered}
+                  {t("migration.status", { ns: "settings" })}: {migrationLastResult.status}
                 </div>
                 <div>
-                  Copied: {migrationLastResult.copied.length}, skipped:{" "}
-                  {migrationLastResult.skipped.length}, errors: {migrationLastResult.errors.length}
+                  {t("migration.repairedSessions", {
+                    ns: "settings",
+                    count: migrationLastResult.sessions_repaired,
+                  })}
+                  ,{" "}
+                  {t("migration.recoveredMessages", {
+                    ns: "settings",
+                    count: migrationLastResult.messages_recovered,
+                  })}
+                </div>
+                <div>
+                  {t("migration.copied", { ns: "settings" })}: {migrationLastResult.copied.length},{" "}
+                  {t("migration.skipped", { ns: "settings" })}: {migrationLastResult.skipped.length}
+                  , {t("migration.errors", { ns: "settings" })}: {migrationLastResult.errors.length}
                 </div>
                 {!!migrationLastResult.report_path && (
-                  <div className="truncate">Report: {migrationLastResult.report_path}</div>
+                  <div className="truncate">
+                    {t("migration.report", { ns: "settings" })}: {migrationLastResult.report_path}
+                  </div>
                 )}
               </div>
             )}
@@ -860,9 +885,9 @@ export function Settings({
               <div className="flex-1">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <CardTitle>Folders</CardTitle>
+                    <CardTitle>{t("projects.folderTitle", { ns: "settings" })}</CardTitle>
                     <CardDescription>
-                      Add and manage folders. Each folder is an independent space.
+                      {t("projects.folderDescription", { ns: "settings" })}
                     </CardDescription>
                   </div>
                   <button
@@ -870,7 +895,11 @@ export function Settings({
                     onClick={() => setProjectsExpanded((v) => !v)}
                     className="rounded-md p-1 text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
                     aria-expanded={projectsExpanded}
-                    title={projectsExpanded ? "Collapse folders" : "Expand folders"}
+                    title={
+                      projectsExpanded
+                        ? t("projects.collapseFolders", { ns: "settings" })
+                        : t("projects.expandFolders", { ns: "settings" })
+                    }
                   >
                     {projectsExpanded ? (
                       <ChevronDown className="h-5 w-5" />
@@ -883,10 +912,13 @@ export function Settings({
                 {!projectsExpanded && (
                   <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-subtle">
                     <span>
-                      {projects.length} folder{projects.length === 1 ? "" : "s"}
+                      {t("projects.folderCount", { ns: "settings", count: projects.length })}
                     </span>
-                    <span className="opacity-60">•</span>
-                    <span className="truncate">Active: {activeProject?.name ?? "None"}</span>
+                    <span className="opacity-60">|</span>
+                    <span className="truncate">
+                      {t("projects.activeFolder", { ns: "settings" })}:{" "}
+                      {activeProject?.name ?? t("projects.none", { ns: "settings" })}
+                    </span>
                   </div>
                 )}
               </div>
@@ -906,8 +938,12 @@ export function Settings({
                     {projects.length === 0 ? (
                       <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
                         <FolderOpen className="mx-auto mb-2 h-8 w-8 text-text-subtle" />
-                        <p className="text-sm text-text-muted">No folders added yet</p>
-                        <p className="text-xs text-text-subtle">Add a folder to get started</p>
+                        <p className="text-sm text-text-muted">
+                          {t("projects.noFolders", { ns: "settings" })}
+                        </p>
+                        <p className="text-xs text-text-subtle">
+                          {t("projects.addFolderHint", { ns: "settings" })}
+                        </p>
                       </div>
                     ) : (
                       <div className="space-y-2">
@@ -926,7 +962,7 @@ export function Settings({
                                   {activeProjectId === project.id && (
                                     <span className="inline-flex items-center gap-1 rounded-full bg-primary/20 px-2 py-0.5 text-xs text-primary">
                                       <Check className="h-3 w-3" />
-                                      Active
+                                      {t("projects.active", { ns: "settings" })}
                                     </span>
                                   )}
                                 </div>
@@ -945,7 +981,7 @@ export function Settings({
                                     onClick={() => handleSetActiveProject(project.id)}
                                     disabled={projectLoading}
                                   >
-                                    Set Active
+                                    {t("projects.setActive", { ns: "settings" })}
                                   </Button>
                                 )}
                                 {deleteConfirm === project.id ? (
@@ -957,7 +993,7 @@ export function Settings({
                                       disabled={projectLoading}
                                       className="text-error hover:bg-error/10"
                                     >
-                                      Confirm
+                                      {t("projects.confirm", { ns: "settings" })}
                                     </Button>
                                     <Button
                                       size="sm"
@@ -965,7 +1001,7 @@ export function Settings({
                                       onClick={() => setDeleteConfirm(null)}
                                       disabled={projectLoading}
                                     >
-                                      Cancel
+                                      {t("actions.cancel", { ns: "common" })}
                                     </Button>
                                   </>
                                 ) : (
@@ -992,14 +1028,13 @@ export function Settings({
                       className="w-full"
                     >
                       <Plus className="mr-2 h-4 w-4" />
-                      Add Folder
+                      {t("projects.addFolder", { ns: "settings" })}
                     </Button>
                   </div>
 
                   <p className="mt-3 text-xs text-text-subtle">
                     <Shield className="mr-1 inline h-3 w-3" />
-                    Tandem can only access files within selected folders. Sensitive files (.env,
-                    .ssh, etc.) are always blocked.
+                    {t("projects.securityNote", { ns: "settings" })}
                   </p>
                 </CardContent>
               </motion.div>
@@ -1013,10 +1048,8 @@ export function Settings({
             <div className="flex items-center gap-3">
               <Palette className="h-5 w-5 text-primary" />
               <div className="flex-1">
-                <CardTitle>Appearance</CardTitle>
-                <CardDescription>
-                  Choose a theme. Changes apply instantly and are saved on this device.
-                </CardDescription>
+                <CardTitle>{t("appearance.title", { ns: "settings" })}</CardTitle>
+                <CardDescription>{t("appearance.description", { ns: "settings" })}</CardDescription>
               </div>
             </div>
           </CardHeader>
@@ -1030,9 +1063,11 @@ export function Settings({
                     <ImageIcon className="h-4 w-4 text-text-muted" />
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-text">Background image (optional)</p>
+                    <p className="text-sm font-semibold text-text">
+                      {t("appearance.backgroundImageTitle", { ns: "settings" })}
+                    </p>
                     <p className="mt-0.5 text-xs text-text-muted">
-                      Overlay a personal image on top of your theme background.
+                      {t("appearance.backgroundImageDescription", { ns: "settings" })}
                     </p>
                   </div>
                 </div>
@@ -1049,7 +1084,7 @@ export function Settings({
                           multiple: false,
                           filters: [
                             {
-                              name: "Images",
+                              name: t("appearance.imagesFilter", { ns: "settings" }),
                               extensions: ["png", "jpg", "jpeg", "webp"],
                             },
                           ],
@@ -1067,12 +1102,12 @@ export function Settings({
                             ? err
                             : err instanceof Error
                               ? err.message
-                              : "Failed to set background image."
+                              : t("appearance.errors.setBackground", { ns: "settings" })
                         );
                       }
                     }}
                   >
-                    Choose…
+                    {t("actions.browse", { ns: "common" })}
                   </Button>
                   <Button
                     size="sm"
@@ -1085,11 +1120,13 @@ export function Settings({
                         await loadCustomBackground();
                       } catch (err) {
                         console.error("Failed to clear custom background:", err);
-                        setCustomBgError("Failed to clear background image.");
+                        setCustomBgError(
+                          t("appearance.errors.clearBackground", { ns: "settings" })
+                        );
                       }
                     }}
                   >
-                    Clear
+                    {t("actions.clear", { ns: "common" })}
                   </Button>
                 </div>
               </div>
@@ -1102,12 +1139,14 @@ export function Settings({
 
               <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="rounded-lg border border-border bg-surface/30 p-3">
-                  <p className="text-xs font-medium text-text-muted">Preview</p>
+                  <p className="text-xs font-medium text-text-muted">
+                    {t("appearance.preview", { ns: "settings" })}
+                  </p>
                   <div className="mt-2 aspect-video overflow-hidden rounded-md border border-border bg-surface">
                     {customBg?.file_path ? (
                       <img
                         src={customBgPreviewSrc ?? undefined}
-                        alt="Custom background preview"
+                        alt={t("appearance.previewAlt", { ns: "settings" })}
                         className="h-full w-full object-cover"
                         onError={async () => {
                           if (bgPreviewFallbackRanRef.current) return;
@@ -1119,7 +1158,7 @@ export function Settings({
                       />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center text-xs text-text-subtle">
-                        No image selected
+                        {t("appearance.noImageSelected", { ns: "settings" })}
                       </div>
                     )}
                   </div>
@@ -1129,7 +1168,7 @@ export function Settings({
               <div className="mt-4">
                 <div className="flex items-center justify-between gap-3">
                   <label className="text-xs font-medium text-text-muted" htmlFor="bg-opacity">
-                    Opacity
+                    {t("appearance.opacity", { ns: "settings" })}
                   </label>
                   <span className="text-xs text-text-subtle">
                     {Math.round(((customBg?.settings.opacity ?? 0.3) as number) * 100)}%
@@ -1185,10 +1224,11 @@ export function Settings({
           <div className="flex items-center gap-3">
             <Cpu className="h-5 w-5 text-primary" />
             <div>
-              <h2 className="text-lg font-semibold text-text">LLM Providers</h2>
+              <h2 className="text-lg font-semibold text-text">
+                {t("providers.title", { ns: "settings" })}
+              </h2>
               <p className="text-sm text-text-muted">
-                Configure your AI providers. OpenRouter is recommended for access to multiple
-                models.
+                {t("providersPanel.description", { ns: "settings" })}
               </p>
             </div>
           </div>
@@ -1198,7 +1238,7 @@ export function Settings({
               <ProviderCard
                 id="opencode_zen"
                 name="Opencode Zen"
-                description="Access to free and premium models - includes free options"
+                description={t("providersCatalog.opencode_zen.description", { ns: "settings" })}
                 endpoint={providers.opencode_zen.endpoint}
                 defaultEndpoint="https://opencode.ai/zen/v1"
                 model={providers.opencode_zen.model}
@@ -1215,7 +1255,7 @@ export function Settings({
               <ProviderCard
                 id="openrouter"
                 name="OpenRouter"
-                description="Access 100+ models with one API key"
+                description={t("providersCatalog.openrouter.description", { ns: "settings" })}
                 endpoint={providers.openrouter.endpoint}
                 defaultEndpoint="https://openrouter.ai/api/v1"
                 model={providers.openrouter.model}
@@ -1232,7 +1272,7 @@ export function Settings({
               <ProviderCard
                 id="anthropic"
                 name="Anthropic"
-                description="Direct access to Anthropic models"
+                description={t("providersCatalog.anthropic.description", { ns: "settings" })}
                 endpoint={providers.anthropic.endpoint}
                 defaultEndpoint="https://api.anthropic.com"
                 model={providers.anthropic.model}
@@ -1249,7 +1289,7 @@ export function Settings({
               <ProviderCard
                 id="openai"
                 name="OpenAI"
-                description="GPT-4 and other OpenAI models"
+                description={t("providersCatalog.openai.description", { ns: "settings" })}
                 endpoint={providers.openai.endpoint}
                 defaultEndpoint="https://api.openai.com/v1"
                 model={providers.openai.model}
@@ -1266,7 +1306,7 @@ export function Settings({
               <ProviderCard
                 id="ollama"
                 name="Ollama"
-                description="Run models locally - no API key needed"
+                description={t("providersCatalog.ollama.description", { ns: "settings" })}
                 endpoint={providers.ollama.endpoint}
                 defaultEndpoint="http://localhost:11434"
                 model={providers.ollama.model}
@@ -1283,7 +1323,7 @@ export function Settings({
               <ProviderCard
                 id="poe"
                 name="Poe"
-                description="Access models via Poe's API"
+                description={t("providersCatalog.poe.description", { ns: "settings" })}
                 endpoint={providers.poe.endpoint}
                 defaultEndpoint="https://api.poe.com/v1"
                 model={providers.poe.model}
@@ -1302,9 +1342,11 @@ export function Settings({
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <div>
-                      <CardTitle>Custom Provider</CardTitle>
+                      <CardTitle>
+                        {t("providersPanel.customProviderTitle", { ns: "settings" })}
+                      </CardTitle>
                       <CardDescription>
-                        Configure your own LLM provider with a custom endpoint
+                        {t("providersPanel.customProviderDescription", { ns: "settings" })}
                       </CardDescription>
                     </div>
                     <Switch
@@ -1324,25 +1366,27 @@ export function Settings({
                       <CardContent className="space-y-4">
                         <div>
                           <label className="text-xs font-medium text-text-subtle">
-                            Endpoint URL
+                            {t("providersPanel.endpointUrl", { ns: "settings" })}
                           </label>
                           <Input
-                            placeholder="https://api.example.com/v1"
+                            placeholder={t("providers.endpointPlaceholder", { ns: "settings" })}
                             value={customEndpoint}
                             onChange={(e) => setCustomEndpoint(e.target.value)}
                           />
                         </div>
                         <div>
-                          <label className="text-xs font-medium text-text-subtle">Model</label>
+                          <label className="text-xs font-medium text-text-subtle">
+                            {t("providers.model", { ns: "settings" })}
+                          </label>
                           <Input
-                            placeholder="model-name"
+                            placeholder={t("providersPanel.modelPlaceholder", { ns: "settings" })}
                             value={customModel}
                             onChange={(e) => setCustomModel(e.target.value)}
                           />
                         </div>
                         <div>
                           <label className="text-xs font-medium text-text-subtle">
-                            API Key (optional)
+                            {t("providersPanel.apiKeyOptional", { ns: "settings" })}
                           </label>
                           <Input
                             type="password"
@@ -1356,7 +1400,7 @@ export function Settings({
                           disabled={!customEndpoint.trim()}
                           className="w-full"
                         >
-                          Save Custom Provider
+                          {t("providersPanel.saveCustomProvider", { ns: "settings" })}
                         </Button>
                       </CardContent>
                     </motion.div>
@@ -1378,12 +1422,12 @@ export function Settings({
           <CardContent className="flex items-start gap-4">
             <Shield className="mt-0.5 h-5 w-5 flex-shrink-0 text-success" />
             <div className="space-y-2">
-              <p className="font-medium text-text">Your keys are secure</p>
+              <p className="font-medium text-text">{t("security.title", { ns: "settings" })}</p>
               <ul className="space-y-1 text-sm text-text-muted">
-                <li>• API keys are encrypted with AES-256-GCM</li>
-                <li>• Keys never leave your device</li>
-                <li>• No telemetry or data collection</li>
-                <li>• All network traffic is allowlisted</li>
+                <li>{t("security.encrypted", { ns: "settings" })}</li>
+                <li>{t("security.localOnly", { ns: "settings" })}</li>
+                <li>{t("security.noTelemetry", { ns: "settings" })}</li>
+                <li>{t("security.allowlisted", { ns: "settings" })}</li>
               </ul>
             </div>
           </CardContent>

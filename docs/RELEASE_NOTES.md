@@ -1,3 +1,15 @@
+# Tandem v0.3.7 Release Notes
+
+## Release Date: 2026-02-18
+
+### Highlights
+
+- **Complete Simplified Chinese overwrite**: Replaced and normalized Simplified Chinese copy across major app surfaces for a consistent zh-CN experience.
+- **Full localization sweep**: Converted remaining high-traffic hardcoded English strings to translation keys and completed `en`/`zh-CN` parity for startup, settings, packs, skills, and About.
+- **Language-switch consistency**: Improved in-app language coverage so zh-CN selection now updates key shells and settings surfaces immediately and persistently.
+
+---
+
 # Tandem v0.3.6 Release Notes
 
 ## Release Date: 2026-02-18

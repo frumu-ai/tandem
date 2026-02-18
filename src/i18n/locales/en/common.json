@@ -39,7 +39,10 @@
     "finish": "Finish",
     "apply": "Apply",
     "reset": "Reset",
-    "confirm": "Confirm"
+    "confirm": "Confirm",
+    "deleteChat": "Delete Chat",
+    "deleteRun": "Delete Run",
+    "deleteConfirm": "Are you sure you want to delete \"{{item}}\"? This action cannot be undone."
   },
   "navigation": {
     "chat": "Chat",
@@ -50,7 +53,12 @@
     "packs": "Packs",
     "projects": "Projects",
     "tasks": "Tasks",
-    "logs": "Logs"
+    "logs": "Logs",
+    "sessions": "Sessions",
+    "starterPacks": "Starter Packs",
+    "hideSidebar": "Hide sidebar",
+    "unknownFolder": "Unknown Folder",
+    "activeFolder": "Active Folder"
   },
   "status": {
     "loading": "Loading...",
@@ -91,6 +99,218 @@
     "file": "File",
     "folder": "Folder",
     "workspace": "Workspace",
-    "project": "Project"
+    "project": "Project",
+    "pluralSuffix": "s"
+  },
+  "time": {
+    "yesterday": "Yesterday"
+  },
+  "history": {
+    "show": "Show history",
+    "hide": "Hide history",
+    "emptyTitle": "No history",
+    "emptyDescription": "Start a new chat to begin",
+    "fileCount": "{{count}} file",
+    "fileCount_plural": "{{count}} files",
+    "syncingTitle": "Syncing Workspace History",
+    "syncingBody": "Loading sessions, project context, and recent activity."
+  },
+  "run": {
+    "untitled": "Untitled Run",
+    "thisRun": "this run"
+  },
+  "chat": {
+    "thisChat": "this chat"
+  },
+  "settings": {
+    "subtitle": "Configure your Tandem folders and AI"
+  },
+  "aboutPage": {
+    "title": "About",
+    "poweredBy": "Powered by Frumu.ai",
+    "sponsorCta": "Sponsor on GitHub",
+    "sponsorSubtitle": "Support the development of Tandem and other open-source projects",
+    "installUpdate": "Install update",
+    "updateCheckFailed": "Update check failed.",
+    "downloadingWithProgress": "Downloading update ({{percent}}%)...",
+    "frumu": {
+      "tagline": "AI-Powered Development",
+      "description": "Frumu.ai builds cutting-edge AI tools that empower developers and creators. We are focused on making artificial intelligence accessible, powerful, and integrated seamlessly into your workflow.",
+      "bullet1": "Privacy-first AI folder tools",
+      "bullet2": "Local-first architecture",
+      "bullet3": "Open-source friendly",
+      "cta": "Visit Frumu.ai"
+    },
+    "aimajin": {
+      "tagline": "Mobile AI Generation",
+      "description": "AIMajin is our mobile AI generation app that puts powerful AI capabilities right in your pocket. Create, generate, and explore AI-powered content anywhere, anytime.",
+      "bullet1": "AI image generation on mobile",
+      "bullet2": "Intuitive mobile-first interface",
+      "bullet3": "Create on the go",
+      "cta": "Check out AIMajin"
+    },
+    "footerBuiltBy": "Tandem is built with love by the Frumu.ai team",
+    "footerValues": "Open source • Privacy-focused • For everyone"
+  },
+  "theme": {
+    "switch": "Switch theme"
+  },
+  "security": {
+    "zeroTrustEnabled": "Zero-trust security enabled"
+  },
+  "extensions": {
+    "title": "Extensions",
+    "subtitle": "Manage skills, plugins, MCP, and advanced modes",
+    "tabs": {
+      "skills": "Skills",
+      "plugins": "Plugins",
+      "mcp": "MCP",
+      "modes": "Modes"
+    }
+  },
+  "packs": {
+    "title": "Starter Packs",
+    "subtitle": "Guided, copyable folders for real-world tasks.",
+    "searchPlaceholder": "Search packs (research, writing, security...)",
+    "installsInclude": "Installs include START_HERE.md, prompts, and sample inputs.",
+    "openSkills": "Open Skills",
+    "showDetails": "What are packs and where do they install?",
+    "hideDetails": "Hide pack details",
+    "detailsBody": "Packs are guided, copyable folders with prompts and expected outputs. After install, open START_HERE.md to follow the workflow.",
+    "installHint": "Click Install to choose a clean location and create the pack folder there.",
+    "runtimeNoteTitle": "Runtime note",
+    "setupPython": "Set up Python (venv)",
+    "requiresLabel": "Some packs may require:",
+    "runtimeNoteBody": "Packs can include scripts and local tooling. Tandem does not bundle these runtimes. If a pack asks you to run a tool you do not have, install it locally or choose a different pack.",
+    "loading": "Loading packs...",
+    "emptySearch": "No packs match your search.",
+    "install": "Install",
+    "installing": "Installing...",
+    "dialog": {
+      "chooseInstallFolder": "Choose where to create the starter pack folder"
+    },
+    "errors": {
+      "loadFailed": "Failed to load packs",
+      "installFailed": "Failed to install pack"
+    },
+    "tags": {
+      "writing": "writing",
+      "creative": "creative",
+      "research": "research",
+      "analysis": "analysis",
+      "docs": "docs",
+      "security": "security",
+      "compliance": "compliance",
+      "legal": "legal",
+      "audit": "audit",
+      "quality": "quality",
+      "data": "data",
+      "visualization": "visualization",
+      "python": "python",
+      "finance": "finance",
+      "reporting": "reporting",
+      "bio": "bio",
+      "nextflow": "nextflow"
+    },
+    "catalog": {
+      "micro-drama-script-studio-pack": {
+        "title": "Micro-Drama Script Studio",
+        "description": "Create short-form scripts with structured workflows",
+        "complexity": "Intermediate",
+        "time_estimate": "15-20 min"
+      },
+      "research-synthesis-pack": {
+        "title": "Research Synthesis",
+        "description": "Synthesize research across multiple documents",
+        "complexity": "Intermediate-Advanced",
+        "time_estimate": "20-25 min"
+      },
+      "web-research-refresh-pack": {
+        "title": "Web Research Refresh",
+        "description": "Verify stale facts and refresh docs with sources",
+        "complexity": "Beginner-Intermediate",
+        "time_estimate": "15-20 min"
+      },
+      "security-playbook-pack": {
+        "title": "Security Playbook",
+        "description": "Build a practical security runbook and checklist",
+        "complexity": "Intermediate",
+        "time_estimate": "20-25 min"
+      },
+      "legal-research-pack": {
+        "title": "Legal Research",
+        "description": "Analyze contracts and synthesize case notes",
+        "complexity": "Intermediate-Advanced",
+        "time_estimate": "20-25 min"
+      },
+      "web-starter-audit-pack": {
+        "title": "Web Starter Audit",
+        "description": "Audit a web project for UX, a11y, and quality",
+        "complexity": "Beginner-Intermediate",
+        "time_estimate": "15-20 min"
+      },
+      "data-visualization-pack": {
+        "title": "Data Visualization",
+        "description": "Create publication-quality visualizations with Python",
+        "complexity": "Intermediate",
+        "time_estimate": "15-20 min"
+      },
+      "finance-analysis-pack": {
+        "title": "Finance Analysis",
+        "description": "Automate financial reporting and variance analysis",
+        "complexity": "Intermediate",
+        "time_estimate": "15-20 min"
+      },
+      "bio-informatics-pack": {
+        "title": "Bio-Informatics",
+        "description": "Convert instrument data, run pipelines, and analyze single-cell data",
+        "complexity": "Advanced",
+        "time_estimate": "30-45 min"
+      }
+    }
+  },
+  "logs": {
+    "paused": "Paused",
+    "tandemLogs": "Tandem logs",
+    "tandemLogsForFile": "Tandem logs: {{file}}",
+    "dockDrawer": "Dock logs drawer",
+    "expandFullScreen": "Expand logs to full screen",
+    "tandemTab": "Tandem",
+    "consoleTab": "Console",
+    "resumeStreaming": "Resume streaming",
+    "pauseStreaming": "Pause streaming",
+    "resume": "Resume",
+    "pause": "Pause",
+    "clearView": "Clear view",
+    "copiedLastLines": "Copied last 200 lines",
+    "copyLastLinesTooltip": "Copy the last 200 lines (from the current filtered view)",
+    "copyLastLines": "Copy last 200",
+    "selectLogFile": "Select a log file",
+    "noLogsFound": "No logs found",
+    "searchPlaceholder": "Search logs...",
+    "correlationId": "Correlation ID",
+    "sessionId": "Session ID",
+    "currentRuntimeOnly": "Current runtime only",
+    "lines": "lines",
+    "dropped": "dropped {{count}}",
+    "waiting": "Waiting for logs...",
+    "jumpToLatest": "Jump to latest",
+    "selectedLine": "Selected Line",
+    "copiedToClipboard": "Copied to clipboard",
+    "copiedCorrelationTrace": "Copied correlation trace",
+    "copyCorrelationTrace": "Copy Correlation Trace",
+    "filters": {
+      "all": "All",
+      "error": "Error",
+      "warn": "Warn",
+      "info": "Info",
+      "debug": "Debug",
+      "trace": "Trace",
+      "stderr": "Stderr",
+      "stdout": "Stdout",
+      "allSources": "All sources",
+      "currentRuntime": "Current runtime",
+      "legacyImported": "Legacy imported"
+    }
   }
 }

@@ -10,9 +10,9 @@
   },
   "providers": {
     "title": "LLM 提供商",
-    "description": "配置您的 AI 模型提供商",
+    "description": "配置你的 AI 模型提供商",
     "apiKey": "API 密钥",
-    "apiKeyPlaceholder": "输入您的 API 密钥",
+    "apiKeyPlaceholder": "输入你的 API 密钥",
     "endpoint": "端点",
     "endpointPlaceholder": "输入 API 端点 URL",
     "model": "模型",
@@ -29,7 +29,7 @@
   },
   "projects": {
     "title": "项目管理",
-    "description": "管理您的工作区和项目",
+    "description": "管理你的工作区和项目",
     "addProject": "添加项目",
     "selectFolder": "选择文件夹",
     "projectName": "项目名称",
@@ -37,11 +37,26 @@
     "activeProject": "当前项目",
     "switchProject": "切换项目",
     "removeProject": "移除项目",
-    "removeConfirm": "确定要移除此项目吗？"
+    "removeConfirm": "确定要移除此项目吗？",
+    "folderTitle": "文件夹",
+    "folderDescription": "添加并管理文件夹。每个文件夹都是独立空间。",
+    "collapseFolders": "收起文件夹",
+    "expandFolders": "展开文件夹",
+    "folderCount": "{{count}} 个文件夹",
+    "folderCount_plural": "{{count}} 个文件夹",
+    "activeFolder": "当前",
+    "none": "无",
+    "noFolders": "还没有添加任何文件夹",
+    "addFolderHint": "添加一个文件夹以开始",
+    "active": "当前",
+    "setActive": "设为当前",
+    "confirm": "确认",
+    "addFolder": "添加文件夹",
+    "securityNote": "Tandem 只能访问已选择文件夹中的文件。敏感文件（.env、.ssh 等）会被始终阻止。"
   },
   "memory": {
     "title": "记忆设置",
-    "description": "配置向量记忆和索引",
+    "description": "配置向量记忆与索引",
     "autoIndex": "自动索引",
     "autoIndexDescription": "项目加载时自动索引文件",
     "indexNow": "立即索引",
@@ -51,26 +66,17 @@
     "notIndexed": "未索引",
     "indexing": "索引中...",
     "filesIndexed": "已索引 {{count}} 个文件",
-    "chunksStored": "存储了 {{count}} 个片段"
-  },
-  "theme": {
-    "title": "主题设置",
-    "description": "自定义应用外观",
-    "selectTheme": "选择主题",
-    "light": "浅色",
-    "dark": "深色",
-    "auto": "跟随系统",
-    "customBackground": "自定义背景",
-    "uploadBackground": "上传背景图片",
-    "removeBackground": "移除背景"
+    "filesIndexed_plural": "已索引 {{count}} 个文件",
+    "chunksStored": "已存储 {{count}} 个分片",
+    "chunksStored_plural": "已存储 {{count}} 个分片"
   },
   "language": {
     "title": "语言设置",
-    "description": "选择您的首选语言",
+    "description": "选择你偏好的语言",
     "current": "当前语言",
     "available": "可用语言",
     "selectLanguage": "选择语言",
-    "restart": "需要重启以应用语言更改"
+    "restart": "需要重启后应用语言更改"
   },
   "advanced": {
     "title": "高级设置",
@@ -80,5 +86,227 @@
     "clearCache": "清除缓存",
     "resetSettings": "重置设置",
     "resetConfirm": "确定要重置所有设置吗？"
+  },
+  "token": {
+    "title": "引擎 API 令牌",
+    "description": "默认隐藏。需要调用引擎 HTTP 端点时可显示并复制。",
+    "hide": "隐藏",
+    "reveal": "显示",
+    "copied": "已复制",
+    "copy": "复制",
+    "path": "路径",
+    "storage": "存储"
+  },
+  "updates": {
+    "title": "更新",
+    "description": "让 Tandem 保持最新。",
+    "checking": "检查中...",
+    "downloading": "下载中...",
+    "installing": "安装中...",
+    "downloadAndInstall": "下载并安装",
+    "checkForUpdates": "检查更新",
+    "updateAvailable": "发现可用更新：v{{version}}",
+    "upToDate": "你已是最新版本。",
+    "installedRelaunching": "更新已安装，正在重启...",
+    "failed": "更新失败。",
+    "checkingForUpdates": "正在检查更新...",
+    "installingUpdate": "正在安装更新...",
+    "downloadingUpdate": "正在下载更新..."
+  },
+  "migration": {
+    "title": "数据迁移",
+    "description": "将旧版 OpenCode 与旧版 Tandem 数据导入到标准 Tandem 存储。",
+    "dryRun": "演练模式",
+    "runAgain": "再次运行迁移",
+    "canonicalRoot": "标准根目录",
+    "unknown": "未知",
+    "lastReason": "上次原因",
+    "na": "不适用",
+    "lastRun": "上次运行",
+    "never": "从未",
+    "sourcesDetected": "检测到的数据源",
+    "status": "状态",
+    "repairedSessions": "已修复会话：{{count}}",
+    "recoveredMessages": "已恢复消息：{{count}}",
+    "copied": "已复制",
+    "skipped": "已跳过",
+    "errors": "错误",
+    "report": "报告"
+  },
+  "appearance": {
+    "title": "外观",
+    "description": "选择主题。更改会立即生效并保存在此设备上。",
+    "backgroundImageTitle": "背景图片（可选）",
+    "backgroundImageDescription": "在当前主题背景上叠加你的个人图片。",
+    "imagesFilter": "图片",
+    "preview": "预览",
+    "previewAlt": "自定义背景预览",
+    "noImageSelected": "尚未选择图片",
+    "opacity": "透明度",
+    "errors": {
+      "loadSettings": "加载自定义背景设置失败。",
+      "setBackground": "设置背景图片失败。",
+      "clearBackground": "清除背景图片失败。"
+    }
+  },
+  "providersPanel": {
+    "description": "配置你的 AI 提供商。推荐使用 OpenRouter 以访问多个模型。",
+    "customProviderTitle": "自定义提供商",
+    "customProviderDescription": "通过自定义端点配置你自己的 LLM 提供商",
+    "endpointUrl": "端点 URL",
+    "modelPlaceholder": "model-name",
+    "apiKeyOptional": "API 密钥（可选）",
+    "saveCustomProvider": "保存自定义提供商"
+  },
+  "providersCatalog": {
+    "opencode_zen": {
+      "description": "可访问免费和高级模型，包含免费选项"
+    },
+    "openrouter": {
+      "description": "一个 API 密钥即可访问 100+ 模型"
+    },
+    "anthropic": {
+      "description": "直连 Anthropic 模型"
+    },
+    "openai": {
+      "description": "GPT-4 及其他 OpenAI 模型"
+    },
+    "ollama": {
+      "description": "本地运行模型，无需 API 密钥"
+    },
+    "poe": {
+      "description": "通过 Poe 的 API 访问模型"
+    }
+  },
+  "providerCard": {
+    "default": "默认",
+    "keySaved": "密钥已保存",
+    "suggestions": "建议",
+    "browseAllModels": "浏览全部模型",
+    "currentModel": "当前",
+    "baseUrl": "基础 URL",
+    "resetEndpoint": "重置为默认端点",
+    "noApiKeyRequired": "本地模型无需 API 密钥",
+    "openWebsite": "打开网站",
+    "getApiKey": "获取 API 密钥",
+    "setDefaultProvider": "设为默认提供商",
+    "placeholders": {
+      "modelOpenRouter": "例如：openai/gpt-4o",
+      "modelGeneric": "例如：llama3.2",
+      "endpoint": "https://api.example.com/v1"
+    },
+    "ollama": {
+      "status": "Ollama 状态",
+      "currentlyRunning": "当前运行中：",
+      "noModelsInMemory": "当前内存中没有模型",
+      "installedModels": "已安装模型：",
+      "loadAndSelect": "加载到内存并选择"
+    },
+    "errors": {
+      "apiKeyRequired": "API 密钥是必填项",
+      "saveApiKey": "保存 API 密钥失败",
+      "deleteApiKey": "删除 API 密钥失败",
+      "stopModel": "停止模型失败：{{error}}",
+      "runModel": "启动模型失败：{{error}}"
+    }
+  },
+  "security": {
+    "title": "你的密钥很安全",
+    "encrypted": "• API 密钥采用 AES-256-GCM 加密",
+    "localOnly": "• 密钥不会离开你的设备",
+    "noTelemetry": "• 不采集遥测或用户数据",
+    "allowlisted": "• 所有网络流量均在白名单中"
+  },
+  "memoryStats": {
+    "title": "向量数据库统计",
+    "scopeAll": "范围：所有项目（此设备）",
+    "scopeProject": "范围：当前项目{{name}}",
+    "indexFiles": "索引文件",
+    "indexing": "索引中...",
+    "allProjects": "所有项目",
+    "activeProject": "当前项目",
+    "autoIndex": "项目加载时自动索引",
+    "embeddings": "嵌入",
+    "activeFolder": "当前文件夹",
+    "indexingWorkspace": "正在索引工作区...",
+    "indexed": "已索引",
+    "skipped": "已跳过",
+    "errorsLabel": "错误",
+    "chunks": "分片",
+    "noWorkspace": "未选择工作区。",
+    "totalChunks": "总分片数",
+    "totalSize": "总大小",
+    "dbFileSize": "数据库文件大小",
+    "breakdown": "明细",
+    "session": "会话",
+    "project": "项目",
+    "global": "全局",
+    "projectChunks": "项目分片",
+    "projectSize": "项目大小",
+    "indexedFiles": "已索引文件",
+    "fileIndex": "文件索引",
+    "size": "大小",
+    "lastIndexed": "上次索引",
+    "never": "从未",
+    "clearFileIndex": "清除文件索引",
+    "confirmClearFileIndex": "要清除此项目的文件索引吗？这只会移除由文件生成的向量，并可释放空间。",
+    "confirmVacuum": "清除后是否执行数据库 Vacuum？这会更慢，但能回收磁盘空间。",
+    "errors": {
+      "load": "加载记忆统计失败",
+      "noActiveProject": "未选择当前项目",
+      "indexWorkspace": "索引工作区失败",
+      "saveSettings": "保存记忆设置失败",
+      "clearFileIndex": "清除文件索引失败"
+    }
+  },
+  "theme": {
+    "title": "主题设置",
+    "description": "自定义应用外观",
+    "selectTheme": "选择主题",
+    "light": "浅色",
+    "dark": "深色",
+    "auto": "自动",
+    "customBackground": "自定义背景",
+    "uploadBackground": "上传背景",
+    "removeBackground": "移除背景",
+    "active": "当前",
+    "catalog": {
+      "charcoal_fire": {
+        "name": "炭黑烈焰",
+        "description": "深炭黑界面，点缀太阳黄主色与绯红安全提示。"
+      },
+      "electric_blue": {
+        "name": "电光蓝",
+        "description": "Tandem 原版风格：电光蓝主色搭配紫色辅助色。"
+      },
+      "emerald_night": {
+        "name": "翡翠夜幕",
+        "description": "深色玻璃质感，翡翠主色与青色高亮。"
+      },
+      "hello_bunny": {
+        "name": "粉兔心情",
+        "description": "柔粉玻璃风，莓果色点缀，轻松俏皮。"
+      },
+      "porcelain": {
+        "name": "瓷白",
+        "description": "明亮纯白搭配柔和粉彩点缀，护眼清爽。"
+      },
+      "neon_riot": {
+        "name": "霓虹暴走",
+        "description": "赛博霓虹风：深空黑底上的电青与亮洋红。"
+      },
+      "cosmic_glass": {
+        "name": "宇宙玻璃",
+        "description": "深空辉光与半透明星云玻璃面板。"
+      },
+      "pink_pony": {
+        "name": "粉色小马",
+        "description": "梦幻芭比风：糖果粉与柔和马卡龙渐变。"
+      },
+      "zen_dusk": {
+        "name": "禅意黄昏",
+        "description": "低对比沉静深色，鼠尾草与柔墨色调。"
+      }
+    }
   }
 }

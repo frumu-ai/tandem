@@ -1,6 +1,7 @@
-import { useTranslation } from "react-i18next";
+﻿import { useTranslation } from "react-i18next";
 import { Globe, Check } from "lucide-react";
 import { motion } from "framer-motion";
+import { normalizeLanguage, persistLanguagePreference } from "@/i18n/languageSync";
 
 const LANGUAGES = [
   { code: "en", name: "English", nativeName: "English" },
@@ -9,11 +10,10 @@ const LANGUAGES = [
 
 export function LanguageSettings() {
   const { t, i18n } = useTranslation("settings");
-  const currentLanguage = i18n.language;
+  const currentLanguage = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language);
 
   const handleLanguageChange = async (languageCode: string) => {
-    await i18n.changeLanguage(languageCode);
-    localStorage.setItem("tandem.language", languageCode);
+    await persistLanguagePreference(languageCode);
   };
 
   return (

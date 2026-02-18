@@ -1,7 +1,7 @@
 {
   "name": "tandem",
   "private": true,
-  "version": "0.3.6",
+  "version": "0.3.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,6 +16,7 @@
     "engine:smoke:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/engine_smoke.ps1",
     "engine:smoke:unix": "bash ./scripts/engine_smoke.sh",
     "docs:parity": "node scripts/verify-docs-parity.mjs",
+    "i18n:parity": "node scripts/verify-i18n-parity.mjs",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",

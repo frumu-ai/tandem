@@ -6,6 +6,12 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 - No unreleased changes.
 
+## v0.3.7 - 2026-02-18
+
+- Complete Simplified Chinese overwrite: replaced and normalized zh-CN copy across major app surfaces.
+- Full localization sweep: converted remaining hardcoded English strings to translation keys on startup, settings, packs, skills, theme picker, provider cards, and About.
+- Locale quality pass: completed `en`/`zh-CN` parity validation and stabilized language-switch coverage for desktop UX.
+
 ## v0.3.6 - 2026-02-18
 
 - TUI startup reliability: Added stale shared-engine detection at connect time (version-aware).

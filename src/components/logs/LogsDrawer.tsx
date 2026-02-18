@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { List, type RowComponentProps, useListCallbackRef } from "react-window";
+import { useTranslation } from "react-i18next";
 import {
   FileText,
   Pause,
@@ -232,6 +233,7 @@ export function LogsDrawer({
   sessionId?: string | null;
   embedded?: boolean;
 }) {
+  const { t } = useTranslation("common");
   const [tab, setTab] = useState<"tandem" | "console">("tandem");
   const [files, setFiles] = useState<LogFileInfo[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -501,9 +503,11 @@ export function LogsDrawer({
   }, [follow, paused, visibleLines.length, listApi]);
 
   const headerSubtitle = useMemo(() => {
-    if (paused) return "Paused";
-    return selectedFile ? `Tandem logs: ${selectedFile}` : "Tandem logs";
-  }, [paused, selectedFile]);
+    if (paused) return t("logs.paused");
+    return selectedFile
+      ? t("logs.tandemLogsForFile", { file: selectedFile })
+      : t("logs.tandemLogs");
+  }, [paused, selectedFile, t]);
 
   type RowProps = { items: LineItem[] };
 
@@ -608,7 +612,7 @@ export function LogsDrawer({
                 <ScrollText className="h-4 w-4 text-primary" />
               </div>
               <div className="min-w-0">
-                <h3 className="font-semibold text-text">Logs</h3>
+                <h3 className="font-semibold text-text">{t("navigation.logs")}</h3>
                 <div className="text-xs text-text-subtle truncate">{headerSubtitle}</div>
               </div>
             </div>
@@ -618,7 +622,7 @@ export function LogsDrawer({
                 <button
                   onClick={() => setExpanded((e) => !e)}
                   className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
-                  title={expanded ? "Dock logs drawer" : "Expand logs to full screen"}
+                  title={expanded ? t("logs.dockDrawer") : t("logs.expandFullScreen")}
                 >
                   {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
                 </button>
@@ -626,7 +630,7 @@ export function LogsDrawer({
                   <button
                     onClick={onClose}
                     className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
-                    title="Close"
+                    title={t("actions.close")}
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -649,7 +653,7 @@ export function LogsDrawer({
                 )}
               >
                 <FileText className="h-3.5 w-3.5" />
-                Tandem
+                {t("logs.tandemTab")}
               </button>
               <button
                 type="button"
@@ -662,7 +666,7 @@ export function LogsDrawer({
                 )}
               >
                 <Terminal className="h-3.5 w-3.5" />
-                Console
+                {t("logs.consoleTab")}
               </button>
 
               <div className="flex-1" />
@@ -678,10 +682,10 @@ export function LogsDrawer({
                         ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
                         : "border-border bg-surface-elevated text-text-subtle hover:text-text"
                     )}
-                    title={paused ? "Resume streaming" : "Pause streaming"}
+                    title={paused ? t("logs.resumeStreaming") : t("logs.pauseStreaming")}
                   >
                     {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-                    {paused ? "Resume" : "Pause"}
+                    {paused ? t("logs.resume") : t("logs.pause")}
                   </button>
 
                   <button
@@ -693,10 +697,10 @@ export function LogsDrawer({
                       setSelectedLine(null);
                     }}
                     className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text-subtle transition-colors hover:text-text"
-                    title="Clear view"
+                    title={t("logs.clearView")}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                    Clear
+                    {t("actions.clear")}
                   </button>
 
                   <button
@@ -707,13 +711,13 @@ export function LogsDrawer({
                           .slice(-200)
                           .map((l) => l.raw.replace(/\r?\n$/, ""))
                           .join("\n"),
-                        "Copied last 200 lines"
+                        t("logs.copiedLastLines")
                       )
                     }
                     className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text-subtle transition-colors hover:text-text"
-                    title="Copy the last 200 lines (from the current filtered view)"
+                    title={t("logs.copyLastLinesTooltip")}
                   >
-                    Copy last 200
+                    {t("logs.copyLastLines")}
                   </button>
                 </>
               )}
@@ -729,9 +733,9 @@ export function LogsDrawer({
                       value={selectedFile ?? ""}
                       onChange={(e) => setSelectedFile(e.target.value || null)}
                       disabled={files.length === 0}
-                      title={selectedFile ?? "Select a log file"}
+                      title={selectedFile ?? t("logs.selectLogFile")}
                     >
-                      {files.length === 0 && <option value="">No logs found</option>}
+                      {files.length === 0 && <option value="">{t("logs.noLogsFound")}</option>}
                       {files
                         .slice()
                         .sort((a, b) => b.modified_ms - a.modified_ms)
@@ -754,7 +758,7 @@ export function LogsDrawer({
                       if (next.trim() !== "") setFollow(false);
                     }}
                     className="w-[220px] bg-transparent text-xs text-text placeholder:text-text-subtle outline-none"
-                    placeholder="Search logs..."
+                    placeholder={t("logs.searchPlaceholder")}
                   />
                 </div>
 
@@ -765,14 +769,14 @@ export function LogsDrawer({
                     value={levelFilter}
                     onChange={(e) => setLevelFilter(e.target.value as LevelFilter)}
                   >
-                    <option value="ALL">All</option>
-                    <option value="ERROR">Error</option>
-                    <option value="WARN">Warn</option>
-                    <option value="INFO">Info</option>
-                    <option value="DEBUG">Debug</option>
-                    <option value="TRACE">Trace</option>
-                    <option value="STDERR">Stderr</option>
-                    <option value="STDOUT">Stdout</option>
+                    <option value="ALL">{t("logs.filters.all")}</option>
+                    <option value="ERROR">{t("logs.filters.error")}</option>
+                    <option value="WARN">{t("logs.filters.warn")}</option>
+                    <option value="INFO">{t("logs.filters.info")}</option>
+                    <option value="DEBUG">{t("logs.filters.debug")}</option>
+                    <option value="TRACE">{t("logs.filters.trace")}</option>
+                    <option value="STDERR">{t("logs.filters.stderr")}</option>
+                    <option value="STDOUT">{t("logs.filters.stdout")}</option>
                   </select>
                 </label>
 
@@ -783,9 +787,9 @@ export function LogsDrawer({
                     value={provenanceFilter}
                     onChange={(e) => setProvenanceFilter(e.target.value as ProvenanceFilter)}
                   >
-                    <option value="ALL">All sources</option>
-                    <option value="CURRENT">Current runtime</option>
-                    <option value="LEGACY">Legacy imported</option>
+                    <option value="ALL">{t("logs.filters.allSources")}</option>
+                    <option value="CURRENT">{t("logs.filters.currentRuntime")}</option>
+                    <option value="LEGACY">{t("logs.filters.legacyImported")}</option>
                   </select>
                 </label>
 
@@ -796,7 +800,7 @@ export function LogsDrawer({
                     value={processFilter}
                     onChange={(e) => setProcessFilter(e.target.value)}
                   >
-                    <option value="ALL">All</option>
+                    <option value="ALL">{t("logs.filters.all")}</option>
                     {processOptions.map((p) => (
                       <option key={p} value={p}>
                         {p}
@@ -812,7 +816,7 @@ export function LogsDrawer({
                     value={componentFilter}
                     onChange={(e) => setComponentFilter(e.target.value)}
                   >
-                    <option value="ALL">All</option>
+                    <option value="ALL">{t("logs.filters.all")}</option>
                     {componentOptions.map((c) => (
                       <option key={c} value={c}>
                         {c}
@@ -828,7 +832,7 @@ export function LogsDrawer({
                     value={eventFilter}
                     onChange={(e) => setEventFilter(e.target.value)}
                   >
-                    <option value="ALL">All</option>
+                    <option value="ALL">{t("logs.filters.all")}</option>
                     {eventOptions.map((ev) => (
                       <option key={ev} value={ev}>
                         {ev}
@@ -841,14 +845,14 @@ export function LogsDrawer({
                   value={correlationFilter}
                   onChange={(e) => setCorrelationFilter(e.target.value)}
                   className="w-[170px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text placeholder:text-text-subtle outline-none focus:border-primary"
-                  placeholder="Correlation ID"
+                  placeholder={t("logs.correlationId")}
                 />
 
                 <input
                   value={sessionFilter}
                   onChange={(e) => setSessionFilter(e.target.value)}
                   className="w-[170px] rounded-lg border border-border bg-surface-elevated px-2 py-1 text-xs text-text placeholder:text-text-subtle outline-none focus:border-primary"
-                  placeholder="Session ID"
+                  placeholder={t("logs.sessionId")}
                 />
 
                 <label className="flex items-center gap-1.5 text-xs text-text-subtle">
@@ -857,16 +861,17 @@ export function LogsDrawer({
                     checked={currentRuntimeOnly}
                     onChange={(e) => setCurrentRuntimeOnly(e.target.checked)}
                   />
-                  Current runtime only
+                  {t("logs.currentRuntimeOnly")}
                 </label>
 
                 <div className="flex-1" />
 
                 <div className="text-xs text-text-subtle">
-                  <span className="font-mono tabular-nums">{visibleLines.length}</span> lines
+                  <span className="font-mono tabular-nums">{visibleLines.length}</span>{" "}
+                  {t("logs.lines")}
                   {dropped > 0 && (
                     <span className="ml-2 rounded-md border border-border bg-surface-elevated px-2 py-0.5 text-[10px] text-text-muted">
-                      dropped {dropped}
+                      {t("logs.dropped", { count: dropped })}
                     </span>
                   )}
                 </div>
@@ -893,7 +898,7 @@ export function LogsDrawer({
             <div ref={listContainerRef} className="relative min-h-0 flex-1 overflow-hidden">
               {visibleLines.length === 0 ? (
                 <div className="flex h-full items-center justify-center text-sm text-text-subtle">
-                  {paused ? "Paused" : "Waiting for logs..."}
+                  {paused ? t("logs.paused") : t("logs.waiting")}
                 </div>
               ) : (
                 <List
@@ -937,7 +942,7 @@ export function LogsDrawer({
                     }}
                   >
                     <ScrollText className="h-3 w-3" />
-                    Jump to latest
+                    {t("logs.jumpToLatest")}
                   </button>
                 </div>
               )}
@@ -955,17 +960,17 @@ export function LogsDrawer({
             {selectedLine && (
               <div className="flex flex-col border-t border-border bg-surface">
                 <div className="flex items-center justify-between px-3 py-2">
-                  <span className="text-xs text-text-subtle">Selected Line</span>
+                  <span className="text-xs text-text-subtle">{t("logs.selectedLine")}</span>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => {
-                        void copyText(selectedLine.raw, "Copied to clipboard");
+                        void copyText(selectedLine.raw, t("logs.copiedToClipboard"));
                       }}
                       className="flex items-center gap-1 rounded px-2 py-1 text-xs text-text-subtle transition hover:bg-surface-elevated hover:text-text"
                     >
                       <Copy className="h-3 w-3" />
-                      Copy
+                      {t("actions.copy")}
                     </button>
                     {!!selectedLine.parsed.correlation_id && (
                       <button
@@ -976,12 +981,12 @@ export function LogsDrawer({
                             .filter((l) => l.parsed.correlation_id === correlationId)
                             .map((l) => l.raw.replace(/\r?\n$/, ""))
                             .join("\n");
-                          void copyText(trace, "Copied correlation trace");
+                          void copyText(trace, t("logs.copiedCorrelationTrace"));
                         }}
                         className="flex items-center gap-1 rounded px-2 py-1 text-xs text-text-subtle transition hover:bg-surface-elevated hover:text-text"
                       >
                         <Copy className="h-3 w-3" />
-                        Copy Correlation Trace
+                        {t("logs.copyCorrelationTrace")}
                       </button>
                     )}
                     <button
@@ -990,7 +995,7 @@ export function LogsDrawer({
                       className="flex items-center gap-1 rounded px-2 py-1 text-xs text-text-subtle transition hover:bg-surface-elevated hover:text-text"
                     >
                       <X className="h-3 w-3" />
-                      Close
+                      {t("actions.close")}
                     </button>
                   </div>
                 </div>

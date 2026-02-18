@@ -1,7 +1,8 @@
-import { startTransition, useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+﻿import { startTransition, useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useTranslation } from "react-i18next";
 import { Message, type MessageProps } from "./Message";
 import { ChatInput, type FileAttachment } from "./ChatInput";
 import {
@@ -100,45 +101,51 @@ interface ChatProps {
   activeChatRunningCount?: number;
 }
 
-function startupPhaseLabel(phase?: string | null): string {
+function startupPhaseLabel(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  phase?: string | null
+): string {
   switch ((phase || "").toLowerCase()) {
     case "migration":
-      return "Scanning legacy data";
+      return t("startup.label.migration");
     case "storage_init":
-      return "Loading sessions and storage";
+      return t("startup.label.storageInit");
     case "config_init":
-      return "Loading provider config";
+      return t("startup.label.configInit");
     case "registry_init":
-      return "Initializing registries";
+      return t("startup.label.registryInit");
     case "engine_loop_init":
-      return "Starting runtime loop";
+      return t("startup.label.engineLoopInit");
     case "ready":
-      return "Ready";
+      return t("startup.label.ready");
     case "failed":
-      return "Startup failed";
+      return t("startup.label.failed");
     default:
-      return "Starting sidecar";
+      return t("startup.label.default");
   }
 }
 
-function startupPhaseDetail(phase?: string | null): string {
+function startupPhaseDetail(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  phase?: string | null
+): string {
   switch ((phase || "").toLowerCase()) {
     case "migration":
-      return "Checking legacy data and migration markers.";
+      return t("startup.detail.migration");
     case "storage_init":
-      return "Loading session history and workspace metadata.";
+      return t("startup.detail.storageInit");
     case "config_init":
-      return "Loading providers, models, and runtime config.";
+      return t("startup.detail.configInit");
     case "registry_init":
-      return "Preparing tools, plugins, and registries.";
+      return t("startup.detail.registryInit");
     case "engine_loop_init":
-      return "Starting message processing and event pipeline.";
+      return t("startup.detail.engineLoopInit");
     case "ready":
-      return "Engine startup complete.";
+      return t("startup.detail.ready");
     case "failed":
-      return "Startup failed. Open logs for details.";
+      return t("startup.detail.failed");
     default:
-      return "Preparing engine startup components.";
+      return t("startup.detail.default");
   }
 }
 
@@ -355,6 +362,7 @@ export function Chat({
   activeOrchestrationCount = 0,
   activeChatRunningCount = 0,
 }: ChatProps) {
+  const { t } = useTranslation(["chat", "common", "settings"]);
   const [messages, setMessages] = useState<MessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const isGeneratingRef = useRef(isGenerating);
@@ -887,7 +895,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
     const nextSessionId = propSessionId || null;
     const prevSessionId = currentSessionIdRef.current;
 
-    // No change → do nothing (prevents churn from unrelated state updates)
+    // No change â†’ do nothing (prevents churn from unrelated state updates)
     if (nextSessionId === prevSessionId) return;
 
     // If we are currently generating a response for a session we just created,
@@ -1074,7 +1082,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
               // Only add a text placeholder if there's no other text or if we want to explicitly record it
               if (role === "user") {
-                content += `\n[📎 Attached file: ${filename}]\n`;
+                content += `\n[ðŸ“Ž Attached file: ${filename}]\n`;
               }
             } else if (partObj.type === "tool" || partObj.type === "tool-invocation") {
               const toolName = (partObj.tool || "unknown") as string;
@@ -1417,7 +1425,7 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
   //     if (toolLower.includes("create")) return `Creating ${shortPath}`;
   //     if (toolLower.includes("delete")) return `Deleting ${shortPath}`;
   //     if (toolLower.includes("list")) return `Listing ${shortPath}`;
-  //     return `${tool} → ${shortPath}`;
+  //     return `${tool} â†’ ${shortPath}`;
   //   }
 
   //   if (query && typeof query === "string") {
@@ -3005,9 +3013,11 @@ ${g.example}
                   <Loader2 className="h-5 w-5 animate-spin text-primary/90" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-text">Connecting to Tandem Engine</h3>
+                  <h3 className="text-base font-semibold text-text">
+                    {t("connection.connectingTitle", { ns: "chat" })}
+                  </h3>
                   <p className="text-sm text-text-subtle">
-                    {startupPhaseLabel(startupHealth?.phase)}
+                    {startupPhaseLabel((k, o) => t(k, { ns: "chat", ...o }), startupHealth?.phase)}
                     {startupHealth
                       ? ` - ${Math.max(0, Math.round((startupHealth.startup_elapsed_ms || 0) / 1000))}s`
                       : ""}
@@ -3056,8 +3066,15 @@ ${g.example}
                   ))}
                 </div>
                 <div className="mt-1.5 flex items-center justify-between text-xs text-text-muted">
-                  <span>{startupPhaseDetail(startupHealth?.phase)}</span>
-                  <span>{startupPhaseProgress(startupHealth?.phase)}% estimated</span>
+                  <span>
+                    {startupPhaseDetail((k, o) => t(k, { ns: "chat", ...o }), startupHealth?.phase)}
+                  </span>
+                  <span>
+                    {t("startup.estimatedPercent", {
+                      ns: "chat",
+                      percent: startupPhaseProgress(startupHealth?.phase),
+                    })}
+                  </span>
                 </div>
               </div>
             </motion.div>
@@ -3085,11 +3102,11 @@ ${g.example}
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               className="flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1"
-              title="Chat sessions currently running"
+              title={t("connection.chatSessionsRunning", { ns: "chat" })}
             >
               <Loader2 className="h-3 w-3 animate-spin text-primary" />
               <span className="text-[10px] font-medium uppercase tracking-wide text-primary">
-                {activeChatRunningCount} chat
+                {activeChatRunningCount} {t("connection.chatShort", { ns: "chat" })}
               </span>
             </motion.div>
           )}
@@ -3099,11 +3116,11 @@ ${g.example}
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1"
-              title="Orchestration runs currently executing in the background"
+              title={t("connection.orchestrationsRunning", { ns: "chat" })}
             >
               <Loader2 className="h-3 w-3 animate-spin text-amber-400" />
               <span className="text-[10px] font-medium uppercase tracking-wide text-amber-300">
-                {activeOrchestrationCount} orch
+                {activeOrchestrationCount} {t("connection.orchShort", { ns: "chat" })}
               </span>
             </motion.div>
           )}
@@ -3117,7 +3134,7 @@ ${g.example}
             >
               <div className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
               <span className="text-xs font-medium text-amber-500">
-                {stagedOperations.length} change{stagedOperations.length !== 1 ? "s" : ""} pending
+                {t("connection.pendingChanges", { ns: "chat", count: stagedOperations.length })}
               </span>
             </motion.div>
           )}
@@ -3134,10 +3151,10 @@ ${g.example}
             />
             <span className="text-xs text-text-muted">
               {sidecarStatus === "running"
-                ? "Connected"
+                ? t("connection.connected", { ns: "chat" })
                 : sidecarStatus === "starting"
-                  ? "Connecting..."
-                  : "Disconnected"}
+                  ? t("connection.connecting", { ns: "chat" })
+                  : t("connection.disconnected", { ns: "chat" })}
             </span>
           </div>
           {sidecarStatus === "running" && (
@@ -3151,7 +3168,7 @@ ${g.example}
                     : "border-sky-500/30 bg-sky-500/10 text-sky-300"
               )}
             >
-              stream {streamHealth}
+              {t("connection.streamHealth", { ns: "chat", health: streamHealth })}
             </span>
           )}
         </div>
@@ -3166,12 +3183,16 @@ ${g.example}
           className="border-b border-border bg-surface-elevated px-4 py-2"
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-text-muted">Plan Mode Active</span>
+            <span className="text-xs font-medium text-text-muted">
+              {t("planMode.active", { ns: "chat" })}
+            </span>
             <button
               onClick={() => setShowPlanView(!showPlanView)}
               className="text-xs text-primary hover:underline"
             >
-              {showPlanView ? "Hide Plans" : "Show Plans"}
+              {showPlanView
+                ? t("planMode.hidePlans", { ns: "chat" })
+                : t("planMode.showPlans", { ns: "chat" })}
             </button>
           </div>
 
@@ -3198,11 +3219,11 @@ ${g.example}
               onClick={() => setShowPythonWizard(true)}
               className="ml-2 rounded-md border border-error/30 bg-error/5 px-2 py-1 text-xs text-error hover:bg-error/10"
             >
-              Open Python setup
+              {t("errors.openPythonSetup", { ns: "chat" })}
             </button>
           )}
           <button onClick={() => setError(null)} className="ml-auto text-error/70 hover:text-error">
-            ×
+            Ã—
           </button>
         </div>
       )}
@@ -3230,7 +3251,9 @@ ${g.example}
                 >
                   <div className="flex flex-col items-center gap-3">
                     <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                    <p className="text-sm text-text-muted">Loading chat history...</p>
+                    <p className="text-sm text-text-muted">
+                      {t("history.loading", { ns: "chat" })}
+                    </p>
                   </div>
                 </motion.div>
               ) : messages.length === 0 && !isGenerating ? (
@@ -3359,7 +3382,9 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="inline-block h-3 w-1.5 bg-primary animate-pulse" />
-                    <span className="terminal-text text-text-muted">Processing</span>
+                    <span className="terminal-text text-text-muted">
+                      {t("messages.generating", { ns: "chat" })}
+                    </span>
                     <div className="flex gap-1">
                       <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.3s]" />
                       <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-subtle [animation-delay:-0.15s]" />
@@ -3381,10 +3406,10 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                     setFollowLatest(true);
                     scrollToBottom(true);
                   }}
-                  aria-label="Jump to latest message"
+                  aria-label={t("history.jumpLatest", { ns: "chat" })}
                 >
                   <ChevronDown className="h-4 w-4" />
-                  Jump to latest
+                  {t("history.jumpLatest", { ns: "chat" })}
                 </button>
               </div>
             )}
@@ -3396,15 +3421,15 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
               <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-yellow-500/50 bg-yellow-500/5 p-6 text-center">
                 <div className="flex items-center gap-2 text-yellow-500">
                   <AlertCircle className="h-5 w-5" />
-                  <p className="font-semibold">Setup Required</p>
+                  <p className="font-semibold">{t("setup.required", { ns: "chat" })}</p>
                 </div>
                 <p className="text-sm text-text-muted">
-                  Configure an AI provider (OpenAI, Anthropic, etc.) to start chatting.
+                  {t("setup.configureProvider", { ns: "chat" })}
                 </p>
                 {onOpenSettings && (
                   <Button onClick={onOpenSettings} variant="primary" className="mt-2 text-white">
                     <SettingsIcon className="mr-2 h-4 w-4" />
-                    Open Settings
+                    {t("setup.openSettings", { ns: "chat" })}
                   </Button>
                 )}
               </div>
@@ -3416,7 +3441,7 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                   <div className="mx-auto flex w-full max-w-5xl items-start justify-between gap-3 rounded-lg border border-border bg-surface-elevated p-3">
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-semibold text-text">
-                        Queued messages ({queuedMessages.length})
+                        {t("queue.title", { ns: "chat", count: queuedMessages.length })}
                       </p>
                       <div className="mt-1 space-y-1">
                         {queuedMessages.slice(0, 3).map((q) => (
@@ -3695,43 +3720,6 @@ type SuggestionAction = {
 
 type Suggestion = SuggestionPrompt | SuggestionAction;
 
-// Suggestion prompts - mix of developer and general user tasks
-const SUGGESTION_PROMPTS: SuggestionPrompt[] = [
-  {
-    title: "📁 Summarize this project",
-    description: "Give me an overview of what this project does",
-    prompt:
-      "Give me a comprehensive overview of this project. What does it do, what are the main components, and how is it organized?",
-  },
-  {
-    title: "🔍 Find and explain",
-    description: "Help me understand a specific file or folder",
-    prompt: "List the files in this project and help me understand what each one does.",
-  },
-  {
-    title: "📝 Analyze a document",
-    description: "Read and summarize any text file",
-    prompt:
-      "Find any text documents, markdown files, or READMEs in this project and summarize their contents.",
-  },
-  {
-    title: "✨ Suggest improvements",
-    description: "What could be better in this project?",
-    prompt: "Analyze this project and suggest improvements. What could be done better?",
-  },
-  {
-    title: "🐛 Find issues",
-    description: "Look for potential bugs or problems",
-    prompt: "Search this codebase for potential bugs, issues, or areas that might cause problems.",
-  },
-  {
-    title: "📖 Create documentation",
-    description: "Generate a README or docs",
-    prompt:
-      "Create comprehensive documentation for this project, including a README with setup instructions.",
-  },
-];
-
 function EmptyState({
   needsConnection,
   isConnecting,
@@ -3743,25 +3731,58 @@ function EmptyState({
   onOpenPacks,
   onOpenExtensions,
 }: EmptyStateProps) {
+  const { t } = useTranslation(["chat", "settings"]);
   const [suggestions] = useState<Suggestion[]>(() => {
-    const shuffled = [...SUGGESTION_PROMPTS].sort(() => Math.random() - 0.5);
+    const shuffled: SuggestionPrompt[] = [
+      {
+        title: t("suggestions.summarizeProject.title", { ns: "chat" }),
+        description: t("suggestions.summarizeProject.description", { ns: "chat" }),
+        prompt: t("suggestions.summarizeProject.prompt", { ns: "chat" }),
+      },
+      {
+        title: t("suggestions.findAndExplain.title", { ns: "chat" }),
+        description: t("suggestions.findAndExplain.description", { ns: "chat" }),
+        prompt: t("suggestions.findAndExplain.prompt", { ns: "chat" }),
+      },
+      {
+        title: t("suggestions.analyzeDocument.title", { ns: "chat" }),
+        description: t("suggestions.analyzeDocument.description", { ns: "chat" }),
+        prompt: t("suggestions.analyzeDocument.prompt", { ns: "chat" }),
+      },
+      {
+        title: t("suggestions.suggestImprovements.title", { ns: "chat" }),
+        description: t("suggestions.suggestImprovements.description", { ns: "chat" }),
+        prompt: t("suggestions.suggestImprovements.prompt", { ns: "chat" }),
+      },
+      {
+        title: t("suggestions.findIssues.title", { ns: "chat" }),
+        description: t("suggestions.findIssues.description", { ns: "chat" }),
+        prompt: t("suggestions.findIssues.prompt", { ns: "chat" }),
+      },
+      {
+        title: t("suggestions.createDocumentation.title", { ns: "chat" }),
+        description: t("suggestions.createDocumentation.description", { ns: "chat" }),
+        prompt: t("suggestions.createDocumentation.prompt", { ns: "chat" }),
+      },
+    ].sort(() => Math.random() - 0.5);
+
     const pinned: SuggestionAction[] = [];
     if (onOpenPacks) {
       pinned.push({
-        title: "Install starter packs",
-        description: "Browse skill templates and starter packs to install",
+        title: t("suggestions.installStarterPacks.title", { ns: "chat" }),
+        description: t("suggestions.installStarterPacks.description", { ns: "chat" }),
         action: "openPacks",
       });
     }
     if (onOpenExtensions) {
       pinned.push({
-        title: "Set up MCP",
-        description: "Add tool servers and test connectivity",
+        title: t("suggestions.setupMcp.title", { ns: "chat" }),
+        description: t("suggestions.setupMcp.description", { ns: "chat" }),
         action: "openMcp",
       });
       pinned.push({
-        title: "Create custom modes",
-        description: "Define advanced mode profiles and restrictions",
+        title: t("suggestions.createCustomModes.title", { ns: "chat" }),
+        description: t("suggestions.createCustomModes.description", { ns: "chat" }),
         action: "openModes",
       });
     }
@@ -3797,23 +3818,25 @@ function EmptyState({
           <Sparkles className="h-8 w-8 text-primary" />
         </div>
 
-        <h2 className="mb-3 text-2xl font-bold text-text">What can I help you with?</h2>
+        <h2 className="mb-3 text-2xl font-bold text-text">{t("empty.title", { ns: "chat" })}</h2>
 
         {!hasConfiguredProvider && (
           <div className="mb-6 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-4 text-left">
             <div className="flex items-start gap-3">
               <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-yellow-500" />
               <div>
-                <h3 className="font-semibold text-text">No Model Configured</h3>
+                <h3 className="font-semibold text-text">
+                  {t("setup.noModelConfigured", { ns: "chat" })}
+                </h3>
                 <p className="mt-1 text-sm text-text-muted">
-                  You need to configure an LLM provider (OpenAI, Anthropic, etc.) to start chatting.
+                  {t("setup.configureProvider", { ns: "chat" })}
                 </p>
                 {onOpenSettings && (
                   <button
                     onClick={onOpenSettings}
                     className="mt-2 text-sm font-medium text-primary hover:underline"
                   >
-                    Configure Settings →
+                    {t("setup.configureSettings", { ns: "chat" })}
                   </button>
                 )}
               </div>
@@ -3821,10 +3844,7 @@ function EmptyState({
           </div>
         )}
 
-        <p className="mb-8 text-text-muted">
-          I can read and write files, search your codebase, run commands, and help you accomplish
-          tasks in your folder.
-        </p>
+        <p className="mb-8 text-text-muted">{t("empty.subtitle", { ns: "chat" })}</p>
 
         {needsConnection && workspacePath && (
           <button
@@ -3835,12 +3855,12 @@ function EmptyState({
             {isConnecting ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Connecting...
+                {t("connection.connecting", { ns: "chat" })}
               </>
             ) : (
               <>
                 <Sparkles className="h-4 w-4" />
-                Connect AI
+                {t("connection.connectAi", { ns: "chat" })}
               </>
             )}
           </button>

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { FolderOpen, Loader2, Sparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -19,6 +20,22 @@ export function PacksPanel({
   onOpenInstalledPack,
   onOpenSkills,
 }: PacksPanelProps) {
+  const { t } = useTranslation("common");
+  const localizePackField = (
+    pack: PackMeta,
+    field: "title" | "description" | "complexity" | "time_estimate"
+  ): string => {
+    const key = `packs.catalog.${pack.id}.${field}`;
+    const value = t(key);
+    // i18next returns the key itself when not found.
+    return value === key ? pack[field] : value;
+  };
+
+  const localizePackTag = (tag: string): string => {
+    const key = `packs.tags.${tag}`;
+    const value = t(key);
+    return value === key ? tag : value;
+  };
   const runtimePillClass = (runtime: string) => {
     switch (runtime.toLowerCase()) {
       case "python":
@@ -48,12 +65,12 @@ export function PacksPanel({
         setError(null);
         setPacks(await listPacks());
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load packs");
+        setError(e instanceof Error ? e.message : t("packs.errors.loadFailed"));
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [t]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -74,7 +91,7 @@ export function PacksPanel({
       const destination = await open({
         directory: true,
         multiple: false,
-        title: "Choose where to create the starter pack folder",
+        title: t("packs.dialog.chooseInstallFolder"),
       });
 
       if (!destination || typeof destination !== "string") return;
@@ -83,7 +100,7 @@ export function PacksPanel({
       await onOpenInstalledPack?.(result.installed_path);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setError(msg || "Failed to install pack");
+      setError(msg || t("packs.errors.installFailed"));
     } finally {
       setInstallingId(null);
     }
@@ -103,10 +120,8 @@ export function PacksPanel({
               <Sparkles className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-text terminal-text">Starter Packs</h1>
-              <p className="text-sm text-text-muted">
-                Guided, copyable folders for real-world tasks.
-              </p>
+              <h1 className="text-2xl font-bold text-text terminal-text">{t("packs.title")}</h1>
+              <p className="text-sm text-text-muted">{t("packs.subtitle")}</p>
             </div>
           </div>
 
@@ -115,17 +130,17 @@ export function PacksPanel({
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search packs (research, writing, security...)"
+                placeholder={t("packs.searchPlaceholder")}
               />
             </div>
             <div className="flex items-center gap-3 text-xs text-text-subtle">
               <span>
                 <FolderOpen className="mr-1 inline h-3 w-3" />
-                Installs include START_HERE.md, prompts, and sample inputs.
+                {t("packs.installsInclude")}
               </span>
               {onOpenSkills && (
                 <Button variant="ghost" size="sm" onClick={onOpenSkills} className="h-8 px-2">
-                  Open Skills
+                  {t("packs.openSkills")}
                 </Button>
               )}
             </div>
@@ -136,17 +151,12 @@ export function PacksPanel({
               onClick={() => setShowPackInfo((v) => !v)}
               className="text-xs text-text-subtle hover:text-text underline underline-offset-4"
             >
-              {showPackInfo ? "Hide pack details" : "What are packs and where do they install?"}
+              {showPackInfo ? t("packs.hideDetails") : t("packs.showDetails")}
             </button>
             {showPackInfo && (
               <div className="mt-2 rounded-lg border border-border bg-surface-elevated p-3 text-xs text-text-muted">
-                <p>
-                  Packs are guided, copyable folders with prompts and expected outputs. After
-                  install, open START_HERE.md to follow the workflow.
-                </p>
-                <p className="mt-2">
-                  Click Install to choose a clean location and create the pack folder there.
-                </p>
+                <p>{t("packs.detailsBody")}</p>
+                <p className="mt-2">{t("packs.installHint")}</p>
               </div>
             )}
           </div>
@@ -154,18 +164,18 @@ export function PacksPanel({
 
         <div className="mb-6 rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
           <div className="flex items-center justify-between gap-3">
-            <p className="font-medium text-text">Runtime note</p>
+            <p className="font-medium text-text">{t("packs.runtimeNoteTitle")}</p>
             <Button
               variant="secondary"
               size="sm"
               onClick={() => setShowPythonWizard(true)}
               className="h-7 px-2 text-[11px]"
             >
-              Set up Python (venv)
+              {t("packs.setupPython")}
             </Button>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="text-[11px] text-text-subtle">Some packs may require:</span>
+            <span className="text-[11px] text-text-subtle">{t("packs.requiresLabel")}</span>
             <span
               className={cn("rounded-full border px-2 py-0.5 text-xs", runtimePillClass("python"))}
             >
@@ -182,11 +192,7 @@ export function PacksPanel({
               Bash
             </span>
           </div>
-          <p className="mt-1">
-            Packs can include scripts and local tooling. Tandem does not bundle these runtimes. If a
-            pack asks you to run a tool you don’t have, install it locally or choose a different
-            pack.
-          </p>
+          <p className="mt-1">{t("packs.runtimeNoteBody")}</p>
         </div>
 
         {error && (
@@ -198,11 +204,11 @@ export function PacksPanel({
         {loading ? (
           <div className="flex items-center justify-center py-16 text-text-muted">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-            Loading packs...
+            {t("packs.loading")}
           </div>
         ) : filtered.length === 0 ? (
           <div className="rounded-lg border border-border bg-surface-elevated p-8 text-center">
-            <p className="text-sm text-text-muted">No packs match your search.</p>
+            <p className="text-sm text-text-muted">{t("packs.emptySearch")}</p>
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
@@ -216,18 +222,22 @@ export function PacksPanel({
                   <div className="p-5">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <h3 className="truncate text-base font-semibold text-text">{pack.title}</h3>
-                        <p className="mt-1 text-sm text-text-muted">{pack.description}</p>
+                        <h3 className="truncate text-base font-semibold text-text">
+                          {localizePackField(pack, "title")}
+                        </h3>
+                        <p className="mt-1 text-sm text-text-muted">
+                          {localizePackField(pack, "description")}
+                        </p>
                       </div>
                       <div className="flex flex-shrink-0 items-center gap-2">
                         <Button onClick={() => handleInstall(pack.id)} disabled={isInstalling}>
                           {isInstalling ? (
                             <>
                               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                              Installing...
+                              {t("packs.installing")}
                             </>
                           ) : (
-                            "Install"
+                            t("packs.install")
                           )}
                         </Button>
                       </div>
@@ -235,14 +245,14 @@ export function PacksPanel({
 
                     <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
                       <span className="rounded-full bg-primary/15 px-2 py-1 text-primary">
-                        {pack.complexity}
+                        {localizePackField(pack, "complexity")}
                       </span>
                       <span className="rounded-full bg-surface-elevated px-2 py-1 text-text-subtle">
-                        {pack.time_estimate}
+                        {localizePackField(pack, "time_estimate")}
                       </span>
                       {(pack.tags ?? []).slice(0, 4).map((t) => (
                         <span key={t} className={cn("rounded-full px-2 py-1", runtimePillClass(t))}>
-                          {t}
+                          {localizePackTag(t)}
                         </span>
                       ))}
                     </div>

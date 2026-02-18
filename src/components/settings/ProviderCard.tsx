@@ -30,6 +30,7 @@ import {
   type ApiKeyType,
   type ModelInfo,
 } from "@/lib/tauri";
+import { useTranslation } from "react-i18next";
 
 // Popular/suggested models for providers with limited options
 const PROVIDER_MODELS: Record<string, { id: string; name: string; description?: string }[]> = {
@@ -121,6 +122,7 @@ export function ProviderCard({
   onKeyChange,
   docsUrl,
 }: ProviderCardProps) {
+  const { t } = useTranslation(["common", "settings"]);
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [hasKey, setHasKey] = useState(false);
@@ -202,7 +204,7 @@ export function ProviderCard({
       await stopOllamaModel(name);
       await loadOllamaData();
     } catch (err) {
-      setError(`Failed to stop model: ${err}`);
+      setError(t("providerCard.errors.stopModel", { error: String(err) }));
     }
   };
 
@@ -211,13 +213,13 @@ export function ProviderCard({
       await runOllamaModel(name);
       await loadOllamaData();
     } catch (err) {
-      setError(`Failed to run model: ${err}`);
+      setError(t("providerCard.errors.runModel", { error: String(err) }));
     }
   };
 
   const handleSaveKey = async () => {
     if (!apiKey.trim()) {
-      setError("API key is required");
+      setError(t("providerCard.errors.apiKeyRequired"));
       return;
     }
 
@@ -234,7 +236,7 @@ export function ProviderCard({
       // Notify parent that key state changed
       onKeyChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save API key");
+      setError(err instanceof Error ? err.message : t("providerCard.errors.saveApiKey"));
     } finally {
       setSaving(false);
     }
@@ -247,7 +249,7 @@ export function ProviderCard({
       // Notify parent that key state changed
       onKeyChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete API key");
+      setError(err instanceof Error ? err.message : t("providerCard.errors.deleteApiKey"));
     }
   };
 
@@ -279,7 +281,7 @@ export function ProviderCard({
     <Card className="relative overflow-hidden">
       {isDefault && (
         <div className="absolute right-0 top-0 rounded-bl-lg bg-primary px-3 py-1 text-xs font-medium text-white">
-          Default
+          {t("providerCard.default")}
         </div>
       )}
 
@@ -297,7 +299,7 @@ export function ProviderCard({
           <div className="flex items-center gap-2">
             {requiresApiKey && hasKey && (
               <span className="rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">
-                Key saved
+                {t("providerCard.keySaved")}
               </span>
             )}
             <Switch checked={enabled} onChange={(e) => onEnabledChange(e.target.checked)} />
@@ -317,11 +319,17 @@ export function ProviderCard({
               {/* Model Selection - Text Input for OpenRouter/Ollama */}
               {isTextInputProvider && id !== "ollama" && (
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-text-subtle">Model</label>
+                  <label className="text-xs font-medium text-text-subtle">
+                    {t("providers.model")}
+                  </label>
                   <div className="relative">
                     <Input
                       type="text"
-                      placeholder={id === "openrouter" ? "e.g., openai/gpt-4o" : "e.g., llama3.2"}
+                      placeholder={
+                        id === "openrouter"
+                          ? t("providerCard.placeholders.modelOpenRouter")
+                          : t("providerCard.placeholders.modelGeneric")
+                      }
                       value={modelInput}
                       onChange={(e) => {
                         setModelInput(e.target.value);
@@ -348,7 +356,7 @@ export function ProviderCard({
                           setShowSuggestions(false);
                         }}
                       >
-                        Save
+                        {t("actions.save", { ns: "common" })}
                       </Button>
                     )}
 
@@ -363,7 +371,7 @@ export function ProviderCard({
                           className="absolute left-0 right-0 top-full z-50 mt-1 max-h-48 overflow-y-auto rounded-lg border border-border bg-surface shadow-lg"
                         >
                           <p className="px-3 py-1.5 text-xs text-text-subtle border-b border-border">
-                            Suggestions
+                            {t("providerCard.suggestions")}
                           </p>
                           {filteredSuggestions.map((s) => (
                             <button
@@ -389,7 +397,8 @@ export function ProviderCard({
                               onClick={() => handleOpenExternal("https://openrouter.ai/models")}
                               className="flex w-full items-center gap-1 px-3 py-2 text-xs text-primary hover:bg-surface-elevated border-t border-border"
                             >
-                              Browse all models <ExternalLink className="h-3 w-3" />
+                              {t("providerCard.browseAllModels")}{" "}
+                              <ExternalLink className="h-3 w-3" />
                             </button>
                           )}
                         </motion.div>
@@ -398,7 +407,8 @@ export function ProviderCard({
                   </div>
                   {model && id !== "ollama" && (
                     <p className="text-xs text-text-muted">
-                      Current: <span className="font-mono text-text">{model}</span>
+                      {t("providerCard.currentModel")}:{" "}
+                      <span className="font-mono text-text">{model}</span>
                     </p>
                   )}
                 </div>
@@ -409,7 +419,7 @@ export function ProviderCard({
                 <div className="space-y-3 rounded-lg border border-border bg-surface-elevated/50 p-3">
                   <div className="flex items-center justify-between">
                     <h4 className="text-xs font-semibold uppercase tracking-wider text-text-subtle">
-                      Ollama Status
+                      {t("providerCard.ollama.status")}
                     </h4>
                     <Button
                       variant="ghost"
@@ -421,13 +431,15 @@ export function ProviderCard({
                       <RefreshCw
                         className={`mr-1 h-3 w-3 ${loadingOllama ? "animate-spin" : ""}`}
                       />
-                      Refresh
+                      {t("actions.refresh", { ns: "common" })}
                     </Button>
                   </div>
 
                   {runningModels.length > 0 ? (
                     <div className="space-y-2">
-                      <p className="text-xs text-text-subtle">Currently Running:</p>
+                      <p className="text-xs text-text-subtle">
+                        {t("providerCard.ollama.currentlyRunning")}
+                      </p>
                       {runningModels.map((m) => (
                         <div
                           key={m.id}
@@ -441,18 +453,22 @@ export function ProviderCard({
                             className="h-7 px-2 text-xs text-error hover:bg-error/10 hover:text-error"
                           >
                             <Square className="mr-1 h-3 w-3 fill-current" />
-                            Stop
+                            {t("actions.stop", { ns: "common" })}
                           </Button>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <p className="text-xs italic text-text-muted">No models currently in memory</p>
+                    <p className="text-xs italic text-text-muted">
+                      {t("providerCard.ollama.noModelsInMemory")}
+                    </p>
                   )}
 
                   {discoveredModels.length > 0 && (
                     <div className="space-y-2 border-t border-border pt-2">
-                      <p className="text-xs text-text-subtle">Installed Models:</p>
+                      <p className="text-xs text-text-subtle">
+                        {t("providerCard.ollama.installedModels")}
+                      </p>
                       <div className="grid grid-cols-2 gap-2">
                         {discoveredModels.map((m) => {
                           const isRunning = runningModels.some((rm) => rm.id === m.id);
@@ -487,7 +503,7 @@ export function ProviderCard({
                                       onModelChange?.(m.id);
                                     }}
                                     className="h-6 w-6 p-0 text-primary hover:bg-primary/20"
-                                    title="Load into memory & select"
+                                    title={t("providerCard.ollama.loadAndSelect")}
                                   >
                                     <Play className="h-3 w-3 fill-current" />
                                   </Button>
@@ -495,7 +511,7 @@ export function ProviderCard({
                                 {isRunning && (
                                   <span
                                     className="flex h-2 w-2 rounded-full bg-success ring-4 ring-success/20"
-                                    title="Running"
+                                    title={t("status.running", { ns: "common" })}
                                   />
                                 )}
                               </div>
@@ -511,7 +527,9 @@ export function ProviderCard({
               {/* Model Selection - Dropdown for Anthropic/OpenAI */}
               {!isTextInputProvider && availableModels.length > 0 && (
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-text-subtle">Model</label>
+                  <label className="text-xs font-medium text-text-subtle">
+                    {t("providers.model")}
+                  </label>
                   <div className="relative">
                     <button
                       type="button"
@@ -572,14 +590,16 @@ export function ProviderCard({
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-medium text-text-subtle">Base URL</label>
+                  <label className="text-xs font-medium text-text-subtle">
+                    {t("providerCard.baseUrl")}
+                  </label>
                   {!isEditingEndpoint && onEndpointChange && (
                     <button
                       type="button"
                       onClick={() => setIsEditingEndpoint(true)}
                       className="text-xs text-primary hover:underline"
                     >
-                      Edit
+                      {t("actions.edit", { ns: "common" })}
                     </button>
                   )}
                 </div>
@@ -588,7 +608,7 @@ export function ProviderCard({
                     <div className="flex items-center gap-2">
                       <Input
                         type="text"
-                        placeholder="https://api.example.com/v1"
+                        placeholder={t("providerCard.placeholders.endpoint")}
                         value={endpointInput}
                         onChange={(e) => setEndpointInput(e.target.value)}
                         onKeyDown={(e) => {
@@ -606,7 +626,7 @@ export function ProviderCard({
                           size="sm"
                           variant="ghost"
                           onClick={handleResetEndpoint}
-                          title="Reset to default endpoint"
+                          title={t("providerCard.resetEndpoint")}
                           className="shrink-0"
                         >
                           <RotateCcw className="h-4 w-4" />
@@ -619,7 +639,7 @@ export function ProviderCard({
                         onClick={handleSaveEndpoint}
                         disabled={!endpointInput.trim()}
                       >
-                        Save
+                        {t("actions.save", { ns: "common" })}
                       </Button>
                       <Button
                         size="sm"
@@ -629,7 +649,7 @@ export function ProviderCard({
                           setIsEditingEndpoint(false);
                         }}
                       >
-                        Cancel
+                        {t("actions.cancel", { ns: "common" })}
                       </Button>
                     </div>
                   </div>
@@ -646,7 +666,7 @@ export function ProviderCard({
                     <div className="flex items-center gap-2">
                       <Check className="h-4 w-4 text-success" />
                       <span className="text-sm text-success">
-                        No API key required for local models
+                        {t("providerCard.noApiKeyRequired")}
                       </span>
                     </div>
                     {docsUrl && (
@@ -655,7 +675,7 @@ export function ProviderCard({
                         onClick={() => handleOpenExternal(docsUrl)}
                         className="inline-flex items-center gap-1 text-xs text-success hover:underline"
                       >
-                        Open website
+                        {t("providerCard.openWebsite")}
                         <ExternalLink className="h-3 w-3" />
                       </button>
                     )}
@@ -665,7 +685,7 @@ export function ProviderCard({
                 <div className="flex items-center justify-between rounded-lg border border-success/30 bg-success/10 p-3">
                   <div className="flex items-center gap-2">
                     <Check className="h-4 w-4 text-success" />
-                    <span className="text-sm text-success">API key configured</span>
+                    <span className="text-sm text-success">{t("providers.hasKey")}</span>
                   </div>
                   <Button
                     variant="ghost"
@@ -674,7 +694,7 @@ export function ProviderCard({
                     className="text-error hover:text-error"
                   >
                     <X className="mr-1 h-4 w-4" />
-                    Remove
+                    {t("providers.removeKey")}
                   </Button>
                 </div>
               ) : (
@@ -682,7 +702,7 @@ export function ProviderCard({
                   <div className="relative">
                     <Input
                       type={showKey ? "text" : "password"}
-                      placeholder="Enter your API key"
+                      placeholder={t("providers.apiKeyPlaceholder")}
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
                       error={error || undefined}
@@ -703,7 +723,7 @@ export function ProviderCard({
                         onClick={() => handleOpenExternal(docsUrl)}
                         className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
                       >
-                        Get API key
+                        {t("providerCard.getApiKey")}
                         <ExternalLink className="h-3 w-3" />
                       </button>
                     )}
@@ -716,10 +736,10 @@ export function ProviderCard({
                       {success ? (
                         <>
                           <Check className="mr-1 h-4 w-4" />
-                          Saved
+                          {t("status.success", { ns: "common" })}
                         </>
                       ) : (
-                        "Save Key"
+                        t("providers.saveKey")
                       )}
                     </Button>
                   </div>
@@ -728,7 +748,7 @@ export function ProviderCard({
 
               {!isDefault && onSetDefault && hasKey && (
                 <Button variant="secondary" size="sm" onClick={onSetDefault} className="w-full">
-                  Set as Default Provider
+                  {t("providerCard.setDefaultProvider")}
                 </Button>
               )}
             </CardContent>

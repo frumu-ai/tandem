@@ -1,128 +1,82 @@
-# Internationalization (i18n) Guide
+﻿# Internationalization (i18n) Guide
 
-Tandem uses [react-i18next](https://react.i18next.com/) for internationalization support.
+Tandem uses [react-i18next](https://react.i18next.com/) for frontend localization.
 
 ## Supported Languages
 
-- English (en) - Default
-- Simplified Chinese (zh-CN)
+- English (`en`) - default
+- Simplified Chinese (`zh-CN`)
 
-## Changing Language
+## Runtime Language Flow
 
-Users can change the language in **Settings → Language**.
+Tandem now uses **frontend + backend sync** for language preference:
 
-## For Developers
+1. Frontend i18n initializes from `src/i18n/index.ts`
+2. `bootstrapLanguagePreference()` runs before React render in `src/main.tsx`
+3. Language is resolved from:
+   - backend store (`get_language_setting`), then
+   - localStorage (`tandem.language`), then
+   - i18next detected language
+4. Resolved language is written back to both:
+   - i18next/localStorage
+   - Tauri store (`set_language_setting`)
 
-### Using Translations in Components
+This ensures language survives restarts and keeps desktop/native state aligned.
 
-```tsx
-import { useTranslation } from "react-i18next";
+## Where Language Is Changed
 
-function MyComponent() {
-  const { t } = useTranslation("common");
+Users can change language in **Settings -> Language**.
 
-  return <div>{t("welcome")}</div>;
-}
+The language selector calls `persistLanguagePreference(...)` from `src/i18n/languageSync.ts`.
+
+## Namespaces
+
+- `common`: app shell/navigation/shared actions
+- `chat`: chat UI and empty states
+- `settings`: settings screens
+- `skills`: skills and packs workflows
+- `errors`: generic error strings
+
+## Translation Files
+
+Located in:
+
+- `src/i18n/locales/en/*.json`
+- `src/i18n/locales/zh-CN/*.json`
+
+## Required Quality Check
+
+Run parity validation before committing locale changes:
+
+```bash
+pnpm i18n:parity
 ```
 
-### Available Namespaces
+This check validates:
 
-- `common` - Common UI elements (buttons, labels, etc.)
-- `chat` - Chat interface
-- `settings` - Settings page
-- `skills` - Skills and workflows
-- `errors` - Error messages
+- same locale files in `en` and `zh-CN`
+- same key paths in each file
+- no empty translation values
+- no locale shape/type mismatches
 
-### Translation Files
+CI runs this automatically in `.github/workflows/ci.yml`.
 
-Translation files are located in `src/i18n/locales/`:
+## Developer Checklist For UI PRs
 
-```
-src/i18n/locales/
-├── en/
-│   ├── common.json
-│   ├── chat.json
-│   ├── settings.json
-│   ├── skills.json
-│   └── errors.json
-└── zh-CN/
-    ├── common.json
-    ├── chat.json
-    ├── settings.json
-    ├── skills.json
-    └── errors.json
-```
+1. Avoid hardcoded user-facing strings in components.
+2. Add keys to `en` locale first.
+3. Add matching keys in `zh-CN` locale.
+4. Use `useTranslation(...)` in component code.
+5. Run `pnpm i18n:parity`.
+6. Verify language switching in-app:
+   - switch to Chinese
+   - restart app
+   - confirm language persists
 
-### Adding New Translations
+## Adding a New Language
 
-1. Add the key to the appropriate namespace file in `en/`
-2. Add the corresponding translation in `zh-CN/`
-3. Use the translation in your component with `t('key')`
-
-Example:
-
-```json
-// src/i18n/locales/en/common.json
-{
-  "myNewKey": "Hello World"
-}
-
-// src/i18n/locales/zh-CN/common.json
-{
-  "myNewKey": "你好世界"
-}
-```
-
-```tsx
-// In your component
-const { t } = useTranslation("common");
-<div>{t("myNewKey")}</div>;
-```
-
-### Adding a New Language
-
-1. Create a new directory in `src/i18n/locales/` (e.g., `fr/`)
-2. Copy all JSON files from `en/` and translate them
-3. Add the language to `src/i18n/index.ts`:
-
-```typescript
-const resources = {
-  en: {
-    /* ... */
-  },
-  "zh-CN": {
-    /* ... */
-  },
-  fr: {
-    common: frCommon,
-    chat: frChat,
-    // ...
-  },
-};
-```
-
-4. Add the language option to `src/components/settings/LanguageSettings.tsx`
-
-### Backend Storage
-
-Language preference is stored in Tauri's persistent store (`store.json`) and synced between frontend and backend using:
-
-- `get_language_setting()` - Get current language
-- `set_language_setting(language)` - Save language preference
-
-## Testing
-
-To test translations:
-
-1. Run the app: `npm run tauri dev`
-2. Go to Settings → Language
-3. Switch between English and Simplified Chinese
-4. Verify that UI elements update correctly
-
-## Best Practices
-
-- Keep translation keys descriptive and organized by feature
-- Use namespaces to group related translations
-- Avoid hardcoded strings in components
-- Test all languages before committing changes
-- Keep translation files in sync across all languages
+1. Create `src/i18n/locales/<lang>/` with all namespace files.
+2. Add resources in `src/i18n/index.ts`.
+3. Add language option in `LanguageSettings.tsx`.
+4. Extend parity tooling if needed for multi-target checks.
+5. Verify startup sync and persistence behavior.

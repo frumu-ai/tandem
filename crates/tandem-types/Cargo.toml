@@ -1,6 +1,6 @@
 [package]
 name = "tandem-types"
-version = "0.3.6"
+version = "0.3.7"
 description = "Shared Tandem data types"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"

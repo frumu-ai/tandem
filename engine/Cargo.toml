@@ -1,6 +1,6 @@
 [package]
 name = "tandem-ai"
-version = "0.3.6"
+version = "0.3.7"
 description = "Tandem engine service and CLI binary"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -33,11 +33,11 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
-tandem-types = { path = "../crates/tandem-types", version = "0.3.6" }
-tandem-wire = { path = "../crates/tandem-wire", version = "0.3.6" }
-tandem-runtime = { path = "../crates/tandem-runtime", version = "0.3.6" }
-tandem-core = { path = "../crates/tandem-core", version = "0.3.6" }
-tandem-tools = { path = "../crates/tandem-tools", version = "0.3.6" }
-tandem-providers = { path = "../crates/tandem-providers", version = "0.3.6" }
-tandem-server = { path = "../crates/tandem-server", version = "0.3.6" }
-tandem-observability = { path = "../crates/tandem-observability", version = "0.3.6" }
+tandem-types = { path = "../crates/tandem-types", version = "0.3.7" }
+tandem-wire = { path = "../crates/tandem-wire", version = "0.3.7" }
+tandem-runtime = { path = "../crates/tandem-runtime", version = "0.3.7" }
+tandem-core = { path = "../crates/tandem-core", version = "0.3.7" }
+tandem-tools = { path = "../crates/tandem-tools", version = "0.3.7" }
+tandem-providers = { path = "../crates/tandem-providers", version = "0.3.7" }
+tandem-server = { path = "../crates/tandem-server", version = "0.3.7" }
+tandem-observability = { path = "../crates/tandem-observability", version = "0.3.7" }

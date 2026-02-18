@@ -1,6 +1,6 @@
 [package]
 name = "tandem-wire"
-version = "0.3.6"
+version = "0.3.7"
 description = "Wire-format models for Tandem APIs"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -10,4 +10,4 @@ edition = "2021"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tandem-types = { path = "../tandem-types", version = "0.3.6" }
+tandem-types = { path = "../tandem-types", version = "0.3.7" }

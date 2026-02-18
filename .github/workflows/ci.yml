@@ -45,6 +45,9 @@ jobs:
       - name: Run TypeScript check
         run: pnpm exec tsc --noEmit
 
+      - name: Validate i18n parity
+        run: pnpm i18n:parity
+
       - name: Run linter
         run: pnpm lint
 

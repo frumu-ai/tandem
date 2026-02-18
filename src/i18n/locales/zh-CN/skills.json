@@ -1,27 +1,39 @@
 {
   "title": "技能",
-  "description": "管理 AI 技能和能力",
+  "description": "管理 AI 技能与能力",
   "tabs": {
     "installed": "已安装",
     "templates": "模板",
     "import": "导入"
   },
   "installed": {
-    "title": "已安装的技能",
+    "title": "已安装技能",
     "empty": "尚未安装任何技能",
     "scope": {
       "global": "全局",
       "workspace": "工作区"
-    }
+    },
+    "summaryTitle": "已安装技能",
+    "summaryCounts": "文件夹：{{projectCount}} • 全局：{{globalCount}} • 可用垃圾桶图标删除。",
+    "jump": "跳转到已安装",
+    "emptySearch": "没有匹配搜索的已安装技能。",
+    "emptyHint": "可先安装上方入门技能，或在高级区粘贴 SKILL.md。之后可用垃圾桶图标删除。",
+    "folderSkills": "文件夹技能",
+    "globalSkills": "全局技能"
   },
   "templates": {
     "title": "技能模板",
-    "description": "快速安装启动技能",
+    "description": "快速安装入门技能",
     "install": "安装",
     "installed": "已安装",
     "installing": "安装中...",
     "requires": "需要",
-    "category": "分类"
+    "category": "分类",
+    "loading": "正在加载入门技能...",
+    "empty": "未找到入门技能。",
+    "emptySearch": "没有匹配搜索的入门技能。",
+    "quickAdds": "快速添加（离线）",
+    "installFailed": "安装入门技能失败"
   },
   "import": {
     "title": "导入技能",
@@ -32,7 +44,21 @@
     "enterUrl": "输入技能 URL",
     "importing": "导入中...",
     "success": "技能导入成功",
-    "error": "导入技能失败"
+    "error": "导入技能失败",
+    "fromFileZip": "从文件/压缩包导入",
+    "previewBeforeApply": "应用前预览",
+    "pathPlaceholder": "SKILL.md 或 skills.zip 路径",
+    "namespacePlaceholder": "命名空间（可选）",
+    "previewButton": "预览导入",
+    "applyButton": "应用导入",
+    "conflicts": {
+      "skip": "跳过冲突",
+      "overwrite": "覆盖冲突",
+      "rename": "重命名冲突"
+    },
+    "ok": "成功",
+    "err": "错误",
+    "selectFileDialogTitle": "选择 SKILL.md 或 zip"
   },
   "actions": {
     "install": "安装",
@@ -43,7 +69,7 @@
     "duplicate": "复制"
   },
   "conflicts": {
-    "title": "冲突解决",
+    "title": "冲突处理",
     "description": "已存在同名技能",
     "skip": "跳过",
     "overwrite": "覆盖",
@@ -58,5 +84,43 @@
     "tags": "标签",
     "license": "许可证",
     "compatibility": "兼容性"
+  },
+  "location": {
+    "saveTo": "保存到：",
+    "activeFolder": "当前文件夹",
+    "folderNotSelected": "文件夹（未选择）",
+    "globalPathLabel": "全局（~/.config/opencode/skills/）"
+  },
+  "runtime": {
+    "title": "运行环境提示",
+    "setupPython": "设置 Python（venv）",
+    "requires": "可能需要：",
+    "body": "某些技能和工作包会要求 Tandem 运行本地工具（Python、Node、bash 等）。Tandem 不内置这些运行时。安装技能本身不会执行任何内容；仅当技能指示代理执行命令时才需要相应运行时。"
+  },
+  "search": {
+    "placeholder": "搜索技能（youtube、写作、数据...）"
+  },
+  "advanced": {
+    "title": "高级：粘贴 SKILL.md",
+    "show": "显示",
+    "hide": "隐藏",
+    "placeholder": "在此粘贴 SKILL.md 内容...",
+    "createBlank": "创建空白",
+    "saving": "保存中..."
+  },
+  "errors": {
+    "pasteSkillContent": "请粘贴 SKILL.md 内容",
+    "chooseImportFirst": "请先选择 SKILL.md 或 zip 文件。",
+    "previewImportFailed": "预览导入失败",
+    "importPackFailed": "导入技能包失败"
+  },
+  "help": {
+    "autoUse": "Tandem 会在相关场景下自动使用已安装技能，无需手动选择。",
+    "marketingTitle": "营销建议（优先使用规范版本）",
+    "marketingPreferred": "优先使用：product-marketing-context、content-strategy、seo-audit、social-content、copywriting、copy-editing、email-sequence、competitor-alternatives、launch-strategy。",
+    "marketingLegacy": "旧版营销模板仍可作为兜底，但不应作为默认路线。",
+    "findSkillsToCopy": "可复制技能来源：",
+    "skillhubBlurb": "7000+ 社区技能",
+    "githubBlurb": "搜索 \"SKILL.md\""
   }
 }

@@ -60,5 +60,112 @@
     "completed": "Completed",
     "failed": "Failed",
     "pending": "Pending"
+  },
+  "connection": {
+    "connectingTitle": "Connecting to Tandem Engine",
+    "chatSessionsRunning": "Chat sessions currently running",
+    "chatShort": "chat",
+    "orchestrationsRunning": "Orchestration runs currently executing in the background",
+    "orchShort": "orch",
+    "pendingChanges": "{{count}} change pending",
+    "pendingChanges_plural": "{{count}} changes pending",
+    "connected": "Connected",
+    "connecting": "Connecting...",
+    "disconnected": "Disconnected",
+    "streamHealth": "stream {{health}}",
+    "connectAi": "Connect AI"
+  },
+  "planMode": {
+    "active": "Plan Mode Active",
+    "hidePlans": "Hide Plans",
+    "showPlans": "Show Plans"
+  },
+  "errors": {
+    "openPythonSetup": "Open Python setup"
+  },
+  "history": {
+    "loading": "Loading chat history...",
+    "jumpLatest": "Jump to latest"
+  },
+  "setup": {
+    "required": "Setup Required",
+    "configureProvider": "Configure an AI provider (OpenAI, Anthropic, etc.) to start chatting.",
+    "openSettings": "Open Settings",
+    "noModelConfigured": "No Model Configured",
+    "configureSettings": "Configure Settings"
+  },
+  "queue": {
+    "title": "Queued messages ({{count}})"
+  },
+  "empty": {
+    "title": "What can I help you with?",
+    "subtitle": "I can read and write files, search your codebase, run commands, and help you accomplish tasks in your folder."
+  },
+  "suggestions": {
+    "installStarterPacks": {
+      "title": "Install starter packs",
+      "description": "Browse skill templates and starter packs to install"
+    },
+    "setupMcp": {
+      "title": "Set up MCP",
+      "description": "Add tool servers and test connectivity"
+    },
+    "createCustomModes": {
+      "title": "Create custom modes",
+      "description": "Define advanced mode profiles and restrictions"
+    },
+    "summarizeProject": {
+      "title": "Summarize this project",
+      "description": "Give me an overview of what this project does",
+      "prompt": "Give me a comprehensive overview of this project. What does it do, what are the main components, and how is it organized?"
+    },
+    "findAndExplain": {
+      "title": "Find and explain",
+      "description": "Help me understand a specific file or folder",
+      "prompt": "List the files in this project and help me understand what each one does."
+    },
+    "analyzeDocument": {
+      "title": "Analyze a document",
+      "description": "Read and summarize any text file",
+      "prompt": "Find any text documents, markdown files, or READMEs in this project and summarize their contents."
+    },
+    "suggestImprovements": {
+      "title": "Suggest improvements",
+      "description": "What could be better in this project?",
+      "prompt": "Analyze this project and suggest improvements. What could be done better?"
+    },
+    "findIssues": {
+      "title": "Find issues",
+      "description": "Look for potential bugs or problems",
+      "prompt": "Search this codebase for potential bugs, issues, or areas that might cause problems."
+    },
+    "createDocumentation": {
+      "title": "Create documentation",
+      "description": "Generate a README or docs",
+      "prompt": "Create comprehensive documentation for this project, including a README with setup instructions."
+    }
+  },
+  "startup": {
+    "label": {
+      "migration": "Scanning legacy data",
+      "storageInit": "Loading sessions and storage",
+      "configInit": "Loading provider config",
+      "registryInit": "Initializing registries",
+      "engineLoopInit": "Starting runtime loop",
+      "ready": "Ready",
+      "failed": "Startup failed",
+      "default": "Starting sidecar"
+    },
+    "detail": {
+      "migration": "Checking legacy data and migration markers.",
+      "storageInit": "Loading session history and workspace metadata.",
+      "configInit": "Loading providers, models, and runtime config.",
+      "registryInit": "Preparing tools, plugins, and registries.",
+      "engineLoopInit": "Starting message processing and event pipeline.",
+      "ready": "Engine startup complete.",
+      "failed": "Startup failed. Open logs for details.",
+      "default": "Preparing engine startup components."
+    },
+    "estimatedPercent": "{{percent}}% estimated"
   }
 }

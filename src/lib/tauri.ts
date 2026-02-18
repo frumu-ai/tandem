@@ -684,6 +684,14 @@ export async function setUserTheme(themeId: string): Promise<void> {
   return invoke("set_user_theme", { themeId });
 }
 
+export async function getLanguageSetting(): Promise<string> {
+  return invoke("get_language_setting");
+}
+
+export async function setLanguageSetting(language: string): Promise<void> {
+  return invoke("set_language_setting", { language });
+}
+
 export type CustomBackgroundFit = "cover" | "contain" | "tile";
 
 export interface CustomBackgroundSettings {

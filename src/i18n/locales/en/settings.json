@@ -37,7 +37,22 @@
     "activeProject": "Active Project",
     "switchProject": "Switch Project",
     "removeProject": "Remove Project",
-    "removeConfirm": "Are you sure you want to remove this project?"
+    "removeConfirm": "Are you sure you want to remove this project?",
+    "folderTitle": "Folders",
+    "folderDescription": "Add and manage folders. Each folder is an independent space.",
+    "collapseFolders": "Collapse folders",
+    "expandFolders": "Expand folders",
+    "folderCount": "{{count}} folder",
+    "folderCount_plural": "{{count}} folders",
+    "activeFolder": "Active",
+    "none": "None",
+    "noFolders": "No folders added yet",
+    "addFolderHint": "Add a folder to get started",
+    "active": "Active",
+    "setActive": "Set Active",
+    "confirm": "Confirm",
+    "addFolder": "Add Folder",
+    "securityNote": "Tandem can only access files within selected folders. Sensitive files (.env, .ssh, etc.) are always blocked."
   },
   "memory": {
     "title": "Memory Settings",
@@ -55,17 +70,6 @@
     "chunksStored": "{{count}} chunk stored",
     "chunksStored_plural": "{{count}} chunks stored"
   },
-  "theme": {
-    "title": "Theme Settings",
-    "description": "Customize the app appearance",
-    "selectTheme": "Select Theme",
-    "light": "Light",
-    "dark": "Dark",
-    "auto": "Auto",
-    "customBackground": "Custom Background",
-    "uploadBackground": "Upload Background",
-    "removeBackground": "Remove Background"
-  },
   "language": {
     "title": "Language Settings",
     "description": "Choose your preferred language",
@@ -82,5 +86,227 @@
     "clearCache": "Clear Cache",
     "resetSettings": "Reset Settings",
     "resetConfirm": "Are you sure you want to reset all settings?"
+  },
+  "token": {
+    "title": "Engine API Token",
+    "description": "Hidden by default. Reveal and copy when you need to call engine HTTP endpoints.",
+    "hide": "Hide",
+    "reveal": "Reveal",
+    "copied": "Copied",
+    "copy": "Copy",
+    "path": "Path",
+    "storage": "Storage"
+  },
+  "updates": {
+    "title": "Updates",
+    "description": "Keep Tandem up to date.",
+    "checking": "Checking...",
+    "downloading": "Downloading...",
+    "installing": "Installing...",
+    "downloadAndInstall": "Download & Install",
+    "checkForUpdates": "Check for Updates",
+    "updateAvailable": "Update available: v{{version}}",
+    "upToDate": "You're on the latest version.",
+    "installedRelaunching": "Update installed. Relaunching...",
+    "failed": "Update failed.",
+    "checkingForUpdates": "Checking for updates...",
+    "installingUpdate": "Installing update...",
+    "downloadingUpdate": "Downloading update..."
+  },
+  "migration": {
+    "title": "Data Migration",
+    "description": "Import legacy OpenCode and older Tandem data into canonical Tandem storage.",
+    "dryRun": "Dry Run",
+    "runAgain": "Run Migration Again",
+    "canonicalRoot": "Canonical root",
+    "unknown": "Unknown",
+    "lastReason": "Last reason",
+    "na": "n/a",
+    "lastRun": "Last run",
+    "never": "never",
+    "sourcesDetected": "Sources detected",
+    "status": "Status",
+    "repairedSessions": "Repaired sessions: {{count}}",
+    "recoveredMessages": "recovered messages: {{count}}",
+    "copied": "Copied",
+    "skipped": "skipped",
+    "errors": "errors",
+    "report": "Report"
+  },
+  "appearance": {
+    "title": "Appearance",
+    "description": "Choose a theme. Changes apply instantly and are saved on this device.",
+    "backgroundImageTitle": "Background image (optional)",
+    "backgroundImageDescription": "Overlay a personal image on top of your theme background.",
+    "imagesFilter": "Images",
+    "preview": "Preview",
+    "previewAlt": "Custom background preview",
+    "noImageSelected": "No image selected",
+    "opacity": "Opacity",
+    "errors": {
+      "loadSettings": "Failed to load custom background settings.",
+      "setBackground": "Failed to set background image.",
+      "clearBackground": "Failed to clear background image."
+    }
+  },
+  "providersPanel": {
+    "description": "Configure your AI providers. OpenRouter is recommended for access to multiple models.",
+    "customProviderTitle": "Custom Provider",
+    "customProviderDescription": "Configure your own LLM provider with a custom endpoint",
+    "endpointUrl": "Endpoint URL",
+    "modelPlaceholder": "model-name",
+    "apiKeyOptional": "API Key (optional)",
+    "saveCustomProvider": "Save Custom Provider"
+  },
+  "providersCatalog": {
+    "opencode_zen": {
+      "description": "Access to free and premium models - includes free options"
+    },
+    "openrouter": {
+      "description": "Access 100+ models with one API key"
+    },
+    "anthropic": {
+      "description": "Direct access to Anthropic models"
+    },
+    "openai": {
+      "description": "GPT-4 and other OpenAI models"
+    },
+    "ollama": {
+      "description": "Run models locally - no API key needed"
+    },
+    "poe": {
+      "description": "Access models via Poe's API"
+    }
+  },
+  "providerCard": {
+    "default": "Default",
+    "keySaved": "Key saved",
+    "suggestions": "Suggestions",
+    "browseAllModels": "Browse all models",
+    "currentModel": "Current",
+    "baseUrl": "Base URL",
+    "resetEndpoint": "Reset to default endpoint",
+    "noApiKeyRequired": "No API key required for local models",
+    "openWebsite": "Open website",
+    "getApiKey": "Get API key",
+    "setDefaultProvider": "Set as Default Provider",
+    "placeholders": {
+      "modelOpenRouter": "e.g., openai/gpt-4o",
+      "modelGeneric": "e.g., llama3.2",
+      "endpoint": "https://api.example.com/v1"
+    },
+    "ollama": {
+      "status": "Ollama Status",
+      "currentlyRunning": "Currently Running:",
+      "noModelsInMemory": "No models currently in memory",
+      "installedModels": "Installed Models:",
+      "loadAndSelect": "Load into memory and select"
+    },
+    "errors": {
+      "apiKeyRequired": "API key is required",
+      "saveApiKey": "Failed to save API key",
+      "deleteApiKey": "Failed to delete API key",
+      "stopModel": "Failed to stop model: {{error}}",
+      "runModel": "Failed to run model: {{error}}"
+    }
+  },
+  "security": {
+    "title": "Your keys are secure",
+    "encrypted": "• API keys are encrypted with AES-256-GCM",
+    "localOnly": "• Keys never leave your device",
+    "noTelemetry": "• No telemetry or data collection",
+    "allowlisted": "• All network traffic is allowlisted"
+  },
+  "memoryStats": {
+    "title": "Vector Database Stats",
+    "scopeAll": "Scope: All projects (this device)",
+    "scopeProject": "Scope: Active project{{name}}",
+    "indexFiles": "Index Files",
+    "indexing": "Indexing...",
+    "allProjects": "All Projects",
+    "activeProject": "Active Project",
+    "autoIndex": "Auto-index on project load",
+    "embeddings": "Embeddings",
+    "activeFolder": "Active folder",
+    "indexingWorkspace": "Indexing workspace...",
+    "indexed": "Indexed",
+    "skipped": "Skipped",
+    "errorsLabel": "Errors",
+    "chunks": "Chunks",
+    "noWorkspace": "No workspace selected.",
+    "totalChunks": "Total Chunks",
+    "totalSize": "Total Size",
+    "dbFileSize": "DB File Size",
+    "breakdown": "Breakdown",
+    "session": "Session",
+    "project": "Project",
+    "global": "Global",
+    "projectChunks": "Project Chunks",
+    "projectSize": "Project Size",
+    "indexedFiles": "Indexed Files",
+    "fileIndex": "File Index",
+    "size": "Size",
+    "lastIndexed": "Last Indexed",
+    "never": "Never",
+    "clearFileIndex": "Clear File Index",
+    "confirmClearFileIndex": "Clear this project's file index? This removes only file-derived vectors and can free up space.",
+    "confirmVacuum": "Vacuum database after clearing? This can take longer but reclaims disk space.",
+    "errors": {
+      "load": "Failed to load memory statistics",
+      "noActiveProject": "No active project selected",
+      "indexWorkspace": "Failed to index workspace",
+      "saveSettings": "Failed to save memory settings",
+      "clearFileIndex": "Failed to clear file index"
+    }
+  },
+  "theme": {
+    "title": "Theme Settings",
+    "description": "Customize the app appearance",
+    "selectTheme": "Select Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "auto": "Auto",
+    "customBackground": "Custom Background",
+    "uploadBackground": "Upload Background",
+    "removeBackground": "Remove Background",
+    "active": "Active",
+    "catalog": {
+      "charcoal_fire": {
+        "name": "Charcoal & Fire",
+        "description": "Deep charcoal surfaces with solar-yellow power accents and crimson security cues."
+      },
+      "electric_blue": {
+        "name": "Electric Blue",
+        "description": "The original Tandem look: electric-blue primary with purple secondary."
+      },
+      "emerald_night": {
+        "name": "Emerald Night",
+        "description": "Dark glass with emerald primary and cyan secondary highlights."
+      },
+      "hello_bunny": {
+        "name": "Hello Bunny",
+        "description": "Soft pink glass with berry accents and a cozy, playful vibe."
+      },
+      "porcelain": {
+        "name": "Porcelain",
+        "description": "Plain, bright whites with soft pastel accents (easy on the eyes)."
+      },
+      "neon_riot": {
+        "name": "Neon Riot",
+        "description": "Crazy cyber-neon: electric cyan + hot magenta on deep space black."
+      },
+      "cosmic_glass": {
+        "name": "Cosmic Glass",
+        "description": "Funky deep-space glow with transparent nebula glass panels."
+      },
+      "pink_pony": {
+        "name": "Pink Pony",
+        "description": "Super girly Barbie-core glow with candy pinks and dreamy pastels."
+      },
+      "zen_dusk": {
+        "name": "Zen Dusk",
+        "description": "Low-contrast calm dark mode with muted sage and soft ink tones."
+      }
+    }
   }
 }

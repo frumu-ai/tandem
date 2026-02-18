@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - No unreleased changes.
 
+## [0.3.7] - 2026-02-18
+
+### Changed
+
+- **Complete Simplified Chinese overwrite**: Replaced and normalized Simplified Chinese copy across major app surfaces, including startup messaging, settings, About page, theme picker, provider cards, packs metadata, and skills guidance.
+- **Localization completeness pass**: Converted remaining hardcoded English strings in key screens to i18n keys and filled missing `zh-CN` locale coverage.
+- **Language UX polish**: Improved live language switching consistency and ensured parity-safe locale catalogs for `en`/`zh-CN`.
+
 ## [0.3.6] - 2026-02-18
 
 ### Fixed
@@ -807,7 +815,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/frumu-ai/tandem/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/frumu-ai/tandem/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/frumu-ai/tandem/compare/v0.3.2...v0.3.5
 [0.3.2]: https://github.com/frumu-ai/tandem/compare/v0.3.1...v0.3.2

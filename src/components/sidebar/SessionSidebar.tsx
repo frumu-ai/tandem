@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useTranslation } from "react-i18next";
 import {
   ChevronLeft,
   ChevronDown,
@@ -127,6 +128,7 @@ export function SessionSidebar({
   onManageProjects,
   projectSwitcherLoading = false,
 }: SessionSidebarProps) {
+  const { t } = useTranslation(["common", "chat"]);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [sessionToDelete, setSessionToDelete] = useState<DisplayItem | null>(null);
   const runningChatIdsSet = useMemo(() => new Set(activeChatSessionIds), [activeChatSessionIds]);
@@ -268,7 +270,7 @@ export function SessionSidebar({
     if (diffDays === 0) {
       return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     } else if (diffDays === 1) {
-      return "Yesterday";
+      return t("time.yesterday", { ns: "common" });
     } else if (diffDays < 7) {
       return date.toLocaleDateString([], { weekday: "short" });
     } else {
@@ -315,7 +317,7 @@ export function SessionSidebar({
       return activeProject.name;
     }
 
-    return "Unknown Folder";
+    return t("navigation.unknownFolder", { ns: "common" });
   };
 
   const getProjectPath = (projectId: string) => {
@@ -372,12 +374,14 @@ export function SessionSidebar({
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <div className="flex items-center gap-2">
               <FolderOpen className="h-4 w-4 text-primary" />
-              <span className="text-sm font-medium">Sessions</span>
+              <span className="text-sm font-medium">
+                {t("navigation.sessions", { ns: "common" })}
+              </span>
             </div>
             <button
               onClick={onToggle}
               className="rounded p-1 transition-colors hover:bg-surface-elevated"
-              title="Hide sidebar"
+              title={t("navigation.hideSidebar", { ns: "common" })}
             >
               <ChevronLeft className="h-4 w-4 text-text-muted" />
             </button>
@@ -404,7 +408,7 @@ export function SessionSidebar({
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-primary to-secondary px-4 py-2 text-white transition-all hover:shadow-lg hover:shadow-black/30"
             >
               <Plus className="h-4 w-4" />
-              <span className="text-sm font-medium">New Chat</span>
+              <span className="text-sm font-medium">{t("header.newChat", { ns: "chat" })}</span>
             </button>
 
             {onOpenPacks && (
@@ -413,7 +417,9 @@ export function SessionSidebar({
                 className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-surface-elevated px-4 py-2 text-text transition-all hover:bg-surface"
               >
                 <Sparkles className="h-4 w-4 text-accent" />
-                <span className="text-sm font-medium">Starter Packs</span>
+                <span className="text-sm font-medium">
+                  {t("navigation.starterPacks", { ns: "common" })}
+                </span>
               </button>
             )}
           </div>
@@ -427,8 +433,10 @@ export function SessionSidebar({
             ) : Object.keys(itemsByProject).length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 text-text-muted">
                 <MessageSquare className="mb-2 h-8 w-8 opacity-50" />
-                <p className="text-sm">No history</p>
-                <p className="mt-1 text-xs text-text-subtle">Start a new chat to begin</p>
+                <p className="text-sm">{t("history.emptyTitle", { ns: "common" })}</p>
+                <p className="mt-1 text-xs text-text-subtle">
+                  {t("history.emptyDescription", { ns: "common" })}
+                </p>
               </div>
             ) : (
               <div className="py-2">
@@ -515,7 +523,9 @@ export function SessionSidebar({
                                   )}
                                 >
                                   {item.title ||
-                                    (item.type === "chat" ? "New Chat" : "Untitled Run")}
+                                    (item.type === "chat"
+                                      ? t("header.newChat", { ns: "chat" })
+                                      : t("run.untitled", { ns: "common" }))}
                                 </p>
                                 <div className="mt-0.5 flex items-center gap-2">
                                   {item.status ? (
@@ -542,7 +552,7 @@ export function SessionSidebar({
                                     <>
                                       <Loader2 className="h-3 w-3 animate-spin text-amber-400" />
                                       <span className="text-[10px] uppercase font-medium text-amber-400">
-                                        running
+                                        {t("status.running", { ns: "common" })}
                                       </span>
                                     </>
                                   ) : (
@@ -558,8 +568,10 @@ export function SessionSidebar({
                                     <>
                                       <FileText className="h-3 w-3 text-text-subtle" />
                                       <span className="text-xs text-text-subtle">
-                                        {item.summary.files} file
-                                        {item.summary.files !== 1 ? "s" : ""}
+                                        {t("history.fileCount", {
+                                          ns: "common",
+                                          count: item.summary.files,
+                                        })}
                                       </span>
                                     </>
                                   )}
@@ -572,7 +584,11 @@ export function SessionSidebar({
                                   "rounded p-1 text-text-muted opacity-0 transition-colors hover:bg-surface hover:text-error group-hover:opacity-100",
                                   item.type === "orchestrator" && !onDeleteRun ? "hidden" : ""
                                 )}
-                                title={item.type === "chat" ? "Delete chat" : "Delete run"}
+                                title={
+                                  item.type === "chat"
+                                    ? t("actions.deleteChat", { ns: "common" })
+                                    : t("actions.deleteRun", { ns: "common" })
+                                }
                               >
                                 <Trash2 className="h-3 w-3" />
                               </button>
@@ -592,10 +608,21 @@ export function SessionSidebar({
       {/* Delete Confirmation Dialog */}
       <ConfirmDialog
         isOpen={sessionToDelete !== null}
-        title={sessionToDelete?.type === "orchestrator" ? "Delete Run" : "Delete Chat"}
-        message={`Are you sure you want to delete "${sessionToDelete?.title || (sessionToDelete?.type === "orchestrator" ? "this run" : "this chat")}"? This action cannot be undone.`}
-        confirmText="Delete"
-        cancelText="Cancel"
+        title={
+          sessionToDelete?.type === "orchestrator"
+            ? t("actions.deleteRun", { ns: "common" })
+            : t("actions.deleteChat", { ns: "common" })
+        }
+        message={t("actions.deleteConfirm", {
+          ns: "common",
+          item:
+            sessionToDelete?.title ||
+            (sessionToDelete?.type === "orchestrator"
+              ? t("run.thisRun", { ns: "common" })
+              : t("chat.thisChat", { ns: "common" })),
+        })}
+        confirmText={t("actions.delete", { ns: "common" })}
+        cancelText={t("actions.cancel", { ns: "common" })}
         variant="danger"
         onConfirm={confirmDelete}
         onCancel={cancelDelete}

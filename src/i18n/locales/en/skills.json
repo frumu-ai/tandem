@@ -12,7 +12,14 @@
     "scope": {
       "global": "Global",
       "workspace": "Workspace"
-    }
+    },
+    "summaryTitle": "Installed skills",
+    "summaryCounts": "Folder: {{projectCount}} • Global: {{globalCount}} • Delete with the trash icon.",
+    "jump": "Jump to installed",
+    "emptySearch": "No installed skills match your search.",
+    "emptyHint": "Install a starter skill above, or paste a SKILL.md in Advanced. You can remove skills later with the trash icon.",
+    "folderSkills": "Folder Skills",
+    "globalSkills": "Global Skills"
   },
   "templates": {
     "title": "Skill Templates",
@@ -21,7 +28,12 @@
     "installed": "Installed",
     "installing": "Installing...",
     "requires": "Requires",
-    "category": "Category"
+    "category": "Category",
+    "loading": "Loading starter skills...",
+    "empty": "No starter skills found.",
+    "emptySearch": "No starter skills match your search.",
+    "quickAdds": "Quick adds (offline)",
+    "installFailed": "Failed to install starter skill"
   },
   "import": {
     "title": "Import Skill",
@@ -32,7 +44,21 @@
     "enterUrl": "Enter skill URL",
     "importing": "Importing...",
     "success": "Skill imported successfully",
-    "error": "Failed to import skill"
+    "error": "Failed to import skill",
+    "fromFileZip": "Import from file/zip",
+    "previewBeforeApply": "Preview before apply",
+    "pathPlaceholder": "Path to SKILL.md or skills.zip",
+    "namespacePlaceholder": "Namespace (optional)",
+    "previewButton": "Preview import",
+    "applyButton": "Apply import",
+    "conflicts": {
+      "skip": "Skip conflicts",
+      "overwrite": "Overwrite conflicts",
+      "rename": "Rename conflicts"
+    },
+    "ok": "OK",
+    "err": "ERR",
+    "selectFileDialogTitle": "Select SKILL.md or zip"
   },
   "actions": {
     "install": "Install",
@@ -58,5 +84,43 @@
     "tags": "Tags",
     "license": "License",
     "compatibility": "Compatibility"
+  },
+  "location": {
+    "saveTo": "Save to:",
+    "activeFolder": "Active Folder",
+    "folderNotSelected": "Folder (no folder selected)",
+    "globalPathLabel": "Global (~/.config/opencode/skills/)"
+  },
+  "runtime": {
+    "title": "Runtime note",
+    "setupPython": "Set up Python (venv)",
+    "requires": "May require:",
+    "body": "Some skills and packs may ask Tandem to run local tools (Python, Node, bash, etc.). Tandem does not bundle these runtimes. Installing a skill does not run anything by itself; a runtime is only needed if a skill instructs the agent to execute commands."
+  },
+  "search": {
+    "placeholder": "Search skills (youtube, writing, data...)"
+  },
+  "advanced": {
+    "title": "Advanced: paste SKILL.md",
+    "show": "Show",
+    "hide": "Hide",
+    "placeholder": "Paste SKILL.md content here...",
+    "createBlank": "Create Blank",
+    "saving": "Saving..."
+  },
+  "errors": {
+    "pasteSkillContent": "Please paste SKILL.md content",
+    "chooseImportFirst": "Choose a SKILL.md or zip file first.",
+    "previewImportFailed": "Failed to preview import",
+    "importPackFailed": "Failed to import skill pack"
+  },
+  "help": {
+    "autoUse": "Tandem automatically uses installed skills when relevant - no selection needed.",
+    "marketingTitle": "Marketing recommendation (canonical first)",
+    "marketingPreferred": "Prefer: product-marketing-context, content-strategy, seo-audit, social-content, copywriting, copy-editing, email-sequence, competitor-alternatives, launch-strategy.",
+    "marketingLegacy": "Legacy marketing templates remain available as fallback, but should not be your default route.",
+    "findSkillsToCopy": "Find skills to copy:",
+    "skillhubBlurb": "7,000+ community skills",
+    "githubBlurb": "Search \"SKILL.md\""
   }
 }

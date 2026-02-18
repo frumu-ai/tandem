@@ -17,10 +17,10 @@
   "modes": {
     "chat": "聊天",
     "plan": "计划",
-    "ask": "询问",
+    "ask": "提问",
     "debug": "调试",
     "ralph": "Ralph 循环",
-    "orchestrator": "编排模式"
+    "orchestrator": "编排器"
   },
   "messages": {
     "thinking": "思考中...",
@@ -42,7 +42,7 @@
     "new": "新建会话",
     "rename": "重命名",
     "delete": "删除会话",
-    "deleteConfirm": "确定要删除此会话吗？",
+    "deleteConfirm": "确定要删除该会话吗？",
     "export": "导出",
     "import": "导入"
   },
@@ -50,7 +50,8 @@
     "title": "记忆",
     "used": "已使用",
     "notUsed": "未使用",
-    "chunks": "{{count}} 个片段",
+    "chunks": "{{count}} 个分片",
+    "chunks_plural": "{{count}} 个分片",
     "retrieving": "检索中..."
   },
   "tools": {
@@ -59,5 +60,112 @@
     "completed": "已完成",
     "failed": "失败",
     "pending": "待处理"
+  },
+  "connection": {
+    "connectingTitle": "正在连接 Tandem 引擎",
+    "chatSessionsRunning": "当前正在运行的聊天会话",
+    "chatShort": "聊天",
+    "orchestrationsRunning": "后台正在执行的编排任务",
+    "orchShort": "编排",
+    "pendingChanges": "{{count}} 项变更待处理",
+    "pendingChanges_plural": "{{count}} 项变更待处理",
+    "connected": "已连接",
+    "connecting": "连接中...",
+    "disconnected": "已断开",
+    "streamHealth": "流状态 {{health}}",
+    "connectAi": "连接 AI"
+  },
+  "planMode": {
+    "active": "计划模式已启用",
+    "hidePlans": "隐藏计划",
+    "showPlans": "显示计划"
+  },
+  "errors": {
+    "openPythonSetup": "打开 Python 设置"
+  },
+  "history": {
+    "loading": "正在加载聊天历史...",
+    "jumpLatest": "跳转到最新"
+  },
+  "setup": {
+    "required": "需要设置",
+    "configureProvider": "请先配置 AI 提供商（OpenAI、Anthropic 等）后再开始聊天。",
+    "openSettings": "打开设置",
+    "noModelConfigured": "未配置模型",
+    "configureSettings": "配置设置"
+  },
+  "queue": {
+    "title": "排队消息（{{count}}）"
+  },
+  "empty": {
+    "title": "我可以帮你做什么？",
+    "subtitle": "我可以读写文件、搜索代码库、运行命令，并帮助你完成文件夹中的任务。"
+  },
+  "suggestions": {
+    "installStarterPacks": {
+      "title": "安装入门工作包",
+      "description": "浏览技能模板和入门工作包并安装"
+    },
+    "setupMcp": {
+      "title": "设置 MCP",
+      "description": "添加工具服务器并测试连接"
+    },
+    "createCustomModes": {
+      "title": "创建自定义模式",
+      "description": "定义高级模式配置和限制"
+    },
+    "summarizeProject": {
+      "title": "总结这个项目",
+      "description": "给我一个这个项目的整体概览",
+      "prompt": "请全面介绍这个项目：它做什么、主要组件有哪些、整体结构如何组织？"
+    },
+    "findAndExplain": {
+      "title": "查找并解释",
+      "description": "帮助我理解某个文件或文件夹",
+      "prompt": "请列出这个项目中的文件，并解释每个文件的作用。"
+    },
+    "analyzeDocument": {
+      "title": "分析文档",
+      "description": "读取并总结任意文本文件",
+      "prompt": "请在项目中查找文本文档、Markdown 文件或 README，并总结其内容。"
+    },
+    "suggestImprovements": {
+      "title": "建议改进",
+      "description": "这个项目还有哪些可优化的地方？",
+      "prompt": "请分析这个项目并给出改进建议。哪些地方可以做得更好？"
+    },
+    "findIssues": {
+      "title": "查找问题",
+      "description": "寻找潜在 bug 或风险点",
+      "prompt": "请在这个代码库中查找潜在 bug、问题点或可能引发风险的区域。"
+    },
+    "createDocumentation": {
+      "title": "生成文档",
+      "description": "生成 README 或文档",
+      "prompt": "请为这个项目创建完整文档，包括带有安装说明的 README。"
+    }
+  },
+  "startup": {
+    "label": {
+      "migration": "扫描历史数据",
+      "storageInit": "加载会话和存储",
+      "configInit": "加载提供商配置",
+      "registryInit": "初始化注册表",
+      "engineLoopInit": "启动运行循环",
+      "ready": "就绪",
+      "failed": "启动失败",
+      "default": "正在启动 sidecar"
+    },
+    "detail": {
+      "migration": "正在检查历史数据和迁移标记。",
+      "storageInit": "正在加载会话历史与工作区元数据。",
+      "configInit": "正在加载提供商、模型和运行配置。",
+      "registryInit": "正在准备工具、插件和注册表。",
+      "engineLoopInit": "正在启动消息处理与事件流水线。",
+      "ready": "引擎启动完成。",
+      "failed": "启动失败。请打开日志查看详情。",
+      "default": "正在准备引擎启动组件。"
+    },
+    "estimatedPercent": "预计 {{percent}}%"
   }
 }

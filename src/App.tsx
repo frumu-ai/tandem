@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useTranslation } from "react-i18next";
 import { Settings } from "@/components/settings";
 import { About } from "@/components/about";
 import { Chat } from "@/components/chat";
@@ -108,6 +109,7 @@ declare global {
 }
 
 function App() {
+  const { t } = useTranslation(["common", "chat", "settings"]);
   const { state, loading, refresh: refreshAppState } = useAppState();
   const { cycleTheme } = useTheme();
   const { startIndex } = useMemoryIndexing();
@@ -1377,7 +1379,11 @@ function App() {
               <button
                 onClick={() => setSidebarOpen(!sidebarOpen)}
                 className="flex h-10 w-10 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
-                title={sidebarOpen ? "Hide history" : "Show history"}
+                title={
+                  sidebarOpen
+                    ? t("history.hide", { ns: "common" })
+                    : t("history.show", { ns: "common" })
+                }
               >
                 {sidebarOpen ? (
                   <PanelLeftClose className="h-5 w-5" />
@@ -1393,7 +1399,7 @@ function App() {
                     ? "bg-primary/20 text-primary"
                     : "text-text-muted hover:bg-surface-elevated hover:text-text"
                 }`}
-                title="Chat"
+                title={t("navigation.chat", { ns: "common" })}
               >
                 <MessageSquare className="h-5 w-5" />
               </button>
@@ -1404,7 +1410,7 @@ function App() {
                     ? "bg-primary/20 text-primary"
                     : "text-text-muted hover:bg-surface-elevated hover:text-text"
                 }`}
-                title="Starter Packs"
+                title={t("navigation.starterPacks", { ns: "common" })}
               >
                 <Sparkles className="h-5 w-5" />
               </button>
@@ -1415,7 +1421,7 @@ function App() {
                     ? "bg-primary/20 text-primary"
                     : "text-text-muted hover:bg-surface-elevated hover:text-text"
                 }`}
-                title="Extensions"
+                title={t("extensions.title", { ns: "common" })}
               >
                 <Blocks className="h-5 w-5" />
               </button>
@@ -1426,7 +1432,7 @@ function App() {
                     ? "bg-primary/20 text-primary"
                     : "text-text-muted hover:bg-surface-elevated hover:text-text"
                 }`}
-                title="Settings"
+                title={t("title", { ns: "settings" })}
               >
                 <SettingsIcon className="h-5 w-5" />
               </button>
@@ -1435,7 +1441,7 @@ function App() {
               <button
                 onClick={() => cycleTheme()}
                 className="flex h-10 w-10 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
-                title="Switch theme"
+                title={t("theme.switch", { ns: "common" })}
               >
                 <Palette className="h-5 w-5" />
               </button>
@@ -1446,7 +1452,7 @@ function App() {
                     ? "bg-primary/20 text-primary"
                     : "text-text-muted hover:bg-surface-elevated hover:text-text"
                 }`}
-                title="About"
+                title={t("navigation.about", { ns: "common" })}
               >
                 <Info className="h-5 w-5" />
               </button>
@@ -1460,7 +1466,7 @@ function App() {
                       ? "bg-primary/20 text-primary"
                       : "text-text-muted hover:bg-surface-elevated hover:text-text"
                   }`}
-                  title="Tasks"
+                  title={t("navigation.tasks", { ns: "common" })}
                 >
                   <ListTodo className="h-5 w-5" />
                   {todosData.todos.length > 0 && (
@@ -1471,7 +1477,7 @@ function App() {
             </nav>
 
             {/* Security indicator */}
-            <div className="mt-auto" title="Zero-trust security enabled">
+            <div className="mt-auto" title={t("security.zeroTrustEnabled", { ns: "common" })}>
               <Shield className="h-4 w-4 text-success" />
             </div>
           </motion.aside>
@@ -1498,7 +1504,7 @@ function App() {
                 )}
               >
                 <MessageSquare className="h-4 w-4" />
-                Sessions
+                {t("navigation.sessions", { ns: "common" })}
               </button>
               <button
                 onClick={() => setSidebarTab("files")}
@@ -1510,7 +1516,7 @@ function App() {
                 )}
               >
                 <Files className="h-4 w-4" />
-                Files
+                {t("navigation.files", { ns: "common" })}
               </button>
             </div>
 
@@ -1648,7 +1654,7 @@ function App() {
                   onClick={() => setView("chat")}
                   className="rounded-lg border border-border bg-surface/70 px-3 py-2 text-sm text-text transition-colors hover:bg-surface-elevated"
                 >
-                  Close
+                  {t("actions.close", { ns: "common" })}
                 </button>
               </div>
               <About />
@@ -1828,9 +1834,11 @@ function App() {
                     <Loader2 className="h-5 w-5 animate-spin text-primary" />
                   </div>
                   <div>
-                    <h3 className="text-base font-semibold text-text">Syncing Workspace History</h3>
+                    <h3 className="text-base font-semibold text-text">
+                      {t("history.syncingTitle", { ns: "common" })}
+                    </h3>
                     <p className="text-sm text-text-muted">
-                      Loading sessions, project context, and recent activity.
+                      {t("history.syncingBody", { ns: "common" })}
                     </p>
                   </div>
                 </div>

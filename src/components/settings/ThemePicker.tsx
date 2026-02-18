@@ -4,6 +4,7 @@ import { Check, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/hooks/useTheme";
 import type { ThemeDefinition } from "@/types/theme";
+import { useTranslation } from "react-i18next";
 
 function ThemeSwatches({ theme }: { theme: ThemeDefinition }) {
   const background = theme.cssVars["--color-background"] ?? "#000000";
@@ -40,15 +41,22 @@ function ThemeSwatches({ theme }: { theme: ThemeDefinition }) {
 type ThemePickerVariant = "grid" | "compact";
 
 export function ThemePicker({ variant = "grid" }: { variant?: ThemePickerVariant }) {
+  const { t } = useTranslation("settings");
   const { themeId, availableThemes, setThemeId } = useTheme();
   const activeTheme = availableThemes.find((t) => t.id === themeId) ?? availableThemes[0]!;
   const [isOpen, setIsOpen] = useState(false);
+  const themeName = (theme: ThemeDefinition) =>
+    t(`theme.catalog.${theme.id}.name`, { defaultValue: theme.name });
+  const themeDescription = (theme: ThemeDefinition) =>
+    t(`theme.catalog.${theme.id}.description`, { defaultValue: theme.description });
 
   if (variant === "compact") {
     return (
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-sm font-medium text-text">Theme</span>
+          <span className="text-sm font-medium text-text">
+            {t("theme.selectTheme", { defaultValue: "Theme" })}
+          </span>
           <ThemeSwatches theme={activeTheme} />
         </div>
 
@@ -66,8 +74,8 @@ export function ThemePicker({ variant = "grid" }: { variant?: ThemePickerVariant
             )}
           >
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-text">{activeTheme.name}</p>
-              <p className="truncate text-xs text-text-muted">{activeTheme.description}</p>
+              <p className="truncate text-sm font-medium text-text">{themeName(activeTheme)}</p>
+              <p className="truncate text-xs text-text-muted">{themeDescription(activeTheme)}</p>
             </div>
             <ChevronDown
               className={cn(
@@ -90,7 +98,7 @@ export function ThemePicker({ variant = "grid" }: { variant?: ThemePickerVariant
                   exit={{ opacity: 0, y: -8 }}
                   transition={{ duration: 0.15 }}
                   role="listbox"
-                  aria-label="Select theme"
+                  aria-label={t("theme.selectTheme", { defaultValue: "Select theme" })}
                   className="absolute left-0 right-0 top-full z-50 mt-2 max-h-80 overflow-y-auto rounded-lg border border-border bg-surface shadow-lg"
                 >
                   {availableThemes.map((theme) => {
@@ -112,8 +120,8 @@ export function ThemePicker({ variant = "grid" }: { variant?: ThemePickerVariant
                         )}
                       >
                         <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-text">{theme.name}</p>
-                          <p className="text-xs text-text-muted">{theme.description}</p>
+                          <p className="text-sm font-medium text-text">{themeName(theme)}</p>
+                          <p className="text-xs text-text-muted">{themeDescription(theme)}</p>
                         </div>
                         <div className="mt-0.5 flex flex-shrink-0 items-center gap-2">
                           <ThemeSwatches theme={theme} />
@@ -153,9 +161,9 @@ export function ThemePicker({ variant = "grid" }: { variant?: ThemePickerVariant
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <p className="font-semibold text-text">{theme.name}</p>
+                  <p className="font-semibold text-text">{themeName(theme)}</p>
                 </div>
-                <p className="mt-1 text-sm text-text-muted">{theme.description}</p>
+                <p className="mt-1 text-sm text-text-muted">{themeDescription(theme)}</p>
               </div>
               <ThemeSwatches theme={theme} />
             </div>
@@ -170,7 +178,7 @@ export function ThemePicker({ variant = "grid" }: { variant?: ThemePickerVariant
               aria-hidden={!selected}
             >
               <Check className="h-3 w-3" />
-              Active
+              {t("theme.active", { defaultValue: "Active" })}
             </span>
           </button>
         );

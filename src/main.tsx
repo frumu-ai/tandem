@@ -7,6 +7,7 @@ import "@fontsource-variable/geist-mono";
 import App from "./App";
 import "./index.css";
 import "./i18n"; // Initialize i18n
+import { bootstrapLanguagePreference } from "./i18n/languageSync";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { UpdaterProvider } from "@/hooks/useUpdater";
 import { MemoryIndexingProvider } from "@/contexts/MemoryIndexingContext";
@@ -35,14 +36,24 @@ import {
   }
 })();
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <ThemeProvider>
-      <UpdaterProvider>
-        <MemoryIndexingProvider>
-          <App />
-        </MemoryIndexingProvider>
-      </UpdaterProvider>
-    </ThemeProvider>
-  </React.StrictMode>
-);
+async function startApp() {
+  try {
+    await bootstrapLanguagePreference();
+  } catch {
+    // Continue booting with i18next default detection on any sync failure.
+  }
+
+  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    <React.StrictMode>
+      <ThemeProvider>
+        <UpdaterProvider>
+          <MemoryIndexingProvider>
+            <App />
+          </MemoryIndexingProvider>
+        </UpdaterProvider>
+      </ThemeProvider>
+    </React.StrictMode>
+  );
+}
+
+void startApp();

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { SkillCard } from "./SkillCard";
@@ -31,6 +32,7 @@ export function SkillsPanel({
   projectPath,
   onRestartSidecar,
 }: SkillsPanelProps) {
+  const { t } = useTranslation(["skills", "common"]);
   const canonicalMarketingTemplateIds = useMemo(
     () =>
       new Set([
@@ -92,7 +94,9 @@ export function SkillsPanel({
   const [importingPack, setImportingPack] = useState(false);
 
   // Extract project name from path for display
-  const projectName = projectPath ? projectPath.split(/[\\/]/).pop() || "Active Folder" : null;
+  const projectName = projectPath
+    ? projectPath.split(/[\\/]/).pop() || t("navigation.activeFolder", { ns: "common" })
+    : null;
   const hasActiveProject = !!projectPath;
 
   useEffect(() => {
@@ -117,7 +121,7 @@ export function SkillsPanel({
 
   const handleSave = async () => {
     if (!content.trim()) {
-      setError("Please paste SKILL.md content");
+      setError(t("skills:errors.pasteSkillContent"));
       return;
     }
 
@@ -132,7 +136,7 @@ export function SkillsPanel({
         await onRestartSidecar();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to import skill");
+      setError(err instanceof Error ? err.message : t("import.error"));
     } finally {
       setSaving(false);
     }
@@ -159,7 +163,7 @@ Instructions for the AI...
 
       if (onRestartSidecar) await onRestartSidecar();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to install starter skill");
+      setError(err instanceof Error ? err.message : t("templates.installFailed"));
     } finally {
       setInstallingTemplateId(null);
     }
@@ -168,7 +172,7 @@ Instructions for the AI...
   const handleChooseImportPath = async () => {
     try {
       const picked = await openDialog({
-        title: "Select SKILL.md or zip",
+        title: t("import.selectFileDialogTitle"),
         multiple: false,
         filters: [
           { name: "Skill Files", extensions: ["md", "zip"] },
@@ -185,7 +189,7 @@ Instructions for the AI...
 
   const handlePreviewImport = async () => {
     if (!importPath.trim()) {
-      setError("Choose a SKILL.md or zip file first.");
+      setError(t("skills:errors.chooseImportFirst"));
       return;
     }
     try {
@@ -198,7 +202,7 @@ Instructions for the AI...
       );
       setImportPreview(preview);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to preview import");
+      setError(e instanceof Error ? e.message : t("skills:errors.previewImportFailed"));
       setImportPreview(null);
     }
   };
@@ -221,7 +225,7 @@ Instructions for the AI...
       if (onRestartSidecar) await onRestartSidecar();
       setImportPreview(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to import skill pack");
+      setError(e instanceof Error ? e.message : t("skills:errors.importPackFailed"));
     } finally {
       setImportingPack(false);
     }
@@ -279,7 +283,7 @@ Instructions for the AI...
 
       {/* Location choice */}
       <div className="flex flex-wrap items-center gap-4 rounded-lg border border-border bg-surface-elevated/50 p-3">
-        <span className="text-sm text-text-muted">Save to:</span>
+        <span className="text-sm text-text-muted">{t("skills:location.saveTo")}</span>
         <label className="flex items-center gap-2">
           <input
             type="radio"
@@ -293,14 +297,14 @@ Instructions for the AI...
           <span className={`text-sm ${hasActiveProject ? "text-text" : "text-text-muted"}`}>
             {hasActiveProject ? (
               <>
-                Active Folder:{" "}
+                {t("skills:location.activeFolder")}:{" "}
                 <span className="font-bold" style={{ color: "var(--color-primary)" }}>
                   {projectName}
                 </span>
                 <span className="ml-2 text-text-subtle text-xs">(.opencode/skill/)</span>
               </>
             ) : (
-              "Folder (no folder selected)"
+              t("skills:location.folderNotSelected")
             )}
           </span>
         </label>
@@ -314,25 +318,25 @@ Instructions for the AI...
             onChange={(e) => setLocation(e.target.value as SkillLocation)}
             className="h-4 w-4 border-border text-primary focus:ring-primary"
           />
-          <span className="text-sm text-text">Global (~/.config/opencode/skills/)</span>
+          <span className="text-sm text-text">{t("skills:location.globalPathLabel")}</span>
         </label>
       </div>
 
       {/* Runtime note */}
       <div className="rounded-lg border border-border bg-surface-elevated/50 p-3 text-xs text-text-muted">
         <div className="flex items-center justify-between gap-3">
-          <p className="font-medium text-text">Runtime note</p>
+          <p className="font-medium text-text">{t("skills:runtime.title")}</p>
           <Button
             variant="secondary"
             size="sm"
             onClick={() => setShowPythonWizard(true)}
             className="h-7 px-2 text-[11px]"
           >
-            Set up Python (venv)
+            {t("skills:runtime.setupPython")}
           </Button>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          <span className="text-[11px] text-text-subtle">May require:</span>
+          <span className="text-[11px] text-text-subtle">{t("skills:runtime.requires")}</span>
           <span className="rounded-full border border-yellow-500/20 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-500">
             Python
           </span>
@@ -343,11 +347,7 @@ Instructions for the AI...
             Bash
           </span>
         </div>
-        <p className="mt-1">
-          Some skills and packs may ask Tandem to run local tools (Python, Node, bash, etc.). Tandem
-          does not bundle these runtimes. Installing a skill does not run anything by itself; a
-          runtime is only needed if a skill instructs the agent to execute commands.
-        </p>
+        <p className="mt-1">{t("skills:runtime.body")}</p>
       </div>
       {showPythonWizard && <PythonSetupWizard onClose={() => setShowPythonWizard(false)} />}
 
@@ -356,17 +356,19 @@ Instructions for the AI...
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search skills (youtube, writing, data...)"
+          placeholder={t("skills:search.placeholder")}
         />
       </div>
 
       {/* Installed skills summary */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface-elevated/50 p-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-text">Installed skills</p>
+          <p className="text-sm font-medium text-text">{t("skills:installed.summaryTitle")}</p>
           <p className="mt-0.5 text-xs text-text-muted">
-            Folder: {allProjectSkills.length} • Global: {allGlobalSkills.length} • Delete with the
-            trash icon.
+            {t("skills:installed.summaryCounts", {
+              projectCount: allProjectSkills.length,
+              globalCount: allGlobalSkills.length,
+            })}
           </p>
         </div>
         <Button
@@ -378,7 +380,7 @@ Instructions for the AI...
           disabled={skills.length === 0}
           className="h-8"
         >
-          Jump to installed
+          {t("skills:installed.jump")}
         </Button>
       </div>
 
@@ -389,43 +391,45 @@ Instructions for the AI...
             Starter skills
             {queryLower ? ` (${filteredTemplates.length} of ${templates.length})` : ""}
           </label>
-          <span className="text-xs text-text-subtle">Quick adds (offline)</span>
+          <span className="text-xs text-text-subtle">{t("skills:templates.quickAdds")}</span>
         </div>
 
         {templatesLoading ? (
           <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
-            Loading starter skills...
+            {t("skills:templates.loading")}
           </div>
         ) : filteredTemplates.length === 0 ? (
           <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
             {templates.length === 0
-              ? "No starter skills found."
-              : "No starter skills match your search."}
+              ? t("skills:templates.empty")
+              : t("skills:templates.emptySearch")}
           </div>
         ) : (
           <div className="grid gap-3 md:grid-cols-2">
-            {filteredTemplates.map((t) => (
+            {filteredTemplates.map((template) => (
               <div
-                key={t.id}
+                key={template.id}
                 className="relative rounded-lg border border-border bg-surface-elevated p-4 pb-10"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-text">{t.name}</p>
-                    <p className="mt-1 text-xs text-text-muted">{t.description}</p>
+                    <p className="truncate text-sm font-semibold text-text">{template.name}</p>
+                    <p className="mt-1 text-xs text-text-muted">{template.description}</p>
                   </div>
                   <Button
                     size="sm"
-                    onClick={() => handleInstallTemplate(t.id)}
+                    onClick={() => handleInstallTemplate(template.id)}
                     disabled={!!installingTemplateId}
                   >
-                    {installingTemplateId === t.id ? "Installing..." : "Install"}
+                    {installingTemplateId === template.id
+                      ? t("skills:templates.installing")
+                      : t("skills:templates.install")}
                   </Button>
                 </div>
 
-                {t.requires && t.requires.length > 0 && (
+                {template.requires && template.requires.length > 0 && (
                   <div className="absolute bottom-3 right-3 flex flex-wrap items-center justify-end gap-1">
-                    {t.requires.slice(0, 3).map((r) => (
+                    {template.requires.slice(0, 3).map((r) => (
                       <span
                         key={r}
                         className={`rounded-full border px-2 py-0.5 text-[10px] ${runtimePillClass(r)}`}
@@ -449,8 +453,10 @@ Instructions for the AI...
           onClick={() => setAdvancedOpen((v) => !v)}
           className="flex w-full items-center justify-between rounded-lg border border-border bg-surface-elevated/50 p-3 text-left"
         >
-          <span className="text-sm font-medium text-text">Advanced: paste SKILL.md</span>
-          <span className="text-xs text-text-subtle">{advancedOpen ? "Hide" : "Show"}</span>
+          <span className="text-sm font-medium text-text">{t("skills:advanced.title")}</span>
+          <span className="text-xs text-text-subtle">
+            {advancedOpen ? t("skills:advanced.hide") : t("skills:advanced.show")}
+          </span>
         </button>
 
         {advancedOpen && (
@@ -458,17 +464,17 @@ Instructions for the AI...
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              placeholder="Paste SKILL.md content here..."
+              placeholder={t("skills:advanced.placeholder")}
               rows={10}
               className="w-full rounded-lg border border-border bg-surface p-3 font-mono text-sm text-text placeholder:text-text-subtle focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             />
 
             <div className="flex items-center justify-between">
               <Button variant="ghost" onClick={handleCreateBlank} disabled={saving}>
-                Create Blank
+                {t("skills:advanced.createBlank")}
               </Button>
               <Button onClick={handleSave} disabled={!content.trim() || saving}>
-                {saving ? "Saving..." : "Save"}
+                {saving ? t("skills:advanced.saving") : t("common:actions.save")}
               </Button>
             </div>
           </div>
@@ -477,35 +483,35 @@ Instructions for the AI...
 
       <div className="space-y-3 rounded-lg border border-border bg-surface-elevated/50 p-4">
         <div className="flex items-center justify-between">
-          <p className="text-sm font-medium text-text">Import from file/zip</p>
-          <span className="text-xs text-text-subtle">Preview before apply</span>
+          <p className="text-sm font-medium text-text">{t("skills:import.fromFileZip")}</p>
+          <span className="text-xs text-text-subtle">{t("skills:import.previewBeforeApply")}</span>
         </div>
         <div className="flex flex-wrap gap-2">
           <Input
             value={importPath}
             onChange={(e) => setImportPath(e.target.value)}
-            placeholder="Path to SKILL.md or skills.zip"
+            placeholder={t("skills:import.pathPlaceholder")}
           />
           <Button variant="secondary" onClick={handleChooseImportPath}>
-            Browse
+            {t("common:actions.browse")}
           </Button>
         </div>
         <div className="grid gap-2 md:grid-cols-3">
           <Input
             value={importNamespace}
             onChange={(e) => setImportNamespace(e.target.value)}
-            placeholder="Namespace (optional)"
+            placeholder={t("skills:import.namespacePlaceholder")}
           />
           <select
             value={conflictPolicy}
             onChange={(e) => setConflictPolicy(e.target.value as SkillsConflictPolicy)}
             className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-text"
           >
-            <option value="skip">Skip conflicts</option>
-            <option value="overwrite">Overwrite conflicts</option>
-            <option value="rename">Rename conflicts</option>
+            <option value="skip">{t("skills:import.conflicts.skip")}</option>
+            <option value="overwrite">{t("skills:import.conflicts.overwrite")}</option>
+            <option value="rename">{t("skills:import.conflicts.rename")}</option>
           </select>
-          <Button onClick={handlePreviewImport}>Preview import</Button>
+          <Button onClick={handlePreviewImport}>{t("skills:import.previewButton")}</Button>
         </div>
 
         {importPreview && (
@@ -518,7 +524,7 @@ Instructions for the AI...
               {importPreview.items.slice(0, 8).map((item, idx) => (
                 <div key={`${item.source}-${idx}`} className="flex items-center gap-2">
                   <span className={item.valid ? "text-success" : "text-error"}>
-                    {item.valid ? "OK" : "ERR"}
+                    {item.valid ? t("skills:import.ok") : t("skills:import.err")}
                   </span>
                   <span className="truncate text-text-muted">{item.source}</span>
                   {item.name && <span className="text-text">→ {item.name}</span>}
@@ -528,7 +534,7 @@ Instructions for the AI...
             </div>
             <div className="mt-3">
               <Button onClick={handleApplyImport} disabled={importingPack}>
-                {importingPack ? "Importing..." : "Apply import"}
+                {importingPack ? t("skills:import.importing") : t("skills:import.applyButton")}
               </Button>
             </div>
           </div>
@@ -539,7 +545,7 @@ Instructions for the AI...
       <div ref={installedRef} className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium text-text">
-            Installed skills
+            {t("skills:installed.title")}
             {queryLower ? ` (${filteredSkills.length} of ${skills.length})` : ` (${skills.length})`}
           </h3>
         </div>
@@ -548,21 +554,20 @@ Instructions for the AI...
           <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
             <p className="text-sm text-text-muted">
               {skills.length === 0
-                ? "No installed skills detected (folder or global)."
-                : "No installed skills match your search."}
+                ? t("skills:installed.empty")
+                : t("skills:installed.emptySearch")}
             </p>
             {skills.length === 0 && (
-              <p className="mt-2 text-xs text-text-subtle">
-                Install a starter skill above, or paste a SKILL.md in Advanced. You can remove
-                skills later with the trash icon.
-              </p>
+              <p className="mt-2 text-xs text-text-subtle">{t("skills:installed.emptyHint")}</p>
             )}
           </div>
         ) : (
           <div className="space-y-3">
             {projectSkills.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs font-medium text-text-subtle">Folder Skills</p>
+                <p className="text-xs font-medium text-text-subtle">
+                  {t("skills:installed.folderSkills")}
+                </p>
                 {projectSkills.map((skill) => (
                   <SkillCard key={skill.path} skill={skill} onDelete={onRefresh} />
                 ))}
@@ -571,7 +576,9 @@ Instructions for the AI...
 
             {globalSkills.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs font-medium text-text-subtle">Global Skills</p>
+                <p className="text-xs font-medium text-text-subtle">
+                  {t("skills:installed.globalSkills")}
+                </p>
                 {globalSkills.map((skill) => (
                   <SkillCard key={skill.path} skill={skill} onDelete={onRefresh} />
                 ))}
@@ -583,22 +590,14 @@ Instructions for the AI...
 
       {/* Help links */}
       <div className="space-y-2 rounded-lg border border-border bg-surface-elevated/50 p-4 text-sm">
-        <p className="text-text-muted">
-          Tandem automatically uses installed skills when relevant - no selection needed.
-        </p>
+        <p className="text-text-muted">{t("skills:help.autoUse")}</p>
         <div className="rounded border border-border bg-surface p-3 text-xs text-text-muted">
-          <p className="font-medium text-text">Marketing recommendation (canonical first)</p>
-          <p className="mt-1">
-            Prefer: product-marketing-context, content-strategy, seo-audit, social-content,
-            copywriting, copy-editing, email-sequence, competitor-alternatives, launch-strategy.
-          </p>
-          <p className="mt-1">
-            Legacy marketing templates remain available as fallback, but should not be your default
-            route.
-          </p>
+          <p className="font-medium text-text">{t("skills:help.marketingTitle")}</p>
+          <p className="mt-1">{t("skills:help.marketingPreferred")}</p>
+          <p className="mt-1">{t("skills:help.marketingLegacy")}</p>
         </div>
         <div className="text-text-muted">
-          <p className="font-medium">Find skills to copy:</p>
+          <p className="font-medium">{t("skills:help.findSkillsToCopy")}</p>
           <ul className="ml-4 mt-1 list-disc space-y-1 text-xs">
             <li>
               <button
@@ -607,7 +606,7 @@ Instructions for the AI...
               >
                 SkillHub
               </button>{" "}
-              - 7,000+ community skills
+              - {t("skills:help.skillhubBlurb")}
             </li>
             <li>
               <button
@@ -616,7 +615,7 @@ Instructions for the AI...
               >
                 GitHub
               </button>{" "}
-              - Search &quot;SKILL.md&quot;
+              - {t("skills:help.githubBlurb")}
             </li>
           </ul>
         </div>

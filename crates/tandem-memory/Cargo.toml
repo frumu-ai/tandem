@@ -1,6 +1,6 @@
 [package]
 name = "tandem-memory"
-version = "0.3.6"
+version = "0.3.7"
 description = "Memory storage and embedding utilities for Tandem"
 edition = "2021"
 license = "MIT OR Apache-2.0"

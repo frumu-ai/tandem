@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Blocks } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { SkillsTab } from "./SkillsTab";
@@ -25,6 +26,7 @@ export function Extensions({
   onInitialTabConsumed,
   onStartModeBuilderChat,
 }: ExtensionsProps) {
+  const { t } = useTranslation("common");
   const [activeTab, setActiveTab] = useState<ExtensionsTabId>(() => initialTab ?? "skills");
 
   useEffect(() => {
@@ -47,13 +49,13 @@ export function Extensions({
               <Blocks className="h-6 w-6 text-primary" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-text">Extensions</h1>
-              <p className="text-text-muted">Manage skills, plugins, MCP, and advanced modes</p>
+              <h1 className="text-2xl font-bold text-text">{t("extensions.title")}</h1>
+              <p className="text-text-muted">{t("extensions.subtitle")}</p>
             </div>
           </div>
           {onClose && (
             <Button variant="ghost" onClick={onClose}>
-              Close
+              {t("actions.close")}
             </Button>
           )}
         </div>
@@ -71,7 +73,7 @@ export function Extensions({
                   : "text-text-muted hover:text-text hover:bg-surface-elevated"
               )}
             >
-              Skills
+              {t("extensions.tabs.skills")}
             </button>
             <button
               type="button"
@@ -83,7 +85,7 @@ export function Extensions({
                   : "text-text-muted hover:text-text hover:bg-surface-elevated"
               )}
             >
-              Plugins
+              {t("extensions.tabs.plugins")}
             </button>
             <button
               type="button"
@@ -95,7 +97,7 @@ export function Extensions({
                   : "text-text-muted hover:text-text hover:bg-surface-elevated"
               )}
             >
-              MCP
+              {t("extensions.tabs.mcp")}
             </button>
             <button
               type="button"
@@ -107,7 +109,7 @@ export function Extensions({
                   : "text-text-muted hover:text-text hover:bg-surface-elevated"
               )}
             >
-              Modes
+              {t("extensions.tabs.modes")}
             </button>
           </div>
 

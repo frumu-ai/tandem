@@ -14,8 +14,10 @@ import { Database, RefreshCw, Play } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Switch } from "@/components/ui/Switch";
 import { useMemoryIndexing } from "@/contexts/MemoryIndexingContext";
+import { useTranslation } from "react-i18next";
 
 export function MemoryStats() {
+  const { t } = useTranslation(["settings", "common"]);
   const { projects, startIndex, clearFileIndex } = useMemoryIndexing();
 
   const [scope, setScope] = useState<"all" | "project">("all");
@@ -51,7 +53,7 @@ export function MemoryStats() {
       }
     } catch (err) {
       console.error("Failed to load memory stats:", err);
-      setError("Failed to load memory statistics");
+      setError(t("memoryStats.errors.load"));
     } finally {
       setLoading(false);
     }
@@ -63,7 +65,7 @@ export function MemoryStats() {
       const state = appState ?? (await getAppState());
       const projectId = state.active_project_id || (state.has_workspace ? "default" : null);
       if (!projectId) {
-        setError("No active project selected");
+        setError(t("memoryStats.errors.noActiveProject"));
         return;
       }
 
@@ -71,7 +73,7 @@ export function MemoryStats() {
       await loadStats();
     } catch (err) {
       console.error("Failed to index:", err);
-      setError("Failed to index workspace");
+      setError(t("memoryStats.errors.indexWorkspace"));
     }
   };
 
@@ -105,12 +107,14 @@ export function MemoryStats() {
         <div className="space-y-1">
           <CardTitle className="text-base font-medium flex items-center gap-2">
             <Database className="h-4 w-4" />
-            Vector Database Stats
+            {t("memoryStats.title")}
           </CardTitle>
           <div className="text-xs text-slate-500">
             {scope === "all"
-              ? "Scope: All projects (this device)"
-              : `Scope: Active project${activeProject ? ` (${activeProject.name})` : ""}`}
+              ? t("memoryStats.scopeAll")
+              : t("memoryStats.scopeProject", {
+                  name: activeProject ? ` (${activeProject.name})` : "",
+                })}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -122,7 +126,7 @@ export function MemoryStats() {
             className="h-8"
           >
             <Play className={`h-4 w-4 mr-2 ${indexing ? "animate-spin" : ""}`} />
-            {indexing ? "Indexing..." : "Index Files"}
+            {indexing ? t("memoryStats.indexing") : t("memoryStats.indexFiles")}
           </Button>
           <Button
             variant="ghost"
@@ -145,7 +149,7 @@ export function MemoryStats() {
                 className="h-8"
                 onClick={() => setScope("all")}
               >
-                All Projects
+                {t("memoryStats.allProjects")}
               </Button>
               <Button
                 variant={scope === "project" ? "secondary" : "ghost"}
@@ -153,14 +157,14 @@ export function MemoryStats() {
                 className="h-8"
                 onClick={() => setScope("project")}
               >
-                Active Project
+                {t("memoryStats.activeProject")}
               </Button>
             </div>
 
             <Switch
               checked={!!memorySettings?.auto_index_on_project_load}
               disabled={!memorySettings}
-              label="Auto-index on project load"
+              label={t("memoryStats.autoIndex")}
               onChange={async (e) => {
                 const next = e.target.checked;
                 try {
@@ -169,7 +173,7 @@ export function MemoryStats() {
                   await setMemorySettings(nextSettings);
                 } catch (err) {
                   console.error("Failed to save memory settings:", err);
-                  setError("Failed to save memory settings");
+                  setError(t("memoryStats.errors.saveSettings"));
                 }
               }}
             />
@@ -177,14 +181,14 @@ export function MemoryStats() {
 
           {memorySettings?.embedding_status && (
             <div className="text-xs text-slate-500">
-              Embeddings: {memorySettings.embedding_status}
+              {t("memoryStats.embeddings")}: {memorySettings.embedding_status}
               {memorySettings.embedding_reason ? ` (${memorySettings.embedding_reason})` : ""}
             </div>
           )}
 
           {scope === "project" && activeProject && (
             <div className="text-xs text-slate-500 truncate" title={activeProject.path}>
-              Active folder: {activeProject.path}
+              {t("memoryStats.activeFolder")}: {activeProject.path}
             </div>
           )}
         </div>
@@ -192,7 +196,7 @@ export function MemoryStats() {
         {indexing && progress && (
           <div className="mb-4 p-3 bg-slate-50 rounded-md border border-slate-100">
             <div className="flex justify-between text-xs text-slate-500 mb-2">
-              <span>Indexing workspace...</span>
+              <span>{t("memoryStats.indexingWorkspace")}</span>
               <span>
                 {progress.files_processed}/{progress.total_files} (
                 {progress.total_files > 0
@@ -223,45 +227,55 @@ export function MemoryStats() {
               {progress.current_file}
             </div>
             <div className="mt-2 text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
-              <span>Indexed: {progress.indexed_files}</span>
-              <span>Skipped: {progress.skipped_files}</span>
-              <span>Errors: {progress.errors}</span>
-              <span>Chunks: {progress.chunks_created}</span>
+              <span>
+                {t("memoryStats.indexed")}: {progress.indexed_files}
+              </span>
+              <span>
+                {t("memoryStats.skipped")}: {progress.skipped_files}
+              </span>
+              <span>
+                {t("memoryStats.errorsLabel")}: {progress.errors}
+              </span>
+              <span>
+                {t("memoryStats.chunks")}: {progress.chunks_created}
+              </span>
             </div>
           </div>
         )}
         {error ? (
           <div className="text-sm text-red-500">{error}</div>
         ) : scope === "all" && !statsAll ? (
-          <div className="text-sm text-slate-500">Loading...</div>
+          <div className="text-sm text-slate-500">{t("status.loading", { ns: "common" })}</div>
         ) : scope === "project" && !activeProjectId ? (
-          <div className="text-sm text-slate-500">No workspace selected.</div>
+          <div className="text-sm text-slate-500">{t("memoryStats.noWorkspace")}</div>
         ) : scope === "project" && !statsProject ? (
-          <div className="text-sm text-slate-500">Loading...</div>
+          <div className="text-sm text-slate-500">{t("status.loading", { ns: "common" })}</div>
         ) : scope === "all" && statsAll ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <div className="text-sm text-slate-500">Total Chunks</div>
+                <div className="text-sm text-slate-500">{t("memoryStats.totalChunks")}</div>
                 <div className="font-medium">{statsAll.total_chunks.toLocaleString()}</div>
               </div>
               <div className="flex items-center justify-between">
-                <div className="text-sm text-slate-500">Total Size</div>
+                <div className="text-sm text-slate-500">{t("memoryStats.totalSize")}</div>
                 <div className="font-medium">{formatBytes(statsAll.total_bytes)}</div>
               </div>
               <div className="flex items-center justify-between">
-                <div className="text-sm text-slate-500">DB File Size</div>
+                <div className="text-sm text-slate-500">{t("memoryStats.dbFileSize")}</div>
                 <div className="font-medium">{formatBytes(statsAll.file_size)}</div>
               </div>
             </div>
 
             <div className="space-y-2 border-t md:border-t-0 md:border-l border-slate-200 pt-4 md:pt-0 md:pl-4">
-              <div className="text-xs font-medium text-slate-500 uppercase mb-2">Breakdown</div>
+              <div className="text-xs font-medium text-slate-500 uppercase mb-2">
+                {t("memoryStats.breakdown")}
+              </div>
 
               <div className="flex items-center justify-between text-sm">
                 <span className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-blue-500"></span>
-                  Session
+                  {t("memoryStats.session")}
                 </span>
                 <span className="text-slate-600">
                   {statsAll.session_chunks.toLocaleString()} ({formatBytes(statsAll.session_bytes)})
@@ -271,7 +285,7 @@ export function MemoryStats() {
               <div className="flex items-center justify-between text-sm">
                 <span className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                  Project
+                  {t("memoryStats.project")}
                 </span>
                 <span className="text-slate-600">
                   {statsAll.project_chunks.toLocaleString()} ({formatBytes(statsAll.project_bytes)})
@@ -281,7 +295,7 @@ export function MemoryStats() {
               <div className="flex items-center justify-between text-sm">
                 <span className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-purple-500"></span>
-                  Global
+                  {t("memoryStats.global")}
                 </span>
                 <span className="text-slate-600">
                   {statsAll.global_chunks.toLocaleString()} ({formatBytes(statsAll.global_bytes)})
@@ -294,36 +308,38 @@ export function MemoryStats() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm text-slate-500">Project Chunks</div>
+                  <div className="text-sm text-slate-500">{t("memoryStats.projectChunks")}</div>
                   <div className="font-medium">{statsProject!.project_chunks.toLocaleString()}</div>
                 </div>
                 <div className="flex items-center justify-between">
-                  <div className="text-sm text-slate-500">Project Size</div>
+                  <div className="text-sm text-slate-500">{t("memoryStats.projectSize")}</div>
                   <div className="font-medium">{formatBytes(statsProject!.project_bytes)}</div>
                 </div>
                 <div className="flex items-center justify-between">
-                  <div className="text-sm text-slate-500">Indexed Files</div>
+                  <div className="text-sm text-slate-500">{t("memoryStats.indexedFiles")}</div>
                   <div className="font-medium">{statsProject!.indexed_files.toLocaleString()}</div>
                 </div>
               </div>
               <div className="space-y-3 border-t md:border-t-0 md:border-l border-slate-200 pt-4 md:pt-0 md:pl-4">
-                <div className="text-xs font-medium text-slate-500 uppercase mb-2">File Index</div>
+                <div className="text-xs font-medium text-slate-500 uppercase mb-2">
+                  {t("memoryStats.fileIndex")}
+                </div>
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-600">Chunks</span>
+                  <span className="text-slate-600">{t("memoryStats.chunks")}</span>
                   <span className="font-medium">
                     {statsProject!.file_index_chunks.toLocaleString()}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-600">Size</span>
+                  <span className="text-slate-600">{t("memoryStats.size")}</span>
                   <span className="font-medium">{formatBytes(statsProject!.file_index_bytes)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-600">Last Indexed</span>
+                  <span className="text-slate-600">{t("memoryStats.lastIndexed")}</span>
                   <span className="font-medium">
                     {statsProject!.last_indexed_at
                       ? new Date(statsProject!.last_indexed_at).toLocaleString()
-                      : "Never"}
+                      : t("memoryStats.never")}
                   </span>
                 </div>
               </div>
@@ -335,23 +351,19 @@ export function MemoryStats() {
                 disabled={!activeProjectId}
                 onClick={async () => {
                   if (!activeProjectId) return;
-                  const ok = window.confirm(
-                    "Clear this project's file index? This removes only file-derived vectors and can free up space."
-                  );
+                  const ok = window.confirm(t("memoryStats.confirmClearFileIndex"));
                   if (!ok) return;
-                  const vacuum = window.confirm(
-                    "Vacuum database after clearing? This can take longer but reclaims disk space."
-                  );
+                  const vacuum = window.confirm(t("memoryStats.confirmVacuum"));
                   try {
                     await clearFileIndex(activeProjectId, vacuum);
                     await loadStats();
                   } catch (err) {
                     console.error("Failed to clear file index:", err);
-                    setError("Failed to clear file index");
+                    setError(t("memoryStats.errors.clearFileIndex"));
                   }
                 }}
               >
-                Clear File Index
+                {t("memoryStats.clearFileIndex")}
               </Button>
             </div>
           </div>
