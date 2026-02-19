@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Engine command docs**: Updated engine command reference to include new web-admin flags.
 - **Desktop-Tauri agent-team bridge**: Added typed Tauri commands and frontend API wrappers for template/mission/instance/approval listing, spawn, and cancel/decision actions.
 
+### Fixed
+
+- **Desktop channel token persistence across restart**: Fixed a vault-unlock/startup race where channel bot tokens (Telegram/Discord/Slack) could fail to rehydrate into sidecar env before restart, causing saved channel connections to appear unconfigured after engine/app restart.
+
 ## [0.3.7] - 2026-02-18
 
 ### Changed

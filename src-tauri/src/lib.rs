@@ -264,10 +264,19 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
         }
     }
 
-    // Restart sidecar to ensure it picks up new env vars (keys are only applied on start).
+    // Manage the keystore
+    app.manage(keystore);
+
+    // Ensure channel bot tokens are restored from the vault as soon as the keystore is ready.
+    // This avoids a startup race where sidecar restarts can occur before channel env vars exist.
     let app_clone = app.clone();
     let sidecar_for_restart = sidecar.clone();
     tauri::async_runtime::spawn(async move {
+        if let Some(app_state) = app_clone.try_state::<state::AppState>() {
+            commands::sync_channel_tokens_env(&app_clone, app_state.inner()).await;
+        }
+
+        // Restart sidecar to ensure it picks up newly loaded env vars (keys are applied on start).
         if sidecar_for_restart.state().await == sidecar::SidecarState::Running {
             tracing::debug!("Restarting sidecar to apply updated API keys");
             if let Err(e) = sidecar_for_restart.stop().await {
@@ -290,9 +299,6 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
             }
         }
     });
-
-    // Manage the keystore
-    app.manage(keystore);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

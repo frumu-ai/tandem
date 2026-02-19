@@ -1769,7 +1769,7 @@ async fn sync_ollama_env(state: &AppState, config: &ProvidersConfig) {
     }
 }
 
-async fn sync_channel_tokens_env(app: &AppHandle, state: &AppState) {
+pub(crate) async fn sync_channel_tokens_env(app: &AppHandle, state: &AppState) {
     let workspace = state.get_workspace_path();
     let project_id = state.active_project_id.read().unwrap().clone();
     let Some(project_id) = project_id else {
@@ -2764,9 +2764,7 @@ fn should_skip_memory_retrieval(prompt: &str) -> bool {
 }
 
 fn is_embeddings_disabled_error(message: &str) -> bool {
-    message
-        .to_ascii_lowercase()
-        .contains("embeddings disabled")
+    message.to_ascii_lowercase().contains("embeddings disabled")
 }
 
 fn short_query_hash(query: &str) -> String {

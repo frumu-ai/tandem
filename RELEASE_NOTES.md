@@ -24,6 +24,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Agent Command Center (desktop): Added initial command-center UI in Orchestrator for live agent-team missions/instances/approvals.
 - Agent-Team approvals: Added explicit spawn approval decision endpoints (`POST /agent-team/approvals/spawn/{id}/approve|deny`).
 - Docs: Updated engine command reference for web admin flags and headless control surface.
+- Desktop channels: Fixed a startup race so saved Telegram/Discord/Slack bot-token connections persist correctly across app/engine restarts after vault unlock.
 
 ## v0.3.7 - 2026-02-18
 
