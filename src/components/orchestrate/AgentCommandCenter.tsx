@@ -22,6 +22,47 @@ import { Button } from "@/components/ui";
 import { CheckCircle2, PauseCircle, PlayCircle, ShieldAlert, XCircle } from "lucide-react";
 
 const ROLE_OPTIONS = ["orchestrator", "delegator", "worker", "watcher", "reviewer", "tester"];
+const STATUS_FILTER_OPTIONS = ["all", "queued", "running", "completed", "failed", "cancelled"];
+
+type RailEventTone = "neutral" | "running" | "success" | "danger" | "warning";
+
+interface MissionRailEvent {
+  id: string;
+  missionId: string;
+  instanceId?: string;
+  parentInstanceId?: string | null;
+  role?: string;
+  status?: string;
+  label: string;
+  detail?: string;
+  tone: RailEventTone;
+  depth: number;
+  tsMs?: number;
+}
+
+function getStatusTone(status: string): RailEventTone {
+  if (status === "running") return "running";
+  if (status === "completed") return "success";
+  if (status === "failed") return "danger";
+  if (status === "cancelled") return "warning";
+  return "neutral";
+}
+
+function toneClassName(tone: RailEventTone): string {
+  if (tone === "running") return "border-cyan-400/40 bg-cyan-500/10";
+  if (tone === "success") return "border-emerald-400/40 bg-emerald-500/10";
+  if (tone === "danger") return "border-red-400/40 bg-red-500/10";
+  if (tone === "warning") return "border-amber-400/40 bg-amber-500/10";
+  return "border-border bg-surface/40";
+}
+
+function toneDotClassName(tone: RailEventTone): string {
+  if (tone === "running") return "bg-cyan-300";
+  if (tone === "success") return "bg-emerald-300";
+  if (tone === "danger") return "bg-red-300";
+  if (tone === "warning") return "bg-amber-300";
+  return "bg-zinc-400";
+}
 
 export function AgentCommandCenter() {
   const [templates, setTemplates] = useState<AgentTeamTemplate[]>([]);
@@ -41,6 +82,11 @@ export function AgentCommandCenter() {
   const [selectedInstanceDetailId, setSelectedInstanceDetailId] = useState<string | null>(null);
   const [justification, setJustification] = useState("Delegate focused task execution.");
   const [actionReason, setActionReason] = useState("Reviewed in command center.");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterRole, setFilterRole] = useState("all");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterMission, setFilterMission] = useState("all");
+  const [filterParent, setFilterParent] = useState("all");
   const refreshTimerRef = useRef<number | null>(null);
 
   const load = useCallback(async () => {
@@ -122,10 +168,189 @@ export function AgentCommandCenter() {
   );
 
   const selectedInstance = useMemo(
-    () =>
-      instances.find((instance) => instance.instance_id === selectedInstanceDetailId) || null,
+    () => instances.find((instance) => instance.instance_id === selectedInstanceDetailId) || null,
     [instances, selectedInstanceDetailId]
   );
+
+  const availableRoles = useMemo(
+    () => ["all", ...Array.from(new Set(instances.map((instance) => instance.role))).sort()],
+    [instances]
+  );
+
+  const availableMissionIds = useMemo(
+    () => ["all", ...Array.from(new Set(instances.map((instance) => instance.mission_id))).sort()],
+    [instances]
+  );
+
+  const availableParents = useMemo(
+    () => [
+      "all",
+      ...Array.from(
+        new Set(
+          instances
+            .map((instance) => instance.parent_instance_id)
+            .filter((parent): parent is string => Boolean(parent))
+        )
+      ).sort(),
+    ],
+    [instances]
+  );
+
+  const filteredInstances = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return instances.filter((instance) => {
+      if (filterRole !== "all" && instance.role !== filterRole) {
+        return false;
+      }
+      if (filterStatus !== "all" && instance.status !== filterStatus) {
+        return false;
+      }
+      if (filterMission !== "all" && instance.mission_id !== filterMission) {
+        return false;
+      }
+      if (filterParent !== "all" && (instance.parent_instance_id || "") !== filterParent) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      const haystack = [
+        instance.instance_id,
+        instance.mission_id,
+        instance.session_id,
+        instance.role,
+        instance.status,
+        instance.parent_instance_id || "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [filterMission, filterParent, filterRole, filterStatus, instances, searchQuery]);
+
+  const filteredMissions = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return missions.filter((mission) => {
+      if (filterMission !== "all" && mission.mission_id !== filterMission) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return mission.mission_id.toLowerCase().includes(query);
+    });
+  }, [filterMission, missions, searchQuery]);
+
+  const missionRailEvents = useMemo<MissionRailEvent[]>(() => {
+    const missionId = selectedMission?.mission_id || selectedMissionDetailId || selectedMissionId;
+    if (!missionId) {
+      return [];
+    }
+
+    const missionInstances = instances.filter((instance) => instance.mission_id === missionId);
+    const depthById = new Map<string, number>();
+    const instanceById = new Map(
+      missionInstances.map((instance) => [instance.instance_id, instance])
+    );
+
+    const getDepth = (instance: AgentTeamInstance): number => {
+      const cached = depthById.get(instance.instance_id);
+      if (cached !== undefined) {
+        return cached;
+      }
+      let depth = 0;
+      let cursor = instance.parent_instance_id || null;
+      let guard = 0;
+      while (cursor && instanceById.has(cursor) && guard < 32) {
+        depth += 1;
+        cursor = instanceById.get(cursor)?.parent_instance_id || null;
+        guard += 1;
+      }
+      depthById.set(instance.instance_id, depth);
+      return depth;
+    };
+
+    const events: MissionRailEvent[] = [];
+
+    for (const instance of missionInstances) {
+      const depth = getDepth(instance);
+      const roleLabel = `${instance.role} ${instance.instance_id}`;
+      events.push({
+        id: `${instance.instance_id}:spawned`,
+        missionId,
+        instanceId: instance.instance_id,
+        parentInstanceId: instance.parent_instance_id,
+        role: instance.role,
+        status: instance.status,
+        label: `Spawned ${roleLabel}`,
+        detail: instance.parent_instance_id
+          ? `child of ${instance.parent_instance_id}`
+          : "root instance",
+        tone: "neutral",
+        depth,
+      });
+      events.push({
+        id: `${instance.instance_id}:status:${instance.status}`,
+        missionId,
+        instanceId: instance.instance_id,
+        parentInstanceId: instance.parent_instance_id,
+        role: instance.role,
+        status: instance.status,
+        label: `${roleLabel} is ${instance.status}`,
+        tone: getStatusTone(instance.status),
+        depth,
+      });
+    }
+
+    const missionApprovals = approvals.spawn_approvals.filter((approval) => {
+      const request = approval.request || {};
+      const requestMission = String((request as Record<string, unknown>).missionID || "");
+      return requestMission === missionId;
+    });
+
+    for (const approval of missionApprovals) {
+      const request = approval.request || {};
+      const role = String((request as Record<string, unknown>).role || "agent");
+      events.push({
+        id: `${approval.approval_id}:approval`,
+        missionId,
+        label: `Spawn approval pending for ${role}`,
+        detail: approval.approval_id,
+        tone: "warning",
+        depth: 0,
+        tsMs: approval.created_at_ms,
+      });
+    }
+
+    const toolApprovalCount = approvals.tool_approvals.filter((approval) => {
+      const sessionId = approval.session_id || "";
+      return missionInstances.some((instance) => instance.session_id === sessionId);
+    }).length;
+    if (toolApprovalCount > 0) {
+      events.push({
+        id: `${missionId}:tool-approvals`,
+        missionId,
+        label: `${toolApprovalCount} tool approval(s) pending`,
+        tone: "warning",
+        depth: 0,
+      });
+    }
+
+    return events.sort((a, b) => {
+      if (a.tsMs && b.tsMs) return a.tsMs - b.tsMs;
+      if (a.tsMs) return -1;
+      if (b.tsMs) return 1;
+      if (a.depth !== b.depth) return a.depth - b.depth;
+      return a.label.localeCompare(b.label);
+    });
+  }, [
+    approvals.spawn_approvals,
+    approvals.tool_approvals,
+    instances,
+    selectedMission,
+    selectedMissionDetailId,
+    selectedMissionId,
+  ]);
 
   const toolApprovals = approvals.tool_approvals;
 
@@ -269,7 +494,9 @@ export function AgentCommandCenter() {
         </div>
         <div className="rounded-lg border border-border bg-surface/60 p-2">
           <div className="text-[10px] uppercase text-text-subtle">Spawn Approvals</div>
-          <div className="text-lg font-semibold text-amber-300">{approvals.spawn_approvals.length}</div>
+          <div className="text-lg font-semibold text-amber-300">
+            {approvals.spawn_approvals.length}
+          </div>
         </div>
       </div>
 
@@ -326,7 +553,9 @@ export function AgentCommandCenter() {
 
       <div className="rounded-lg border border-border bg-surface/50 p-3 space-y-2">
         <div className="flex items-center justify-between">
-          <div className="text-xs uppercase tracking-wide text-text-subtle">Pending Spawn Approvals</div>
+          <div className="text-xs uppercase tracking-wide text-text-subtle">
+            Pending Spawn Approvals
+          </div>
           <input
             className="w-56 rounded border border-border bg-surface p-1.5 text-xs text-text"
             value={actionReason}
@@ -375,14 +604,86 @@ export function AgentCommandCenter() {
         )}
       </div>
 
+      <div className="rounded-lg border border-border bg-surface/50 p-3 space-y-3">
+        <div className="text-xs uppercase tracking-wide text-text-subtle">Search And Filters</div>
+        <input
+          className="w-full rounded border border-border bg-surface p-2 text-sm text-text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search mission / instance / session / role / status"
+        />
+        <div className="space-y-2">
+          <div className="text-[10px] uppercase text-text-subtle">Role</div>
+          <div className="flex flex-wrap gap-2">
+            {availableRoles.map((role) => (
+              <button
+                key={role}
+                className={`rounded-full border px-2 py-1 text-[11px] ${
+                  filterRole === role
+                    ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-100"
+                    : "border-border text-text-muted"
+                }`}
+                onClick={() => setFilterRole(role)}
+              >
+                {role}
+              </button>
+            ))}
+          </div>
+          <div className="text-[10px] uppercase text-text-subtle">Status</div>
+          <div className="flex flex-wrap gap-2">
+            {STATUS_FILTER_OPTIONS.map((status) => (
+              <button
+                key={status}
+                className={`rounded-full border px-2 py-1 text-[11px] ${
+                  filterStatus === status
+                    ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-100"
+                    : "border-border text-text-muted"
+                }`}
+                onClick={() => setFilterStatus(status)}
+              >
+                {status}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <select
+              className="rounded border border-border bg-surface p-2 text-xs text-text"
+              value={filterMission}
+              onChange={(e) => setFilterMission(e.target.value)}
+            >
+              {availableMissionIds.map((missionId) => (
+                <option key={missionId} value={missionId}>
+                  {missionId === "all" ? "all missions" : missionId}
+                </option>
+              ))}
+            </select>
+            <select
+              className="rounded border border-border bg-surface p-2 text-xs text-text"
+              value={filterParent}
+              onChange={(e) => setFilterParent(e.target.value)}
+            >
+              {availableParents.map((parentId) => (
+                <option key={parentId} value={parentId}>
+                  {parentId === "all" ? "all parents" : parentId}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="text-[11px] text-text-muted">
+            showing {filteredMissions.length}/{missions.length} missions and{" "}
+            {filteredInstances.length}/{instances.length} instances
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
         <div className="rounded-lg border border-border bg-surface/50 p-3 space-y-2">
           <div className="text-xs uppercase tracking-wide text-text-subtle">Missions</div>
           <div className="space-y-2 max-h-56 overflow-y-auto">
-            {missions.length === 0 ? (
+            {filteredMissions.length === 0 ? (
               <div className="text-xs text-text-muted">No missions yet.</div>
             ) : (
-              missions.map((mission) => (
+              filteredMissions.map((mission) => (
                 <div
                   key={mission.mission_id}
                   className={`rounded border p-2 cursor-pointer ${
@@ -397,7 +698,10 @@ export function AgentCommandCenter() {
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => void handleCancelMission(mission.mission_id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleCancelMission(mission.mission_id);
+                      }}
                     >
                       <PauseCircle className="mr-1 h-4 w-4" />
                       Cancel
@@ -416,10 +720,10 @@ export function AgentCommandCenter() {
         <div className="rounded-lg border border-border bg-surface/50 p-3 space-y-2">
           <div className="text-xs uppercase tracking-wide text-text-subtle">Instances</div>
           <div className="space-y-2 max-h-56 overflow-y-auto">
-            {instances.length === 0 ? (
+            {filteredInstances.length === 0 ? (
               <div className="text-xs text-text-muted">No instances yet.</div>
             ) : (
-              instances.map((instance) => (
+              filteredInstances.map((instance) => (
                 <div
                   key={instance.instance_id}
                   className={`rounded border p-2 cursor-pointer ${
@@ -433,7 +737,9 @@ export function AgentCommandCenter() {
                     <div>
                       <div className="text-sm text-text">
                         {instance.role}{" "}
-                        <span className="font-mono text-xs text-text-muted">{instance.instance_id}</span>
+                        <span className="font-mono text-xs text-text-muted">
+                          {instance.instance_id}
+                        </span>
                       </div>
                       <div className="text-xs text-text-muted">
                         mission {instance.mission_id} | {instance.status}
@@ -442,7 +748,10 @@ export function AgentCommandCenter() {
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => void handleCancelInstance(instance.instance_id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleCancelInstance(instance.instance_id);
+                      }}
                     >
                       <PauseCircle className="mr-1 h-4 w-4" />
                       Cancel
@@ -471,8 +780,8 @@ export function AgentCommandCenter() {
                   running {selectedMission.running_count} / total {selectedMission.instance_count}
                 </div>
                 <div>
-                  completed {selectedMission.completed_count} | failed {selectedMission.failed_count}{" "}
-                  | cancelled {selectedMission.cancelled_count}
+                  completed {selectedMission.completed_count} | failed{" "}
+                  {selectedMission.failed_count} | cancelled {selectedMission.cancelled_count}
                 </div>
                 <div className="pt-1">
                   tokens {selectedMission.token_used_total} | toolCalls{" "}
@@ -518,6 +827,40 @@ export function AgentCommandCenter() {
         </div>
       )}
 
+      <div className="rounded-lg border border-border bg-surface/50 p-3">
+        <div className="text-xs uppercase tracking-wide text-text-subtle mb-2">
+          Mission Activity Rail
+        </div>
+        {missionRailEvents.length === 0 ? (
+          <div className="text-xs text-text-muted">
+            Select a mission to see spawn chain, status transitions, failures, and cancellations.
+          </div>
+        ) : (
+          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+            {missionRailEvents.map((event) => (
+              <div
+                key={event.id}
+                className={`rounded border p-2 ${toneClassName(event.tone)}`}
+                style={{ marginLeft: `${Math.min(event.depth, 6) * 14}px` }}
+              >
+                <div className="flex items-center gap-2 text-xs text-text">
+                  <span
+                    className={`inline-block h-2 w-2 rounded-full ${toneDotClassName(event.tone)}`}
+                  />
+                  <span>{event.label}</span>
+                  {event.status ? (
+                    <span className="text-[10px] uppercase text-text-muted">{event.status}</span>
+                  ) : null}
+                </div>
+                {event.detail ? (
+                  <div className="mt-1 text-[11px] text-text-muted">{event.detail}</div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {toolApprovals.length > 0 && (
         <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 space-y-2">
           <div className="flex items-center gap-2 text-rose-200 text-sm">
@@ -542,7 +885,9 @@ export function AgentCommandCenter() {
                   <div className="mt-2 flex gap-2">
                     <Button
                       size="sm"
-                      onClick={() => void handleApproveTool(approval.session_id!, approval.tool_call_id)}
+                      onClick={() =>
+                        void handleApproveTool(approval.session_id!, approval.tool_call_id)
+                      }
                     >
                       <CheckCircle2 className="mr-1 h-4 w-4" />
                       Approve Tool
@@ -550,7 +895,9 @@ export function AgentCommandCenter() {
                     <Button
                       size="sm"
                       variant="danger"
-                      onClick={() => void handleDenyTool(approval.session_id!, approval.tool_call_id)}
+                      onClick={() =>
+                        void handleDenyTool(approval.session_id!, approval.tool_call_id)
+                      }
                     >
                       <XCircle className="mr-1 h-4 w-4" />
                       Deny Tool
@@ -558,7 +905,8 @@ export function AgentCommandCenter() {
                   </div>
                 ) : (
                   <div className="mt-1 text-xs text-rose-100/80">
-                    Missing `sessionID`/`toolCallID` in approval payload; use request center fallback.
+                    Missing `sessionID`/`toolCallID` in approval payload; use request center
+                    fallback.
                   </div>
                 )}
               </div>
@@ -575,4 +923,3 @@ export function AgentCommandCenter() {
     </div>
   );
 }
-

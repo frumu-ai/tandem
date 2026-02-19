@@ -5,18 +5,16 @@ Owner: Platform / Agent Runtime
 
 ## In Progress
 
-- [ ] `ACC-009` Add mission timeline/event rail (spawn chain, state transitions, failures, cancellations).
-- [ ] `ACC-010` Add mission/instance search + filter chips (role, status, mission, parent).
+- [ ] `ACC-011` Add guided spawn flow for non-developers (simple mode + advanced mode).
+- [ ] `ACC-012` Add command-center health strip (SSE connected, last event time, refresh mode).
 
 ## Ready Next
 
-- [ ] `ACC-011` Add guided spawn flow for non-developers (simple mode + advanced mode).
-- [ ] `ACC-012` Add command-center “health strip” (SSE connected, last event time, refresh mode).
+- [ ] `ACC-013` Add desktop approvals inbox combining spawn approvals and tool approvals in one queue.
+- [ ] `ACC-014` Add TUI command-center parity (`/agent-team` dashboard + approval actions).
 
 ## Backlog
 
-- [ ] `ACC-013` Add desktop approvals inbox combining spawn approvals and tool approvals in one queue.
-- [ ] `ACC-014` Add TUI command-center parity (`/agent-team` dashboard + approval actions).
 - [ ] `ACC-015` Add role/template editor UX in desktop with safe policy validation preview.
 - [ ] `ACC-016` Add exportable mission run report (JSON + markdown summary).
 - [ ] `ACC-017` Add operator onboarding tour for first-time command-center users.
@@ -33,6 +31,8 @@ Owner: Platform / Agent Runtime
 - [x] `ACC-006` Add mission and instance drill-down details + tool-approval action path in desktop UI.
 - [x] `ACC-007` Add SSE-driven refresh trigger in desktop command center for `agent_team.*` event stream updates (polling fallback retained).
 - [x] `ACC-008` Normalize `/agent-team/approvals` tool-approval payload contract (`approvalID`, `sessionID`, `toolCallID`, `tool`, `args`, `status`) and consume typed shape in desktop.
+- [x] `ACC-009` Add mission timeline/event rail in desktop command center (spawn chain + status/failure/cancel activity).
+- [x] `ACC-010` Add mission/instance search + filter chips (role, status, mission, parent).
 
 ## Risks / Notes
 
