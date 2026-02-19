@@ -35,6 +35,17 @@ use crate::telegram::TelegramChannel;
 use crate::traits::{Channel, ChannelMessage, SendMessage};
 
 // ---------------------------------------------------------------------------
+// Auth helper
+// ---------------------------------------------------------------------------
+
+/// Attach both auth schemes so the dispatcher works regardless of whether the
+/// Tandem server is running in headless mode (Bearer) or via the Tauri sidecar
+/// (x-tandem-token).
+fn add_auth(rb: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
+    rb.header("x-tandem-token", token).bearer_auth(token)
+}
+
+// ---------------------------------------------------------------------------
 // Session map + persistence
 // ---------------------------------------------------------------------------
 
@@ -299,9 +310,7 @@ async fn get_or_create_session(
         "directory": "."
     });
 
-    let resp = client
-        .post(format!("{base_url}/session"))
-        .bearer_auth(api_token)
+    let resp = add_auth(client.post(format!("{base_url}/session")), api_token)
         .json(&body)
         .send()
         .await;
@@ -355,12 +364,13 @@ async fn run_in_session(
         "parts": [{ "type": "text", "text": content }]
     });
 
-    let resp = client
-        .post(format!("{base_url}/session/{session_id}/prompt_sync"))
-        .bearer_auth(api_token)
-        .json(&body)
-        .send()
-        .await?;
+    let resp = add_auth(
+        client.post(format!("{base_url}/session/{session_id}/prompt_sync")),
+        api_token,
+    )
+    .json(&body)
+    .send()
+    .await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -470,9 +480,7 @@ async fn list_sessions_text(
     let client = reqwest::Client::new();
     let source_title_prefix = format!("{channel} — {sender}");
 
-    let Ok(resp) = client
-        .get(format!("{base_url}/session"))
-        .bearer_auth(api_token)
+    let Ok(resp) = add_auth(client.get(format!("{base_url}/session")), api_token)
         .send()
         .await
     else {
@@ -536,9 +544,7 @@ async fn new_session_text(
     let client = reqwest::Client::new();
     let body = serde_json::json!({ "title": display_name, "directory": "." });
 
-    let Ok(resp) = client
-        .post(format!("{base_url}/session"))
-        .bearer_auth(api_token)
+    let Ok(resp) = add_auth(client.post(format!("{base_url}/session")), api_token)
         .json(&body)
         .send()
         .await
@@ -576,9 +582,7 @@ async fn resume_session_text(
     let source_prefix = format!("{} — {}", msg.channel, msg.sender);
     let client = reqwest::Client::new();
 
-    let Ok(resp) = client
-        .get(format!("{base_url}/session"))
-        .bearer_auth(api_token)
+    let Ok(resp) = add_auth(client.get(format!("{base_url}/session")), api_token)
         .send()
         .await
     else {
@@ -646,9 +650,7 @@ async fn status_text(
     };
 
     let client = reqwest::Client::new();
-    let Ok(resp) = client
-        .get(format!("{base_url}/session/{sid}"))
-        .bearer_auth(api_token)
+    let Ok(resp) = add_auth(client.get(format!("{base_url}/session/{sid}")), api_token)
         .send()
         .await
     else {
@@ -690,9 +692,7 @@ async fn rename_session_text(
     };
 
     let client = reqwest::Client::new();
-    let resp = client
-        .patch(format!("{base_url}/session/{sid}"))
-        .bearer_auth(api_token)
+    let resp = add_auth(client.patch(format!("{base_url}/session/{sid}")), api_token)
         .json(&serde_json::json!({ "title": name }))
         .send()
         .await;
