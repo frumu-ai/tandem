@@ -30,3 +30,4 @@ title: Desktop Troubleshooting
 - Restart desktop and engine.
 - Re-open workspace and session.
 - Re-run with a small validation prompt first.
+- If you run headless in production, use: [Headless Deployment](./headless-deployment/).

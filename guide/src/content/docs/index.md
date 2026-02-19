@@ -12,12 +12,14 @@ Welcome to the Tandem documentation focused on the TUI and engine runtime.
 - [Build from Source (Contributors)](./build-from-source/)
 - [Installation (Legacy Entry)](./installation/)
 - [Running Tandem](./usage/)
+- [Headless Service](./headless-service/)
 
 ## User Guide
 
 - [TUI Guide](./tui-guide/)
 - [Configuration](./configuration/)
 - [Agents & Sessions](./agents-and-sessions/)
+- [Headless Deployment](./desktop/headless-deployment/)
 - [Agent Teams](./agent-teams/)
 - [Agent Command Center](./agent-command-center/)
 - [Agent Teams Rollout Plan](./agent-teams-rollout/)

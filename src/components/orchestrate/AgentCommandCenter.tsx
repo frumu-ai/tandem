@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  approveTool,
   agentTeamApproveSpawn,
   agentTeamCancelInstance,
   agentTeamCancelMission,
@@ -9,6 +10,7 @@ import {
   agentTeamListMissions,
   agentTeamListTemplates,
   agentTeamSpawn,
+  denyTool,
   type AgentTeamApprovals,
   type AgentTeamInstance,
   type AgentTeamMissionSummary,
@@ -33,6 +35,8 @@ export function AgentCommandCenter() {
   const [selectedRole, setSelectedRole] = useState("worker");
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [selectedMissionId, setSelectedMissionId] = useState("");
+  const [selectedMissionDetailId, setSelectedMissionDetailId] = useState<string | null>(null);
+  const [selectedInstanceDetailId, setSelectedInstanceDetailId] = useState<string | null>(null);
   const [justification, setJustification] = useState("Delegate focused task execution.");
   const [actionReason, setActionReason] = useState("Reviewed in command center.");
 
@@ -73,6 +77,62 @@ export function AgentCommandCenter() {
     }
     return counts;
   }, [instances]);
+
+  const selectedMission = useMemo(
+    () =>
+      missions.find(
+        (mission) => mission.mission_id === (selectedMissionDetailId || selectedMissionId)
+      ) || null,
+    [missions, selectedMissionDetailId, selectedMissionId]
+  );
+
+  const selectedInstance = useMemo(
+    () =>
+      instances.find((instance) => instance.instance_id === selectedInstanceDetailId) || null,
+    [instances, selectedInstanceDetailId]
+  );
+
+  const toolApprovals = useMemo(() => {
+    const getString = (obj: Record<string, unknown>, keys: string[]): string | null => {
+      for (const key of keys) {
+        const value = obj[key];
+        if (typeof value === "string" && value.trim()) {
+          return value;
+        }
+      }
+      return null;
+    };
+
+    return approvals.tool_approvals.map((raw, index) => {
+      const obj = (raw ?? {}) as Record<string, unknown>;
+      const sessionId =
+        getString(obj, ["sessionID", "sessionId", "session_id"]) ??
+        getString((obj.request as Record<string, unknown>) || {}, [
+          "sessionID",
+          "sessionId",
+          "session_id",
+        ]);
+      const toolCallId =
+        getString(obj, ["toolCallID", "toolCallId", "tool_call_id", "callID", "id"]) ??
+        getString((obj.tool as Record<string, unknown>) || {}, [
+          "callID",
+          "toolCallID",
+          "toolCallId",
+          "id",
+        ]);
+      const toolName =
+        getString(obj, ["tool", "toolName", "name"]) ??
+        getString((obj.tool as Record<string, unknown>) || {}, ["name", "tool"]);
+
+      return {
+        id: getString(obj, ["id", "requestID", "requestId"]) || `tool-approval-${index}`,
+        sessionId,
+        toolCallId,
+        toolName: toolName || "tool",
+        raw: obj,
+      };
+    });
+  }, [approvals.tool_approvals]);
 
   const handleSpawn = async () => {
     if (!justification.trim()) {
@@ -147,6 +207,34 @@ export function AgentCommandCenter() {
     setIsLoading(true);
     try {
       await agentTeamCancelMission(missionId, actionReason);
+      await load();
+      setError(null);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleApproveTool = async (sessionId: string, toolCallId: string) => {
+    setIsLoading(true);
+    try {
+      await approveTool(sessionId, toolCallId);
+      await load();
+      setError(null);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDenyTool = async (sessionId: string, toolCallId: string) => {
+    setIsLoading(true);
+    try {
+      await denyTool(sessionId, toolCallId);
       await load();
       setError(null);
     } catch (e) {
@@ -300,7 +388,15 @@ export function AgentCommandCenter() {
               <div className="text-xs text-text-muted">No missions yet.</div>
             ) : (
               missions.map((mission) => (
-                <div key={mission.mission_id} className="rounded border border-border p-2">
+                <div
+                  key={mission.mission_id}
+                  className={`rounded border p-2 cursor-pointer ${
+                    selectedMission?.mission_id === mission.mission_id
+                      ? "border-cyan-400/60 bg-cyan-500/10"
+                      : "border-border"
+                  }`}
+                  onClick={() => setSelectedMissionDetailId(mission.mission_id)}
+                >
                   <div className="flex items-center justify-between">
                     <div className="font-mono text-xs text-text">{mission.mission_id}</div>
                     <Button
@@ -329,7 +425,15 @@ export function AgentCommandCenter() {
               <div className="text-xs text-text-muted">No instances yet.</div>
             ) : (
               instances.map((instance) => (
-                <div key={instance.instance_id} className="rounded border border-border p-2">
+                <div
+                  key={instance.instance_id}
+                  className={`rounded border p-2 cursor-pointer ${
+                    selectedInstance?.instance_id === instance.instance_id
+                      ? "border-cyan-400/60 bg-cyan-500/10"
+                      : "border-border"
+                  }`}
+                  onClick={() => setSelectedInstanceDetailId(instance.instance_id)}
+                >
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="text-sm text-text">
@@ -356,14 +460,111 @@ export function AgentCommandCenter() {
         </div>
       </div>
 
-      {approvals.tool_approvals.length > 0 && (
-        <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3">
+      {(selectedMission || selectedInstance) && (
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+          <div className="rounded-lg border border-border bg-surface/50 p-3">
+            <div className="text-xs uppercase tracking-wide text-text-subtle mb-2">
+              Mission Drill-Down
+            </div>
+            {selectedMission ? (
+              <div className="space-y-1 text-xs text-text">
+                <div>
+                  <span className="text-text-muted">mission:</span>{" "}
+                  <span className="font-mono">{selectedMission.mission_id}</span>
+                </div>
+                <div>
+                  running {selectedMission.running_count} / total {selectedMission.instance_count}
+                </div>
+                <div>
+                  completed {selectedMission.completed_count} | failed {selectedMission.failed_count}{" "}
+                  | cancelled {selectedMission.cancelled_count}
+                </div>
+                <div className="pt-1">
+                  tokens {selectedMission.token_used_total} | toolCalls{" "}
+                  {selectedMission.tool_calls_used_total} | steps {selectedMission.steps_used_total}
+                </div>
+                <div>cost ${selectedMission.cost_used_usd_total.toFixed(4)}</div>
+              </div>
+            ) : (
+              <div className="text-xs text-text-muted">Select a mission to inspect details.</div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-border bg-surface/50 p-3">
+            <div className="text-xs uppercase tracking-wide text-text-subtle mb-2">
+              Instance Drill-Down
+            </div>
+            {selectedInstance ? (
+              <div className="space-y-2 text-xs text-text">
+                <div>
+                  <span className="text-text-muted">instance:</span>{" "}
+                  <span className="font-mono">{selectedInstance.instance_id}</span>
+                </div>
+                <div>
+                  role {selectedInstance.role} | status {selectedInstance.status}
+                </div>
+                <div>
+                  mission <span className="font-mono">{selectedInstance.mission_id}</span> | session{" "}
+                  <span className="font-mono">{selectedInstance.session_id}</span>
+                </div>
+                <div className="text-text-muted">budget</div>
+                <pre className="overflow-x-auto rounded border border-border bg-surface p-2 text-[11px]">
+                  {JSON.stringify(selectedInstance.budget, null, 2)}
+                </pre>
+                <div className="text-text-muted">capabilities</div>
+                <pre className="overflow-x-auto rounded border border-border bg-surface p-2 text-[11px]">
+                  {JSON.stringify(selectedInstance.capabilities || {}, null, 2)}
+                </pre>
+              </div>
+            ) : (
+              <div className="text-xs text-text-muted">Select an instance to inspect details.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {toolApprovals.length > 0 && (
+        <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 space-y-2">
           <div className="flex items-center gap-2 text-rose-200 text-sm">
             <ShieldAlert className="h-4 w-4" />
-            Tool approvals pending: {approvals.tool_approvals.length}
+            Tool approvals pending: {toolApprovals.length}
           </div>
-          <div className="text-xs text-rose-100/90 mt-1">
-            Review tool approvals from the existing approval queue before continuing.
+          <div className="space-y-2">
+            {toolApprovals.map((approval) => (
+              <div key={approval.id} className="rounded border border-rose-500/30 bg-black/10 p-2">
+                <div className="text-xs text-rose-100">
+                  {approval.toolName}{" "}
+                  {approval.sessionId ? (
+                    <>
+                      in <span className="font-mono">{approval.sessionId}</span>
+                    </>
+                  ) : null}
+                </div>
+                {approval.sessionId && approval.toolCallId ? (
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => void handleApproveTool(approval.sessionId!, approval.toolCallId!)}
+                    >
+                      <CheckCircle2 className="mr-1 h-4 w-4" />
+                      Approve Tool
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      onClick={() => void handleDenyTool(approval.sessionId!, approval.toolCallId!)}
+                    >
+                      <XCircle className="mr-1 h-4 w-4" />
+                      Deny Tool
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="mt-1 text-xs text-rose-100/80">
+                    Missing `sessionID`/`toolCallID` in approval payload; use request center fallback.
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}

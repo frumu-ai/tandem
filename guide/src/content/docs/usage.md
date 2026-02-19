@@ -34,6 +34,12 @@ The TUI will attempt to connect to the local engine. If the engine is not runnin
 
 When a shared engine is already running, TUI now checks engine version before attaching. If the running engine is older than the TUI-required version, TUI defaults to replacing it with a fresh managed engine.
 
+## Headless Service Mode
+
+If you want to run Tandem as a service (without launching TUI), see:
+
+- [Headless Service](./headless-service/)
+
 ## Troubleshooting
 
 - **Connection Refused**: Ensure `tandem-engine` is running in a separate terminal.

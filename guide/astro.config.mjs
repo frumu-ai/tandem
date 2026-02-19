@@ -33,6 +33,7 @@ export default defineConfig({
             "build-from-source",
             "installation",
             "usage",
+            "headless-service",
           ],
         },
         {
@@ -41,6 +42,7 @@ export default defineConfig({
             "tui-guide",
             "configuration",
             "agents-and-sessions",
+            "desktop/headless-deployment",
             "agent-teams",
             "design-system",
           ],

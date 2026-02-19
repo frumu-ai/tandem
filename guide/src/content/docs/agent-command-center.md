@@ -32,3 +32,7 @@ The Agent Command Center is the desktop control surface for Agent Teams.
 - Spawn policy is enforced server-side for every action.
 - Approval decisions are auditable and require justification when policy requires it.
 - Mission/instance cancellation uses the same runtime safety gates as API callers.
+
+## Implementation Tracking
+
+- Internal kanban: `docs/AGENT_COMMAND_CENTER_KANBAN.md`
