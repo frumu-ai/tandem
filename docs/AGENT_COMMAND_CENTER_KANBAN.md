@@ -5,19 +5,16 @@ Owner: Platform / Agent Runtime
 
 ## In Progress
 
-- [ ] `ACC-011` Add guided spawn flow for non-developers (simple mode + advanced mode).
-- [ ] `ACC-012` Add command-center health strip (SSE connected, last event time, refresh mode).
+- [ ] `ACC-015` Add role/template editor UX in desktop with safe policy validation preview.
+- [ ] Harden command-center payload guards to tolerate mixed snake_case/camelCase responses.
 
 ## Ready Next
 
-- [ ] `ACC-013` Add desktop approvals inbox combining spawn approvals and tool approvals in one queue.
-- [ ] `ACC-014` Add TUI command-center parity (`/agent-team` dashboard + approval actions).
+- [ ] `ACC-017` Add operator onboarding tour for first-time command-center users.
 
 ## Backlog
 
-- [ ] `ACC-015` Add role/template editor UX in desktop with safe policy validation preview.
-- [ ] `ACC-016` Add exportable mission run report (JSON + markdown summary).
-- [ ] `ACC-017` Add operator onboarding tour for first-time command-center users.
+- [ ] Add command-center smoke tests (desktop integration path).
 
 ## Done
 
@@ -33,6 +30,11 @@ Owner: Platform / Agent Runtime
 - [x] `ACC-008` Normalize `/agent-team/approvals` tool-approval payload contract (`approvalID`, `sessionID`, `toolCallID`, `tool`, `args`, `status`) and consume typed shape in desktop.
 - [x] `ACC-009` Add mission timeline/event rail in desktop command center (spawn chain + status/failure/cancel activity).
 - [x] `ACC-010` Add mission/instance search + filter chips (role, status, mission, parent).
+- [x] `ACC-011` Add guided spawn flow for non-developers (simple mode + advanced mode).
+- [x] `ACC-012` Add command-center health strip (SSE connected, last event time, refresh mode).
+- [x] `ACC-013` Add desktop approvals inbox combining spawn approvals and tool approvals in one queue.
+- [x] `ACC-014` Add TUI command-center parity (`/agent-team` dashboard + approval actions).
+- [x] `ACC-016` Add exportable mission run report (JSON + markdown summary).
 
 ## Risks / Notes
 

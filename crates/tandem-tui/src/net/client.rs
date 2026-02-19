@@ -477,6 +477,80 @@ struct MissionRecordResponse {
     mission: MissionState,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct AgentTeamMissionSummary {
+    #[serde(rename = "missionID")]
+    pub mission_id: String,
+    #[serde(rename = "instanceCount")]
+    pub instance_count: u64,
+    #[serde(rename = "runningCount")]
+    pub running_count: u64,
+    #[serde(rename = "completedCount")]
+    pub completed_count: u64,
+    #[serde(rename = "failedCount")]
+    pub failed_count: u64,
+    #[serde(rename = "cancelledCount")]
+    pub cancelled_count: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct AgentTeamInstance {
+    #[serde(rename = "instanceID")]
+    pub instance_id: String,
+    #[serde(rename = "missionID")]
+    pub mission_id: String,
+    #[serde(rename = "parentInstanceID", default)]
+    pub parent_instance_id: Option<String>,
+    pub role: String,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct AgentTeamSpawnApproval {
+    #[serde(rename = "approvalID")]
+    pub approval_id: String,
+    #[serde(rename = "createdAtMs")]
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub request: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct AgentTeamToolApproval {
+    #[serde(rename = "approvalID")]
+    pub approval_id: String,
+    #[serde(rename = "sessionID", default)]
+    pub session_id: Option<String>,
+    #[serde(rename = "toolCallID", default)]
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+struct AgentTeamMissionsResponse {
+    #[serde(default)]
+    missions: Vec<AgentTeamMissionSummary>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+struct AgentTeamInstancesResponse {
+    #[serde(default)]
+    instances: Vec<AgentTeamInstance>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct AgentTeamApprovalsResponse {
+    #[serde(rename = "spawnApprovals", default)]
+    pub spawn_approvals: Vec<AgentTeamSpawnApproval>,
+    #[serde(rename = "toolApprovals", default)]
+    pub tool_approvals: Vec<AgentTeamToolApproval>,
+}
+
 impl EngineClient {
     pub fn new(base_url: String) -> Self {
         Self::new_with_token(base_url, None)
@@ -1015,6 +1089,63 @@ impl EngineClient {
             .await?;
         let payload = resp.json::<MissionApplyEventResult>().await?;
         Ok(payload)
+    }
+
+    pub async fn agent_team_missions(&self) -> Result<Vec<AgentTeamMissionSummary>> {
+        let url = format!("{}/agent-team/missions", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        let payload = resp.json::<AgentTeamMissionsResponse>().await?;
+        Ok(payload.missions)
+    }
+
+    pub async fn agent_team_instances(
+        &self,
+        mission_id: Option<&str>,
+    ) -> Result<Vec<AgentTeamInstance>> {
+        let url = format!("{}/agent-team/instances", self.base_url);
+        let req = if let Some(mission_id) = mission_id {
+            self.client.get(&url).query(&[("missionID", mission_id)])
+        } else {
+            self.client.get(&url)
+        };
+        let resp = req.send().await?;
+        let payload = resp.json::<AgentTeamInstancesResponse>().await?;
+        Ok(payload.instances)
+    }
+
+    pub async fn agent_team_approvals(&self) -> Result<AgentTeamApprovalsResponse> {
+        let url = format!("{}/agent-team/approvals", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        let payload = resp.json::<AgentTeamApprovalsResponse>().await?;
+        Ok(payload)
+    }
+
+    pub async fn agent_team_approve_spawn(&self, approval_id: &str, reason: &str) -> Result<bool> {
+        let url = format!(
+            "{}/agent-team/approvals/spawn/{}/approve",
+            self.base_url, approval_id
+        );
+        let resp = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "reason": reason }))
+            .send()
+            .await?;
+        Ok(resp.status().is_success())
+    }
+
+    pub async fn agent_team_deny_spawn(&self, approval_id: &str, reason: &str) -> Result<bool> {
+        let url = format!(
+            "{}/agent-team/approvals/spawn/{}/deny",
+            self.base_url, approval_id
+        );
+        let resp = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "reason": reason }))
+            .send()
+            .await?;
+        Ok(resp.status().is_success())
     }
 }
 
