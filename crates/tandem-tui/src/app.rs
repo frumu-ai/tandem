@@ -4896,6 +4896,16 @@ MISSIONS:
                                            Quick approval_granted for test
   /mission_review_no <mission_id> <work_item_id> [reason]
                                            Quick approval_denied for review
+  /agent-team                              Show agent-team dashboard summary
+  /agent-team missions                     List agent-team mission rollups
+  /agent-team instances [mission_id]       List agent-team instances
+  /agent-team approvals                    List pending agent-team approvals
+  /agent-team approve spawn <approval_id> [reason]
+                                           Approve pending spawn approval
+  /agent-team deny spawn <approval_id> [reason]
+                                           Deny pending spawn approval
+  /agent-team approve tool <request_id>    Approve tool permission request
+  /agent-team deny tool <request_id>       Deny tool permission request
 
 CONFIG:
   /config            Show configuration
@@ -6194,6 +6204,156 @@ MULTI-AGENT KEYS:
                         mission_id, work_item_id, result.mission.revision
                     ),
                     Err(err) => format!("Failed to deny review: {}", err),
+                }
+            }
+
+            "agent-team" | "agent_team" => {
+                let Some(client) = &self.client else {
+                    return "Engine client not connected.".to_string();
+                };
+                let sub = args.first().copied().unwrap_or("summary");
+                match sub {
+                    "summary" => {
+                        let missions = client.agent_team_missions().await;
+                        let instances = client.agent_team_instances(None).await;
+                        let approvals = client.agent_team_approvals().await;
+                        match (missions, instances, approvals) {
+                            (Ok(missions), Ok(instances), Ok(approvals)) => format!(
+                                "Agent-Team Summary:\n  Missions: {}\n  Instances: {}\n  Spawn approvals: {}\n  Tool approvals: {}",
+                                missions.len(),
+                                instances.len(),
+                                approvals.spawn_approvals.len(),
+                                approvals.tool_approvals.len()
+                            ),
+                            _ => "Failed to load agent-team summary.".to_string(),
+                        }
+                    }
+                    "missions" => match client.agent_team_missions().await {
+                        Ok(missions) => {
+                            if missions.is_empty() {
+                                return "No agent-team missions found.".to_string();
+                            }
+                            let lines = missions
+                                .into_iter()
+                                .map(|mission| {
+                                    format!(
+                                        "- {} total={} running={} done={} failed={} cancelled={}",
+                                        mission.mission_id,
+                                        mission.instance_count,
+                                        mission.running_count,
+                                        mission.completed_count,
+                                        mission.failed_count,
+                                        mission.cancelled_count
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            format!("Agent-Team Missions:\n{}", lines.join("\n"))
+                        }
+                        Err(err) => format!("Failed to list agent-team missions: {}", err),
+                    },
+                    "instances" => {
+                        let mission_id = args.get(1).copied();
+                        match client.agent_team_instances(mission_id).await {
+                            Ok(instances) => {
+                                if instances.is_empty() {
+                                    return "No agent-team instances found.".to_string();
+                                }
+                                let lines = instances
+                                    .into_iter()
+                                    .map(|instance| {
+                                        format!(
+                                            "- {} role={} mission={} status={} parent={}",
+                                            instance.instance_id,
+                                            instance.role,
+                                            instance.mission_id,
+                                            instance.status,
+                                            instance.parent_instance_id.unwrap_or_else(|| "-".to_string())
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                format!("Agent-Team Instances:\n{}", lines.join("\n"))
+                            }
+                            Err(err) => format!("Failed to list agent-team instances: {}", err),
+                        }
+                    }
+                    "approvals" => match client.agent_team_approvals().await {
+                        Ok(approvals) => {
+                            let mut lines = Vec::new();
+                            for spawn in approvals.spawn_approvals {
+                                lines.push(format!("- spawn approval {}", spawn.approval_id));
+                            }
+                            for tool in approvals.tool_approvals {
+                                lines.push(format!(
+                                    "- tool approval {} ({})",
+                                    tool.approval_id,
+                                    tool.tool.unwrap_or_else(|| "tool".to_string())
+                                ));
+                            }
+                            if lines.is_empty() {
+                                "No agent-team approvals pending.".to_string()
+                            } else {
+                            format!("Agent-Team Approvals:\n{}", lines.join("\n"))
+                            }
+                        }
+                        Err(err) => format!("Failed to list agent-team approvals: {}", err),
+                    },
+                    "approve" => {
+                        if args.len() < 3 {
+                            return "Usage: /agent-team approve <spawn|tool> <id> [reason]"
+                                .to_string();
+                        }
+                        let target = args[1];
+                        let id = args[2];
+                        let reason = if args.len() > 3 {
+                            args[3..].join(" ")
+                        } else {
+                            "approved in TUI".to_string()
+                        };
+                        match target {
+                            "spawn" => match client.agent_team_approve_spawn(id, &reason).await {
+                                Ok(true) => format!("Approved spawn approval {}.", id),
+                                Ok(false) => format!("Spawn approval not found or denied: {}", id),
+                                Err(err) => format!("Failed to approve spawn approval: {}", err),
+                            },
+                            "tool" => match client.reply_permission(id, "allow").await {
+                                Ok(true) => format!("Approved tool request {}.", id),
+                                Ok(false) => format!("Tool request not found: {}", id),
+                                Err(err) => format!("Failed to approve tool request: {}", err),
+                            },
+                            _ => "Usage: /agent-team approve <spawn|tool> <id> [reason]"
+                                .to_string(),
+                        }
+                    }
+                    "deny" => {
+                        if args.len() < 3 {
+                            return "Usage: /agent-team deny <spawn|tool> <id> [reason]"
+                                .to_string();
+                        }
+                        let target = args[1];
+                        let id = args[2];
+                        let reason = if args.len() > 3 {
+                            args[3..].join(" ")
+                        } else {
+                            "denied in TUI".to_string()
+                        };
+                        match target {
+                            "spawn" => match client.agent_team_deny_spawn(id, &reason).await {
+                                Ok(true) => format!("Denied spawn approval {}.", id),
+                                Ok(false) => format!("Spawn approval not found or already resolved: {}", id),
+                                Err(err) => format!("Failed to deny spawn approval: {}", err),
+                            },
+                            "tool" => match client.reply_permission(id, "deny").await {
+                                Ok(true) => format!("Denied tool request {}.", id),
+                                Ok(false) => format!("Tool request not found: {}", id),
+                                Err(err) => format!("Failed to deny tool request: {}", err),
+                            },
+                            _ => "Usage: /agent-team deny <spawn|tool> <id> [reason]"
+                                .to_string(),
+                        }
+                    }
+                    _ => {
+                        "Usage: /agent-team [summary|missions|instances [mission_id]|approvals|approve <spawn|tool> <id> [reason]|deny <spawn|tool> <id> [reason]]".to_string()
+                    }
                 }
             }
 
