@@ -238,8 +238,7 @@ async fn process_channel_message(
     // --- Slash command intercept ---
     if msg.content.starts_with('/') {
         if let Some(cmd) = parse_slash_command(&msg.content) {
-            let response =
-                handle_slash_command(cmd, &msg, base_url, api_token, session_map).await;
+            let response = handle_slash_command(cmd, &msg, base_url, api_token, session_map).await;
             let _ = channel
                 .send(&SendMessage {
                     content: response,
@@ -252,8 +251,7 @@ async fn process_channel_message(
 
     // --- Normal message → Tandem session ---
     let map_key = format!("{}:{}", msg.channel, msg.sender);
-    let session_id =
-        get_or_create_session(&map_key, &msg, base_url, api_token, session_map).await;
+    let session_id = get_or_create_session(&map_key, &msg, base_url, api_token, session_map).await;
 
     let session_id = match session_id {
         Some(id) => id,
@@ -693,7 +691,7 @@ async fn rename_session_text(
 
     let client = reqwest::Client::new();
     let resp = client
-        .put(format!("{base_url}/session/{sid}"))
+        .patch(format!("{base_url}/session/{sid}"))
         .bearer_auth(api_token)
         .json(&serde_json::json!({ "title": name }))
         .send()

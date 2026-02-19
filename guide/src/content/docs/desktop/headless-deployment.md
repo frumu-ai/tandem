@@ -91,9 +91,64 @@ Web admin:
 
 - `http://127.0.0.1:39731/admin`
 
+## Reverse Proxy (TLS)
+
+### Caddy (recommended quick setup)
+
+`/etc/caddy/Caddyfile`:
+
+```caddy
+tandem.example.com {
+  reverse_proxy 127.0.0.1:39731
+}
+```
+
+Then reload Caddy:
+
+```bash
+sudo systemctl reload caddy
+```
+
+Caddy will provision TLS certificates automatically when DNS is configured.
+
+### Nginx (minimal example)
+
+```nginx
+server {
+  listen 443 ssl http2;
+  server_name tandem.example.com;
+
+  ssl_certificate /etc/letsencrypt/live/tandem.example.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/tandem.example.com/privkey.pem;
+
+  location / {
+    proxy_pass http://127.0.0.1:39731;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}
+```
+
+### Cloudflare Tunnel (no public port)
+
+Run a tunnel to the local Tandem service:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:39731
+```
+
+For a named tunnel (recommended for persistent setup), create a tunnel and map
+your hostname in Cloudflare DNS, then run it as a service:
+
+```bash
+cloudflared tunnel create tandem
+cloudflared tunnel route dns tandem tandem.example.com
+cloudflared tunnel run tandem
+```
+
 ## Notes
 
 - Keep token auth enabled (`TANDEM_API_TOKEN`).
 - Terminate TLS at a reverse proxy if exposed beyond localhost.
 - For channel features, set channel env vars or config values in state config.
-
