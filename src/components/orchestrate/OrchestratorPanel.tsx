@@ -17,6 +17,7 @@ import {
 import { Button } from "@/components/ui";
 import { BudgetMeter } from "./BudgetMeter";
 import { TaskBoard } from "./TaskBoard";
+import { AgentCommandCenter } from "./AgentCommandCenter";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { LogsDrawer } from "@/components/logs";
 import { getProvidersConfig, getSessionMessages, type SessionMessage } from "@/lib/tauri";
@@ -1072,6 +1073,10 @@ export function OrchestratorPanel({
               {error}
             </div>
           )}
+
+          <div className="mt-4">
+            <AgentCommandCenter />
+          </div>
         </div>
       </div>
 

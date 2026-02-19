@@ -609,6 +609,16 @@ pub fn run() {
             commands::mission_create,
             commands::mission_get,
             commands::mission_apply_event,
+            // Agent-team command center
+            commands::agent_team_list_templates,
+            commands::agent_team_list_instances,
+            commands::agent_team_list_missions,
+            commands::agent_team_list_approvals,
+            commands::agent_team_spawn,
+            commands::agent_team_cancel_instance,
+            commands::agent_team_cancel_mission,
+            commands::agent_team_approve_spawn,
+            commands::agent_team_deny_spawn,
             // Execution planning / staging area
             commands::stage_tool_operation,
             commands::get_staged_operations,

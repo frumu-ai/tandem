@@ -85,6 +85,16 @@ Error response:
 }
 ```
 
+If policy requires user approval, response shape is still `200` with:
+
+```json
+{
+  "ok": false,
+  "code": "spawn_requires_approval",
+  "requiresUserApproval": true
+}
+```
+
 ## Tool-driven spawn (`spawn_agent`)
 
 `spawn_agent` uses the same server-side policy/runtime gate as `POST /agent-team/spawn`.
@@ -116,6 +126,50 @@ Request body:
 ```json
 {
   "reason": "manual stop"
+}
+```
+
+### `POST /agent-team/approvals/spawn/{id}/approve`
+
+Request body:
+
+```json
+{
+  "reason": "approved from command center"
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "approvalID": "appr_...",
+  "decision": "approved",
+  "instanceID": "ins_...",
+  "missionID": "m1",
+  "status": "running"
+}
+```
+
+### `POST /agent-team/approvals/spawn/{id}/deny`
+
+Request body:
+
+```json
+{
+  "reason": "not aligned with mission scope"
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "approvalID": "appr_...",
+  "decision": "denied",
+  "reason": "not aligned with mission scope"
 }
 ```
 

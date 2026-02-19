@@ -1,0 +1,21 @@
+[package]
+name = "tandem-channels"
+version = "0.3.8"
+description = "External messaging channel integrations for Tandem (Telegram, Discord, Slack)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/frumu-ai/tandem"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+parking_lot = "0.12"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }

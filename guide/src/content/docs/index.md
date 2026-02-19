@@ -19,6 +19,7 @@ Welcome to the Tandem documentation focused on the TUI and engine runtime.
 - [Configuration](./configuration/)
 - [Agents & Sessions](./agents-and-sessions/)
 - [Agent Teams](./agent-teams/)
+- [Agent Command Center](./agent-command-center/)
 - [Agent Teams Rollout Plan](./agent-teams-rollout/)
 - [Design System](./design-system/)
 
