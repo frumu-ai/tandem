@@ -37,9 +37,17 @@ pub struct ChatMessage {
 pub enum StreamChunk {
     TextDelta(String),
     ReasoningDelta(String),
-    ToolCallStart { id: String, name: String },
-    ToolCallDelta { id: String, args_delta: String },
-    ToolCallEnd { id: String },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        id: String,
+        args_delta: String,
+    },
+    ToolCallEnd {
+        id: String,
+    },
     Done {
         finish_reason: String,
         usage: Option<TokenUsage>,

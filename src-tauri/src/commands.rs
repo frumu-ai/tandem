@@ -14,17 +14,20 @@ use crate::orchestrator::{
     engine::OrchestratorEngine,
     policy::{PolicyConfig, PolicyEngine},
     store::OrchestratorStore,
-    types::{Budget, OrchestratorConfig, Run, RunSnapshot, RunStatus, RunSummary, Task, TaskState},
+    types::{
+        AgentModelRouting, Budget, ModelSelection, OrchestratorConfig, Run, RunSnapshot, RunStatus,
+        RunSummary, Task, TaskState,
+    },
 };
 use crate::python_env;
 use crate::sidecar::{
     ActiveRunStatusResponse, AgentTeamApprovals, AgentTeamCancelRequest, AgentTeamDecisionResult,
     AgentTeamInstance, AgentTeamInstancesQuery, AgentTeamMissionSummary, AgentTeamSpawnRequest,
-    AgentTeamSpawnResult, AgentTeamTemplate, CreateSessionRequest, FilePartInput,
-    MissionApplyEventResult, MissionCreateRequest, MissionState, ModelInfo, ModelSpec, Project,
-    ProviderInfo, RoutineCreateRequest, RoutineHistoryEvent, RoutinePatchRequest,
-    RoutineRunNowRequest, RoutineRunNowResponse, RoutineSpec, SendMessageRequest, Session,
-    SessionMessage, SidecarState, StreamEvent, TodoItem,
+    AgentTeamSpawnResult, AgentTeamTemplate, ChannelsConfigResponse, ChannelsStatusResponse,
+    CreateSessionRequest, FilePartInput, MissionApplyEventResult, MissionCreateRequest,
+    MissionState, ModelInfo, ModelSpec, Project, ProviderInfo, RoutineCreateRequest,
+    RoutineHistoryEvent, RoutinePatchRequest, RoutineRunNowRequest, RoutineRunNowResponse,
+    RoutineSpec, SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent, TodoItem,
 };
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
@@ -587,6 +590,60 @@ fn env_var_for_key(key_type: &ApiKeyType) -> Option<&'static str> {
     }
 }
 
+const CHANNEL_NAMES: [&str; 3] = ["telegram", "discord", "slack"];
+
+fn normalize_channel_name(raw: &str) -> Result<&'static str> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "telegram" => Ok("telegram"),
+        "discord" => Ok("discord"),
+        "slack" => Ok("slack"),
+        _ => Err(TandemError::InvalidConfig(format!(
+            "Unsupported channel: {}",
+            raw
+        ))),
+    }
+}
+
+fn channel_token_env_var(channel: &str) -> &'static str {
+    match channel {
+        "telegram" => "TANDEM_TELEGRAM_BOT_TOKEN",
+        "discord" => "TANDEM_DISCORD_BOT_TOKEN",
+        "slack" => "TANDEM_SLACK_BOT_TOKEN",
+        _ => "TANDEM_CHANNEL_BOT_TOKEN",
+    }
+}
+
+fn channel_token_storage_key(project_id: &str, channel: &str) -> String {
+    format!("channel::{project_id}::{channel}::bot_token")
+}
+
+fn active_project_id(state: &AppState) -> Result<String> {
+    state
+        .active_project_id
+        .read()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| {
+            TandemError::InvalidConfig(
+                "No active project selected for channel connections".to_string(),
+            )
+        })
+}
+
+fn workspace_channel_enabled(workspace_path: &Path, channel: &str) -> bool {
+    let config_path = workspace_path.join(".tandem").join("config.json");
+    let Ok(raw) = fs::read_to_string(config_path) else {
+        return false;
+    };
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    root.get("channels")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|channels| channels.contains_key(channel))
+}
+
 /// Check if a file operation should be auto-approved based on path
 /// Auto-approve writes to .tandem/plans/ (canonical) and legacy .opencode/plans/.
 fn workspace_plans_dirs(workspace_path: &Path) -> (PathBuf, PathBuf) {
@@ -1043,6 +1100,7 @@ pub async fn set_active_project(
             };
             sync_ollama_env(&state, &providers).await;
             sync_provider_keys_env(&app, &state, &providers).await;
+            sync_channel_tokens_env(&app, &state).await;
 
             // Restart with new workspace
             state
@@ -1569,6 +1627,137 @@ pub fn populate_provider_keys(app: &AppHandle, config: &mut ProvidersConfig) {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ChannelConnectionInput {
+    pub token: Option<String>,
+    pub allowed_users: Option<Vec<String>>,
+    pub mention_only: Option<bool>,
+    pub guild_id: Option<String>,
+    pub channel_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ChannelConnectionConfigView {
+    pub has_token: bool,
+    pub allowed_users: Vec<String>,
+    pub mention_only: Option<bool>,
+    pub guild_id: Option<String>,
+    pub channel_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ChannelConnectionView {
+    pub status: crate::sidecar::ChannelRuntimeStatus,
+    pub config: ChannelConnectionConfigView,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ChannelConnectionsView {
+    pub telegram: ChannelConnectionView,
+    pub discord: ChannelConnectionView,
+    pub slack: ChannelConnectionView,
+}
+
+fn normalize_allowed_users(input: Option<Vec<String>>, fallback: &[String]) -> Vec<String> {
+    let mut users = input.unwrap_or_else(|| fallback.to_vec());
+    users = users
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if users.is_empty() {
+        users.push("*".to_string());
+    }
+    users
+}
+
+fn trim_to_option(value: Option<String>) -> Option<String> {
+    value
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn merge_channel_views(
+    statuses: ChannelsStatusResponse,
+    configs: ChannelsConfigResponse,
+    project_token_presence: Option<&std::collections::HashMap<&'static str, bool>>,
+) -> ChannelConnectionsView {
+    let has_token_for = |channel: &'static str, fallback: bool| -> bool {
+        project_token_presence
+            .and_then(|map| map.get(channel))
+            .copied()
+            .unwrap_or(fallback)
+    };
+
+    ChannelConnectionsView {
+        telegram: ChannelConnectionView {
+            status: statuses.telegram,
+            config: ChannelConnectionConfigView {
+                has_token: has_token_for("telegram", configs.telegram.has_token),
+                allowed_users: normalize_allowed_users(Some(configs.telegram.allowed_users), &[]),
+                mention_only: Some(configs.telegram.mention_only),
+                guild_id: None,
+                channel_id: None,
+            },
+        },
+        discord: ChannelConnectionView {
+            status: statuses.discord,
+            config: ChannelConnectionConfigView {
+                has_token: has_token_for("discord", configs.discord.has_token),
+                allowed_users: normalize_allowed_users(Some(configs.discord.allowed_users), &[]),
+                mention_only: Some(configs.discord.mention_only),
+                guild_id: trim_to_option(configs.discord.guild_id),
+                channel_id: None,
+            },
+        },
+        slack: ChannelConnectionView {
+            status: statuses.slack,
+            config: ChannelConnectionConfigView {
+                has_token: has_token_for("slack", configs.slack.has_token),
+                allowed_users: normalize_allowed_users(Some(configs.slack.allowed_users), &[]),
+                mention_only: None,
+                guild_id: None,
+                channel_id: trim_to_option(configs.slack.channel_id),
+            },
+        },
+    }
+}
+
+async fn get_channel_connections_inner(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<ChannelConnectionsView> {
+    let project_id = active_project_id(state)?;
+    let sidecar_running = matches!(state.sidecar.state().await, SidecarState::Running);
+
+    let statuses = if sidecar_running {
+        state.sidecar.channels_status().await.unwrap_or_default()
+    } else {
+        ChannelsStatusResponse::default()
+    };
+
+    let configs = if sidecar_running {
+        state.sidecar.channels_config().await.unwrap_or_default()
+    } else {
+        ChannelsConfigResponse::default()
+    };
+
+    let token_presence = app.try_state::<SecureKeyStore>().map(|keystore| {
+        let mut map = std::collections::HashMap::new();
+        for channel in CHANNEL_NAMES {
+            let key = channel_token_storage_key(&project_id, channel);
+            map.insert(channel, keystore.has(&key));
+        }
+        map
+    });
+
+    Ok(merge_channel_views(
+        statuses,
+        configs,
+        token_presence.as_ref(),
+    ))
+}
+
 async fn sync_ollama_env(state: &AppState, config: &ProvidersConfig) {
     if config.ollama.enabled {
         let endpoint = config.ollama.endpoint.trim();
@@ -1577,6 +1766,64 @@ async fn sync_ollama_env(state: &AppState, config: &ProvidersConfig) {
         }
     } else {
         state.sidecar.remove_env("OLLAMA_HOST").await;
+    }
+}
+
+async fn sync_channel_tokens_env(app: &AppHandle, state: &AppState) {
+    let workspace = state.get_workspace_path();
+    let project_id = state.active_project_id.read().unwrap().clone();
+    let Some(project_id) = project_id else {
+        for channel in CHANNEL_NAMES {
+            state
+                .sidecar
+                .remove_env(channel_token_env_var(channel))
+                .await;
+        }
+        return;
+    };
+    let Some(workspace) = workspace else {
+        for channel in CHANNEL_NAMES {
+            state
+                .sidecar
+                .remove_env(channel_token_env_var(channel))
+                .await;
+        }
+        return;
+    };
+    let Some(keystore) = app.try_state::<SecureKeyStore>() else {
+        for channel in CHANNEL_NAMES {
+            state
+                .sidecar
+                .remove_env(channel_token_env_var(channel))
+                .await;
+        }
+        return;
+    };
+
+    for channel in CHANNEL_NAMES {
+        if !workspace_channel_enabled(&workspace, channel) {
+            state
+                .sidecar
+                .remove_env(channel_token_env_var(channel))
+                .await;
+            continue;
+        }
+
+        let storage_key = channel_token_storage_key(&project_id, channel);
+        match keystore.get(&storage_key) {
+            Ok(Some(token)) if !token.trim().is_empty() => {
+                state
+                    .sidecar
+                    .set_env(channel_token_env_var(channel), token.trim())
+                    .await;
+            }
+            _ => {
+                state
+                    .sidecar
+                    .remove_env(channel_token_env_var(channel))
+                    .await;
+            }
+        }
     }
 }
 
@@ -1728,6 +1975,139 @@ pub async fn set_providers_config(
 }
 
 // ============================================================================
+// Channel Connections (Telegram / Discord / Slack)
+// ============================================================================
+
+#[tauri::command]
+pub async fn get_channel_connections(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ChannelConnectionsView> {
+    get_channel_connections_inner(&app, state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_channel_connection(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    channel: String,
+    input: ChannelConnectionInput,
+) -> Result<ChannelConnectionsView> {
+    let channel = normalize_channel_name(&channel)?;
+    let project_id = active_project_id(state.inner())?;
+    let keystore = app
+        .try_state::<SecureKeyStore>()
+        .ok_or_else(|| TandemError::Vault("Keystore not initialized".to_string()))?;
+
+    if let Some(raw_token) = input.token.as_deref() {
+        let token = raw_token.trim();
+        if !token.is_empty() {
+            validate_api_key(token)?;
+            let key = channel_token_storage_key(&project_id, channel);
+            keystore.set(&key, token)?;
+            state
+                .sidecar
+                .set_env(channel_token_env_var(channel), token)
+                .await;
+        }
+    }
+
+    let token = {
+        let key = channel_token_storage_key(&project_id, channel);
+        keystore.get(&key)?.ok_or_else(|| {
+            TandemError::InvalidConfig(format!("No saved {} bot token for active project", channel))
+        })?
+    };
+
+    let existing_cfg = state.sidecar.channels_config().await.unwrap_or_default();
+    let payload = match channel {
+        "telegram" => {
+            let allowed_users =
+                normalize_allowed_users(input.allowed_users, &existing_cfg.telegram.allowed_users);
+            let mention_only = input
+                .mention_only
+                .unwrap_or(existing_cfg.telegram.mention_only);
+            serde_json::json!({
+                "bot_token": token,
+                "allowed_users": allowed_users,
+                "mention_only": mention_only,
+            })
+        }
+        "discord" => {
+            let allowed_users =
+                normalize_allowed_users(input.allowed_users, &existing_cfg.discord.allowed_users);
+            let mention_only = input
+                .mention_only
+                .unwrap_or(existing_cfg.discord.mention_only);
+            let guild_id = trim_to_option(input.guild_id).or(existing_cfg.discord.guild_id);
+            serde_json::json!({
+                "bot_token": token,
+                "allowed_users": allowed_users,
+                "mention_only": mention_only,
+                "guild_id": guild_id,
+            })
+        }
+        "slack" => {
+            let allowed_users =
+                normalize_allowed_users(input.allowed_users, &existing_cfg.slack.allowed_users);
+            let channel_id = trim_to_option(input.channel_id).or(existing_cfg.slack.channel_id);
+            let channel_id = channel_id.ok_or_else(|| {
+                TandemError::InvalidConfig("Slack channel_id is required".to_string())
+            })?;
+            serde_json::json!({
+                "bot_token": token,
+                "allowed_users": allowed_users,
+                "channel_id": channel_id,
+            })
+        }
+        _ => {
+            return Err(TandemError::InvalidConfig(format!(
+                "Unsupported channel: {}",
+                channel
+            )))
+        }
+    };
+
+    state.sidecar.channels_put(channel, payload).await?;
+    get_channel_connections_inner(&app, state.inner()).await
+}
+
+#[tauri::command]
+pub async fn disable_channel_connection(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    channel: String,
+) -> Result<ChannelConnectionsView> {
+    let channel = normalize_channel_name(&channel)?;
+    state.sidecar.channels_delete(channel).await?;
+    state
+        .sidecar
+        .remove_env(channel_token_env_var(channel))
+        .await;
+    get_channel_connections_inner(&app, state.inner()).await
+}
+
+#[tauri::command]
+pub async fn delete_channel_connection_token(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    channel: String,
+) -> Result<ChannelConnectionsView> {
+    let channel = normalize_channel_name(&channel)?;
+    let project_id = active_project_id(state.inner())?;
+    let keystore = app
+        .try_state::<SecureKeyStore>()
+        .ok_or_else(|| TandemError::Vault("Keystore not initialized".to_string()))?;
+    let key = channel_token_storage_key(&project_id, channel);
+    keystore.delete(&key)?;
+    state
+        .sidecar
+        .remove_env(channel_token_env_var(channel))
+        .await;
+    get_channel_connections_inner(&app, state.inner()).await
+}
+
+// ============================================================================
 // Sidecar Management
 // ============================================================================
 
@@ -1784,6 +2164,7 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
     // Set/remove API keys based on enabled providers.
     // (Important: remove_env only applies after restart, but we call this before start().)
     sync_provider_keys_env(&app, &state, &providers).await;
+    sync_channel_tokens_env(&app, &state).await;
 
     // Start the sidecar
     state
@@ -2382,6 +2763,12 @@ fn should_skip_memory_retrieval(prompt: &str) -> bool {
     trimmed.is_empty() || trimmed.starts_with('/')
 }
 
+fn is_embeddings_disabled_error(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("embeddings disabled")
+}
+
 fn short_query_hash(query: &str) -> String {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -2710,6 +3097,31 @@ async fn store_user_message_in_memory(
     let Some(manager) = &state.memory_manager else {
         return;
     };
+    let embedding_health = manager.embedding_health().await;
+    if embedding_health.status != "ok" {
+        tracing::info!(
+            target: "tandem.memory",
+            "Skipping user memory storage: session_id={} status={} reason={}",
+            session_id,
+            embedding_health.status,
+            embedding_health.reason.as_deref().unwrap_or("unknown")
+        );
+        emit_stream_event_pair(
+            app,
+            &memory_storage_event(
+                session_id,
+                None,
+                "user",
+                0,
+                0,
+                Some("degraded_disabled".to_string()),
+                embedding_health.reason,
+            ),
+            StreamEventSource::Memory,
+            format!("{}:memory-store:user:{}", session_id, Uuid::new_v4()),
+        );
+        return;
+    }
     let active_project_id = resolve_memory_project_id_for_session(state, session_id).await;
     let base_metadata = serde_json::json!({
         "role": "user",
@@ -2731,18 +3143,29 @@ async fn store_user_message_in_memory(
     let mut session_chunks_stored = 0usize;
     let mut project_chunks_stored = 0usize;
     let mut storage_error: Option<String> = None;
+    let mut embeddings_disabled = false;
 
     match manager.store_message(session_req).await {
         Ok(ids) => {
             session_chunks_stored = ids.len();
         }
         Err(err) => {
-            tracing::warn!(
-                target: "tandem.memory",
-                "Failed to store user session memory chunk: session_id={} error={}",
-                session_id,
-                err
-            );
+            if is_embeddings_disabled_error(&err.to_string()) {
+                embeddings_disabled = true;
+                tracing::info!(
+                    target: "tandem.memory",
+                    "User session memory storage degraded (embeddings disabled): session_id={} error={}",
+                    session_id,
+                    err
+                );
+            } else {
+                tracing::warn!(
+                    target: "tandem.memory",
+                    "Failed to store user session memory chunk: session_id={} error={}",
+                    session_id,
+                    err
+                );
+            }
             storage_error.get_or_insert_with(|| err.to_string());
         }
     }
@@ -2765,13 +3188,24 @@ async fn store_user_message_in_memory(
                 project_chunks_stored = ids.len();
             }
             Err(err) => {
-                tracing::warn!(
-                    target: "tandem.memory",
-                    "Failed to store user project memory chunk: session_id={} project_id={} error={}",
-                    session_id,
-                    project_id,
-                    err
-                );
+                if is_embeddings_disabled_error(&err.to_string()) {
+                    embeddings_disabled = true;
+                    tracing::info!(
+                        target: "tandem.memory",
+                        "User project memory storage degraded (embeddings disabled): session_id={} project_id={} error={}",
+                        session_id,
+                        project_id,
+                        err
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "tandem.memory",
+                        "Failed to store user project memory chunk: session_id={} project_id={} error={}",
+                        session_id,
+                        project_id,
+                        err
+                    );
+                }
                 storage_error.get_or_insert_with(|| err.to_string());
             }
         }
@@ -2785,7 +3219,9 @@ async fn store_user_message_in_memory(
             "user",
             session_chunks_stored,
             project_chunks_stored,
-            Some(if storage_error.is_some() {
+            Some(if embeddings_disabled {
+                "degraded_disabled".to_string()
+            } else if storage_error.is_some() {
                 "error".to_string()
             } else {
                 "ok".to_string()
@@ -4733,7 +5169,9 @@ pub async fn mission_apply_event(
 }
 
 #[tauri::command]
-pub async fn agent_team_list_templates(state: State<'_, AppState>) -> Result<Vec<AgentTeamTemplate>> {
+pub async fn agent_team_list_templates(
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentTeamTemplate>> {
     state.sidecar.agent_team_list_templates().await
 }
 
@@ -7283,10 +7721,77 @@ pub async fn ralph_history(
 // Orchestrator Commands
 // ============================================================================
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OrchestratorModelSelection {
     pub model: Option<String>,
     pub provider: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OrchestratorModelRouting {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner: Option<OrchestratorModelSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder: Option<OrchestratorModelSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator: Option<OrchestratorModelSelection>,
+}
+
+fn normalize_orchestrator_model_selection(
+    selection: Option<OrchestratorModelSelection>,
+) -> Option<ModelSelection> {
+    let selection = selection?;
+    let model = selection
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let provider = selection
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .map(|p| {
+            normalize_provider_id_for_sidecar(Some(p)).unwrap_or_else(|| "opencode".to_string())
+        });
+
+    if model.is_none() && provider.is_none() {
+        return None;
+    }
+
+    Some(ModelSelection { model, provider })
+}
+
+fn to_orchestrator_model_selection(
+    selection: Option<ModelSelection>,
+) -> Option<OrchestratorModelSelection> {
+    selection.map(|s| OrchestratorModelSelection {
+        model: s.model,
+        provider: s.provider,
+    })
+}
+
+fn normalize_orchestrator_model_routing(
+    input: Option<OrchestratorModelRouting>,
+) -> AgentModelRouting {
+    let Some(input) = input else {
+        return AgentModelRouting::default();
+    };
+    AgentModelRouting {
+        planner: normalize_orchestrator_model_selection(input.planner),
+        builder: normalize_orchestrator_model_selection(input.builder),
+        validator: normalize_orchestrator_model_selection(input.validator),
+    }
+}
+
+fn to_orchestrator_model_routing(routing: AgentModelRouting) -> OrchestratorModelRouting {
+    OrchestratorModelRouting {
+        planner: to_orchestrator_model_selection(routing.planner),
+        builder: to_orchestrator_model_selection(routing.builder),
+        validator: to_orchestrator_model_selection(routing.validator),
+    }
 }
 
 fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
@@ -7376,6 +7881,7 @@ pub async fn orchestrator_create_run(
     config: OrchestratorConfig,
     model: Option<String>,
     provider: Option<String>,
+    agent_model_routing: Option<OrchestratorModelRouting>,
 ) -> Result<String> {
     use crate::sidecar::CreateSessionRequest;
 
@@ -7458,6 +7964,7 @@ pub async fn orchestrator_create_run(
     // model specs even if the sidecar session object doesn't echo them back.
     run.model = final_model.clone();
     run.provider = final_provider.clone();
+    run.agent_model_routing = normalize_orchestrator_model_routing(agent_model_routing);
 
     // Initialize dependencies
     let workspace_path = state
@@ -7652,6 +8159,52 @@ pub async fn orchestrator_get_run_model(
         model: session.model,
         provider: session.provider,
     })
+}
+
+#[tauri::command]
+pub async fn orchestrator_get_model_routing(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<OrchestratorModelRouting> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    let routing = engine.get_run_model_routing().await;
+    Ok(to_orchestrator_model_routing(routing))
+}
+
+#[tauri::command]
+pub async fn orchestrator_set_model_routing(
+    state: State<'_, AppState>,
+    run_id: String,
+    routing: OrchestratorModelRouting,
+) -> Result<OrchestratorModelRouting> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    let snapshot = engine.get_snapshot().await;
+    if snapshot.status != RunStatus::Paused
+        && snapshot.status != RunStatus::Cancelled
+        && snapshot.status != RunStatus::Failed
+    {
+        return Err(TandemError::InvalidOperation(
+            "Run must be paused, failed, or cancelled to change agent model routing".to_string(),
+        ));
+    }
+
+    let normalized = normalize_orchestrator_model_routing(Some(routing));
+    engine.set_run_model_routing(normalized.clone()).await?;
+    Ok(to_orchestrator_model_routing(normalized))
 }
 
 #[tauri::command]

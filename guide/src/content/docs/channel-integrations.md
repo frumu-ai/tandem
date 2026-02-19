@@ -27,8 +27,25 @@ Each `{channel}:{sender}` pair maps to one Tandem session, persisted to
 
 ## Setup: Desktop App
 
-The desktop app runs the engine as a sidecar. Set environment variables
-**before launching the app**:
+### Recommended: GUI Setup (Settings -> Connections)
+
+Use the desktop UI to configure channel adapters per active project:
+
+1. Open **Settings**.
+2. Open the **Connections** tab.
+3. Configure Telegram, Discord, or Slack fields.
+4. Click **Enable**.
+
+Notes:
+
+- Bot tokens are stored in the encrypted desktop vault (not plaintext config files).
+- **Disable** keeps the saved token for quick re-enable.
+- **Forget token** removes the stored token.
+
+### Advanced: Environment Variables
+
+The desktop app runs the engine as a sidecar. You can also set environment variables
+before launching the app:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 

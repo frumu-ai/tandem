@@ -76,6 +76,7 @@ import {
   Files,
   Palette,
   Sparkles,
+  Rocket,
   Blocks,
   Loader2,
 } from "lucide-react";
@@ -1422,7 +1423,7 @@ function App() {
                 }`}
                 title="Command Center"
               >
-                <Sparkles className="h-5 w-5" />
+                <Rocket className="h-5 w-5" />
               </button>
               <button
                 onClick={handleOpenPacks}
@@ -1690,11 +1691,12 @@ function App() {
               transition={{ duration: 0.2, ease: "easeOut" }}
             >
               <CommandCenterPage
-                onOpenOrchestrator={(runId) => {
-                  setCurrentOrchestratorRunId(runId ?? null);
-                  setOrchestratorOpen(true);
-                  setView("chat");
-                }}
+                userProjects={userProjects}
+                activeProject={activeProject}
+                onSwitchProject={handleSwitchProject}
+                onAddProject={handleAddProject}
+                onManageProjects={handleManageProjects}
+                projectSwitcherLoading={projectSwitcherLoading}
               />
             </motion.div>
           ) : (
@@ -1711,7 +1713,6 @@ function App() {
                       // Reset to default agent when closing
                       setSelectedAgent(undefined);
                     }}
-                    onOpenCommandCenter={() => setView("command-center")}
                   />
                 ) : (
                   // Chat view

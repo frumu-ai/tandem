@@ -4,9 +4,9 @@
 use crate::types::{
     MemoryError, MemoryResult, DEFAULT_EMBEDDING_DIMENSION, DEFAULT_EMBEDDING_MODEL,
 };
-use once_cell::sync::OnceCell;
 #[cfg(feature = "local-embeddings")]
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use once_cell::sync::OnceCell;
 #[cfg(feature = "local-embeddings")]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,35 +74,39 @@ impl EmbeddingService {
 
         #[cfg(feature = "local-embeddings")]
         {
-        let Some(parsed_model) = Self::parse_model_id(model_name) else {
-            return (
-                None,
-                Some(format!(
-                    "unsupported embedding model id '{}'; supported: {}",
-                    model_name, DEFAULT_EMBEDDING_MODEL
-                )),
+            if let Some(reason) = embeddings_runtime_disabled_reason() {
+                return (None, Some(reason));
+            }
+
+            let Some(parsed_model) = Self::parse_model_id(model_name) else {
+                return (
+                    None,
+                    Some(format!(
+                        "unsupported embedding model id '{}'; supported: {}",
+                        model_name, DEFAULT_EMBEDDING_MODEL
+                    )),
+                );
+            };
+
+            let cache_dir = resolve_embedding_cache_dir();
+            let options = InitOptions::new(parsed_model).with_cache_dir(cache_dir.clone());
+
+            tracing::info!(
+                target: "tandem.memory",
+                "Initializing embeddings with cache dir: {}",
+                cache_dir.display()
             );
-        };
 
-        let cache_dir = resolve_embedding_cache_dir();
-        let options = InitOptions::new(parsed_model).with_cache_dir(cache_dir.clone());
-
-        tracing::info!(
-            target: "tandem.memory",
-            "Initializing embeddings with cache dir: {}",
-            cache_dir.display()
-        );
-
-        match TextEmbedding::try_new(options) {
-            Ok(model) => (Some(model), None),
-            Err(err) => (
-                None,
-                Some(format!(
-                    "failed to initialize embedding model '{}': {}",
-                    model_name, err
-                )),
-            ),
-        }
+            match TextEmbedding::try_new(options) {
+                Ok(model) => (Some(model), None),
+                Err(err) => (
+                    None,
+                    Some(format!(
+                        "failed to initialize embedding model '{}': {}",
+                        model_name, err
+                    )),
+                ),
+            }
         }
     }
 
@@ -164,18 +168,18 @@ impl EmbeddingService {
 
         #[cfg(feature = "local-embeddings")]
         {
-        let Some(model) = self.model.as_ref() else {
-            return Err(self.unavailable_error());
-        };
+            let Some(model) = self.model.as_ref() else {
+                return Err(self.unavailable_error());
+            };
 
-        let mut embeddings = model
-            .embed(vec![text.to_string()], None)
-            .map_err(|e| MemoryError::Embedding(e.to_string()))?;
-        let embedding = embeddings
-            .pop()
-            .ok_or_else(|| MemoryError::Embedding("no embedding generated".to_string()))?;
-        self.ensure_dimension(&embedding)?;
-        Ok(embedding)
+            let mut embeddings = model
+                .embed(vec![text.to_string()], None)
+                .map_err(|e| MemoryError::Embedding(e.to_string()))?;
+            let embedding = embeddings
+                .pop()
+                .ok_or_else(|| MemoryError::Embedding("no embedding generated".to_string()))?;
+            self.ensure_dimension(&embedding)?;
+            Ok(embedding)
         }
     }
 
@@ -189,19 +193,19 @@ impl EmbeddingService {
 
         #[cfg(feature = "local-embeddings")]
         {
-        let Some(model) = self.model.as_ref() else {
-            return Err(self.unavailable_error());
-        };
+            let Some(model) = self.model.as_ref() else {
+                return Err(self.unavailable_error());
+            };
 
-        let embeddings = model
-            .embed(texts.to_vec(), None)
-            .map_err(|e| MemoryError::Embedding(e.to_string()))?;
+            let embeddings = model
+                .embed(texts.to_vec(), None)
+                .map_err(|e| MemoryError::Embedding(e.to_string()))?;
 
-        for embedding in &embeddings {
-            self.ensure_dimension(embedding)?;
-        }
+            for embedding in &embeddings {
+                self.ensure_dimension(embedding)?;
+            }
 
-        Ok(embeddings)
+            Ok(embeddings)
         }
     }
 
@@ -230,6 +234,21 @@ impl EmbeddingService {
             .sum::<f32>()
             .sqrt()
     }
+}
+
+#[cfg(feature = "local-embeddings")]
+fn embeddings_runtime_disabled_reason() -> Option<String> {
+    let disable = std::env::var("TANDEM_DISABLE_EMBEDDINGS")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+
+    if disable {
+        return Some("disabled by TANDEM_DISABLE_EMBEDDINGS".to_string());
+    }
+    None
 }
 
 #[cfg(feature = "local-embeddings")]

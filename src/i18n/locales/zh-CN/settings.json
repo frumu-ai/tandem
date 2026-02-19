@@ -54,6 +54,41 @@
     "addFolder": "添加文件夹",
     "securityNote": "Tandem 只能访问已选择文件夹中的文件。敏感文件（.env、.ssh 等）会被始终阻止。"
   },
+  "connections": {
+    "title": "连接",
+    "description": "在这里配置 Telegram、Discord 和 Slack。机器人令牌会保存在加密保险库中。",
+    "status": {
+      "connected": "已连接",
+      "configured": "已配置",
+      "notConfigured": "未配置"
+    },
+    "activeSessions": "活跃会话：{{count}}",
+    "tokenStored": "已保存令牌",
+    "tokenMissing": "需要令牌",
+    "botToken": "机器人令牌",
+    "botTokenPlaceholder": "留空可继续使用已保存令牌",
+    "allowedUsers": "允许用户（逗号分隔或 *）",
+    "guildId": "Guild ID（可选）",
+    "channelId": "频道 ID",
+    "mentionOnly": "仅在提及时回复",
+    "mentionOnlyDescription": "仅在消息中提到机器人时回复。",
+    "actions": {
+      "save": "保存",
+      "enable": "启用",
+      "forgetToken": "忘记令牌"
+    },
+    "channels": {
+      "telegram": {
+        "title": "Telegram"
+      },
+      "discord": {
+        "title": "Discord"
+      },
+      "slack": {
+        "title": "Slack"
+      }
+    }
+  },
   "memory": {
     "title": "记忆设置",
     "description": "配置向量记忆与索引",

@@ -354,14 +354,18 @@ impl AgentTeamRuntime {
                 });
             row.instance_count = row.instance_count.saturating_add(1);
             match instance.status {
-                AgentInstanceStatus::Queued => row.queued_count = row.queued_count.saturating_add(1),
+                AgentInstanceStatus::Queued => {
+                    row.queued_count = row.queued_count.saturating_add(1)
+                }
                 AgentInstanceStatus::Running => {
                     row.running_count = row.running_count.saturating_add(1)
                 }
                 AgentInstanceStatus::Completed => {
                     row.completed_count = row.completed_count.saturating_add(1)
                 }
-                AgentInstanceStatus::Failed => row.failed_count = row.failed_count.saturating_add(1),
+                AgentInstanceStatus::Failed => {
+                    row.failed_count = row.failed_count.saturating_add(1)
+                }
                 AgentInstanceStatus::Cancelled => {
                     row.cancelled_count = row.cancelled_count.saturating_add(1)
                 }
@@ -384,12 +388,9 @@ impl AgentTeamRuntime {
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0),
                 );
-                row.steps_used_total = row.steps_used_total.saturating_add(
-                    usage
-                        .get("stepsUsed")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0),
-                );
+                row.steps_used_total = row
+                    .steps_used_total
+                    .saturating_add(usage.get("stepsUsed").and_then(|v| v.as_u64()).unwrap_or(0));
                 row.cost_used_usd_total += usage
                     .get("costUsedUsd")
                     .and_then(|v| v.as_f64())
@@ -809,12 +810,18 @@ impl AgentTeamRuntime {
             .unwrap_or_default();
         if let Some(max) = limit.max_tokens {
             if usage.tokens_used >= max {
-                return Some(format!("mission max_tokens exhausted ({}/{})", usage.tokens_used, max));
+                return Some(format!(
+                    "mission max_tokens exhausted ({}/{})",
+                    usage.tokens_used, max
+                ));
             }
         }
         if let Some(max) = limit.max_steps {
             if usage.steps_used >= u64::from(max) {
-                return Some(format!("mission max_steps exhausted ({}/{})", usage.steps_used, max));
+                return Some(format!(
+                    "mission max_steps exhausted ({}/{})",
+                    usage.steps_used, max
+                ));
             }
         }
         if let Some(max) = limit.max_tool_calls {
@@ -1595,8 +1602,12 @@ fn validate_pinned_hash(
     policy: &SpawnPolicy,
 ) -> Result<(), String> {
     let by_id = id.and_then(|id| policy.skill_sources.pinned_hashes.get(&format!("id:{id}")));
-    let by_path =
-        path.and_then(|path| policy.skill_sources.pinned_hashes.get(&format!("path:{path}")));
+    let by_path = path.and_then(|path| {
+        policy
+            .skill_sources
+            .pinned_hashes
+            .get(&format!("path:{path}"))
+    });
     let expected = by_id.or(by_path);
     if let Some(expected) = expected {
         let normalized = expected.strip_prefix("sha256:").unwrap_or(expected);
@@ -1785,10 +1796,7 @@ async fn evaluate_capability_deny(
             }
             for candidate in requested {
                 if !is_path_allowed_by_scopes(&root, &candidate, allowed_scopes) {
-                    return Some(format!(
-                        "fs {kind} access denied for path `{}`",
-                        candidate
-                    ));
+                    return Some(format!("fs {kind} access denied for path `{}`", candidate));
                 }
             }
         }
@@ -1893,7 +1901,11 @@ fn extract_url_host(args: &Value) -> Option<String> {
     let (_, after_scheme) = raw.split_once("://")?;
     let host_port = after_scheme.split('/').next().unwrap_or_default();
     let host = host_port.split('@').next_back().unwrap_or_default();
-    let host = host.split(':').next().unwrap_or_default().to_ascii_lowercase();
+    let host = host
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if host.is_empty() {
         None
     } else {

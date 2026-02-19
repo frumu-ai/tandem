@@ -1092,6 +1092,12 @@ fn extract_websearch_query(args: Option<&serde_json::Value>) -> Option<String> {
     None
 }
 
+fn is_embeddings_disabled_error(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("embeddings disabled")
+}
+
 async fn persist_assistant_message_memory(
     app: &AppHandle,
     session_id: &str,
@@ -1104,6 +1110,40 @@ async fn persist_assistant_message_memory(
     let Some(manager) = app_state.memory_manager.clone() else {
         return;
     };
+    let embedding_health = manager.embedding_health().await;
+    if embedding_health.status != "ok" {
+        tracing::info!(
+            target: "tandem.memory",
+            "Skipping assistant memory storage: session_id={} message_id={} status={} reason={}",
+            session_id,
+            message_id,
+            embedding_health.status,
+            embedding_health.reason.as_deref().unwrap_or("unknown")
+        );
+        let event = StreamEvent::MemoryStorage {
+            session_id: session_id.to_string(),
+            message_id: Some(message_id.to_string()),
+            role: "assistant".to_string(),
+            session_chunks_stored: 0,
+            project_chunks_stored: 0,
+            status: Some("degraded_disabled".to_string()),
+            error: embedding_health.reason,
+        };
+        if let Err(err) = crate::tool_history::record_stream_event(app, &event) {
+            tracing::warn!("Failed to persist assistant memory storage event: {}", err);
+        }
+        let _ = app.emit("sidecar_event", &event);
+        let envelope = StreamEventEnvelopeV2 {
+            event_id: Uuid::new_v4().to_string(),
+            correlation_id: format!("{}:memory-store:assistant:{}", session_id, Uuid::new_v4()),
+            ts_ms: crate::logs::now_ms(),
+            session_id: Some(session_id.to_string()),
+            source: StreamEventSource::Memory,
+            payload: event,
+        };
+        let _ = app.emit("sidecar_event_v2", envelope);
+        return;
+    }
 
     let project_id = match app_state.sidecar.get_session(session_id).await {
         Ok(session) => session.project_id,
@@ -1131,18 +1171,30 @@ async fn persist_assistant_message_memory(
     let mut session_chunks_stored = 0usize;
     let mut project_chunks_stored = 0usize;
     let mut storage_error: Option<String> = None;
+    let mut embeddings_disabled = false;
     match manager.store_message(session_req).await {
         Ok(ids) => {
             session_chunks_stored = ids.len();
         }
         Err(err) => {
-            tracing::warn!(
-                target: "tandem.memory",
-                "Failed to store assistant session memory chunk: session_id={} message_id={} error={}",
-                session_id,
-                message_id,
-                err
-            );
+            if is_embeddings_disabled_error(&err.to_string()) {
+                embeddings_disabled = true;
+                tracing::info!(
+                    target: "tandem.memory",
+                    "Assistant session memory storage degraded (embeddings disabled): session_id={} message_id={} error={}",
+                    session_id,
+                    message_id,
+                    err
+                );
+            } else {
+                tracing::warn!(
+                    target: "tandem.memory",
+                    "Failed to store assistant session memory chunk: session_id={} message_id={} error={}",
+                    session_id,
+                    message_id,
+                    err
+                );
+            }
             storage_error.get_or_insert_with(|| err.to_string());
         }
     }
@@ -1165,14 +1217,26 @@ async fn persist_assistant_message_memory(
                 project_chunks_stored = ids.len();
             }
             Err(err) => {
-                tracing::warn!(
-                    target: "tandem.memory",
-                    "Failed to store assistant project memory chunk: session_id={} project_id={} message_id={} error={}",
-                    session_id,
-                    pid,
-                    message_id,
-                    err
-                );
+                if is_embeddings_disabled_error(&err.to_string()) {
+                    embeddings_disabled = true;
+                    tracing::info!(
+                        target: "tandem.memory",
+                        "Assistant project memory storage degraded (embeddings disabled): session_id={} project_id={} message_id={} error={}",
+                        session_id,
+                        pid,
+                        message_id,
+                        err
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "tandem.memory",
+                        "Failed to store assistant project memory chunk: session_id={} project_id={} message_id={} error={}",
+                        session_id,
+                        pid,
+                        message_id,
+                        err
+                    );
+                }
                 storage_error.get_or_insert_with(|| err.to_string());
             }
         }
@@ -1184,7 +1248,9 @@ async fn persist_assistant_message_memory(
         role: "assistant".to_string(),
         session_chunks_stored,
         project_chunks_stored,
-        status: Some(if storage_error.is_some() {
+        status: Some(if embeddings_disabled {
+            "degraded_disabled".to_string()
+        } else if storage_error.is_some() {
             "error".to_string()
         } else {
             "ok".to_string()

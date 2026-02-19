@@ -28,7 +28,7 @@ tandem-providers = { path = "../tandem-providers", version = "0.3.8" }
 tandem-runtime = { path = "../tandem-runtime", version = "0.3.8" }
 tandem-tools = { path = "../tandem-tools", version = "0.3.8" }
 tandem-skills = { path = "../tandem-skills", version = "0.3.8" }
-tandem-memory = { path = "../tandem-memory", version = "0.3.8" }
+tandem-memory = { path = "../tandem-memory", version = "0.3.8", features = ["local-embeddings"] }
 tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.3.8" }
 tandem-types = { path = "../tandem-types", version = "0.3.8" }
 tandem-wire = { path = "../tandem-wire", version = "0.3.8" }

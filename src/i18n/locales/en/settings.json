@@ -54,6 +54,41 @@
     "addFolder": "Add Folder",
     "securityNote": "Tandem can only access files within selected folders. Sensitive files (.env, .ssh, etc.) are always blocked."
   },
+  "connections": {
+    "title": "Connections",
+    "description": "Configure Telegram, Discord, and Slack channels. Bot tokens are stored in your encrypted vault.",
+    "status": {
+      "connected": "Connected",
+      "configured": "Configured",
+      "notConfigured": "Not configured"
+    },
+    "activeSessions": "Active sessions: {{count}}",
+    "tokenStored": "Token stored",
+    "tokenMissing": "Token required",
+    "botToken": "Bot token",
+    "botTokenPlaceholder": "Leave blank to keep saved token",
+    "allowedUsers": "Allowed users (comma-separated or *)",
+    "guildId": "Guild ID (optional)",
+    "channelId": "Channel ID",
+    "mentionOnly": "Mention only",
+    "mentionOnlyDescription": "Reply only when the bot is mentioned.",
+    "actions": {
+      "save": "Save",
+      "enable": "Enable",
+      "forgetToken": "Forget token"
+    },
+    "channels": {
+      "telegram": {
+        "title": "Telegram"
+      },
+      "discord": {
+        "title": "Discord"
+      },
+      "slack": {
+        "title": "Slack"
+      }
+    }
+  },
   "memory": {
     "title": "Memory Settings",
     "description": "Configure vector memory and indexing",

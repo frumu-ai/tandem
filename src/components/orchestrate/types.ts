@@ -23,6 +23,17 @@ export interface OrchestratorConfig {
   contract_warnings_enabled?: boolean;
 }
 
+export interface OrchestratorModelSelection {
+  model?: string | null;
+  provider?: string | null;
+}
+
+export interface OrchestratorModelRouting {
+  planner?: OrchestratorModelSelection | null;
+  builder?: OrchestratorModelSelection | null;
+  validator?: OrchestratorModelSelection | null;
+}
+
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   max_iterations: 500,
   max_total_tokens: 400_000,

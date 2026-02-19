@@ -52,6 +52,7 @@ const SERVE_EXAMPLES: &str = r#"Examples:
   tandem-engine serve
   tandem-engine serve --hostname 0.0.0.0 --port 39731
   tandem-engine serve --state-dir .tandem-test --provider openrouter --model openai/gpt-4o-mini
+  tandem-engine serve --disable-embeddings
 "#;
 
 const RUN_EXAMPLES: &str = r#"Examples:
@@ -164,6 +165,13 @@ enum Command {
             help = "Path prefix where embedded web admin UI is served."
         )]
         web_ui_prefix: String,
+        #[arg(
+            long,
+            env = "TANDEM_DISABLE_EMBEDDINGS",
+            default_value_t = false,
+            help = "Disable semantic memory embeddings for this engine process."
+        )]
+        disable_embeddings: bool,
     },
     #[command(about = "Run one prompt and print only the assistant response.")]
     #[command(after_help = RUN_EXAMPLES)]
@@ -250,7 +258,14 @@ async fn main() -> anyhow::Result<()> {
             api_token,
             web_ui,
             web_ui_prefix,
+            disable_embeddings,
         } => {
+            if disable_embeddings {
+                std::env::set_var("TANDEM_DISABLE_EMBEDDINGS", "1");
+                info!("semantic embeddings disabled by CLI/env flag");
+            } else {
+                std::env::remove_var("TANDEM_DISABLE_EMBEDDINGS");
+            }
             let provider = normalize_and_validate_provider(provider)?;
             let overrides = build_cli_overrides(api_key, provider, model)?;
             let state_dir = resolve_state_dir(state_dir);

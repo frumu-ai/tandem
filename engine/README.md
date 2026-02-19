@@ -29,6 +29,12 @@ Start the HTTP/SSE engine server:
 cargo run -p tandem-ai -- serve --hostname 127.0.0.1 --port 39731
 ```
 
+Disable memory embeddings for a server run:
+
+```bash
+cargo run -p tandem-ai -- serve --disable-embeddings
+```
+
 Run a one-off prompt:
 
 ```bash

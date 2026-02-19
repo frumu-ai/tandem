@@ -21,6 +21,7 @@ import {
   Eye,
   EyeOff,
   Copy,
+  Link2,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { ProviderCard } from "./ProviderCard";
@@ -33,6 +34,7 @@ import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
 import { MemoryStats } from "./MemoryStats";
 import { LogsDrawer } from "@/components/logs";
 import { LanguageSettings } from "./LanguageSettings";
+import { ConnectionsSettings } from "./ConnectionsSettings";
 
 import { useUpdater } from "@/hooks/useUpdater";
 import {
@@ -85,7 +87,7 @@ export function Settings({
   onInitialSectionConsumed,
 }: SettingsProps) {
   const { t } = useTranslation(["common", "settings"]);
-  const [activeTab, setActiveTab] = useState<"settings" | "logs">("settings");
+  const [activeTab, setActiveTab] = useState<"settings" | "connections" | "logs">("settings");
   const {
     status: updateStatus,
     updateInfo,
@@ -597,6 +599,14 @@ export function Settings({
             </button>
             <button
               type="button"
+              onClick={() => setActiveTab("connections")}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+            >
+              <Link2 className="h-4 w-4" />
+              {t("navigation.connections", { ns: "common", defaultValue: "Connections" })}
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveTab("logs")}
               className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-primary/15 px-3 py-2 text-sm font-medium text-text transition-colors"
             >
@@ -608,6 +618,65 @@ export function Settings({
           <div className="h-[70vh] min-h-[560px]">
             <LogsDrawer embedded />
           </div>
+        </div>
+      </motion.div>
+    );
+  }
+
+  if (activeTab === "connections") {
+    return (
+      <motion.div
+        className="h-full overflow-y-auto p-6"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.3 }}
+      >
+        <div className="mx-auto max-w-2xl space-y-8">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+                <SettingsIcon className="h-6 w-6 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-text">{t("title", { ns: "settings" })}</h1>
+                <p className="text-text-muted">{t("settings.subtitle", { ns: "common" })}</p>
+              </div>
+            </div>
+            {onClose && (
+              <Button variant="ghost" onClick={onClose}>
+                {t("actions.close", { ns: "common" })}
+              </Button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-elevated/40 p-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab("settings")}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+            >
+              <SettingsIcon className="h-4 w-4" />
+              {t("title", { ns: "settings" })}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("connections")}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-primary/15 px-3 py-2 text-sm font-medium text-text transition-colors"
+            >
+              <Link2 className="h-4 w-4" />
+              {t("navigation.connections", { ns: "common", defaultValue: "Connections" })}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("logs")}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+            >
+              <ScrollText className="h-4 w-4" />
+              {t("navigation.logs", { ns: "common" })}
+            </button>
+          </div>
+
+          <ConnectionsSettings />
         </div>
       </motion.div>
     );
@@ -647,6 +716,14 @@ export function Settings({
           >
             <SettingsIcon className="h-4 w-4" />
             {t("title", { ns: "settings" })}
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("connections")}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+          >
+            <Link2 className="h-4 w-4" />
+            {t("navigation.connections", { ns: "common", defaultValue: "Connections" })}
           </button>
           <button
             type="button"

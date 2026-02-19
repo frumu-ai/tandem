@@ -290,7 +290,9 @@ impl OrchestratorEngine {
         }
 
         // Send message and wait for response
-        let response = self.call_agent(None, &session_id, &prompt).await?;
+        let response = self
+            .call_agent(None, &session_id, &prompt, AgentRole::Planner)
+            .await?;
 
         // Record tokens (estimate from response length)
         {
@@ -741,7 +743,12 @@ impl OrchestratorEngine {
             }
 
             let builder_response = self
-                .call_agent_for_task_with_recovery(&task, &mut session_id, &prompt)
+                .call_agent_for_task_with_recovery(
+                    &task,
+                    &mut session_id,
+                    &prompt,
+                    AgentRole::Builder,
+                )
                 .await?;
 
             // Record tokens
@@ -763,7 +770,12 @@ impl OrchestratorEngine {
             }
 
             let validator_response = self
-                .call_agent_for_task_with_recovery(&task, &mut session_id, &validator_prompt)
+                .call_agent_for_task_with_recovery(
+                    &task,
+                    &mut session_id,
+                    &validator_prompt,
+                    AgentRole::Validator,
+                )
                 .await?;
 
             // Record tokens
@@ -1105,9 +1117,10 @@ impl OrchestratorEngine {
         task: &Task,
         session_id: &mut String,
         prompt: &str,
+        role: AgentRole,
     ) -> Result<String> {
         match self
-            .call_agent(Some(&task.id), session_id.as_str(), prompt)
+            .call_agent(Some(&task.id), session_id.as_str(), prompt, role)
             .await
         {
             Ok(response) => Ok(response),
@@ -1119,7 +1132,7 @@ impl OrchestratorEngine {
                 );
                 self.invalidate_task_session(&task.id).await;
                 *session_id = self.get_or_create_task_session_id(task).await?;
-                self.call_agent(Some(&task.id), session_id.as_str(), prompt)
+                self.call_agent(Some(&task.id), session_id.as_str(), prompt, role)
                     .await
             }
             Err(e) => Err(e),
@@ -1248,6 +1261,7 @@ impl OrchestratorEngine {
         task_id: Option<&str>,
         session_id: &str,
         prompt: &str,
+        role: AgentRole,
     ) -> Result<String> {
         use crate::sidecar::{ModelSpec, SendMessageRequest, StreamEvent};
 
@@ -1262,13 +1276,14 @@ impl OrchestratorEngine {
 
         // Prefer the model/provider persisted on the run. (Some OpenCode builds don't populate
         // legacy `session.model/provider` in GET /session responses.)
-        let (run_model, run_provider) = self.get_run_model_provider().await;
+        let (run_model, run_provider) = self.get_model_provider_for_role(role).await;
         let model_spec = match (run_provider.clone(), run_model.clone()) {
             (Some(provider_id), Some(model_id))
                 if !provider_id.trim().is_empty() && !model_id.trim().is_empty() =>
             {
                 tracing::info!(
-                    "Orchestrator agent call using run model: provider={} model={}",
+                    "Orchestrator agent call using role model: role={:?} provider={} model={}",
+                    role,
                     provider_id,
                     model_id
                 );
@@ -1324,8 +1339,10 @@ impl OrchestratorEngine {
         {
             if task_id.is_none() && is_sidecar_session_not_found(&e) {
                 tracing::warn!(
-                    "Base orchestrator session {} missing (404) during agent call. Recreating and retrying once.",
+                    "Base orchestrator session {} missing (404) during agent call for role {:?}. Recreating and retrying once.",
                     active_session_id
+                    ,
+                    role
                 );
                 active_session_id = self.recreate_base_run_session().await?;
                 let mut retry_request = SendMessageRequest::text(prompt.to_string());
@@ -1923,10 +1940,54 @@ impl OrchestratorEngine {
         (run.model.clone(), run.provider.clone())
     }
 
+    pub async fn get_model_provider_for_role(
+        &self,
+        role: AgentRole,
+    ) -> (Option<String>, Option<String>) {
+        let run = self.run.read().await;
+        let role_selection = match role {
+            AgentRole::Planner => run.agent_model_routing.planner.as_ref(),
+            AgentRole::Builder => run.agent_model_routing.builder.as_ref(),
+            AgentRole::Validator => run.agent_model_routing.validator.as_ref(),
+            AgentRole::Researcher => None,
+        };
+
+        if let Some(selection) = role_selection {
+            let model = selection
+                .model
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            let provider = selection
+                .provider
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            if let (Some(model), Some(provider)) = (model, provider) {
+                return (Some(model.to_string()), Some(provider.to_string()));
+            }
+        }
+
+        (run.model.clone(), run.provider.clone())
+    }
+
+    pub async fn get_run_model_routing(&self) -> AgentModelRouting {
+        let run = self.run.read().await;
+        run.agent_model_routing.clone()
+    }
+
     pub async fn set_run_model_provider(&self, model: Option<String>, provider: Option<String>) {
         let mut run = self.run.write().await;
         run.model = model;
         run.provider = provider;
+    }
+
+    pub async fn set_run_model_routing(&self, routing: AgentModelRouting) -> Result<()> {
+        {
+            let mut run = self.run.write().await;
+            run.agent_model_routing = routing;
+        }
+        self.save_state().await
     }
 
     async fn save_state(&self) -> Result<()> {

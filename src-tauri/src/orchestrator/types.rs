@@ -150,6 +150,9 @@ pub struct Run {
     /// Model for this run (provider-specific model ID)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Optional role-based model/provider overrides.
+    #[serde(default)]
+    pub agent_model_routing: AgentModelRouting,
     /// User's objective
     pub objective: String,
     /// Run configuration
@@ -182,6 +185,7 @@ impl Run {
             session_id,
             provider: None,
             model: None,
+            agent_model_routing: AgentModelRouting::default(),
             objective,
             config: config.clone(),
             status: RunStatus::Idle,
@@ -193,6 +197,24 @@ impl Run {
             revision_feedback: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelSelection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentModelRouting {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner: Option<ModelSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder: Option<ModelSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator: Option<ModelSelection>,
 }
 
 /// Snapshot of run state for UI consumption

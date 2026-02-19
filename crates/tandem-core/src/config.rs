@@ -231,6 +231,15 @@ async fn write_json_file(path: &Path, value: &Value) -> anyhow::Result<()> {
 
 fn strip_persisted_secrets(value: &mut Value) {
     if let Value::Object(root) = value {
+        if let Some(channels) = root.get_mut("channels").and_then(|v| v.as_object_mut()) {
+            for channel in ["telegram", "discord", "slack"] {
+                if let Some(cfg) = channels.get_mut(channel).and_then(|v| v.as_object_mut()) {
+                    cfg.remove("bot_token");
+                    cfg.remove("botToken");
+                }
+            }
+        }
+
         let Some(providers) = root.get_mut("providers").and_then(|v| v.as_object_mut()) else {
             return;
         };
@@ -619,5 +628,96 @@ impl From<AppConfig> for tandem_providers::AppConfig {
                 .collect(),
             default_provider: value.default_provider,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_file(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        path.push(format!("tandem-core-config-{name}-{ts}.json"));
+        path
+    }
+
+    #[test]
+    fn strip_persisted_secrets_removes_channel_bot_tokens() {
+        let mut value = json!({
+            "channels": {
+                "telegram": {
+                    "bot_token": "tg-secret",
+                    "allowed_users": ["*"]
+                },
+                "discord": {
+                    "botToken": "dc-secret",
+                    "allowed_users": ["*"],
+                    "mention_only": true
+                },
+                "slack": {
+                    "bot_token": "sl-secret",
+                    "channel_id": "C123"
+                }
+            },
+            "providers": {}
+        });
+
+        strip_persisted_secrets(&mut value);
+
+        assert!(value
+            .get("channels")
+            .and_then(|v| v.get("telegram"))
+            .and_then(Value::as_object)
+            .is_some_and(|obj| !obj.contains_key("bot_token")));
+        assert!(value
+            .get("channels")
+            .and_then(|v| v.get("discord"))
+            .and_then(Value::as_object)
+            .is_some_and(|obj| !obj.contains_key("botToken")));
+        assert!(value
+            .get("channels")
+            .and_then(|v| v.get("slack"))
+            .and_then(Value::as_object)
+            .is_some_and(|obj| !obj.contains_key("bot_token")));
+    }
+
+    #[tokio::test]
+    async fn scrub_persisted_secrets_rewrites_channel_tokens_on_disk() {
+        let path = unique_temp_file("scrub");
+        let original = json!({
+            "channels": {
+                "telegram": {
+                    "bot_token": "tg-secret",
+                    "allowed_users": ["@alice"]
+                }
+            },
+            "providers": {}
+        });
+        let raw = serde_json::to_string_pretty(&original).expect("serialize");
+        fs::write(&path, raw).await.expect("write");
+
+        let mut loaded =
+            serde_json::from_str::<Value>(&fs::read_to_string(&path).await.expect("read before"))
+                .expect("parse");
+
+        scrub_persisted_secrets(&mut loaded, Some(&path))
+            .await
+            .expect("scrub");
+
+        let persisted =
+            serde_json::from_str::<Value>(&fs::read_to_string(&path).await.expect("read after"))
+                .expect("parse persisted");
+        assert!(persisted
+            .get("channels")
+            .and_then(|v| v.get("telegram"))
+            .and_then(Value::as_object)
+            .is_some_and(|obj| !obj.contains_key("bot_token")));
+
+        let _ = fs::remove_file(&path).await;
     }
 }

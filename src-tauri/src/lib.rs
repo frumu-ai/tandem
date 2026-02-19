@@ -529,6 +529,11 @@ pub fn run() {
             // Provider configuration
             commands::get_providers_config,
             commands::set_providers_config,
+            // Channel connections
+            commands::get_channel_connections,
+            commands::set_channel_connection,
+            commands::disable_channel_connection,
+            commands::delete_channel_connection_token,
             // Sidecar management
             commands::start_sidecar,
             commands::stop_sidecar,
@@ -688,6 +693,8 @@ pub fn run() {
             commands::orchestrator_get_config,
             commands::orchestrator_extend_budget,
             commands::orchestrator_get_run_model,
+            commands::orchestrator_get_model_routing,
+            commands::orchestrator_set_model_routing,
             commands::orchestrator_set_resume_model,
             commands::orchestrator_approve,
             commands::orchestrator_request_revision,

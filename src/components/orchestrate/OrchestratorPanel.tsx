@@ -18,11 +18,13 @@ import { Button } from "@/components/ui";
 import { BudgetMeter } from "./BudgetMeter";
 import { TaskBoard } from "./TaskBoard";
 import { ModelSelector } from "@/components/chat/ModelSelector";
+import { AgentModelRoutingPanel } from "./AgentModelRoutingPanel";
 import { LogsDrawer } from "@/components/logs";
 import { getProvidersConfig, getSessionMessages, type SessionMessage } from "@/lib/tauri";
 import { DEFAULT_ORCHESTRATOR_CONFIG } from "./types";
 import type {
   OrchestratorConfig,
+  OrchestratorModelRouting,
   RunSnapshot,
   Run,
   RunSummary,
@@ -32,7 +34,6 @@ import type {
 
 interface OrchestratorPanelProps {
   onClose: () => void;
-  onOpenCommandCenter?: () => void;
   runId?: string | null;
   runSessionIdHint?: string | null;
 }
@@ -59,7 +60,6 @@ function extractSessionMessageText(message: SessionMessage): string {
 
 export function OrchestratorPanel({
   onClose,
-  onOpenCommandCenter,
   runId: initialRunId,
   runSessionIdHint,
 }: OrchestratorPanelProps) {
@@ -83,6 +83,7 @@ export function OrchestratorPanel({
   const [selectedProvider, setSelectedProvider] = useState<string | undefined>(undefined);
   const [runModel, setRunModel] = useState<string | undefined>(undefined);
   const [runProvider, setRunProvider] = useState<string | undefined>(undefined);
+  const [modelRouting, setModelRouting] = useState<OrchestratorModelRouting>({});
 
   // Revision feedback
   const [showRevisionInput, setShowRevisionInput] = useState(false);
@@ -283,6 +284,7 @@ export function OrchestratorPanel({
     if (!runId) {
       setRunModel(undefined);
       setRunProvider(undefined);
+      setModelRouting({});
       return;
     }
 
@@ -308,6 +310,32 @@ export function OrchestratorPanel({
     };
 
     loadRunModel();
+    return () => {
+      isMounted = false;
+    };
+  }, [runId, snapshot?.status]);
+
+  useEffect(() => {
+    if (!runId) {
+      setModelRouting({});
+      return;
+    }
+
+    let isMounted = true;
+    const loadModelRouting = async () => {
+      try {
+        const routing = await invoke<OrchestratorModelRouting>("orchestrator_get_model_routing", {
+          runId,
+        });
+        if (!isMounted) return;
+        setModelRouting(routing || {});
+      } catch {
+        if (!isMounted) return;
+        setModelRouting({});
+      }
+    };
+
+    void loadModelRouting();
     return () => {
       isMounted = false;
     };
@@ -503,6 +531,7 @@ export function OrchestratorPanel({
         config,
         model: selectedModel,
         provider: selectedProvider,
+        agentModelRouting: modelRouting,
       });
 
       setRunId(newRunId);
@@ -594,6 +623,23 @@ export function OrchestratorPanel({
     }
   };
 
+  const handleSetModelRouting = async () => {
+    if (!runId) return;
+    setIsLoading(true);
+    setError(null);
+    try {
+      const nextRouting = await invoke<OrchestratorModelRouting>("orchestrator_set_model_routing", {
+        runId,
+        routing: modelRouting,
+      });
+      setModelRouting(nextRouting || {});
+    } catch (e) {
+      setError(`Failed to set agent models: ${e}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleRestart = async () => {
     if (!runId) return;
     setIsLoading(true);
@@ -665,6 +711,7 @@ export function OrchestratorPanel({
   const canApplyResumeModel = Boolean(
     canAdjustResumeModel && hasModelSelection && resumeModelChanged && !isLoading
   );
+  const canApplyAgentModelRouting = Boolean(canAdjustResumeModel && runId && !isLoading);
   const canResume = isPaused && !resumeModelChanged;
   const canCancel = Boolean(
     snapshot &&
@@ -684,6 +731,12 @@ export function OrchestratorPanel({
 
   const maxParallelTasks =
     runConfig?.max_parallel_tasks ?? DEFAULT_ORCHESTRATOR_CONFIG.max_parallel_tasks ?? 1;
+  const activeModelLabel =
+    selectedModel && selectedProvider
+      ? `${selectedProvider}/${selectedModel}`
+      : runModel && runProvider
+        ? `${runProvider}/${runModel}`
+        : "default";
 
   const tasksForDisplay = useMemo(
     () =>
@@ -703,6 +756,9 @@ export function OrchestratorPanel({
           <div className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
             <h3 className="font-semibold text-text">Orchestrator</h3>
+            <span className="rounded border border-border bg-surface-elevated px-1.5 py-0.5 text-[10px] text-text-muted">
+              Model: {activeModelLabel}
+            </span>
             {snapshot && (
               <div className="flex items-center gap-2">
                 {isReadOnly && (
@@ -730,16 +786,15 @@ export function OrchestratorPanel({
             )}
           </div>
           <div className="flex items-center gap-2">
-            {onOpenCommandCenter ? (
-              <button
-                type="button"
-                onClick={onOpenCommandCenter}
-                className="rounded px-2 py-1 text-xs text-text-subtle hover:bg-surface-elevated hover:text-text"
-                title="Open Command Center"
-              >
-                Command Center
-              </button>
-            ) : null}
+            <ModelSelector
+              currentModel={selectedModel ?? runModel}
+              align="right"
+              side="bottom"
+              onModelSelect={(modelId, providerId) => {
+                setSelectedModel(modelId);
+                setSelectedProvider(providerId);
+              }}
+            />
             <button
               type="button"
               onClick={() => setShowLogsDrawer(true)}
@@ -811,6 +866,8 @@ export function OrchestratorPanel({
                     default.
                   </p>
                 ) : null}
+
+                <AgentModelRoutingPanel routing={modelRouting} onChange={setModelRouting} />
               </motion.div>
             ) : snapshot ? (
               <motion.div
@@ -899,6 +956,24 @@ export function OrchestratorPanel({
                             : "unknown"}
                           {resumeModelChanged ? " (apply selection before resume)" : ""}
                         </p>
+                      </div>
+                    )}
+
+                    {canAdjustResumeModel && (
+                      <div className="space-y-2">
+                        <AgentModelRoutingPanel
+                          routing={modelRouting}
+                          onChange={setModelRouting}
+                          disabled={isLoading}
+                        />
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={handleSetModelRouting}
+                          disabled={!canApplyAgentModelRouting}
+                        >
+                          Apply Agent Models
+                        </Button>
                       </div>
                     )}
 

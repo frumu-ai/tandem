@@ -679,6 +679,7 @@ fn app_router(state: AppState) -> Router {
         .route("/memory/audit", get(memory_audit))
         .route("/memory", get(memory_list))
         .route("/memory/{id}", axum::routing::delete(memory_delete))
+        .route("/channels/config", get(channels_config))
         .route("/channels/status", get(channels_status))
         .route(
             "/channels/{name}",
@@ -747,6 +748,10 @@ async fn auth_gate(State(state): State<AppState>, request: Request, next: Next) 
         return next.run(request).await;
     }
     let path = request.uri().path();
+    if state.web_ui_enabled() && request.uri().path().starts_with(&state.web_ui_prefix()) {
+        return next.run(request).await;
+    }
+
     if path == "/global/health" {
         return next.run(request).await;
     }
@@ -2464,7 +2469,11 @@ fn redact_secret_fields(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (key, field) in map.iter_mut() {
-                if key.eq_ignore_ascii_case("api_key") || key.eq_ignore_ascii_case("apikey") {
+                if key.eq_ignore_ascii_case("api_key")
+                    || key.eq_ignore_ascii_case("apikey")
+                    || key.eq_ignore_ascii_case("bot_token")
+                    || key.eq_ignore_ascii_case("botToken")
+                {
                     *field = Value::String("[REDACTED]".to_string());
                 } else {
                     redact_secret_fields(field);
@@ -2490,6 +2499,8 @@ fn contains_secret_config_fields(value: &Value) -> bool {
         Value::Object(map) => map.iter().any(|(key, field)| {
             key.eq_ignore_ascii_case("api_key")
                 || key.eq_ignore_ascii_case("apikey")
+                || key.eq_ignore_ascii_case("bot_token")
+                || key.eq_ignore_ascii_case("botToken")
                 || contains_secret_config_fields(field)
         }),
         Value::Array(items) => items.iter().any(contains_secret_config_fields),
@@ -3744,6 +3755,83 @@ async fn memory_delete(
         }),
     ));
     Ok(Json(json!({"ok": true})))
+}
+
+fn parse_allowed_users(value: Option<&Value>) -> Vec<String> {
+    let mut users = value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if users.is_empty() {
+        users.push("*".to_string());
+    }
+    users
+}
+
+async fn channels_config(State(state): State<AppState>) -> Json<Value> {
+    let effective = state.config.get_effective_value().await;
+    let channels = effective.get("channels").and_then(Value::as_object);
+
+    let telegram = channels
+        .and_then(|obj| obj.get("telegram"))
+        .and_then(Value::as_object);
+    let discord = channels
+        .and_then(|obj| obj.get("discord"))
+        .and_then(Value::as_object);
+    let slack = channels
+        .and_then(|obj| obj.get("slack"))
+        .and_then(Value::as_object);
+
+    let telegram_has_token = telegram
+        .and_then(|cfg| cfg.get("bot_token"))
+        .and_then(Value::as_str)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let discord_has_token = discord
+        .and_then(|cfg| cfg.get("bot_token"))
+        .and_then(Value::as_str)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let slack_has_token = slack
+        .and_then(|cfg| cfg.get("bot_token"))
+        .and_then(Value::as_str)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    Json(json!({
+        "telegram": {
+            "has_token": telegram_has_token,
+            "allowed_users": parse_allowed_users(telegram.and_then(|cfg| cfg.get("allowed_users"))),
+            "mention_only": telegram
+                .and_then(|cfg| cfg.get("mention_only"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        },
+        "discord": {
+            "has_token": discord_has_token,
+            "allowed_users": parse_allowed_users(discord.and_then(|cfg| cfg.get("allowed_users"))),
+            "mention_only": discord
+                .and_then(|cfg| cfg.get("mention_only"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            "guild_id": discord
+                .and_then(|cfg| cfg.get("guild_id"))
+                .and_then(Value::as_str),
+        },
+        "slack": {
+            "has_token": slack_has_token,
+            "allowed_users": parse_allowed_users(slack.and_then(|cfg| cfg.get("allowed_users"))),
+            "channel_id": slack
+                .and_then(|cfg| cfg.get("channel_id"))
+                .and_then(Value::as_str),
+        }
+    }))
 }
 
 async fn channels_status(State(state): State<AppState>) -> Json<Value> {
@@ -8639,6 +8727,7 @@ mod tests {
         let app = app_router(state);
 
         for (method, uri) in [
+            ("GET", "/channels/config"),
             ("GET", "/channels/status"),
             ("POST", "/admin/reload-config"),
             ("GET", "/memory"),
@@ -8651,5 +8740,108 @@ mod tests {
             let resp = app.clone().oneshot(req).await.expect("response");
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         }
+    }
+
+    #[tokio::test]
+    async fn channels_config_returns_non_secret_shape() {
+        let state = test_state().await;
+        let _ = state
+            .config
+            .patch_project(json!({
+                "channels": {
+                    "telegram": {
+                        "bot_token": "tg-secret",
+                        "allowed_users": ["@alice", "@bob"],
+                        "mention_only": true
+                    },
+                    "discord": {
+                        "bot_token": "dc-secret",
+                        "allowed_users": ["*"],
+                        "mention_only": false,
+                        "guild_id": "1234"
+                    },
+                    "slack": {
+                        "bot_token": "sl-secret",
+                        "channel_id": "C123",
+                        "allowed_users": ["U1"]
+                    }
+                }
+            }))
+            .await
+            .expect("patch project");
+        let app = app_router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/channels/config")
+            .body(Body::empty())
+            .expect("request");
+        let resp = app.clone().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload
+                .get("telegram")
+                .and_then(|v| v.get("has_token"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(payload
+            .get("telegram")
+            .and_then(Value::as_object)
+            .is_some_and(|obj| !obj.contains_key("bot_token")));
+        assert!(payload
+            .get("discord")
+            .and_then(Value::as_object)
+            .is_some_and(|obj| !obj.contains_key("bot_token")));
+        assert!(payload
+            .get("slack")
+            .and_then(Value::as_object)
+            .is_some_and(|obj| !obj.contains_key("bot_token")));
+    }
+
+    #[tokio::test]
+    async fn get_config_redacts_channel_bot_token() {
+        let state = test_state().await;
+        let _ = state
+            .config
+            .patch_project(json!({
+                "channels": {
+                    "telegram": {
+                        "bot_token": "tg-secret",
+                        "allowed_users": ["*"],
+                        "mention_only": false
+                    }
+                }
+            }))
+            .await
+            .expect("patch project");
+        let app = app_router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/config")
+            .body(Body::empty())
+            .expect("request");
+        let resp = app.clone().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload
+                .get("effective")
+                .and_then(|v| v.get("channels"))
+                .and_then(|v| v.get("telegram"))
+                .and_then(|v| v.get("bot_token"))
+                .and_then(Value::as_str),
+            Some("[REDACTED]")
+        );
     }
 }

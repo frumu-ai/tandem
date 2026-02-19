@@ -157,11 +157,7 @@ impl Channel for TelegramChannel {
                 let sender = msg["from"]["username"]
                     .as_str()
                     .map(|u| format!("@{u}"))
-                    .or_else(|| {
-                        msg["from"]["first_name"]
-                            .as_str()
-                            .map(|n| n.to_string())
-                    })
+                    .or_else(|| msg["from"]["first_name"].as_str().map(|n| n.to_string()))
                     .unwrap_or_else(|| msg["from"]["id"].to_string());
 
                 if !is_user_allowed(&sender, &self.allowed_users) {

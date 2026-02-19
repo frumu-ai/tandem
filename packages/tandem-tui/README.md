@@ -25,13 +25,7 @@ The installer downloads the release asset that matches this package version. Tag
 
 ## Quick Start
 
-Start the engine in one terminal:
-
-```bash
-tandem-engine serve --hostname 127.0.0.1 --port 39731
-```
-
-Start the TUI in another terminal:
+Start the TUI in your terminal:
 
 ```bash
 tandem-tui

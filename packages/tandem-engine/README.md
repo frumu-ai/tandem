@@ -31,12 +31,6 @@ Start the engine server:
 tandem-engine serve --hostname 127.0.0.1 --port 39731
 ```
 
-In a second terminal, you can start the TUI:
-
-```bash
-tandem-tui
-```
-
 ## Commands
 
 ### Serve

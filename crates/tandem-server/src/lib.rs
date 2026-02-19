@@ -14,11 +14,11 @@ use tandem_types::EngineEvent;
 use tokio::fs;
 use tokio::sync::RwLock;
 
+use tandem_channels::config::{ChannelsConfig, DiscordConfig, SlackConfig, TelegramConfig};
 use tandem_core::{
     AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus, PermissionManager,
     PluginRegistry, Storage,
 };
-use tandem_channels::config::{ChannelsConfig, DiscordConfig, SlackConfig, TelegramConfig};
 use tandem_providers::ProviderRegistry;
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::ToolRegistry;
@@ -478,9 +478,7 @@ impl AppState {
             agent_teams: AgentTeamRuntime::new(resolve_agent_team_audit_path()),
             web_ui_enabled: Arc::new(AtomicBool::new(false)),
             web_ui_prefix: Arc::new(std::sync::RwLock::new("/admin".to_string())),
-            server_base_url: Arc::new(std::sync::RwLock::new(
-                "http://127.0.0.1:39731".to_string(),
-            )),
+            server_base_url: Arc::new(std::sync::RwLock::new("http://127.0.0.1:39731".to_string())),
             channels_runtime: Arc::new(tokio::sync::Mutex::new(ChannelRuntime::default())),
         }
     }

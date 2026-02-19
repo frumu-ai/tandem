@@ -918,6 +918,70 @@ pub struct ProviderInfo {
     pub configured: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelRuntimeStatus {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub active_sessions: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelsStatusResponse {
+    #[serde(default)]
+    pub telegram: ChannelRuntimeStatus,
+    #[serde(default)]
+    pub discord: ChannelRuntimeStatus,
+    #[serde(default)]
+    pub slack: ChannelRuntimeStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TelegramChannelConfigView {
+    #[serde(default)]
+    pub has_token: bool,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub mention_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DiscordChannelConfigView {
+    #[serde(default)]
+    pub has_token: bool,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub mention_only: bool,
+    #[serde(default)]
+    pub guild_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SlackChannelConfigView {
+    #[serde(default)]
+    pub has_token: bool,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelsConfigResponse {
+    #[serde(default)]
+    pub telegram: TelegramChannelConfigView,
+    #[serde(default)]
+    pub discord: DiscordChannelConfigView,
+    #[serde(default)]
+    pub slack: SlackChannelConfigView,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct ProviderCatalogResponse {
     #[serde(default)]
@@ -3312,12 +3376,9 @@ impl SidecarManager {
     pub async fn agent_team_list_templates(&self) -> Result<Vec<AgentTeamTemplate>> {
         self.check_circuit_breaker().await?;
         let url = format!("{}/agent-team/templates", self.base_url().await?);
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to list agent-team templates: {}", e)))?;
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to list agent-team templates: {}", e))
+        })?;
         let payload: AgentTeamTemplatesResponse = self.handle_response(response).await?;
         Ok(payload.templates)
     }
@@ -3342,10 +3403,9 @@ impl SidecarManager {
         if !pairs.is_empty() {
             request = request.query(&pairs);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to list agent-team instances: {}", e)))?;
+        let response = request.send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to list agent-team instances: {}", e))
+        })?;
         let payload: AgentTeamInstancesResponse = self.handle_response(response).await?;
         Ok(payload.instances)
     }
@@ -3353,12 +3413,9 @@ impl SidecarManager {
     pub async fn agent_team_list_missions(&self) -> Result<Vec<AgentTeamMissionSummary>> {
         self.check_circuit_breaker().await?;
         let url = format!("{}/agent-team/missions", self.base_url().await?);
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to list agent-team missions: {}", e)))?;
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to list agent-team missions: {}", e))
+        })?;
         let payload: AgentTeamMissionSummariesResponse = self.handle_response(response).await?;
         Ok(payload.missions)
     }
@@ -3366,12 +3423,9 @@ impl SidecarManager {
     pub async fn agent_team_list_approvals(&self) -> Result<AgentTeamApprovals> {
         self.check_circuit_breaker().await?;
         let url = format!("{}/agent-team/approvals", self.base_url().await?);
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to list agent-team approvals: {}", e)))?;
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to list agent-team approvals: {}", e))
+        })?;
         let payload: AgentTeamApprovalsResponse = self.handle_response(response).await?;
         Ok(AgentTeamApprovals {
             spawn_approvals: payload.spawn_approvals,
@@ -3391,7 +3445,9 @@ impl SidecarManager {
             .json(&request)
             .send()
             .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to spawn agent-team instance: {}", e)))?;
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to spawn agent-team instance: {}", e))
+            })?;
         self.handle_response(response).await
     }
 
@@ -3412,7 +3468,9 @@ impl SidecarManager {
             .json(&request)
             .send()
             .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to cancel agent-team instance: {}", e)))?;
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to cancel agent-team instance: {}", e))
+            })?;
         self.handle_response(response).await
     }
 
@@ -3433,7 +3491,9 @@ impl SidecarManager {
             .json(&request)
             .send()
             .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to cancel agent-team mission: {}", e)))?;
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to cancel agent-team mission: {}", e))
+            })?;
         self.handle_response(response).await
     }
 
@@ -3454,7 +3514,9 @@ impl SidecarManager {
             .json(&request)
             .send()
             .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to approve agent-team spawn: {}", e)))?;
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to approve agent-team spawn: {}", e))
+            })?;
         self.handle_response(response).await
     }
 
@@ -3563,6 +3625,52 @@ impl SidecarManager {
                 self.handle_response(response).await
             }
         }
+    }
+
+    pub async fn channels_status(&self) -> Result<ChannelsStatusResponse> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/channels/status", self.base_url().await?);
+        let response =
+            self.http_client.get(&url).send().await.map_err(|e| {
+                TandemError::Sidecar(format!("Failed to fetch channels status: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn channels_config(&self) -> Result<ChannelsConfigResponse> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/channels/config", self.base_url().await?);
+        let response =
+            self.http_client.get(&url).send().await.map_err(|e| {
+                TandemError::Sidecar(format!("Failed to fetch channels config: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn channels_put(&self, name: &str, body: serde_json::Value) -> Result<()> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/channels/{}", self.base_url().await?, name);
+        let response = self
+            .http_client
+            .put(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to update channel '{}': {}", name, e))
+            })?;
+        let _: serde_json::Value = self.handle_response(response).await?;
+        Ok(())
+    }
+
+    pub async fn channels_delete(&self, name: &str) -> Result<()> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/channels/{}", self.base_url().await?, name);
+        let response = self.http_client.delete(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to disable channel '{}': {}", name, e))
+        })?;
+        let _: serde_json::Value = self.handle_response(response).await?;
+        Ok(())
     }
 
     /// Set runtime-only auth token for a provider on the engine sidecar.

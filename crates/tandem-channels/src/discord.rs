@@ -72,10 +72,7 @@ pub fn split_message(message: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 fn mention_tags(bot_user_id: &str) -> [String; 2] {
-    [
-        format!("<@{bot_user_id}>"),
-        format!("<@!{bot_user_id}>"),
-    ]
+    [format!("<@{bot_user_id}>"), format!("<@!{bot_user_id}>")]
 }
 
 fn normalize_incoming_content(
@@ -112,8 +109,7 @@ fn normalize_incoming_content(
 // Token → bot user ID (minimal base64 decode — no extra dep)
 // ---------------------------------------------------------------------------
 
-const BASE64_ALPHABET: &[u8] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 #[allow(clippy::cast_possible_truncation)]
 fn base64_decode(input: &str) -> Option<String> {
@@ -283,8 +279,7 @@ impl Channel for DiscordChannel {
         // Heartbeat timer — sends ticks into the select! loop
         let (hb_tx, mut hb_rx) = tokio::sync::mpsc::channel::<()>(1);
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(Duration::from_millis(heartbeat_interval));
+            let mut interval = tokio::time::interval(Duration::from_millis(heartbeat_interval));
             loop {
                 interval.tick().await;
                 if hb_tx.send(()).await.is_err() {

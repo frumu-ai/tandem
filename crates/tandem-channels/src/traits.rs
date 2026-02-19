@@ -45,10 +45,7 @@ pub trait Channel: Send + Sync {
     ///
     /// This method should run until the sender is dropped or an unrecoverable
     /// error occurs. The supervisor in `dispatcher.rs` handles restarts.
-    async fn listen(
-        &self,
-        tx: tokio::sync::mpsc::Sender<ChannelMessage>,
-    ) -> anyhow::Result<()>;
+    async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()>;
 
     /// Returns `true` if the platform connection is currently healthy.
     /// Used by the supervisor to decide whether to log a warning on restart.

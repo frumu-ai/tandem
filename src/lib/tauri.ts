@@ -745,6 +745,69 @@ export async function setProvidersConfig(config: ProvidersConfig): Promise<void>
 }
 
 // ============================================================================
+// Channel Connections (Telegram / Discord / Slack)
+// ============================================================================
+
+export type ChannelName = "telegram" | "discord" | "slack";
+
+export interface ChannelRuntimeStatus {
+  enabled: boolean;
+  connected: boolean;
+  last_error?: string | null;
+  active_sessions: number;
+}
+
+export interface ChannelConnectionConfigView {
+  has_token: boolean;
+  allowed_users: string[];
+  mention_only?: boolean | null;
+  guild_id?: string | null;
+  channel_id?: string | null;
+}
+
+export interface ChannelConnectionView {
+  status: ChannelRuntimeStatus;
+  config: ChannelConnectionConfigView;
+}
+
+export interface ChannelConnectionsView {
+  telegram: ChannelConnectionView;
+  discord: ChannelConnectionView;
+  slack: ChannelConnectionView;
+}
+
+export interface ChannelConnectionInput {
+  token?: string;
+  allowed_users?: string[];
+  mention_only?: boolean;
+  guild_id?: string | null;
+  channel_id?: string | null;
+}
+
+export async function getChannelConnections(): Promise<ChannelConnectionsView> {
+  return invoke("get_channel_connections");
+}
+
+export async function setChannelConnection(
+  channel: ChannelName,
+  input: ChannelConnectionInput
+): Promise<ChannelConnectionsView> {
+  return invoke("set_channel_connection", { channel, input });
+}
+
+export async function disableChannelConnection(
+  channel: ChannelName
+): Promise<ChannelConnectionsView> {
+  return invoke("disable_channel_connection", { channel });
+}
+
+export async function deleteChannelConnectionToken(
+  channel: ChannelName
+): Promise<ChannelConnectionsView> {
+  return invoke("delete_channel_connection_token", { channel });
+}
+
+// ============================================================================
 // Sidecar Management
 // ============================================================================
 
