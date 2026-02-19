@@ -42,6 +42,8 @@ tandem-engine serve [OPTIONS]
 - `--api-key <KEY>`: API key override for the selected provider for this process.
 - `--config <PATH>`: Override config file path.
 - `--api-token <TOKEN>`: Require token auth for HTTP endpoints (Authorization Bearer or `X-Tandem-Token`, env: `TANDEM_API_TOKEN`).
+- `--web-ui`: Enable embedded web admin UI (env: `TANDEM_WEB_UI`).
+- `--web-ui-prefix <PATH>`: Path prefix for embedded web admin UI (default: `/admin`, env: `TANDEM_WEB_UI_PREFIX`).
 
 ## `run`
 

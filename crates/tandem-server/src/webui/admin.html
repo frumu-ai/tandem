@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tandem Admin</title>
+    <style>
+      :root {
+        --bg0: #080d19;
+        --bg1: #132747;
+        --bg2: #0f3d46;
+        --glass: rgba(20, 31, 56, 0.62);
+        --glass-border: rgba(132, 163, 225, 0.26);
+        --text: #eef5ff;
+        --muted: #98abcf;
+        --ok: #54d996;
+        --warn: #f3be68;
+        --err: #ff6d7f;
+        --accent: #69b1ff;
+      }
+      * { box-sizing: border-box; }
+      @keyframes pulse { 0%,100% { opacity: .55; transform: scale(1);} 50% { opacity: 1; transform: scale(1.12);} }
+      @keyframes shimmer { 0% { background-position: -260px 0;} 100% { background-position: 260px 0;} }
+      body {
+        margin: 0; color: var(--text); font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(800px 500px at 0% -10%, var(--bg1) 0%, transparent 60%),
+          radial-gradient(700px 420px at 100% 0%, var(--bg2) 0%, transparent 65%),
+          var(--bg0);
+      }
+      .wrap { max-width: 1200px; margin: 20px auto; padding: 0 14px; }
+      .card {
+        border: 1px solid var(--glass-border); border-radius: 16px; background: var(--glass); backdrop-filter: blur(14px);
+        box-shadow: 0 12px 38px rgba(0, 0, 0, .35); transition: transform .18s ease, border-color .18s ease;
+      }
+      .card:hover { transform: translateY(-2px); border-color: rgba(132, 163, 225, .45); }
+      .top { display: grid; gap: 10px; grid-template-columns: 1fr auto auto; padding: 12px; }
+      .tabs { display: flex; gap: 8px; margin: 12px 0; }
+      button, input, textarea, select {
+        font: inherit; border-radius: 10px; border: 1px solid #31466f; background: #0f1830; color: var(--text); padding: 9px 11px;
+      }
+      button { cursor: pointer; transition: transform .16s ease, filter .16s ease; }
+      button:hover { transform: translateY(-1px); filter: brightness(1.05); }
+      .btn-primary { border: none; background: linear-gradient(90deg, #7cbcff, #54d996); color: #03151d; font-weight: 700; }
+      .btn-danger { border-color: #6a2a37; background: #2a1521; color: #ffbcc8; }
+      .tab.active { border-color: #5e90db; background: #15264a; }
+      .grid { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .pane { display: none; }
+      .pane.active { display: block; animation: in .2s ease; }
+      @keyframes in { from { opacity: 0; transform: translateY(5px);} to { opacity: 1; transform: translateY(0);} }
+      .status-dot { width: 9px; height: 9px; border-radius: 999px; display: inline-block; margin-right: 6px; }
+      .status-dot.live { background: var(--ok); animation: pulse 1.5s ease-in-out infinite; }
+      .status-dot.off { background: #68748f; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .muted { color: var(--muted); }
+      .list { display: grid; gap: 8px; }
+      .item { padding: 10px; border: 1px solid #304468; border-radius: 12px; background: rgba(13, 22, 42, 0.75); }
+      .split { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+      .skeleton { height: 54px; border-radius: 12px; background: linear-gradient(90deg, #1a2744 8%, #2a3d66 38%, #1a2744 62%); background-size: 400px 100%; animation: shimmer 1.2s linear infinite; }
+      .mono { font-family: "JetBrains Mono", "Cascadia Mono", monospace; font-size: 12px; }
+      .hidden { display: none !important; }
+      #tokenModal {
+        position: fixed; inset: 0; display: grid; place-items: center; background: rgba(2, 4, 9, 0.72);
+      }
+      #tokenModal .card { width: min(540px, 94vw); padding: 16px; }
+      @media (max-width: 920px) { .grid, .split, .top { grid-template-columns: 1fr; } }
+      @media (prefers-reduced-motion: reduce) {
+        * { animation: none !important; transition: none !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="tokenModal">
+      <div class="card">
+        <h2 style="margin:0 0 8px">Tandem Admin Token</h2>
+        <div class="muted" style="margin-bottom:10px">Token stays in memory for this tab only.</div>
+        <input id="tokenInput" placeholder="tk_..." />
+        <div class="row" style="margin-top:10px">
+          <button id="tokenSubmit" class="btn-primary">Unlock</button>
+          <span id="tokenErr" class="muted"></span>
+        </div>
+      </div>
+    </div>
+    <div class="wrap">
+      <div class="card top">
+        <div class="row"><strong>Tandem Headless Admin</strong> <span id="liveBadge" class="muted">offline</span></div>
+        <button id="reloadBtn" class="btn-primary">Reload Config</button>
+        <button id="signoutBtn">Sign Out</button>
+      </div>
+      <div class="tabs">
+        <button class="tab active" data-tab="connections">Connections</button>
+        <button class="tab" data-tab="sessions">Sessions</button>
+        <button class="tab" data-tab="memory">Memory</button>
+        <button class="tab" data-tab="settings">Settings</button>
+      </div>
+
+      <section id="connections" class="pane active">
+        <div id="connList" class="grid"></div>
+      </section>
+
+      <section id="sessions" class="pane">
+        <div class="split">
+          <div class="card" style="padding:10px">
+            <div class="row"><input id="sessionSearch" placeholder="Search sessions..." /><button id="sessionRefresh">Refresh</button></div>
+            <div id="sessionList" class="list" style="margin-top:10px"></div>
+          </div>
+          <div class="card" style="padding:10px">
+            <div class="muted">Session messages</div>
+            <div id="sessionMsgs" class="list mono" style="margin-top:10px; max-height:540px; overflow:auto"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="memory" class="pane">
+        <div class="card" style="padding:10px">
+          <div class="row"><input id="memorySearch" placeholder="Filter memory..." /><button id="memoryRefresh">Refresh</button></div>
+          <div id="memoryList" class="list" style="margin-top:10px"></div>
+        </div>
+      </section>
+
+      <section id="settings" class="pane">
+        <div class="card" style="padding:10px">
+          <div class="muted">Providers</div>
+          <pre id="providers" class="mono" style="white-space:pre-wrap"></pre>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const st = { token: "", sseAbort: null, pollTimer: null, selectedSession: "" };
+      const $ = (id) => document.getElementById(id);
+      const tabs = [...document.querySelectorAll(".tab")];
+
+      function authHeaders(jsonBody) {
+        const h = { "X-Tandem-Token": st.token };
+        if (jsonBody) h["content-type"] = "application/json";
+        return h;
+      }
+      async function api(path, opts = {}) {
+        const res = await fetch(path, { ...opts, headers: { ...authHeaders(!!opts.body), ...(opts.headers || {}) } });
+        if (!res.ok) throw new Error(`${path} failed (${res.status})`);
+        if (res.status === 204) return null;
+        const t = await res.text();
+        return t ? JSON.parse(t) : null;
+      }
+      function setLive(online) {
+        $("liveBadge").textContent = online ? "live" : "offline";
+        $("liveBadge").style.color = online ? "var(--ok)" : "var(--muted)";
+      }
+
+      async function boot() {
+        await renderConnections();
+        await renderSessions();
+        await renderMemory();
+        await renderSettings();
+        startRealtime();
+      }
+
+      function channelCard(name, data) {
+        const pretty = name[0].toUpperCase() + name.slice(1);
+        const dot = data.connected ? "live" : "off";
+        const el = document.createElement("div");
+        el.className = "card";
+        el.style.padding = "10px";
+        const enabled = !!data.enabled;
+        el.innerHTML = `
+          <div class="row"><span class="status-dot ${dot}"></span><strong>${pretty}</strong> <span class="muted">${enabled ? "configured" : "not configured"}</span></div>
+          <div class="muted" style="margin-top:6px">active sessions: <span data-ctr="${name}">${data.active_sessions || 0}</span></div>
+          <div class="row" style="margin-top:10px">
+            <input placeholder="bot token" data-field="token" />
+            <button data-action="save" class="btn-primary">${enabled ? "Update" : "Enable"}</button>
+            <button data-action="disable" class="btn-danger">Disable</button>
+          </div>`;
+        const tokenInput = el.querySelector("input");
+        el.querySelector("[data-action='save']").onclick = async () => {
+          const body = { bot_token: tokenInput.value.trim(), allowed_users: ["*"] };
+          if (name === "slack") body.channel_id = "C00000000";
+          try {
+            await api(`/channels/${name}`, { method: "PUT", body: JSON.stringify(body) });
+            await renderConnections();
+          } catch (e) { alert(String(e.message || e)); }
+        };
+        el.querySelector("[data-action='disable']").onclick = async () => {
+          try { await api(`/channels/${name}`, { method: "DELETE" }); await renderConnections(); }
+          catch (e) { alert(String(e.message || e)); }
+        };
+        return el;
+      }
+
+      async function renderConnections() {
+        const root = $("connList");
+        root.innerHTML = `<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>`;
+        const data = await api("/channels/status");
+        root.innerHTML = "";
+        ["telegram", "discord", "slack"].forEach((name) => root.appendChild(channelCard(name, data[name] || {})));
+      }
+
+      async function renderSessions() {
+        const q = $("sessionSearch").value.trim();
+        const list = await api(`/session?page=1&page_size=30${q ? `&q=${encodeURIComponent(q)}` : ""}`);
+        const root = $("sessionList");
+        root.innerHTML = "";
+        (list || []).forEach((s) => {
+          const item = document.createElement("div");
+          item.className = "item";
+          item.innerHTML = `<div><strong>${s.title || "Untitled"}</strong></div><div class="muted mono">${s.id}</div>`;
+          item.onclick = async () => {
+            st.selectedSession = s.id;
+            const msgs = await api(`/session/${encodeURIComponent(s.id)}/message`);
+            const msgRoot = $("sessionMsgs");
+            msgRoot.innerHTML = "";
+            (msgs || []).slice(-30).forEach((m) => {
+              const d = document.createElement("div");
+              d.className = "item";
+              const role = (m.role || m.info?.role || "unknown").toString();
+              d.textContent = `[${role}] ${(m.parts || []).map((p) => p.text || p.content || "").join(" ")}`;
+              msgRoot.appendChild(d);
+            });
+          };
+          root.appendChild(item);
+        });
+      }
+
+      async function renderMemory() {
+        const q = $("memorySearch").value.trim().toLowerCase();
+        const data = await api("/memory?limit=100");
+        const root = $("memoryList");
+        root.innerHTML = "";
+        const rows = (data?.items || []).filter((r) => !q || JSON.stringify(r).toLowerCase().includes(q));
+        rows.forEach((row) => {
+          const item = document.createElement("div");
+          item.className = "item";
+          item.innerHTML = `<div class="row"><strong>${row.id}</strong><button class="btn-danger">Delete</button></div><div class="mono muted">${(row.content || "").slice(0, 220)}</div>`;
+          item.querySelector("button").onclick = async () => {
+            if (!confirm(`Delete memory ${row.id}?`)) return;
+            await api(`/memory/${encodeURIComponent(row.id)}`, { method: "DELETE" });
+            await renderMemory();
+          };
+          root.appendChild(item);
+        });
+      }
+
+      async function renderSettings() {
+        const providers = await api("/config/providers");
+        $("providers").textContent = JSON.stringify(providers, null, 2);
+      }
+
+      function startPollingFallback() {
+        stopPollingFallback();
+        st.pollTimer = setInterval(async () => {
+          try {
+            await Promise.all([renderConnections(), renderSessions(), renderMemory()]);
+          } catch (_) {}
+        }, 5000);
+      }
+      function stopPollingFallback() {
+        if (st.pollTimer) { clearInterval(st.pollTimer); st.pollTimer = null; }
+      }
+
+      async function startRealtime() {
+        if (st.sseAbort) st.sseAbort.abort();
+        const abort = new AbortController();
+        st.sseAbort = abort;
+        try {
+          const res = await fetch("/event", { headers: { ...authHeaders(false), Accept: "text/event-stream" }, signal: abort.signal });
+          if (!res.ok || !res.body) throw new Error("sse unavailable");
+          setLive(true);
+          stopPollingFallback();
+          const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const blocks = buf.replace(/\r\n/g, "\n").split("\n\n");
+            buf = blocks.pop() || "";
+            for (const b of blocks) {
+              const data = b.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("\n");
+              if (!data || data === "[DONE]") continue;
+              const evt = JSON.parse(data);
+              const t = evt.type || evt.event_type || "";
+              if (t.startsWith("channel.") || t.startsWith("session.") || t.startsWith("memory.")) {
+                if (t.startsWith("channel.")) renderConnections();
+                if (t.startsWith("session.")) renderSessions();
+                if (t.startsWith("memory.")) renderMemory();
+              }
+            }
+          }
+        } catch (_) {
+          setLive(false);
+          startPollingFallback();
+        }
+      }
+
+      $("reloadBtn").onclick = async () => { await api("/admin/reload-config", { method: "POST", body: "{}" }); await boot(); };
+      $("signoutBtn").onclick = () => location.reload();
+      $("sessionRefresh").onclick = renderSessions;
+      $("memoryRefresh").onclick = renderMemory;
+      $("sessionSearch").oninput = () => renderSessions();
+      $("memorySearch").oninput = () => renderMemory();
+      tabs.forEach((t) => t.onclick = () => {
+        tabs.forEach((x) => x.classList.remove("active"));
+        t.classList.add("active");
+        document.querySelectorAll(".pane").forEach((p) => p.classList.remove("active"));
+        document.getElementById(t.dataset.tab).classList.add("active");
+      });
+      $("tokenSubmit").onclick = async () => {
+        st.token = $("tokenInput").value.trim();
+        try {
+          await api("/global/health");
+          $("tokenModal").classList.add("hidden");
+          await boot();
+        } catch {
+          $("tokenErr").textContent = "Invalid token or unavailable server.";
+        }
+      };
+    </script>
+  </body>
+</html>
+

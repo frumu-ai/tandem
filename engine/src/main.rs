@@ -150,6 +150,20 @@ enum Command {
             help = "Require API token auth for HTTP endpoints (Authorization: Bearer <token> or X-Tandem-Token)."
         )]
         api_token: Option<String>,
+        #[arg(
+            long,
+            env = "TANDEM_WEB_UI",
+            default_value_t = false,
+            help = "Enable embedded web admin UI."
+        )]
+        web_ui: bool,
+        #[arg(
+            long,
+            env = "TANDEM_WEB_UI_PREFIX",
+            default_value = "/admin",
+            help = "Path prefix where embedded web admin UI is served."
+        )]
+        web_ui_prefix: String,
     },
     #[command(about = "Run one prompt and print only the assistant response.")]
     #[command(after_help = RUN_EXAMPLES)]
@@ -234,6 +248,8 @@ async fn main() -> anyhow::Result<()> {
             model,
             config,
             api_token,
+            web_ui,
+            web_ui_prefix,
         } => {
             let provider = normalize_and_validate_provider(provider)?;
             let overrides = build_cli_overrides(api_key, provider, model)?;
@@ -264,6 +280,7 @@ async fn main() -> anyhow::Result<()> {
             info!("engine logging initialized: {:?}", log_info);
             let startup_attempt_id = Uuid::new_v4().to_string();
             let state = AppState::new_starting(startup_attempt_id.clone(), in_process);
+            state.configure_web_ui(web_ui, web_ui_prefix);
             if let Some(token) = api_token.and_then(|raw| {
                 let trimmed = raw.trim().to_string();
                 if trimmed.is_empty() {
@@ -278,6 +295,12 @@ async fn main() -> anyhow::Result<()> {
             let addr: SocketAddr = format!("{hostname}:{port}")
                 .parse()
                 .context("invalid hostname or port")?;
+            let internal_host = if hostname == "0.0.0.0" {
+                "127.0.0.1".to_string()
+            } else {
+                hostname.clone()
+            };
+            state.set_server_base_url(format!("http://{internal_host}:{port}"));
             log_startup_paths(&state_dir, &addr, &startup_attempt_id);
             let init_state = state.clone();
             let init_state_dir = state_dir.clone();
@@ -681,6 +704,7 @@ async fn initialize_runtime(
 
     let runtime = build_runtime(&state_dir, Some(&state), overrides, config_path).await?;
     state.mark_ready(runtime).await?;
+    let _ = state.restart_channel_listeners().await;
     state.set_phase("ready").await;
     emit_event(
         tracing::Level::INFO,

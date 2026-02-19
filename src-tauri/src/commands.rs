@@ -18,11 +18,13 @@ use crate::orchestrator::{
 };
 use crate::python_env;
 use crate::sidecar::{
-    ActiveRunStatusResponse, CreateSessionRequest, FilePartInput, MissionApplyEventResult,
-    MissionCreateRequest, MissionState, ModelInfo, ModelSpec, Project, ProviderInfo,
-    RoutineCreateRequest, RoutineHistoryEvent, RoutinePatchRequest, RoutineRunNowRequest,
-    RoutineRunNowResponse, RoutineSpec, SendMessageRequest, Session, SessionMessage, SidecarState,
-    StreamEvent, TodoItem,
+    ActiveRunStatusResponse, AgentTeamApprovals, AgentTeamCancelRequest, AgentTeamDecisionResult,
+    AgentTeamInstance, AgentTeamInstancesQuery, AgentTeamMissionSummary, AgentTeamSpawnRequest,
+    AgentTeamSpawnResult, AgentTeamTemplate, CreateSessionRequest, FilePartInput,
+    MissionApplyEventResult, MissionCreateRequest, MissionState, ModelInfo, ModelSpec, Project,
+    ProviderInfo, RoutineCreateRequest, RoutineHistoryEvent, RoutinePatchRequest,
+    RoutineRunNowRequest, RoutineRunNowResponse, RoutineSpec, SendMessageRequest, Session,
+    SessionMessage, SidecarState, StreamEvent, TodoItem,
 };
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
@@ -4728,6 +4730,96 @@ pub async fn mission_apply_event(
     event: serde_json::Value,
 ) -> Result<MissionApplyEventResult> {
     state.sidecar.mission_apply_event(&mission_id, event).await
+}
+
+#[tauri::command]
+pub async fn agent_team_list_templates(state: State<'_, AppState>) -> Result<Vec<AgentTeamTemplate>> {
+    state.sidecar.agent_team_list_templates().await
+}
+
+#[tauri::command]
+pub async fn agent_team_list_instances(
+    state: State<'_, AppState>,
+    mission_id: Option<String>,
+    parent_instance_id: Option<String>,
+    status: Option<String>,
+) -> Result<Vec<AgentTeamInstance>> {
+    state
+        .sidecar
+        .agent_team_list_instances(AgentTeamInstancesQuery {
+            mission_id,
+            parent_instance_id,
+            status,
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn agent_team_list_missions(
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentTeamMissionSummary>> {
+    state.sidecar.agent_team_list_missions().await
+}
+
+#[tauri::command]
+pub async fn agent_team_list_approvals(state: State<'_, AppState>) -> Result<AgentTeamApprovals> {
+    state.sidecar.agent_team_list_approvals().await
+}
+
+#[tauri::command]
+pub async fn agent_team_spawn(
+    state: State<'_, AppState>,
+    request: AgentTeamSpawnRequest,
+) -> Result<AgentTeamSpawnResult> {
+    state.sidecar.agent_team_spawn(request).await
+}
+
+#[tauri::command]
+pub async fn agent_team_cancel_instance(
+    state: State<'_, AppState>,
+    instance_id: String,
+    reason: Option<String>,
+) -> Result<AgentTeamDecisionResult> {
+    state
+        .sidecar
+        .agent_team_cancel_instance(&instance_id, AgentTeamCancelRequest { reason })
+        .await
+}
+
+#[tauri::command]
+pub async fn agent_team_cancel_mission(
+    state: State<'_, AppState>,
+    mission_id: String,
+    reason: Option<String>,
+) -> Result<AgentTeamDecisionResult> {
+    state
+        .sidecar
+        .agent_team_cancel_mission(&mission_id, AgentTeamCancelRequest { reason })
+        .await
+}
+
+#[tauri::command]
+pub async fn agent_team_approve_spawn(
+    state: State<'_, AppState>,
+    approval_id: String,
+    reason: Option<String>,
+) -> Result<AgentTeamDecisionResult> {
+    state
+        .sidecar
+        .agent_team_approve_spawn(&approval_id, AgentTeamCancelRequest { reason })
+        .await
+}
+
+#[tauri::command]
+pub async fn agent_team_deny_spawn(
+    state: State<'_, AppState>,
+    approval_id: String,
+    reason: Option<String>,
+) -> Result<AgentTeamDecisionResult> {
+    state
+        .sidecar
+        .agent_team_deny_spawn(&approval_id, AgentTeamCancelRequest { reason })
+        .await
 }
 
 // ============================================================================

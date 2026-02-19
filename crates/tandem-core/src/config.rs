@@ -153,6 +153,11 @@ impl ConfigStore {
         Ok(self.get_effective_value().await)
     }
 
+    pub async fn replace_project_value(&self, value: Value) -> anyhow::Result<Value> {
+        self.set_project_value(value).await?;
+        Ok(self.get_effective_value().await)
+    }
+
     pub async fn delete_runtime_provider_key(&self, provider_id: &str) -> anyhow::Result<Value> {
         let provider = provider_id.trim().to_string();
         {
@@ -333,6 +338,88 @@ async fn resolve_global_config_path() -> anyhow::Result<PathBuf> {
 fn env_layer() -> Value {
     let mut root = empty_object();
 
+    if let Ok(enabled) = std::env::var("TANDEM_WEB_UI") {
+        if let Some(v) = parse_bool_like(&enabled) {
+            deep_merge(&mut root, &json!({ "web_ui": { "enabled": v } }));
+        }
+    }
+    if let Ok(prefix) = std::env::var("TANDEM_WEB_UI_PREFIX") {
+        if !prefix.trim().is_empty() {
+            deep_merge(&mut root, &json!({ "web_ui": { "path_prefix": prefix } }));
+        }
+    }
+    if let Ok(token) = std::env::var("TANDEM_TELEGRAM_BOT_TOKEN") {
+        if !token.trim().is_empty() {
+            let allowed = std::env::var("TANDEM_TELEGRAM_ALLOWED_USERS")
+                .map(|s| parse_csv(&s))
+                .unwrap_or_else(|_| vec!["*".to_string()]);
+            let mention_only = std::env::var("TANDEM_TELEGRAM_MENTION_ONLY")
+                .ok()
+                .and_then(|v| parse_bool_like(&v))
+                .unwrap_or(false);
+            deep_merge(
+                &mut root,
+                &json!({
+                    "channels": {
+                        "telegram": {
+                            "bot_token": token,
+                            "allowed_users": allowed,
+                            "mention_only": mention_only
+                        }
+                    }
+                }),
+            );
+        }
+    }
+    if let Ok(token) = std::env::var("TANDEM_DISCORD_BOT_TOKEN") {
+        if !token.trim().is_empty() {
+            let allowed = std::env::var("TANDEM_DISCORD_ALLOWED_USERS")
+                .map(|s| parse_csv(&s))
+                .unwrap_or_else(|_| vec!["*".to_string()]);
+            let mention_only = std::env::var("TANDEM_DISCORD_MENTION_ONLY")
+                .ok()
+                .and_then(|v| parse_bool_like(&v))
+                .unwrap_or(true);
+            let guild_id = std::env::var("TANDEM_DISCORD_GUILD_ID").ok();
+            deep_merge(
+                &mut root,
+                &json!({
+                    "channels": {
+                        "discord": {
+                            "bot_token": token,
+                            "guild_id": guild_id,
+                            "allowed_users": allowed,
+                            "mention_only": mention_only
+                        }
+                    }
+                }),
+            );
+        }
+    }
+    if let Ok(token) = std::env::var("TANDEM_SLACK_BOT_TOKEN") {
+        if !token.trim().is_empty() {
+            if let Ok(channel_id) = std::env::var("TANDEM_SLACK_CHANNEL_ID") {
+                if !channel_id.trim().is_empty() {
+                    let allowed = std::env::var("TANDEM_SLACK_ALLOWED_USERS")
+                        .map(|s| parse_csv(&s))
+                        .unwrap_or_else(|_| vec!["*".to_string()]);
+                    deep_merge(
+                        &mut root,
+                        &json!({
+                            "channels": {
+                                "slack": {
+                                    "bot_token": token,
+                                    "channel_id": channel_id,
+                                    "allowed_users": allowed
+                                }
+                            }
+                        }),
+                    );
+                }
+            }
+        }
+    }
+
     if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
         deep_merge(
             &mut root,
@@ -451,6 +538,24 @@ fn env_layer() -> Value {
     }
 
     root
+}
+
+fn parse_bool_like(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_csv(raw: &str) -> Vec<String> {
+    if raw.trim() == "*" {
+        return vec!["*".to_string()];
+    }
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn add_openai_env(root: &mut Value, provider: &str, key_env: &str, default_url: &str, model: &str) {

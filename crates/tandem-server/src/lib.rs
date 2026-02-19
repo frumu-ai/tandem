@@ -18,15 +18,83 @@ use tandem_core::{
     AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus, PermissionManager,
     PluginRegistry, Storage,
 };
+use tandem_channels::config::{ChannelsConfig, DiscordConfig, SlackConfig, TelegramConfig};
 use tandem_providers::ProviderRegistry;
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::ToolRegistry;
 
 mod agent_teams;
 mod http;
+pub mod webui;
 
 pub use agent_teams::AgentTeamRuntime;
 pub use http::serve;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelStatus {
+    pub enabled: bool,
+    pub connected: bool,
+    pub last_error: Option<String>,
+    pub active_sessions: u64,
+    pub meta: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebUiConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_web_ui_prefix")]
+    pub path_prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelsConfigFile {
+    pub telegram: Option<TelegramConfigFile>,
+    pub discord: Option<DiscordConfigFile>,
+    pub slack: Option<SlackConfigFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramConfigFile {
+    pub bot_token: String,
+    #[serde(default = "default_allow_all")]
+    pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub mention_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordConfigFile {
+    pub bot_token: String,
+    #[serde(default)]
+    pub guild_id: Option<String>,
+    #[serde(default = "default_allow_all")]
+    pub allowed_users: Vec<String>,
+    #[serde(default = "default_discord_mention_only")]
+    pub mention_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackConfigFile {
+    pub bot_token: String,
+    pub channel_id: String,
+    #[serde(default = "default_allow_all")]
+    pub allowed_users: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct EffectiveAppConfig {
+    #[serde(default)]
+    pub channels: ChannelsConfigFile,
+    #[serde(default)]
+    pub web_ui: WebUiConfig,
+}
+
+#[derive(Default)]
+pub struct ChannelRuntime {
+    pub listeners: Option<tokio::task::JoinSet<()>>,
+    pub statuses: std::collections::HashMap<String, ChannelStatus>,
+}
 
 #[derive(Debug, Clone)]
 pub struct EngineLease {
@@ -371,6 +439,10 @@ pub struct AppState {
     pub routine_history: Arc<RwLock<std::collections::HashMap<String, Vec<RoutineHistoryEvent>>>>,
     pub routines_path: PathBuf,
     pub agent_teams: AgentTeamRuntime,
+    pub web_ui_enabled: Arc<AtomicBool>,
+    pub web_ui_prefix: Arc<std::sync::RwLock<String>>,
+    pub server_base_url: Arc<std::sync::RwLock<String>>,
+    pub channels_runtime: Arc<tokio::sync::Mutex<ChannelRuntime>>,
 }
 
 #[derive(Debug, Clone)]
@@ -404,6 +476,12 @@ impl AppState {
             routine_history: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routines_path: resolve_routines_path(),
             agent_teams: AgentTeamRuntime::new(resolve_agent_team_audit_path()),
+            web_ui_enabled: Arc::new(AtomicBool::new(false)),
+            web_ui_prefix: Arc::new(std::sync::RwLock::new("/admin".to_string())),
+            server_base_url: Arc::new(std::sync::RwLock::new(
+                "http://127.0.0.1:39731".to_string(),
+            )),
+            channels_runtime: Arc::new(tokio::sync::Mutex::new(ChannelRuntime::default())),
         }
     }
 
@@ -417,6 +495,37 @@ impl AppState {
         } else {
             "sidecar"
         }
+    }
+
+    pub fn configure_web_ui(&self, enabled: bool, prefix: String) {
+        self.web_ui_enabled.store(enabled, Ordering::Relaxed);
+        if let Ok(mut guard) = self.web_ui_prefix.write() {
+            *guard = normalize_web_ui_prefix(&prefix);
+        }
+    }
+
+    pub fn web_ui_enabled(&self) -> bool {
+        self.web_ui_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn web_ui_prefix(&self) -> String {
+        self.web_ui_prefix
+            .read()
+            .map(|v| v.clone())
+            .unwrap_or_else(|_| "/admin".to_string())
+    }
+
+    pub fn set_server_base_url(&self, base_url: String) {
+        if let Ok(mut guard) = self.server_base_url.write() {
+            *guard = base_url;
+        }
+    }
+
+    pub fn server_base_url(&self) -> String {
+        self.server_base_url
+            .read()
+            .map(|v| v.clone())
+            .unwrap_or_else(|_| "http://127.0.0.1:39731".to_string())
     }
 
     pub async fn api_token(&self) -> Option<String> {
@@ -477,6 +586,75 @@ impl AppState {
         startup.status = StartupStatus::Failed;
         startup.phase = phase.into();
         startup.last_error = Some(error.into());
+    }
+
+    pub async fn channel_statuses(&self) -> std::collections::HashMap<String, ChannelStatus> {
+        let runtime = self.channels_runtime.lock().await;
+        runtime.statuses.clone()
+    }
+
+    pub async fn restart_channel_listeners(&self) -> anyhow::Result<()> {
+        let effective = self.config.get_effective_value().await;
+        let parsed: EffectiveAppConfig = serde_json::from_value(effective).unwrap_or_default();
+        self.configure_web_ui(parsed.web_ui.enabled, parsed.web_ui.path_prefix.clone());
+
+        let mut runtime = self.channels_runtime.lock().await;
+        if let Some(listeners) = runtime.listeners.as_mut() {
+            listeners.abort_all();
+        }
+        runtime.listeners = None;
+        runtime.statuses.clear();
+
+        let mut status_map = std::collections::HashMap::new();
+        status_map.insert(
+            "telegram".to_string(),
+            ChannelStatus {
+                enabled: parsed.channels.telegram.is_some(),
+                connected: false,
+                last_error: None,
+                active_sessions: 0,
+                meta: serde_json::json!({}),
+            },
+        );
+        status_map.insert(
+            "discord".to_string(),
+            ChannelStatus {
+                enabled: parsed.channels.discord.is_some(),
+                connected: false,
+                last_error: None,
+                active_sessions: 0,
+                meta: serde_json::json!({}),
+            },
+        );
+        status_map.insert(
+            "slack".to_string(),
+            ChannelStatus {
+                enabled: parsed.channels.slack.is_some(),
+                connected: false,
+                last_error: None,
+                active_sessions: 0,
+                meta: serde_json::json!({}),
+            },
+        );
+
+        if let Some(channels_cfg) = build_channels_config(self, &parsed.channels).await {
+            let listeners = tandem_channels::start_channel_listeners(channels_cfg).await;
+            runtime.listeners = Some(listeners);
+            for status in status_map.values_mut() {
+                if status.enabled {
+                    status.connected = true;
+                }
+            }
+        }
+
+        runtime.statuses = status_map.clone();
+        drop(runtime);
+
+        self.event_bus.publish(EngineEvent::new(
+            "channel.status.changed",
+            serde_json::json!({ "channels": status_map }),
+        ));
+        Ok(())
     }
 
     pub async fn load_shared_resources(&self) -> anyhow::Result<()> {
@@ -817,6 +995,60 @@ impl AppState {
         rows.truncate(limit);
         rows
     }
+}
+
+async fn build_channels_config(
+    state: &AppState,
+    channels: &ChannelsConfigFile,
+) -> Option<ChannelsConfig> {
+    if channels.telegram.is_none() && channels.discord.is_none() && channels.slack.is_none() {
+        return None;
+    }
+    Some(ChannelsConfig {
+        telegram: channels.telegram.clone().map(|cfg| TelegramConfig {
+            bot_token: cfg.bot_token,
+            allowed_users: cfg.allowed_users,
+            mention_only: cfg.mention_only,
+        }),
+        discord: channels.discord.clone().map(|cfg| DiscordConfig {
+            bot_token: cfg.bot_token,
+            guild_id: cfg.guild_id,
+            allowed_users: cfg.allowed_users,
+            mention_only: cfg.mention_only,
+        }),
+        slack: channels.slack.clone().map(|cfg| SlackConfig {
+            bot_token: cfg.bot_token,
+            channel_id: cfg.channel_id,
+            allowed_users: cfg.allowed_users,
+        }),
+        server_base_url: state.server_base_url(),
+        api_token: state.api_token().await.unwrap_or_default(),
+    })
+}
+
+fn normalize_web_ui_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return "/admin".to_string();
+    }
+    let with_leading = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    with_leading.trim_end_matches('/').to_string()
+}
+
+fn default_web_ui_prefix() -> String {
+    "/admin".to_string()
+}
+
+fn default_allow_all() -> Vec<String> {
+    vec!["*".to_string()]
+}
+
+fn default_discord_mention_only() -> bool {
+    true
 }
 
 fn resolve_run_stale_ms() -> u64 {

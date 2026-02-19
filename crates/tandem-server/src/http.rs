@@ -46,9 +46,10 @@ use tandem_wire::{
 use crate::ResourceStoreError;
 use crate::{
     agent_teams::{emit_spawn_approved, emit_spawn_denied, emit_spawn_requested},
-    evaluate_routine_execution_policy, ActiveRun, AppState, RoutineExecutionDecision,
-    RoutineHistoryEvent, RoutineMisfirePolicy, RoutineSchedule, RoutineSpec, RoutineStatus,
-    RoutineStoreError, StartupStatus,
+    evaluate_routine_execution_policy, ActiveRun, AppState, ChannelStatus, DiscordConfigFile,
+    RoutineExecutionDecision, RoutineHistoryEvent, RoutineMisfirePolicy, RoutineSchedule,
+    RoutineSpec, RoutineStatus, RoutineStoreError, SlackConfigFile, StartupStatus,
+    TelegramConfigFile,
 };
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -375,6 +376,13 @@ struct ResourceEventsQuery {
     prefix: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct MemoryListQuery {
+    q: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ResourceWriteInput {
     value: Value,
@@ -480,7 +488,7 @@ fn app_router(state: AppState) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    Router::new()
+    let mut router = Router::new()
         .route("/global/health", get(global_health))
         .route("/global/event", get(events))
         .route("/global/lease/acquire", post(global_lease_acquire))
@@ -635,6 +643,11 @@ fn app_router(state: AppState) -> Router {
         .route("/memory/promote", post(memory_promote))
         .route("/memory/search", post(memory_search))
         .route("/memory/audit", get(memory_audit))
+        .route("/memory", get(memory_list))
+        .route("/memory/{id}", axum::routing::delete(memory_delete))
+        .route("/channels/status", get(channels_status))
+        .route("/channels/{name}", put(channels_put).delete(channels_delete))
+        .route("/admin/reload-config", post(admin_reload_config))
         .route("/mission", get(mission_list).post(mission_create))
         .route("/mission/{id}", get(mission_get))
         .route("/mission/{id}/event", post(mission_apply_event))
@@ -642,6 +655,14 @@ fn app_router(state: AppState) -> Router {
         .route("/agent-team/instances", get(agent_team_instances))
         .route("/agent-team/missions", get(agent_team_missions))
         .route("/agent-team/approvals", get(agent_team_approvals))
+        .route(
+            "/agent-team/approvals/spawn/{id}/approve",
+            post(agent_team_approve_spawn),
+        )
+        .route(
+            "/agent-team/approvals/spawn/{id}/deny",
+            post(agent_team_deny_spawn),
+        )
         .route("/agent-team/spawn", post(agent_team_spawn))
         .route(
             "/agent-team/instance/{id}/cancel",
@@ -671,7 +692,13 @@ fn app_router(state: AppState) -> Router {
         .route("/skill", get(skill_list))
         .route("/instance/dispose", post(instance_dispose))
         .route("/log", post(push_log))
-        .route("/doc", get(openapi_doc))
+        .route("/doc", get(openapi_doc));
+
+    if state.web_ui_enabled() {
+        router = router.merge(crate::webui::web_ui_router(&state.web_ui_prefix()));
+    }
+
+    router
         .layer(cors)
         .layer(middleware::from_fn_with_state(state.clone(), startup_gate))
         .layer(middleware::from_fn_with_state(state.clone(), auth_gate))
@@ -3317,6 +3344,13 @@ async fn memory_put(
             "auditID": audit_id,
         }),
     ));
+    state.event_bus.publish(EngineEvent::new(
+        "memory.updated",
+        json!({
+            "memoryID": id,
+            "action": "put",
+        }),
+    ));
 
     Ok(Json(MemoryPutResponse {
         id,
@@ -3457,6 +3491,13 @@ async fn memory_promote(
             "scrubStatus": scrub_report.status,
         }),
     ));
+    state.event_bus.publish(EngineEvent::new(
+        "memory.updated",
+        json!({
+            "memoryID": new_id,
+            "action": "promote",
+        }),
+    ));
 
     Ok(Json(MemoryPromoteResponse {
         promoted: true,
@@ -3580,6 +3621,213 @@ async fn memory_audit(
         "events": entries,
         "count": entries.len(),
     }))
+}
+
+async fn memory_list(
+    State(state): State<AppState>,
+    Query(query): Query<MemoryListQuery>,
+) -> Json<Value> {
+    let q = query.q.unwrap_or_default().to_lowercase();
+    let limit = query.limit.unwrap_or(100).clamp(1, 1000);
+    let offset = query.offset.unwrap_or(0);
+    let mut items = state
+        .memory_records
+        .read()
+        .await
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+    if !q.is_empty() {
+        items.retain(|row| {
+            row.id.to_lowercase().contains(&q)
+                || row.run_id.to_lowercase().contains(&q)
+                || row.content.to_lowercase().contains(&q)
+                || row.partition.key().to_lowercase().contains(&q)
+        });
+    }
+    let total = items.len();
+    let page = items
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|row| {
+            json!({
+                "id": row.id,
+                "run_id": row.run_id,
+                "partition": row.partition,
+                "kind": row.kind,
+                "content": row.content,
+                "artifact_refs": row.artifact_refs,
+                "classification": row.classification,
+                "metadata": row.metadata,
+                "source_memory_id": row.source_memory_id,
+                "created_at_ms": row.created_at_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    Json(json!({
+        "items": page,
+        "count": total,
+        "offset": offset,
+        "limit": limit,
+    }))
+}
+
+async fn memory_delete(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let deleted = state.memory_records.write().await.remove(&id);
+    let Some(record) = deleted else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let now = crate::now_ms();
+    append_memory_audit(
+        &state,
+        crate::MemoryAuditEvent {
+            audit_id: Uuid::new_v4().to_string(),
+            action: "memory_delete".to_string(),
+            run_id: record.run_id,
+            memory_id: Some(id.clone()),
+            source_memory_id: record.source_memory_id,
+            to_tier: Some(record.partition.tier),
+            partition_key: record.partition.key(),
+            actor: "admin".to_string(),
+            status: "ok".to_string(),
+            detail: None,
+            created_at_ms: now,
+        },
+    )
+    .await?;
+    state.event_bus.publish(EngineEvent::new(
+        "memory.deleted",
+        json!({
+            "memoryID": id,
+        }),
+    ));
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn channels_status(State(state): State<AppState>) -> Json<Value> {
+    let status = state.channel_statuses().await;
+    Json(json!({
+        "telegram": status.get("telegram").cloned().unwrap_or_else(|| ChannelStatus {
+            enabled: false,
+            connected: false,
+            last_error: None,
+            active_sessions: 0,
+            meta: json!({}),
+        }),
+        "discord": status.get("discord").cloned().unwrap_or_else(|| ChannelStatus {
+            enabled: false,
+            connected: false,
+            last_error: None,
+            active_sessions: 0,
+            meta: json!({}),
+        }),
+        "slack": status.get("slack").cloned().unwrap_or_else(|| ChannelStatus {
+            enabled: false,
+            connected: false,
+            last_error: None,
+            active_sessions: 0,
+            meta: json!({}),
+        }),
+    }))
+}
+
+async fn channels_put(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let normalized = name.to_ascii_lowercase();
+    let mut project = state.config.get_project_value().await;
+    let Some(root) = project.as_object_mut() else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    let channels = root
+        .entry("channels".to_string())
+        .or_insert_with(|| json!({}));
+    let Some(channels_obj) = channels.as_object_mut() else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    match normalized.as_str() {
+        "telegram" => {
+            let cfg: TelegramConfigFile =
+                serde_json::from_value(input).map_err(|_| StatusCode::BAD_REQUEST)?;
+            if cfg.bot_token.trim().is_empty() {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            channels_obj.insert("telegram".to_string(), json!(cfg));
+        }
+        "discord" => {
+            let cfg: DiscordConfigFile =
+                serde_json::from_value(input).map_err(|_| StatusCode::BAD_REQUEST)?;
+            if cfg.bot_token.trim().is_empty() {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            channels_obj.insert("discord".to_string(), json!(cfg));
+        }
+        "slack" => {
+            let cfg: SlackConfigFile =
+                serde_json::from_value(input).map_err(|_| StatusCode::BAD_REQUEST)?;
+            if cfg.bot_token.trim().is_empty() || cfg.channel_id.trim().is_empty() {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            channels_obj.insert("slack".to_string(), json!(cfg));
+        }
+        _ => return Err(StatusCode::NOT_FOUND),
+    }
+    state
+        .config
+        .replace_project_value(project)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    state
+        .restart_channel_listeners()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn channels_delete(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let mut project = state.config.get_project_value().await;
+    let Some(root) = project.as_object_mut() else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    let channels = root
+        .entry("channels".to_string())
+        .or_insert_with(|| json!({}));
+    let Some(channels_obj) = channels.as_object_mut() else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    channels_obj.remove(&name.to_ascii_lowercase());
+    state
+        .config
+        .replace_project_value(project)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    state
+        .restart_channel_listeners()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn admin_reload_config(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+    state
+        .providers
+        .reload(state.config.get().await.into())
+        .await;
+    state
+        .restart_channel_listeners()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({"ok": true})))
 }
 
 fn mission_event_id(event: &MissionEvent) -> &str {
@@ -3951,6 +4199,86 @@ async fn agent_team_spawn(
         "runID": instance.run_id,
         "status": instance.status,
         "skillHash": instance.skill_hash,
+    })))
+}
+
+async fn agent_team_approve_spawn(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<AgentTeamCancelInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let reason = input.reason.unwrap_or_else(|| "approved by user".to_string());
+    let Some(result) = state
+        .agent_teams
+        .approve_spawn_approval(&state, &id, Some(reason.as_str()))
+        .await
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "ok": false,
+                "code": "APPROVAL_NOT_FOUND",
+                "error": "Spawn approval not found",
+                "approvalID": id,
+            })),
+        ));
+    };
+    if !result.decision.allowed || result.instance.is_none() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "ok": false,
+                "code": result.decision.code,
+                "error": result.decision.reason,
+                "approvalID": id,
+            })),
+        ));
+    }
+    let instance = result.instance.expect("checked is_some");
+    Ok(Json(json!({
+        "ok": true,
+        "approvalID": id,
+        "decision": "approved",
+        "instanceID": instance.instance_id,
+        "sessionID": instance.session_id,
+        "missionID": instance.mission_id,
+        "status": instance.status,
+    })))
+}
+
+async fn agent_team_deny_spawn(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<AgentTeamCancelInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let reason = input.reason.unwrap_or_else(|| "denied by user".to_string());
+    let Some(approval) = state
+        .agent_teams
+        .deny_spawn_approval(&id, Some(reason.as_str()))
+        .await
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "ok": false,
+                "code": "APPROVAL_NOT_FOUND",
+                "error": "Spawn approval not found",
+                "approvalID": id,
+            })),
+        ));
+    };
+    let denied_decision = tandem_orchestrator::SpawnDecision {
+        allowed: false,
+        code: approval.decision_code,
+        reason: Some(reason.clone()),
+        requires_user_approval: false,
+    };
+    emit_spawn_denied(&state, &approval.request, &denied_decision);
+    Ok(Json(json!({
+        "ok": true,
+        "approvalID": id,
+        "decision": "denied",
+        "reason": reason,
     })))
 }
 
@@ -4627,6 +4955,8 @@ async fn openapi_doc() -> Json<Value> {
             "/agent-team/instances":{"get":{"summary":"List agent team instances"}},
             "/agent-team/missions":{"get":{"summary":"List agent team mission summaries"}},
             "/agent-team/approvals":{"get":{"summary":"List pending approvals for agent-team actions"}},
+            "/agent-team/approvals/spawn/{id}/approve":{"post":{"summary":"Approve a pending spawn approval"}},
+            "/agent-team/approvals/spawn/{id}/deny":{"post":{"summary":"Deny a pending spawn approval"}},
             "/agent-team/spawn":{"post":{"summary":"Spawn an agent team instance with server policy gating"}},
             "/agent-team/instance/{id}/cancel":{"post":{"summary":"Cancel an agent team instance"}},
             "/agent-team/mission/{id}/cancel":{"post":{"summary":"Cancel all instances for a mission"}},
@@ -8130,6 +8460,105 @@ mod tests {
             })
             .unwrap_or(false);
         assert!(blocked_promote_exists);
+    }
+
+    #[tokio::test]
+    async fn memory_list_and_delete_admin_routes_work() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let put_req = Request::builder()
+            .method("POST")
+            .uri("/memory/put")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "run-4",
+                    "partition": {
+                        "org_id": "org-1",
+                        "workspace_id": "ws-1",
+                        "project_id": "proj-1",
+                        "tier": "session"
+                    },
+                    "kind": "fact",
+                    "content": "admin memory test",
+                    "artifact_refs": [],
+                    "classification": "internal",
+                    "metadata": null
+                })
+                .to_string(),
+            ))
+            .expect("memory put request");
+        let put_resp = app.clone().oneshot(put_req).await.expect("memory put response");
+        assert_eq!(put_resp.status(), StatusCode::OK);
+        let put_body = to_bytes(put_resp.into_body(), usize::MAX)
+            .await
+            .expect("memory put body");
+        let put_payload: Value = serde_json::from_slice(&put_body).expect("memory put json");
+        let memory_id = put_payload
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("memory id")
+            .to_string();
+
+        let list_req = Request::builder()
+            .method("GET")
+            .uri("/memory?limit=20")
+            .body(Body::empty())
+            .expect("memory list request");
+        let list_resp = app
+            .clone()
+            .oneshot(list_req)
+            .await
+            .expect("memory list response");
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let list_body = to_bytes(list_resp.into_body(), usize::MAX)
+            .await
+            .expect("memory list body");
+        let list_payload: Value = serde_json::from_slice(&list_body).expect("memory list json");
+        let contains = list_payload
+            .get("items")
+            .and_then(|v| v.as_array())
+            .map(|rows| {
+                rows.iter().any(|row| {
+                    row.get("id").and_then(|v| v.as_str()) == Some(memory_id.as_str())
+                })
+            })
+            .unwrap_or(false);
+        assert!(contains);
+
+        let del_req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/memory/{memory_id}"))
+            .body(Body::empty())
+            .expect("memory delete request");
+        let del_resp = app
+            .clone()
+            .oneshot(del_req)
+            .await
+            .expect("memory delete response");
+        assert_eq!(del_resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_and_channel_routes_require_auth_when_api_token_enabled() {
+        let state = test_state().await;
+        state.set_api_token(Some("tk_test".to_string())).await;
+        let app = app_router(state);
+
+        for (method, uri) in [
+            ("GET", "/channels/status"),
+            ("POST", "/admin/reload-config"),
+            ("GET", "/memory"),
+        ] {
+            let req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .expect("request");
+            let resp = app.clone().oneshot(req).await.expect("response");
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
     }
 }
 

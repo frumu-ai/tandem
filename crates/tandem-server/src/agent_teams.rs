@@ -90,13 +90,13 @@ struct MissionBudgetState {
 #[derive(Debug, Clone, Serialize)]
 pub struct PendingSpawnApproval {
     #[serde(rename = "approvalID")]
-    approval_id: String,
+    pub approval_id: String,
     #[serde(rename = "createdAtMs")]
-    created_at_ms: u64,
-    request: SpawnRequest,
+    pub created_at_ms: u64,
+    pub request: SpawnRequest,
     #[serde(rename = "decisionCode")]
-    decision_code: Option<SpawnDenyCode>,
-    reason: Option<String>,
+    pub decision_code: Option<SpawnDenyCode>,
+    pub reason: Option<String>,
 }
 
 #[derive(Clone)]
@@ -481,7 +481,16 @@ impl AgentTeamRuntime {
         Ok(())
     }
 
-    pub async fn spawn(&self, state: &AppState, mut req: SpawnRequest) -> SpawnResult {
+    pub async fn spawn(&self, state: &AppState, req: SpawnRequest) -> SpawnResult {
+        self.spawn_with_approval_override(state, req, false).await
+    }
+
+    async fn spawn_with_approval_override(
+        &self,
+        state: &AppState,
+        mut req: SpawnRequest,
+        approval_override: bool,
+    ) -> SpawnResult {
         let workspace_root = state.workspace_index.snapshot().await.root;
         if let Err(err) = self.ensure_loaded_for_workspace(&workspace_root).await {
             return SpawnResult {
@@ -551,9 +560,21 @@ impl AgentTeamRuntime {
             .count();
         drop(instances);
 
-        let decision = policy.evaluate(&req, total_agents, running_agents, template.as_ref());
+        let mut decision = policy.evaluate(&req, total_agents, running_agents, template.as_ref());
+        if approval_override
+            && !decision.allowed
+            && decision.requires_user_approval
+            && matches!(decision.code, Some(SpawnDenyCode::SpawnRequiresApproval))
+        {
+            decision = SpawnDecision {
+                allowed: true,
+                code: None,
+                reason: None,
+                requires_user_approval: false,
+            };
+        }
         if !decision.allowed {
-            if decision.requires_user_approval {
+            if decision.requires_user_approval && !approval_override {
                 self.queue_spawn_approval(&req, &decision).await;
             }
             return SpawnResult {
@@ -693,6 +714,43 @@ impl AgentTeamRuntime {
             },
             instance: Some(instance),
         }
+    }
+
+    pub async fn approve_spawn_approval(
+        &self,
+        state: &AppState,
+        approval_id: &str,
+        reason: Option<&str>,
+    ) -> Option<SpawnResult> {
+        let approval = self.spawn_approvals.write().await.remove(approval_id)?;
+        let result = self
+            .spawn_with_approval_override(state, approval.request.clone(), true)
+            .await;
+        if let Some(instance) = result.instance.as_ref() {
+            let note = reason.unwrap_or("approved by operator");
+            let _ = self
+                .append_approval_audit("spawn.approval.approved", approval_id, Some(instance), note)
+                .await;
+        } else {
+            let note = reason.unwrap_or("approval replay failed policy checks");
+            let _ = self
+                .append_approval_audit("spawn.approval.rejected_on_replay", approval_id, None, note)
+                .await;
+        }
+        Some(result)
+    }
+
+    pub async fn deny_spawn_approval(
+        &self,
+        approval_id: &str,
+        reason: Option<&str>,
+    ) -> Option<PendingSpawnApproval> {
+        let approval = self.spawn_approvals.write().await.remove(approval_id)?;
+        let note = reason.unwrap_or("denied by operator");
+        let _ = self
+            .append_approval_audit("spawn.approval.denied", approval_id, None, note)
+            .await;
+        Some(approval)
     }
 
     pub async fn cancel_instance(
@@ -1187,6 +1245,41 @@ impl AgentTeamRuntime {
             "templateID": instance.template_id,
             "sessionID": instance.session_id,
             "skillHash": instance.skill_hash,
+            "timestampMs": crate::now_ms(),
+        });
+        let mut existing = if path.exists() {
+            fs::read_to_string(&path).await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        existing.push_str(&serde_json::to_string(&row)?);
+        existing.push('\n');
+        fs::write(path, existing).await?;
+        Ok(())
+    }
+
+    async fn append_approval_audit(
+        &self,
+        action: &str,
+        approval_id: &str,
+        instance: Option<&AgentInstance>,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        let path = self.audit_path.read().await.clone();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let row = json!({
+            "action": action,
+            "approvalID": approval_id,
+            "reason": reason,
+            "missionID": instance.map(|v| v.mission_id.clone()),
+            "instanceID": instance.map(|v| v.instance_id.clone()),
+            "parentInstanceID": instance.and_then(|v| v.parent_instance_id.clone()),
+            "role": instance.map(|v| v.role.clone()),
+            "templateID": instance.map(|v| v.template_id.clone()),
+            "sessionID": instance.map(|v| v.session_id.clone()),
+            "skillHash": instance.map(|v| v.skill_hash.clone()),
             "timestampMs": crate::now_ms(),
         });
         let mut existing = if path.exists() {

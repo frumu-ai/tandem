@@ -1154,6 +1154,163 @@ export async function rejectQuestion(requestId: string): Promise<void> {
 }
 
 // ============================================================================
+// Agent Teams / Command Center
+// ============================================================================
+
+export interface AgentTeamBudgetLimit {
+  max_tokens?: number | null;
+  max_steps?: number | null;
+  max_tool_calls?: number | null;
+  max_duration_ms?: number | null;
+  max_cost_usd?: number | null;
+}
+
+export interface AgentTeamTemplate {
+  template_id: string;
+  role: string;
+  system_prompt?: string | null;
+  skills: unknown[];
+  default_budget: AgentTeamBudgetLimit;
+  capabilities: Record<string, unknown>;
+}
+
+export interface AgentTeamInstance {
+  instance_id: string;
+  mission_id: string;
+  parent_instance_id?: string | null;
+  role: string;
+  template_id: string;
+  session_id: string;
+  run_id?: string | null;
+  status: string;
+  budget: AgentTeamBudgetLimit;
+  skill_hash: string;
+  capabilities: Record<string, unknown>;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface AgentTeamMissionSummary {
+  mission_id: string;
+  instance_count: number;
+  running_count: number;
+  completed_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  queued_count: number;
+  token_used_total: number;
+  tool_calls_used_total: number;
+  steps_used_total: number;
+  cost_used_usd_total: number;
+}
+
+export interface AgentTeamSpawnApproval {
+  approval_id: string;
+  created_at_ms: number;
+  request: Record<string, unknown>;
+  decision_code?: string | null;
+  reason?: string | null;
+}
+
+export interface AgentTeamApprovals {
+  spawn_approvals: AgentTeamSpawnApproval[];
+  tool_approvals: Record<string, unknown>[];
+}
+
+export interface AgentTeamSpawnRequest {
+  mission_id?: string | null;
+  parent_instance_id?: string | null;
+  template_id?: string | null;
+  role: string;
+  source?: string | null;
+  justification: string;
+  budget_override?: AgentTeamBudgetLimit | null;
+}
+
+export interface AgentTeamSpawnResult {
+  ok: boolean;
+  mission_id?: string | null;
+  instance_id?: string | null;
+  session_id?: string | null;
+  run_id?: string | null;
+  status?: string | null;
+  skill_hash?: string | null;
+  code?: string | null;
+  error?: string | null;
+  requires_user_approval?: boolean | null;
+}
+
+export interface AgentTeamDecisionResult {
+  ok: boolean;
+  approval_id?: string | null;
+  decision?: string | null;
+  instance_id?: string | null;
+  session_id?: string | null;
+  mission_id?: string | null;
+  status?: string | null;
+  reason?: string | null;
+  code?: string | null;
+  error?: string | null;
+}
+
+export async function agentTeamListTemplates(): Promise<AgentTeamTemplate[]> {
+  return invoke("agent_team_list_templates");
+}
+
+export async function agentTeamListInstances(params?: {
+  mission_id?: string;
+  parent_instance_id?: string;
+  status?: string;
+}): Promise<AgentTeamInstance[]> {
+  return invoke("agent_team_list_instances", {
+    missionId: params?.mission_id,
+    parentInstanceId: params?.parent_instance_id,
+    status: params?.status,
+  });
+}
+
+export async function agentTeamListMissions(): Promise<AgentTeamMissionSummary[]> {
+  return invoke("agent_team_list_missions");
+}
+
+export async function agentTeamListApprovals(): Promise<AgentTeamApprovals> {
+  return invoke("agent_team_list_approvals");
+}
+
+export async function agentTeamSpawn(
+  request: AgentTeamSpawnRequest
+): Promise<AgentTeamSpawnResult> {
+  return invoke("agent_team_spawn", { request });
+}
+
+export async function agentTeamCancelInstance(
+  instanceId: string,
+  reason?: string
+): Promise<AgentTeamDecisionResult> {
+  return invoke("agent_team_cancel_instance", { instanceId, reason });
+}
+
+export async function agentTeamCancelMission(
+  missionId: string,
+  reason?: string
+): Promise<AgentTeamDecisionResult> {
+  return invoke("agent_team_cancel_mission", { missionId, reason });
+}
+
+export async function agentTeamApproveSpawn(
+  approvalId: string,
+  reason?: string
+): Promise<AgentTeamDecisionResult> {
+  return invoke("agent_team_approve_spawn", { approvalId, reason });
+}
+
+export async function agentTeamDenySpawn(
+  approvalId: string,
+  reason?: string
+): Promise<AgentTeamDecisionResult> {
+  return invoke("agent_team_deny_spawn", { approvalId, reason });
+}
+
+// ============================================================================
 // Execution Planning / Staging Area
 // ============================================================================
 

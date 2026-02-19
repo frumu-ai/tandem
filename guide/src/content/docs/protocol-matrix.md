@@ -13,6 +13,7 @@ This matrix summarizes the engine-backed contracts between Desktop/TUI clients a
 | `read_plan_content`                                      | Reads a plan markdown file by path.                           |
 | `build_permission_rules`                                 | Returns rule names aligned with runtime tool names.           |
 | Session scope                                            | Session list is scoped to the active workspace.               |
+| `agent_team_*` commands                                 | Desktop command-center bridge for templates, instances, missions, approvals, spawn, and cancel/decision actions. |
 
 ## Tauri <-> Engine HTTP
 
@@ -30,6 +31,8 @@ This matrix summarizes the engine-backed contracts between Desktop/TUI clients a
 | `GET /agent-team/missions`                     | Lists mission-level Agent Team status rollups and usage totals. |
 | `GET /agent-team/approvals`                    | Lists pending spawn approvals + pending tool approvals for agent-team sessions. |
 | `POST /agent-team/spawn`                       | Server-gated spawn with policy, edge, and skill checks. |
+| `POST /agent-team/approvals/spawn/{id}/approve`| Approves a queued spawn request and executes gated spawn path. |
+| `POST /agent-team/approvals/spawn/{id}/deny`   | Denies a queued spawn request with auditable reason. |
 | `POST /agent-team/instance/{id}/cancel`        | Cancels a single agent instance and child session execution. |
 | `POST /agent-team/mission/{id}/cancel`         | Cancels all tracked agent instances for a mission. |
 

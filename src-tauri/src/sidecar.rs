@@ -688,6 +688,33 @@ pub struct PermissionAskedProps {
     pub query: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PermissionRequest {
+    pub id: String,
+    #[serde(rename = "sessionID", default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    #[serde(rename = "argsSource", default)]
+    pub args_source: Option<String>,
+    #[serde(rename = "argsIntegrity", default)]
+    pub args_integrity: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PermissionSnapshot {
+    #[serde(default)]
+    pub requests: Vec<PermissionRequest>,
+    #[serde(default)]
+    pub rules: Vec<serde_json::Value>,
+}
+
 /// Raw OpenCode event from SSE stream
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenCodeEvent {
@@ -1197,6 +1224,208 @@ struct MissionListResponse {
 #[derive(Debug, Deserialize)]
 struct MissionRecordResponse {
     mission: MissionState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentTeamBudgetLimit {
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
+    #[serde(default)]
+    pub max_steps: Option<u32>,
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default)]
+    pub max_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub max_cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeamTemplate {
+    #[serde(rename = "templateID")]
+    pub template_id: String,
+    pub role: String,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub skills: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub default_budget: AgentTeamBudgetLimit,
+    #[serde(default)]
+    pub capabilities: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeamInstance {
+    #[serde(rename = "instanceID")]
+    pub instance_id: String,
+    #[serde(rename = "missionID")]
+    pub mission_id: String,
+    #[serde(rename = "parentInstanceID", default)]
+    pub parent_instance_id: Option<String>,
+    pub role: String,
+    #[serde(rename = "templateID")]
+    pub template_id: String,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    #[serde(rename = "runID", default)]
+    pub run_id: Option<String>,
+    pub status: String,
+    pub budget: AgentTeamBudgetLimit,
+    #[serde(rename = "skillHash")]
+    pub skill_hash: String,
+    #[serde(default)]
+    pub capabilities: serde_json::Value,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeamMissionSummary {
+    #[serde(rename = "missionID")]
+    pub mission_id: String,
+    #[serde(rename = "instanceCount")]
+    pub instance_count: usize,
+    #[serde(rename = "runningCount")]
+    pub running_count: usize,
+    #[serde(rename = "completedCount")]
+    pub completed_count: usize,
+    #[serde(rename = "failedCount")]
+    pub failed_count: usize,
+    #[serde(rename = "cancelledCount")]
+    pub cancelled_count: usize,
+    #[serde(rename = "queuedCount")]
+    pub queued_count: usize,
+    #[serde(rename = "tokenUsedTotal")]
+    pub token_used_total: u64,
+    #[serde(rename = "toolCallsUsedTotal")]
+    pub tool_calls_used_total: u64,
+    #[serde(rename = "stepsUsedTotal")]
+    pub steps_used_total: u64,
+    #[serde(rename = "costUsedUsdTotal")]
+    pub cost_used_usd_total: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeamSpawnApproval {
+    #[serde(rename = "approvalID")]
+    pub approval_id: String,
+    #[serde(rename = "createdAtMs")]
+    pub created_at_ms: u64,
+    pub request: serde_json::Value,
+    #[serde(rename = "decisionCode", default)]
+    pub decision_code: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentTeamApprovals {
+    #[serde(rename = "spawnApprovals", default)]
+    pub spawn_approvals: Vec<AgentTeamSpawnApproval>,
+    #[serde(rename = "toolApprovals", default)]
+    pub tool_approvals: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentTeamInstancesQuery {
+    #[serde(rename = "missionID", default)]
+    pub mission_id: Option<String>,
+    #[serde(rename = "parentInstanceID", default)]
+    pub parent_instance_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeamSpawnRequest {
+    #[serde(rename = "missionID", default)]
+    pub mission_id: Option<String>,
+    #[serde(rename = "parentInstanceID", default)]
+    pub parent_instance_id: Option<String>,
+    #[serde(rename = "templateID", default)]
+    pub template_id: Option<String>,
+    pub role: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    pub justification: String,
+    #[serde(default)]
+    pub budget_override: Option<AgentTeamBudgetLimit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeamSpawnResult {
+    pub ok: bool,
+    #[serde(rename = "missionID", default)]
+    pub mission_id: Option<String>,
+    #[serde(rename = "instanceID", default)]
+    pub instance_id: Option<String>,
+    #[serde(rename = "sessionID", default)]
+    pub session_id: Option<String>,
+    #[serde(rename = "runID", default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(rename = "skillHash", default)]
+    pub skill_hash: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(rename = "requiresUserApproval", default)]
+    pub requires_user_approval: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentTeamCancelRequest {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeamDecisionResult {
+    pub ok: bool,
+    #[serde(rename = "approvalID", default)]
+    pub approval_id: Option<String>,
+    #[serde(default)]
+    pub decision: Option<String>,
+    #[serde(rename = "instanceID", default)]
+    pub instance_id: Option<String>,
+    #[serde(rename = "sessionID", default)]
+    pub session_id: Option<String>,
+    #[serde(rename = "missionID", default)]
+    pub mission_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentTeamTemplatesResponse {
+    templates: Vec<AgentTeamTemplate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentTeamInstancesResponse {
+    instances: Vec<AgentTeamInstance>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentTeamMissionSummariesResponse {
+    missions: Vec<AgentTeamMissionSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentTeamApprovalsResponse {
+    #[serde(rename = "spawnApprovals", default)]
+    spawn_approvals: Vec<AgentTeamSpawnApproval>,
+    #[serde(rename = "toolApprovals", default)]
+    tool_approvals: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3058,6 +3287,180 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to apply mission event: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    // ========================================================================
+    // Agent Teams
+    // ========================================================================
+
+    pub async fn agent_team_list_templates(&self) -> Result<Vec<AgentTeamTemplate>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/agent-team/templates", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list agent-team templates: {}", e)))?;
+        let payload: AgentTeamTemplatesResponse = self.handle_response(response).await?;
+        Ok(payload.templates)
+    }
+
+    pub async fn agent_team_list_instances(
+        &self,
+        query: AgentTeamInstancesQuery,
+    ) -> Result<Vec<AgentTeamInstance>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/agent-team/instances", self.base_url().await?);
+        let mut request = self.http_client.get(&url);
+        let mut pairs: Vec<(&str, String)> = Vec::new();
+        if let Some(v) = query.mission_id {
+            pairs.push(("missionID", v));
+        }
+        if let Some(v) = query.parent_instance_id {
+            pairs.push(("parentInstanceID", v));
+        }
+        if let Some(v) = query.status {
+            pairs.push(("status", v));
+        }
+        if !pairs.is_empty() {
+            request = request.query(&pairs);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list agent-team instances: {}", e)))?;
+        let payload: AgentTeamInstancesResponse = self.handle_response(response).await?;
+        Ok(payload.instances)
+    }
+
+    pub async fn agent_team_list_missions(&self) -> Result<Vec<AgentTeamMissionSummary>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/agent-team/missions", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list agent-team missions: {}", e)))?;
+        let payload: AgentTeamMissionSummariesResponse = self.handle_response(response).await?;
+        Ok(payload.missions)
+    }
+
+    pub async fn agent_team_list_approvals(&self) -> Result<AgentTeamApprovals> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/agent-team/approvals", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list agent-team approvals: {}", e)))?;
+        let payload: AgentTeamApprovalsResponse = self.handle_response(response).await?;
+        Ok(AgentTeamApprovals {
+            spawn_approvals: payload.spawn_approvals,
+            tool_approvals: payload.tool_approvals,
+        })
+    }
+
+    pub async fn agent_team_spawn(
+        &self,
+        request: AgentTeamSpawnRequest,
+    ) -> Result<AgentTeamSpawnResult> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/agent-team/spawn", self.base_url().await?);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to spawn agent-team instance: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn agent_team_cancel_instance(
+        &self,
+        instance_id: &str,
+        request: AgentTeamCancelRequest,
+    ) -> Result<AgentTeamDecisionResult> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/agent-team/instance/{}/cancel",
+            self.base_url().await?,
+            instance_id
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to cancel agent-team instance: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn agent_team_cancel_mission(
+        &self,
+        mission_id: &str,
+        request: AgentTeamCancelRequest,
+    ) -> Result<AgentTeamDecisionResult> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/agent-team/mission/{}/cancel",
+            self.base_url().await?,
+            mission_id
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to cancel agent-team mission: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn agent_team_approve_spawn(
+        &self,
+        approval_id: &str,
+        request: AgentTeamCancelRequest,
+    ) -> Result<AgentTeamDecisionResult> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/agent-team/approvals/spawn/{}/approve",
+            self.base_url().await?,
+            approval_id
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to approve agent-team spawn: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn agent_team_deny_spawn(
+        &self,
+        approval_id: &str,
+        request: AgentTeamCancelRequest,
+    ) -> Result<AgentTeamDecisionResult> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/agent-team/approvals/spawn/{}/deny",
+            self.base_url().await?,
+            approval_id
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to deny agent-team spawn: {}", e)))?;
         self.handle_response(response).await
     }
 
