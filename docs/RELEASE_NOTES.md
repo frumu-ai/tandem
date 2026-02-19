@@ -1,6 +1,72 @@
+# Tandem v0.3.8 Release Notes
+
+## Release Date: 2026-02-19
+
+### Highlights
+
+- **External Messaging Channels (Phases 1+2)**: New `tandem-channels` crate - `Channel` trait, session dispatcher, slash commands, and fully working adapters:
+  - **Telegram**: long-poll, 4096-char chunking, typing indicators.
+  - **Discord**: WebSocket gateway (op 2 Identify, heartbeat, op 7/9 reconnect), 2000-char chunking, typing, mention-only mode.
+  - **Slack**: `conversations.history` poll, `last_ts` dedup, `auth.test` self-filter.
+- **In-channel slash commands**: `/new`, `/sessions`, `/resume`, `/rename`, `/status`, `/help` - manage Tandem sessions directly from Telegram/Discord/Slack messages.
+- **Persistent session mapping**: Each `{channel}:{sender}` pair maps to a named Tandem session, surviving server restarts.
+- **Supervisor with backoff**: Channel listeners auto-restart on failure with exponential backoff (1s -> 60s cap).
+- **Headless Web Admin UI**: Added an embedded, single-file `/admin` interface served directly by `tandem-server`.
+- **Realtime admin refresh**: Added SSE-first updates with polling fallback for channel/session/memory visibility.
+- **Headless control APIs**: Added:
+  - `GET /channels/status`
+  - `PUT /channels/{name}`
+  - `DELETE /channels/{name}`
+  - `POST /admin/reload-config`
+  - `GET /memory`
+  - `DELETE /memory/{id}`
+- **Agent Command Center (Desktop)**: Added an orchestrator-embedded command center surface for Agent Teams with live mission/instance/approval visibility.
+- **Agent-Team spawn approval decisions**: Added dedicated decision endpoints:
+  - `POST /agent-team/approvals/spawn/{id}/approve`
+  - `POST /agent-team/approvals/spawn/{id}/deny`
+
+### Complete Feature List - tandem-channels v0.3.8
+
+#### New Crate: `tandem-channels`
+
+- Added `Channel` trait (`send`, `listen`, `health_check`, `start_typing`, `stop_typing`, `supports_draft_updates`).
+- Added `ChannelMessage` and `SendMessage` data types.
+- Added `ChannelsConfig` with env-var loading (`TANDEM_TELEGRAM_BOT_TOKEN`, `TANDEM_DISCORD_BOT_TOKEN`, `TANDEM_SLACK_BOT_TOKEN`, and related vars).
+- Added `is_user_allowed` helper with `["*"]` wildcard support.
+- Added `TelegramChannel`: `getUpdates` long-poll, `sendMessage`, chunking, typing-indicator loop.
+- Added `DiscordChannel`: WebSocket gateway, Identify (op 2), heartbeat, Reconnect/InvalidSession handling (op 7/9), 2000-char chunking, mention normalization, bot self-filter, typing indicator loop.
+- Added `SlackChannel`: `conversations.history` poll every 3s, `last_ts` dedup, `auth.test` self-filter, `chat.postMessage` with `ok`-field validation.
+- Added session dispatcher: `start_channel_listeners`, supervised listeners, `get_or_create_session`, `run_in_session` (HTTP poll).
+- Added in-channel slash commands: `/new [name]`, `/sessions`, `/resume <query>`, `/rename <name>`, `/status`, `/help`.
+- Added unit tests: allowlist wildcards, comma-separated user lists, message splitting for Telegram (4096) and Discord (2000).
+
+### Headless Web Admin + Server Integration
+
+- Added embedded admin UI module and baked HTML shell:
+  - `crates/tandem-server/src/webui/mod.rs`
+  - `crates/tandem-server/src/webui/admin.html`
+- Added secure admin response headers:
+  - `Content-Security-Policy`
+  - `X-Frame-Options: DENY`
+  - `X-Content-Type-Options: nosniff`
+  - `Referrer-Policy: no-referrer`
+- Added channel runtime lifecycle wiring into server startup/reload path with status publication events.
+- Added server-side memory listing/deletion routes for admin operations.
+- Added memory event aliases consumed by admin UX:
+  - `memory.updated`
+  - `memory.deleted`
+- Added CLI + env control for web admin serving:
+  - `tandem-engine serve --web-ui --web-ui-prefix /admin`
+  - `TANDEM_WEB_UI`, `TANDEM_WEB_UI_PREFIX`
+- Updated engine command docs to include web-admin serve options.
+
+
+---
+
 # Tandem v0.3.7 Release Notes
 
 ## Release Date: 2026-02-18
+
 
 ### Highlights
 
@@ -835,3 +901,4 @@ _Release attempt failed on 2026-02-09 due to GitHub release asset upload errors 
 
 - **Vector Memory Store**: Implemented a local, zero-trust vector database (`sqlite-vec`) to store and retrieve semantic embeddings of your codebase and conversation history.
 - **Memory Context Injection**: The AI now automatically receives relevant context snippets based on your current query, reducing hallucinations and "I don't know" responses about your own code.
+

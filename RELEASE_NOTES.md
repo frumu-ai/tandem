@@ -6,6 +6,25 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 - No unreleased changes.
 
+## v0.3.8 - 2026-02-19
+
+- Headless web admin: Added embedded single-file `/admin` UI served by `tandem-server` (no external runtime assets).
+- Realtime admin updates: Added SSE-driven refresh behavior with polling fallback for live admin visibility.
+- New channel admin APIs:
+  - `GET /channels/status`
+  - `PUT /channels/{name}`
+  - `DELETE /channels/{name}`
+  - `POST /admin/reload-config`
+- New memory admin APIs:
+  - `GET /memory`
+  - `DELETE /memory/{id}`
+- Engine CLI: Added `tandem-engine serve --web-ui` and `--web-ui-prefix` (plus env equivalents).
+- Runtime wiring: Channel listener lifecycle now integrates with server startup/reload paths for headless operation.
+- Security hardening: Embedded admin responses now include strict CSP/security headers.
+- Agent Command Center (desktop): Added initial command-center UI in Orchestrator for live agent-team missions/instances/approvals.
+- Agent-Team approvals: Added explicit spawn approval decision endpoints (`POST /agent-team/approvals/spawn/{id}/approve|deny`).
+- Docs: Updated engine command reference for web admin flags and headless control surface.
+
 ## v0.3.7 - 2026-02-18
 
 - Complete Simplified Chinese overwrite: replaced and normalized zh-CN copy across major app surfaces.

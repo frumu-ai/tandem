@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - No unreleased changes.
 
+## [0.3.8] - 2026-02-19
+
+### Added
+
+- **Headless Web Admin UI (embedded, single-file)**: Added an embedded `/admin` web interface served directly by `tandem-server` using a baked-in `admin.html` shell (no external assets/build pipeline at runtime).
+- **Realtime Admin UX**: Added SSE-driven UI refresh behavior (with polling fallback) for channel/session/memory visibility in the headless admin surface.
+- **Channel Admin API surface**: Added channel-management endpoints for headless control:
+  - `GET /channels/status`
+  - `PUT /channels/{name}`
+  - `DELETE /channels/{name}`
+  - `POST /admin/reload-config`
+- **Memory Admin API surface**: Added browse/delete endpoints for admin workflows:
+  - `GET /memory`
+  - `DELETE /memory/{id}`
+- **Engine CLI web-admin flags**: Added `tandem-engine serve` flags:
+  - `--web-ui`
+  - `--web-ui-prefix`
+- **Desktop Agent Command Center (first integration pass)**: Added an orchestrator-embedded command center UI for Agent Teams with live mission/instance status, spawn controls, and spawn-approval decision actions.
+- **Agent-Team approval action endpoints**: Added explicit spawn approval decision routes:
+  - `POST /agent-team/approvals/spawn/{id}/approve`
+  - `POST /agent-team/approvals/spawn/{id}/deny`
+
+### Changed
+
+- **Headless config/env support**: Added config/env handling for web admin and channel settings (`TANDEM_WEB_UI`, `TANDEM_WEB_UI_PREFIX`, and channel env overlays).
+- **Channel runtime wiring**: Wired channel listener lifecycle into server startup/reload flow with status publication events for admin visibility.
+- **Security headers for embedded UI**: Added strict response headers/CSP for admin HTML responses.
+- **Engine command docs**: Updated engine command reference to include new web-admin flags.
+- **Desktop-Tauri agent-team bridge**: Added typed Tauri commands and frontend API wrappers for template/mission/instance/approval listing, spawn, and cancel/decision actions.
+
 ## [0.3.7] - 2026-02-18
 
 ### Changed
@@ -815,7 +845,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/frumu-ai/tandem/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/frumu-ai/tandem/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/frumu-ai/tandem/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/frumu-ai/tandem/compare/v0.3.2...v0.3.5

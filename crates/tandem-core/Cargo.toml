@@ -1,6 +1,6 @@
 [package]
 name = "tandem-core"
-version = "0.3.7"
+version = "0.3.8"
 description = "Core types and helpers for the Tandem engine"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -19,11 +19,11 @@ tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["serde", "v4"] }
 keyring = "2"
-tandem-types = { path = "../tandem-types", version = "0.3.7" }
-tandem-wire = { path = "../tandem-wire", version = "0.3.7" }
-tandem-tools = { path = "../tandem-tools", version = "0.3.7" }
-tandem-providers = { path = "../tandem-providers", version = "0.3.7" }
-tandem-observability = { path = "../tandem-observability", version = "0.3.7" }
+tandem-types = { path = "../tandem-types", version = "0.3.8" }
+tandem-wire = { path = "../tandem-wire", version = "0.3.8" }
+tandem-tools = { path = "../tandem-tools", version = "0.3.8" }
+tandem-providers = { path = "../tandem-providers", version = "0.3.8" }
+tandem-observability = { path = "../tandem-observability", version = "0.3.8" }
 
 [dev-dependencies]
 tempfile = "3"
