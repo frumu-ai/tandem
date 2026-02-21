@@ -470,6 +470,7 @@ impl EngineLoop {
                 }
                 if !tool_calls.is_empty() {
                     let mut outputs = Vec::new();
+                    let mut executed_productive_tool = false;
                     for (tool, args) in tool_calls {
                         if !agent_can_use_tool(&active_agent, &tool) {
                             continue;
@@ -573,6 +574,8 @@ impl EngineLoop {
                             )
                             .await?
                         {
+                            let productive =
+                                !(tool_key == "batch" && is_non_productive_batch_output(&output));
                             if output.contains("WEBSEARCH_QUERY_MISSING") {
                                 websearch_query_blocked = true;
                             }
@@ -586,16 +589,23 @@ impl EngineLoop {
                             {
                                 readonly_tool_cache.insert(signature, output.clone());
                             }
+                            if productive {
+                                executed_productive_tool = true;
+                            }
                             outputs.push(output);
                         }
                     }
                     if !outputs.is_empty() {
                         last_tool_outputs = outputs.clone();
-                        followup_context = Some(format!(
-                            "{}\nContinue with a concise final response and avoid repeating identical tool calls.",
-                            summarize_tool_outputs(&outputs)
-                        ));
-                        continue;
+                        if executed_productive_tool {
+                            followup_context = Some(format!(
+                                "{}\nContinue with a concise final response and avoid repeating identical tool calls.",
+                                summarize_tool_outputs(&outputs)
+                            ));
+                            continue;
+                        }
+                        completion.clear();
+                        break;
                     }
                 }
 
@@ -1372,6 +1382,26 @@ fn is_batch_wrapper_tool_name(name: &str) -> bool {
     )
 }
 
+fn non_empty_string_at<'a>(obj: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    obj.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn nested_non_empty_string_at<'a>(
+    obj: &'a Map<String, Value>,
+    parent: &str,
+    key: &str,
+) -> Option<&'a str> {
+    obj.get(parent)
+        .and_then(|v| v.as_object())
+        .and_then(|nested| nested.get(key))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
 fn extract_batch_calls(args: &Value) -> Vec<(String, Value)> {
     let calls = args
         .get("tool_calls")
@@ -1382,16 +1412,16 @@ fn extract_batch_calls(args: &Value) -> Vec<(String, Value)> {
         .into_iter()
         .filter_map(|call| {
             let obj = call.as_object()?;
-            let tool_raw = obj
-                .get("tool")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let name_raw = obj
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
+            let tool_raw = non_empty_string_at(obj, "tool")
+                .or_else(|| nested_non_empty_string_at(obj, "tool", "name"))
+                .or_else(|| nested_non_empty_string_at(obj, "function", "tool"))
+                .or_else(|| nested_non_empty_string_at(obj, "function_call", "tool"))
+                .or_else(|| nested_non_empty_string_at(obj, "call", "tool"));
+            let name_raw = non_empty_string_at(obj, "name")
+                .or_else(|| nested_non_empty_string_at(obj, "function", "name"))
+                .or_else(|| nested_non_empty_string_at(obj, "function_call", "name"))
+                .or_else(|| nested_non_empty_string_at(obj, "call", "name"))
+                .or_else(|| nested_non_empty_string_at(obj, "tool", "name"));
             let effective = match (tool_raw, name_raw) {
                 (Some(t), Some(n)) if is_batch_wrapper_tool_name(t) => n,
                 (Some(t), _) => t,
@@ -1420,6 +1450,30 @@ fn batch_tool_signature(args: &Value) -> Option<String> {
         .map(|(tool, call_args)| tool_signature(&tool, &call_args))
         .collect::<Vec<_>>();
     Some(format!("batch:{}", parts.join("|")))
+}
+
+fn is_non_productive_batch_output(output: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(output.trim()) else {
+        return false;
+    };
+    let Some(items) = value.as_array() else {
+        return false;
+    };
+    if items.is_empty() {
+        return true;
+    }
+    items.iter().all(|item| {
+        let text = item
+            .get("output")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        text.is_empty()
+            || text.starts_with("unknown tool:")
+            || text.contains("call skipped")
+            || text.contains("guard budget exceeded")
+    })
 }
 
 fn tool_budget_for(tool_name: &str) -> usize {
@@ -3670,6 +3724,30 @@ Call: todowrite(task_id=3, status="in_progress")
         let sig = batch_tool_signature(&args).unwrap_or_default();
         assert!(sig.contains("read:"));
         assert!(sig.contains("glob:"));
+    }
+
+    #[test]
+    fn batch_helpers_resolve_nested_function_name() {
+        let args = json!({
+            "tool_calls":[
+                {"tool":"default_api","function":{"name":"read"},"args":{"path":"CONCEPT.md"}}
+            ]
+        });
+        let calls = extract_batch_calls(&args);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "read");
+        assert!(is_read_only_batch_call(&args));
+    }
+
+    #[test]
+    fn batch_output_classifier_detects_non_productive_unknown_results() {
+        let output = r#"
+[
+  {"tool":"default_api","output":"Unknown tool: default_api","metadata":{}},
+  {"tool":"default_api","output":"Unknown tool: default_api","metadata":{}}
+]
+"#;
+        assert!(is_non_productive_batch_output(output));
     }
 
     #[test]

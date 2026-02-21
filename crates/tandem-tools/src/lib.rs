@@ -172,27 +172,76 @@ fn is_batch_wrapper_tool_name(name: &str) -> bool {
     )
 }
 
+fn non_empty_batch_str<'a>(value: Option<&'a Value>) -> Option<&'a str> {
+    value
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
 fn resolve_batch_call_tool_name(call: &Value) -> Option<String> {
-    let tool = call
-        .get("tool")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let name = call
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let tool = non_empty_batch_str(call.get("tool"))
+        .or_else(|| {
+            call.get("tool")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("name")))
+        })
+        .or_else(|| {
+            call.get("function")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("tool")))
+        })
+        .or_else(|| {
+            call.get("function_call")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("tool")))
+        })
+        .or_else(|| {
+            call.get("call")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("tool")))
+        });
+    let name = non_empty_batch_str(call.get("name"))
+        .or_else(|| {
+            call.get("function")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("name")))
+        })
+        .or_else(|| {
+            call.get("function_call")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("name")))
+        })
+        .or_else(|| {
+            call.get("call")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("name")))
+        })
+        .or_else(|| {
+            call.get("tool")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("name")))
+        });
 
     match (tool, name) {
         (Some(t), Some(n)) => {
             if is_batch_wrapper_tool_name(t) {
                 Some(n.to_string())
+            } else if let Some(stripped) = strip_known_tool_namespace(t) {
+                Some(stripped)
             } else {
                 Some(t.to_string())
             }
         }
-        (Some(t), None) => Some(t.to_string()),
+        (Some(t), None) => {
+            if is_batch_wrapper_tool_name(t) {
+                None
+            } else if let Some(stripped) = strip_known_tool_namespace(t) {
+                Some(stripped)
+            } else {
+                Some(t.to_string())
+            }
+        }
         (None, Some(n)) => Some(n.to_string()),
         (None, None) => None,
     }
@@ -2888,6 +2937,38 @@ mod tests {
             .await
             .expect("batch should return ToolResult");
         assert!(!result.output.contains("Unknown tool: default_api"));
+    }
+
+    #[tokio::test]
+    async fn batch_resolves_nested_function_name_for_wrapper_tool() {
+        let tool = BatchTool;
+        let result = tool
+            .execute(json!({
+                "tool_calls":[
+                    {
+                        "tool":"default_api",
+                        "function":{"name":"read"},
+                        "args":{"path":"Cargo.toml"}
+                    }
+                ]
+            }))
+            .await
+            .expect("batch should return ToolResult");
+        assert!(!result.output.contains("Unknown tool: default_api"));
+    }
+
+    #[tokio::test]
+    async fn batch_drops_wrapper_calls_without_resolvable_name() {
+        let tool = BatchTool;
+        let result = tool
+            .execute(json!({
+                "tool_calls":[
+                    {"tool":"default_api","args":{"path":"Cargo.toml"}}
+                ]
+            }))
+            .await
+            .expect("batch should return ToolResult");
+        assert_eq!(result.metadata["count"], json!(0));
     }
 }
 
