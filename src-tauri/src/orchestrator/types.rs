@@ -26,6 +26,12 @@ pub struct OrchestratorConfig {
     pub max_web_sources: u32,
     /// Maximum retries per task before fail-block
     pub max_task_retries: u32,
+    /// Maximum seconds to wait for a single agent call before timeout recovery/fail
+    #[serde(default = "default_max_agent_call_secs")]
+    pub max_agent_call_secs: u64,
+    /// Automatic timeout retries per task attempt (session recreation + one retry)
+    #[serde(default = "default_max_timeout_retries_per_task_attempt")]
+    pub max_timeout_retries_per_task_attempt: u32,
     /// Require approval before writing files
     pub require_write_approval: bool,
     /// Enable research/web agent
@@ -78,6 +84,14 @@ fn default_contract_warnings_enabled() -> bool {
     true
 }
 
+fn default_max_agent_call_secs() -> u64 {
+    600
+}
+
+fn default_max_timeout_retries_per_task_attempt() -> u32 {
+    1
+}
+
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
@@ -93,6 +107,8 @@ impl Default for OrchestratorConfig {
             max_subagent_runs: 2000, // Increased from 500
             max_web_sources: 30,
             max_task_retries: 3,
+            max_agent_call_secs: default_max_agent_call_secs(),
+            max_timeout_retries_per_task_attempt: default_max_timeout_retries_per_task_attempt(),
             require_write_approval: true,
             enable_research: false,
             allow_dangerous_actions: false,

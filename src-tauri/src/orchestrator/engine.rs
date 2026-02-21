@@ -66,7 +66,7 @@ fn is_nested_agent_tool(tool_name: &str) -> bool {
     matches!(normalized.as_str(), "task" | "spawn_agent")
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct FileFingerprint {
     size: u64,
     modified_ms: u128,
@@ -256,6 +256,11 @@ impl OrchestratorEngine {
             || e.contains("invalid tool args")
             || e.contains("tool args must be a json object")
             || e.contains("missing required 'path'")
+            || e.contains("missing required 'content'")
+            || e.contains("file_path_missing")
+            || e.contains("write_content_missing")
+            || e.contains("write requires `content`")
+            || e.contains("write requires non-empty `content`")
     }
 
     fn should_clear_error_on_resume(error: &str) -> bool {
@@ -264,6 +269,8 @@ impl OrchestratorEngine {
             || Self::is_provider_quota_error(error)
             || Self::is_auth_error(error)
             || Self::is_workspace_not_found_error(error)
+            || Self::is_invalid_tool_args_error(error)
+            || Self::is_path_not_found_error(error)
             || error
                 .to_lowercase()
                 .contains("run paused so you can resume and continue")
@@ -718,6 +725,8 @@ impl OrchestratorEngine {
                             continue;
                         }
                         run.tasks[idx].state = TaskState::InProgress;
+                        // Clear stale per-task error once a fresh execution attempt starts.
+                        run.tasks[idx].error_message = None;
                         run.tasks[idx].clone()
                     } else {
                         continue;
@@ -881,6 +890,8 @@ impl OrchestratorEngine {
                 timestamp: chrono::Utc::now(),
             });
             let workspace_before = self.capture_workspace_snapshot().await?;
+            let hinted_targets = Self::extract_target_file_hints(&task);
+            let hinted_before = self.capture_target_file_snapshot(&hinted_targets).await?;
 
             // Build context for execution role
             let file_context = self.get_task_file_context(&task).await?;
@@ -905,7 +916,7 @@ impl OrchestratorEngine {
                 tracker.record_iteration();
             }
 
-            let builder_response = self
+            let mut builder_response = self
                 .call_agent_for_task_with_recovery(&task, &mut session_id, &prompt, execution_role)
                 .await?;
 
@@ -916,20 +927,88 @@ impl OrchestratorEngine {
             }
 
             // Get per-task workspace changes for validation.
-            let workspace_changes = self
+            let mut workspace_changes = self
                 .get_recent_changes_since(&workspace_before)
                 .await?;
+            let hinted_changes = self
+                .summarize_target_file_changes(&hinted_before, &hinted_targets)
+                .await?;
+            if !hinted_changes.is_empty() {
+                workspace_changes.has_changes = true;
+                if !workspace_changes.diff_text.is_empty() {
+                    workspace_changes.diff_text.push('\n');
+                }
+                workspace_changes.diff_text.push_str("Hint-target file changes:");
+                for line in hinted_changes.iter().take(20) {
+                    workspace_changes.diff_text.push('\n');
+                    workspace_changes.diff_text.push_str(line);
+                }
+            }
             if self.task_requires_workspace_changes(&task) && !workspace_changes.has_changes {
-                let hinted_targets = Self::extract_target_file_hints(&task);
+                // One targeted recovery pass: force explicit file-tool usage with concrete paths.
+                self.emit_task_trace(
+                    &task.id,
+                    Some(session_id.as_str()),
+                    "NO_CHANGES_RECOVERY_RETRY",
+                    Some("retry=1/1 reason=no_workspace_changes_captured".to_string()),
+                );
                 let target_hint = if hinted_targets.is_empty() {
                     "the expected artifact file".to_string()
                 } else {
                     hinted_targets.join(", ")
                 };
-                return Err(TandemError::Orchestrator(format!(
-                    "Task requires file changes but none were captured. Use write/edit/apply_patch to update {} before completing.",
+                let recovery_prompt = format!(
+                    "{}\n\n[Critical Recovery]\n\
+Your previous attempt did not persist any workspace file changes.\n\
+You MUST perform concrete file edits now.\n\
+- Use `write`, `edit`, or `apply_patch` with explicit JSON args.\n\
+- For file tools, include a non-empty `path` string.\n\
+- Prefer these target files when relevant: {}\n\
+- Do not finish until at least one target file has actually changed on disk.",
+                    AgentPrompts::build_builder_prompt(
+                        &task,
+                        &file_context,
+                        Some(builder_response.as_str())
+                    ),
                     target_hint
-                )));
+                );
+                builder_response = self
+                    .call_agent_for_task_with_recovery(
+                        &task,
+                        &mut session_id,
+                        &recovery_prompt,
+                        execution_role,
+                    )
+                    .await?;
+                {
+                    let mut tracker = self.budget_tracker.write().await;
+                    tracker.record_tokens(None, Some(builder_response.len()));
+                }
+
+                workspace_changes = self
+                    .get_recent_changes_since(&workspace_before)
+                    .await?;
+                let hinted_changes = self
+                    .summarize_target_file_changes(&hinted_before, &hinted_targets)
+                    .await?;
+                if !hinted_changes.is_empty() {
+                    workspace_changes.has_changes = true;
+                    if !workspace_changes.diff_text.is_empty() {
+                        workspace_changes.diff_text.push('\n');
+                    }
+                    workspace_changes.diff_text.push_str("Hint-target file changes:");
+                    for line in hinted_changes.iter().take(20) {
+                        workspace_changes.diff_text.push('\n');
+                        workspace_changes.diff_text.push_str(line);
+                    }
+                }
+
+                if !workspace_changes.has_changes {
+                    return Err(TandemError::Orchestrator(format!(
+                        "Task requires file changes but none were captured. Use write/edit/apply_patch to update {} before completing.",
+                        target_hint
+                    )));
+                }
             }
             let changes_diff = workspace_changes.diff_text;
 
@@ -1119,12 +1198,13 @@ impl OrchestratorEngine {
         let invalid_tool_args = Self::is_invalid_tool_args_error(error);
         let path_not_found = Self::is_path_not_found_error(error);
         let error_code = Self::extract_error_code(error);
+        let path_or_args_issue = invalid_tool_args || path_not_found;
         let should_pause = rate_limited
             || quota_exceeded
             || auth_failed
             || transient_timeout
-            || workspace_not_found;
-        let should_fail_fast = invalid_tool_args || path_not_found;
+            || workspace_not_found
+            || path_or_args_issue;
 
         let session_id = {
             let mut run = self.run.write().await;
@@ -1159,6 +1239,16 @@ impl OrchestratorEngine {
                             "Workspace root not found. Verify workspace path and continue."
                                 .to_string(),
                         );
+                    } else if invalid_tool_args {
+                        t.error_message = Some(
+                            "Invalid tool arguments detected (missing/invalid file path). Run paused so you can resume after guardrails."
+                                .to_string(),
+                        );
+                    } else if path_not_found {
+                        t.error_message = Some(
+                            "Path not found detected (os error 3). Verify workspace/file paths and continue."
+                                .to_string(),
+                        );
                     } else if transient_timeout {
                         t.error_message = Some(
                             "Tool timeout detected. Run paused so you can resume and continue."
@@ -1174,27 +1264,17 @@ impl OrchestratorEngine {
                     } else if workspace_not_found {
                         "Paused: workspace root not found. Verify workspace path and continue."
                             .to_string()
+                    } else if invalid_tool_args {
+                        "Paused: invalid tool args (missing file path). Resume to retry with strict path guardrails."
+                            .to_string()
+                    } else if path_not_found {
+                        "Paused: path not found (os error 3). Verify workspace/file paths and continue."
+                            .to_string()
                     } else if transient_timeout {
                         "Paused: transient tool timeout detected. Resume run to continue."
                             .to_string()
                     } else {
                         "Paused: provider rate-limited. Switch model/provider and retry."
-                            .to_string()
-                    });
-                } else if should_fail_fast {
-                    t.state = TaskState::Failed;
-                    t.error_message = Some(if invalid_tool_args {
-                        "Task failed: invalid tool arguments emitted by agent. Fix argument shape and retry."
-                            .to_string()
-                    } else {
-                        "Task failed: target path not found (os error 3). Verify file path and retry."
-                            .to_string()
-                    });
-                    run.error_message = Some(if invalid_tool_args {
-                        "Invalid tool args detected. Update prompt/tool argument shape before retrying."
-                            .to_string()
-                    } else {
-                        "Path not found detected (os error 3). Verify workspace/file paths before retrying."
                             .to_string()
                     });
                 } else {
@@ -1340,6 +1420,7 @@ impl OrchestratorEngine {
         let mut timeout_retries_used: u32 = 0;
         let mut session_recreated_after_404 = false;
         let mut invalid_tool_args_retry_used = false;
+        let mut path_not_found_retry_used = false;
         let mut effective_prompt = prompt.to_string();
 
         loop {
@@ -1379,9 +1460,40 @@ impl OrchestratorEngine {
                         "{prompt}\n\n[Tool Argument Guardrail]\n\
 When you call file tools, arguments MUST be a JSON object.\n\
 - `read` requires: {{\"path\":\"relative/or/absolute/path\"}}\n\
-- `write` requires: {{\"path\":\"relative/or/absolute/path\", ...}}\n\
-Never call `read` or `write` with empty args (`{{}}`) or missing `path`.\n\
+- `write` requires: {{\"path\":\"relative/or/absolute/path\", \"content\":\"...\"}}\n\
+Never call `read` or `write` with empty args (`{{}}`) or missing required fields.\n\
+For `write`, always include a non-empty `content` string.\n\
 If unsure, run `glob` first to discover files, then call `read` with a concrete path."
+                    );
+                    self.invalidate_task_session(&task.id).await;
+                    *session_id = self.get_or_create_task_session_id(task).await?;
+                }
+                Err(e)
+                    if Self::is_path_not_found_error(&e.to_string())
+                        && !path_not_found_retry_used =>
+                {
+                    path_not_found_retry_used = true;
+                    tracing::warn!(
+                        "Task {} role {:?} hit path-not-found on session {}. Retrying once with strict path guardrail.",
+                        task.id,
+                        role,
+                        session_id
+                    );
+                    self.emit_task_trace(
+                        &task.id,
+                        Some(session_id.as_str()),
+                        "AGENT_PATH_NOT_FOUND_RETRY",
+                        Some("retry=1/1 reason=os_error_3".to_string()),
+                    );
+                    effective_prompt = format!(
+                        "{prompt}\n\n[Path Guardrail]\n\
+Your previous attempt hit a path-not-found error (Windows os error 3).\n\
+When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
+- Never call file tools with empty args (`{{}}`) or missing `path`.\n\
+- For `write`, include a non-empty `content` string.\n\
+- Use `glob` first to discover real files/dirs in this workspace.\n\
+- Prefer workspace-relative paths that already exist.\n\
+- If creating a new file, ensure the parent directory exists first."
                     );
                     self.invalidate_task_session(&task.id).await;
                     *session_id = self.get_or_create_task_session_id(task).await?;
@@ -2003,6 +2115,33 @@ If unsure, run `glob` first to discover files, then call `read` with a concrete 
         Some(hasher.finish())
     }
 
+    fn fingerprint_path(path: &Path) -> Option<FileFingerprint> {
+        if !path.is_file() {
+            return None;
+        }
+        let meta = std::fs::metadata(path).ok()?;
+        let modified_ms = meta
+            .modified()
+            .ok()
+            .and_then(|ts| {
+                ts.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis())
+            })
+            .unwrap_or(0);
+        let size = meta.len();
+        let content_hash = if size <= 1_048_576 {
+            Self::hash_file_contents(path)
+        } else {
+            None
+        };
+        Some(FileFingerprint {
+            size,
+            modified_ms,
+            content_hash,
+        })
+    }
+
     async fn capture_workspace_snapshot(&self) -> Result<HashMap<String, FileFingerprint>> {
         let root = self.workspace_path.clone();
         tokio::task::spawn_blocking(move || {
@@ -2024,38 +2163,72 @@ If unsure, run `glob` first to discover files, then call `read` with a concrete 
                 if !Self::should_track_workspace_path(&rel) {
                     continue;
                 }
-                let meta = match std::fs::metadata(path) {
-                    Ok(m) => m,
-                    Err(_) => continue,
+                let Some(fingerprint) = Self::fingerprint_path(path) else {
+                    continue;
                 };
-                let modified_ms = meta
-                    .modified()
-                    .ok()
-                    .and_then(|ts| {
-                        ts.duration_since(std::time::UNIX_EPOCH)
-                            .ok()
-                            .map(|d| d.as_millis())
-                    })
-                    .unwrap_or(0);
-                let size = meta.len();
-                let content_hash = if size <= 1_048_576 {
-                    Self::hash_file_contents(path)
-                } else {
-                    None
-                };
-                snapshot.insert(
-                    rel,
-                    FileFingerprint {
-                        size,
-                        modified_ms,
-                        content_hash,
-                    },
-                );
+                snapshot.insert(rel, fingerprint);
             }
             Ok::<_, TandemError>(snapshot)
         })
         .await
         .map_err(|e| TandemError::Orchestrator(format!("workspace snapshot task failed: {}", e)))?
+    }
+
+    async fn capture_target_file_snapshot(
+        &self,
+        targets: &[String],
+    ) -> Result<HashMap<String, Option<FileFingerprint>>> {
+        if targets.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let root = self.workspace_path.clone();
+        let targets = targets.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let mut out = HashMap::new();
+            for target in targets {
+                let raw = target.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                let path = {
+                    let candidate = PathBuf::from(raw);
+                    if candidate.is_absolute() {
+                        candidate
+                    } else {
+                        root.join(candidate)
+                    }
+                };
+                out.insert(target, Self::fingerprint_path(&path));
+            }
+            Ok::<_, TandemError>(out)
+        })
+        .await
+        .map_err(|e| TandemError::Orchestrator(format!("target snapshot task failed: {}", e)))?
+    }
+
+    async fn summarize_target_file_changes(
+        &self,
+        before: &HashMap<String, Option<FileFingerprint>>,
+        targets: &[String],
+    ) -> Result<Vec<String>> {
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let after = self.capture_target_file_snapshot(targets).await?;
+        let mut changed = Vec::new();
+        for target in targets {
+            let old_fp = before.get(target).cloned().flatten();
+            let new_fp = after.get(target).cloned().flatten();
+            if old_fp != new_fp {
+                let symbol = match (old_fp.is_some(), new_fp.is_some()) {
+                    (false, true) => "+",
+                    (true, false) => "-",
+                    _ => "~",
+                };
+                changed.push(format!("{} {}", symbol, target));
+            }
+        }
+        Ok(changed)
     }
 
     fn summarize_workspace_changes(
@@ -2322,6 +2495,12 @@ If unsure, run `glob` first to discover files, then call `read` with a concrete 
                 .error_message
                 .as_deref()
                 .is_some_and(|msg| msg.contains(task_id) || msg.contains("Deadlock detected"))
+            {
+                run.error_message = None;
+            } else if run
+                .error_message
+                .as_deref()
+                .is_some_and(Self::should_clear_error_on_resume)
             {
                 run.error_message = None;
             }

@@ -134,6 +134,7 @@ Output ONLY the JSON array, no other text."#,
   - Do not rely on assumptions without tool-produced evidence.
 - Tool arguments MUST be valid JSON objects. Never emit empty `{{}}` for file tools.
 - For `read`/`write`, always include a non-empty string `path` field.
+- For `write`, always include a non-empty string `content` field.
 - If your tool call arguments are malformed, the task will fail immediately.
 
 Complete this task now."#,

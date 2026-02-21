@@ -4609,15 +4609,15 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                     let args = match normalize_tool_args(&tool, &raw_args) {
                         Ok(value) => value,
                         Err(reason) => {
-                            let error_code = "INVALID_TOOL_ARGS";
-                            return Some(StreamEvent::SessionError {
-                                session_id: session_id.clone(),
-                                error: tagged_error(
-                                    error_code,
-                                    &format!("tool='{}' {}", tool, reason),
-                                ),
-                                error_code: Some(error_code.to_string()),
-                            });
+                            // Be permissive on stream payload parsing: partial/odd args can occur
+                            // mid-stream and should not hard-fail the entire session.
+                            tracing::warn!(
+                                "tool args normalization fallback for tool={} part_id={} reason={}",
+                                tool,
+                                part_id,
+                                reason
+                            );
+                            raw_args.clone()
                         }
                     };
                     let has_output = state_value.and_then(|s| s.get("output")).is_some()
@@ -5143,7 +5143,11 @@ fn classify_error_code(message: &str) -> Option<String> {
     if msg.contains("invalid_tool_args")
         || msg.contains("invalid tool args")
         || msg.contains("missing required 'path'")
+        || msg.contains("missing required 'content'")
         || msg.contains("tool args must be a json object")
+        || msg.contains("write_content_missing")
+        || msg.contains("write requires `content`")
+        || msg.contains("write requires non-empty `content`")
     {
         return Some("INVALID_TOOL_ARGS".to_string());
     }

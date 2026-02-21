@@ -85,8 +85,11 @@ impl ToolRegistry {
     }
 
     pub async fn execute(&self, name: &str, args: Value) -> anyhow::Result<ToolResult> {
-        let tools = self.tools.read().await;
-        let Some(tool) = tools.get(name) else {
+        let tool = {
+            let tools = self.tools.read().await;
+            resolve_registered_tool(&tools, name)
+        };
+        let Some(tool) = tool else {
             return Ok(ToolResult {
                 output: format!("Unknown tool: {name}"),
                 metadata: json!({}),
@@ -101,8 +104,11 @@ impl ToolRegistry {
         args: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let tools = self.tools.read().await;
-        let Some(tool) = tools.get(name) else {
+        let tool = {
+            let tools = self.tools.read().await;
+            resolve_registered_tool(&tools, name)
+        };
+        let Some(tool) = tool else {
             return Ok(ToolResult {
                 output: format!("Unknown tool: {name}"),
                 metadata: json!({}),
@@ -110,6 +116,53 @@ impl ToolRegistry {
         };
         tool.execute_with_cancel(args, cancel).await
     }
+}
+
+fn canonical_tool_name(name: &str) -> String {
+    match name.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        "run_command" | "shell" | "powershell" | "cmd" => "bash".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn strip_known_tool_namespace(name: &str) -> Option<String> {
+    const PREFIXES: [&str; 8] = [
+        "default_api:",
+        "default_api.",
+        "functions.",
+        "function.",
+        "tools.",
+        "tool.",
+        "builtin:",
+        "builtin.",
+    ];
+    for prefix in PREFIXES {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn resolve_registered_tool(
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    requested_name: &str,
+) -> Option<Arc<dyn Tool>> {
+    let canonical = canonical_tool_name(requested_name);
+    if let Some(tool) = tools.get(&canonical) {
+        return Some(tool.clone());
+    }
+    if let Some(stripped) = strip_known_tool_namespace(&canonical) {
+        let stripped = canonical_tool_name(&stripped);
+        if let Some(tool) = tools.get(&stripped) {
+            return Some(tool.clone());
+        }
+    }
+    None
 }
 
 impl Default for ToolRegistry {
@@ -201,12 +254,57 @@ fn validate_schema_node(
 }
 
 fn is_path_allowed(path: &str) -> bool {
-    let raw = Path::new(path);
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if is_root_only_path_token(trimmed) || is_malformed_tool_path_token(trimmed) {
+        return false;
+    }
+    let raw = Path::new(trimmed);
     if raw.is_absolute() {
         return false;
     }
     !raw.components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+fn is_root_only_path_token(path: &str) -> bool {
+    if matches!(path, "/" | "\\" | "." | ".." | "~") {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() == 2 && bytes[1] == b':' && (bytes[0] as char).is_ascii_alphabetic() {
+        return true;
+    }
+    if bytes.len() == 3
+        && bytes[1] == b':'
+        && (bytes[0] as char).is_ascii_alphabetic()
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        return true;
+    }
+    false
+}
+
+fn is_malformed_tool_path_token(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    if lower.contains("<tool_call")
+        || lower.contains("</tool_call")
+        || lower.contains("<function=")
+        || lower.contains("<parameter=")
+        || lower.contains("</function>")
+        || lower.contains("</parameter>")
+    {
+        return true;
+    }
+    if path.contains('\n') || path.contains('\r') {
+        return true;
+    }
+    if path.contains('*') || path.contains('?') {
+        return true;
+    }
+    false
 }
 
 struct BashTool;
@@ -216,7 +314,13 @@ impl Tool for BashTool {
         ToolSchema {
             name: "bash".to_string(),
             description: "Run shell command".to_string(),
-            input_schema: json!({"type":"object","properties":{"command":{"type":"string"}}}),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "command":{"type":"string"}
+                },
+                "required":["command"]
+            }),
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
@@ -344,7 +448,10 @@ fn shell_metadata(
             );
         }
         if let Some(reason) = guardrail_reason {
-            obj.insert("guardrail_reason".to_string(), Value::String(reason.to_string()));
+            obj.insert(
+                "guardrail_reason".to_string(),
+                Value::String(reason.to_string()),
+            );
         }
     }
     metadata
@@ -525,8 +632,8 @@ fn windows_guardrail_reason(raw_cmd: &str) -> Option<&'static str> {
         return None;
     }
     let unix_only_prefixes = [
-        "awk ", "sed ", "xargs ", "chmod ", "chown ", "sudo ", "apt ", "apt-get ", "yum ",
-        "dnf ", "brew ", "zsh ", "bash ", "sh ", "uname", "pwd",
+        "awk ", "sed ", "xargs ", "chmod ", "chown ", "sudo ", "apt ", "apt-get ", "yum ", "dnf ",
+        "brew ", "zsh ", "bash ", "sh ", "uname", "pwd",
     ];
     if unix_only_prefixes
         .iter()
@@ -547,7 +654,13 @@ impl Tool for ReadTool {
         ToolSchema {
             name: "read".to_string(),
             description: "Read file contents".to_string(),
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"}
+                },
+                "required":["path"]
+            }),
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
@@ -573,17 +686,46 @@ impl Tool for WriteTool {
         ToolSchema {
             name: "write".to_string(),
             description: "Write file contents".to_string(),
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "content":{"type":"string"},
+                    "allow_empty":{"type":"boolean"}
+                },
+                "required":["path", "content"]
+            }),
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
-        let path = args["path"].as_str().unwrap_or("");
-        let content = args["content"].as_str().unwrap_or("");
+        let path = args["path"].as_str().unwrap_or("").trim();
+        let content = args["content"].as_str();
+        let allow_empty = args
+            .get("allow_empty")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !is_path_allowed(path) {
             return Ok(ToolResult {
                 output: "path denied by sandbox policy".to_string(),
                 metadata: json!({"path": path}),
             });
+        }
+        let Some(content) = content else {
+            return Ok(ToolResult {
+                output: "write requires `content`".to_string(),
+                metadata: json!({"ok": false, "reason": "missing_content", "path": path}),
+            });
+        };
+        if content.is_empty() && !allow_empty {
+            return Ok(ToolResult {
+                output: "write requires non-empty `content` (or set allow_empty=true)".to_string(),
+                metadata: json!({"ok": false, "reason": "empty_content", "path": path}),
+            });
+        }
+        if let Some(parent) = Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).await?;
+            }
         }
         fs::write(path, content).await?;
         Ok(ToolResult {
@@ -600,7 +742,15 @@ impl Tool for EditTool {
         ToolSchema {
             name: "edit".to_string(),
             description: "String replacement edit".to_string(),
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"}}}),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "old":{"type":"string"},
+                    "new":{"type":"string"}
+                },
+                "required":["path", "old", "new"]
+            }),
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
@@ -2634,6 +2784,55 @@ mod tests {
             windows_guardrail_reason("sed -n '1,5p' README.md"),
             Some("unix_command_untranslatable")
         );
+    }
+
+    #[test]
+    fn path_policy_rejects_tool_markup_and_globs() {
+        assert!(!is_path_allowed(
+            "<tool_call><function=glob><parameter=pattern>**/*</parameter></function></tool_call>"
+        ));
+        assert!(!is_path_allowed("**/*"));
+        assert!(!is_path_allowed("/"));
+        assert!(!is_path_allowed("C:\\"));
+    }
+
+    #[tokio::test]
+    async fn write_tool_rejects_empty_content_by_default() {
+        let tool = WriteTool;
+        let result = tool
+            .execute(json!({
+                "path":"target/write_guard_test.txt",
+                "content":""
+            }))
+            .await
+            .expect("write tool should return ToolResult");
+        assert!(result.output.contains("non-empty `content`"));
+        assert_eq!(result.metadata["reason"], json!("empty_content"));
+        assert!(!Path::new("target/write_guard_test.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn registry_resolves_default_api_namespaced_tool() {
+        let registry = ToolRegistry::new();
+        let result = registry
+            .execute("default_api:read", json!({"path":"Cargo.toml"}))
+            .await
+            .expect("registry execute should return ToolResult");
+        assert!(!result.output.starts_with("Unknown tool:"));
+    }
+
+    #[tokio::test]
+    async fn batch_resolves_default_api_namespaced_tool() {
+        let tool = BatchTool;
+        let result = tool
+            .execute(json!({
+                "tool_calls":[
+                    {"tool":"default_api:read","args":{"path":"Cargo.toml"}}
+                ]
+            }))
+            .await
+            .expect("batch should return ToolResult");
+        assert!(!result.output.contains("Unknown tool: default_api:read"));
     }
 }
 
