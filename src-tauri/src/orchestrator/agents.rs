@@ -74,6 +74,8 @@ Example:
 3. Each task should be achievable in one sub-agent call
 4. Include clear acceptance criteria for validation
 5. Maximum {max_tasks} tasks
+6. If workspace context indicates sparse/empty files, create research-first and scaffold-first tasks
+   (avoid repeated local shell discovery loops; use web research and produce concrete starter artifacts)
 
 Output ONLY the JSON array, no other text."#,
             objective = objective,
@@ -117,6 +119,11 @@ Output ONLY the JSON array, no other text."#,
 - Do not run dangerous commands (shell, install) unless absolutely necessary
 - Be precise and minimal in your changes
 - If you cannot complete the task, explain why
+- If workspace context is sparse/empty, avoid repeated shell discovery loops and pivot to research + initial scaffold artifacts
+- Before claiming the workspace is empty or that templates/prior work are missing, you MUST gather concrete evidence with tools:
+  - Run `glob` with pattern `**/*` (or `*` as fallback) and summarize results.
+  - Cite at least a few observed paths (or explicitly report that no non-metadata files were found).
+  - Do not rely on assumptions without tool-produced evidence.
 
 Complete this task now."#,
             title = task.title,

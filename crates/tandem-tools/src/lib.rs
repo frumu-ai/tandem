@@ -545,6 +545,9 @@ impl Tool for GlobTool {
         }
         let mut files = Vec::new();
         for path in (glob::glob(pattern)?).flatten() {
+            if is_discovery_ignored_path(&path) {
+                continue;
+            }
             files.push(path.display().to_string());
             if files.len() >= 100 {
                 break;
@@ -555,6 +558,11 @@ impl Tool for GlobTool {
             metadata: json!({"count": files.len()}),
         })
     }
+}
+
+fn is_discovery_ignored_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == ".tandem")
 }
 
 struct GrepTool;
@@ -583,6 +591,9 @@ impl Tool for GrepTool {
                 continue;
             }
             let path = entry.path();
+            if is_discovery_ignored_path(path) {
+                continue;
+            }
             if let Ok(content) = fs::read_to_string(path).await {
                 for (idx, line) in content.lines().enumerate() {
                     if regex.is_match(line) {

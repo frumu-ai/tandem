@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui";
+import { FileBrowser } from "@/components/files/FileBrowser";
 import { AgentCommandCenter } from "@/components/orchestrate/AgentCommandCenter";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { AgentModelRoutingPanel } from "@/components/orchestrate/AgentModelRoutingPanel";
 import { TaskBoard } from "@/components/orchestrate/TaskBoard";
 import { LogsDrawer } from "@/components/logs";
+import { ConsoleTab } from "@/components/logs/ConsoleTab";
 import { ProjectSwitcher } from "@/components/sidebar";
 import {
   deleteOrchestratorRun,
@@ -14,6 +16,7 @@ import {
   getProvidersConfig,
   setProvidersConfig,
   onSidecarEventV2,
+  type FileEntry,
   type SidecarStartupHealth,
   type SidecarState,
   type StreamEventEnvelopeV2,
@@ -56,6 +59,7 @@ interface CommandCenterPageProps {
   onSwitchProject: (projectId: string) => void;
   onAddProject: () => void;
   onManageProjects: () => void;
+  onFileOpen?: (file: FileEntry) => void;
   projectSwitcherLoading?: boolean;
   initialRunId?: string | null;
 }
@@ -130,6 +134,7 @@ export function CommandCenterPage({
   onSwitchProject,
   onAddProject,
   onManageProjects,
+  onFileOpen,
   projectSwitcherLoading = false,
   initialRunId = null,
 }: CommandCenterPageProps) {
@@ -157,6 +162,8 @@ export function CommandCenterPage({
   const [modelRouting, setModelRouting] = useState<OrchestratorModelRouting>({});
   const [showLogsDrawer, setShowLogsDrawer] = useState(false);
   const [autoApproveTargetRunId, setAutoApproveTargetRunId] = useState<string | null>(null);
+  const [selectedWorkspaceFile, setSelectedWorkspaceFile] = useState<FileEntry | null>(null);
+  const [workspaceFilesExpanded, setWorkspaceFilesExpanded] = useState(false);
   const lastSnapshotRef = useRef<RunSnapshot | null>(null);
   const autoApproveInFlightRef = useRef(false);
   const lastContentFeedMsRef = useRef(0);
@@ -347,6 +354,10 @@ export function CommandCenterPage({
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    setSelectedWorkspaceFile(null);
+  }, [activeProject?.id]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -579,6 +590,34 @@ export function CommandCenterPage({
     }
   };
 
+  const handleRetryTask = async (task: Task) => {
+    if (!runId) return;
+    setIsRunActionLoading(true);
+    setError(null);
+    try {
+      await invoke("orchestrator_retry_task", { runId, taskId: task.id });
+
+      const [nextSnapshot, nextTasks] = await Promise.all([
+        invoke<RunSnapshot>("orchestrator_get_run", { runId }),
+        invoke<Task[]>("orchestrator_list_tasks", { runId }),
+      ]);
+      lastSnapshotRef.current = nextSnapshot;
+      setSnapshot(nextSnapshot);
+      setTasks(nextTasks);
+
+      if (nextSnapshot.status === "paused") {
+        await invoke("orchestrator_resume", { runId });
+      }
+
+      const at = new Date().toLocaleTimeString();
+      setEventFeed((prev) => [`${at} retry requested for ${task.id}`, ...prev].slice(0, 40));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsRunActionLoading(false);
+    }
+  };
+
   const handleDeleteRun = async (targetRunId: string) => {
     try {
       await deleteOrchestratorRun(targetRunId);
@@ -670,6 +709,50 @@ export function CommandCenterPage({
               </Button>
             </div>
           </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs uppercase tracking-wide text-text-subtle">Workspace Files</div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setWorkspaceFilesExpanded((prev) => !prev)}
+            >
+              {workspaceFilesExpanded ? (
+                <>
+                  <ChevronUp className="mr-1 h-3.5 w-3.5" />
+                  Collapse
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="mr-1 h-3.5 w-3.5" />
+                  Expand
+                </>
+              )}
+            </Button>
+          </div>
+          <div className="mt-2 text-xs text-text-muted">
+            Click a file to open rich preview in the side pane.
+          </div>
+          {workspaceFilesExpanded ? (
+            !workspacePath ? (
+              <div className="mt-3 text-xs text-text-muted">No active project selected.</div>
+            ) : (
+              <div className="mt-3 h-[320px] overflow-hidden rounded border border-border bg-surface-elevated/30">
+                <FileBrowser
+                  rootPath={workspacePath}
+                  onFileSelect={(file) => {
+                    setSelectedWorkspaceFile(file);
+                    if (!file.is_directory) {
+                      onFileOpen?.(file);
+                    }
+                  }}
+                  selectedPath={selectedWorkspaceFile?.path}
+                />
+              </div>
+            )
+          ) : null}
         </div>
 
         {tab === "task-to-swarm" ? (
@@ -915,11 +998,26 @@ export function CommandCenterPage({
                 </div>
               )}
             </div>
+            <div className="xl:col-span-1 rounded-lg border border-border bg-surface p-0 overflow-hidden min-h-[260px]">
+              <div className="border-b border-border px-4 py-3 text-xs uppercase tracking-wide text-text-subtle">
+                Console
+              </div>
+              <div className="h-[260px]">
+                <ConsoleTab
+                  sessionId={selectedRunSessionId ?? activeRunSessionId}
+                  sessionIds={selectedRunConsoleSessionIds}
+                />
+              </div>
+            </div>
             <div className="xl:col-span-4 rounded-lg border border-border bg-surface p-4">
               <div className="mb-3 text-xs uppercase tracking-wide text-text-subtle">
                 Task Board
               </div>
-              <TaskBoard tasks={tasks} currentTaskId={snapshot?.current_task_id} />
+              <TaskBoard
+                tasks={tasks}
+                currentTaskId={snapshot?.current_task_id}
+                onRetryTask={(task) => void handleRetryTask(task)}
+              />
             </div>
           </div>
         ) : (

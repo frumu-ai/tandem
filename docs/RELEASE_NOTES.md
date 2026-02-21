@@ -35,6 +35,10 @@
 - **Shell timeout/hang prevention**: Empty shell calls now fail immediately with explicit `BASH_COMMAND_MISSING` rather than stalling until watchdog timeout.
 - **Windows shell translation**: Added automatic translation for common Unix-style agent commands (`ls -la`, `find ... -type f -name ...`) into PowerShell equivalents on Windows.
 - **Watchdog signal quality**: Reduced false stream watchdog degradation events while tool executions are still pending.
+- **Command Center failed-task retry**: Added a one-click `Retry Task` action for failed tasks that re-queues the task and re-evaluates dependency blocks without requiring full run restart.
+- **Command Center failure visibility**: Failed task cards now show clearer validator/error context directly on the task card.
+- **Command Center live debugging UX**: Added an inline run-scoped Console panel and promoted workspace file browser visibility for in-context swarm troubleshooting.
+- **Startup view safety default**: Desktop startup now defaults to Chat view instead of restoring Command Center first (pending a dedicated starter page flow).
 
 ### Orchestrator Routing Migration Notes
 

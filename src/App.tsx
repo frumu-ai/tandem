@@ -910,7 +910,10 @@ function App() {
     setSidecarReady(true);
     // Navigate to appropriate view
     if (state?.has_workspace) {
-      setView("command-center");
+      // TODO(startup-routing): Revisit last-open-area restore once we have a proper
+      // starter/boot page that can coordinate sidecar readiness checks for all views.
+      // For now, always land in chat on startup to avoid command-center-first boot races.
+      setView("chat");
 
       // If there's a saved session, trigger Chat to reload it now that sidecar is ready
       // We do this by briefly clearing and restoring the session ID
@@ -1342,6 +1345,31 @@ function App() {
     }
   };
 
+  const openFilePreview = useCallback((file: FileEntry) => {
+    setSelectedFile(file);
+    setSidebarTab("files");
+  }, []);
+
+  const openFilePreviewFromPath = useCallback(
+    (filePath: string) => {
+      const workspacePath = activeProject?.path || state?.workspace_path;
+      let absolutePath = filePath;
+
+      if (workspacePath && !filePath.match(/^([a-zA-Z]:[\\/]|\/)/)) {
+        absolutePath = `${workspacePath}/${filePath}`.replace(/\\/g, "/");
+      }
+
+      const fileName = absolutePath.split(/[\\/]/).pop() || absolutePath;
+      openFilePreview({
+        path: absolutePath,
+        name: fileName,
+        is_directory: false,
+        extension: fileName.includes(".") ? fileName.split(".").pop() : undefined,
+      });
+    },
+    [activeProject?.path, state?.workspace_path, openFilePreview]
+  );
+
   const visibleChatSessionIds = useMemo(() => {
     const runBaseSessionIds = new Set(orchestratorRuns.map((r) => r.session_id));
     return new Set(
@@ -1700,15 +1728,41 @@ function App() {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2, ease: "easeOut" }}
             >
-              <CommandCenterPage
-                userProjects={userProjects}
-                activeProject={activeProject}
-                onSwitchProject={handleSwitchProject}
-                onAddProject={handleAddProject}
-                onManageProjects={handleManageProjects}
-                projectSwitcherLoading={projectSwitcherLoading}
-                initialRunId={commandCenterRunId}
-              />
+              <div className={cn("h-full w-full flex", selectedFile && "gap-0")}>
+                <div className={cn("flex-1 min-w-0", selectedFile && "w-1/2")}>
+                  <CommandCenterPage
+                    userProjects={userProjects}
+                    activeProject={activeProject}
+                    onSwitchProject={handleSwitchProject}
+                    onAddProject={handleAddProject}
+                    onManageProjects={handleManageProjects}
+                    onFileOpen={openFilePreview}
+                    projectSwitcherLoading={projectSwitcherLoading}
+                    initialRunId={commandCenterRunId}
+                  />
+                </div>
+                <AnimatePresence>
+                  {selectedFile && (
+                    <motion.div
+                      initial={{ width: 0, opacity: 0 }}
+                      animate={{ width: "50%", opacity: 1 }}
+                      exit={{ width: 0, opacity: 0 }}
+                      transition={{ duration: 0.3 }}
+                      className="overflow-hidden"
+                    >
+                      <div ref={setFilePreviewDockEl} className="h-full" />
+                      {filePreviewDockEl && (
+                        <FilePreview
+                          file={selectedFile}
+                          dockEl={filePreviewDockEl}
+                          onClose={() => setSelectedFile(null)}
+                          onAddToChat={handleAddFileToChat}
+                        />
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
             </motion.div>
           ) : (
             <>
@@ -1765,27 +1819,7 @@ function App() {
                     onDraftMessageConsumed={() => setDraftMessage(null)}
                     activeChatRunningCount={activeChatRunningCount}
                     activeOrchestrationCount={activeOrchestrationCount}
-                    onFileOpen={(filePath) => {
-                      // Resolve relative paths to absolute using workspace path
-                      const workspacePath = activeProject?.path || state?.workspace_path;
-                      let absolutePath = filePath;
-
-                      // If path is not absolute, resolve it relative to workspace
-                      if (workspacePath && !filePath.match(/^([a-zA-Z]:[\\/]|\/)/)) {
-                        absolutePath = `${workspacePath}/${filePath}`.replace(/\\/g, "/");
-                      }
-
-                      // Create FileEntry from path and open in preview
-                      const fileName = absolutePath.split(/[\\/]/).pop() || absolutePath;
-                      const fileEntry: FileEntry = {
-                        path: absolutePath,
-                        name: fileName,
-                        is_directory: false,
-                        extension: fileName.includes(".") ? fileName.split(".").pop() : undefined,
-                      };
-                      setSelectedFile(fileEntry);
-                      setSidebarTab("files"); // Switch to files tab for context
-                    }}
+                    onFileOpen={(filePath) => openFilePreviewFromPath(filePath)}
                   />
                 )}
               </div>

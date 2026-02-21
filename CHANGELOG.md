@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security headers for embedded UI**: Added strict response headers/CSP for admin HTML responses.
 - **Engine command docs**: Updated engine command reference to include new web-admin flags.
 - **Desktop-Tauri agent-team bridge**: Added typed Tauri commands and frontend API wrappers for template/mission/instance/approval listing, spawn, and cancel/decision actions.
+- **Startup navigation default**: Desktop now always opens in Chat view on startup (with a TODO for future starter/landing flow) instead of restoring Command Center directly.
+- **Command Center observability layout**: Added inline run-scoped Console panel and elevated workspace file browser support in Command Center to improve live swarm debugging.
 
 ### Fixed
 
@@ -52,6 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shell-call robustness**: Empty shell invocations now fail fast with explicit `BASH_COMMAND_MISSING` instead of hanging until watchdog timeout.
 - **Windows shell compatibility**: Added Windows translation for common Unix shell calls used by agents (`ls -la`, `find ... -type f -name ...`) to PowerShell equivalents.
 - **Stream watchdog noise reduction**: Suppressed false stream-degraded watchdog events while tools are actively pending.
+- **Failed task recovery in Command Center**: Added per-task retry support that re-queues failed tasks, clears stale task failure state, and unblocks dependent tasks without forcing full run restart.
+- **Failed task diagnostics clarity**: Failed task cards now surface richer validator/error detail so failure causes are visible in-place instead of opaque `session.error` noise.
 
 ## [0.3.7] - 2026-02-18
 

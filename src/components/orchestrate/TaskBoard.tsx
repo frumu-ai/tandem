@@ -8,6 +8,7 @@ interface TaskBoardProps {
   tasks: Task[];
   currentTaskId?: string;
   onTaskClick?: (task: Task) => void;
+  onRetryTask?: (task: Task) => void;
   className?: string;
 }
 
@@ -43,9 +44,10 @@ interface TaskCardProps {
   task: Task;
   isCurrent: boolean;
   onClick?: () => void;
+  onRetryTask?: (task: Task) => void;
 }
 
-function TaskCard({ task, isCurrent, onClick }: TaskCardProps) {
+function TaskCard({ task, isCurrent, onClick, onRetryTask }: TaskCardProps) {
   const config = STATE_CONFIG[task.state];
 
   return (
@@ -97,7 +99,9 @@ function TaskCard({ task, isCurrent, onClick }: TaskCardProps) {
       )}
 
       {task.error_message && (
-        <p className="mt-1 text-xs text-red-400 line-clamp-1">{task.error_message}</p>
+        <p className="mt-1 text-xs text-red-400 line-clamp-3" title={task.error_message}>
+          {task.error_message}
+        </p>
       )}
 
       {task.dependencies.length > 0 && (
@@ -118,11 +122,32 @@ function TaskCard({ task, isCurrent, onClick }: TaskCardProps) {
           Retried {task.retry_count} time{task.retry_count > 1 ? "s" : ""}
         </div>
       )}
+
+      {task.state === "failed" && onRetryTask ? (
+        <div className="mt-2">
+          <button
+            type="button"
+            className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200 hover:bg-amber-500/20"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRetryTask(task);
+            }}
+          >
+            Retry Task
+          </button>
+        </div>
+      ) : null}
     </motion.div>
   );
 }
 
-export function TaskBoard({ tasks, currentTaskId, onTaskClick, className }: TaskBoardProps) {
+export function TaskBoard({
+  tasks,
+  currentTaskId,
+  onTaskClick,
+  onRetryTask,
+  className,
+}: TaskBoardProps) {
   const groupedTasks = useMemo(() => {
     const groups: Record<TaskState, Task[]> = {
       pending: [],
@@ -199,6 +224,7 @@ export function TaskBoard({ tasks, currentTaskId, onTaskClick, className }: Task
                   task={task}
                   isCurrent={task.id === currentTaskId}
                   onClick={() => onTaskClick?.(task)}
+                  onRetryTask={onRetryTask}
                 />
               ))}
               {column.tasks.length === 0 && (
