@@ -1339,10 +1339,12 @@ impl OrchestratorEngine {
         };
         let mut timeout_retries_used: u32 = 0;
         let mut session_recreated_after_404 = false;
+        let mut invalid_tool_args_retry_used = false;
+        let mut effective_prompt = prompt.to_string();
 
         loop {
             match self
-                .call_agent(Some(&task.id), session_id.as_str(), prompt, role)
+                .call_agent(Some(&task.id), session_id.as_str(), &effective_prompt, role)
                 .await
             {
                 Ok(response) => return Ok(response),
@@ -1352,6 +1354,34 @@ impl OrchestratorEngine {
                         "Task {} session {} missing (404). Recreating task session and retrying once.",
                         task.id,
                         session_id
+                    );
+                    self.invalidate_task_session(&task.id).await;
+                    *session_id = self.get_or_create_task_session_id(task).await?;
+                }
+                Err(e)
+                    if Self::is_invalid_tool_args_error(&e.to_string())
+                        && !invalid_tool_args_retry_used =>
+                {
+                    invalid_tool_args_retry_used = true;
+                    tracing::warn!(
+                        "Task {} role {:?} emitted invalid tool args on session {}. Retrying once with strict tool-arg reminder.",
+                        task.id,
+                        role,
+                        session_id
+                    );
+                    self.emit_task_trace(
+                        &task.id,
+                        Some(session_id.as_str()),
+                        "AGENT_INVALID_TOOL_ARGS_RETRY",
+                        Some("retry=1/1 reason=missing_read_path".to_string()),
+                    );
+                    effective_prompt = format!(
+                        "{prompt}\n\n[Tool Argument Guardrail]\n\
+When you call file tools, arguments MUST be a JSON object.\n\
+- `read` requires: {{\"path\":\"relative/or/absolute/path\"}}\n\
+- `write` requires: {{\"path\":\"relative/or/absolute/path\", ...}}\n\
+Never call `read` or `write` with empty args (`{{}}`) or missing `path`.\n\
+If unsure, run `glob` first to discover files, then call `read` with a concrete path."
                     );
                     self.invalidate_task_session(&task.id).await;
                     *session_id = self.get_or_create_task_session_id(task).await?;
@@ -1696,7 +1726,11 @@ impl OrchestratorEngine {
                             if sid == &active_session_id {
                                 tracing::error!("Session {} error: {}", active_session_id, error);
                                 if let Some(code) = error_code {
-                                    errors.push(format!("[{}] {}", code, error));
+                                    if error.starts_with('[') {
+                                        errors.push(error.clone());
+                                    } else {
+                                        errors.push(format!("[{}] {}", code, error));
+                                    }
                                 } else {
                                     errors.push(error.clone());
                                 }

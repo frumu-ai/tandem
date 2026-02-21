@@ -5174,29 +5174,66 @@ fn normalize_tool_args(
 
     let parsed = match args {
         serde_json::Value::Object(_) => args.clone(),
-        serde_json::Value::String(raw) => serde_json::from_str::<serde_json::Value>(raw)
-            .map_err(|_| "tool args string was not valid JSON".to_string())?,
-        serde_json::Value::Null => {
-            return Err("tool args cannot be null".to_string());
+        serde_json::Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(serde_json::Value::Null);
+            }
+            // Plain-string path fallback.
+            if !(trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"')) {
+                let mut obj = serde_json::Map::new();
+                obj.insert(
+                    "path".to_string(),
+                    serde_json::Value::String(trimmed.to_string()),
+                );
+                return Ok(serde_json::Value::Object(obj));
+            }
+            serde_json::from_str::<serde_json::Value>(trimmed)
+                .map_err(|_| "tool args string was not valid JSON".to_string())?
         }
-        _ => {
-            return Err("tool args must be a JSON object".to_string());
-        }
+        // Running updates can legitimately omit args; don't fail-fast here.
+        serde_json::Value::Null => return Ok(serde_json::Value::Null),
+        _ => return Err("tool args must be a JSON object or string".to_string()),
     };
 
-    let obj = parsed
-        .as_object()
-        .ok_or_else(|| "tool args must be a JSON object".to_string())?;
-    let path = obj
+    let mut obj = match parsed {
+        serde_json::Value::Object(map) => map,
+        // Non-object JSON payloads are treated as pass-through to avoid false parser failures.
+        other => return Ok(other),
+    };
+
+    if obj
         .get("path")
         .and_then(|v| v.as_str())
         .map(str::trim)
-        .unwrap_or("");
-    if path.is_empty() {
-        return Err("missing required 'path' string".to_string());
+        .unwrap_or("")
+        .is_empty()
+    {
+        for key in [
+            "file_path",
+            "filePath",
+            "filepath",
+            "filename",
+            "file",
+            "target",
+        ] {
+            if let Some(alias) = obj
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                obj.insert(
+                    "path".to_string(),
+                    serde_json::Value::String(alias.to_string()),
+                );
+                break;
+            }
+        }
     }
 
-    Ok(parsed)
+    // Do not reject here for missing path: stream payloads are frequently partial in-flight.
+    Ok(serde_json::Value::Object(obj))
 }
 
 fn extract_error_code(value: &serde_json::Value) -> Option<String> {
