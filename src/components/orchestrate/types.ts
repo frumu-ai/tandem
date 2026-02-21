@@ -63,6 +63,8 @@ export type RunStatus =
   | "failed"
   | "cancelled";
 
+export type RunSource = "orchestrator" | "command_center";
+
 export type TaskState = "pending" | "in_progress" | "blocked" | "done" | "failed";
 
 export interface Task {
@@ -112,6 +114,7 @@ export interface RunSnapshot {
 export interface RunSummary {
   run_id: string;
   session_id: string;
+  source?: RunSource;
   objective: string;
   status: RunStatus;
   created_at: string;

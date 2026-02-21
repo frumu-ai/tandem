@@ -128,29 +128,29 @@
   },
   "aboutPage": {
     "title": "关于",
-    "poweredBy": "由 Frumu.ai 提供支持",
+    "poweredBy": "面向本地优先编码流程的开源编排引擎",
     "sponsorCta": "在 GitHub 赞助",
-    "sponsorSubtitle": "支持 Tandem 及其他开源项目的持续开发",
+    "sponsorSubtitle": "支持 Tandem 的持续开源开发",
     "installUpdate": "安装更新",
     "updateCheckFailed": "检查更新失败。",
     "downloadingWithProgress": "正在下载更新（{{percent}}%）...",
     "frumu": {
-      "tagline": "AI 驱动开发",
-      "description": "Frumu.ai 打造前沿 AI 工具，赋能开发者与创作者。我们专注于让人工智能更易用、更强大，并无缝融入你的工作流。",
-      "bullet1": "隐私优先的 AI 文件夹工具",
-      "bullet2": "本地优先架构",
-      "bullet3": "开源友好",
-      "cta": "访问 Frumu.ai"
+      "tagline": "指南与 API 参考",
+      "description": "阅读 Tandem 文档，了解安装、架构、引擎用法与集成模式。",
+      "bullet1": "快速开始与本地优先工作流",
+      "bullet2": "引擎 API 与协议细节",
+      "bullet3": "运维指南与发布说明",
+      "cta": "打开 Tandem 文档"
     },
     "aimajin": {
-      "tagline": "移动端 AI 生成",
-      "description": "AIMajin 是我们的移动端 AI 生成应用，让强大的 AI 能力随身可用。你可以随时随地创作、生成并探索 AI 内容。",
-      "bullet1": "移动端 AI 图像生成",
-      "bullet2": "直观的移动优先界面",
-      "bullet3": "随时随地创作",
-      "cta": "了解 AIMajin"
+      "tagline": "可直接运行的部署示例",
+      "description": "查看 `tandem/examples` 可运行模板，包括 VPS 部署与引擎预构建 Web 界面。",
+      "bullet1": "用于远程部署的 VPS 启动脚本",
+      "bullet2": "已接入引擎的预构建 Web 门户",
+      "bullet3": "参考配置与环境变量示例",
+      "cta": "在 GitHub 浏览示例"
     },
-    "footerBuiltBy": "Tandem 由 Frumu.ai 团队用心打造",
+    "footerBuiltBy": "Tandem 由 Frumu.ai 团队与社区贡献者以开源方式共同开发",
     "footerValues": "开源 • 注重隐私 • 面向每个人"
   },
   "theme": {

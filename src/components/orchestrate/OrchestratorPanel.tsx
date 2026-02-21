@@ -529,6 +529,7 @@ export function OrchestratorPanel({
         model: selectedModel,
         provider: selectedProvider,
         agentModelRouting: modelRouting,
+        source: "orchestrator",
       });
 
       setRunId(newRunId);

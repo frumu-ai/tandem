@@ -493,8 +493,10 @@ function App() {
     invoke<RunSummary[]>("orchestrator_list_runs")
       .then((runs) => {
         if (!runs || runs.length === 0) return;
-        const preferred = runs.find((r) =>
-          ["planning", "awaiting_approval", "executing", "paused"].includes(r.status)
+        const preferred = runs.find(
+          (r) =>
+            r.source !== "command_center" &&
+            ["planning", "awaiting_approval", "executing", "paused"].includes(r.status)
         );
         if (!preferred) return;
         setCurrentOrchestratorRunId(preferred.run_id);
@@ -513,6 +515,16 @@ function App() {
       setCurrentOrchestratorRunId(null);
     }
   }, [activeProject?.id, orchestratorRuns, currentOrchestratorRunId]);
+
+  useEffect(() => {
+    if (!commandCenterRunId) return;
+    const existsInActiveWorkspace = orchestratorRuns.some(
+      (run) => run.run_id === commandCenterRunId
+    );
+    if (!existsInActiveWorkspace) {
+      setCommandCenterRunId(null);
+    }
+  }, [activeProject?.id, orchestratorRuns, commandCenterRunId]);
 
   // Todos for task sidebar
   const todosData = useTodos(currentSessionId);
@@ -924,9 +936,17 @@ function App() {
           .then((runs) => {
             const run = runs.find((r) => r.session_id === currentSessionId);
             if (run) {
-              setOrchestratorOpen(false);
-              setCurrentOrchestratorRunId(run.run_id);
-              setCommandCenterRunId(run.run_id);
+              if (run.source === "command_center") {
+                setOrchestratorOpen(false);
+                setCurrentOrchestratorRunId(null);
+                setCommandCenterRunId(run.run_id);
+                setView("command-center");
+              } else {
+                setCommandCenterRunId(null);
+                setCurrentOrchestratorRunId(run.run_id);
+                setOrchestratorOpen(true);
+                setView("chat");
+              }
               setCurrentSessionId(null); // Clear session ID as we're in orchestrator mode
             } else {
               const savedId = currentSessionId;
@@ -1151,10 +1171,17 @@ function App() {
     const run = orchestratorRuns.find((r) => r.session_id === sessionId);
     if (run) {
       setCurrentSessionId(null);
-      setCurrentOrchestratorRunId(run.run_id);
-      setCommandCenterRunId(run.run_id);
-      setOrchestratorOpen(false);
-      setView("command-center");
+      if (run.source === "command_center") {
+        setCurrentOrchestratorRunId(null);
+        setCommandCenterRunId(run.run_id);
+        setOrchestratorOpen(false);
+        setView("command-center");
+      } else {
+        setCommandCenterRunId(null);
+        setCurrentOrchestratorRunId(run.run_id);
+        setOrchestratorOpen(true);
+        setView("chat");
+      }
       return;
     }
     setView("chat");
@@ -1594,13 +1621,21 @@ function App() {
                       projects={projects}
                       currentSessionId={currentSessionId}
                       currentRunId={currentOrchestratorRunId}
+                      currentCommandCenterRunId={commandCenterRunId}
                       activeChatSessionIds={Array.from(runningSessionIds)}
                       onSelectSession={handleSelectSession}
-                      onSelectRun={(runId) => {
+                      onSelectRun={(runId, runType) => {
+                        if (runType === "command-center") {
+                          setCurrentOrchestratorRunId(null);
+                          setCommandCenterRunId(runId);
+                          setOrchestratorOpen(false);
+                          setView("command-center");
+                          return;
+                        }
+                        setCommandCenterRunId(null);
                         setCurrentOrchestratorRunId(runId);
-                        setCommandCenterRunId(runId);
-                        setOrchestratorOpen(false);
-                        setView("command-center");
+                        setOrchestratorOpen(true);
+                        setView("chat");
                       }}
                       onNewChat={handleNewChat}
                       onOpenPacks={() => setView("packs")}

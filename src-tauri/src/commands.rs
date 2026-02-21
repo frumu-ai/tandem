@@ -15,8 +15,8 @@ use crate::orchestrator::{
     policy::{PolicyConfig, PolicyEngine},
     store::OrchestratorStore,
     types::{
-        AgentModelRouting, Budget, ModelSelection, OrchestratorConfig, Run, RunSnapshot, RunStatus,
-        RunSummary, Task, TaskState,
+        AgentModelRouting, Budget, ModelSelection, OrchestratorConfig, Run, RunSnapshot, RunSource,
+        RunStatus, RunSummary, Task, TaskState,
     },
 };
 use crate::python_env;
@@ -8151,6 +8151,20 @@ fn build_sidecar_session_model(
     }
 }
 
+fn existing_workspace_dir_for_session(state: &AppState) -> Option<String> {
+    state.get_workspace_path().and_then(|p| {
+        if p.is_dir() {
+            Some(p.to_string_lossy().to_string())
+        } else {
+            tracing::warn!(
+                "Workspace path no longer exists or is not a directory: {}. Falling back to sidecar default cwd.",
+                p.display()
+            );
+            None
+        }
+    })
+}
+
 fn orchestrator_strict_contract_flag() -> bool {
     match std::env::var("TANDEM_ORCH_STRICT_CONTRACT") {
         Ok(v) => matches!(
@@ -8171,6 +8185,7 @@ pub async fn orchestrator_create_run(
     model: Option<String>,
     provider: Option<String>,
     agent_model_routing: Option<OrchestratorModelRouting>,
+    source: Option<RunSource>,
 ) -> Result<String> {
     use crate::sidecar::CreateSessionRequest;
 
@@ -8200,6 +8215,7 @@ pub async fn orchestrator_create_run(
     .await?;
 
     // Create a NEW session specifically for the orchestrator
+    let workspace_dir = existing_workspace_dir_for_session(state.inner());
     let session_request = CreateSessionRequest {
         parent_id: None,
         title: Some(format!(
@@ -8210,12 +8226,8 @@ pub async fn orchestrator_create_run(
         model: build_sidecar_session_model(final_model.clone(), final_provider.clone()),
         provider: final_provider.clone(),
         permission: Some(orchestrator_permission_rules()),
-        directory: state
-            .get_workspace_path()
-            .map(|p| p.to_string_lossy().to_string()),
-        workspace_root: state
-            .get_workspace_path()
-            .map(|p| p.to_string_lossy().to_string()),
+        directory: workspace_dir.clone(),
+        workspace_root: workspace_dir,
     };
 
     let session = state
@@ -8272,6 +8284,7 @@ pub async fn orchestrator_create_run(
 
     // Create the run object
     let mut run = Run::new(run_id.clone(), session_id, objective, config);
+    run.source = source.unwrap_or(RunSource::Orchestrator);
     // Persist model/provider selection into the run so the orchestrator can always send explicit
     // model specs even if the sidecar session object doesn't echo them back.
     run.model = final_model.clone();
@@ -8282,6 +8295,12 @@ pub async fn orchestrator_create_run(
     let workspace_path = state
         .get_workspace_path()
         .ok_or_else(|| TandemError::InvalidConfig("No workspace selected".to_string()))?;
+    if !workspace_path.is_dir() {
+        return Err(TandemError::InvalidConfig(format!(
+            "Selected workspace does not exist or is not a directory: {}",
+            workspace_path.display()
+        )));
+    }
 
     let policy_config = PolicyConfig::new(workspace_path.clone());
     let policy = PolicyEngine::new(policy_config);
@@ -8744,6 +8763,7 @@ pub async fn orchestrator_list_runs(state: State<'_, AppState>) -> Result<Vec<Ru
                 summaries.push(RunSummary {
                     run_id: run.run_id,
                     session_id: run.session_id,
+                    source: run.source,
                     objective: run.objective,
                     status: run.status,
                     created_at: run.started_at,

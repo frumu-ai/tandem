@@ -128,29 +128,29 @@
   },
   "aboutPage": {
     "title": "About",
-    "poweredBy": "Powered by Frumu.ai",
+    "poweredBy": "Open-source orchestration for local-first coding workflows",
     "sponsorCta": "Sponsor on GitHub",
-    "sponsorSubtitle": "Support the development of Tandem and other open-source projects",
+    "sponsorSubtitle": "Support the ongoing development of Tandem",
     "installUpdate": "Install update",
     "updateCheckFailed": "Update check failed.",
     "downloadingWithProgress": "Downloading update ({{percent}}%)...",
     "frumu": {
-      "tagline": "AI-Powered Development",
-      "description": "Frumu.ai builds cutting-edge AI tools that empower developers and creators. We are focused on making artificial intelligence accessible, powerful, and integrated seamlessly into your workflow.",
-      "bullet1": "Privacy-first AI folder tools",
-      "bullet2": "Local-first architecture",
-      "bullet3": "Open-source friendly",
-      "cta": "Visit Frumu.ai"
+      "tagline": "Guides and API references",
+      "description": "Read the Tandem documentation for setup, architecture, engine usage, and integration patterns.",
+      "bullet1": "Quickstart setup and local-first workflow",
+      "bullet2": "Engine API and protocol details",
+      "bullet3": "Operational guides and release notes",
+      "cta": "Open Tandem docs"
     },
     "aimajin": {
-      "tagline": "Mobile AI Generation",
-      "description": "AIMajin is our mobile AI generation app that puts powerful AI capabilities right in your pocket. Create, generate, and explore AI-powered content anywhere, anytime.",
-      "bullet1": "AI image generation on mobile",
-      "bullet2": "Intuitive mobile-first interface",
-      "bullet3": "Create on the go",
-      "cta": "Check out AIMajin"
+      "tagline": "Hands-on deployment examples",
+      "description": "Explore `tandem/examples` for runnable templates, including a VPS setup and a prebuilt web interface for the engine.",
+      "bullet1": "VPS bootstrap script for remote deployments",
+      "bullet2": "Prebuilt web portal wired to the engine",
+      "bullet3": "Reference configs and environment samples",
+      "cta": "Browse examples on GitHub"
     },
-    "footerBuiltBy": "Tandem is built with love by the Frumu.ai team",
+    "footerBuiltBy": "Tandem is developed in the open by the Frumu.ai team and contributors",
     "footerValues": "Open source • Privacy-focused • For everyone"
   },
   "theme": {

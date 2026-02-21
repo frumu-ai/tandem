@@ -11,6 +11,7 @@ import {
   Clock,
   FileText,
   Sparkles,
+  Rocket,
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -53,7 +54,7 @@ export interface SessionInfo {
 // Internal unified item type
 interface DisplayItem {
   id: string;
-  type: "chat" | "orchestrator";
+  type: "chat" | "orchestrator" | "command-center";
   projectID: string;
   groupKey: string;
   directory?: string;
@@ -88,9 +89,10 @@ interface SessionSidebarProps {
   projects: Project[];
   currentSessionId: string | null;
   currentRunId?: string | null;
+  currentCommandCenterRunId?: string | null;
   activeChatSessionIds?: string[];
   onSelectSession: (sessionId: string) => void;
-  onSelectRun?: (runId: string) => void;
+  onSelectRun?: (runId: string, runType: "orchestrator" | "command-center") => void;
   onNewChat: () => void;
   onOpenPacks?: () => void;
   onDeleteSession: (sessionId: string) => void;
@@ -113,6 +115,7 @@ export function SessionSidebar({
   projects,
   currentSessionId,
   currentRunId,
+  currentCommandCenterRunId,
   activeChatSessionIds = [],
   onSelectSession,
   onSelectRun,
@@ -191,9 +194,10 @@ export function SessionSidebar({
 
       runs.forEach((r) => {
         const runDirectory = activeProject.path;
+        const runType = r.source === "command_center" ? "command-center" : "orchestrator";
         items.push({
           id: r.run_id,
-          type: "orchestrator",
+          type: runType,
           projectID: targetProjectID, // Use matched ID to ensure grouping
           groupKey: toProjectGroupKey(targetProjectID, runDirectory),
           directory: runDirectory,
@@ -236,15 +240,17 @@ export function SessionSidebar({
       }
     }
 
-    if (currentRunId && activeProject) {
-      const run = runs.find((r) => r.run_id === currentRunId);
+    if ((currentRunId || currentCommandCenterRunId) && activeProject) {
+      const run = runs.find(
+        (r) => r.run_id === currentRunId || r.run_id === currentCommandCenterRunId
+      );
       if (run) {
         ids.add(toProjectGroupKey(activeProject.id, activeProject.path));
       }
     }
 
     return ids;
-  }, [currentSessionId, currentRunId, sessions, runs, activeProject]);
+  }, [currentSessionId, currentRunId, currentCommandCenterRunId, sessions, runs, activeProject]);
 
   const isProjectExpanded = (projectId: string) =>
     expandedProjects.has(projectId) || autoExpandedProjectIds.has(projectId);
@@ -348,7 +354,7 @@ export function SessionSidebar({
       setSessionToDelete(null);
       return;
     }
-    if (sessionToDelete.type === "orchestrator") {
+    if (sessionToDelete.type === "orchestrator" || sessionToDelete.type === "command-center") {
       onDeleteRun?.(sessionToDelete.id);
       setSessionToDelete(null);
     }
@@ -361,8 +367,8 @@ export function SessionSidebar({
   const handleItemSelect = (item: DisplayItem) => {
     if (item.type === "chat") {
       onSelectSession(item.id);
-    } else if (item.type === "orchestrator" && onSelectRun) {
-      onSelectRun(item.id);
+    } else if ((item.type === "orchestrator" || item.type === "command-center") && onSelectRun) {
+      onSelectRun(item.id, item.type);
     }
   };
 
@@ -491,17 +497,30 @@ export function SessionSidebar({
                               className={cn(
                                 "group relative flex w-full cursor-pointer items-start gap-2 px-3 py-2 pl-10 transition-colors hover:bg-surface-elevated",
                                 "before:absolute before:left-4 before:top-1/2 before:h-5 before:w-1 before:-translate-y-1/2 before:rounded-full before:bg-primary/40",
-                                (currentSessionId === item.id || currentRunId === item.id) &&
+                                (currentSessionId === item.id ||
+                                  currentRunId === item.id ||
+                                  currentCommandCenterRunId === item.id) &&
                                   "bg-primary/10 before:bg-primary"
                               )}
                             >
-                              {item.type === "orchestrator" ? (
-                                <Sparkles
-                                  className={cn(
-                                    "mt-0.5 h-4 w-4 flex-shrink-0",
-                                    currentRunId === item.id ? "text-primary" : "text-purple-400"
-                                  )}
-                                />
+                              {item.type === "orchestrator" || item.type === "command-center" ? (
+                                item.type === "command-center" ? (
+                                  <Rocket
+                                    className={cn(
+                                      "mt-0.5 h-4 w-4 flex-shrink-0",
+                                      currentCommandCenterRunId === item.id
+                                        ? "text-primary"
+                                        : "text-cyan-400"
+                                    )}
+                                  />
+                                ) : (
+                                  <Sparkles
+                                    className={cn(
+                                      "mt-0.5 h-4 w-4 flex-shrink-0",
+                                      currentRunId === item.id ? "text-primary" : "text-purple-400"
+                                    )}
+                                  />
+                                )
                               ) : (
                                 <MessageSquare
                                   className={cn(
@@ -517,7 +536,9 @@ export function SessionSidebar({
                                 <p
                                   className={cn(
                                     "truncate text-sm",
-                                    currentSessionId === item.id || currentRunId === item.id
+                                    currentSessionId === item.id ||
+                                      currentRunId === item.id ||
+                                      currentCommandCenterRunId === item.id
                                       ? "font-medium text-primary"
                                       : "text-text"
                                   )}
@@ -582,7 +603,11 @@ export function SessionSidebar({
                                 onClick={(e) => handleDelete(item, e)}
                                 className={cn(
                                   "rounded p-1 text-text-muted opacity-0 transition-colors hover:bg-surface hover:text-error group-hover:opacity-100",
-                                  item.type === "orchestrator" && !onDeleteRun ? "hidden" : ""
+                                  (item.type === "orchestrator" ||
+                                    item.type === "command-center") &&
+                                    !onDeleteRun
+                                    ? "hidden"
+                                    : ""
                                 )}
                                 title={
                                   item.type === "chat"
@@ -609,7 +634,7 @@ export function SessionSidebar({
       <ConfirmDialog
         isOpen={sessionToDelete !== null}
         title={
-          sessionToDelete?.type === "orchestrator"
+          sessionToDelete?.type === "orchestrator" || sessionToDelete?.type === "command-center"
             ? t("actions.deleteRun", { ns: "common" })
             : t("actions.deleteChat", { ns: "common" })
         }
@@ -617,7 +642,7 @@ export function SessionSidebar({
           ns: "common",
           item:
             sessionToDelete?.title ||
-            (sessionToDelete?.type === "orchestrator"
+            (sessionToDelete?.type === "orchestrator" || sessionToDelete?.type === "command-center"
               ? t("run.thisRun", { ns: "common" })
               : t("chat.thisChat", { ns: "common" })),
         })}

@@ -137,6 +137,15 @@ pub enum RunStatus {
     Cancelled,
 }
 
+/// Source that initiated an orchestration run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RunSource {
+    #[default]
+    Orchestrator,
+    CommandCenter,
+}
+
 /// Represents a complete orchestration run
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
@@ -144,6 +153,9 @@ pub struct Run {
     pub run_id: String,
     /// Session ID for sidecar communication
     pub session_id: String,
+    /// UI origin for this run (orchestrator panel vs command center).
+    #[serde(default)]
+    pub source: RunSource,
     /// Provider for this run's model (sidecar provider ID, e.g. "openrouter", "opencode")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -183,6 +195,7 @@ impl Run {
         Self {
             run_id,
             session_id,
+            source: RunSource::Orchestrator,
             provider: None,
             model: None,
             agent_model_routing: AgentModelRouting::default(),
@@ -291,6 +304,8 @@ pub struct RunSnapshot {
 pub struct RunSummary {
     pub run_id: String,
     pub session_id: String,
+    #[serde(default)]
+    pub source: RunSource,
     pub objective: String,
     pub status: RunStatus,
     pub created_at: chrono::DateTime<chrono::Utc>,

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui";
 import { FileBrowser } from "@/components/files/FileBrowser";
 import { AgentCommandCenter } from "@/components/orchestrate/AgentCommandCenter";
+import { BudgetMeter } from "@/components/orchestrate/BudgetMeter";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { AgentModelRoutingPanel } from "@/components/orchestrate/AgentModelRoutingPanel";
 import { TaskBoard } from "@/components/orchestrate/TaskBoard";
@@ -67,6 +68,15 @@ interface CommandCenterPageProps {
 interface RunModelSelection {
   model?: string | null;
   provider?: string | null;
+}
+
+interface MissionLimits {
+  wallTimeHours: number;
+  maxTotalTokens: number;
+  maxTokensPerStep: number;
+  maxIterations: number;
+  maxSubagentRuns: number;
+  maxTaskRetries: number;
 }
 
 function truncateForFeed(value: string, max = 64): string {
@@ -164,6 +174,14 @@ export function CommandCenterPage({
   const [autoApproveTargetRunId, setAutoApproveTargetRunId] = useState<string | null>(null);
   const [selectedWorkspaceFile, setSelectedWorkspaceFile] = useState<FileEntry | null>(null);
   const [workspaceFilesExpanded, setWorkspaceFilesExpanded] = useState(false);
+  const [missionLimits, setMissionLimits] = useState<MissionLimits>({
+    wallTimeHours: 48,
+    maxTotalTokens: 500_000,
+    maxTokensPerStep: 30_000,
+    maxIterations: 800,
+    maxSubagentRuns: 3_000,
+    maxTaskRetries: 5,
+  });
   const lastSnapshotRef = useRef<RunSnapshot | null>(null);
   const autoApproveInFlightRef = useRef(false);
   const lastContentFeedMsRef = useRef(0);
@@ -202,8 +220,9 @@ export function CommandCenterPage({
     setRunsLoading(true);
     try {
       const listed = await invoke<RunSummary[]>("orchestrator_list_runs");
-      listed.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
-      setRuns(listed);
+      const commandCenterRuns = listed.filter((run) => run.source === "command_center");
+      commandCenterRuns.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+      setRuns(commandCenterRuns);
     } catch {
       setRuns([]);
     } finally {
@@ -278,7 +297,7 @@ export function CommandCenterPage({
   useEffect(() => {
     if (!initialRunId) return;
     setRunId(initialRunId);
-    setTab("advanced");
+    setTab("task-to-swarm");
   }, [initialRunId]);
 
   useEffect(() => {
@@ -485,20 +504,23 @@ export function CommandCenterPage({
     setError(null);
     try {
       const configByPreset = {
-        speed: { max_parallel_tasks: 6, llm_parallel: 4 },
-        balanced: { max_parallel_tasks: 4, llm_parallel: 3 },
-        quality: { max_parallel_tasks: 2, llm_parallel: 2 },
+        speed: { max_parallel_tasks: 8, llm_parallel: 6 },
+        balanced: { max_parallel_tasks: 6, llm_parallel: 4 },
+        quality: { max_parallel_tasks: 3, llm_parallel: 2 },
       } as const;
       const config: OrchestratorConfig = {
         ...DEFAULT_ORCHESTRATOR_CONFIG,
-        max_total_tokens: 250_000,
-        max_tokens_per_step: 25_000,
-        max_task_retries: 5,
+        max_iterations: Math.max(1, missionLimits.maxIterations),
+        max_total_tokens: Math.max(1_000, missionLimits.maxTotalTokens),
+        max_tokens_per_step: Math.max(500, missionLimits.maxTokensPerStep),
+        max_wall_time_secs: Math.max(300, Math.floor(missionLimits.wallTimeHours * 60 * 60)),
+        max_subagent_runs: Math.max(1, missionLimits.maxSubagentRuns),
+        max_task_retries: Math.max(0, missionLimits.maxTaskRetries),
         max_parallel_tasks: configByPreset[preset].max_parallel_tasks,
         llm_parallel: configByPreset[preset].llm_parallel,
         fs_write_parallel: 1,
         shell_parallel: 1,
-        network_parallel: 2,
+        network_parallel: preset === "speed" ? 4 : preset === "balanced" ? 3 : 2,
       };
       const createdRunId = await invoke<string>("orchestrator_create_run", {
         objective: objective.trim(),
@@ -506,6 +528,7 @@ export function CommandCenterPage({
         model: dispatchModel,
         provider: dispatchProvider,
         agentModelRouting: modelRouting,
+        source: "command_center",
       });
       setRunId(createdRunId);
       setTab("task-to-swarm");
@@ -537,6 +560,17 @@ export function CommandCenterPage({
     () => runs.find((run) => run.run_id === runId) ?? null,
     [runId, runs]
   );
+  const inferredRunCostUsd = useMemo(() => {
+    if (!snapshot) return null;
+    const raw = snapshot as unknown as Record<string, unknown>;
+    const candidates = [raw.cost_used_usd, raw.cost_usd, raw.price_usd, raw.estimated_cost_usd];
+    for (const candidate of candidates) {
+      if (typeof candidate === "number" && Number.isFinite(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  }, [snapshot]);
 
   const loadRunIntoEngine = useCallback(async (targetRunId: string) => {
     await invoke("orchestrator_load_run", { runId: targetRunId });
@@ -891,6 +925,18 @@ export function CommandCenterPage({
                   </div>
                 ) : null}
               </div>
+              <div className="text-xs text-text-muted">
+                Limits: {missionLimits.wallTimeHours}h,{" "}
+                {missionLimits.maxTotalTokens.toLocaleString()} tokens,{" "}
+                {missionLimits.maxIterations.toLocaleString()} iterations.{" "}
+                <button
+                  type="button"
+                  className="text-primary underline-offset-2 hover:underline"
+                  onClick={() => setTab("advanced")}
+                >
+                  Edit in Advanced Controls
+                </button>
+              </div>
               {error ? (
                 <div className="rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-200">
                   {error}
@@ -927,6 +973,32 @@ export function CommandCenterPage({
               </div>
               <div className="text-xs text-text-muted">Tasks: {tasks.length}</div>
               <div className="text-xs text-text-muted">Pending: {pendingTasks}</div>
+              {snapshot ? (
+                <div className="space-y-2 rounded-md border border-border bg-surface-elevated/30 p-2">
+                  <div className="text-[11px] uppercase tracking-wide text-text-subtle">
+                    Run Metrics
+                  </div>
+                  <div className="text-xs text-text-muted">
+                    Context used: {snapshot.budget.tokens_used.toLocaleString()} /{" "}
+                    {snapshot.budget.max_tokens.toLocaleString()} TOK
+                  </div>
+                  <div className="text-xs text-text-muted">
+                    Agent calls: {snapshot.budget.subagent_runs_used.toLocaleString()} /{" "}
+                    {snapshot.budget.max_subagent_runs.toLocaleString()}
+                  </div>
+                  <div className="text-xs text-text-muted">
+                    Wall time: {snapshot.budget.wall_time_secs.toLocaleString()} /{" "}
+                    {snapshot.budget.max_wall_time_secs.toLocaleString()}s
+                  </div>
+                  <div className="text-xs text-text-muted">
+                    Price:{" "}
+                    {inferredRunCostUsd !== null
+                      ? `$${inferredRunCostUsd.toFixed(4)}`
+                      : "Unavailable for orchestrator run snapshots"}
+                  </div>
+                </div>
+              ) : null}
+              {snapshot ? <BudgetMeter budget={snapshot.budget} /> : null}
               {runId &&
               snapshot &&
               [
@@ -1060,6 +1132,154 @@ export function CommandCenterPage({
               ) : null}
             </div>
             <AgentModelRoutingPanel routing={modelRouting} onChange={setModelRouting} />
+            <div className="rounded-lg border border-border bg-surface p-4 space-y-3">
+              <div className="text-xs uppercase tracking-wide text-text-subtle">Mission Limits</div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="space-y-1">
+                  <div className="text-xs text-text-muted">Wall time (hours)</div>
+                  <input
+                    type="number"
+                    min={1}
+                    max={168}
+                    value={missionLimits.wallTimeHours}
+                    onChange={(e) =>
+                      setMissionLimits((prev) => ({
+                        ...prev,
+                        wallTimeHours: Number(e.target.value) || 1,
+                      }))
+                    }
+                    className="w-full rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-text focus:border-primary focus:outline-none"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <div className="text-xs text-text-muted">Max total tokens</div>
+                  <input
+                    type="number"
+                    min={10000}
+                    step={10000}
+                    value={missionLimits.maxTotalTokens}
+                    onChange={(e) =>
+                      setMissionLimits((prev) => ({
+                        ...prev,
+                        maxTotalTokens: Number(e.target.value) || 10000,
+                      }))
+                    }
+                    className="w-full rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-text focus:border-primary focus:outline-none"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <div className="text-xs text-text-muted">Max tokens per step</div>
+                  <input
+                    type="number"
+                    min={1000}
+                    step={1000}
+                    value={missionLimits.maxTokensPerStep}
+                    onChange={(e) =>
+                      setMissionLimits((prev) => ({
+                        ...prev,
+                        maxTokensPerStep: Number(e.target.value) || 1000,
+                      }))
+                    }
+                    className="w-full rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-text focus:border-primary focus:outline-none"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <div className="text-xs text-text-muted">Max iterations</div>
+                  <input
+                    type="number"
+                    min={50}
+                    step={50}
+                    value={missionLimits.maxIterations}
+                    onChange={(e) =>
+                      setMissionLimits((prev) => ({
+                        ...prev,
+                        maxIterations: Number(e.target.value) || 50,
+                      }))
+                    }
+                    className="w-full rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-text focus:border-primary focus:outline-none"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <div className="text-xs text-text-muted">Max subagent runs</div>
+                  <input
+                    type="number"
+                    min={100}
+                    step={100}
+                    value={missionLimits.maxSubagentRuns}
+                    onChange={(e) =>
+                      setMissionLimits((prev) => ({
+                        ...prev,
+                        maxSubagentRuns: Number(e.target.value) || 100,
+                      }))
+                    }
+                    className="w-full rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-text focus:border-primary focus:outline-none"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <div className="text-xs text-text-muted">Max task retries</div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={20}
+                    value={missionLimits.maxTaskRetries}
+                    onChange={(e) =>
+                      setMissionLimits((prev) => ({
+                        ...prev,
+                        maxTaskRetries: Number(e.target.value) || 0,
+                      }))
+                    }
+                    className="w-full rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-text focus:border-primary focus:outline-none"
+                  />
+                </label>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() =>
+                    setMissionLimits((prev) => ({
+                      ...prev,
+                      wallTimeHours: 24,
+                      maxTotalTokens: 300_000,
+                      maxIterations: 600,
+                      maxSubagentRuns: 2_000,
+                    }))
+                  }
+                >
+                  24h profile
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() =>
+                    setMissionLimits((prev) => ({
+                      ...prev,
+                      wallTimeHours: 48,
+                      maxTotalTokens: 500_000,
+                      maxIterations: 800,
+                      maxSubagentRuns: 3_000,
+                    }))
+                  }
+                >
+                  48h profile
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() =>
+                    setMissionLimits((prev) => ({
+                      ...prev,
+                      wallTimeHours: 72,
+                      maxTotalTokens: 800_000,
+                      maxIterations: 1200,
+                      maxSubagentRuns: 5_000,
+                    }))
+                  }
+                >
+                  72h profile
+                </Button>
+              </div>
+            </div>
             <div className="rounded-lg border border-border bg-surface-elevated/40 p-3 text-xs text-text-muted">
               Orchestrator role model routing applies to newly launched runs from this page.
             </div>

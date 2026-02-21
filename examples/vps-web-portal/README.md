@@ -2,14 +2,42 @@
 
 This project contains a highly-polished, multi-page showcase that connects directly to the `tandem-engine` running as a headless server on a Linux VPS. It provides a secure UI wrapper and a Node/Express backend that handles reverse-proxying and authentication, safeguarding the engine's open ports from the public internet.
 
-## Prerequisites
+## Auto Setup Script (recommended)
+
+If you want the fastest setup, use the install script. It handles almost everything:
+
+- Installs/uses `@frumu/tandem`
+- Generates (or reuses) API token
+- Creates `/etc/tandem/engine.env`
+- Bootstraps `$TANDEM_STATE_DIR/config.json` when missing
+- Builds the portal
+- Creates and starts both systemd services
+  - `tandem-engine.service`
+  - `tandem-portal.service`
+
+```bash
+cd examples/vps-web-portal
+sudo TANDEM_STATE_DIR=/srv/tandem bash setup-vps.sh
+```
+
+Optional: pre-create `.env` in this folder with provider keys (`OPENROUTER_API_KEY`, etc.).  
+The script merges those into `/etc/tandem/engine.env` automatically.
+
+If you are using this script, you can skip the manual setup section and jump to `Usage`.
+
+## Manual Setup
+
+### Prerequisites
 
 - A Linux VPS (Ubuntu/Debian recommended)
 - Node.js (v18+)
-- PM2 (optional, for running the project in the background)
-- The Tandem Engine CLI (`npm install -g @frumu/tandem`)
+- `sudo` access
+- PM2 (optional, only for manual run path)
+- The Tandem Engine CLI (only required for manual setup path)
 
-## 1. Setup the Tandem Engine
+### 1. Setup the Tandem Engine
+
+Use this section only if you are not running `setup-vps.sh`.
 
 First, install the tandem engine directly on your VPS. Provide it access to local AI providers or proxies as well as MCP components.
 
@@ -31,7 +59,7 @@ Start the engine running in the background. It will bind to `localhost:39731` by
 nohup tandem-engine serve --hostname 127.0.0.1 --port 39731 --api-token "<YOUR_TOKEN>" &
 ```
 
-### Systemd (recommended)
+#### Systemd (recommended)
 
 For a one-command setup (engine + portal systemd services), run:
 
@@ -119,7 +147,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now tandem-engine
 ```
 
-## 2. Setup the Web Portal
+### 2. Setup the Web Portal
+
+Use this section only if you are not running `setup-vps.sh`.
 
 Clone this repository or copy the `vps-web-portal` directory to your VPS.
 
@@ -146,7 +176,9 @@ VITE_PORTAL_KEY=your-generated-tandem-token-here
 VITE_TANDEM_ENGINE_URL=http://127.0.0.1:39731
 ```
 
-## 3. Build & Run
+### 3. Build & Run
+
+Use this section only if you are not running `setup-vps.sh`.
 
 Build the Vite React frontend for production:
 
