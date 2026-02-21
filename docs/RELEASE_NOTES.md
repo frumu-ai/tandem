@@ -40,6 +40,10 @@
 - **Engine memory learning tools**: Added `memory_store` and `memory_list` to the engine tool registry so agents can write and inspect memory directly through tool calls.
 - **Global knowledge-base search (opt-in)**: Extended `memory_search` to support `tier=global` when explicitly enabled via `allow_global=true` or `TANDEM_ENABLE_GLOBAL_MEMORY=1`.
 - **Shared memory DB routing**: `tandem-engine` now auto-configures `TANDEM_MEMORY_DB_PATH` to the shared Tandem `memory.sqlite` path when unset, improving cross-app memory consistency.
+- **Engine-canonical OS context**: Added shared `HostRuntimeContext` (`os`, `arch`, `shell_family`, `path_style`) and exposed it via `/global/health`, session metadata, and `session.run.started` events.
+- **OS-aware prompt injection**: `tandem-core` now prepends deterministic `[Execution Environment]` context to model runs (default on, controlled by `TANDEM_OS_AWARE_PROMPTS`).
+- **Cross-platform shell guardrails**: Added stronger Windows Unix-command translation/blocking with structured guardrail metadata, plus POSIX-native shell execution path on non-Windows hosts.
+- **OS mismatch diagnostics and loop suppression**: Added `OS_MISMATCH` error classification and retry suppression for repeated identical shell mismatch patterns.
 - **Docs and examples refresh**: Added engine CLI examples for memory write/list/global flows and documented global-memory startup configuration.
 - **Safety and coverage**: Added/updated tests to enforce explicit global-memory gating and avoid accidental unrestricted global recall.
 

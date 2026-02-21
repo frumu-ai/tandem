@@ -42,6 +42,23 @@ tandem-engine status
 tandem-engine status --hostname 127.0.0.1 --port 39731
 ```
 
+## Engine-Detected Execution Environment
+
+Engine runtime now detects host environment once at startup and treats it as canonical:
+
+- `os`: `windows|linux|macos`
+- `shell_family`: `powershell|posix`
+- `path_style`: `windows|posix`
+- `arch`: host architecture (for example `x86_64`, `aarch64`)
+
+This environment is injected into run prompts, exposed via `GET /global/health` (`environment`),
+and attached to `session.run.started` events so all clients (Desktop, TUI, HTTP) see identical OS context.
+
+OS-aware prompt behavior can be controlled with:
+
+- `TANDEM_OS_AWARE_PROMPTS=1` (default on)
+- `TANDEM_OS_AWARE_PROMPTS=0` to disable environment prompt injection
+
 ### `run`
 
 Runs one prompt and prints the model response.

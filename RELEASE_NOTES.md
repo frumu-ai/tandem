@@ -39,6 +39,14 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Global tier remains gated by default to preserve isolation without explicit enablement.
 - Engine memory DB alignment:
   - `tandem-engine` now auto-sets `TANDEM_MEMORY_DB_PATH` to shared Tandem `memory.sqlite` when unset so connected apps/tools use the same knowledge base.
+- Engine-native OS awareness:
+  - Added canonical engine-detected runtime context (`os`, `arch`, `shell_family`, `path_style`) shared across server APIs/events and session metadata.
+  - `session.run.started` and `/global/health` now include `environment` metadata for cross-client diagnostics (Desktop, TUI, HTTP clients).
+  - `tandem-core` prompt assembly now injects a deterministic `[Execution Environment]` block by default (`TANDEM_OS_AWARE_PROMPTS` toggle).
+- Cross-platform shell hardening:
+  - Non-Windows shell execution now uses POSIX shell (`sh -lc`) instead of PowerShell fallback.
+  - Windows shell guardrails now translate common Unix command patterns, block unsafe untranslatable Unix-only commands, and return structured metadata (`os_guardrail_applied`, `translated_command`, `guardrail_reason`).
+  - Added OS/path mismatch classification (`OS_MISMATCH`) and suppression of repeated identical mismatch-prone shell retries.
 - Documentation:
   - Added CLI examples for `memory_store`, `memory_list`, and global memory operations.
   - Updated engine README with global memory enablement and shared DB behavior notes.

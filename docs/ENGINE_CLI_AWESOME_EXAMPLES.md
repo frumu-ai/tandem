@@ -154,6 +154,22 @@ tandem-engine tool --json "{\"tool\":\"apply_patch\",\"args\":{\"patchText\":\"*
 tandem-engine tool --json '{"tool":"bash","args":{"command":"Get-ChildItem tandem/docs | Select-Object -First 5"}}'
 ```
 
+### OS-Aware Guardrail Demo (Windows)
+
+```bash
+# Translated command example
+tandem-engine tool --json '{"tool":"bash","args":{"command":"ls -la"}}'
+
+# Blocked Unix-only pattern example with guidance metadata
+tandem-engine tool --json '{"tool":"bash","args":{"command":"sed -n \"1,5p\" README.md"}}'
+```
+
+Inspect `metadata`:
+
+- `os_guardrail_applied`
+- `translated_command` (when rewritten)
+- `guardrail_reason` (when rewritten/blocked)
+
 ### Web Research
 
 ```bash

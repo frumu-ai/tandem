@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Engine memory write/list tools**: Added `memory_store` and `memory_list` tools to `tandem-tools` so agents can persist and audit memory directly from engine tool calls.
 - **Global memory opt-in support**: `memory_search` now supports `tier=global` when explicitly enabled via `allow_global=true` or `TANDEM_ENABLE_GLOBAL_MEMORY=1`.
 - **Shared memory DB auto-wiring in engine**: `tandem-engine` now auto-configures `TANDEM_MEMORY_DB_PATH` to the shared Tandem `memory.sqlite` path when unset, aligning connected app/tool memory access by default.
+- **Engine host runtime context contract**: Added shared `HostRuntimeContext` (`os`, `arch`, `shell_family`, `path_style`) in shared types/wire payloads and surfaced it through engine health/session/run metadata.
+- **Server run-start environment observability**: `session.run.started` lifecycle events now include canonical engine environment metadata for cross-client parity.
 
 ### Changed
 
@@ -41,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Command Center observability layout**: Added inline run-scoped Console panel and elevated workspace file browser support in Command Center to improve live swarm debugging.
 - **`memory_search` scope policy**: Reworked strict scope enforcement to allow controlled global search while preserving default isolation behavior unless global is explicitly enabled.
 - **Engine memory docs/examples**: Expanded CLI and engine README docs with `memory_store`, `memory_list`, and global memory usage examples.
+- **Engine prompt assembly (OS-aware)**: `tandem-core` now prepends a deterministic `[Execution Environment]` block (engine-detected OS/shell/path style) to model runs by default (`TANDEM_OS_AWARE_PROMPTS` toggle).
+- **Canonical OS authority policy**: Runtime behavior now trusts engine-detected host environment as the source of truth rather than client-provided OS hints.
+- **Engine health diagnostics**: `/global/health` now exposes `environment` metadata for troubleshooting and external clients.
 
 ### Fixed
 
@@ -59,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Failed task diagnostics clarity**: Failed task cards now surface richer validator/error detail so failure causes are visible in-place instead of opaque `session.error` noise.
 - **Engine tool memory path mismatch**: Fixed default `memory_search`/memory tool DB resolution in headless engine runs by setting the shared memory DB path at runtime when not already provided.
 - **Memory tool test coverage**: Added/updated tests to validate global-memory opt-in gates and prevent accidental unrestricted global access.
+- **Cross-platform shell execution path**: Non-Windows engine shell tool execution now uses POSIX shell (`sh -lc`) instead of hardcoded PowerShell fallback.
+- **Windows shell mismatch loops**: Expanded Windows shell guardrails to translate common Unix patterns, block unsafe Unix-only commands with structured guidance, and emit `os_guardrail_applied`/`guardrail_reason` metadata.
+- **OS mismatch retry suppression**: Engine loop now suppresses repeated identical shell calls after path/shell mismatch signatures and steers model/tool flow toward cross-platform tools (`read`, `glob`, `grep`).
+- **OS mismatch error taxonomy**: Server dispatch now classifies common path/shell mismatch failures as `OS_MISMATCH` for clearer diagnostics.
 
 ## [0.3.7] - 2026-02-18
 
