@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { api } from "../api";
 import { Loader2, Users } from "lucide-react";
 
@@ -25,12 +25,61 @@ const personas = [
   },
 ];
 
+const SWARM_SESSION_KEY = "tandem_portal_swarm_sessions";
+
 export const SwarmDashboard: React.FC = () => {
   const [query, setQuery] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [agents, setAgents] = useState<AgentResponse[]>(
     personas.map((p) => ({ persona: p.name, response: "", loading: false, error: null }))
   );
+
+  const loadAgentResponse = async (personaName: string, sessionId: string) => {
+    try {
+      const messages = await api.getSessionMessages(sessionId);
+      const lastAssistant = [...messages].reverse().find((m) => m.info?.role === "assistant");
+      const finalText = (lastAssistant?.parts || [])
+        .filter((p) => p.type === "text" && p.text)
+        .map((p) => p.text)
+        .join("\n")
+        .trim();
+      if (finalText) {
+        setAgents((prev) => {
+          const updated = [...prev];
+          const idx = personas.findIndex((p) => p.name === personaName);
+          if (idx >= 0) {
+            updated[idx].response = finalText;
+            updated[idx].loading = false;
+            updated[idx].error = null;
+          }
+          return updated;
+        });
+      }
+    } catch (err: any) {
+      setAgents((prev) => {
+        const updated = [...prev];
+        const idx = personas.findIndex((p) => p.name === personaName);
+        if (idx >= 0) {
+          updated[idx].loading = false;
+          updated[idx].error = err.message || "Failed to load saved session";
+        }
+        return updated;
+      });
+    }
+  };
+
+  useEffect(() => {
+    const raw = localStorage.getItem(SWARM_SESSION_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as Record<string, string>;
+      void Promise.all(
+        Object.entries(parsed).map(([personaName, sid]) => loadAgentResponse(personaName, sid))
+      );
+    } catch (err) {
+      console.error("Failed to parse swarm session map", err);
+    }
+  }, []);
 
   const handleStart = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,6 +96,10 @@ export const SwarmDashboard: React.FC = () => {
         try {
           // 1. Create a dedicated session for this persona
           const sessionId = await api.createSession(`Swarm: ${persona.name}`);
+          const raw = localStorage.getItem(SWARM_SESSION_KEY);
+          const currentMap = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+          currentMap[persona.name] = sessionId;
+          localStorage.setItem(SWARM_SESSION_KEY, JSON.stringify(currentMap));
 
           // 2. Start the run
           const fullPrompt = `${persona.prompt}\n\n${query}`;
@@ -54,6 +107,14 @@ export const SwarmDashboard: React.FC = () => {
 
           // 3. Listen to the event stream
           const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
+          let finalized = false;
+
+          const finalizeAgent = async () => {
+            if (finalized) return;
+            finalized = true;
+            await loadAgentResponse(persona.name, sessionId);
+            eventSource.close();
+          };
 
           eventSource.onmessage = (evt) => {
             const data = JSON.parse(evt.data);
@@ -72,12 +133,12 @@ export const SwarmDashboard: React.FC = () => {
               data.type === "run.status.updated" &&
               (data.properties.status === "completed" || data.properties.status === "failed")
             ) {
-              setAgents((prev) => {
-                const updated = [...prev];
-                updated[index].loading = false;
-                return updated;
-              });
-              eventSource.close();
+              void finalizeAgent();
+            } else if (
+              data.type === "session.run.finished" &&
+              (data.properties?.status === "completed" || data.properties?.status === "failed")
+            ) {
+              void finalizeAgent();
             }
           };
 

@@ -8,6 +8,29 @@ interface ChatMessage {
   content: string;
 }
 
+const SECOND_BRAIN_SESSION_KEY = "tandem_portal_second_brain_session_id";
+
+const toChatMessages = (
+  messages: Awaited<ReturnType<typeof api.getSessionMessages>>
+): ChatMessage[] => {
+  return messages
+    .filter((m) => m.info?.role === "user" || m.info?.role === "assistant")
+    .map((m) => {
+      const role: ChatMessage["role"] = m.info?.role === "assistant" ? "agent" : "user";
+      const content = (m.parts || [])
+        .filter((p) => p.type === "text" && p.text)
+        .map((p) => p.text)
+        .join("\n")
+        .trim();
+      return {
+        id: Math.random().toString(),
+        role,
+        content,
+      };
+    })
+    .filter((m) => m.content.length > 0);
+};
+
 export const SecondBrainDashboard: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -22,12 +45,23 @@ export const SecondBrainDashboard: React.FC = () => {
   useEffect(() => {
     const initBrain = async () => {
       try {
+        const existingSessionId = localStorage.getItem(SECOND_BRAIN_SESSION_KEY);
+        if (existingSessionId) {
+          const history = await api.getSessionMessages(existingSessionId);
+          const restored = toChatMessages(history);
+          setSessionId(existingSessionId);
+          if (restored.length > 0) {
+            setMessages(restored);
+            return;
+          }
+        }
+
         const sid = await api.createSession("Second Brain MVP");
+        localStorage.setItem(SECOND_BRAIN_SESSION_KEY, sid);
         setSessionId(sid);
-        // System prompt sets up the MCP expectation
+        // System prompt sets up the MCP expectation for new sessions only.
         const prompt = `You are a Second Brain AI assistant. You have access to local the server's workspace and tools via MCP (Model Context Protocol). You can search files, read local databases, and help the user synthesize information from their local filesystem.`;
         await api.sendMessage(sid, prompt);
-
         setMessages([
           {
             id: "welcome",
@@ -64,6 +98,24 @@ export const SecondBrainDashboard: React.FC = () => {
     try {
       const { runId } = await api.startAsyncRun(sessionId, userMsg);
       const source = new EventSource(api.getEventStreamUrl(sessionId, runId));
+      let finalized = false;
+
+      const finalize = async () => {
+        if (finalized) return;
+        finalized = true;
+        try {
+          const history = await api.getSessionMessages(sessionId);
+          const restored = toChatMessages(history);
+          if (restored.length > 0) {
+            setMessages(restored);
+          }
+        } catch (err) {
+          console.error("Failed to load session history after run", err);
+        } finally {
+          setIsThinking(false);
+          source.close();
+        }
+      };
 
       source.onmessage = (evt) => {
         const data = JSON.parse(evt.data);
@@ -91,8 +143,12 @@ export const SecondBrainDashboard: React.FC = () => {
           data.type === "run.status.updated" &&
           (data.properties.status === "completed" || data.properties.status === "failed")
         ) {
-          setIsThinking(false);
-          source.close();
+          void finalize();
+        } else if (
+          data.type === "session.run.finished" &&
+          (data.properties?.status === "completed" || data.properties?.status === "failed")
+        ) {
+          void finalize();
         }
       };
       source.onerror = () => {

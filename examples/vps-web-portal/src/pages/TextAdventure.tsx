@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { api } from "../api";
-import { MessageSquareQuote, ChevronRight } from "lucide-react";
+import { MessageSquareQuote, ChevronRight, RotateCcw } from "lucide-react";
 
 interface GameEvent {
   id: string;
@@ -10,36 +10,123 @@ interface GameEvent {
   questionId?: string;
 }
 
+const ADVENTURE_SESSION_KEY = "tandem_portal_adventure_session_id";
+
+const buildAdventureEventsFromMessages = (
+  messages: Awaited<ReturnType<typeof api.getSessionMessages>>
+): GameEvent[] => {
+  const mapped: GameEvent[] = messages.flatMap((m): GameEvent[] => {
+    const role = m.info?.role;
+    if (role !== "user" && role !== "assistant") return [];
+    const text = (m.parts || [])
+      .filter((p) => p.type === "text" && p.text)
+      .map((p) => p.text)
+      .join("\n")
+      .trim();
+    if (!text) return [];
+    if (role === "assistant") {
+      return [{ id: Math.random().toString(36).substring(7), type: "text", content: text }];
+    }
+    return [{ id: Math.random().toString(36).substring(7), type: "hero", content: `> ${text}` }];
+  });
+  return mapped;
+};
+
 export const TextAdventure: React.FC = () => {
   const [events, setEvents] = useState<GameEvent[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
+  const [manualInput, setManualInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   // Auto-scroll logic
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [events]);
 
+  useEffect(() => {
+    const restore = async () => {
+      const savedSessionId = localStorage.getItem(ADVENTURE_SESSION_KEY);
+      if (!savedSessionId) return;
+      try {
+        const messages = await api.getSessionMessages(savedSessionId);
+        const restoredEvents = buildAdventureEventsFromMessages(messages);
+        if (restoredEvents.length > 0) {
+          setSessionId(savedSessionId);
+          setHasStarted(true);
+          setEvents(restoredEvents);
+          maybeAddChoiceFromLastAssistant(restoredEvents);
+        }
+      } catch (err) {
+        console.error("Failed to restore adventure session", err);
+      }
+    };
+    void restore();
+  }, []);
+
   const addEvent = (evt: Omit<GameEvent, "id">) => {
     setEvents((prev) => [...prev, { ...evt, id: Math.random().toString(36).substring(7) }]);
   };
 
+  const parseChoicesFromText = (text: string): string[] => {
+    const lines = text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const numbered = lines
+      .map((line) => line.match(/^\d+[.)]\s+(.+)$/)?.[1]?.trim())
+      .filter((v): v is string => !!v);
+    return numbered.slice(0, 6);
+  };
+
+  const maybeAddChoiceFromLastAssistant = (
+    restoredEvents: GameEvent[],
+    fallbackPrompt = "Choose your next action:"
+  ) => {
+    const lastText = [...restoredEvents].reverse().find((e) => e.type === "text");
+    if (!lastText) return;
+    const options = parseChoicesFromText(lastText.content);
+    if (options.length < 2) return;
+    const alreadyExists = restoredEvents.some(
+      (e) => e.type === "choice" && e.content === fallbackPrompt
+    );
+    if (alreadyExists) return;
+    addEvent({
+      type: "choice",
+      content: fallbackPrompt,
+      options,
+    });
+  };
+
   const startGame = async () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
     setIsLoading(true);
     setEvents([]);
+    setSessionId(null);
+    setManualInput("");
     addEvent({ type: "system", content: "INITIALIZING RPG SERVER CONNECTION..." });
 
     try {
       const sid = await api.createSession("RPG Game Master");
       setSessionId(sid);
+      localStorage.setItem(ADVENTURE_SESSION_KEY, sid);
       setHasStarted(true);
 
-      const prompt = `You are a text-based RPG Game Master. The player has just woken up in a dark, mysterious forest. Describe the environment vividly. Then, explicitly use the Question tool (or ask a multiple choice question directly depending on engine capabilities) to present the player with exactly 3 choices of what to do next. Wait for the player's choice before continuing. Keep responses under 3 paragraphs.`;
-
-      await api.sendMessage(sid, prompt);
-      const { runId } = await api.startAsyncRun(sid);
+      const prompt = `You are a text-based RPG Game Master.
+The player has just woken up in a dark, mysterious forest.
+Describe the environment vividly.
+At the end of every turn, present exactly 3 numbered choices in plain text:
+1) ...
+2) ...
+3) ...
+Do not continue the story until the player picks one choice.
+Keep responses under 3 paragraphs plus the 3 choices.`;
+      const { runId } = await api.startAsyncRun(sid, prompt);
 
       connectStream(sid, runId);
     } catch (err: any) {
@@ -49,8 +136,35 @@ export const TextAdventure: React.FC = () => {
   };
 
   const connectStream = (sid: string, rid: string) => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
     const eventSource = new EventSource(api.getEventStreamUrl(sid, rid));
+    eventSourceRef.current = eventSource;
     let activeText = "";
+    let finalized = false;
+
+    const finalize = async () => {
+      if (finalized) return;
+      finalized = true;
+      try {
+        const messages = await api.getSessionMessages(sid);
+        const restoredEvents = buildAdventureEventsFromMessages(messages);
+        if (restoredEvents.length > 0) {
+          setEvents(restoredEvents);
+          maybeAddChoiceFromLastAssistant(restoredEvents);
+        }
+      } catch (err) {
+        console.error("Failed to restore adventure history after run", err);
+      } finally {
+        setIsLoading(false);
+        eventSource.close();
+        if (eventSourceRef.current === eventSource) {
+          eventSourceRef.current = null;
+        }
+      }
+    };
 
     eventSource.onmessage = (evt) => {
       const data = JSON.parse(evt.data);
@@ -92,15 +206,32 @@ export const TextAdventure: React.FC = () => {
         data.type === "run.status.updated" &&
         (data.properties.status === "completed" || data.properties.status === "failed")
       ) {
-        setIsLoading(false);
-        eventSource.close();
+        void finalize();
+      } else if (
+        data.type === "session.run.finished" &&
+        (data.properties?.status === "completed" || data.properties?.status === "failed")
+      ) {
+        void finalize();
       }
     };
 
     eventSource.onerror = () => {
       setIsLoading(false);
       eventSource.close();
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
     };
+  };
+
+  const restartGame = async () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    localStorage.removeItem(ADVENTURE_SESSION_KEY);
+    setHasStarted(false);
+    await startGame();
   };
 
   const handleChoice = async (choice: string, questionId?: string) => {
@@ -108,6 +239,7 @@ export const TextAdventure: React.FC = () => {
     setIsLoading(true);
 
     addEvent({ type: "hero", content: `> You chose: ${choice}` });
+    setManualInput("");
 
     try {
       if (questionId) {
@@ -131,6 +263,13 @@ export const TextAdventure: React.FC = () => {
     }
   };
 
+  const handleManualSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = manualInput.trim();
+    if (!text || !sessionId || isLoading) return;
+    await handleChoice(text);
+  };
+
   return (
     <div className="flex flex-col h-full bg-black p-0 md:p-6 font-mono">
       <div className="bg-gray-900 border border-green-900 flex flex-col h-full rounded-none md:rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.1)] overflow-hidden">
@@ -139,7 +278,19 @@ export const TextAdventure: React.FC = () => {
           <span className="flex items-center gap-2">
             <MessageSquareQuote size={14} /> tty1 - tandem-rpg
           </span>
-          <span>{isLoading ? "EXECUTING..." : "IDLE"}</span>
+          <div className="flex items-center gap-3">
+            {hasStarted && (
+              <button
+                type="button"
+                onClick={restartGame}
+                className="flex items-center gap-1 border border-green-800 px-2 py-1 hover:bg-green-900/40"
+              >
+                <RotateCcw size={12} />
+                Restart Game
+              </button>
+            )}
+            <span>{isLoading ? "EXECUTING..." : "IDLE"}</span>
+          </div>
         </div>
 
         {/* Main terminal display */}
@@ -205,6 +356,23 @@ export const TextAdventure: React.FC = () => {
                 <div className="text-green-700 animate-pulse flex items-center gap-2">
                   <div className="w-2 h-4 bg-green-700"></div> The Game Master is typing...
                 </div>
+              )}
+              {!isLoading && (
+                <form onSubmit={handleManualSubmit} className="mt-4 flex gap-2">
+                  <input
+                    type="text"
+                    value={manualInput}
+                    onChange={(e) => setManualInput(e.target.value)}
+                    placeholder="Type your action..."
+                    className="flex-1 bg-black border border-green-900 px-3 py-2 text-green-300"
+                  />
+                  <button
+                    type="submit"
+                    className="border border-green-700 px-4 py-2 text-green-300 hover:bg-green-900/40"
+                  >
+                    Send
+                  </button>
+                </form>
               )}
             </>
           )}
