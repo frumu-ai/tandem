@@ -1,18 +1,4 @@
-# Tandem Unreleased Notes
-
-## Highlights
-
-- **Engine memory learning tools**: Added `memory_store` and `memory_list` to the engine tool registry so agents can write and inspect memory directly through tool calls.
-- **Global knowledge-base search (opt-in)**: Extended `memory_search` to support `tier=global` when explicitly enabled via `allow_global=true` or `TANDEM_ENABLE_GLOBAL_MEMORY=1`.
-- **Shared memory DB routing**: `tandem-engine` now auto-configures `TANDEM_MEMORY_DB_PATH` to the shared Tandem `memory.sqlite` path when unset, improving cross-app memory consistency.
-- **Docs and examples refresh**: Added engine CLI examples for memory write/list/global flows and documented global-memory startup configuration.
-- **Safety and coverage**: Added/updated tests to enforce explicit global-memory gating and avoid accidental unrestricted global recall.
-
----
-
-# Tandem v0.3.8 Release Notes
-
-## Release Date: 2026-02-19
+# Tandem v0.3.8 Release Notes (Unreleased)
 
 ### Highlights
 
@@ -51,6 +37,11 @@
 - **Command Center failure visibility**: Failed task cards now show clearer validator/error context directly on the task card.
 - **Command Center live debugging UX**: Added an inline run-scoped Console panel and promoted workspace file browser visibility for in-context swarm troubleshooting.
 - **Startup view safety default**: Desktop startup now defaults to Chat view instead of restoring Command Center first (pending a dedicated starter page flow).
+- **Engine memory learning tools**: Added `memory_store` and `memory_list` to the engine tool registry so agents can write and inspect memory directly through tool calls.
+- **Global knowledge-base search (opt-in)**: Extended `memory_search` to support `tier=global` when explicitly enabled via `allow_global=true` or `TANDEM_ENABLE_GLOBAL_MEMORY=1`.
+- **Shared memory DB routing**: `tandem-engine` now auto-configures `TANDEM_MEMORY_DB_PATH` to the shared Tandem `memory.sqlite` path when unset, improving cross-app memory consistency.
+- **Docs and examples refresh**: Added engine CLI examples for memory write/list/global flows and documented global-memory startup configuration.
+- **Safety and coverage**: Added/updated tests to enforce explicit global-memory gating and avoid accidental unrestricted global recall.
 
 ### Orchestrator Routing Migration Notes
 

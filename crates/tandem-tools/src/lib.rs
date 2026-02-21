@@ -224,7 +224,16 @@ impl Tool for BashTool {
         if cmd.is_empty() {
             anyhow::bail!("BASH_COMMAND_MISSING");
         }
-        let (mut command, translated_cmd) = build_shell_command(cmd);
+        let shell = match build_shell_command(cmd) {
+            ShellCommandPlan::Execute(plan) => plan,
+            ShellCommandPlan::Blocked(result) => return Ok(result),
+        };
+        let ShellExecutionPlan {
+            mut command,
+            translated_command,
+            os_guardrail_applied,
+            guardrail_reason,
+        } = shell;
         if let Some(env) = args.get("env").and_then(|v| v.as_object()) {
             for (k, v) in env {
                 if let Some(value) = v.as_str() {
@@ -234,12 +243,12 @@ impl Tool for BashTool {
         }
         let output = command.output().await?;
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let mut metadata = json!({"stderr": stderr});
-        if let Some(translated) = translated_cmd {
-            if let Some(obj) = metadata.as_object_mut() {
-                obj.insert("translated_command".to_string(), Value::String(translated));
-            }
-        }
+        let metadata = shell_metadata(
+            translated_command.as_deref(),
+            os_guardrail_applied,
+            guardrail_reason.as_deref(),
+            stderr,
+        );
         Ok(ToolResult {
             output: String::from_utf8_lossy(&output.stdout).to_string(),
             metadata,
@@ -255,7 +264,16 @@ impl Tool for BashTool {
         if cmd.is_empty() {
             anyhow::bail!("BASH_COMMAND_MISSING");
         }
-        let (mut command, translated_cmd) = build_shell_command(cmd);
+        let shell = match build_shell_command(cmd) {
+            ShellCommandPlan::Execute(plan) => plan,
+            ShellCommandPlan::Blocked(result) => return Ok(result),
+        };
+        let ShellExecutionPlan {
+            mut command,
+            translated_command,
+            os_guardrail_applied,
+            guardrail_reason,
+        } = shell;
         if let Some(env) = args.get("env").and_then(|v| v.as_object()) {
             for (k, v) in env {
                 if let Some(value) = v.as_str() {
@@ -285,14 +303,14 @@ impl Tool for BashTool {
             }
             None => String::new(),
         };
-        let mut metadata = json!({
-            "stderr": stderr,
-            "exit_code": status.code()
-        });
-        if let Some(translated) = translated_cmd {
-            if let Some(obj) = metadata.as_object_mut() {
-                obj.insert("translated_command".to_string(), Value::String(translated));
-            }
+        let mut metadata = shell_metadata(
+            translated_command.as_deref(),
+            os_guardrail_applied,
+            guardrail_reason.as_deref(),
+            stderr,
+        );
+        if let Some(obj) = metadata.as_object_mut() {
+            obj.insert("exit_code".to_string(), json!(status.code()));
         }
         Ok(ToolResult {
             output: format!("command exited: {}", status),
@@ -301,25 +319,86 @@ impl Tool for BashTool {
     }
 }
 
-fn build_shell_command(raw_cmd: &str) -> (Command, Option<String>) {
+struct ShellExecutionPlan {
+    command: Command,
+    translated_command: Option<String>,
+    os_guardrail_applied: bool,
+    guardrail_reason: Option<String>,
+}
+
+fn shell_metadata(
+    translated_command: Option<&str>,
+    os_guardrail_applied: bool,
+    guardrail_reason: Option<&str>,
+    stderr: String,
+) -> Value {
+    let mut metadata = json!({
+        "stderr": stderr,
+        "os_guardrail_applied": os_guardrail_applied,
+    });
+    if let Some(obj) = metadata.as_object_mut() {
+        if let Some(translated) = translated_command {
+            obj.insert(
+                "translated_command".to_string(),
+                Value::String(translated.to_string()),
+            );
+        }
+        if let Some(reason) = guardrail_reason {
+            obj.insert("guardrail_reason".to_string(), Value::String(reason.to_string()));
+        }
+    }
+    metadata
+}
+
+enum ShellCommandPlan {
+    Execute(ShellExecutionPlan),
+    Blocked(ToolResult),
+}
+
+fn build_shell_command(raw_cmd: &str) -> ShellCommandPlan {
     #[cfg(windows)]
     {
+        let reason = windows_guardrail_reason(raw_cmd);
         let translated = translate_windows_shell_command(raw_cmd);
+        let translated_applied = translated.is_some();
+        if let Some(reason) = reason {
+            if translated.is_none() {
+                return ShellCommandPlan::Blocked(ToolResult {
+                    output: format!(
+                        "Shell command blocked on Windows ({reason}). Use cross-platform tools (`read`, `glob`, `grep`) or PowerShell-native syntax."
+                    ),
+                    metadata: json!({
+                        "os_guardrail_applied": true,
+                        "guardrail_reason": reason,
+                        "blocked": true
+                    }),
+                });
+            }
+        }
         let effective = translated.clone().unwrap_or_else(|| raw_cmd.to_string());
         let mut command = Command::new("powershell");
         command.args(["-NoProfile", "-Command", &effective]);
-        return (command, translated);
+        return ShellCommandPlan::Execute(ShellExecutionPlan {
+            command,
+            translated_command: translated,
+            os_guardrail_applied: reason.is_some() || translated_applied,
+            guardrail_reason: reason.map(str::to_string),
+        });
     }
 
     #[allow(unreachable_code)]
     {
-        let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-Command", raw_cmd]);
-        (command, None)
+        let mut command = Command::new("sh");
+        command.args(["-lc", raw_cmd]);
+        ShellCommandPlan::Execute(ShellExecutionPlan {
+            command,
+            translated_command: None,
+            os_guardrail_applied: false,
+            guardrail_reason: None,
+        })
     }
 }
 
-#[cfg(windows)]
 fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
     let trimmed = raw_cmd.trim();
     if trimmed.is_empty() {
@@ -335,7 +414,6 @@ fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
     None
 }
 
-#[cfg(windows)]
 fn translate_windows_ls_command(trimmed: &str) -> Option<String> {
     let mut force = false;
     let mut paths: Vec<&str> = Vec::new();
@@ -361,7 +439,6 @@ fn translate_windows_ls_command(trimmed: &str) -> Option<String> {
     Some(translated)
 }
 
-#[cfg(windows)]
 fn translate_windows_find_command(trimmed: &str) -> Option<String> {
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
     if tokens.is_empty() || !tokens[0].eq_ignore_ascii_case("find") {
@@ -427,7 +504,6 @@ fn translate_windows_find_command(trimmed: &str) -> Option<String> {
     Some(translated)
 }
 
-#[cfg(windows)]
 fn normalize_shell_token(token: &str) -> String {
     let trimmed = token.trim();
     if trimmed.len() >= 2
@@ -439,9 +515,29 @@ fn normalize_shell_token(token: &str) -> String {
     trimmed.to_string()
 }
 
-#[cfg(windows)]
 fn quote_powershell_single(input: &str) -> String {
     format!("'{}'", input.replace('\'', "''"))
+}
+
+fn windows_guardrail_reason(raw_cmd: &str) -> Option<&'static str> {
+    let trimmed = raw_cmd.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let unix_only_prefixes = [
+        "awk ", "sed ", "xargs ", "chmod ", "chown ", "sudo ", "apt ", "apt-get ", "yum ",
+        "dnf ", "brew ", "zsh ", "bash ", "sh ", "uname", "pwd",
+    ];
+    if unix_only_prefixes
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+    {
+        return Some("unix_command_untranslatable");
+    }
+    if trimmed.contains("/dev/null") || trimmed.contains("~/.") {
+        return Some("posix_path_pattern");
+    }
+    None
 }
 
 struct ReadTool;
@@ -2514,6 +2610,30 @@ mod tests {
         assert!(result.output.contains("requires allow_global=true"));
         assert_eq!(result.metadata["ok"], json!(false));
         assert_eq!(result.metadata["reason"], json!("global_scope_disabled"));
+    }
+
+    #[test]
+    fn translate_windows_ls_with_all_flag() {
+        let translated = translate_windows_shell_command("ls -la").expect("translation");
+        assert!(translated.contains("Get-ChildItem"));
+        assert!(translated.contains("-Force"));
+    }
+
+    #[test]
+    fn translate_windows_find_name_pattern() {
+        let translated =
+            translate_windows_shell_command("find . -type f -name \"*.rs\"").expect("translation");
+        assert!(translated.contains("Get-ChildItem"));
+        assert!(translated.contains("-Recurse"));
+        assert!(translated.contains("-Filter"));
+    }
+
+    #[test]
+    fn windows_guardrail_blocks_untranslatable_unix_command() {
+        assert_eq!(
+            windows_guardrail_reason("sed -n '1,5p' README.md"),
+            Some("unix_command_untranslatable")
+        );
     }
 }
 

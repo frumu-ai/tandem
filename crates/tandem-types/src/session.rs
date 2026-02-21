@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Message, ModelSpec};
+use crate::{HostRuntimeContext, Message, ModelSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionTime {
@@ -33,6 +33,8 @@ pub struct Session {
     pub time: SessionTime,
     pub model: Option<ModelSpec>,
     pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<HostRuntimeContext>,
     #[serde(default)]
     pub messages: Vec<Message>,
 }
@@ -59,6 +61,7 @@ impl Session {
             },
             model: None,
             provider: None,
+            environment: None,
             messages: Vec::new(),
         }
     }

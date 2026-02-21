@@ -111,7 +111,7 @@ function TaskCard({ task, isCurrent, onClick, onRetryTask }: TaskCardProps) {
               key={depId}
               className="inline-flex items-center rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-text-muted"
             >
-              ← {depId}
+              {"<-"} {depId}
             </span>
           ))}
         </div>
@@ -164,15 +164,34 @@ export function TaskBoard({
     return groups;
   }, [tasks]);
 
-  const columns = (
-    [
-      { state: "pending" as TaskState, tasks: groupedTasks.pending },
-      { state: "in_progress" as TaskState, tasks: groupedTasks.in_progress },
-      { state: "blocked" as TaskState, tasks: groupedTasks.blocked },
-      { state: "done" as TaskState, tasks: groupedTasks.done },
-      { state: "failed" as TaskState, tasks: groupedTasks.failed },
-    ] as const
-  ).filter((col) => col.tasks.length > 0 || col.state === "pending" || col.state === "done");
+  const pendingSplit = useMemo(() => {
+    const doneIds = new Set(groupedTasks.done.map((task) => task.id));
+    const runnable: Task[] = [];
+    const waiting: Task[] = [];
+
+    for (const task of groupedTasks.pending) {
+      const depsSatisfied =
+        task.dependencies.length === 0 || task.dependencies.every((depId) => doneIds.has(depId));
+      if (depsSatisfied) runnable.push(task);
+      else waiting.push(task);
+    }
+
+    return { runnable, waiting };
+  }, [groupedTasks.done, groupedTasks.pending]);
+
+  const columns: Array<{ state: TaskState; tasks: Task[]; label?: string }> = [
+    { state: "pending" as TaskState, tasks: pendingSplit.runnable, label: "Runnable" },
+    { state: "pending" as TaskState, tasks: pendingSplit.waiting, label: "Waiting on deps" },
+    { state: "in_progress" as TaskState, tasks: groupedTasks.in_progress },
+    { state: "blocked" as TaskState, tasks: groupedTasks.blocked },
+    { state: "done" as TaskState, tasks: groupedTasks.done },
+    { state: "failed" as TaskState, tasks: groupedTasks.failed },
+  ].filter(
+    (col) =>
+      col.tasks.length > 0 ||
+      (col.state === "pending" && col.label === "Runnable") ||
+      col.state === "done"
+  );
 
   if (tasks.length === 0) {
     return (
@@ -194,6 +213,14 @@ export function TaskBoard({
         <span>
           <span className="text-emerald-400">{groupedTasks.done.length}</span> done
         </span>
+        <span>
+          <span className="text-slate-300">{pendingSplit.runnable.length}</span> runnable
+        </span>
+        {pendingSplit.waiting.length > 0 && (
+          <span>
+            <span className="text-amber-300">{pendingSplit.waiting.length}</span> waiting
+          </span>
+        )}
         {groupedTasks.in_progress.length > 0 && (
           <span>
             <span className="text-blue-400">{groupedTasks.in_progress.length}</span> in progress
@@ -213,7 +240,7 @@ export function TaskBoard({
             <div className="flex items-center gap-2">
               {STATE_CONFIG[column.state].icon}
               <span className="text-xs font-medium text-text-subtle uppercase tracking-wide">
-                {STATE_CONFIG[column.state].label}
+                {column.label ?? STATE_CONFIG[column.state].label}
               </span>
               <span className="text-xs text-text-muted">({column.tasks.length})</span>
             </div>
@@ -239,3 +266,4 @@ export function TaskBoard({
     </div>
   );
 }
+

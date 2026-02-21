@@ -8175,6 +8175,10 @@ fn orchestrator_strict_contract_flag() -> bool {
     }
 }
 
+fn is_legacy_low_wall_time_for_command_center(source: RunSource, wall_time_secs: u64) -> bool {
+    matches!(source, RunSource::CommandCenter) && wall_time_secs <= 60 * 60
+}
+
 /// Create a new orchestration run
 #[tauri::command]
 pub async fn orchestrator_create_run(
@@ -8257,6 +8261,7 @@ pub async fn orchestrator_create_run(
     }
 
     // Guard against old UI defaults when creating new runs.
+    let run_source = source.unwrap_or(RunSource::Orchestrator);
     let mut config = config;
     if config.max_iterations == 10 || config.max_iterations == 30 || config.max_iterations == 200 {
         config.max_iterations = 500;
@@ -8269,6 +8274,9 @@ pub async fn orchestrator_create_run(
     }
     if config.max_wall_time_secs == 20 * 60 {
         config.max_wall_time_secs = 60 * 60;
+    }
+    if is_legacy_low_wall_time_for_command_center(run_source, config.max_wall_time_secs) {
+        config.max_wall_time_secs = 48 * 60 * 60;
     }
     if orchestrator_strict_contract_flag() {
         config.strict_planner_json = true;
@@ -8284,7 +8292,7 @@ pub async fn orchestrator_create_run(
 
     // Create the run object
     let mut run = Run::new(run_id.clone(), session_id, objective, config);
-    run.source = source.unwrap_or(RunSource::Orchestrator);
+    run.source = run_source;
     // Persist model/provider selection into the run so the orchestrator can always send explicit
     // model specs even if the sidecar session object doesn't echo them back.
     run.model = final_model.clone();
@@ -8839,6 +8847,12 @@ pub async fn orchestrator_load_run(
     }
     if run_to_load.config.max_wall_time_secs == 20 * 60 {
         run_to_load.config.max_wall_time_secs = 60 * 60;
+    }
+    if is_legacy_low_wall_time_for_command_center(
+        run_to_load.source,
+        run_to_load.config.max_wall_time_secs,
+    ) {
+        run_to_load.config.max_wall_time_secs = 48 * 60 * 60;
     }
 
     // Keep budget max values aligned with config so "still_exceeded" is accurate.

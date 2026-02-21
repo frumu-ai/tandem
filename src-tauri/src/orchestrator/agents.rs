@@ -70,12 +70,18 @@ Example:
 
 ## Rules
 1. Be CONCISE - no essays, just actionable tasks
-2. Order tasks logically with proper dependencies
-3. Each task should be achievable in one sub-agent call
-4. Include clear acceptance criteria for validation
-5. Maximum {max_tasks} tasks
-6. If workspace context indicates sparse/empty files, create research-first and scaffold-first tasks
+2. Maximize safe parallelism:
+   - Prefer independent tasks with empty dependencies when possible
+   - Add dependencies ONLY when strictly required by task outputs
+   - Avoid over-serializing work into unnecessary chains
+3. Order tasks logically with proper dependencies
+4. Each task should be achievable in one sub-agent call
+5. Include clear acceptance criteria for validation
+6. Maximum {max_tasks} tasks
+7. If workspace context indicates sparse/empty files, create research-first and scaffold-first tasks
    (avoid repeated local shell discovery loops; use web research and produce concrete starter artifacts)
+8. The first wave of work should include multiple runnable tasks whenever objective scope allows it.
+   Only final synthesis/integration tasks should depend on many prior tasks.
 
 Output ONLY the JSON array, no other text."#,
             objective = objective,

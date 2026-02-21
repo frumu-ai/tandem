@@ -51,6 +51,7 @@ impl From<Session> for WireSession {
             }),
             model: value.model.map(Into::into),
             provider: value.provider,
+            environment: value.environment,
             messages: value
                 .messages
                 .into_iter()

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tandem_memory::{GovernedMemoryTier, MemoryClassification, MemoryContentKind, MemoryPartition};
 use tandem_orchestrator::MissionState;
-use tandem_types::EngineEvent;
+use tandem_types::{EngineEvent, HostOs, HostRuntimeContext, PathStyle, ShellFamily};
 use tokio::fs;
 use tokio::sync::RwLock;
 
@@ -236,6 +236,26 @@ pub fn build_id() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+pub fn detect_host_runtime_context() -> HostRuntimeContext {
+    let os = if cfg!(target_os = "windows") {
+        HostOs::Windows
+    } else if cfg!(target_os = "macos") {
+        HostOs::Macos
+    } else {
+        HostOs::Linux
+    };
+    let (shell_family, path_style) = match os {
+        HostOs::Windows => (ShellFamily::Powershell, PathStyle::Windows),
+        HostOs::Linux | HostOs::Macos => (ShellFamily::Posix, PathStyle::Posix),
+    };
+    HostRuntimeContext {
+        os,
+        arch: std::env::consts::ARCH.to_string(),
+        shell_family,
+        path_style,
+    }
+}
+
 pub fn binary_path_for_health() -> Option<String> {
     #[cfg(debug_assertions)]
     {
@@ -267,6 +287,7 @@ pub struct RuntimeState {
     pub workspace_index: WorkspaceIndex,
     pub cancellations: CancellationRegistry,
     pub engine_loop: EngineLoop,
+    pub host_runtime_context: HostRuntimeContext,
 }
 
 #[derive(Debug, Clone)]
@@ -443,6 +464,7 @@ pub struct AppState {
     pub web_ui_prefix: Arc<std::sync::RwLock<String>>,
     pub server_base_url: Arc<std::sync::RwLock<String>>,
     pub channels_runtime: Arc<tokio::sync::Mutex<ChannelRuntime>>,
+    pub host_runtime_context: HostRuntimeContext,
 }
 
 #[derive(Debug, Clone)]
@@ -480,6 +502,7 @@ impl AppState {
             web_ui_prefix: Arc::new(std::sync::RwLock::new("/admin".to_string())),
             server_base_url: Arc::new(std::sync::RwLock::new("http://127.0.0.1:39731".to_string())),
             channels_runtime: Arc::new(tokio::sync::Mutex::new(ChannelRuntime::default())),
+            host_runtime_context: detect_host_runtime_context(),
         }
     }
 
@@ -544,6 +567,13 @@ impl AppState {
             attempt_id: state.attempt_id,
             last_error: state.last_error,
         }
+    }
+
+    pub fn host_runtime_context(&self) -> HostRuntimeContext {
+        self.runtime
+            .get()
+            .map(|runtime| runtime.host_runtime_context.clone())
+            .unwrap_or_else(|| self.host_runtime_context.clone())
     }
 
     pub async fn set_phase(&self, phase: impl Into<String>) {

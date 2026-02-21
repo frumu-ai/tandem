@@ -9,7 +9,8 @@ use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
 use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk, TokenUsage};
 use tandem_tools::{validate_tool_schemas, ToolRegistry};
 use tandem_types::{
-    EngineEvent, Message, MessagePart, MessagePartInput, MessageRole, ModelSpec, SendMessageRequest,
+    EngineEvent, HostOs, HostRuntimeContext, Message, MessagePart, MessagePartInput, MessageRole,
+    ModelSpec, PathStyle, SendMessageRequest, ShellFamily,
 };
 use tandem_wire::WireMessagePart;
 use tokio_util::sync::CancellationToken;
@@ -79,6 +80,7 @@ pub struct EngineLoop {
     permissions: PermissionManager,
     tools: ToolRegistry,
     cancellations: CancellationRegistry,
+    host_runtime_context: HostRuntimeContext,
     workspace_overrides: std::sync::Arc<RwLock<HashMap<String, u64>>>,
     spawn_agent_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn SpawnAgentHook>>>>,
     tool_policy_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn ToolPolicyHook>>>>,
@@ -95,6 +97,7 @@ impl EngineLoop {
         permissions: PermissionManager,
         tools: ToolRegistry,
         cancellations: CancellationRegistry,
+        host_runtime_context: HostRuntimeContext,
     ) -> Self {
         Self {
             storage,
@@ -105,6 +108,7 @@ impl EngineLoop {
             permissions,
             tools,
             cancellations,
+            host_runtime_context,
             workspace_overrides: std::sync::Arc::new(RwLock::new(HashMap::new())),
             spawn_agent_hook: std::sync::Arc::new(RwLock::new(None)),
             tool_policy_hook: std::sync::Arc::new(RwLock::new(None)),
@@ -274,13 +278,14 @@ impl EngineLoop {
             let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
             let mut readonly_tool_cache: HashMap<String, String> = HashMap::new();
             let mut readonly_signature_counts: HashMap<String, usize> = HashMap::new();
+            let mut shell_mismatch_signatures: HashSet<String> = HashSet::new();
             let mut websearch_query_blocked = false;
             let mut auto_workspace_probe_attempted = false;
 
             while max_iterations > 0 && !cancel.is_cancelled() {
                 max_iterations -= 1;
                 let mut messages = load_chat_history(self.storage.clone(), &session_id).await;
-                let mut system_parts = vec![tandem_runtime_system_prompt().to_string()];
+                let mut system_parts = vec![tandem_runtime_system_prompt(&self.host_runtime_context)];
                 if let Some(system) = active_agent.system_prompt.as_ref() {
                     system_parts.push(system.clone());
                 }
@@ -501,6 +506,15 @@ impl EngineLoop {
                             }
                         }
                         let signature = tool_signature(&tool_key, &args);
+                        if is_shell_tool_name(&tool_key)
+                            && shell_mismatch_signatures.contains(&signature)
+                        {
+                            outputs.push(
+                                "Tool `bash` call skipped: previous invocation hit an OS/path mismatch. Use `read`, `glob`, or `grep`."
+                                    .to_string(),
+                            );
+                            continue;
+                        }
                         let mut signature_count = 1usize;
                         if is_read_only_tool(&tool_key) {
                             let count = readonly_signature_counts
@@ -553,6 +567,11 @@ impl EngineLoop {
                         {
                             if output.contains("WEBSEARCH_QUERY_MISSING") {
                                 websearch_query_blocked = true;
+                            }
+                            if is_shell_tool_name(&tool_key)
+                                && is_os_mismatch_tool_output(&output)
+                            {
+                                shell_mismatch_signatures.insert(signature.clone());
                             }
                             if is_read_only_tool(&tool_key)
                                 && tool_key != "websearch"
@@ -1104,7 +1123,7 @@ impl EngineLoop {
             return None;
         }
         let mut messages = load_chat_history(self.storage.clone(), session_id).await;
-        let mut system_parts = vec![tandem_runtime_system_prompt().to_string()];
+        let mut system_parts = vec![tandem_runtime_system_prompt(&self.host_runtime_context)];
         if let Some(system) = active_agent.system_prompt.as_ref() {
             system_parts.push(system.clone());
         }
@@ -1567,13 +1586,80 @@ fn summarize_tool_outputs(outputs: &[String]) -> String {
         .join("\n\n")
 }
 
-fn tandem_runtime_system_prompt() -> &'static str {
-    "You are operating inside Tandem (Desktop/TUI) as an engine-backed coding assistant.
+fn is_os_mismatch_tool_output(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("os error 3")
+        || lower.contains("system cannot find the path specified")
+        || lower.contains("command not found")
+        || lower.contains("is not recognized as an internal or external command")
+        || lower.contains("shell command blocked on windows")
+}
+
+fn tandem_runtime_system_prompt(host: &HostRuntimeContext) -> String {
+    let mut sections = Vec::new();
+    if os_aware_prompts_enabled() {
+        sections.push(format!(
+            "[Execution Environment]\nHost OS: {}\nShell: {}\nPath style: {}\nArchitecture: {}",
+            host_os_label(host.os),
+            shell_family_label(host.shell_family),
+            path_style_label(host.path_style),
+            host.arch
+        ));
+    }
+    sections.push(
+        "You are operating inside Tandem (Desktop/TUI) as an engine-backed coding assistant.
 Use tool calls to inspect and modify the workspace when needed instead of asking the user
 to manually run basic discovery steps. Permission prompts may occur for some tools; if
-a tool is denied or blocked, explain what was blocked and suggest a concrete next step.
-On Windows workspaces, prefer cross-platform tools (`glob`, `grep`, `read`, `write`, `edit`)
-or PowerShell-native commands over Unix-specific shell syntax (`find`, `ls -la`, etc.)."
+a tool is denied or blocked, explain what was blocked and suggest a concrete next step."
+            .to_string(),
+    );
+    if host.os == HostOs::Windows {
+        sections.push(
+            "Windows guidance: prefer cross-platform tools (`glob`, `grep`, `read`, `write`, `edit`) and PowerShell-native commands.
+Avoid Unix-only shell syntax (`ls -la`, `find ... -type f`, `cat` pipelines) unless translated.
+If a shell command fails with a path/shell mismatch, immediately switch to cross-platform tools (`read`, `glob`, `grep`)."
+                .to_string(),
+        );
+    } else {
+        sections.push(
+            "POSIX guidance: standard shell commands are available.
+Use cross-platform tools (`glob`, `grep`, `read`) when they are simpler and safer for codebase exploration."
+                .to_string(),
+        );
+    }
+    sections.join("\n\n")
+}
+
+fn os_aware_prompts_enabled() -> bool {
+    std::env::var("TANDEM_OS_AWARE_PROMPTS")
+        .ok()
+        .map(|v| {
+            let normalized = v.trim().to_ascii_lowercase();
+            !(normalized == "0" || normalized == "false" || normalized == "off")
+        })
+        .unwrap_or(true)
+}
+
+fn host_os_label(os: HostOs) -> &'static str {
+    match os {
+        HostOs::Windows => "windows",
+        HostOs::Linux => "linux",
+        HostOs::Macos => "macos",
+    }
+}
+
+fn shell_family_label(shell: ShellFamily) -> &'static str {
+    match shell {
+        ShellFamily::Powershell => "powershell",
+        ShellFamily::Posix => "posix",
+    }
+}
+
+fn path_style_label(path_style: PathStyle) -> &'static str {
+    match path_style {
+        PathStyle::Windows => "windows",
+        PathStyle::Posix => "posix",
+    }
 }
 
 fn should_force_workspace_probe(user_text: &str, completion: &str) -> bool {
@@ -2821,5 +2907,19 @@ Call: todowrite(task_id=3, status="in_progress")
         assert!(normalized.missing_terminal);
         assert_eq!(normalized.args_source, "missing");
         assert_eq!(normalized.args_integrity, "empty");
+    }
+
+    #[test]
+    fn runtime_prompt_includes_execution_environment_block() {
+        let prompt = tandem_runtime_system_prompt(&HostRuntimeContext {
+            os: HostOs::Windows,
+            arch: "x86_64".to_string(),
+            shell_family: ShellFamily::Powershell,
+            path_style: PathStyle::Windows,
+        });
+        assert!(prompt.contains("[Execution Environment]"));
+        assert!(prompt.contains("Host OS: windows"));
+        assert!(prompt.contains("Shell: powershell"));
+        assert!(prompt.contains("Path style: windows"));
     }
 }

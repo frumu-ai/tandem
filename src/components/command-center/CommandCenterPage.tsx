@@ -36,8 +36,10 @@ import {
   ChevronDown,
   ChevronUp,
   Loader2,
+  Pause,
   RefreshCw,
   RotateCcw,
+  Square,
   ScrollText,
   Sparkles,
   Trash2,
@@ -148,6 +150,7 @@ export function CommandCenterPage({
   projectSwitcherLoading = false,
   initialRunId = null,
 }: CommandCenterPageProps) {
+  const pageScrollRef = useRef<HTMLDivElement | null>(null);
   const [tab, setTab] = useState<TabId>("task-to-swarm");
   const [objective, setObjective] = useState("");
   const [preset, setPreset] = useState<QualityPreset>("balanced");
@@ -185,6 +188,7 @@ export function CommandCenterPage({
   const lastSnapshotRef = useRef<RunSnapshot | null>(null);
   const autoApproveInFlightRef = useRef(false);
   const lastContentFeedMsRef = useRef(0);
+  const lastSessionErrorRef = useRef<{ signature: string; atMs: number } | null>(null);
   const selectedModelRef = useRef<string | undefined>(undefined);
   const selectedProviderRef = useRef<string | undefined>(undefined);
 
@@ -408,6 +412,20 @@ export function CommandCenterPage({
           }
           lastContentFeedMsRef.current = nowMs;
         }
+        if (payload.type === "session_error") {
+          const nowMs = Date.now();
+          const signature = `${eventSessionId ?? "none"}:${payload.error ?? ""}`;
+          const previous = lastSessionErrorRef.current;
+          // Sidecar can emit the same terminal error repeatedly; collapse duplicates.
+          if (
+            previous &&
+            previous.signature === signature &&
+            nowMs - previous.atMs < 5000
+          ) {
+            return;
+          }
+          lastSessionErrorRef.current = { signature, atMs: nowMs };
+        }
         if (payload.type === "run_started" && payload.run_id === runId) {
           setActiveRunSessionId(payload.session_id);
         }
@@ -582,6 +600,8 @@ export function CommandCenterPage({
     try {
       await loadRunIntoEngine(targetRunId);
       setRunId(targetRunId);
+      // Keep selection controls visible; avoid jumping focus toward lower task sections.
+      pageScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
       const summary = runs.find((run) => run.run_id === targetRunId);
       if (summary?.objective) {
         setObjective(summary.objective);
@@ -603,6 +623,30 @@ export function CommandCenterPage({
     setError(null);
     try {
       await loadRunIntoEngine(runId);
+      const canSwitchResumeModel =
+        snapshot.status === "paused" ||
+        snapshot.status === "failed" ||
+        snapshot.status === "cancelled";
+      const nextModel = selectedModelRef.current ?? selectedModel;
+      const nextProvider = selectedProviderRef.current ?? selectedProvider;
+      const currentModel = runModelSelection?.model ?? null;
+      const currentProvider = runModelSelection?.provider ?? null;
+      const shouldSwitchResumeModel =
+        canSwitchResumeModel &&
+        !!nextModel &&
+        !!nextProvider &&
+        (nextModel !== currentModel || nextProvider !== currentProvider);
+      if (shouldSwitchResumeModel) {
+        const selection = await invoke<RunModelSelection>("orchestrator_set_resume_model", {
+          runId,
+          model: nextModel,
+          provider: nextProvider,
+        });
+        setRunModelSelection({
+          model: selection.model ?? nextModel,
+          provider: selection.provider ?? nextProvider,
+        });
+      }
       if (snapshot.status === "awaiting_approval") {
         await invoke("orchestrator_approve", { runId });
       } else if (snapshot.status === "paused") {
@@ -616,6 +660,40 @@ export function CommandCenterPage({
       }
       const at = new Date().toLocaleTimeString();
       setEventFeed((prev) => [`${at} continue requested for ${runId}`, ...prev].slice(0, 40));
+      await loadRuns();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsRunActionLoading(false);
+    }
+  };
+
+  const handlePauseRun = async () => {
+    if (!runId) return;
+    setIsRunActionLoading(true);
+    setError(null);
+    try {
+      await loadRunIntoEngine(runId);
+      await invoke("orchestrator_pause", { runId });
+      const at = new Date().toLocaleTimeString();
+      setEventFeed((prev) => [`${at} pause requested for ${runId}`, ...prev].slice(0, 40));
+      await loadRuns();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsRunActionLoading(false);
+    }
+  };
+
+  const handleCancelRun = async () => {
+    if (!runId) return;
+    setIsRunActionLoading(true);
+    setError(null);
+    try {
+      await loadRunIntoEngine(runId);
+      await invoke("orchestrator_cancel", { runId });
+      const at = new Date().toLocaleTimeString();
+      setEventFeed((prev) => [`${at} cancel requested for ${runId}`, ...prev].slice(0, 40));
       await loadRuns();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -667,7 +745,7 @@ export function CommandCenterPage({
   };
 
   return (
-    <div className="h-full w-full overflow-y-auto app-background p-6">
+    <div ref={pageScrollRef} className="h-full w-full overflow-y-auto app-background p-6">
       <div className="mx-auto max-w-6xl space-y-4">
         <div className="rounded-lg border border-border bg-surface p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -887,62 +965,74 @@ export function CommandCenterPage({
               )}
             </div>
 
-            <div className="xl:col-span-2 rounded-lg border border-border bg-surface p-4 space-y-3">
-              <div className="text-xs uppercase tracking-wide text-text-subtle">Objective</div>
-              <textarea
-                value={objective}
-                onChange={(e) => setObjective(e.target.value)}
-                placeholder="Describe the mission. The orchestrator will plan role-assigned tasks, preview for approval, then execute."
-                className="min-h-[120px] w-full rounded-lg border border-border bg-surface-elevated p-3 text-sm text-text placeholder:text-text-muted focus:border-primary focus:outline-none"
-              />
-              <div className="flex flex-wrap gap-2">
-                {(["speed", "balanced", "quality"] as QualityPreset[]).map((nextPreset) => (
+            {!runId ? (
+              <div className="xl:col-span-2 rounded-lg border border-border bg-surface p-4 space-y-3">
+                <div className="text-xs uppercase tracking-wide text-text-subtle">Objective</div>
+                <textarea
+                  value={objective}
+                  onChange={(e) => setObjective(e.target.value)}
+                  placeholder="Describe the mission. The orchestrator will plan role-assigned tasks, preview for approval, then execute."
+                  className="min-h-[120px] w-full rounded-lg border border-border bg-surface-elevated p-3 text-sm text-text placeholder:text-text-muted focus:border-primary focus:outline-none"
+                />
+                <div className="flex flex-wrap gap-2">
+                  {(["speed", "balanced", "quality"] as QualityPreset[]).map((nextPreset) => (
+                    <button
+                      key={nextPreset}
+                      className={`rounded-full border px-3 py-1 text-xs ${
+                        preset === nextPreset
+                          ? "border-primary/50 bg-primary/10 text-primary"
+                          : "border-border text-text-muted"
+                      }`}
+                      onClick={() => setPreset(nextPreset)}
+                    >
+                      {nextPreset}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={() => void launchSwarm()} disabled={launchDisabled}>
+                    {isLoading ? (
+                      <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="mr-1 h-4 w-4" />
+                    )}
+                    Launch Swarm
+                  </Button>
+                  {!sidecarReady ? (
+                    <div className="text-xs text-text-muted">
+                      Engine is starting. Launch enables automatically when ready.
+                    </div>
+                  ) : null}
+                </div>
+                <div className="text-xs text-text-muted">
+                  Limits: {missionLimits.wallTimeHours}h,{" "}
+                  {missionLimits.maxTotalTokens.toLocaleString()} tokens,{" "}
+                  {missionLimits.maxIterations.toLocaleString()} iterations.{" "}
                   <button
-                    key={nextPreset}
-                    className={`rounded-full border px-3 py-1 text-xs ${
-                      preset === nextPreset
-                        ? "border-primary/50 bg-primary/10 text-primary"
-                        : "border-border text-text-muted"
-                    }`}
-                    onClick={() => setPreset(nextPreset)}
+                    type="button"
+                    className="text-primary underline-offset-2 hover:underline"
+                    onClick={() => setTab("advanced")}
                   >
-                    {nextPreset}
+                    Edit in Advanced Controls
                   </button>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={() => void launchSwarm()} disabled={launchDisabled}>
-                  {isLoading ? (
-                    <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Sparkles className="mr-1 h-4 w-4" />
-                  )}
-                  Launch Swarm
-                </Button>
-                {!sidecarReady ? (
-                  <div className="text-xs text-text-muted">
-                    Engine is starting. Launch enables automatically when ready.
+                </div>
+                {error ? (
+                  <div className="rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-200">
+                    {error}
                   </div>
                 ) : null}
               </div>
-              <div className="text-xs text-text-muted">
-                Limits: {missionLimits.wallTimeHours}h,{" "}
-                {missionLimits.maxTotalTokens.toLocaleString()} tokens,{" "}
-                {missionLimits.maxIterations.toLocaleString()} iterations.{" "}
-                <button
-                  type="button"
-                  className="text-primary underline-offset-2 hover:underline"
-                  onClick={() => setTab("advanced")}
-                >
-                  Edit in Advanced Controls
-                </button>
-              </div>
-              {error ? (
-                <div className="rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-200">
-                  {error}
+            ) : (
+              <div className="xl:col-span-2 rounded-lg border border-border bg-surface p-4 space-y-2">
+                <div className="text-xs uppercase tracking-wide text-text-subtle">Selected Run</div>
+                <div className="text-sm text-text">
+                  {selectedRunSummary?.objective || objective || "Run selected"}
                 </div>
-              ) : null}
-            </div>
+                <div className="text-xs text-text-muted">
+                  Use Live Status actions to continue, pause, cancel, or restart this run.
+                </div>
+              </div>
+            )}
 
             <div className="rounded-lg border border-border bg-surface p-4 space-y-3">
               <div className="text-xs uppercase tracking-wide text-text-subtle">Live Status</div>
@@ -999,6 +1089,40 @@ export function CommandCenterPage({
                 </div>
               ) : null}
               {snapshot ? <BudgetMeter budget={snapshot.budget} /> : null}
+              {runId &&
+              snapshot &&
+              ["planning", "awaiting_approval", "executing"].includes(snapshot.status) ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void handlePauseRun()}
+                  disabled={isRunActionLoading}
+                >
+                  {isRunActionLoading ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Pause className="mr-1 h-4 w-4" />
+                  )}
+                  Pause Run
+                </Button>
+              ) : null}
+              {runId &&
+              snapshot &&
+              !["completed", "cancelled"].includes(snapshot.status) ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void handleCancelRun()}
+                  disabled={isRunActionLoading}
+                >
+                  {isRunActionLoading ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Square className="mr-1 h-4 w-4" />
+                  )}
+                  Cancel Run
+                </Button>
+              ) : null}
               {runId &&
               snapshot &&
               [

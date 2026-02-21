@@ -15,7 +15,7 @@ use crate::sidecar::SidecarManager;
 use crate::stream_hub::StreamHub;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 use tokio::fs;
@@ -97,6 +97,23 @@ pub struct OrchestratorEngine {
 }
 
 impl OrchestratorEngine {
+    fn existing_dir_string(path: &Path) -> Option<String> {
+        if path.is_dir() {
+            Some(path.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    }
+
+    fn existing_dir_string_from_opt(value: Option<&str>) -> Option<String> {
+        let raw = value?.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let path = PathBuf::from(raw);
+        Self::existing_dir_string(&path)
+    }
+
     fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
         let mut rules = tandem_core::build_mode_permission_rules(None)
             .into_iter()
@@ -175,11 +192,21 @@ impl OrchestratorEngine {
             || e.contains("stream_idle_timeout")
     }
 
+    fn is_workspace_path_mismatch_error(error: &str) -> bool {
+        let e = error.to_lowercase();
+        // Windows canonical message for missing/invalid working directory.
+        e.contains("(os error 3)")
+            || e.contains("the system cannot find the path specified")
+            || e.contains("system cannot find the path specified")
+            || e.contains("os error 3")
+    }
+
     fn should_clear_error_on_resume(error: &str) -> bool {
         Self::is_transient_timeout_error(error)
             || Self::is_rate_limit_error(error)
             || Self::is_provider_quota_error(error)
             || Self::is_auth_error(error)
+            || Self::is_workspace_path_mismatch_error(error)
             || error
                 .to_lowercase()
                 .contains("run paused so you can resume and continue")
@@ -1027,7 +1054,9 @@ impl OrchestratorEngine {
         let quota_exceeded = Self::is_provider_quota_error(error);
         let auth_failed = Self::is_auth_error(error);
         let transient_timeout = Self::is_transient_timeout_error(error);
-        let should_pause = rate_limited || quota_exceeded || auth_failed || transient_timeout;
+        let workspace_path_mismatch = Self::is_workspace_path_mismatch_error(error);
+        let should_pause =
+            rate_limited || quota_exceeded || auth_failed || transient_timeout || workspace_path_mismatch;
 
         let session_id = {
             let mut run = self.run.write().await;
@@ -1057,6 +1086,11 @@ impl OrchestratorEngine {
                             "Provider authentication failed (401/403). Check API key/provider selection and retry."
                                 .to_string(),
                         );
+                    } else if workspace_path_mismatch {
+                        t.error_message = Some(
+                            "Workspace/path mismatch detected (Windows path error). Verify workspace path and use cross-platform tools, then continue."
+                                .to_string(),
+                        );
                     } else if transient_timeout {
                         t.error_message = Some(
                             "Tool timeout detected. Run paused so you can resume and continue."
@@ -1068,6 +1102,9 @@ impl OrchestratorEngine {
                             .to_string()
                     } else if auth_failed {
                         "Paused: provider authentication failed (401/403). Check API key/provider selection and continue."
+                            .to_string()
+                    } else if workspace_path_mismatch {
+                        "Paused: workspace/path mismatch detected (os error 3). Verify workspace path and continue."
                             .to_string()
                     } else if transient_timeout {
                         "Paused: transient tool timeout detected. Resume run to continue."
@@ -1160,8 +1197,14 @@ impl OrchestratorEngine {
             model,
             provider,
             permission,
-            directory: Some(self.workspace_path.to_string_lossy().to_string()),
-            workspace_root: Some(self.workspace_path.to_string_lossy().to_string()),
+            // Prefer base session paths if they still exist; otherwise fall back to engine workspace.
+            // If neither exists, omit directory/workspace_root so sidecar can use its default.
+            directory: Self::existing_dir_string_from_opt(base_session.directory.as_deref())
+                .or_else(|| Self::existing_dir_string(&self.workspace_path)),
+            workspace_root: Self::existing_dir_string_from_opt(
+                base_session.workspace_root.as_deref(),
+            )
+            .or_else(|| Self::existing_dir_string(&self.workspace_path)),
         };
 
         let session = self.sidecar.create_session(request).await?;
@@ -1260,8 +1303,8 @@ impl OrchestratorEngine {
             model,
             provider: run_provider,
             permission: Some(Self::orchestrator_permission_rules()),
-            directory: Some(self.workspace_path.to_string_lossy().to_string()),
-            workspace_root: Some(self.workspace_path.to_string_lossy().to_string()),
+            directory: Self::existing_dir_string(&self.workspace_path),
+            workspace_root: Self::existing_dir_string(&self.workspace_path),
         };
 
         let session = self.sidecar.create_session(request).await?;
@@ -2509,6 +2552,11 @@ impl OrchestratorEngine {
         }
         if run.config.max_wall_time_secs == 20 * 60 {
             run.config.max_wall_time_secs = 60 * 60;
+            changed = true;
+        }
+        if matches!(run.source, RunSource::CommandCenter) && run.config.max_wall_time_secs <= 60 * 60
+        {
+            run.config.max_wall_time_secs = 48 * 60 * 60;
             changed = true;
         }
 

@@ -5,25 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- **Engine memory write/list tools**: Added `memory_store` and `memory_list` tools to `tandem-tools` so agents can persist and audit memory directly from engine tool calls.
-- **Global memory opt-in support**: `memory_search` now supports `tier=global` when explicitly enabled via `allow_global=true` or `TANDEM_ENABLE_GLOBAL_MEMORY=1`.
-- **Shared memory DB auto-wiring in engine**: `tandem-engine` now auto-configures `TANDEM_MEMORY_DB_PATH` to the shared Tandem `memory.sqlite` path when unset, aligning connected app/tool memory access by default.
-
-### Changed
-
-- **`memory_search` scope policy**: Reworked strict scope enforcement to allow controlled global search while preserving default isolation behavior unless global is explicitly enabled.
-- **Engine memory docs/examples**: Expanded CLI and engine README docs with `memory_store`, `memory_list`, and global memory usage examples.
-
-### Fixed
-
-- **Engine tool memory path mismatch**: Fixed default `memory_search`/memory tool DB resolution in headless engine runs by setting the shared memory DB path at runtime when not already provided.
-- **Memory tool test coverage**: Added/updated tests to validate global-memory opt-in gates and prevent accidental unrestricted global access.
-
-## [0.3.8] - 2026-02-19
+## [0.3.8]
 
 ### Added
 
@@ -44,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Agent-Team approval action endpoints**: Added explicit spawn approval decision routes:
   - `POST /agent-team/approvals/spawn/{id}/approve`
   - `POST /agent-team/approvals/spawn/{id}/deny`
+- **Engine memory write/list tools**: Added `memory_store` and `memory_list` tools to `tandem-tools` so agents can persist and audit memory directly from engine tool calls.
+- **Global memory opt-in support**: `memory_search` now supports `tier=global` when explicitly enabled via `allow_global=true` or `TANDEM_ENABLE_GLOBAL_MEMORY=1`.
+- **Shared memory DB auto-wiring in engine**: `tandem-engine` now auto-configures `TANDEM_MEMORY_DB_PATH` to the shared Tandem `memory.sqlite` path when unset, aligning connected app/tool memory access by default.
 
 ### Changed
 
@@ -54,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Desktop-Tauri agent-team bridge**: Added typed Tauri commands and frontend API wrappers for template/mission/instance/approval listing, spawn, and cancel/decision actions.
 - **Startup navigation default**: Desktop now always opens in Chat view on startup (with a TODO for future starter/landing flow) instead of restoring Command Center directly.
 - **Command Center observability layout**: Added inline run-scoped Console panel and elevated workspace file browser support in Command Center to improve live swarm debugging.
+- **`memory_search` scope policy**: Reworked strict scope enforcement to allow controlled global search while preserving default isolation behavior unless global is explicitly enabled.
+- **Engine memory docs/examples**: Expanded CLI and engine README docs with `memory_store`, `memory_list`, and global memory usage examples.
 
 ### Fixed
 
@@ -70,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stream watchdog noise reduction**: Suppressed false stream-degraded watchdog events while tools are actively pending.
 - **Failed task recovery in Command Center**: Added per-task retry support that re-queues failed tasks, clears stale task failure state, and unblocks dependent tasks without forcing full run restart.
 - **Failed task diagnostics clarity**: Failed task cards now surface richer validator/error detail so failure causes are visible in-place instead of opaque `session.error` noise.
+- **Engine tool memory path mismatch**: Fixed default `memory_search`/memory tool DB resolution in headless engine runs by setting the shared memory DB path at runtime when not already provided.
+- **Memory tool test coverage**: Added/updated tests to validate global-memory opt-in gates and prevent accidental unrestricted global access.
 
 ## [0.3.7] - 2026-02-18
 
@@ -877,8 +866,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.3.8...HEAD
-[0.3.8]: https://github.com/frumu-ai/tandem/compare/v0.3.7...v0.3.8
+[0.3.8]: https://github.com/frumu-ai/tandem/compare/v0.3.7...HEAD
 [0.3.7]: https://github.com/frumu-ai/tandem/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/frumu-ai/tandem/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/frumu-ai/tandem/compare/v0.3.2...v0.3.5

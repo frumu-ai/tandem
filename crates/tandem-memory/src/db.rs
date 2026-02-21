@@ -358,7 +358,10 @@ impl MemoryDatabase {
         text.contains("vector blob")
             || text.contains("chunks iter error")
             || text.contains("chunks iter")
+            || text.contains("internal sqlite-vec error")
+            || text.contains("insert rowids id")
             || text.contains("sql logic error")
+            || text.contains("database disk image is malformed")
             || text.contains("session_memory_vectors")
             || text.contains("project_memory_vectors")
             || text.contains("global_memory_vectors")
@@ -450,6 +453,54 @@ impl MemoryDatabase {
                 Ok(true)
             }
             Err(err) => Err(err),
+        }
+    }
+
+    /// Last-resort runtime repair for malformed DB states: drop user memory tables
+    /// and recreate the schema in-place so new writes can proceed.
+    /// This intentionally clears memory content for the active DB file.
+    pub async fn reset_all_memory_tables(&self) -> MemoryResult<()> {
+        let table_names = {
+            let conn = self.conn.lock().await;
+            let mut stmt = conn.prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type='table'
+                   AND name NOT LIKE 'sqlite_%'
+                 ORDER BY name",
+            )?;
+            let names = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            names
+        };
+
+        {
+            let conn = self.conn.lock().await;
+            for table in table_names {
+                let sql = format!("DROP TABLE IF EXISTS \"{}\"", table.replace('"', "\"\""));
+                let _ = conn.execute(&sql, []);
+            }
+        }
+
+        self.init_schema().await
+    }
+
+    /// Attempt an immediate vector-table repair when a concrete DB error indicates
+    /// sqlite-vec internals are failing at statement/rowid level.
+    pub async fn try_repair_after_error(
+        &self,
+        err: &crate::types::MemoryError,
+    ) -> MemoryResult<bool> {
+        match err {
+            crate::types::MemoryError::Database(db_err) if Self::is_vector_table_error(db_err) => {
+                tracing::warn!(
+                    "Memory write/read hit vector DB error ({}). Recreating vector tables immediately.",
+                    db_err
+                );
+                self.recreate_vector_tables().await?;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 

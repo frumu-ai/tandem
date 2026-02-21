@@ -856,6 +856,7 @@ async fn global_health(State(state): State<AppState>) -> impl IntoResponse {
     let startup = state.startup_snapshot().await;
     let build_id = crate::build_id();
     let binary_path = crate::binary_path_for_health();
+    let environment = state.host_runtime_context();
     Json(json!({
         "healthy": true,
         "ready": state.is_ready(),
@@ -868,7 +869,8 @@ async fn global_health(State(state): State<AppState>) -> impl IntoResponse {
         "build_id": build_id,
         "binary_path": binary_path,
         "mode": state.mode_label(),
-        "leaseCount": lease_count
+        "leaseCount": lease_count,
+        "environment": environment
     }))
 }
 
@@ -1063,6 +1065,7 @@ async fn create_session(
             session.directory = workspace;
         }
     }
+    session.environment = Some(state.host_runtime_context());
     session.model = req.model;
     session.provider = req.provider;
     state
@@ -1365,6 +1368,7 @@ async fn prompt_async(
             "clientID": active_run.client_id,
             "agentID": active_run.agent_id,
             "agentProfile": active_run.agent_profile,
+            "environment": state.host_runtime_context(),
         }),
     ));
 
@@ -1462,6 +1466,7 @@ async fn prompt_sync(
             "clientID": active_run.client_id,
             "agentID": active_run.agent_id,
             "agentProfile": active_run.agent_profile,
+            "environment": state.host_runtime_context(),
         }),
     ));
 
@@ -1628,6 +1633,7 @@ fn sse_run_stream(
                 "agentID": agent_id,
                 "agentProfile": agent_profile,
                 "channel": "system",
+                "environment": state.host_runtime_context(),
             }),
         ))
         .unwrap_or_default(),
@@ -1750,6 +1756,9 @@ fn infer_event_channel(event_type: &str, props: &serde_json::Map<String, Value>)
 }
 
 fn dispatch_error_code(message: &str) -> &'static str {
+    if is_os_mismatch_error(message) {
+        return "OS_MISMATCH";
+    }
     if message.contains("invalid_function_parameters")
         || message.contains("array schema missing items")
     {
@@ -1757,6 +1766,16 @@ fn dispatch_error_code(message: &str) -> &'static str {
     } else {
         "ENGINE_DISPATCH_FAILED"
     }
+}
+
+fn is_os_mismatch_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("os error 3")
+        || lower.contains("system cannot find the path specified")
+        || lower.contains("cannot find path")
+        || lower.contains("is not recognized as an internal or external command")
+        || lower.contains("no such file or directory")
+        || lower.contains("command not found")
 }
 
 fn truncate_text(input: &str, max_len: usize) -> String {
@@ -5161,6 +5180,7 @@ mod tests {
         let logs = Arc::new(tokio::sync::RwLock::new(Vec::new()));
         let workspace_index = WorkspaceIndex::new(".").await;
         let cancellations = CancellationRegistry::new();
+        let host_runtime_context = crate::detect_host_runtime_context();
         let engine_loop = EngineLoop::new(
             storage.clone(),
             event_bus.clone(),
@@ -5170,6 +5190,7 @@ mod tests {
             permissions.clone(),
             tools.clone(),
             cancellations.clone(),
+            host_runtime_context.clone(),
         );
         let mut state = AppState::new_starting(Uuid::new_v4().to_string(), false);
         state.shared_resources_path = root.join("shared_resources.json");
@@ -5191,6 +5212,7 @@ mod tests {
                 workspace_index,
                 cancellations,
                 engine_loop,
+                host_runtime_context,
             })
             .await
             .expect("runtime ready");
@@ -5353,6 +5375,7 @@ mod tests {
             model.get("modelID").and_then(|v| v.as_str()),
             Some("openai/gpt-4o-mini")
         );
+        assert!(payload.get("environment").is_some());
     }
 
     #[tokio::test]
@@ -5375,6 +5398,7 @@ mod tests {
         assert!(payload.get("startup_elapsed_ms").is_some());
         assert!(payload.get("version").and_then(|v| v.as_str()).is_some());
         assert!(payload.get("mode").and_then(|v| v.as_str()).is_some());
+        assert!(payload.get("environment").is_some());
     }
 
     #[tokio::test]

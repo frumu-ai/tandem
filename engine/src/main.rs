@@ -17,7 +17,7 @@ use tandem_observability::{
     canonical_logs_dir_from_root, emit_event, init_process_logging, ObservabilityEvent, ProcessKind,
 };
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
-use tandem_server::{serve, AppState, RuntimeState};
+use tandem_server::{detect_host_runtime_context, serve, AppState, RuntimeState};
 use tandem_tools::ToolRegistry;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -840,6 +840,7 @@ async fn build_runtime(
     }
     let phase_start = Instant::now();
     let cancellations = CancellationRegistry::new();
+    let host_runtime_context = detect_host_runtime_context();
     let engine_loop = EngineLoop::new(
         storage.clone(),
         event_bus.clone(),
@@ -849,6 +850,7 @@ async fn build_runtime(
         permissions.clone(),
         tools.clone(),
         cancellations.clone(),
+        host_runtime_context.clone(),
     );
     info!(
         "engine.startup.phase engine_loop_init elapsed_ms={}",
@@ -876,6 +878,7 @@ async fn build_runtime(
         workspace_index,
         cancellations,
         engine_loop,
+        host_runtime_context,
     })
 }
 

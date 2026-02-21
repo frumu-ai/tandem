@@ -21,6 +21,12 @@ pub struct MemoryManager {
 }
 
 impl MemoryManager {
+    fn is_malformed_database_error(err: &crate::types::MemoryError) -> bool {
+        err.to_string()
+            .to_lowercase()
+            .contains("database disk image is malformed")
+    }
+
     pub fn db(&self) -> &Arc<MemoryDatabase> {
         &self.db
     }
@@ -104,15 +110,31 @@ impl MemoryManager {
                 tracing::warn!("Failed to store memory chunk {}: {}", chunk.id, err);
                 let repaired = self
                     .db
-                    .ensure_vector_tables_healthy()
+                    .try_repair_after_error(&err)
                     .await
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                    || self
+                        .db
+                        .ensure_vector_tables_healthy()
+                        .await
+                        .unwrap_or(false);
                 if repaired {
                     tracing::warn!(
                         "Retrying memory chunk insert after vector table repair: {}",
                         chunk.id
                     );
-                    self.db.store_chunk(&chunk, &embedding).await?;
+                    if let Err(retry_err) = self.db.store_chunk(&chunk, &embedding).await {
+                        if Self::is_malformed_database_error(&retry_err) {
+                            tracing::warn!(
+                                "Memory DB still malformed after vector repair. Resetting memory tables and retrying chunk insert: {}",
+                                chunk.id
+                            );
+                            self.db.reset_all_memory_tables().await?;
+                            self.db.store_chunk(&chunk, &embedding).await?;
+                        } else {
+                            return Err(retry_err);
+                        }
+                    }
                 } else {
                     return Err(err);
                 }
@@ -179,9 +201,14 @@ impl MemoryManager {
                     );
                     let repaired = self
                         .db
-                        .ensure_vector_tables_healthy()
+                        .try_repair_after_error(&err)
                         .await
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        || self
+                            .db
+                            .ensure_vector_tables_healthy()
+                            .await
+                            .unwrap_or(false);
                     if repaired {
                         match self
                             .db
