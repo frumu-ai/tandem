@@ -33,6 +33,15 @@ Useful options:
 - `TANDEM_ENGINE_PORT` (env override)
 - `TANDEM_API_TOKEN` (optional API auth token requirement)
 
+### `status`
+
+Checks engine health by calling `GET /global/health`.
+
+```bash
+tandem-engine status
+tandem-engine status --hostname 127.0.0.1 --port 39731
+```
+
 ### `run`
 
 Runs one prompt and prints the model response.
