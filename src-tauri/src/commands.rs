@@ -4615,7 +4615,7 @@ pub async fn rewind_to_message(
                     action: "allow".to_string(),
                 },
                 crate::sidecar::PermissionRule {
-                    permission: "webfetch".to_string(),
+                    permission: "webfetch_document".to_string(),
                     pattern: "*".to_string(),
                     action: "allow".to_string(),
                 },
@@ -4848,8 +4848,28 @@ fn effective_session_mode(state: &AppState, session_id: &str) -> ResolvedMode {
 }
 
 fn normalize_tool_name_for_approval(name: &str) -> String {
-    match name.trim().to_ascii_lowercase().as_str() {
+    let mut normalized = name.trim().to_ascii_lowercase().replace('-', "_");
+    for prefix in [
+        "default_api:",
+        "default_api.",
+        "functions.",
+        "function.",
+        "tools.",
+        "tool.",
+        "builtin:",
+        "builtin.",
+    ] {
+        if let Some(rest) = normalized.strip_prefix(prefix) {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() {
+                normalized = trimmed.to_string();
+                break;
+            }
+        }
+    }
+    match normalized.as_str() {
         "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        "run_command" | "shell" | "powershell" | "cmd" => "bash".to_string(),
         other => other.to_string(),
     }
 }
@@ -6071,18 +6091,18 @@ Use this capability for finding information, verifying facts, or gathering data 
 
 ## Best Practices:
 1. **Search First:** Always start with `websearch` to find valid, up-to-date URLs.
-2. **Avoid Dead Links:** Do not `webfetch` URLs that likely don't exist or are deep links without verifying them first.
+2. **Avoid Dead Links:** Do not `webfetch_document` URLs that likely don't exist or are deep links without verifying them first.
 3. **Handle Blocking:** Many sites (e.g., Statista, Airbnb, LinkedIn) block bots.
-   - If `webfetch` returns 403/404/Timeout:
+   - If `webfetch_document` returns 403/404/Timeout:
      - Do NOT retry the exact same URL immediately.
      - Try searching for the specific information on a different site.
      - Try fetching the root domain or a generic page if appropriate.
-4. **Prefer Text:** `webfetch` works best on content-heavy pages (docs, blogs, articles). It may fail on heavy SPAs.
+4. **Prefer Text:** `webfetch_document` works best on content-heavy pages (docs, blogs, articles). It may fail on heavy SPAs.
 
 ## Workflow:
 1. **Search:** `websearch` query: "latest real estate trends asia 2025"
 2. **Select:** Pick 1-2 promising URLs from the search results.
-3. **Fetch:** `webfetch` url: "..."
+3. **Fetch:** `webfetch_document` url: "..."
 4. **Fallback:** If fetch fails, go back to step 1 with a refined query or try the next URL.
 "#.to_string(),
                     json_schema: serde_json::json!({
@@ -8116,6 +8136,9 @@ fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
         "todowrite",
         "todo_write",
         "update_todo_list",
+        "websearch",
+        "webfetch_document",
+        "batch",
         "task",
     ] {
         rules.push(crate::sidecar::PermissionRule {

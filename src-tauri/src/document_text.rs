@@ -14,7 +14,7 @@ fn lower_ext(path: &Path) -> Option<String> {
         .map(|s| s.to_lowercase())
 }
 
-fn truncate_output(mut s: String, max_chars: usize) -> String {
+fn truncate_output(s: String, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
     }
@@ -179,7 +179,7 @@ fn extract_text_pptx(path: &Path, max_xml_bytes: usize) -> Result<String> {
 
     let mut slides: BTreeMap<String, String> = BTreeMap::new();
     for i in 0..zip.len() {
-        let Ok(mut f) = zip.by_index(i) else {
+        let Ok(f) = zip.by_index(i) else {
             continue;
         };
         let name = f.name().to_string();

@@ -9,9 +9,8 @@ use clap::{Parser, Subcommand};
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use tandem_core::{
-    migrate_legacy_storage_if_needed, resolve_shared_paths, AgentRegistry, CancellationRegistry,
-    ConfigStore, EngineLoop, EventBus, PermissionManager, PluginRegistry, Storage,
-    DEFAULT_ENGINE_HOST, DEFAULT_ENGINE_PORT,
+    resolve_shared_paths, AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus,
+    PermissionManager, PluginRegistry, Storage, DEFAULT_ENGINE_HOST, DEFAULT_ENGINE_PORT,
 };
 use tandem_observability::{
     canonical_logs_dir_from_root, emit_event, init_process_logging, ObservabilityEvent, ProcessKind,
@@ -721,40 +720,6 @@ async fn initialize_runtime(
     let startup = state.startup_snapshot().await;
     let attempt_id = startup.attempt_id;
     let init_started = Instant::now();
-
-    state.set_phase("migration").await;
-    emit_event(
-        tracing::Level::INFO,
-        ProcessKind::Engine,
-        ObservabilityEvent {
-            event: "engine.startup.phase",
-            component: "engine.main",
-            correlation_id: None,
-            session_id: None,
-            run_id: None,
-            message_id: None,
-            provider_id: None,
-            model_id: None,
-            status: Some("running"),
-            error_code: None,
-            detail: Some(&format!("attempt_id={} phase=migration", attempt_id)),
-        },
-    );
-    let _ = tokio::task::spawn_blocking(move || {
-        if let Ok(paths) = resolve_shared_paths() {
-            if let Ok(report) = migrate_legacy_storage_if_needed(&paths) {
-                info!(
-                    "storage migration status: reason={} performed={} copied={} skipped={} errors={}",
-                    report.reason,
-                    report.performed,
-                    report.copied.len(),
-                    report.skipped.len(),
-                    report.errors.len()
-                );
-            }
-        }
-    })
-    .await;
 
     let runtime = build_runtime(&state_dir, Some(&state), overrides, config_path).await?;
     state.mark_ready(runtime).await?;

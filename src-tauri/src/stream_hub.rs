@@ -1086,8 +1086,28 @@ fn tool_timeout_for(tool: &str) -> Duration {
 }
 
 fn normalize_tool_name(name: &str) -> String {
-    match name.trim().to_ascii_lowercase().as_str() {
+    let mut normalized = name.trim().to_ascii_lowercase().replace('-', "_");
+    for prefix in [
+        "default_api:",
+        "default_api.",
+        "functions.",
+        "function.",
+        "tools.",
+        "tool.",
+        "builtin:",
+        "builtin.",
+    ] {
+        if let Some(rest) = normalized.strip_prefix(prefix) {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() {
+                normalized = trimmed.to_string();
+                break;
+            }
+        }
+    }
+    match normalized.as_str() {
         "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        "run_command" | "shell" | "powershell" | "cmd" => "bash".to_string(),
         other => other.to_string(),
     }
 }

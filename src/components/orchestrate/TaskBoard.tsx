@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -49,6 +49,20 @@ interface TaskCardProps {
 
 function TaskCard({ task, isCurrent, onClick, onRetryTask }: TaskCardProps) {
   const config = STATE_CONFIG[task.state];
+  const [errorExpanded, setErrorExpanded] = useState(false);
+  const [copiedError, setCopiedError] = useState(false);
+  const hasLongError = (task.error_message?.length ?? 0) > 180;
+
+  const copyError = async () => {
+    if (!task.error_message) return;
+    try {
+      await globalThis.navigator?.clipboard?.writeText(task.error_message);
+      setCopiedError(true);
+      window.setTimeout(() => setCopiedError(false), 1200);
+    } catch {
+      setCopiedError(false);
+    }
+  };
 
   return (
     <motion.div
@@ -99,9 +113,41 @@ function TaskCard({ task, isCurrent, onClick, onRetryTask }: TaskCardProps) {
       )}
 
       {task.error_message && (
-        <p className="mt-1 text-xs text-red-400 line-clamp-3" title={task.error_message}>
-          {task.error_message}
-        </p>
+        <div className="mt-1">
+          <p
+            className={cn(
+              "text-xs text-red-400 whitespace-pre-wrap break-words",
+              !errorExpanded && "line-clamp-3"
+            )}
+            title={task.error_message}
+          >
+            {task.error_message}
+          </p>
+          <div className="mt-1 flex items-center gap-2">
+            {hasLongError ? (
+              <button
+                type="button"
+                className="rounded border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] text-red-200 hover:bg-red-500/20"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setErrorExpanded((prev) => !prev);
+                }}
+              >
+                {errorExpanded ? "Show less" : "Show full error"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="rounded border border-border bg-surface px-2 py-0.5 text-[10px] text-text-muted hover:bg-surface-elevated"
+              onClick={(e) => {
+                e.stopPropagation();
+                void copyError();
+              }}
+            >
+              {copiedError ? "Copied" : "Copy error"}
+            </button>
+          </div>
+        </div>
       )}
 
       {task.dependencies.length > 0 && (
@@ -266,4 +312,3 @@ export function TaskBoard({
     </div>
   );
 }
-
