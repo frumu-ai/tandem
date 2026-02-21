@@ -45,6 +45,19 @@ tandem-engine serve [OPTIONS]
 - `--web-ui`: Enable embedded web admin UI (env: `TANDEM_WEB_UI`).
 - `--web-ui-prefix <PATH>`: Path prefix for embedded web admin UI (default: `/admin`, env: `TANDEM_WEB_UI_PREFIX`).
 
+## `status`
+
+Checks engine health by calling `GET /global/health` on a target host/port.
+
+```bash
+tandem-engine status [OPTIONS]
+```
+
+**Options:**
+
+- `--hostname <HOSTNAME>` / `--host <HOSTNAME>`: Hostname or IP to check (default: `127.0.0.1`, env: `TANDEM_ENGINE_HOST`).
+- `--port <PORT>`: Port to check (default: `39731`, env: `TANDEM_ENGINE_PORT`).
+
 ## `run`
 
 Execute a single prompt and exit. Useful for quick CLI queries or scripting.

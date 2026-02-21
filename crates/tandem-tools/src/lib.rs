@@ -165,6 +165,39 @@ fn resolve_registered_tool(
     None
 }
 
+fn is_batch_wrapper_tool_name(name: &str) -> bool {
+    matches!(
+        canonical_tool_name(name).as_str(),
+        "default_api" | "default" | "api" | "function" | "functions" | "tool" | "tools"
+    )
+}
+
+fn resolve_batch_call_tool_name(call: &Value) -> Option<String> {
+    let tool = call
+        .get("tool")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let name = call
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    match (tool, name) {
+        (Some(t), Some(n)) => {
+            if is_batch_wrapper_tool_name(t) {
+                Some(n.to_string())
+            } else {
+                Some(t.to_string())
+            }
+        }
+        (Some(t), None) => Some(t.to_string()),
+        (None, Some(n)) => Some(n.to_string()),
+        (None, None) => None,
+    }
+}
+
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
@@ -2420,16 +2453,24 @@ impl Tool for BatchTool {
         let registry = ToolRegistry::new();
         let mut outputs = Vec::new();
         for call in calls.iter().take(20) {
-            let tool = call
-                .get("tool")
-                .or_else(|| call.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let Some(tool) = resolve_batch_call_tool_name(call) else {
+                continue;
+            };
             if tool.is_empty() || tool == "batch" {
                 continue;
             }
             let call_args = call.get("args").cloned().unwrap_or_else(|| json!({}));
-            let result = registry.execute(tool, call_args).await?;
+            let mut result = registry.execute(&tool, call_args.clone()).await?;
+            if result.output.starts_with("Unknown tool:") {
+                if let Some(fallback_name) = call
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && *s != tool)
+                {
+                    result = registry.execute(fallback_name, call_args).await?;
+                }
+            }
             outputs.push(json!({
                 "tool": tool,
                 "output": result.output,
@@ -2833,6 +2874,20 @@ mod tests {
             .await
             .expect("batch should return ToolResult");
         assert!(!result.output.contains("Unknown tool: default_api:read"));
+    }
+
+    #[tokio::test]
+    async fn batch_prefers_name_when_tool_is_default_api_wrapper() {
+        let tool = BatchTool;
+        let result = tool
+            .execute(json!({
+                "tool_calls":[
+                    {"tool":"default_api","name":"read","args":{"path":"Cargo.toml"}}
+                ]
+            }))
+            .await
+            .expect("batch should return ToolResult");
+        assert!(!result.output.contains("Unknown tool: default_api"));
     }
 }
 

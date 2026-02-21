@@ -22,8 +22,12 @@ The Tandem Engine tool registry currently exposes the following tools.
 - **`websearch`**: Search the web (powered by Exa.ai).
   - Input: `query` (string), `limit` (integer)
 - **`codesearch`**: Semantic code search (if configured).
+- **`memory_list`**: List persisted memory entries for a scope/tier.
+  - Input: optional scope + filter arguments (e.g., `session_id`, `project_id`, `tier`, `limit`)
 - **`memory_search`**: Search persisted memory by query and scope.
   - Input: `query` plus one or more scopes (e.g., session/workspace).
+- **`memory_store`**: Persist memory content for session/project/global retrieval.
+  - Input: `content` plus scope/tier arguments (e.g., `session_id`, `project_id`, `tier`)
 
 ## Web
 
@@ -41,6 +45,8 @@ The Tandem Engine tool registry currently exposes the following tools.
   - Aliases: `todowrite`, `update_todo_list`
 - **`task`**: Update the current task status.
 - **`question`**: Ask a structured question to the user and wait for input.
+- **`spawn_agent`**: Spawn an agent-team worker instance (runtime/policy gated).
+  - Input: mission/spawn payload (e.g., `missionID`, `role`, `templateID`, `source`)
 
 ## Specialized
 

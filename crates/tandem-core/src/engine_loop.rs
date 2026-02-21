@@ -506,7 +506,12 @@ impl EngineLoop {
                                 continue;
                             }
                         }
-                        let signature = tool_signature(&tool_key, &args);
+                        let signature = if tool_key == "batch" {
+                            batch_tool_signature(&args)
+                                .unwrap_or_else(|| tool_signature(&tool_key, &args))
+                        } else {
+                            tool_signature(&tool_key, &args)
+                        };
                         if is_shell_tool_name(&tool_key)
                             && shell_mismatch_signatures.contains(&signature)
                         {
@@ -517,7 +522,9 @@ impl EngineLoop {
                             continue;
                         }
                         let mut signature_count = 1usize;
-                        if is_read_only_tool(&tool_key) {
+                        if is_read_only_tool(&tool_key)
+                            || (tool_key == "batch" && is_read_only_batch_call(&args))
+                        {
                             let count = readonly_signature_counts
                                 .entry(signature.clone())
                                 .and_modify(|v| *v = v.saturating_add(1))
@@ -1358,11 +1365,69 @@ fn is_read_only_tool(tool_name: &str) -> bool {
     )
 }
 
+fn is_batch_wrapper_tool_name(name: &str) -> bool {
+    matches!(
+        normalize_tool_name(name).as_str(),
+        "default_api" | "default" | "api" | "function" | "functions" | "tool" | "tools"
+    )
+}
+
+fn extract_batch_calls(args: &Value) -> Vec<(String, Value)> {
+    let calls = args
+        .get("tool_calls")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    calls
+        .into_iter()
+        .filter_map(|call| {
+            let obj = call.as_object()?;
+            let tool_raw = obj
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let name_raw = obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let effective = match (tool_raw, name_raw) {
+                (Some(t), Some(n)) if is_batch_wrapper_tool_name(t) => n,
+                (Some(t), _) => t,
+                (None, Some(n)) => n,
+                (None, None) => return None,
+            };
+            let normalized = normalize_tool_name(effective);
+            let call_args = obj.get("args").cloned().unwrap_or_else(|| json!({}));
+            Some((normalized, call_args))
+        })
+        .collect()
+}
+
+fn is_read_only_batch_call(args: &Value) -> bool {
+    let calls = extract_batch_calls(args);
+    !calls.is_empty() && calls.iter().all(|(tool, _)| is_read_only_tool(tool))
+}
+
+fn batch_tool_signature(args: &Value) -> Option<String> {
+    let calls = extract_batch_calls(args);
+    if calls.is_empty() {
+        return None;
+    }
+    let parts = calls
+        .into_iter()
+        .map(|(tool, call_args)| tool_signature(&tool, &call_args))
+        .collect::<Vec<_>>();
+    Some(format!("batch:{}", parts.join("|")))
+}
+
 fn tool_budget_for(tool_name: &str) -> usize {
     match normalize_tool_name(tool_name).as_str() {
         "glob" => 4,
         "read" => 8,
         "websearch" => 3,
+        "batch" => 4,
         "grep" | "search" | "codesearch" => 6,
         _ => 10,
     }
@@ -3587,6 +3652,24 @@ Call: todowrite(task_id=3, status="in_progress")
     fn normalize_tool_name_strips_default_api_namespace() {
         assert_eq!(normalize_tool_name("default_api:read"), "read");
         assert_eq!(normalize_tool_name("functions.shell"), "bash");
+    }
+
+    #[test]
+    fn batch_helpers_use_name_when_tool_is_wrapper() {
+        let args = json!({
+            "tool_calls":[
+                {"tool":"default_api","name":"read","args":{"path":"CONCEPT.md"}},
+                {"tool":"default_api:glob","args":{"pattern":"*.md"}}
+            ]
+        });
+        let calls = extract_batch_calls(&args);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "read");
+        assert_eq!(calls[1].0, "glob");
+        assert!(is_read_only_batch_call(&args));
+        let sig = batch_tool_signature(&args).unwrap_or_default();
+        assert!(sig.contains("read:"));
+        assert!(sig.contains("glob:"));
     }
 
     #[test]
