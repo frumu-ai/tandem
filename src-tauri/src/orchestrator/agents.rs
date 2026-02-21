@@ -2,7 +2,7 @@
 // Defines prompts for Planner, Builder, Validator, and Researcher agents
 // See: docs/orchestration_plan.md
 
-use crate::orchestrator::types::{Task, ValidationResult};
+use crate::orchestrator::types::{normalize_role_key, Task, TaskGate, ValidationResult};
 use std::collections::HashSet;
 
 // ============================================================================
@@ -42,6 +42,9 @@ You MUST output a valid JSON array of tasks. Each task must have:
 - "description": detailed task description
 - "dependencies": array of task IDs that must complete first (can be empty)
 - "acceptance_criteria": array of specific criteria to verify completion
+- "assigned_role": orchestrator/delegator/worker/watcher/reviewer/tester (default worker)
+- Optional "template_id": role template hint
+- Optional "gate": "review" or "test"
 
 Example:
 ```json
@@ -51,14 +54,16 @@ Example:
     "title": "Analyze existing code structure",
     "description": "Review the current implementation to understand the codebase",
     "dependencies": [],
-    "acceptance_criteria": ["Identified key files", "Documented dependencies"]
+    "acceptance_criteria": ["Identified key files", "Documented dependencies"],
+    "assigned_role": "orchestrator"
   }},
   {{
     "id": "task_2",
     "title": "Implement feature X",
     "description": "Add the new feature based on analysis",
     "dependencies": ["task_1"],
-    "acceptance_criteria": ["Feature works as specified", "No regressions"]
+    "acceptance_criteria": ["Feature works as specified", "No regressions"],
+    "assigned_role": "worker"
   }}
 ]
 ```
@@ -527,6 +532,9 @@ fn parse_tasks_from_markdown(output: &str) -> Vec<ParsedTask> {
             description: title,
             dependencies: Vec::new(),
             acceptance_criteria: vec!["Task completed successfully".to_string()],
+            assigned_role: Some("worker".to_string()),
+            template_id: None,
+            gate: None,
         });
     }
 
@@ -559,6 +567,18 @@ fn normalize_and_validate_parsed_tasks(
             .map(|c| c.trim().to_string())
             .filter(|c| !c.is_empty())
             .collect();
+        task.assigned_role = task
+            .assigned_role
+            .map(|r| normalize_role_key(&r))
+            .or_else(|| Some("worker".to_string()));
+        task.template_id = task
+            .template_id
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        task.gate = task
+            .gate
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| v == "review" || v == "test");
 
         if task.id.is_empty() {
             task.id = format!("task_{}", idx + 1);
@@ -632,16 +652,35 @@ pub struct ParsedTask {
     pub dependencies: Vec<String>,
     #[serde(default)]
     pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub assigned_role: Option<String>,
+    #[serde(default)]
+    pub template_id: Option<String>,
+    #[serde(default)]
+    pub gate: Option<String>,
 }
 
 impl From<ParsedTask> for Task {
     fn from(parsed: ParsedTask) -> Self {
+        let assigned_role = normalize_role_key(parsed.assigned_role.as_deref().unwrap_or("worker"));
+        let gate =
+            parsed
+                .gate
+                .as_deref()
+                .and_then(|value| match value.trim().to_lowercase().as_str() {
+                    "review" => Some(TaskGate::Review),
+                    "test" => Some(TaskGate::Test),
+                    _ => None,
+                });
         Task {
             id: parsed.id,
             title: parsed.title,
             description: parsed.description,
             dependencies: parsed.dependencies,
             acceptance_criteria: parsed.acceptance_criteria,
+            assigned_role,
+            template_id: parsed.template_id.filter(|v| !v.trim().is_empty()),
+            gate,
             state: crate::orchestrator::types::TaskState::Pending,
             retry_count: 0,
             artifacts: Vec::new(),

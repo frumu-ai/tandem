@@ -209,12 +209,65 @@ pub struct ModelSelection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentModelRouting {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub roles: HashMap<String, ModelSelection>,
+    // Legacy compatibility fields: read old persisted payloads and map into `roles`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner: Option<ModelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builder: Option<ModelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validator: Option<ModelSelection>,
+}
+
+pub const ROLE_ORCHESTRATOR: &str = "orchestrator";
+pub const ROLE_DELEGATOR: &str = "delegator";
+pub const ROLE_WORKER: &str = "worker";
+pub const ROLE_WATCHER: &str = "watcher";
+pub const ROLE_REVIEWER: &str = "reviewer";
+pub const ROLE_TESTER: &str = "tester";
+
+pub fn normalize_role_key(raw: &str) -> String {
+    let key = raw.trim().to_lowercase();
+    match key.as_str() {
+        "planner" => ROLE_ORCHESTRATOR.to_string(),
+        "builder" => ROLE_WORKER.to_string(),
+        "validator" => ROLE_REVIEWER.to_string(),
+        "researcher" => ROLE_WATCHER.to_string(),
+        _ => key,
+    }
+}
+
+impl AgentModelRouting {
+    pub fn canonicalized(&self) -> Self {
+        let mut roles = HashMap::<String, ModelSelection>::new();
+        for (key, selection) in &self.roles {
+            let normalized = normalize_role_key(key);
+            roles.entry(normalized).or_insert_with(|| selection.clone());
+        }
+
+        if let Some(sel) = self.planner.clone() {
+            roles.entry(ROLE_ORCHESTRATOR.to_string()).or_insert(sel);
+        }
+        if let Some(sel) = self.builder.clone() {
+            roles.entry(ROLE_WORKER.to_string()).or_insert(sel);
+        }
+        if let Some(sel) = self.validator.clone() {
+            roles.entry(ROLE_REVIEWER.to_string()).or_insert(sel);
+        }
+
+        Self {
+            roles,
+            planner: None,
+            builder: None,
+            validator: None,
+        }
+    }
+
+    pub fn get_for_role(&self, role: &str) -> Option<&ModelSelection> {
+        let normalized = normalize_role_key(role);
+        self.roles.get(&normalized)
+    }
 }
 
 /// Snapshot of run state for UI consumption
@@ -311,6 +364,15 @@ pub struct Task {
     pub dependencies: Vec<String>,
     /// Acceptance criteria for validation
     pub acceptance_criteria: Vec<String>,
+    /// Assigned role for execution (canonical default: worker)
+    #[serde(default = "default_task_role")]
+    pub assigned_role: String,
+    /// Optional template hint for role-specific execution
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    /// Optional gate stage for this task
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<TaskGate>,
     /// Current task state
     pub state: TaskState,
     /// Number of retry attempts
@@ -333,6 +395,9 @@ impl Task {
             description,
             dependencies: Vec::new(),
             acceptance_criteria: Vec::new(),
+            assigned_role: default_task_role(),
+            template_id: None,
+            gate: None,
             state: TaskState::Pending,
             retry_count: 0,
             artifacts: Vec::new(),
@@ -341,6 +406,17 @@ impl Task {
             session_id: None,
         }
     }
+}
+
+fn default_task_role() -> String {
+    ROLE_WORKER.to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskGate {
+    Review,
+    Test,
 }
 
 // ============================================================================
@@ -604,10 +680,29 @@ pub struct ApprovalRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {
+    Orchestrator,
+    Delegator,
+    Worker,
+    Watcher,
+    Reviewer,
+    Tester,
     Planner,
     Builder,
     Validator,
     Researcher,
+}
+
+impl AgentRole {
+    pub fn role_key(&self) -> &'static str {
+        match self {
+            AgentRole::Orchestrator | AgentRole::Planner => ROLE_ORCHESTRATOR,
+            AgentRole::Delegator => ROLE_DELEGATOR,
+            AgentRole::Worker | AgentRole::Builder => ROLE_WORKER,
+            AgentRole::Watcher | AgentRole::Researcher => ROLE_WATCHER,
+            AgentRole::Reviewer | AgentRole::Validator => ROLE_REVIEWER,
+            AgentRole::Tester => ROLE_TESTER,
+        }
+    }
 }
 
 /// Result from a sub-agent call

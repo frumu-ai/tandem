@@ -376,6 +376,7 @@ function App() {
   // Orchestrator panel state
   const [orchestratorOpen, setOrchestratorOpen] = useState(false);
   const [currentOrchestratorRunId, setCurrentOrchestratorRunId] = useState<string | null>(null);
+  const [commandCenterRunId, setCommandCenterRunId] = useState<string | null>(null);
   const [orchestratorRuns, setOrchestratorRuns] = useState<RunSummary[]>([]);
   const skipOrchestratorAutoResumeRef = useRef(false);
 
@@ -909,7 +910,7 @@ function App() {
     setSidecarReady(true);
     // Navigate to appropriate view
     if (state?.has_workspace) {
-      setView("chat");
+      setView("command-center");
 
       // If there's a saved session, trigger Chat to reload it now that sidecar is ready
       // We do this by briefly clearing and restoring the session ID
@@ -920,8 +921,9 @@ function App() {
           .then((runs) => {
             const run = runs.find((r) => r.session_id === currentSessionId);
             if (run) {
-              setOrchestratorOpen(true);
+              setOrchestratorOpen(false);
               setCurrentOrchestratorRunId(run.run_id);
+              setCommandCenterRunId(run.run_id);
               setCurrentSessionId(null); // Clear session ID as we're in orchestrator mode
             } else {
               const savedId = currentSessionId;
@@ -1147,11 +1149,13 @@ function App() {
     if (run) {
       setCurrentSessionId(null);
       setCurrentOrchestratorRunId(run.run_id);
-      setOrchestratorOpen(true);
-      setView("chat");
+      setCommandCenterRunId(run.run_id);
+      setOrchestratorOpen(false);
+      setView("command-center");
       return;
     }
     setView("chat");
+    setCommandCenterRunId(null);
     setOrchestratorOpen(false);
     setCurrentOrchestratorRunId(null);
     // If the user clicks the already-selected session, React won't emit a state change,
@@ -1168,6 +1172,7 @@ function App() {
     skipOrchestratorAutoResumeRef.current = true;
     setOrchestratorOpen(false);
     setCurrentOrchestratorRunId(null);
+    setCommandCenterRunId(null);
     setCurrentSessionId(null);
     setView("chat");
   };
@@ -1204,6 +1209,9 @@ function App() {
 
       if (currentOrchestratorRunId === runId) {
         setCurrentOrchestratorRunId(null);
+      }
+      if (commandCenterRunId === runId) {
+        setCommandCenterRunId(null);
       }
     } catch (e) {
       console.error("Failed to delete orchestrator run:", e);
@@ -1421,7 +1429,7 @@ function App() {
                     ? "bg-primary/20 text-primary"
                     : "text-text-muted hover:bg-surface-elevated hover:text-text"
                 }`}
-                title="Command Center"
+                title="Command Center (beta)"
               >
                 <Rocket className="h-5 w-5" />
               </button>
@@ -1562,7 +1570,9 @@ function App() {
                       onSelectSession={handleSelectSession}
                       onSelectRun={(runId) => {
                         setCurrentOrchestratorRunId(runId);
-                        setOrchestratorOpen(true);
+                        setCommandCenterRunId(runId);
+                        setOrchestratorOpen(false);
+                        setView("command-center");
                       }}
                       onNewChat={handleNewChat}
                       onOpenPacks={() => setView("packs")}
@@ -1697,6 +1707,7 @@ function App() {
                 onAddProject={handleAddProject}
                 onManageProjects={handleManageProjects}
                 projectSwitcherLoading={projectSwitcherLoading}
+                initialRunId={commandCenterRunId}
               />
             </motion.div>
           ) : (
@@ -1802,15 +1813,6 @@ function App() {
                 )}
               </AnimatePresence>
 
-              {/* Git Initialization Dialog */}
-              <GitInitDialog
-                isOpen={showGitDialog}
-                onClose={handleGitSkip}
-                onInitialize={handleGitInitialize}
-                gitInstalled={gitStatus?.git_installed ?? false}
-                folderPath={pendingProjectPath ?? ""}
-              />
-
               {/* Task Sidebar - only show in chat mode */}
               {!orchestratorOpen && (
                 <TaskSidebar
@@ -1828,6 +1830,13 @@ function App() {
             </>
           )}
         </main>
+        <GitInitDialog
+          isOpen={showGitDialog}
+          onClose={handleGitSkip}
+          onInitialize={handleGitInitialize}
+          gitInstalled={gitStatus?.git_installed ?? false}
+          folderPath={pendingProjectPath ?? ""}
+        />
         <AppUpdateOverlay />
         <WhatsNewOverlay
           open={shouldShowWhatsNew}

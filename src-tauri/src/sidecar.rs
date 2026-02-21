@@ -473,9 +473,9 @@ pub enum MessagePartInput {
 /// Model specification for prompt
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelSpec {
-    #[serde(alias = "providerID")]
+    #[serde(rename = "providerID", alias = "provider_id")]
     pub provider_id: String,
-    #[serde(alias = "modelID")]
+    #[serde(rename = "modelID", alias = "model_id")]
     pub model_id: String,
 }
 
@@ -1825,6 +1825,14 @@ impl SidecarManager {
             env_vars.contains_key("ANTHROPIC_API_KEY"),
             env_vars.contains_key("OPENAI_API_KEY")
         );
+        let has_openrouter_key = env_vars
+            .get("OPENROUTER_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        let has_openai_key = env_vars
+            .get("OPENAI_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
 
         // Build the command
         let mut cmd = Command::new(sidecar_path);
@@ -1893,6 +1901,45 @@ impl SidecarManager {
                 let models = serde_json::Value::Object(models_map);
 
                 if let Err(e) = crate::tandem_config::update_config_at(&config_path, |cfg| {
+                    // Keep sidecar defaults aligned with actual key availability to avoid
+                    // silent fallback to OpenAI defaults when only OpenRouter auth is present.
+                    if has_openrouter_key && !has_openai_key {
+                        if let Some(root) = cfg.as_object_mut() {
+                            let should_set_default = match root
+                                .get("default_provider")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.trim().to_lowercase())
+                            {
+                                Some(current) => current.is_empty() || current == "openai",
+                                None => true,
+                            };
+                            if should_set_default {
+                                root.insert(
+                                    "default_provider".to_string(),
+                                    serde_json::Value::String("openrouter".to_string()),
+                                );
+                            }
+
+                            let providers =
+                                root.entry("providers".to_string()).or_insert_with(|| {
+                                    serde_json::Value::Object(serde_json::Map::new())
+                                });
+                            if let Some(providers_obj) = providers.as_object_mut() {
+                                let openrouter = providers_obj
+                                    .entry("openrouter".to_string())
+                                    .or_insert_with(|| {
+                                        serde_json::Value::Object(serde_json::Map::new())
+                                    });
+                                if let Some(openrouter_obj) = openrouter.as_object_mut() {
+                                    openrouter_obj.entry("url".to_string()).or_insert_with(|| {
+                                        serde_json::Value::String(
+                                            "https://openrouter.ai/api/v1".to_string(),
+                                        )
+                                    });
+                                }
+                            }
+                        }
+                    }
                     crate::tandem_config::set_provider_ollama_models(cfg, models);
                     Ok(())
                 }) {
@@ -2501,18 +2548,98 @@ impl SidecarManager {
     pub async fn create_session(&self, request: CreateSessionRequest) -> Result<Session> {
         self.check_circuit_breaker().await?;
 
-        let url = format!("{}/session", self.base_url().await?);
+        let base = self.base_url().await?;
+        let url = format!("{}/session", base);
+        let fallback_url = format!("{}/api/session", base);
         tracing::debug!("Creating session at: {}", url);
 
-        let response = self
-            .http_client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to create session: {}", e)))?;
+        const ENGINE_STARTUP_RETRIES: usize = 10;
+        const ENGINE_STARTUP_RETRY_MS: u64 = 450;
+        let is_engine_starting = |text: &str| {
+            text.contains("ENGINE_STARTING")
+                || text.contains("Engine starting")
+                || text.contains("Service Unavailable")
+        };
 
-        self.handle_response(response).await
+        let mut last_error = String::new();
+        for attempt in 0..=ENGINE_STARTUP_RETRIES {
+            let response = self
+                .http_client
+                .post(&url)
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| TandemError::Sidecar(format!("Failed to create session: {}", e)))?;
+
+            if response.status().is_success() {
+                self.record_success().await;
+                let body = response.text().await.map_err(|e| {
+                    TandemError::Sidecar(format!("Failed to read response body: {}", e))
+                })?;
+                let session: Session = serde_json::from_str(&body).map_err(|e| {
+                    TandemError::Sidecar(format!(
+                        "Failed to parse response: {}. Body: {}",
+                        e,
+                        &body[..body.len().min(200)]
+                    ))
+                })?;
+                return Ok(session);
+            }
+
+            tracing::warn!(
+                "create_session failed on primary URL {}, retrying via {}",
+                url,
+                fallback_url
+            );
+            let fallback = self
+                .http_client
+                .post(&fallback_url)
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| TandemError::Sidecar(format!("Failed to create session: {}", e)))?;
+
+            if fallback.status().is_success() {
+                self.record_success().await;
+                let body = fallback.text().await.map_err(|e| {
+                    TandemError::Sidecar(format!("Failed to read response body: {}", e))
+                })?;
+                let session: Session = serde_json::from_str(&body).map_err(|e| {
+                    TandemError::Sidecar(format!(
+                        "Failed to parse response: {}. Body: {}",
+                        e,
+                        &body[..body.len().min(200)]
+                    ))
+                })?;
+                return Ok(session);
+            }
+
+            let status = fallback.status();
+            let body = fallback.text().await.unwrap_or_default();
+            last_error = format!("Failed to create session: {} {}", status, body);
+
+            if is_engine_starting(&body) && attempt < ENGINE_STARTUP_RETRIES {
+                tracing::warn!(
+                    "Engine still starting during create_session (attempt {}/{}). Retrying in {}ms.",
+                    attempt + 1,
+                    ENGINE_STARTUP_RETRIES + 1,
+                    ENGINE_STARTUP_RETRY_MS
+                );
+                tokio::time::sleep(Duration::from_millis(ENGINE_STARTUP_RETRY_MS)).await;
+                continue;
+            }
+
+            if !is_engine_starting(&body) {
+                self.record_failure().await;
+            }
+            return Err(TandemError::Sidecar(last_error));
+        }
+
+        Err(TandemError::Sidecar(if last_error.is_empty() {
+            "Failed to create session: engine did not become ready in time".to_string()
+        } else {
+            last_error
+        }))
     }
 
     /// Get a session by ID
@@ -2790,18 +2917,35 @@ impl SidecarManager {
 
         tracing::debug!("Sending prompt to: {} with {:?}", url, request);
 
-        let mut append_builder = self.http_client.post(&append_url);
-        if let Some(cid) = correlation_id {
-            append_builder = append_builder
-                .header("x-tandem-correlation-id", cid)
-                .header("x-tandem-session-id", session_id);
-        }
-        let append_response = append_builder
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to append message: {}", e)))?;
-        if !append_response.status().is_success() {
+        const ENGINE_STARTUP_RETRIES: usize = 10;
+        const ENGINE_STARTUP_RETRY_MS: u64 = 450;
+
+        let is_engine_starting = |text: &str| {
+            text.contains("ENGINE_STARTING")
+                || text.contains("Engine starting")
+                || text.contains("Service Unavailable")
+        };
+
+        // Phase 1: append message. Retry transient startup failures before surfacing error.
+        let mut append_ok = false;
+        let mut last_append_error = String::new();
+        for attempt in 0..=ENGINE_STARTUP_RETRIES {
+            let mut append_builder = self.http_client.post(&append_url);
+            if let Some(cid) = correlation_id {
+                append_builder = append_builder
+                    .header("x-tandem-correlation-id", cid)
+                    .header("x-tandem-session-id", session_id);
+            }
+            let append_response =
+                append_builder.json(&request).send().await.map_err(|e| {
+                    TandemError::Sidecar(format!("Failed to append message: {}", e))
+                })?;
+
+            if append_response.status().is_success() {
+                append_ok = true;
+                break;
+            }
+
             tracing::warn!(
                 "append message failed on primary URL {}, retrying via {}",
                 append_url,
@@ -2818,72 +2962,112 @@ impl SidecarManager {
                 .send()
                 .await
                 .map_err(|e| TandemError::Sidecar(format!("Failed to append message: {}", e)))?;
-            if !append_fallback_response.status().is_success() {
-                let status = append_fallback_response.status();
-                let body = append_fallback_response.text().await.unwrap_or_default();
-                self.record_failure().await;
-                return Err(TandemError::Sidecar(format!(
-                    "Failed to append message: {} {}",
-                    status, body
-                )));
-            }
-        }
 
-        let mut request_builder = self.http_client.post(&url);
-        if let Some(cid) = correlation_id {
-            request_builder = request_builder
-                .header("x-tandem-correlation-id", cid)
-                .header("x-tandem-session-id", session_id);
-        }
-        let response = request_builder
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
-
-        match Self::handle_prompt_async_response(response).await {
-            Ok(()) => {
-                self.record_success().await;
-                Ok(())
+            if append_fallback_response.status().is_success() {
+                append_ok = true;
+                break;
             }
-            Err(err) if err.starts_with("html_response") => {
+
+            let status = append_fallback_response.status();
+            let body = append_fallback_response.text().await.unwrap_or_default();
+            last_append_error = format!("Failed to append message: {} {}", status, body);
+
+            if is_engine_starting(&body) && attempt < ENGINE_STARTUP_RETRIES {
                 tracing::warn!(
-                    "prompt_async returned HTML from {}, retrying via {}",
-                    url,
-                    fallback_url
+                    "Engine still starting during append (attempt {}/{}). Retrying in {}ms.",
+                    attempt + 1,
+                    ENGINE_STARTUP_RETRIES + 1,
+                    ENGINE_STARTUP_RETRY_MS
                 );
-                let mut fallback_builder = self.http_client.post(&fallback_url);
-                if let Some(cid) = correlation_id {
-                    fallback_builder = fallback_builder
-                        .header("x-tandem-correlation-id", cid)
-                        .header("x-tandem-session-id", session_id);
-                }
-                let response =
-                    fallback_builder.json(&request).send().await.map_err(|e| {
+                tokio::time::sleep(Duration::from_millis(ENGINE_STARTUP_RETRY_MS)).await;
+                continue;
+            }
+
+            if !is_engine_starting(&body) {
+                self.record_failure().await;
+            }
+            return Err(TandemError::Sidecar(last_append_error));
+        }
+
+        if !append_ok {
+            return Err(TandemError::Sidecar(if last_append_error.is_empty() {
+                "Failed to append message: engine did not become ready in time".to_string()
+            } else {
+                last_append_error
+            }));
+        }
+
+        // Phase 2: start run. Retry ENGINE_STARTING responses; do not append again.
+        let mut last_send_error: Option<String> = None;
+        for attempt in 0..=ENGINE_STARTUP_RETRIES {
+            let mut request_builder = self.http_client.post(&url);
+            if let Some(cid) = correlation_id {
+                request_builder = request_builder
+                    .header("x-tandem-correlation-id", cid)
+                    .header("x-tandem-session-id", session_id);
+            }
+            let response = request_builder
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
+
+            let outcome = match Self::handle_prompt_async_response(response).await {
+                Ok(()) => Ok(()),
+                Err(err) if err.starts_with("html_response") => {
+                    tracing::warn!(
+                        "prompt_async returned HTML from {}, retrying via {}",
+                        url,
+                        fallback_url
+                    );
+                    let mut fallback_builder = self.http_client.post(&fallback_url);
+                    if let Some(cid) = correlation_id {
+                        fallback_builder = fallback_builder
+                            .header("x-tandem-correlation-id", cid)
+                            .header("x-tandem-session-id", session_id);
+                    }
+                    let response = fallback_builder.json(&request).send().await.map_err(|e| {
                         TandemError::Sidecar(format!("Failed to send message: {}", e))
                     })?;
-                match Self::handle_prompt_async_response(response).await {
-                    Ok(()) => {
-                        self.record_success().await;
-                        Ok(())
+                    Self::handle_prompt_async_response(response).await
+                }
+                Err(err) => Err(err),
+            };
+
+            match outcome {
+                Ok(()) => {
+                    self.record_success().await;
+                    return Ok(());
+                }
+                Err(err) => {
+                    if is_engine_starting(&err) && attempt < ENGINE_STARTUP_RETRIES {
+                        tracing::warn!(
+                            "Engine still starting during prompt_async (attempt {}/{}). Retrying in {}ms.",
+                            attempt + 1,
+                            ENGINE_STARTUP_RETRIES + 1,
+                            ENGINE_STARTUP_RETRY_MS
+                        );
+                        tokio::time::sleep(Duration::from_millis(ENGINE_STARTUP_RETRY_MS)).await;
+                        last_send_error = Some(err);
+                        continue;
                     }
-                    Err(err) => {
+                    if !is_engine_starting(&err) {
                         self.record_failure().await;
-                        Err(TandemError::Sidecar(format!(
-                            "Failed to send message: {}",
-                            err
-                        )))
                     }
+                    return Err(TandemError::Sidecar(format!(
+                        "Failed to send message: {}",
+                        err
+                    )));
                 }
             }
-            Err(err) => {
-                self.record_failure().await;
-                Err(TandemError::Sidecar(format!(
-                    "Failed to send message: {}",
-                    err
-                )))
-            }
         }
+
+        let final_err =
+            last_send_error.unwrap_or_else(|| "engine did not become ready in time".to_string());
+        Err(TandemError::Sidecar(format!(
+            "Failed to send message: {}",
+            final_err
+        )))
     }
 
     async fn handle_prompt_async_response(
@@ -4138,8 +4322,15 @@ impl SidecarManager {
                 ))
             })
         } else {
-            self.record_failure().await;
             let body = response.text().await.unwrap_or_default();
+            if !body.contains("ENGINE_STARTING") {
+                self.record_failure().await;
+            } else {
+                tracing::debug!(
+                    "Ignoring circuit breaker failure for ENGINE_STARTING: {}",
+                    url
+                );
+            }
             tracing::error!("Request to {} failed ({}): {}", url, status, body);
             Err(TandemError::Sidecar(format!(
                 "Request failed ({}): {}",

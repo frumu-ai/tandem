@@ -8093,6 +8093,15 @@ fn to_orchestrator_model_routing(routing: AgentModelRouting) -> OrchestratorMode
 fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
     tandem_core::build_mode_permission_rules(None)
         .into_iter()
+        .map(|mut rule| {
+            if matches!(
+                rule.permission.as_str(),
+                "bash" | "shell" | "cmd" | "terminal" | "run_command"
+            ) {
+                rule.action = "allow".to_string();
+            }
+            rule
+        })
         .map(|rule| crate::sidecar::PermissionRule {
             permission: rule.permission,
             pattern: rule.pattern,

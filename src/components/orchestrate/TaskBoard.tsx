@@ -81,6 +81,21 @@ function TaskCard({ task, isCurrent, onClick }: TaskCardProps) {
         </p>
       )}
 
+      {(task.assigned_role || task.gate) && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {task.assigned_role ? (
+            <span className="inline-flex items-center rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-cyan-200">
+              role: {task.assigned_role}
+            </span>
+          ) : null}
+          {task.gate ? (
+            <span className="inline-flex items-center rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-amber-200">
+              gate: {task.gate}
+            </span>
+          ) : null}
+        </div>
+      )}
+
       {task.error_message && (
         <p className="mt-1 text-xs text-red-400 line-clamp-1">{task.error_message}</p>
       )}

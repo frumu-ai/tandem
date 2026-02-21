@@ -96,6 +96,26 @@ pub struct OrchestratorEngine {
 }
 
 impl OrchestratorEngine {
+    fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
+        tandem_core::build_mode_permission_rules(None)
+            .into_iter()
+            .map(|mut rule| {
+                if matches!(
+                    rule.permission.as_str(),
+                    "bash" | "shell" | "cmd" | "terminal" | "run_command"
+                ) {
+                    rule.action = "allow".to_string();
+                }
+                rule
+            })
+            .map(|rule| crate::sidecar::PermissionRule {
+                permission: rule.permission,
+                pattern: rule.pattern,
+                action: rule.action,
+            })
+            .collect()
+    }
+
     const RELAXED_MAX_ITERATIONS: u32 = 1_000_000;
     const RELAXED_MAX_TOTAL_TOKENS: u64 = 100_000_000;
     const RELAXED_MAX_WALL_TIME_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
@@ -119,6 +139,31 @@ impl OrchestratorEngine {
             || e.contains("out of credits")
             || e.contains("billing")
             || e.contains("payment required")
+    }
+
+    fn is_auth_error(error: &str) -> bool {
+        let e = error.to_lowercase();
+        (e.contains("401") || e.contains("unauthorized") || e.contains("forbidden"))
+            && (e.contains("provider") || e.contains("auth") || e.contains("api key"))
+            || e.contains("no cookie auth credentials found")
+    }
+
+    fn is_transient_timeout_error(error: &str) -> bool {
+        let e = error.to_lowercase();
+        e.contains("exceeded timeout")
+            || e.contains("timed out")
+            || e.contains("timeout")
+            || e.contains("stream_idle_timeout")
+    }
+
+    fn should_clear_error_on_resume(error: &str) -> bool {
+        Self::is_transient_timeout_error(error)
+            || Self::is_rate_limit_error(error)
+            || Self::is_provider_quota_error(error)
+            || Self::is_auth_error(error)
+            || error
+                .to_lowercase()
+                .contains("run paused so you can resume and continue")
     }
     /// Create a new orchestrator engine
     pub fn new(
@@ -175,10 +220,20 @@ impl OrchestratorEngine {
     pub async fn start(&self) -> Result<()> {
         // Phase 1: Planning
         if let Err(e) = self.run_planning_phase().await {
-            // Ensure the run transitions to a terminal state instead of leaving the UI stuck
-            // in "planning" forever.
             let reason = e.to_string();
-            let _ = self.handle_failure(&reason).await;
+            // Planning can fail before task-level retries kick in. For transient conditions,
+            // pause instead of failing so users can continue from Command Center.
+            if Self::is_transient_timeout_error(&reason)
+                || Self::is_rate_limit_error(&reason)
+                || Self::is_provider_quota_error(&reason)
+                || Self::is_auth_error(&reason)
+            {
+                let _ = self.handle_transient_start_failure(&reason).await;
+            } else {
+                // Ensure the run transitions to a terminal state instead of leaving the UI stuck
+                // in "planning" forever.
+                let _ = self.handle_failure(&reason).await;
+            }
             return Err(e);
         }
 
@@ -291,7 +346,7 @@ impl OrchestratorEngine {
 
         // Send message and wait for response
         let response = self
-            .call_agent(None, &session_id, &prompt, AgentRole::Planner)
+            .call_agent(None, &session_id, &prompt, AgentRole::Orchestrator)
             .await?;
 
         // Record tokens (estimate from response length)
@@ -729,10 +784,21 @@ impl OrchestratorEngine {
                 timestamp: chrono::Utc::now(),
             });
 
-            // Build context for builder
+            // Build context for execution role
             let file_context = self.get_task_file_context(&task).await?;
 
-            // Build builder prompt
+            let execution_role = self.resolve_task_execution_role(&task).await;
+            if let Some(template_id) = task.template_id.as_deref() {
+                self.emit_task_trace(
+                    &task_id,
+                    Some(&session_id),
+                    "TEMPLATE_HINT",
+                    Some(format!(
+                        "template '{}' is advisory; falling back to role prompt templates",
+                        template_id
+                    )),
+                );
+            }
             let prompt = AgentPrompts::build_builder_prompt(&task, &file_context, None);
 
             // Record budget
@@ -743,12 +809,7 @@ impl OrchestratorEngine {
             }
 
             let builder_response = self
-                .call_agent_for_task_with_recovery(
-                    &task,
-                    &mut session_id,
-                    &prompt,
-                    AgentRole::Builder,
-                )
+                .call_agent_for_task_with_recovery(&task, &mut session_id, &prompt, execution_role)
                 .await?;
 
             // Record tokens
@@ -761,7 +822,11 @@ impl OrchestratorEngine {
             let changes_diff = self.get_recent_changes().await?;
 
             // Build validator prompt
-            let validator_prompt = AgentPrompts::build_validator_prompt(&task, &changes_diff, None);
+            let validator_prompt = AgentPrompts::build_validator_prompt(
+                &task,
+                &changes_diff,
+                Some(builder_response.as_str()),
+            );
 
             // Call validator
             {
@@ -774,7 +839,7 @@ impl OrchestratorEngine {
                     &task,
                     &mut session_id,
                     &validator_prompt,
-                    AgentRole::Validator,
+                    self.resolve_task_validation_role(&task, execution_role),
                 )
                 .await?;
 
@@ -882,7 +947,21 @@ impl OrchestratorEngine {
 
                             if t.retry_count >= max_retries {
                                 t.state = TaskState::Failed;
-                                t.error_message = Some("Max retries exceeded".to_string());
+                                let validator_feedback = t
+                                    .validation_result
+                                    .as_ref()
+                                    .map(|v| v.feedback.trim())
+                                    .filter(|v| !v.is_empty())
+                                    .map(|v| v.to_string());
+                                t.error_message = Some(match validator_feedback {
+                                    Some(feedback) => {
+                                        format!(
+                                            "Max retries exceeded. Last validator feedback: {}",
+                                            feedback
+                                        )
+                                    }
+                                    None => "Max retries exceeded".to_string(),
+                                });
                             } else {
                                 // Reset to pending for retry
                                 t.state = TaskState::Pending;
@@ -927,7 +1006,9 @@ impl OrchestratorEngine {
     async fn mark_task_error(&self, task_id: &str, error: &str) -> Result<()> {
         let rate_limited = Self::is_rate_limit_error(error);
         let quota_exceeded = Self::is_provider_quota_error(error);
-        let should_pause = rate_limited || quota_exceeded;
+        let auth_failed = Self::is_auth_error(error);
+        let transient_timeout = Self::is_transient_timeout_error(error);
+        let should_pause = rate_limited || quota_exceeded || auth_failed || transient_timeout;
 
         let session_id = {
             let mut run = self.run.write().await;
@@ -952,9 +1033,25 @@ impl OrchestratorEngine {
                         t.error_message = Some(
                             "Provider rate-limited. Switch model/provider and retry.".to_string(),
                         );
+                    } else if auth_failed {
+                        t.error_message = Some(
+                            "Provider authentication failed (401/403). Check API key/provider selection and retry."
+                                .to_string(),
+                        );
+                    } else if transient_timeout {
+                        t.error_message = Some(
+                            "Tool timeout detected. Run paused so you can resume and continue."
+                                .to_string(),
+                        );
                     }
                     run.error_message = Some(if quota_exceeded {
                         "Paused: provider quota/credits exceeded. Switch model/provider and retry."
+                            .to_string()
+                    } else if auth_failed {
+                        "Paused: provider authentication failed (401/403). Check API key/provider selection and continue."
+                            .to_string()
+                    } else if transient_timeout {
+                        "Paused: transient tool timeout detected. Resume run to continue."
                             .to_string()
                     } else {
                         "Paused: provider rate-limited. Switch model/provider and retry."
@@ -999,7 +1096,7 @@ impl OrchestratorEngine {
     }
 
     async fn get_or_create_task_session_id(&self, task: &Task) -> Result<String> {
-        use crate::sidecar::{CreateSessionRequest, PermissionRule};
+        use crate::sidecar::CreateSessionRequest;
 
         if let Some(existing) = self.task_sessions.read().await.get(&task.id).cloned() {
             return Ok(existing);
@@ -1023,54 +1120,13 @@ impl OrchestratorEngine {
             Err(e) => return Err(e),
         };
 
-        let permission = Some(vec![
-            PermissionRule {
-                permission: "ls".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "read".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "todowrite".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "websearch".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "webfetch".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "glob".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "grep".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "search".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-        ]);
+        let permission = Some(Self::orchestrator_permission_rules());
 
         let provider = base_session.provider.clone();
         let model = match (base_session.model.clone(), provider.clone()) {
             (Some(model_id), Some(provider_id)) => Some(json!({
-                "provider_id": provider_id,
-                "model_id": model_id
+                "providerID": provider_id,
+                "modelID": model_id
             })),
             _ => None,
         };
@@ -1153,7 +1209,7 @@ impl OrchestratorEngine {
     }
 
     async fn recreate_base_run_session(&self) -> Result<String> {
-        use crate::sidecar::{CreateSessionRequest, PermissionRule};
+        use crate::sidecar::CreateSessionRequest;
 
         let (objective, run_model, run_provider) = {
             let run = self.run.read().await;
@@ -1169,8 +1225,8 @@ impl OrchestratorEngine {
                 if !provider_id.trim().is_empty() && !model_id.trim().is_empty() =>
             {
                 Some(json!({
-                    "provider_id": provider_id,
-                    "model_id": model_id
+                    "providerID": provider_id,
+                    "modelID": model_id
                 }))
             }
             _ => None,
@@ -1184,48 +1240,7 @@ impl OrchestratorEngine {
             )),
             model,
             provider: run_provider,
-            permission: Some(vec![
-                PermissionRule {
-                    permission: "ls".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "read".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "todowrite".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "websearch".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "webfetch".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "glob".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "grep".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "search".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-            ]),
+            permission: Some(Self::orchestrator_permission_rules()),
             directory: Some(self.workspace_path.to_string_lossy().to_string()),
             workspace_root: Some(self.workspace_path.to_string_lossy().to_string()),
         };
@@ -1676,6 +1691,23 @@ impl OrchestratorEngine {
             }
             run.status = RunStatus::Executing;
             run.ended_at = None;
+            if run
+                .error_message
+                .as_deref()
+                .is_some_and(Self::should_clear_error_on_resume)
+            {
+                run.error_message = None;
+            }
+            for task in run.tasks.iter_mut() {
+                if task.state == TaskState::Pending
+                    && task
+                        .error_message
+                        .as_deref()
+                        .is_some_and(Self::should_clear_error_on_resume)
+                {
+                    task.error_message = None;
+                }
+            }
         }
 
         {
@@ -1876,6 +1908,44 @@ impl OrchestratorEngine {
         Ok(())
     }
 
+    async fn handle_transient_start_failure(&self, reason: &str) -> Result<()> {
+        {
+            let run = self.run.read().await;
+            if run.status == RunStatus::Cancelled {
+                return Ok(());
+            }
+        }
+        self.budget_tracker.write().await.set_active(false);
+        {
+            let mut run = self.run.write().await;
+            run.status = RunStatus::Paused;
+            run.ended_at = None;
+            run.error_message = Some(if Self::is_provider_quota_error(reason) {
+                "Paused: provider quota/credits exceeded during planning. Switch model/provider and continue."
+                    .to_string()
+            } else if Self::is_auth_error(reason) {
+                "Paused: provider authentication failed during planning (401/403). Check API key/provider selection and continue."
+                    .to_string()
+            } else if Self::is_rate_limit_error(reason) {
+                "Paused: provider rate-limited during planning. Retry or switch model/provider and continue."
+                    .to_string()
+            } else {
+                "Paused: transient timeout during planning. Continue run to retry planning."
+                    .to_string()
+            });
+            self.reset_in_progress_tasks_to_pending(&mut run);
+        }
+
+        self.save_state().await?;
+
+        self.emit_event(OrchestratorEvent::RunPaused {
+            run_id: self.get_run_id().await,
+            timestamp: chrono::Utc::now(),
+        });
+
+        Ok(())
+    }
+
     async fn handle_completion(&self) -> Result<()> {
         {
             let run = self.run.read().await;
@@ -1935,6 +2005,45 @@ impl OrchestratorEngine {
         self.run_id.clone()
     }
 
+    async fn resolve_task_execution_role(&self, task: &Task) -> AgentRole {
+        match task.assigned_role.as_str() {
+            crate::orchestrator::types::ROLE_ORCHESTRATOR => AgentRole::Orchestrator,
+            crate::orchestrator::types::ROLE_DELEGATOR => AgentRole::Delegator,
+            crate::orchestrator::types::ROLE_WORKER => AgentRole::Worker,
+            crate::orchestrator::types::ROLE_WATCHER => AgentRole::Watcher,
+            crate::orchestrator::types::ROLE_REVIEWER => AgentRole::Reviewer,
+            crate::orchestrator::types::ROLE_TESTER => AgentRole::Tester,
+            _ => {
+                self.emit_contract_warning(
+                    Some(task.id.clone()),
+                    "planner",
+                    "task_role",
+                    "unknown assigned_role; fallback to worker",
+                    true,
+                    Some(task.assigned_role.clone()),
+                )
+                .await;
+                AgentRole::Worker
+            }
+        }
+    }
+
+    fn resolve_task_validation_role(&self, task: &Task, execution_role: AgentRole) -> AgentRole {
+        if matches!(task.gate, Some(crate::orchestrator::types::TaskGate::Test)) {
+            return AgentRole::Tester;
+        }
+        if matches!(
+            task.gate,
+            Some(crate::orchestrator::types::TaskGate::Review)
+        ) {
+            return AgentRole::Reviewer;
+        }
+        if execution_role == AgentRole::Reviewer || execution_role == AgentRole::Tester {
+            return execution_role;
+        }
+        AgentRole::Reviewer
+    }
+
     pub async fn get_run_model_provider(&self) -> (Option<String>, Option<String>) {
         let run = self.run.read().await;
         (run.model.clone(), run.provider.clone())
@@ -1945,12 +2054,7 @@ impl OrchestratorEngine {
         role: AgentRole,
     ) -> (Option<String>, Option<String>) {
         let run = self.run.read().await;
-        let role_selection = match role {
-            AgentRole::Planner => run.agent_model_routing.planner.as_ref(),
-            AgentRole::Builder => run.agent_model_routing.builder.as_ref(),
-            AgentRole::Validator => run.agent_model_routing.validator.as_ref(),
-            AgentRole::Researcher => None,
-        };
+        let role_selection = run.agent_model_routing.get_for_role(role.role_key());
 
         if let Some(selection) = role_selection {
             let model = selection
@@ -1973,7 +2077,7 @@ impl OrchestratorEngine {
 
     pub async fn get_run_model_routing(&self) -> AgentModelRouting {
         let run = self.run.read().await;
-        run.agent_model_routing.clone()
+        run.agent_model_routing.canonicalized()
     }
 
     pub async fn set_run_model_provider(&self, model: Option<String>, provider: Option<String>) {
@@ -1985,7 +2089,7 @@ impl OrchestratorEngine {
     pub async fn set_run_model_routing(&self, routing: AgentModelRouting) -> Result<()> {
         {
             let mut run = self.run.write().await;
-            run.agent_model_routing = routing;
+            run.agent_model_routing = routing.canonicalized();
         }
         self.save_state().await
     }

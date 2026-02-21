@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Provider runtime model override**: Provider calls now honor per-request model overrides, preventing unintended fallback execution (for example `gpt-4o-mini` when another model is selected).
 - **OpenRouter attribution**: Added consistent request attribution headers so calls are identified as Tandem instead of unknown source.
 - **Memory startup self-heal**: Corrupted/incompatible vector DB state is now detected, backed up, and auto-recovered to prevent repeated startup failures (`chunks iter error` / SQL logic errors).
+- **Command Center task state/UI correctness**: Fixed paused/failed run status mapping and disabled launch actions while a run is already active to prevent duplicate swarm starts.
+- **Autonomous swarm permission flow**: Orchestrator/Command Center sessions now auto-allow shell tool permissions in autonomous mode (no manual approve gate for each call).
+- **Shell-call robustness**: Empty shell invocations now fail fast with explicit `BASH_COMMAND_MISSING` instead of hanging until watchdog timeout.
+- **Windows shell compatibility**: Added Windows translation for common Unix shell calls used by agents (`ls -la`, `find ... -type f -name ...`) to PowerShell equivalents.
+- **Stream watchdog noise reduction**: Suppressed false stream-degraded watchdog events while tools are actively pending.
 
 ## [0.3.7] - 2026-02-18
 

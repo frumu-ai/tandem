@@ -26,6 +26,8 @@ tandem-engine serve \
   --web-ui-prefix /admin
 ```
 
+$env:TANDEM_WEB_UI="true"; .\src-tauri\binaries\tandem-engine.exe serve --hostname 127.0.0.1 --port 39731 --web-ui --state-dir .tandem-test
+
 Open:
 
 - `http://127.0.0.1:39731/admin`

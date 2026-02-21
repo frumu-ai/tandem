@@ -445,8 +445,12 @@ impl StreamHub {
 
                             let has_active_sessions =
                                 !active_sessions.is_empty() || !pending_tools.is_empty();
+                            // Long-running tool executions can legitimately go quiet for a while.
+                            // Avoid marking the stream degraded while at least one tool is still pending.
+                            let has_pending_tools = !pending_tools.is_empty();
                             if last_progress.elapsed() > no_event_watchdog
                                 && has_active_sessions
+                                && !has_pending_tools
                                 && !matches!(health, StreamHealthStatus::Degraded)
                             {
                                 emit_event(
@@ -1067,6 +1071,11 @@ fn tool_timeout_for(tool: &str) -> Duration {
         // Workspace-wide file enumeration can be slow on large repos (especially Windows).
         "glob" => Duration::from_secs(10 * 60),
         "grep" | "search" | "codesearch" => Duration::from_secs(5 * 60),
+        // Shell operations in orchestrated runs can include dependency install/build/test flows.
+        // 120s is too aggressive and causes premature synthetic timeout terminals.
+        "bash" | "shell" | "powershell" | "cmd" => Duration::from_secs(15 * 60),
+        // Batch can wrap multi-step tool operations and often exceeds 120s in larger projects.
+        "batch" => Duration::from_secs(10 * 60),
         _ => Duration::from_secs(120),
     }
 }
@@ -1093,9 +1102,7 @@ fn extract_websearch_query(args: Option<&serde_json::Value>) -> Option<String> {
 }
 
 fn is_embeddings_disabled_error(message: &str) -> bool {
-    message
-        .to_ascii_lowercase()
-        .contains("embeddings disabled")
+    message.to_ascii_lowercase().contains("embeddings disabled")
 }
 
 async fn persist_assistant_message_memory(

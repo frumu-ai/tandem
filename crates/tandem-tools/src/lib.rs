@@ -1,6 +1,7 @@
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -217,9 +218,11 @@ impl Tool for BashTool {
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
-        let cmd = args["command"].as_str().unwrap_or("");
-        let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-Command", cmd]);
+        let cmd = args["command"].as_str().unwrap_or("").trim();
+        if cmd.is_empty() {
+            anyhow::bail!("BASH_COMMAND_MISSING");
+        }
+        let (mut command, translated_cmd) = build_shell_command(cmd);
         if let Some(env) = args.get("env").and_then(|v| v.as_object()) {
             for (k, v) in env {
                 if let Some(value) = v.as_str() {
@@ -228,9 +231,16 @@ impl Tool for BashTool {
             }
         }
         let output = command.output().await?;
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut metadata = json!({"stderr": stderr});
+        if let Some(translated) = translated_cmd {
+            if let Some(obj) = metadata.as_object_mut() {
+                obj.insert("translated_command".to_string(), Value::String(translated));
+            }
+        }
         Ok(ToolResult {
             output: String::from_utf8_lossy(&output.stdout).to_string(),
-            metadata: json!({"stderr": String::from_utf8_lossy(&output.stderr)}),
+            metadata,
         })
     }
 
@@ -239,9 +249,11 @@ impl Tool for BashTool {
         args: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let cmd = args["command"].as_str().unwrap_or("");
-        let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-Command", cmd]);
+        let cmd = args["command"].as_str().unwrap_or("").trim();
+        if cmd.is_empty() {
+            anyhow::bail!("BASH_COMMAND_MISSING");
+        }
+        let (mut command, translated_cmd) = build_shell_command(cmd);
         if let Some(env) = args.get("env").and_then(|v| v.as_object()) {
             for (k, v) in env {
                 if let Some(value) = v.as_str() {
@@ -249,6 +261,8 @@ impl Tool for BashTool {
                 }
             }
         }
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::piped());
         let mut child = command.spawn()?;
         let status = tokio::select! {
             _ = cancel.cancelled() => {
@@ -260,11 +274,172 @@ impl Tool for BashTool {
             }
             result = child.wait() => result?
         };
+        let stderr = match child.stderr.take() {
+            Some(mut handle) => {
+                use tokio::io::AsyncReadExt;
+                let mut buf = Vec::new();
+                let _ = handle.read_to_end(&mut buf).await;
+                String::from_utf8_lossy(&buf).to_string()
+            }
+            None => String::new(),
+        };
+        let mut metadata = json!({
+            "stderr": stderr,
+            "exit_code": status.code()
+        });
+        if let Some(translated) = translated_cmd {
+            if let Some(obj) = metadata.as_object_mut() {
+                obj.insert("translated_command".to_string(), Value::String(translated));
+            }
+        }
         Ok(ToolResult {
             output: format!("command exited: {}", status),
-            metadata: json!({}),
+            metadata,
         })
     }
+}
+
+fn build_shell_command(raw_cmd: &str) -> (Command, Option<String>) {
+    #[cfg(windows)]
+    {
+        let translated = translate_windows_shell_command(raw_cmd);
+        let effective = translated.clone().unwrap_or_else(|| raw_cmd.to_string());
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-Command", &effective]);
+        return (command, translated);
+    }
+
+    #[allow(unreachable_code)]
+    {
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-Command", raw_cmd]);
+        (command, None)
+    }
+}
+
+#[cfg(windows)]
+fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
+    let trimmed = raw_cmd.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered.starts_with("ls") {
+        return translate_windows_ls_command(trimmed);
+    }
+    if lowered.starts_with("find ") {
+        return translate_windows_find_command(trimmed);
+    }
+    None
+}
+
+#[cfg(windows)]
+fn translate_windows_ls_command(trimmed: &str) -> Option<String> {
+    let mut force = false;
+    let mut paths: Vec<&str> = Vec::new();
+    for token in trimmed.split_whitespace().skip(1) {
+        if token.starts_with('-') {
+            let flags = token.trim_start_matches('-').to_ascii_lowercase();
+            if flags.contains('a') {
+                force = true;
+            }
+            continue;
+        }
+        paths.push(token);
+    }
+
+    let mut translated = String::from("Get-ChildItem");
+    if force {
+        translated.push_str(" -Force");
+    }
+    if !paths.is_empty() {
+        translated.push_str(" -Path ");
+        translated.push_str(&quote_powershell_single(&paths.join(" ")));
+    }
+    Some(translated)
+}
+
+#[cfg(windows)]
+fn translate_windows_find_command(trimmed: &str) -> Option<String> {
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.is_empty() || !tokens[0].eq_ignore_ascii_case("find") {
+        return None;
+    }
+
+    let mut idx = 1usize;
+    let mut path = ".".to_string();
+    let mut file_only = false;
+    let mut patterns: Vec<String> = Vec::new();
+
+    if idx < tokens.len() && !tokens[idx].starts_with('-') {
+        path = normalize_shell_token(tokens[idx]);
+        idx += 1;
+    }
+
+    while idx < tokens.len() {
+        let token = tokens[idx].to_ascii_lowercase();
+        match token.as_str() {
+            "-type" => {
+                if idx + 1 < tokens.len() && tokens[idx + 1].eq_ignore_ascii_case("f") {
+                    file_only = true;
+                }
+                idx += 2;
+            }
+            "-name" => {
+                if idx + 1 < tokens.len() {
+                    let pattern = normalize_shell_token(tokens[idx + 1]);
+                    if !pattern.is_empty() {
+                        patterns.push(pattern);
+                    }
+                }
+                idx += 2;
+            }
+            "-o" | "-or" | "(" | ")" => {
+                idx += 1;
+            }
+            _ => {
+                idx += 1;
+            }
+        }
+    }
+
+    let mut translated = format!("Get-ChildItem -Path {}", quote_powershell_single(&path));
+    translated.push_str(" -Recurse");
+    if file_only {
+        translated.push_str(" -File");
+    }
+
+    if patterns.len() == 1 {
+        translated.push_str(" -Filter ");
+        translated.push_str(&quote_powershell_single(&patterns[0]));
+    } else if patterns.len() > 1 {
+        translated.push_str(" -Include ");
+        let include_list = patterns
+            .iter()
+            .map(|p| quote_powershell_single(p))
+            .collect::<Vec<_>>()
+            .join(",");
+        translated.push_str(&include_list);
+    }
+
+    Some(translated)
+}
+
+#[cfg(windows)]
+fn normalize_shell_token(token: &str) -> String {
+    let trimmed = token.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        return trimmed[1..trimmed.len() - 1].to_string();
+    }
+    trimmed.to_string()
+}
+
+#[cfg(windows)]
+fn quote_powershell_single(input: &str) -> String {
+    format!("'{}'", input.replace('\'', "''"))
 }
 
 struct ReadTool;

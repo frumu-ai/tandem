@@ -30,6 +30,11 @@
 - **Provider runtime model-override fix**: Streaming and completion provider calls now honor explicit per-request model overrides.
 - **OpenRouter attribution fix**: Added Tandem-origin request headers for OpenRouter calls.
 - **Memory startup self-heal**: Added backup + auto-recovery for malformed/incompatible memory vector DB state during initialization.
+- **Command Center status/launch reliability**: Fixed paused/failed state mapping and disabled launch while runs are active to prevent duplicate swarm starts.
+- **Autonomous swarm approvals**: Command Center/orchestrator sessions now auto-allow shell permissions in autonomous mode instead of repeatedly prompting.
+- **Shell timeout/hang prevention**: Empty shell calls now fail immediately with explicit `BASH_COMMAND_MISSING` rather than stalling until watchdog timeout.
+- **Windows shell translation**: Added automatic translation for common Unix-style agent commands (`ls -la`, `find ... -type f -name ...`) into PowerShell equivalents on Windows.
+- **Watchdog signal quality**: Reduced false stream watchdog degradation events while tool executions are still pending.
 
 ### Orchestrator Routing Migration Notes
 

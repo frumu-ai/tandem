@@ -28,11 +28,7 @@ export interface OrchestratorModelSelection {
   provider?: string | null;
 }
 
-export interface OrchestratorModelRouting {
-  planner?: OrchestratorModelSelection | null;
-  builder?: OrchestratorModelSelection | null;
-  validator?: OrchestratorModelSelection | null;
-}
+export type OrchestratorModelRouting = Record<string, OrchestratorModelSelection | null>;
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   max_iterations: 500,
@@ -75,6 +71,9 @@ export interface Task {
   description: string;
   dependencies: string[];
   acceptance_criteria: string[];
+  assigned_role?: string;
+  template_id?: string;
+  gate?: "review" | "test";
   state: TaskState;
   retry_count: number;
   error_message?: string;

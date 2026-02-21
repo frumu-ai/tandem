@@ -40,7 +40,14 @@ import {
 } from "lucide-react";
 
 type QualityPreset = "speed" | "balanced" | "quality";
-type SwarmStage = "idle" | "planning" | "awaiting_review" | "executing" | "completed" | "failed";
+type SwarmStage =
+  | "idle"
+  | "planning"
+  | "awaiting_review"
+  | "executing"
+  | "paused"
+  | "completed"
+  | "failed";
 type TabId = "task-to-swarm" | "advanced";
 
 interface CommandCenterPageProps {
@@ -110,7 +117,8 @@ function stageFromSnapshot(snapshot: RunSnapshot | null): SwarmStage {
   if (!snapshot) return "idle";
   if (snapshot.status === "planning") return "planning";
   if (snapshot.status === "awaiting_approval") return "awaiting_review";
-  if (snapshot.status === "executing" || snapshot.status === "paused") return "executing";
+  if (snapshot.status === "executing") return "executing";
+  if (snapshot.status === "paused") return "paused";
   if (snapshot.status === "completed") return "completed";
   if (snapshot.status === "failed" || snapshot.status === "cancelled") return "failed";
   return "idle";
@@ -161,6 +169,13 @@ export function CommandCenterPage({
     sidecarStatus === "starting" || !!(sidecarStartupHealth && !sidecarStartupHealth.ready);
   const sidecarReady = sidecarStatus === "running" && !sidecarStarting;
   const isWorking = stage === "planning" || stage === "awaiting_review" || stage === "executing";
+  const launchDisabled =
+    isLoading ||
+    isWorking ||
+    !objective.trim() ||
+    !selectedModel ||
+    !selectedProvider ||
+    !sidecarReady;
   const selectedRunSessionId = useMemo(
     () => runs.find((run) => run.run_id === runId)?.session_id ?? null,
     [runId, runs]
@@ -779,16 +794,7 @@ export function CommandCenterPage({
                 ))}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button
-                  onClick={() => void launchSwarm()}
-                  disabled={
-                    isLoading ||
-                    !objective.trim() ||
-                    !selectedModel ||
-                    !selectedProvider ||
-                    !sidecarReady
-                  }
-                >
+                <Button onClick={() => void launchSwarm()} disabled={launchDisabled}>
                   {isLoading ? (
                     <Loader2 className="mr-1 h-4 w-4 animate-spin" />
                   ) : (
@@ -940,16 +946,7 @@ export function CommandCenterPage({
                     {nextPreset}
                   </button>
                 ))}
-                <Button
-                  onClick={() => void launchSwarm()}
-                  disabled={
-                    isLoading ||
-                    !objective.trim() ||
-                    !selectedModel ||
-                    !selectedProvider ||
-                    !sidecarReady
-                  }
-                >
+                <Button onClick={() => void launchSwarm()} disabled={launchDisabled}>
                   {isLoading ? (
                     <Loader2 className="mr-1 h-4 w-4 animate-spin" />
                   ) : (

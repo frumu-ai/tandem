@@ -753,6 +753,10 @@ impl EngineLoop {
             ));
         }
         if normalized.missing_terminal {
+            let missing_reason = normalized
+                .missing_terminal_reason
+                .clone()
+                .unwrap_or_else(|| "TOOL_ARGUMENTS_MISSING".to_string());
             self.event_bus.publish(EngineEvent::new(
                 "tool.args.missing_terminal",
                 json!({
@@ -762,18 +766,18 @@ impl EngineLoop {
                     "argsSource": normalized.args_source,
                     "argsIntegrity": normalized.args_integrity,
                     "requestID": Value::Null,
-                    "error": "WEBSEARCH_QUERY_MISSING"
+                    "error": missing_reason
                 }),
             ));
             let mut failed_part =
                 WireMessagePart::tool_result(session_id, message_id, tool.clone(), json!(null));
             failed_part.state = Some("failed".to_string());
-            failed_part.error = Some("WEBSEARCH_QUERY_MISSING".to_string());
+            failed_part.error = Some(missing_reason.clone());
             self.event_bus.publish(EngineEvent::new(
                 "message.part.updated",
                 json!({"part": failed_part}),
             ));
-            return Ok(Some("WEBSEARCH_QUERY_MISSING".to_string()));
+            return Ok(Some(missing_reason));
         }
 
         let args = match enforce_skill_scope(&tool, normalized.args, equipped_skills) {
@@ -1332,6 +1336,7 @@ struct NormalizedToolArgs {
     args_integrity: String,
     query: Option<String>,
     missing_terminal: bool,
+    missing_terminal_reason: Option<String>,
 }
 
 fn normalize_tool_args(
@@ -1350,6 +1355,7 @@ fn normalize_tool_args(
     let mut args_integrity = "ok".to_string();
     let mut query = None;
     let mut missing_terminal = false;
+    let mut missing_terminal_reason = None;
 
     if normalized_tool == "websearch" {
         if let Some(found) = extract_websearch_query(&args) {
@@ -1369,6 +1375,16 @@ fn normalize_tool_args(
             args_source = "missing".to_string();
             args_integrity = "empty".to_string();
             missing_terminal = true;
+            missing_terminal_reason = Some("WEBSEARCH_QUERY_MISSING".to_string());
+        }
+    } else if is_shell_tool_name(&normalized_tool) {
+        if let Some(command) = extract_shell_command(&args) {
+            args = set_shell_command(args, command);
+        } else {
+            args_source = "missing".to_string();
+            args_integrity = "empty".to_string();
+            missing_terminal = true;
+            missing_terminal_reason = Some("BASH_COMMAND_MISSING".to_string());
         }
     }
 
@@ -1378,7 +1394,55 @@ fn normalize_tool_args(
         args_integrity,
         query,
         missing_terminal,
+        missing_terminal_reason,
     }
+}
+
+fn is_shell_tool_name(tool_name: &str) -> bool {
+    matches!(
+        tool_name.trim().to_ascii_lowercase().as_str(),
+        "bash" | "shell" | "powershell" | "cmd"
+    )
+}
+
+fn set_shell_command(args: Value, command: String) -> Value {
+    let mut obj = args.as_object().cloned().unwrap_or_default();
+    obj.insert("command".to_string(), Value::String(command));
+    Value::Object(obj)
+}
+
+fn extract_shell_command(args: &Value) -> Option<String> {
+    if let Some(raw) = args.as_str() {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    const COMMAND_KEYS: [&str; 4] = ["command", "cmd", "script", "line"];
+    for key in COMMAND_KEYS {
+        if let Some(raw) = args.get(key).and_then(|v| v.as_str()) {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    for container in ["arguments", "args", "input", "params"] {
+        if let Some(obj) = args.get(container) {
+            for key in COMMAND_KEYS {
+                if let Some(raw) = obj.get(key).and_then(|v| v.as_str()) {
+                    let trimmed = raw.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn set_websearch_query_and_source(args: Value, query: Option<String>, query_source: &str) -> Value {
@@ -1507,7 +1571,9 @@ fn tandem_runtime_system_prompt() -> &'static str {
     "You are operating inside Tandem (Desktop/TUI) as an engine-backed coding assistant.
 Use tool calls to inspect and modify the workspace when needed instead of asking the user
 to manually run basic discovery steps. Permission prompts may occur for some tools; if
-a tool is denied or blocked, explain what was blocked and suggest a concrete next step."
+a tool is denied or blocked, explain what was blocked and suggest a concrete next step.
+On Windows workspaces, prefer cross-platform tools (`glob`, `grep`, `read`, `write`, `edit`)
+or PowerShell-native commands over Unix-specific shell syntax (`find`, `ls -la`, etc.)."
 }
 
 fn should_force_workspace_probe(user_text: &str, completion: &str) -> bool {

@@ -30,6 +30,11 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Provider runtime behavior: Streaming/completion calls now honor per-request model overrides.
 - OpenRouter attribution: Added Tandem-origin headers for provider requests.
 - Memory reliability: Added startup backup + self-heal recovery for malformed/incompatible memory vector tables.
+- Command Center reliability: Fixed paused/failed status mapping and disabled launch while runs are active.
+- Autonomous swarm permissions: Orchestrator/Command Center sessions now auto-allow shell permissions in autonomous mode.
+- Shell robustness: Empty shell calls now fail fast with `BASH_COMMAND_MISSING` instead of hanging until timeout.
+- Windows compatibility: Added translation for common Unix-style agent shell commands (`ls -la`, `find ... -type f -name ...`) to PowerShell equivalents.
+- Stream stability: Reduced false stream watchdog degraded events while tools are still pending.
 
 ## v0.3.7 - 2026-02-18
 

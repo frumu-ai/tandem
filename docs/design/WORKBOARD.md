@@ -30,6 +30,12 @@
 | W-017 | 6     | Control-center operator UX refinement backlog (Desktop + TUI)                             | `IMPLEMENTATION_PLAN.md`  | Codex | done   | Phase 6 operator workflows and acceptance checks are explicitly defined for both clients                           |
 | W-018 | 6     | SDK ergonomics and contract hardening backlog for third-party builders                    | `IMPLEMENTATION_PLAN.md`  | Codex | done   | Remaining stable API/event contracts and contract-test coverage are enumerated with owners                         |
 | W-019 | 6     | SDK contract test coverage expansion plan                                                 | `SDK_CONTRACTS.md`        | Codex | done   | Mission/routine event contract families are snapshot-tested, parity-checked in Desktop/TUI, and promoted to stable |
+| W-020 | 7     | Dynamic orchestrator role-map routing + legacy compatibility                              | `ORCHESTRATOR.md`         | Codex | done   | Legacy planner/builder/validator payloads and new role-map payloads are both normalized to canonical role routing  |
+| W-021 | 7     | Control Center role-model UX alignment and naming cleanup                                 | `ENGINE_VS_UI.md`         | Codex | done   | Command Center distinguishes orchestrator role-model routing from operator agent-team controls                     |
+| W-022 | 7     | Role-aware planner task schema (`assigned_role`, `template_id`, `gate`)                   | `DEFAULT_MISSION_FLOW.md` | Codex | done   | Planner task parsing and persisted task schema support role assignment, template hint, and gate metadata           |
+| W-023 | 7     | Role-aware orchestrator task dispatch engine                                              | `ORCHESTRATOR.md`         | Codex | done   | Task execution routes model selection and dispatch by assigned role with fallback + warnings                       |
+| W-024 | 7     | Reviewer/tester gate integration in orchestrator execution                                | `DEFAULT_MISSION_FLOW.md` | Codex | done   | Validation role honors task gate metadata (`review`/`test`) and surfaces gate labels in operator task board        |
+| W-025 | 7     | Migration + contract + parity coverage for multi-role routing                             | `SDK_CONTRACTS.md`        | Codex | done   | Load-time migration normalizes legacy runs and build/check pipelines verify desktop+tauri compile parity           |
 
 ## Backlog Intake Rules
 
