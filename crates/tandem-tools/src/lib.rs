@@ -63,6 +63,8 @@ impl ToolRegistry {
         map.insert("question".to_string(), Arc::new(QuestionTool));
         map.insert("spawn_agent".to_string(), Arc::new(SpawnAgentTool));
         map.insert("skill".to_string(), Arc::new(SkillTool));
+        map.insert("memory_store".to_string(), Arc::new(MemoryStoreTool));
+        map.insert("memory_list".to_string(), Arc::new(MemoryListTool));
         map.insert("memory_search".to_string(), Arc::new(MemorySearchTool));
         map.insert("apply_patch".to_string(), Arc::new(ApplyPatchTool));
         map.insert("batch".to_string(), Arc::new(BatchTool));
@@ -1392,15 +1394,16 @@ impl Tool for MemorySearchTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "memory_search".to_string(),
-            description: "Search tandem memory with strict session/project scoping. Requires session_id and/or project_id; global search is blocked.".to_string(),
+            description: "Search tandem memory across session/project/global tiers. Global scope is opt-in via allow_global=true (or TANDEM_ENABLE_GLOBAL_MEMORY=1).".to_string(),
             input_schema: json!({
                 "type":"object",
                 "properties":{
                     "query":{"type":"string"},
                     "session_id":{"type":"string"},
                     "project_id":{"type":"string"},
-                    "tier":{"type":"string","enum":["session","project"]},
+                    "tier":{"type":"string","enum":["session","project","global"]},
                     "limit":{"type":"integer","minimum":1,"maximum":20},
+                    "allow_global":{"type":"boolean"},
                     "db_path":{"type":"string"}
                 },
                 "required":["query"]
@@ -1434,9 +1437,10 @@ impl Tool for MemorySearchTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(ToString::to_string);
-        if session_id.is_none() && project_id.is_none() {
+        let allow_global = global_memory_enabled(&args);
+        if session_id.is_none() && project_id.is_none() && !allow_global {
             return Ok(ToolResult {
-                output: "memory_search requires at least one scope: session_id or project_id"
+                output: "memory_search requires at least one scope: session_id or project_id (or allow_global=true)"
                     .to_string(),
                 metadata: json!({"ok": false, "reason": "missing_scope"}),
             });
@@ -1449,15 +1453,11 @@ impl Tool for MemorySearchTool {
         {
             Some(t) if t == "session" => Some(MemoryTier::Session),
             Some(t) if t == "project" => Some(MemoryTier::Project),
-            Some(t) if t == "global" => {
-                return Ok(ToolResult {
-                    output: "memory_search blocks global tier for strict isolation".to_string(),
-                    metadata: json!({"ok": false, "reason": "global_scope_blocked"}),
-                });
-            }
+            Some(t) if t == "global" => Some(MemoryTier::Global),
             Some(_) => {
                 return Ok(ToolResult {
-                    output: "memory_search tier must be one of: session, project".to_string(),
+                    output: "memory_search tier must be one of: session, project, global"
+                        .to_string(),
                     metadata: json!({"ok": false, "reason": "invalid_tier"}),
                 });
             }
@@ -1473,6 +1473,12 @@ impl Tool for MemorySearchTool {
             return Ok(ToolResult {
                 output: "tier=project requires project_id".to_string(),
                 metadata: json!({"ok": false, "reason": "missing_project_scope"}),
+            });
+        }
+        if matches!(tier, Some(MemoryTier::Global)) && !allow_global {
+            return Ok(ToolResult {
+                output: "tier=global requires allow_global=true".to_string(),
+                metadata: json!({"ok": false, "reason": "global_scope_disabled"}),
             });
         }
 
@@ -1537,6 +1543,13 @@ impl Tool for MemorySearchTool {
                         .await?,
                 );
             }
+            Some(MemoryTier::Global) => {
+                results.extend(
+                    manager
+                        .search(query, Some(MemoryTier::Global), None, None, Some(limit))
+                        .await?,
+                );
+            }
             _ => {
                 if session_id.is_some() {
                     results.extend(
@@ -1561,6 +1574,13 @@ impl Tool for MemorySearchTool {
                                 session_id.as_deref(),
                                 Some(limit),
                             )
+                            .await?,
+                    );
+                }
+                if allow_global {
+                    results.extend(
+                        manager
+                            .search(query, Some(MemoryTier::Global), None, None, Some(limit))
                             .await?,
                     );
                 }
@@ -1605,9 +1625,309 @@ impl Tool for MemorySearchTool {
                 "query": query,
                 "session_id": session_id,
                 "project_id": project_id,
+                "allow_global": allow_global,
                 "embedding_status": health.status,
                 "embedding_reason": health.reason,
-                "strict_scope": true,
+                "strict_scope": !allow_global,
+            }),
+        })
+    }
+}
+
+struct MemoryStoreTool;
+#[async_trait]
+impl Tool for MemoryStoreTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "memory_store".to_string(),
+            description: "Store memory chunks in session/project/global tiers. Global writes are opt-in via allow_global=true (or TANDEM_ENABLE_GLOBAL_MEMORY=1).".to_string(),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "content":{"type":"string"},
+                    "tier":{"type":"string","enum":["session","project","global"]},
+                    "session_id":{"type":"string"},
+                    "project_id":{"type":"string"},
+                    "source":{"type":"string"},
+                    "metadata":{"type":"object"},
+                    "allow_global":{"type":"boolean"},
+                    "db_path":{"type":"string"}
+                },
+                "required":["content"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        if content.is_empty() {
+            return Ok(ToolResult {
+                output: "memory_store requires non-empty content".to_string(),
+                metadata: json!({"ok": false, "reason": "missing_content"}),
+            });
+        }
+
+        let session_id = args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let project_id = args
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let allow_global = global_memory_enabled(&args);
+
+        let tier = match args
+            .get("tier")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_ascii_lowercase())
+        {
+            Some(t) if t == "session" => MemoryTier::Session,
+            Some(t) if t == "project" => MemoryTier::Project,
+            Some(t) if t == "global" => MemoryTier::Global,
+            Some(_) => {
+                return Ok(ToolResult {
+                    output: "memory_store tier must be one of: session, project, global"
+                        .to_string(),
+                    metadata: json!({"ok": false, "reason": "invalid_tier"}),
+                });
+            }
+            None => {
+                if project_id.is_some() {
+                    MemoryTier::Project
+                } else if session_id.is_some() {
+                    MemoryTier::Session
+                } else if allow_global {
+                    MemoryTier::Global
+                } else {
+                    return Ok(ToolResult {
+                        output: "memory_store requires scope: session_id or project_id (or allow_global=true)"
+                            .to_string(),
+                        metadata: json!({"ok": false, "reason": "missing_scope"}),
+                    });
+                }
+            }
+        };
+
+        if matches!(tier, MemoryTier::Session) && session_id.is_none() {
+            return Ok(ToolResult {
+                output: "tier=session requires session_id".to_string(),
+                metadata: json!({"ok": false, "reason": "missing_session_scope"}),
+            });
+        }
+        if matches!(tier, MemoryTier::Project) && project_id.is_none() {
+            return Ok(ToolResult {
+                output: "tier=project requires project_id".to_string(),
+                metadata: json!({"ok": false, "reason": "missing_project_scope"}),
+            });
+        }
+        if matches!(tier, MemoryTier::Global) && !allow_global {
+            return Ok(ToolResult {
+                output: "tier=global requires allow_global=true".to_string(),
+                metadata: json!({"ok": false, "reason": "global_scope_disabled"}),
+            });
+        }
+
+        let db_path = resolve_memory_db_path(&args);
+        let manager = MemoryManager::new(&db_path).await?;
+        let health = manager.embedding_health().await;
+        if health.status != "ok" {
+            return Ok(ToolResult {
+                output: "memory embeddings unavailable; semantic memory store is disabled"
+                    .to_string(),
+                metadata: json!({
+                    "ok": false,
+                    "reason": "embeddings_unavailable",
+                    "embedding_status": health.status,
+                    "embedding_reason": health.reason,
+                }),
+            });
+        }
+
+        let source = args
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("agent_note")
+            .to_string();
+        let metadata = args.get("metadata").cloned();
+
+        let request = tandem_memory::types::StoreMessageRequest {
+            content: content.to_string(),
+            tier,
+            session_id: session_id.clone(),
+            project_id: project_id.clone(),
+            source,
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: None,
+            metadata,
+        };
+        let chunk_ids = manager.store_message(request).await?;
+
+        Ok(ToolResult {
+            output: format!("stored {} chunk(s) in {} memory", chunk_ids.len(), tier),
+            metadata: json!({
+                "ok": true,
+                "chunk_ids": chunk_ids,
+                "count": chunk_ids.len(),
+                "tier": tier.to_string(),
+                "session_id": session_id,
+                "project_id": project_id,
+                "allow_global": allow_global,
+                "embedding_status": health.status,
+                "embedding_reason": health.reason,
+                "db_path": db_path,
+            }),
+        })
+    }
+}
+
+struct MemoryListTool;
+#[async_trait]
+impl Tool for MemoryListTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "memory_list".to_string(),
+            description: "List stored memory chunks for auditing and knowledge-base browsing."
+                .to_string(),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "tier":{"type":"string","enum":["session","project","global","all"]},
+                    "session_id":{"type":"string"},
+                    "project_id":{"type":"string"},
+                    "limit":{"type":"integer","minimum":1,"maximum":200},
+                    "allow_global":{"type":"boolean"},
+                    "db_path":{"type":"string"}
+                }
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let session_id = args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let project_id = args
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let allow_global = global_memory_enabled(&args);
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(50)
+            .clamp(1, 200) as usize;
+
+        let tier = args
+            .get("tier")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_ascii_lowercase())
+            .unwrap_or_else(|| "all".to_string());
+        if tier == "global" && !allow_global {
+            return Ok(ToolResult {
+                output: "tier=global requires allow_global=true".to_string(),
+                metadata: json!({"ok": false, "reason": "global_scope_disabled"}),
+            });
+        }
+        if session_id.is_none() && project_id.is_none() && tier != "global" && !allow_global {
+            return Ok(ToolResult {
+                output: "memory_list requires session_id/project_id, or allow_global=true for global listing".to_string(),
+                metadata: json!({"ok": false, "reason": "missing_scope"}),
+            });
+        }
+
+        let db_path = resolve_memory_db_path(&args);
+        let manager = MemoryManager::new(&db_path).await?;
+
+        let mut chunks: Vec<tandem_memory::types::MemoryChunk> = Vec::new();
+        match tier.as_str() {
+            "session" => {
+                let Some(sid) = session_id.as_deref() else {
+                    return Ok(ToolResult {
+                        output: "tier=session requires session_id".to_string(),
+                        metadata: json!({"ok": false, "reason": "missing_session_scope"}),
+                    });
+                };
+                chunks.extend(manager.db().get_session_chunks(sid).await?);
+            }
+            "project" => {
+                let Some(pid) = project_id.as_deref() else {
+                    return Ok(ToolResult {
+                        output: "tier=project requires project_id".to_string(),
+                        metadata: json!({"ok": false, "reason": "missing_project_scope"}),
+                    });
+                };
+                chunks.extend(manager.db().get_project_chunks(pid).await?);
+            }
+            "global" => {
+                chunks.extend(manager.db().get_global_chunks(limit as i64).await?);
+            }
+            "all" => {
+                if let Some(sid) = session_id.as_deref() {
+                    chunks.extend(manager.db().get_session_chunks(sid).await?);
+                }
+                if let Some(pid) = project_id.as_deref() {
+                    chunks.extend(manager.db().get_project_chunks(pid).await?);
+                }
+                if allow_global {
+                    chunks.extend(manager.db().get_global_chunks(limit as i64).await?);
+                }
+            }
+            _ => {
+                return Ok(ToolResult {
+                    output: "memory_list tier must be one of: session, project, global, all"
+                        .to_string(),
+                    metadata: json!({"ok": false, "reason": "invalid_tier"}),
+                });
+            }
+        }
+
+        chunks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        chunks.truncate(limit);
+        let rows = chunks
+            .iter()
+            .map(|chunk| {
+                json!({
+                    "chunk_id": chunk.id,
+                    "tier": chunk.tier.to_string(),
+                    "session_id": chunk.session_id,
+                    "project_id": chunk.project_id,
+                    "source": chunk.source,
+                    "content": chunk.content,
+                    "created_at": chunk.created_at,
+                    "metadata": chunk.metadata,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&rows).unwrap_or_default(),
+            metadata: json!({
+                "ok": true,
+                "count": rows.len(),
+                "limit": limit,
+                "tier": tier,
+                "session_id": session_id,
+                "project_id": project_id,
+                "allow_global": allow_global,
+                "db_path": db_path,
             }),
         })
     }
@@ -1629,6 +1949,23 @@ fn resolve_memory_db_path(args: &Value) -> PathBuf {
         }
     }
     PathBuf::from("memory.sqlite")
+}
+
+fn global_memory_enabled(args: &Value) -> bool {
+    if args
+        .get("allow_global")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let Ok(raw) = std::env::var("TANDEM_ENABLE_GLOBAL_MEMORY") else {
+        return false;
+    };
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 struct SkillTool;
@@ -2149,7 +2486,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_search_blocks_global_tier() {
+    async fn memory_search_global_requires_opt_in() {
         let tool = MemorySearchTool;
         let result = tool
             .execute(json!({
@@ -2159,9 +2496,24 @@ mod tests {
             }))
             .await
             .expect("memory_search should return ToolResult");
-        assert!(result.output.contains("blocks global tier"));
+        assert!(result.output.contains("requires allow_global=true"));
         assert_eq!(result.metadata["ok"], json!(false));
-        assert_eq!(result.metadata["reason"], json!("global_scope_blocked"));
+        assert_eq!(result.metadata["reason"], json!("global_scope_disabled"));
+    }
+
+    #[tokio::test]
+    async fn memory_store_global_requires_opt_in() {
+        let tool = MemoryStoreTool;
+        let result = tool
+            .execute(json!({
+                "content": "global pattern",
+                "tier": "global"
+            }))
+            .await
+            .expect("memory_store should return ToolResult");
+        assert!(result.output.contains("requires allow_global=true"));
+        assert_eq!(result.metadata["ok"], json!(false));
+        assert_eq!(result.metadata["reason"], json!("global_scope_disabled"));
     }
 }
 

@@ -4,7 +4,19 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## Unreleased
 
-- No unreleased changes.
+- Engine memory tools:
+  - Added `memory_store` for persisting agent-learned memory in `session`/`project`/`global` tiers.
+  - Added `memory_list` for browsing/auditing stored memory by scope/tier.
+- Global memory support:
+  - `memory_search` now supports `tier=global` with explicit opt-in (`allow_global=true` or `TANDEM_ENABLE_GLOBAL_MEMORY=1`).
+  - Global tier remains gated by default to preserve isolation without explicit enablement.
+- Engine memory DB alignment:
+  - `tandem-engine` now auto-sets `TANDEM_MEMORY_DB_PATH` to shared Tandem `memory.sqlite` when unset so connected apps/tools use the same knowledge base.
+- Documentation:
+  - Added CLI examples for `memory_store`, `memory_list`, and global memory operations.
+  - Updated engine README with global memory enablement and shared DB behavior notes.
+- Quality:
+  - Added/updated tool tests for global-memory opt-in gating and scope validation.
 
 ## v0.3.8 - 2026-02-19
 

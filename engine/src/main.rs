@@ -790,6 +790,7 @@ async fn build_runtime(
     cli_overrides: Option<serde_json::Value>,
     override_config_path: Option<PathBuf>,
 ) -> anyhow::Result<RuntimeState> {
+    configure_memory_db_path_env(state_dir);
     let startup = Instant::now();
     if let Some(state) = startup_state {
         state.set_phase("storage_init").await;
@@ -876,6 +877,25 @@ async fn build_runtime(
         cancellations,
         engine_loop,
     })
+}
+
+fn configure_memory_db_path_env(state_dir: &Path) {
+    if std::env::var("TANDEM_MEMORY_DB_PATH")
+        .ok()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    let candidate = resolve_shared_paths()
+        .map(|p| p.memory_db_path)
+        .unwrap_or_else(|_| state_dir.join("memory.sqlite"));
+    std::env::set_var("TANDEM_MEMORY_DB_PATH", candidate.as_os_str());
+    info!(
+        "configured TANDEM_MEMORY_DB_PATH={}",
+        candidate.to_string_lossy()
+    );
 }
 
 async fn emit_startup_phase_event(state: &AppState, phase: &str) {
