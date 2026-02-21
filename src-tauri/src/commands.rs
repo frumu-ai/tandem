@@ -8091,7 +8091,7 @@ fn to_orchestrator_model_routing(routing: AgentModelRouting) -> OrchestratorMode
 }
 
 fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
-    tandem_core::build_mode_permission_rules(None)
+    let mut rules = tandem_core::build_mode_permission_rules(None)
         .into_iter()
         .map(|mut rule| {
             if matches!(
@@ -8107,7 +8107,25 @@ fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
             pattern: rule.pattern,
             action: rule.action,
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    for permission in [
+        "write",
+        "edit",
+        "apply_patch",
+        "todowrite",
+        "todo_write",
+        "update_todo_list",
+        "task",
+    ] {
+        rules.push(crate::sidecar::PermissionRule {
+            permission: permission.to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        });
+    }
+
+    rules
 }
 
 fn normalize_provider_id_for_sidecar(provider: Option<String>) -> Option<String> {
@@ -8374,6 +8392,25 @@ pub async fn orchestrator_list_tasks(
     };
 
     Ok(engine.get_tasks().await)
+}
+
+/// Re-queue a failed task so it can run again without restarting the whole run.
+#[tauri::command]
+pub async fn orchestrator_retry_task(
+    state: State<'_, AppState>,
+    run_id: String,
+    task_id: String,
+) -> Result<()> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    engine.retry_failed_task(&task_id).await?;
+    Ok(())
 }
 
 #[tauri::command]

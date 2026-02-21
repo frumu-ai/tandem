@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
+use tokio::fs;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -97,7 +98,7 @@ pub struct OrchestratorEngine {
 
 impl OrchestratorEngine {
     fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
-        tandem_core::build_mode_permission_rules(None)
+        let mut rules = tandem_core::build_mode_permission_rules(None)
             .into_iter()
             .map(|mut rule| {
                 if matches!(
@@ -113,7 +114,25 @@ impl OrchestratorEngine {
                 pattern: rule.pattern,
                 action: rule.action,
             })
-            .collect()
+            .collect::<Vec<_>>();
+
+        for permission in [
+            "write",
+            "edit",
+            "apply_patch",
+            "todowrite",
+            "todo_write",
+            "update_todo_list",
+            "task",
+        ] {
+            rules.push(crate::sidecar::PermissionRule {
+                permission: permission.to_string(),
+                pattern: "*".to_string(),
+                action: "allow".to_string(),
+            });
+        }
+
+        rules
     }
 
     const RELAXED_MAX_ITERATIONS: u32 = 1_000_000;
@@ -1599,17 +1618,93 @@ impl OrchestratorEngine {
 
     /// Build a summary of the workspace
     async fn build_workspace_summary(&self) -> Result<String> {
-        // TODO: Implement actual workspace analysis
+        let mut top_level_entries: Vec<String> = Vec::new();
+        let mut non_meta_entries: Vec<String> = Vec::new();
+
+        let mut dir = match fs::read_dir(&self.workspace_path).await {
+            Ok(dir) => dir,
+            Err(err) => {
+                return Ok(format!(
+                    "Workspace: {}\nWorkspace scan unavailable: {}",
+                    self.workspace_path.display(),
+                    err
+                ));
+            }
+        };
+
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".tandem" {
+                continue;
+            }
+            top_level_entries.push(name.clone());
+            if name != ".git" {
+                non_meta_entries.push(name);
+            }
+        }
+
+        top_level_entries.sort();
+        non_meta_entries.sort();
+
+        let preview = if top_level_entries.is_empty() {
+            "(none)".to_string()
+        } else {
+            top_level_entries
+                .iter()
+                .take(20)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        let sparse_note = if non_meta_entries.is_empty() {
+            "\nWorkspace appears empty or metadata-only. Prefer research-first planning and create starter project artifacts rather than repeated local shell discovery."
+        } else {
+            ""
+        };
+
         Ok(format!(
-            "Workspace: {}\nFiles: (summary pending)",
-            self.workspace_path.display()
+            "Workspace: {}\nTop-level entries (excluding .tandem): {}\nNon-metadata entry count: {}{}",
+            self.workspace_path.display(),
+            preview,
+            non_meta_entries.len(),
+            sparse_note
         ))
     }
 
     /// Get file context relevant to a task
     async fn get_task_file_context(&self, _task: &Task) -> Result<String> {
-        // TODO: Implement context selection based on task description
-        Ok("File context pending implementation".to_string())
+        let mut dir = match fs::read_dir(&self.workspace_path).await {
+            Ok(dir) => dir,
+            Err(err) => {
+                return Ok(format!("File context unavailable: {}", err));
+            }
+        };
+
+        let mut entries: Vec<String> = Vec::new();
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".tandem" {
+                continue;
+            }
+            entries.push(name);
+        }
+        entries.sort();
+
+        let non_meta: Vec<String> = entries
+            .iter()
+            .filter(|name| name.as_str() != ".git")
+            .cloned()
+            .collect();
+
+        if non_meta.is_empty() {
+            return Ok("Workspace appears metadata-only (.git and/or empty after excluding .tandem). Prefer web research and generating initial scaffold files; avoid repeated shell discovery loops.".to_string());
+        }
+
+        Ok(format!(
+            "Top-level files/directories: {}",
+            non_meta.into_iter().take(25).collect::<Vec<_>>().join(", ")
+        ))
     }
 
     /// Get recent changes (git diff)
@@ -1721,6 +1816,58 @@ impl OrchestratorEngine {
             run_id: self.get_run_id().await,
             timestamp: chrono::Utc::now(),
         });
+
+        Ok(())
+    }
+
+    /// Re-queue a failed task so it can be attempted again without restarting the entire run.
+    pub async fn retry_failed_task(&self, task_id: &str) -> Result<()> {
+        {
+            let mut run = self.run.write().await;
+            let task = run
+                .tasks
+                .iter_mut()
+                .find(|t| t.id == task_id)
+                .ok_or_else(|| TandemError::NotFound(format!("Task not found: {}", task_id)))?;
+
+            if task.state != TaskState::Failed {
+                return Err(TandemError::InvalidOperation(format!(
+                    "Task {} is not failed (current state: {:?})",
+                    task_id, task.state
+                )));
+            }
+
+            task.state = TaskState::Pending;
+            task.retry_count = 0;
+            task.error_message = None;
+            task.validation_result = None;
+            // Force a fresh child session for the retried task.
+            task.session_id = None;
+
+            TaskScheduler::update_blocked_tasks(&mut run.tasks);
+
+            if matches!(run.status, RunStatus::Failed | RunStatus::Cancelled) {
+                run.status = RunStatus::Paused;
+                run.ended_at = None;
+            }
+
+            if run
+                .error_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains(task_id) || msg.contains("Deadlock detected"))
+            {
+                run.error_message = None;
+            }
+        }
+
+        {
+            let mut sessions = self.task_sessions.write().await;
+            sessions.remove(task_id);
+        }
+
+        self.save_state().await?;
+
+        self.emit_task_trace(task_id, None, "TASK_REQUEUED", None);
 
         Ok(())
     }
