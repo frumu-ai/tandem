@@ -52,6 +52,33 @@ export const ResearchDashboard: React.FC = () => {
 
       // 3. Connect to the SSE stream
       const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
+      let finalized = false;
+
+      const finalizeRun = async (status: string) => {
+        if (finalized) return;
+        finalized = true;
+        try {
+          const messages = await api.getSessionMessages(sessionId);
+          const lastAssistant = [...messages].reverse().find((m) => m.info?.role === "assistant");
+          const finalText = (lastAssistant?.parts || [])
+            .filter((p) => p.type === "text" && p.text)
+            .map((p) => p.text)
+            .join("\n")
+            .trim();
+          if (finalText) {
+            addLog({ type: "text", content: finalText });
+          }
+        } catch (err) {
+          console.error("Failed to fetch final run output", err);
+        } finally {
+          addLog({
+            type: "system",
+            content: `Run finished with status: ${status}`,
+          });
+          setIsRunning(false);
+          eventSource.close();
+        }
+      };
 
       eventSource.onmessage = (evt) => {
         try {
@@ -84,12 +111,12 @@ export const ResearchDashboard: React.FC = () => {
             data.type === "run.status.updated" &&
             (data.properties.status === "completed" || data.properties.status === "failed")
           ) {
-            addLog({
-              type: "system",
-              content: `Run finished with status: ${data.properties.status}`,
-            });
-            setIsRunning(false);
-            eventSource.close();
+            void finalizeRun(data.properties.status);
+          } else if (
+            data.type === "session.run.finished" &&
+            (data.properties?.status === "completed" || data.properties?.status === "failed")
+          ) {
+            void finalizeRun(data.properties.status);
           }
         } catch (err) {
           console.error("Failed to parse SSE event", err);

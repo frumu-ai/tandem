@@ -2,6 +2,7 @@ import React from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, Link } from "react-router-dom";
 import { AuthProvider, useAuth } from "./AuthContext";
 import { Login } from "./pages/Login";
+import { ProviderSetup } from "./pages/ProviderSetup";
 import { ResearchDashboard } from "./pages/ResearchDashboard";
 import { SwarmDashboard } from "./pages/SwarmDashboard";
 import { TextAdventure } from "./pages/TextAdventure";
@@ -20,6 +21,12 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { token, isLoading } = useAuth();
   if (isLoading) return <div className="text-white p-8">Loading session...</div>;
   return token ? <>{children}</> : <Navigate to="/" replace />;
+};
+
+const ProviderReadyRoute = ({ children }: { children: React.ReactNode }) => {
+  const { providerConfigured, providerLoading } = useAuth();
+  if (providerLoading) return <div className="text-white p-8">Loading provider config...</div>;
+  return providerConfigured ? <>{children}</> : <Navigate to="/setup" replace />;
 };
 
 const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
@@ -88,14 +95,24 @@ export default function App() {
       <Router>
         <Routes>
           <Route path="/" element={<Login />} />
+          <Route
+            path="/setup"
+            element={
+              <ProtectedRoute>
+                <ProviderSetup />
+              </ProtectedRoute>
+            }
+          />
 
           <Route
             path="/research"
             element={
               <ProtectedRoute>
-                <NavigationLayout>
-                  <ResearchDashboard />
-                </NavigationLayout>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <ResearchDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
               </ProtectedRoute>
             }
           />
@@ -103,9 +120,11 @@ export default function App() {
             path="/swarm"
             element={
               <ProtectedRoute>
-                <NavigationLayout>
-                  <SwarmDashboard />
-                </NavigationLayout>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <SwarmDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
               </ProtectedRoute>
             }
           />
@@ -113,9 +132,11 @@ export default function App() {
             path="/adventure"
             element={
               <ProtectedRoute>
-                <NavigationLayout>
-                  <TextAdventure />
-                </NavigationLayout>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <TextAdventure />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
               </ProtectedRoute>
             }
           />
@@ -123,9 +144,11 @@ export default function App() {
             path="/second-brain"
             element={
               <ProtectedRoute>
-                <NavigationLayout>
-                  <SecondBrainDashboard />
-                </NavigationLayout>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <SecondBrainDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
               </ProtectedRoute>
             }
           />
@@ -133,9 +156,11 @@ export default function App() {
             path="/channels"
             element={
               <ProtectedRoute>
-                <NavigationLayout>
-                  <ConnectorsDashboard />
-                </NavigationLayout>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <ConnectorsDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
               </ProtectedRoute>
             }
           />

@@ -42,10 +42,16 @@ const SUPPORTED_PROVIDER_IDS: [&str; 12] = [
 
 const ENGINE_CLI_EXAMPLES: &str = r#"Examples:
   tandem-engine serve --hostname 127.0.0.1 --port 39731
+  tandem-engine status --hostname 127.0.0.1 --port 39731
   tandem-engine run "Summarize this repository" --provider openrouter --model openai/gpt-4o-mini
   tandem-engine tool --json @payload.json
   cat payload.json | tandem-engine tool --json -
   tandem-engine providers
+"#;
+
+const STATUS_EXAMPLES: &str = r#"Examples:
+  tandem-engine status
+  tandem-engine status --hostname 127.0.0.1 --port 39731
 "#;
 
 const SERVE_EXAMPLES: &str = r#"Examples:
@@ -103,6 +109,25 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    #[command(about = "Check engine health status (GET /global/health).")]
+    #[command(after_help = STATUS_EXAMPLES)]
+    Status {
+        #[arg(
+            long,
+            env = "TANDEM_ENGINE_HOST",
+            alias = "host",
+            default_value = DEFAULT_ENGINE_HOST,
+            help = "Hostname or IP address to check."
+        )]
+        hostname: String,
+        #[arg(
+            long,
+            env = "TANDEM_ENGINE_PORT",
+            default_value_t = DEFAULT_ENGINE_PORT,
+            help = "Port to check."
+        )]
+        port: u16,
+    },
     #[command(
         about = "Start the HTTP/SSE engine server (recommended for desktop/TUI integration)."
     )]
@@ -246,6 +271,20 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Status { hostname, port } => {
+            let url = format!("http://{hostname}:{port}/global/health");
+            let resp = reqwest::Client::new().get(&url).send().await?;
+            let status = resp.status();
+            let body = resp.text().await?;
+            if !status.is_success() {
+                anyhow::bail!("engine health check failed: {} {}", status, body);
+            }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            } else {
+                println!("{body}");
+            }
+        }
         Command::Serve {
             hostname,
             port,
