@@ -108,11 +108,7 @@ impl MemoryManager {
             // Store in database (retry once after vector-table self-heal).
             if let Err(err) = self.db.store_chunk(&chunk, &embedding).await {
                 tracing::warn!("Failed to store memory chunk {}: {}", chunk.id, err);
-                let repaired = self
-                    .db
-                    .try_repair_after_error(&err)
-                    .await
-                    .unwrap_or(false)
+                let repaired = self.db.try_repair_after_error(&err).await.unwrap_or(false)
                     || self
                         .db
                         .ensure_vector_tables_healthy()
@@ -199,11 +195,7 @@ impl MemoryManager {
                         search_tier,
                         err
                     );
-                    let repaired = self
-                        .db
-                        .try_repair_after_error(&err)
-                        .await
-                        .unwrap_or(false)
+                    let repaired = self.db.try_repair_after_error(&err).await.unwrap_or(false)
                         || self
                             .db
                             .ensure_vector_tables_healthy()

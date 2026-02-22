@@ -29,4 +29,3 @@ pub struct HostRuntimeContext {
     pub shell_family: ShellFamily,
     pub path_style: PathStyle,
 }
-

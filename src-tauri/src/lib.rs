@@ -2,7 +2,7 @@
 // This is the main library entry point for the Tauri application
 
 mod commands;
-mod document_text;
+pub mod document_text;
 mod error;
 mod file_watcher;
 mod keystore;

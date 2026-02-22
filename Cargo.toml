@@ -5,6 +5,7 @@ members = [
     "crates/tandem-types",
     "crates/tandem-wire",
     "crates/tandem-core",
+    "crates/tandem-document",
     "crates/tandem-providers",
     "crates/tandem-tools",
     "crates/tandem-server",

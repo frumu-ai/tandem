@@ -64,6 +64,21 @@ impl From<crate::memory::types::MemoryError> for TandemError {
     }
 }
 
+impl From<crate::document_text::DocumentError> for TandemError {
+    fn from(err: crate::document_text::DocumentError) -> Self {
+        match err {
+            crate::document_text::DocumentError::Io(e) => TandemError::Io(e),
+            crate::document_text::DocumentError::NotFound(msg) => TandemError::NotFound(msg),
+            crate::document_text::DocumentError::InvalidDocument(msg) => {
+                TandemError::InvalidConfig(msg)
+            }
+            crate::document_text::DocumentError::ExtractionFailed(msg) => {
+                TandemError::InvalidConfig(msg)
+            }
+        }
+    }
+}
+
 // Allow conversion from String to TandemError
 impl From<String> for TandemError {
     fn from(err: String) -> Self {

@@ -7017,6 +7017,7 @@ dependencies = [
  "sha2",
  "sqlite-vec",
  "tandem-core",
+ "tandem-document",
  "tandem-memory",
  "tandem-observability",
  "tandem-skills",
@@ -7122,6 +7123,18 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "tandem-document"
+version = "0.3.8"
+dependencies = [
+ "calamine",
+ "pdf-extract",
+ "quick-xml 0.38.4",
+ "tempfile",
+ "thiserror 1.0.69",
+ "zip 0.6.6",
 ]
 
 [[package]]
@@ -7259,6 +7272,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "tandem-document",
  "tandem-memory",
  "tandem-skills",
  "tandem-types",

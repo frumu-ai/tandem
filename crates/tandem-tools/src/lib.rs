@@ -172,7 +172,7 @@ fn is_batch_wrapper_tool_name(name: &str) -> bool {
     )
 }
 
-fn non_empty_batch_str<'a>(value: Option<&'a Value>) -> Option<&'a str> {
+fn non_empty_batch_str(value: Option<&Value>) -> Option<&str> {
     value
         .and_then(|v| v.as_str())
         .map(str::trim)
@@ -389,6 +389,17 @@ fn is_malformed_tool_path_token(path: &str) -> bool {
     false
 }
 
+fn is_document_file(path: &Path) -> bool {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        matches!(
+            ext.to_lowercase().as_str(),
+            "pdf" | "docx" | "pptx" | "xlsx" | "xls" | "ods" | "xlsb" | "rtf"
+        )
+    } else {
+        false
+    }
+}
+
 struct BashTool;
 #[async_trait]
 impl Tool for BashTool {
@@ -410,10 +421,13 @@ impl Tool for BashTool {
         if cmd.is_empty() {
             anyhow::bail!("BASH_COMMAND_MISSING");
         }
+        #[cfg(windows)]
         let shell = match build_shell_command(cmd) {
             ShellCommandPlan::Execute(plan) => plan,
             ShellCommandPlan::Blocked(result) => return Ok(result),
         };
+        #[cfg(not(windows))]
+        let ShellCommandPlan::Execute(shell) = build_shell_command(cmd);
         let ShellExecutionPlan {
             mut command,
             translated_command,
@@ -450,10 +464,13 @@ impl Tool for BashTool {
         if cmd.is_empty() {
             anyhow::bail!("BASH_COMMAND_MISSING");
         }
+        #[cfg(windows)]
         let shell = match build_shell_command(cmd) {
             ShellCommandPlan::Execute(plan) => plan,
             ShellCommandPlan::Blocked(result) => return Ok(result),
         };
+        #[cfg(not(windows))]
+        let ShellCommandPlan::Execute(shell) = build_shell_command(cmd);
         let ShellExecutionPlan {
             mut command,
             translated_command,
@@ -541,6 +558,7 @@ fn shell_metadata(
 
 enum ShellCommandPlan {
     Execute(ShellExecutionPlan),
+    #[cfg(windows)]
     Blocked(ToolResult),
 }
 
@@ -588,6 +606,7 @@ fn build_shell_command(raw_cmd: &str) -> ShellCommandPlan {
     }
 }
 
+#[cfg(any(windows, test))]
 fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
     let trimmed = raw_cmd.trim();
     if trimmed.is_empty() {
@@ -603,6 +622,7 @@ fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
     None
 }
 
+#[cfg(any(windows, test))]
 fn translate_windows_ls_command(trimmed: &str) -> Option<String> {
     let mut force = false;
     let mut paths: Vec<&str> = Vec::new();
@@ -628,6 +648,7 @@ fn translate_windows_ls_command(trimmed: &str) -> Option<String> {
     Some(translated)
 }
 
+#[cfg(any(windows, test))]
 fn translate_windows_find_command(trimmed: &str) -> Option<String> {
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
     if tokens.is_empty() || !tokens[0].eq_ignore_ascii_case("find") {
@@ -693,6 +714,7 @@ fn translate_windows_find_command(trimmed: &str) -> Option<String> {
     Some(translated)
 }
 
+#[cfg(any(windows, test))]
 fn normalize_shell_token(token: &str) -> String {
     let trimmed = token.trim();
     if trimmed.len() >= 2
@@ -704,10 +726,12 @@ fn normalize_shell_token(token: &str) -> String {
     trimmed.to_string()
 }
 
+#[cfg(any(windows, test))]
 fn quote_powershell_single(input: &str) -> String {
     format!("'{}'", input.replace('\'', "''"))
 }
 
+#[cfg(any(windows, test))]
 fn windows_guardrail_reason(raw_cmd: &str) -> Option<&'static str> {
     let trimmed = raw_cmd.trim().to_ascii_lowercase();
     if trimmed.is_empty() {
@@ -735,13 +759,24 @@ impl Tool for ReadTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "read".to_string(),
-            description: "Read file contents".to_string(),
+            description: "Read file contents. Supports text files and documents (PDF, DOCX, PPTX, XLSX, RTF).".to_string(),
             input_schema: json!({
-                "type":"object",
-                "properties":{
-                    "path":{"type":"string"}
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to file"
+                    },
+                    "max_size": {
+                        "type": "integer",
+                        "description": "Max file size in bytes (default: 25MB)"
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Max output characters (default: 200,000)"
+                    }
                 },
-                "required":["path"]
+                "required": ["path"]
             }),
         }
     }
@@ -753,10 +788,51 @@ impl Tool for ReadTool {
                 metadata: json!({"path": path}),
             });
         }
+
+        let path_buf = PathBuf::from(path);
+
+        // Check if it's a document format
+        if is_document_file(&path_buf) {
+            // Use document extraction
+            let mut limits = tandem_document::ExtractLimits::default();
+
+            if let Some(max_size) = args["max_size"].as_u64() {
+                limits.max_file_bytes = max_size;
+            }
+            if let Some(max_chars) = args["max_chars"].as_u64() {
+                limits.max_output_chars = max_chars as usize;
+            }
+
+            match tandem_document::extract_file_text(&path_buf, limits) {
+                Ok(text) => {
+                    let ext = path_buf
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("unknown")
+                        .to_lowercase();
+                    return Ok(ToolResult {
+                        output: text,
+                        metadata: json!({
+                            "path": path,
+                            "type": "document",
+                            "format": ext
+                        }),
+                    });
+                }
+                Err(e) => {
+                    return Ok(ToolResult {
+                        output: format!("Failed to extract document text: {}", e),
+                        metadata: json!({"path": path, "error": true}),
+                    });
+                }
+            }
+        }
+
+        // Fallback to text reading
         let data = fs::read_to_string(path).await.unwrap_or_default();
         Ok(ToolResult {
             output: data,
-            metadata: json!({}),
+            metadata: json!({"path": path, "type": "text"}),
         })
     }
 }

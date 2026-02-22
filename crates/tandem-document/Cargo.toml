@@ -1,0 +1,17 @@
+[package]
+name = "tandem-document"
+version = "0.3.8"
+description = "Document text extraction for Tandem"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/frumu-ai/tandem"
+edition = "2021"
+
+[dependencies]
+pdf-extract = "0.10"
+calamine = "0.26"
+quick-xml = "0.38"
+zip = "0.6"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
