@@ -937,6 +937,13 @@ export async function routinesRuns(
   return invoke("routines_runs", { routineId, limit });
 }
 
+export async function routinesRunsAll(
+  routineId?: string,
+  limit?: number
+): Promise<RoutineRunRecord[]> {
+  return invoke("routines_runs_all", { routineId, limit });
+}
+
 export async function routinesRunGet(runId: string): Promise<RoutineRunRecord> {
   return invoke("routines_run_get", { runId });
 }

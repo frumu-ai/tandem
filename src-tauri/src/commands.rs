@@ -5458,6 +5458,18 @@ pub async fn routines_runs(
 }
 
 #[tauri::command]
+pub async fn routines_runs_all(
+    state: State<'_, AppState>,
+    routine_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<RoutineRunRecord>> {
+    state
+        .sidecar
+        .routines_runs_all(routine_id.as_deref(), limit)
+        .await
+}
+
+#[tauri::command]
 pub async fn routines_run_get(
     state: State<'_, AppState>,
     run_id: String,
