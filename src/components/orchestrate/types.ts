@@ -118,16 +118,21 @@ export interface RunSnapshot {
 export interface RunSummary {
   run_id: string;
   session_id: string;
+  workspace_root?: string | null;
   source?: RunSource;
   objective: string;
   status: RunStatus;
   created_at: string;
   updated_at: string;
+  started_at?: string;
+  ended_at?: string | null;
+  last_error?: string | null;
 }
 
 export interface Run {
   run_id: string;
   session_id: string;
+  workspace_root?: string | null;
   objective: string;
   config: OrchestratorConfig;
   status: RunStatus;

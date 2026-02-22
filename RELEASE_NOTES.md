@@ -34,6 +34,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Command Center reliability: Added strict `read`/`write` tool-arg validation (JSON object + non-empty `path`) with fail-fast `INVALID_TOOL_ARGS` handling to prevent endless retry loops.
 - Orchestrator error clarity: Replaced generic Windows `os error 3` workspace mismatch messaging with structured classification (`WORKSPACE_NOT_FOUND`, path-not-found fail-fast, timeout codes).
 - Workspace safety: Task child sessions now pin explicitly to orchestrator workspace path and preflight-check workspace existence before session creation.
+- Workspace propagation fix (CC-001): New runs now persist canonical `workspace_root`, and tool executions receive explicit `workspace_root`/`effective_cwd` context so filesystem operations always use the selected workspace.
+- Workspace switch hot-reload fix (CC-001): Switching active workspace now invalidates stale orchestrator engines bound to previous roots, preventing agents from reading/writing in old directories.
+- Selected Run readability (CC-002): Added objective line-clamp with `Show more` / `Show less` in Command Center Selected Run panel.
+- Runs observability (CC-003): Runs list now shows status badges, started/ended timestamps, and failed-run error snippets.
 - Tool history integrity: Tool execution IDs now include session/message/part context to avoid cross-session `part_id` collisions in diagnostics.
 - File-tool stability: Increased `read`/`write` timeout budget to reduce premature synthetic timeout terminals on larger repos.
 - Engine memory tools:
@@ -290,4 +294,3 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 ## v0.2.3 (2026-02-08)
 
 - Fixed Orchestration Mode creating endless new root chat sessions during execution.
-

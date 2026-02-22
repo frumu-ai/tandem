@@ -26,10 +26,10 @@ use crate::sidecar::{
     AgentTeamSpawnResult, AgentTeamTemplate, ChannelsConfigResponse, ChannelsStatusResponse,
     CreateSessionRequest, FilePartInput, McpActionResponse, McpAddRequest, McpRemoteTool,
     McpServerRecord, MissionApplyEventResult, MissionCreateRequest, MissionState, ModelInfo,
-    ModelSpec, Project, ProviderInfo, RoutineCreateRequest, RoutineHistoryEvent, RoutinePatchRequest,
-    RoutineRunArtifact, RoutineRunArtifactAddRequest, RoutineRunDecisionRequest, RoutineRunNowRequest,
-    RoutineRunNowResponse, RoutineRunRecord, RoutineSpec, SendMessageRequest, Session, SessionMessage,
-    SidecarState, StreamEvent, TodoItem,
+    ModelSpec, Project, ProviderInfo, RoutineCreateRequest, RoutineHistoryEvent,
+    RoutinePatchRequest, RoutineRunArtifact, RoutineRunArtifactAddRequest,
+    RoutineRunDecisionRequest, RoutineRunNowRequest, RoutineRunNowResponse, RoutineRunRecord,
+    RoutineSpec, SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent, TodoItem,
 };
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
@@ -1254,6 +1254,28 @@ pub async fn set_active_project(
     let path_buf = project.path_buf();
     migrate_workspace_legacy_namespace_if_needed(&path_buf)?;
     state.set_workspace(path_buf.clone());
+    let normalized_workspace = normalize_workspace_path(&path_buf.to_string_lossy())
+        .unwrap_or_else(|| path_buf.to_string_lossy().to_string());
+
+    // Invalidate orchestrator engines bound to other workspaces so new runs always use
+    // the active project context.
+    {
+        let mut engines = state.orchestrator_engines.write().unwrap();
+        let before = engines.len();
+        engines.retain(|_, engine| {
+            normalize_workspace_path(&engine.workspace_path_string())
+                .map(|root| root == normalized_workspace)
+                .unwrap_or(false)
+        });
+        let removed = before.saturating_sub(engines.len());
+        if removed > 0 {
+            tracing::info!(
+                "Workspace switch invalidated {} orchestrator engine(s); active workspace={}",
+                removed,
+                normalized_workspace
+            );
+        }
+    }
 
     // Update sidecar workspace - this sets it for when sidecar restarts
     state.sidecar.set_workspace(path_buf.clone()).await;
@@ -5368,26 +5390,17 @@ pub async fn mcp_set_enabled(
 }
 
 #[tauri::command]
-pub async fn mcp_connect(
-    state: State<'_, AppState>,
-    name: String,
-) -> Result<McpActionResponse> {
+pub async fn mcp_connect(state: State<'_, AppState>, name: String) -> Result<McpActionResponse> {
     state.sidecar.mcp_connect(&name).await
 }
 
 #[tauri::command]
-pub async fn mcp_disconnect(
-    state: State<'_, AppState>,
-    name: String,
-) -> Result<McpActionResponse> {
+pub async fn mcp_disconnect(state: State<'_, AppState>, name: String) -> Result<McpActionResponse> {
     state.sidecar.mcp_disconnect(&name).await
 }
 
 #[tauri::command]
-pub async fn mcp_refresh(
-    state: State<'_, AppState>,
-    name: String,
-) -> Result<McpActionResponse> {
+pub async fn mcp_refresh(state: State<'_, AppState>, name: String) -> Result<McpActionResponse> {
     state.sidecar.mcp_refresh(&name).await
 }
 
@@ -5539,7 +5552,10 @@ pub async fn routines_run_add_artifact(
     run_id: String,
     request: RoutineRunArtifactAddRequest,
 ) -> Result<RoutineRunRecord> {
-    state.sidecar.routines_run_add_artifact(&run_id, request).await
+    state
+        .sidecar
+        .routines_run_add_artifact(&run_id, request)
+        .await
 }
 
 #[tauri::command]
@@ -8343,10 +8359,10 @@ fn build_sidecar_session_model(
     }
 }
 
-fn existing_workspace_dir_for_session(state: &AppState) -> Option<String> {
+fn canonical_workspace_dir_for_session(state: &AppState) -> Option<String> {
     state.get_workspace_path().and_then(|p| {
         if p.is_dir() {
-            Some(p.to_string_lossy().to_string())
+            normalize_workspace_path(&p.to_string_lossy())
         } else {
             tracing::warn!(
                 "Workspace path no longer exists or is not a directory: {}. Falling back to sidecar default cwd.",
@@ -8386,6 +8402,16 @@ pub async fn orchestrator_create_run(
     use crate::sidecar::CreateSessionRequest;
 
     let run_id = Uuid::new_v4().to_string();
+    let workspace_dir = canonical_workspace_dir_for_session(state.inner())
+        .ok_or_else(|| TandemError::InvalidConfig("No workspace selected".to_string()))?;
+    let workspace_path = PathBuf::from(&workspace_dir);
+    if !workspace_path.is_dir() {
+        return Err(TandemError::InvalidConfig(format!(
+            "Selected workspace does not exist or is not a directory: {}",
+            workspace_path.display()
+        )));
+    }
+
     let config_snapshot = { state.providers_config.read().unwrap().clone() };
     let resolved_model_spec = resolve_required_model_spec(
         &config_snapshot,
@@ -8410,8 +8436,7 @@ pub async fn orchestrator_create_run(
     )
     .await?;
 
-    // Create a NEW session specifically for the orchestrator
-    let workspace_dir = existing_workspace_dir_for_session(state.inner());
+    // Create a NEW session specifically for the orchestrator.
     let session_request = CreateSessionRequest {
         parent_id: None,
         title: Some(format!(
@@ -8422,8 +8447,8 @@ pub async fn orchestrator_create_run(
         model: build_sidecar_session_model(final_model.clone(), final_provider.clone()),
         provider: final_provider.clone(),
         permission: Some(orchestrator_permission_rules()),
-        directory: workspace_dir.clone(),
-        workspace_root: workspace_dir,
+        directory: Some(workspace_dir.clone()),
+        workspace_root: Some(workspace_dir.clone()),
     };
 
     let session = state
@@ -8436,10 +8461,13 @@ pub async fn orchestrator_create_run(
 
     let session_id = session.id;
     tracing::info!(
-        "Created orchestrator session: {} with model: {:?}, provider: {:?}",
+        "Created orchestrator session: {} run_id={} workspace_root={} directory={} model={:?} provider={:?}",
         session_id,
+        run_id,
+        workspace_dir,
+        session.directory.clone().unwrap_or_else(|| ".".to_string()),
         session.model,
-        session.provider
+        session.provider,
     );
     if let (Some(expected_provider), Some(expected_model)) = (&final_provider, &final_model) {
         if let (Some(actual_provider), Some(actual_model)) = (&session.provider, &session.model) {
@@ -8484,6 +8512,7 @@ pub async fn orchestrator_create_run(
 
     // Create the run object
     let mut run = Run::new(run_id.clone(), session_id, objective, config);
+    run.workspace_root = Some(workspace_dir.clone());
     run.source = run_source;
     // Persist model/provider selection into the run so the orchestrator can always send explicit
     // model specs even if the sidecar session object doesn't echo them back.
@@ -8491,17 +8520,7 @@ pub async fn orchestrator_create_run(
     run.provider = final_provider.clone();
     run.agent_model_routing = normalize_orchestrator_model_routing(agent_model_routing);
 
-    // Initialize dependencies
-    let workspace_path = state
-        .get_workspace_path()
-        .ok_or_else(|| TandemError::InvalidConfig("No workspace selected".to_string()))?;
-    if !workspace_path.is_dir() {
-        return Err(TandemError::InvalidConfig(format!(
-            "Selected workspace does not exist or is not a directory: {}",
-            workspace_path.display()
-        )));
-    }
-
+    // Initialize dependencies.
     let policy_config = PolicyConfig::new(workspace_path.clone());
     let policy = PolicyEngine::new(policy_config);
     let store = OrchestratorStore::new(&workspace_path)?;
@@ -8540,7 +8559,12 @@ pub async fn orchestrator_create_run(
         tracing::info!("Orchestrator event loop ended for run {}", run_id_clone);
     });
 
-    tracing::info!("Created orchestrator run: {}", run_id);
+    tracing::info!(
+        "Created orchestrator run: run_id={} session_id={} workspace_root={}",
+        run_id,
+        engine.get_base_session_id().await,
+        workspace_dir
+    );
     Ok(run_id)
 }
 
@@ -8960,14 +8984,28 @@ pub async fn orchestrator_list_runs(state: State<'_, AppState>) -> Result<Vec<Ru
 
             // Try to load run from disk
             if let Ok(run) = store.load_run(&run_id) {
+                let ended_at = run.ended_at;
+                let updated_at = ended_at.unwrap_or_else(chrono::Utc::now);
+                let last_error = run.error_message.as_ref().and_then(|msg| {
+                    let trimmed = msg.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.chars().take(220).collect::<String>())
+                    }
+                });
                 summaries.push(RunSummary {
                     run_id: run.run_id,
                     session_id: run.session_id,
+                    workspace_root: run.workspace_root,
                     source: run.source,
                     objective: run.objective,
                     status: run.status,
                     created_at: run.started_at,
-                    updated_at: run.ended_at.unwrap_or_else(chrono::Utc::now),
+                    updated_at,
+                    started_at: run.started_at,
+                    ended_at,
+                    last_error,
                 });
             }
         }
@@ -9001,8 +9039,16 @@ pub async fn orchestrator_load_run(
         }
     }
 
+    let run_workspace_path = run
+        .workspace_root
+        .as_deref()
+        .and_then(normalize_workspace_path)
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .unwrap_or_else(|| workspace_path.clone());
+
     // Re-hydrate engine
-    let policy_config = PolicyConfig::new(workspace_path.clone());
+    let policy_config = PolicyConfig::new(run_workspace_path.clone());
     let policy = PolicyEngine::new(policy_config);
 
     // Channel for events
@@ -9014,6 +9060,7 @@ pub async fn orchestrator_load_run(
     // However, the `Run` struct loaded from disk has the OLD config.
     // We should patch the config here before creating the engine.
     let mut run_to_load = run.clone();
+    run_to_load.workspace_root = Some(run_workspace_path.to_string_lossy().to_string());
     run_to_load.agent_model_routing = run_to_load.agent_model_routing.canonicalized();
     for task in run_to_load.tasks.iter_mut() {
         let normalized = crate::orchestrator::types::normalize_role_key(&task.assigned_role);
@@ -9086,7 +9133,7 @@ pub async fn orchestrator_load_run(
         store,
         state.sidecar.clone(),
         state.stream_hub.clone(),
-        workspace_path,
+        run_workspace_path,
         event_tx,
     ));
 

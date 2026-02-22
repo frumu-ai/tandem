@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Workspace/path error taxonomy**: Replaced broad Windows `os error 3` pause messaging with clearer classification (`WORKSPACE_NOT_FOUND`, path-not-found fail-fast) so runs stop/recover deterministically.
 - **Orchestrator retry-loop suppression**: Invalid tool args and path-not-found failures now fail task attempts directly instead of repeatedly re-queuing.
 - **Task session workspace pinning**: Child task sessions are now pinned to the orchestrator workspace path, with preflight checks before session creation.
+- **Workspace switch propagation (CC-001)**: New runs now persist canonical `workspace_root` and inject explicit workspace/cwd into tool execution so file ops resolve against the selected Command Center workspace (not stale process CWD).
+- **Workspace hot-switch engine invalidation (CC-001)**: Switching active project now invalidates stale in-memory orchestrator engines bound to other workspaces, preventing cross-workspace drift in subsequent runs.
+- **Selected Run objective readability (CC-002)**: Added inline objective truncation with `Show more` / `Show less` toggle so large prompts no longer overwhelm the Selected Run panel by default.
+- **Runs list status visibility (CC-003)**: Runs now surface status badges, start/end timestamps, and last-error snippets in Command Center for faster state triage without digging through logs.
 - **Tool timeout resilience for file ops**: Increased `read`/`write` tool timeouts to reduce premature synthetic terminal errors on larger workspaces.
 - **Tool history ID collision fix**: Tool execution IDs now include session/message/part context (not just `part_id`) to prevent cross-session overwrite/correlation drift.
 - **Structured stream error codes**: Stream tool/session terminal events now carry optional `error_code` metadata for clearer diagnostics in orchestrator + UI.
@@ -917,4 +921,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.5]: https://github.com/frumu-ai/tandem/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/frumu-ai/tandem/compare/v0.1.0...v0.1.4
 [0.1.0]: https://github.com/frumu-ai/tandem/releases/tag/v0.1.0
-

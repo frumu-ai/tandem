@@ -32,6 +32,10 @@
 - **Command Center retry-loop fix (Windows/path failures)**: Added strict `read`/`write` argument validation (`JSON object` + non-empty `path`) with fail-fast `INVALID_TOOL_ARGS` handling to stop endless task retries.
 - **Structured orchestrator error taxonomy**: Replaced generic `os error 3` workspace mismatch messaging with explicit categories (`WORKSPACE_NOT_FOUND`, path-not-found fail-fast, timeout codes).
 - **Workspace pinning + preflight**: Child task sessions now pin to the orchestrator workspace and validate workspace existence before session creation.
+- **Workspace propagation correctness (CC-001)**: Orchestrator runs now persist canonical `workspace_root`, and tool calls execute with explicit `workspace_root`/`effective_cwd` context to keep all filesystem actions rooted to the selected workspace.
+- **Workspace switch hot-switch hardening (CC-001)**: Active-project switches now invalidate stale in-memory orchestrator engines tied to old workspace roots, preventing cross-workspace bleed.
+- **Selected Run prompt UX (CC-002)**: Added inline objective line-clamp with `Show more` / `Show less` toggle in the Command Center Selected Run panel.
+- **Runs status visibility (CC-003)**: Command Center run list now shows status badges, started/ended timestamps, and failed-run error snippets.
 - **Tool-history correlation integrity**: Tool execution IDs now include session/message/part context to prevent cross-session `part_id` collision overwrite.
 - **File-tool timeout tuning**: Increased `read`/`write` timeout budget to reduce premature synthetic timeout terminal events.
 - **Autonomous swarm approvals**: Command Center/orchestrator sessions now auto-allow shell permissions in autonomous mode instead of repeatedly prompting.
@@ -935,4 +939,3 @@ _Release attempt failed on 2026-02-09 due to GitHub release asset upload errors 
 
 - **Vector Memory Store**: Implemented a local, zero-trust vector database (`sqlite-vec`) to store and retrieve semantic embeddings of your codebase and conversation history.
 - **Memory Context Injection**: The AI now automatically receives relevant context snippets based on your current query, reducing hallucinations and "I don't know" responses about your own code.
-
