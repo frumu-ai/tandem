@@ -266,11 +266,11 @@ Tandem 采用**零信任模型**，仅可访问你明确授权的文件夹：
 
 **技术栈：**
 
-- **Frontend**: React 18, TypeScript, Tailwind CSS, Framer Motion
-- **Backend**: Rust, Tauri 2.0
-- **Agent Runtime**: Tandem Engine (Rust, HTTP + SSE)
-- **Encryption**: AES-256-GCM for API key storage
-- **IPC**: Tauri's secure command system
+- **前端**: React 18、TypeScript、Tailwind CSS、Framer Motion
+- **后端**: Rust、Tauri 2.0
+- **Agent 运行时**: Tandem Engine（Rust、HTTP + SSE）
+- **加密**: 使用 AES-256-GCM 存储 API 密钥
+- **IPC**: Tauri 的安全命令系统
 
 ### 受监督的 Agent 模式
 
