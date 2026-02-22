@@ -23,6 +23,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
 tandem-core = { path = "../tandem-core", version = "0.3.8" }
 tandem-providers = { path = "../tandem-providers", version = "0.3.8" }
 tandem-runtime = { path = "../tandem-runtime", version = "0.3.8" }

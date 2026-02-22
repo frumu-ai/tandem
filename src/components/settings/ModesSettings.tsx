@@ -9,7 +9,9 @@ import {
   deleteMode,
   exportModes,
   importModes,
+  mcpListTools,
   upsertMode,
+  type McpRemoteTool,
   type ModeBase,
   type ModeDefinition,
   type ModeScope,
@@ -70,6 +72,7 @@ export function ModesSettings() {
   const [importScope, setImportScope] = useState<ModeScope>("user");
   const [status, setStatus] = useState<string>("");
   const [isSaving, setIsSaving] = useState(false);
+  const [mcpTools, setMcpTools] = useState<McpRemoteTool[]>([]);
 
   const editableModes = useMemo(
     () => modes.filter((m) => m.source === "user" || m.source === "project"),
@@ -87,8 +90,62 @@ export function ModesSettings() {
     setForm(modeToForm(selected));
   }, [modes, selectedId]);
 
+  useEffect(() => {
+    let disposed = false;
+    const loadMcpTools = async () => {
+      try {
+        const loaded = await mcpListTools();
+        if (!disposed) setMcpTools(loaded);
+      } catch {
+        if (!disposed) setMcpTools([]);
+      }
+    };
+    void loadMcpTools();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
   const selectedMode = modes.find((m) => m.id === selectedId);
   const isBuiltInSelected = selectedMode?.source === "builtin";
+  const allowedToolSet = useMemo(
+    () =>
+      new Set(
+        form.allowedTools
+          .split(",")
+          .map((tool) => tool.trim())
+          .filter(Boolean)
+      ),
+    [form.allowedTools]
+  );
+  const groupedMcpTools = useMemo(() => {
+    const grouped = new Map<string, McpRemoteTool[]>();
+    for (const tool of mcpTools) {
+      if (!grouped.has(tool.server_name)) grouped.set(tool.server_name, []);
+      grouped.get(tool.server_name)?.push(tool);
+    }
+    for (const rows of grouped.values()) {
+      rows.sort((a, b) => a.namespaced_name.localeCompare(b.namespaced_name));
+    }
+    return Array.from(grouped.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [mcpTools]);
+
+  const toggleAllowedTool = (toolName: string, enabled: boolean) => {
+    setForm((prev) => {
+      const next = new Set(
+        prev.allowedTools
+          .split(",")
+          .map((tool) => tool.trim())
+          .filter(Boolean)
+      );
+      if (enabled) {
+        next.add(toolName);
+      } else {
+        next.delete(toolName);
+      }
+      return { ...prev, allowedTools: Array.from(next).join(", ") };
+    });
+  };
 
   const saveMode = async () => {
     setIsSaving(true);
@@ -272,6 +329,36 @@ export function ModesSettings() {
             placeholder="read, list, todowrite"
           />
         </div>
+
+        {groupedMcpTools.length > 0 && (
+          <div className="space-y-2 rounded-md border border-border bg-surface-elevated/40 p-3">
+            <p className="text-xs font-medium text-text-muted">Connector tools (MCP)</p>
+            {groupedMcpTools.map(([server, tools]) => (
+              <div key={server} className="space-y-1">
+                <p className="text-[11px] font-semibold text-text">{server}</p>
+                <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
+                  {tools.map((tool) => (
+                    <label
+                      key={tool.namespaced_name}
+                      className="flex items-center gap-2 rounded border border-border bg-surface px-2 py-1 text-xs"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={allowedToolSet.has(tool.namespaced_name)}
+                        onChange={(event) =>
+                          toggleAllowedTool(tool.namespaced_name, event.target.checked)
+                        }
+                      />
+                      <span className="truncate font-mono" title={tool.namespaced_name}>
+                        {tool.namespaced_name}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div>
           <label className="text-xs font-medium text-text-muted">

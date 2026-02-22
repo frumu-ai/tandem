@@ -1084,6 +1084,66 @@ pub struct RoutineHistoryEvent {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpToolCacheEntry {
+    pub tool_name: String,
+    pub description: String,
+    #[serde(default)]
+    pub input_schema: serde_json::Value,
+    pub fetched_at_ms: u64,
+    pub schema_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpServerRecord {
+    pub name: String,
+    pub transport: String,
+    #[serde(default)]
+    pub enabled: bool,
+    pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub tool_cache: Vec<McpToolCacheEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_fetched_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpRemoteTool {
+    pub server_name: String,
+    pub tool_name: String,
+    pub namespaced_name: String,
+    pub description: String,
+    #[serde(default)]
+    pub input_schema: serde_json::Value,
+    pub fetched_at_ms: u64,
+    pub schema_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpAddRequest {
+    pub name: String,
+    pub transport: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpActionResponse {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutineCreateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1153,6 +1213,79 @@ pub struct RoutineRunNowResponse {
     pub fired_at_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineRunStatus {
+    Queued,
+    PendingApproval,
+    Running,
+    Paused,
+    BlockedPolicy,
+    Denied,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineRunArtifact {
+    pub artifact_id: String,
+    pub uri: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineRunRecord {
+    pub run_id: String,
+    pub routine_id: String,
+    pub trigger_type: String,
+    pub run_count: u32,
+    pub status: RoutineRunStatus,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fired_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u64>,
+    pub requires_approval: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denial_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+    #[serde(default)]
+    pub artifacts: Vec<RoutineRunArtifact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RoutineRunDecisionRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineRunArtifactAddRequest {
+    pub uri: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Deserialize)]
 struct RoutineListResponse {
     routines: Vec<RoutineSpec>,
@@ -1171,6 +1304,21 @@ struct RoutineDeleteResponse {
 #[derive(Debug, Deserialize)]
 struct RoutineHistoryResponse {
     events: Vec<RoutineHistoryEvent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineRunsResponse {
+    runs: Vec<RoutineRunRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineRunResponse {
+    run: RoutineRunRecord,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineRunArtifactsResponse {
+    artifacts: Vec<RoutineRunArtifact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3404,6 +3552,101 @@ impl SidecarManager {
     }
 
     // ========================================================================
+    // MCP
+    // ========================================================================
+
+    pub async fn mcp_list_servers(&self) -> Result<Vec<McpServerRecord>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mcp", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list MCP servers: {}", e)))?;
+        let payload: HashMap<String, McpServerRecord> = self.handle_response(response).await?;
+        let mut rows = payload.into_values().collect::<Vec<_>>();
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(rows)
+    }
+
+    pub async fn mcp_add_server(&self, request: McpAddRequest) -> Result<McpActionResponse> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mcp", self.base_url().await?);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to upsert MCP server: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn mcp_set_enabled(&self, name: &str, enabled: bool) -> Result<McpActionResponse> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mcp/{}", self.base_url().await?, name);
+        let response = self
+            .http_client
+            .patch(&url)
+            .json(&serde_json::json!({ "enabled": enabled }))
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to toggle MCP server: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn mcp_connect(&self, name: &str) -> Result<McpActionResponse> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mcp/{}/connect", self.base_url().await?, name);
+        let response = self
+            .http_client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to connect MCP server: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn mcp_disconnect(&self, name: &str) -> Result<McpActionResponse> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mcp/{}/disconnect", self.base_url().await?, name);
+        let response = self
+            .http_client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to disconnect MCP server: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn mcp_refresh(&self, name: &str) -> Result<McpActionResponse> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mcp/{}/refresh", self.base_url().await?, name);
+        let response = self
+            .http_client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to refresh MCP tools: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn mcp_list_tools(&self) -> Result<Vec<McpRemoteTool>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mcp/tools", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list MCP tools: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    // ========================================================================
     // Routines
     // ========================================================================
 
@@ -3499,6 +3742,134 @@ impl SidecarManager {
             .map_err(|e| TandemError::Sidecar(format!("Failed to load routine history: {}", e)))?;
         let payload: RoutineHistoryResponse = self.handle_response(response).await?;
         Ok(payload.events)
+    }
+
+    pub async fn routines_runs(
+        &self,
+        routine_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<RoutineRunRecord>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/{}/runs", self.base_url().await?, routine_id);
+        let mut request = self.http_client.get(&url);
+        if let Some(limit) = limit {
+            request = request.query(&[("limit", limit)]);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to load routine runs: {}", e)))?;
+        let payload: RoutineRunsResponse = self.handle_response(response).await?;
+        Ok(payload.runs)
+    }
+
+    pub async fn routines_run_get(&self, run_id: &str) -> Result<RoutineRunRecord> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/runs/{}", self.base_url().await?, run_id);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to load routine run: {}", e)))?;
+        let payload: RoutineRunResponse = self.handle_response(response).await?;
+        Ok(payload.run)
+    }
+
+    async fn routine_run_decision(
+        &self,
+        run_id: &str,
+        action: &str,
+        request: RoutineRunDecisionRequest,
+    ) -> Result<RoutineRunRecord> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/routines/runs/{}/{}",
+            self.base_url().await?,
+            run_id,
+            action
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!(
+                    "Failed routine run {} action for {}: {}",
+                    action, run_id, e
+                ))
+            })?;
+        let payload: RoutineRunResponse = self.handle_response(response).await?;
+        Ok(payload.run)
+    }
+
+    pub async fn routines_run_approve(
+        &self,
+        run_id: &str,
+        request: RoutineRunDecisionRequest,
+    ) -> Result<RoutineRunRecord> {
+        self.routine_run_decision(run_id, "approve", request).await
+    }
+
+    pub async fn routines_run_deny(
+        &self,
+        run_id: &str,
+        request: RoutineRunDecisionRequest,
+    ) -> Result<RoutineRunRecord> {
+        self.routine_run_decision(run_id, "deny", request).await
+    }
+
+    pub async fn routines_run_pause(
+        &self,
+        run_id: &str,
+        request: RoutineRunDecisionRequest,
+    ) -> Result<RoutineRunRecord> {
+        self.routine_run_decision(run_id, "pause", request).await
+    }
+
+    pub async fn routines_run_resume(
+        &self,
+        run_id: &str,
+        request: RoutineRunDecisionRequest,
+    ) -> Result<RoutineRunRecord> {
+        self.routine_run_decision(run_id, "resume", request).await
+    }
+
+    pub async fn routines_run_artifacts(&self, run_id: &str) -> Result<Vec<RoutineRunArtifact>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/runs/{}/artifacts", self.base_url().await?, run_id);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to load routine run artifacts: {}", e))
+            })?;
+        let payload: RoutineRunArtifactsResponse = self.handle_response(response).await?;
+        Ok(payload.artifacts)
+    }
+
+    pub async fn routines_run_add_artifact(
+        &self,
+        run_id: &str,
+        request: RoutineRunArtifactAddRequest,
+    ) -> Result<RoutineRunRecord> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/runs/{}/artifacts", self.base_url().await?, run_id);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to add routine run artifact: {}", e))
+            })?;
+        let payload: RoutineRunResponse = self.handle_response(response).await?;
+        Ok(payload.run)
     }
 
     // ========================================================================

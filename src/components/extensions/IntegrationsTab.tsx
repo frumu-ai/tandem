@@ -6,6 +6,14 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import {
+  mcpConnect,
+  mcpDisconnect,
+  mcpListServers,
+  mcpListTools,
+  mcpRefresh,
+  mcpSetEnabled,
+  type McpRemoteTool,
+  type McpServerRecord,
   opencodeAddMcpServer,
   opencodeListMcpServers,
   opencodeRemoveMcpServer,
@@ -62,6 +70,10 @@ export function IntegrationsTab({ workspacePath }: IntegrationsTabProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeLoading, setRuntimeLoading] = useState(true);
+  const [runtimeBusyServer, setRuntimeBusyServer] = useState<string | null>(null);
+  const [runtimeServers, setRuntimeServers] = useState<McpServerRecord[]>([]);
+  const [runtimeTools, setRuntimeTools] = useState<McpRemoteTool[]>([]);
 
   const [testingName, setTestingName] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, OpencodeMcpTestResult>>({});
@@ -94,8 +106,24 @@ export function IntegrationsTab({ workspacePath }: IntegrationsTabProps) {
     }
   };
 
+  const refreshRuntime = async () => {
+    setRuntimeLoading(true);
+    try {
+      const [serversList, toolsList] = await Promise.all([mcpListServers(), mcpListTools()]);
+      setRuntimeServers(serversList);
+      setRuntimeTools(toolsList);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load MCP runtime");
+      setRuntimeServers([]);
+      setRuntimeTools([]);
+    } finally {
+      setRuntimeLoading(false);
+    }
+  };
+
   useEffect(() => {
     refresh().catch(console.error);
+    refreshRuntime().catch(console.error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, workspacePath]);
 
@@ -204,6 +232,66 @@ export function IntegrationsTab({ workspacePath }: IntegrationsTabProps) {
     }
   };
 
+  const runtimeConnect = async (name: string) => {
+    setRuntimeBusyServer(name);
+    try {
+      const result = await mcpConnect(name);
+      if (!result.ok) {
+        throw new Error(result.error ?? "Failed to connect MCP server");
+      }
+      await refreshRuntime();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to connect MCP server");
+    } finally {
+      setRuntimeBusyServer(null);
+    }
+  };
+
+  const runtimeDisconnect = async (name: string) => {
+    setRuntimeBusyServer(name);
+    try {
+      const result = await mcpDisconnect(name);
+      if (!result.ok) {
+        throw new Error(result.error ?? "Failed to disconnect MCP server");
+      }
+      await refreshRuntime();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to disconnect MCP server");
+    } finally {
+      setRuntimeBusyServer(null);
+    }
+  };
+
+  const runtimeRefresh = async (name: string) => {
+    setRuntimeBusyServer(name);
+    try {
+      const result = await mcpRefresh(name);
+      if (!result.ok) {
+        throw new Error(result.error ?? "Failed to refresh MCP tools");
+      }
+      await refreshRuntime();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to refresh MCP tools");
+    } finally {
+      setRuntimeBusyServer(null);
+    }
+  };
+
+  const runtimeToggleEnabled = async (name: string, enabled: boolean) => {
+    setRuntimeBusyServer(name);
+    try {
+      const result = await mcpSetEnabled(name, enabled);
+      if (!result.ok) {
+        throw new Error(result.error ?? "Failed to update MCP server");
+      }
+      await refreshRuntime();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update MCP server");
+    } finally {
+      setRuntimeBusyServer(null);
+    }
+  };
+
   const test = async (name: string) => {
     setTestingName(name);
     try {
@@ -271,6 +359,93 @@ export function IntegrationsTab({ workspacePath }: IntegrationsTabProps) {
           </button>
         </div>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Runtime MCP status</CardTitle>
+          <CardDescription>
+            Runtime connection state and discovered connector tools used by agents and routines.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {runtimeLoading ? (
+            <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
+              Loading runtime MCP status...
+            </div>
+          ) : runtimeServers.length === 0 ? (
+            <div className="rounded-lg border border-border bg-surface-elevated p-4 text-sm text-text-muted">
+              No MCP servers registered in runtime yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {runtimeServers.map((server) => {
+                const serverTools = runtimeTools.filter((tool) => tool.server_name === server.name);
+                const busy = runtimeBusyServer === server.name;
+                return (
+                  <div
+                    key={server.name}
+                    className="rounded-lg border border-border bg-surface-elevated p-3"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-text">{server.name}</p>
+                        <p className="mt-1 truncate text-xs font-mono text-text-muted">
+                          {server.transport}
+                        </p>
+                        <p className="mt-1 text-xs text-text-subtle">
+                          {server.enabled ? "Enabled" : "Disabled"} ·{" "}
+                          {server.connected ? "Connected" : "Disconnected"} · {serverTools.length}{" "}
+                          tools
+                        </p>
+                        {server.last_error && (
+                          <p className="mt-1 text-xs text-error/80">{server.last_error}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => runtimeToggleEnabled(server.name, !server.enabled)}
+                        >
+                          {server.enabled ? "Disable" : "Enable"}
+                        </Button>
+                        {server.connected ? (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={busy}
+                            onClick={() => runtimeDisconnect(server.name)}
+                          >
+                            Disconnect
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={busy || !server.enabled}
+                            onClick={() => runtimeConnect(server.name)}
+                          >
+                            Connect
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy || !server.enabled}
+                          onClick={() => runtimeRefresh(server.name)}
+                        >
+                          Refresh
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

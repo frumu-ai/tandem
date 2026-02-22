@@ -16,6 +16,16 @@ import {
   getSidecarStatus,
   getProvidersConfig,
   setProvidersConfig,
+  mcpListServers,
+  mcpListTools,
+  routinesRunApprove,
+  routinesRunDeny,
+  routinesRunPause,
+  routinesRunResume,
+  routinesRuns,
+  type McpRemoteTool,
+  type McpServerRecord,
+  type RoutineRunRecord,
   onSidecarEventV2,
   type FileEntry,
   type SidecarStartupHealth,
@@ -70,6 +80,12 @@ interface CommandCenterPageProps {
 interface RunModelSelection {
   model?: string | null;
   provider?: string | null;
+}
+
+interface RoutineSpecLite {
+  routine_id: string;
+  name: string;
+  status: "active" | "paused";
 }
 
 interface MissionLimits {
@@ -176,6 +192,12 @@ export function CommandCenterPage({
   const [activeRunSessionId, setActiveRunSessionId] = useState<string | null>(null);
   const [runModelSelection, setRunModelSelection] = useState<RunModelSelection | null>(null);
   const [modelRouting, setModelRouting] = useState<OrchestratorModelRouting>({});
+  const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
+  const [mcpTools, setMcpTools] = useState<McpRemoteTool[]>([]);
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [routineRuns, setRoutineRuns] = useState<RoutineRunRecord[]>([]);
+  const [routineRunsLoading, setRoutineRunsLoading] = useState(false);
+  const [routineActionBusyRunId, setRoutineActionBusyRunId] = useState<string | null>(null);
   const [showLogsDrawer, setShowLogsDrawer] = useState(false);
   const [autoApproveTargetRunId, setAutoApproveTargetRunId] = useState<string | null>(null);
   const [selectedWorkspaceFile, setSelectedWorkspaceFile] = useState<FileEntry | null>(null);
@@ -333,6 +355,52 @@ export function CommandCenterPage({
     return () => clearInterval(timer);
   }, [loadRuns]);
 
+  const loadMcpStatus = useCallback(async () => {
+    setMcpLoading(true);
+    try {
+      const [servers, tools] = await Promise.all([mcpListServers(), mcpListTools()]);
+      setMcpServers(servers);
+      setMcpTools(tools);
+    } catch {
+      setMcpServers([]);
+      setMcpTools([]);
+    } finally {
+      setMcpLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadMcpStatus();
+    const timer = setInterval(() => void loadMcpStatus(), 10000);
+    return () => clearInterval(timer);
+  }, [loadMcpStatus]);
+
+  const loadRoutineRuns = useCallback(async () => {
+    setRoutineRunsLoading(true);
+    try {
+      const routines = await invoke<RoutineSpecLite[]>("routines_list");
+      const topRoutines = routines.slice(0, 8);
+      const runsByRoutine = await Promise.all(
+        topRoutines.map((routine) => routinesRuns(routine.routine_id, 10))
+      );
+      const merged = runsByRoutine
+        .flat()
+        .sort((a, b) => b.created_at_ms - a.created_at_ms)
+        .slice(0, 20);
+      setRoutineRuns(merged);
+    } catch {
+      setRoutineRuns([]);
+    } finally {
+      setRoutineRunsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRoutineRuns();
+    const timer = setInterval(() => void loadRoutineRuns(), 10000);
+    return () => clearInterval(timer);
+  }, [loadRoutineRuns]);
+
   useEffect(() => {
     if (!autoApproveTargetRunId || !snapshot || runId !== autoApproveTargetRunId) {
       return;
@@ -441,6 +509,12 @@ export function CommandCenterPage({
         }
         const at = new Date().toLocaleTimeString();
         setEventFeed((prev) => [`${at} ${line}`, ...prev].slice(0, 40));
+        if (payload.type === "raw" && payload.event_type.startsWith("mcp.")) {
+          void loadMcpStatus();
+        }
+        if (payload.type === "raw" && payload.event_type.startsWith("routine.")) {
+          void loadRoutineRuns();
+        }
         if (
           payload.type === "run_started" ||
           payload.type === "run_finished" ||
@@ -455,7 +529,31 @@ export function CommandCenterPage({
     return () => {
       if (unlisten) unlisten();
     };
-  }, [loadRuns, runId, selectedRunConsoleSessionIds]);
+  }, [loadMcpStatus, loadRoutineRuns, loadRuns, runId, selectedRunConsoleSessionIds]);
+
+  const handleRoutineRunAction = async (
+    run: RoutineRunRecord,
+    action: "approve" | "deny" | "pause" | "resume"
+  ) => {
+    setRoutineActionBusyRunId(run.run_id);
+    try {
+      if (action === "approve") {
+        await routinesRunApprove(run.run_id);
+      } else if (action === "deny") {
+        await routinesRunDeny(run.run_id);
+      } else if (action === "pause") {
+        await routinesRunPause(run.run_id);
+      } else {
+        await routinesRunResume(run.run_id);
+      }
+      await loadRoutineRuns();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setError(`Routine run action failed: ${message}`);
+    } finally {
+      setRoutineActionBusyRunId(null);
+    }
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -854,6 +952,117 @@ export function CommandCenterPage({
                 Advanced Controls
               </Button>
             </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs uppercase tracking-wide text-text-subtle">Scheduled Bots</div>
+            <div className="text-xs text-text-muted">
+              {routineRunsLoading ? "Refreshing..." : `${routineRuns.length} recent runs`}
+            </div>
+          </div>
+          <div className="mt-2 grid grid-cols-1 gap-2">
+            {routineRuns.slice(0, 8).map((run) => {
+              const busy = routineActionBusyRunId === run.run_id;
+              return (
+                <div
+                  key={run.run_id}
+                  className="rounded-md border border-border bg-surface-elevated/50 px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold text-text">
+                        {run.routine_id} · {run.status}
+                      </div>
+                      <div className="mt-0.5 truncate text-[11px] text-text-muted">
+                        run {run.run_id} · {run.trigger_type}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {run.status === "pending_approval" ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={busy}
+                            onClick={() => void handleRoutineRunAction(run, "approve")}
+                          >
+                            Approve
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={() => void handleRoutineRunAction(run, "deny")}
+                          >
+                            Deny
+                          </Button>
+                        </>
+                      ) : null}
+                      {run.status === "queued" || run.status === "running" ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => void handleRoutineRunAction(run, "pause")}
+                        >
+                          Pause
+                        </Button>
+                      ) : null}
+                      {run.status === "paused" ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => void handleRoutineRunAction(run, "resume")}
+                        >
+                          Resume
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {!routineRunsLoading && routineRuns.length === 0 ? (
+              <div className="rounded-md border border-border bg-surface-elevated/50 px-3 py-2 text-xs text-text-muted">
+                No recent routine runs.
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs uppercase tracking-wide text-text-subtle">Connectors</div>
+            <div className="text-xs text-text-muted">
+              {mcpLoading
+                ? "Refreshing..."
+                : `${mcpServers.filter((row) => row.connected).length}/${mcpServers.length} connected`}
+            </div>
+          </div>
+          <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+            {mcpServers.slice(0, 6).map((server) => {
+              const count = mcpTools.filter((tool) => tool.server_name === server.name).length;
+              return (
+                <div
+                  key={server.name}
+                  className="rounded-md border border-border bg-surface-elevated/50 px-3 py-2"
+                >
+                  <div className="text-xs font-semibold text-text">{server.name}</div>
+                  <div className="mt-0.5 text-[11px] text-text-muted">
+                    {server.enabled ? "enabled" : "disabled"} ·{" "}
+                    {server.connected ? "connected" : "disconnected"} · {count} tools
+                  </div>
+                </div>
+              );
+            })}
+            {!mcpLoading && mcpServers.length === 0 ? (
+              <div className="rounded-md border border-border bg-surface-elevated/50 px-3 py-2 text-xs text-text-muted">
+                No MCP connectors configured.
+              </div>
+            ) : null}
           </div>
         </div>
 

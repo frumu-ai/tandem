@@ -7206,8 +7206,11 @@ dependencies = [
  "chrono",
  "ignore",
  "regex",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
+ "tandem-types",
  "tokio",
  "uuid",
 ]
@@ -7217,6 +7220,7 @@ name = "tandem-server"
 version = "0.3.8"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "chrono",
  "futures",

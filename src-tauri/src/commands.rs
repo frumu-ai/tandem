@@ -24,10 +24,12 @@ use crate::sidecar::{
     ActiveRunStatusResponse, AgentTeamApprovals, AgentTeamCancelRequest, AgentTeamDecisionResult,
     AgentTeamInstance, AgentTeamInstancesQuery, AgentTeamMissionSummary, AgentTeamSpawnRequest,
     AgentTeamSpawnResult, AgentTeamTemplate, ChannelsConfigResponse, ChannelsStatusResponse,
-    CreateSessionRequest, FilePartInput, MissionApplyEventResult, MissionCreateRequest,
-    MissionState, ModelInfo, ModelSpec, Project, ProviderInfo, RoutineCreateRequest,
-    RoutineHistoryEvent, RoutinePatchRequest, RoutineRunNowRequest, RoutineRunNowResponse,
-    RoutineSpec, SendMessageRequest, Session, SessionMessage, SidecarState, StreamEvent, TodoItem,
+    CreateSessionRequest, FilePartInput, McpActionResponse, McpAddRequest, McpRemoteTool,
+    McpServerRecord, MissionApplyEventResult, MissionCreateRequest, MissionState, ModelInfo,
+    ModelSpec, Project, ProviderInfo, RoutineCreateRequest, RoutineHistoryEvent, RoutinePatchRequest,
+    RoutineRunArtifact, RoutineRunArtifactAddRequest, RoutineRunDecisionRequest, RoutineRunNowRequest,
+    RoutineRunNowResponse, RoutineRunRecord, RoutineSpec, SendMessageRequest, Session, SessionMessage,
+    SidecarState, StreamEvent, TodoItem,
 };
 use crate::sidecar_manager::{self, SidecarStatus};
 use crate::state::{AppState, AppStateInfo, ProvidersConfig};
@@ -5340,6 +5342,61 @@ pub async fn reject_question(state: State<'_, AppState>, request_id: String) -> 
 }
 
 // ============================================================================
+// MCP Runtime
+// ============================================================================
+
+#[tauri::command]
+pub async fn mcp_list_servers(state: State<'_, AppState>) -> Result<Vec<McpServerRecord>> {
+    state.sidecar.mcp_list_servers().await
+}
+
+#[tauri::command]
+pub async fn mcp_add_server(
+    state: State<'_, AppState>,
+    request: McpAddRequest,
+) -> Result<McpActionResponse> {
+    state.sidecar.mcp_add_server(request).await
+}
+
+#[tauri::command]
+pub async fn mcp_set_enabled(
+    state: State<'_, AppState>,
+    name: String,
+    enabled: bool,
+) -> Result<McpActionResponse> {
+    state.sidecar.mcp_set_enabled(&name, enabled).await
+}
+
+#[tauri::command]
+pub async fn mcp_connect(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<McpActionResponse> {
+    state.sidecar.mcp_connect(&name).await
+}
+
+#[tauri::command]
+pub async fn mcp_disconnect(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<McpActionResponse> {
+    state.sidecar.mcp_disconnect(&name).await
+}
+
+#[tauri::command]
+pub async fn mcp_refresh(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<McpActionResponse> {
+    state.sidecar.mcp_refresh(&name).await
+}
+
+#[tauri::command]
+pub async fn mcp_list_tools(state: State<'_, AppState>) -> Result<Vec<McpRemoteTool>> {
+    state.sidecar.mcp_list_tools().await
+}
+
+// ============================================================================
 // Routines
 // ============================================================================
 
@@ -5389,6 +5446,88 @@ pub async fn routines_history(
     limit: Option<usize>,
 ) -> Result<Vec<RoutineHistoryEvent>> {
     state.sidecar.routines_history(&routine_id, limit).await
+}
+
+#[tauri::command]
+pub async fn routines_runs(
+    state: State<'_, AppState>,
+    routine_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<RoutineRunRecord>> {
+    state.sidecar.routines_runs(&routine_id, limit).await
+}
+
+#[tauri::command]
+pub async fn routines_run_get(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<RoutineRunRecord> {
+    state.sidecar.routines_run_get(&run_id).await
+}
+
+#[tauri::command]
+pub async fn routines_run_approve(
+    state: State<'_, AppState>,
+    run_id: String,
+    request: Option<RoutineRunDecisionRequest>,
+) -> Result<RoutineRunRecord> {
+    state
+        .sidecar
+        .routines_run_approve(&run_id, request.unwrap_or_default())
+        .await
+}
+
+#[tauri::command]
+pub async fn routines_run_deny(
+    state: State<'_, AppState>,
+    run_id: String,
+    request: Option<RoutineRunDecisionRequest>,
+) -> Result<RoutineRunRecord> {
+    state
+        .sidecar
+        .routines_run_deny(&run_id, request.unwrap_or_default())
+        .await
+}
+
+#[tauri::command]
+pub async fn routines_run_pause(
+    state: State<'_, AppState>,
+    run_id: String,
+    request: Option<RoutineRunDecisionRequest>,
+) -> Result<RoutineRunRecord> {
+    state
+        .sidecar
+        .routines_run_pause(&run_id, request.unwrap_or_default())
+        .await
+}
+
+#[tauri::command]
+pub async fn routines_run_resume(
+    state: State<'_, AppState>,
+    run_id: String,
+    request: Option<RoutineRunDecisionRequest>,
+) -> Result<RoutineRunRecord> {
+    state
+        .sidecar
+        .routines_run_resume(&run_id, request.unwrap_or_default())
+        .await
+}
+
+#[tauri::command]
+pub async fn routines_run_artifacts(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<RoutineRunArtifact>> {
+    state.sidecar.routines_run_artifacts(&run_id).await
+}
+
+#[tauri::command]
+pub async fn routines_run_add_artifact(
+    state: State<'_, AppState>,
+    run_id: String,
+    request: RoutineRunArtifactAddRequest,
+) -> Result<RoutineRunRecord> {
+    state.sidecar.routines_run_add_artifact(&run_id, request).await
 }
 
 #[tauri::command]

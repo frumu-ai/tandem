@@ -385,6 +385,63 @@ pub struct RoutineHistoryEvent {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineRunStatus {
+    Queued,
+    PendingApproval,
+    Running,
+    Paused,
+    BlockedPolicy,
+    Denied,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineRunArtifact {
+    pub artifact_id: String,
+    pub uri: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutineRunRecord {
+    pub run_id: String,
+    pub routine_id: String,
+    pub trigger_type: String,
+    pub run_count: u32,
+    pub status: RoutineRunStatus,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fired_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u64>,
+    pub requires_approval: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denial_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub args: Value,
+    #[serde(default)]
+    pub artifacts: Vec<RoutineRunArtifact>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RoutineTriggerPlan {
     pub routine_id: String,
@@ -458,7 +515,10 @@ pub struct AppState {
     pub shared_resources_path: PathBuf,
     pub routines: Arc<RwLock<std::collections::HashMap<String, RoutineSpec>>>,
     pub routine_history: Arc<RwLock<std::collections::HashMap<String, Vec<RoutineHistoryEvent>>>>,
+    pub routine_runs: Arc<RwLock<std::collections::HashMap<String, RoutineRunRecord>>>,
     pub routines_path: PathBuf,
+    pub routine_history_path: PathBuf,
+    pub routine_runs_path: PathBuf,
     pub agent_teams: AgentTeamRuntime,
     pub web_ui_enabled: Arc<AtomicBool>,
     pub web_ui_prefix: Arc<std::sync::RwLock<String>>,
@@ -496,7 +556,10 @@ impl AppState {
             shared_resources_path: resolve_shared_resources_path(),
             routines: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_history: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            routine_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routines_path: resolve_routines_path(),
+            routine_history_path: resolve_routine_history_path(),
+            routine_runs_path: resolve_routine_runs_path(),
             agent_teams: AgentTeamRuntime::new(resolve_agent_team_audit_path()),
             web_ui_enabled: Arc::new(AtomicBool::new(false)),
             web_ui_prefix: Arc::new(std::sync::RwLock::new("/admin".to_string())),
@@ -597,6 +660,8 @@ impl AppState {
             .await;
         let _ = self.load_shared_resources().await;
         let _ = self.load_routines().await;
+        let _ = self.load_routine_history().await;
+        let _ = self.load_routine_runs().await;
         let workspace_root = self.workspace_index.snapshot().await.root;
         let _ = self
             .agent_teams
@@ -852,6 +917,34 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn load_routine_history(&self) -> anyhow::Result<()> {
+        if !self.routine_history_path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&self.routine_history_path).await?;
+        let parsed = serde_json::from_str::<
+            std::collections::HashMap<String, Vec<RoutineHistoryEvent>>,
+        >(&raw)
+        .unwrap_or_default();
+        let mut guard = self.routine_history.write().await;
+        *guard = parsed;
+        Ok(())
+    }
+
+    pub async fn load_routine_runs(&self) -> anyhow::Result<()> {
+        if !self.routine_runs_path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&self.routine_runs_path).await?;
+        let parsed = serde_json::from_str::<
+            std::collections::HashMap<String, RoutineRunRecord>,
+        >(&raw)
+        .unwrap_or_default();
+        let mut guard = self.routine_runs.write().await;
+        *guard = parsed;
+        Ok(())
+    }
+
     pub async fn persist_routines(&self) -> anyhow::Result<()> {
         if let Some(parent) = self.routines_path.parent() {
             fs::create_dir_all(parent).await?;
@@ -861,6 +954,30 @@ impl AppState {
             serde_json::to_string_pretty(&*guard)?
         };
         fs::write(&self.routines_path, payload).await?;
+        Ok(())
+    }
+
+    pub async fn persist_routine_history(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.routine_history_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.routine_history.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.routine_history_path, payload).await?;
+        Ok(())
+    }
+
+    pub async fn persist_routine_runs(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.routine_runs_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.routine_runs.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.routine_runs_path, payload).await?;
         Ok(())
     }
 
@@ -1004,6 +1121,8 @@ impl AppState {
             .entry(event.routine_id.clone())
             .or_default()
             .push(event);
+        drop(history);
+        let _ = self.persist_routine_history().await;
     }
 
     pub async fn list_routine_history(
@@ -1022,6 +1141,120 @@ impl AppState {
         rows.sort_by(|a, b| b.fired_at_ms.cmp(&a.fired_at_ms));
         rows.truncate(limit);
         rows
+    }
+
+    pub async fn create_routine_run(
+        &self,
+        routine: &RoutineSpec,
+        trigger_type: &str,
+        run_count: u32,
+        status: RoutineRunStatus,
+        detail: Option<String>,
+    ) -> RoutineRunRecord {
+        let now = now_ms();
+        let record = RoutineRunRecord {
+            run_id: format!("routine-run-{}", uuid::Uuid::new_v4()),
+            routine_id: routine.routine_id.clone(),
+            trigger_type: trigger_type.to_string(),
+            run_count,
+            status,
+            created_at_ms: now,
+            updated_at_ms: now,
+            fired_at_ms: Some(now),
+            started_at_ms: None,
+            finished_at_ms: None,
+            requires_approval: routine.requires_approval,
+            approval_reason: None,
+            denial_reason: None,
+            paused_reason: None,
+            detail,
+            entrypoint: routine.entrypoint.clone(),
+            args: routine.args.clone(),
+            artifacts: Vec::new(),
+        };
+        self.routine_runs
+            .write()
+            .await
+            .insert(record.run_id.clone(), record.clone());
+        let _ = self.persist_routine_runs().await;
+        record
+    }
+
+    pub async fn get_routine_run(&self, run_id: &str) -> Option<RoutineRunRecord> {
+        self.routine_runs.read().await.get(run_id).cloned()
+    }
+
+    pub async fn list_routine_runs(
+        &self,
+        routine_id: Option<&str>,
+        limit: usize,
+    ) -> Vec<RoutineRunRecord> {
+        let mut rows = self
+            .routine_runs
+            .read()
+            .await
+            .values()
+            .filter(|row| {
+                if let Some(id) = routine_id {
+                    row.routine_id == id
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        rows.truncate(limit.clamp(1, 500));
+        rows
+    }
+
+    pub async fn update_routine_run_status(
+        &self,
+        run_id: &str,
+        status: RoutineRunStatus,
+        reason: Option<String>,
+    ) -> Option<RoutineRunRecord> {
+        let mut guard = self.routine_runs.write().await;
+        let row = guard.get_mut(run_id)?;
+        row.status = status.clone();
+        row.updated_at_ms = now_ms();
+        match status {
+            RoutineRunStatus::PendingApproval => row.approval_reason = reason,
+            RoutineRunStatus::Denied => row.denial_reason = reason,
+            RoutineRunStatus::Paused => row.paused_reason = reason,
+            RoutineRunStatus::Completed
+            | RoutineRunStatus::Failed
+            | RoutineRunStatus::Cancelled => {
+                row.finished_at_ms = Some(now_ms());
+                if let Some(detail) = reason {
+                    row.detail = Some(detail);
+                }
+            }
+            _ => {
+                if let Some(detail) = reason {
+                    row.detail = Some(detail);
+                }
+            }
+        }
+        let updated = row.clone();
+        drop(guard);
+        let _ = self.persist_routine_runs().await;
+        Some(updated)
+    }
+
+    pub async fn append_routine_run_artifact(
+        &self,
+        run_id: &str,
+        artifact: RoutineRunArtifact,
+    ) -> Option<RoutineRunRecord> {
+        let mut guard = self.routine_runs.write().await;
+        let row = guard.get_mut(run_id)?;
+        row.updated_at_ms = now_ms();
+        row.artifacts.push(artifact);
+        let updated = row.clone();
+        drop(guard);
+        let _ = self.persist_routine_runs().await;
+        Some(updated)
     }
 }
 
@@ -1105,6 +1338,26 @@ fn resolve_routines_path() -> PathBuf {
         }
     }
     PathBuf::from(".tandem").join("routines.json")
+}
+
+fn resolve_routine_history_path() -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_STORAGE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("routine_history.json");
+        }
+    }
+    PathBuf::from(".tandem").join("routine_history.json")
+}
+
+fn resolve_routine_runs_path() -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("routine_runs.json");
+        }
+    }
+    PathBuf::from(".tandem").join("routine_runs.json")
 }
 
 fn resolve_agent_team_audit_path() -> PathBuf {
@@ -1366,6 +1619,15 @@ pub async fn run_routine_scheduler(state: AppState) {
             match evaluate_routine_execution_policy(&routine, "scheduled") {
                 RoutineExecutionDecision::Allowed => {
                     let _ = state.mark_routine_fired(&plan.routine_id, now).await;
+                    let run = state
+                        .create_routine_run(
+                            &routine,
+                            "scheduled",
+                            plan.run_count,
+                            RoutineRunStatus::Queued,
+                            None,
+                        )
+                        .await;
                     state
                         .append_routine_history(RoutineHistoryEvent {
                             routine_id: plan.routine_id.clone(),
@@ -1380,13 +1642,29 @@ pub async fn run_routine_scheduler(state: AppState) {
                         "routine.fired",
                         serde_json::json!({
                             "routineID": plan.routine_id,
+                            "runID": run.run_id,
                             "runCount": plan.run_count,
                             "scheduledAtMs": plan.scheduled_at_ms,
                             "nextFireAtMs": plan.next_fire_at_ms,
                         }),
                     ));
+                    state.event_bus.publish(EngineEvent::new(
+                        "routine.run.created",
+                        serde_json::json!({
+                            "run": run,
+                        }),
+                    ));
                 }
                 RoutineExecutionDecision::RequiresApproval { reason } => {
+                    let run = state
+                        .create_routine_run(
+                            &routine,
+                            "scheduled",
+                            plan.run_count,
+                            RoutineRunStatus::PendingApproval,
+                            Some(reason.clone()),
+                        )
+                        .await;
                     state
                         .append_routine_history(RoutineHistoryEvent {
                             routine_id: plan.routine_id.clone(),
@@ -1401,13 +1679,29 @@ pub async fn run_routine_scheduler(state: AppState) {
                         "routine.approval_required",
                         serde_json::json!({
                             "routineID": plan.routine_id,
+                            "runID": run.run_id,
                             "runCount": plan.run_count,
                             "triggerType": "scheduled",
                             "reason": reason,
                         }),
                     ));
+                    state.event_bus.publish(EngineEvent::new(
+                        "routine.run.created",
+                        serde_json::json!({
+                            "run": run,
+                        }),
+                    ));
                 }
                 RoutineExecutionDecision::Blocked { reason } => {
+                    let run = state
+                        .create_routine_run(
+                            &routine,
+                            "scheduled",
+                            plan.run_count,
+                            RoutineRunStatus::BlockedPolicy,
+                            Some(reason.clone()),
+                        )
+                        .await;
                     state
                         .append_routine_history(RoutineHistoryEvent {
                             routine_id: plan.routine_id.clone(),
@@ -1422,9 +1716,16 @@ pub async fn run_routine_scheduler(state: AppState) {
                         "routine.blocked",
                         serde_json::json!({
                             "routineID": plan.routine_id,
+                            "runID": run.run_id,
                             "runCount": plan.run_count,
                             "triggerType": "scheduled",
                             "reason": reason,
+                        }),
+                    ));
+                    state.event_bus.publish(EngineEvent::new(
+                        "routine.run.created",
+                        serde_json::json!({
+                            "run": run,
                         }),
                     ));
                 }
@@ -1441,6 +1742,8 @@ mod tests {
         let mut state = AppState::new_starting("test-attempt".to_string(), true);
         state.shared_resources_path = path;
         state.routines_path = tmp_routines_file("shared-state");
+        state.routine_history_path = tmp_routines_file("routine-history");
+        state.routine_runs_path = tmp_routines_file("routine-runs");
         state
     }
 

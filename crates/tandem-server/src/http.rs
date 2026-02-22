@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::header::{self, HeaderValue};
@@ -35,9 +37,10 @@ use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 use tandem_channels::start_channel_listeners;
+use tandem_tools::Tool;
 use tandem_types::{
     CreateSessionRequest, EngineEvent, Message, MessagePart, MessagePartInput, MessageRole,
-    SendMessageRequest, Session, TodoItem,
+    SendMessageRequest, Session, TodoItem, ToolResult, ToolSchema,
 };
 use tandem_wire::{
     WireProviderCatalog, WireProviderEntry, WireProviderModel, WireProviderModelLimit, WireSession,
@@ -48,9 +51,9 @@ use crate::ResourceStoreError;
 use crate::{
     agent_teams::{emit_spawn_approved, emit_spawn_denied, emit_spawn_requested},
     evaluate_routine_execution_policy, ActiveRun, AppState, ChannelStatus, DiscordConfigFile,
-    RoutineExecutionDecision, RoutineHistoryEvent, RoutineMisfirePolicy, RoutineSchedule,
-    RoutineSpec, RoutineStatus, RoutineStoreError, SlackConfigFile, StartupStatus,
-    TelegramConfigFile,
+    RoutineExecutionDecision, RoutineHistoryEvent, RoutineMisfirePolicy, RoutineRunArtifact,
+    RoutineRunStatus, RoutineSchedule, RoutineSpec, RoutineStatus, RoutineStoreError,
+    SlackConfigFile, StartupStatus, TelegramConfigFile,
 };
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -377,6 +380,26 @@ struct RoutineHistoryQuery {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct RoutineRunsQuery {
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RoutineRunDecisionInput {
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutineRunArtifactInput {
+    uri: String,
+    kind: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct RoutineEventsQuery {
     routine_id: Option<String>,
 }
@@ -499,6 +522,41 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
 struct ToolExecutionInput {
     tool: String,
     args: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct McpAddInput {
+    name: Option<String>,
+    transport: Option<String>,
+    headers: Option<HashMap<String, String>>,
+    enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct McpPatchInput {
+    enabled: Option<bool>,
+}
+
+#[derive(Clone)]
+struct McpBridgeTool {
+    schema: ToolSchema,
+    mcp: tandem_runtime::McpRegistry,
+    server_name: String,
+    tool_name: String,
+}
+
+#[async_trait]
+impl Tool for McpBridgeTool {
+    fn schema(&self) -> ToolSchema {
+        self.schema.clone()
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        self.mcp
+            .call_tool(&self.server_name, &self.tool_name, args)
+            .await
+            .map_err(anyhow::Error::msg)
+    }
 }
 
 async fn execute_tool(
@@ -630,9 +688,12 @@ fn app_router(state: AppState) -> Router {
         .route("/mcp", get(list_mcp).post(add_mcp))
         .route("/mcp/{name}/connect", post(connect_mcp))
         .route("/mcp/{name}/disconnect", post(disconnect_mcp))
+        .route("/mcp/{name}", axum::routing::patch(patch_mcp))
+        .route("/mcp/{name}/refresh", post(refresh_mcp))
         .route("/mcp/{name}/auth", post(auth_mcp).delete(delete_auth_mcp))
         .route("/mcp/{name}/auth/callback", post(callback_mcp))
         .route("/mcp/{name}/auth/authenticate", post(authenticate_mcp))
+        .route("/mcp/tools", get(mcp_tools))
         .route("/mcp/resources", get(mcp_resources))
         .route("/tool/ids", get(tool_ids))
         .route("/tool", get(tool_list_for_model))
@@ -718,6 +779,19 @@ fn app_router(state: AppState) -> Router {
         )
         .route("/routines/{id}/run_now", post(routines_run_now))
         .route("/routines/{id}/history", get(routines_history))
+        .route("/routines/{id}/runs", get(routines_runs))
+        .route("/routines/runs/{run_id}", get(routines_run_get))
+        .route(
+            "/routines/runs/{run_id}/approve",
+            post(routines_run_approve),
+        )
+        .route("/routines/runs/{run_id}/deny", post(routines_run_deny))
+        .route("/routines/runs/{run_id}/pause", post(routines_run_pause))
+        .route("/routines/runs/{run_id}/resume", post(routines_run_resume))
+        .route(
+            "/routines/runs/{run_id}/artifacts",
+            get(routines_run_artifacts).post(routines_run_artifact_add),
+        )
         .route("/resource", get(resource_list))
         .route("/resource/events", get(resource_events))
         .route(
@@ -2606,24 +2680,176 @@ async fn list_mcp(State(state): State<AppState>) -> Json<Value> {
 }
 async fn add_mcp(
     State(state): State<AppState>,
-    Json(input): Json<HashMap<String, String>>,
+    Json(input): Json<McpAddInput>,
 ) -> Json<Value> {
     let name = input
-        .get("name")
-        .cloned()
+        .name
         .unwrap_or_else(|| "default".to_string());
     let transport = input
-        .get("transport")
-        .cloned()
+        .transport
         .unwrap_or_else(|| "stdio".to_string());
-    state.mcp.add(name, transport).await;
+    state
+        .mcp
+        .add_or_update(
+            name.clone(),
+            transport,
+            input.headers.unwrap_or_default(),
+            input.enabled.unwrap_or(true),
+        )
+        .await;
+    state.event_bus.publish(EngineEvent::new(
+        "mcp.server.updated",
+        json!({
+            "name": name,
+        }),
+    ));
     Json(json!({"ok": true}))
 }
+
+fn mcp_namespace_segment(raw: &str) -> String {
+    let mut out = String::new();
+    let mut previous_underscore = false;
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            previous_underscore = false;
+        } else if !previous_underscore {
+            out.push('_');
+            previous_underscore = true;
+        }
+    }
+    let cleaned = out.trim_matches('_');
+    if cleaned.is_empty() {
+        "server".to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+async fn sync_mcp_tools_for_server(state: &AppState, name: &str) -> usize {
+    let prefix = format!("mcp.{}.", mcp_namespace_segment(name));
+    state.tools.unregister_by_prefix(&prefix).await;
+    let tools = state.mcp.server_tools(name).await;
+    for tool in &tools {
+        let schema = ToolSchema {
+            name: tool.namespaced_name.clone(),
+            description: if tool.description.trim().is_empty() {
+                format!("MCP tool {} from {}", tool.tool_name, tool.server_name)
+            } else {
+                tool.description.clone()
+            },
+            input_schema: tool.input_schema.clone(),
+        };
+        state
+            .tools
+            .register_tool(
+                schema.name.clone(),
+                Arc::new(McpBridgeTool {
+                    schema,
+                    mcp: state.mcp.clone(),
+                    server_name: tool.server_name.clone(),
+                    tool_name: tool.tool_name.clone(),
+                }),
+            )
+            .await;
+    }
+    tools.len()
+}
+
 async fn connect_mcp(State(state): State<AppState>, Path(name): Path<String>) -> Json<Value> {
-    Json(json!({"ok": state.mcp.connect(&name).await}))
+    let ok = state.mcp.connect(&name).await;
+    if ok {
+        let count = sync_mcp_tools_for_server(&state, &name).await;
+        state.event_bus.publish(EngineEvent::new(
+            "mcp.server.connected",
+            json!({
+                "name": name,
+                "status": "connected",
+            }),
+        ));
+        state.event_bus.publish(EngineEvent::new(
+            "mcp.tools.updated",
+            json!({
+                "name": name,
+                "count": count,
+            }),
+        ));
+    }
+    Json(json!({"ok": ok}))
 }
 async fn disconnect_mcp(State(state): State<AppState>, Path(name): Path<String>) -> Json<Value> {
-    Json(json!({"ok": state.mcp.disconnect(&name).await}))
+    let ok = state.mcp.disconnect(&name).await;
+    if ok {
+        let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
+        let removed = state.tools.unregister_by_prefix(&prefix).await;
+        state.event_bus.publish(EngineEvent::new(
+            "mcp.server.disconnected",
+            json!({
+                "name": name,
+                "removedToolCount": removed,
+            }),
+        ));
+    }
+    Json(json!({"ok": ok}))
+}
+
+async fn patch_mcp(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(input): Json<McpPatchInput>,
+) -> Json<Value> {
+    let mut changed = false;
+    if let Some(enabled) = input.enabled {
+        changed = state.mcp.set_enabled(&name, enabled).await;
+        if changed {
+            if enabled {
+                let _ = state.mcp.connect(&name).await;
+                let count = sync_mcp_tools_for_server(&state, &name).await;
+                state.event_bus.publish(EngineEvent::new(
+                    "mcp.tools.updated",
+                    json!({
+                        "name": name,
+                        "count": count,
+                    }),
+                ));
+            } else {
+                let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
+                let _ = state.tools.unregister_by_prefix(&prefix).await;
+            }
+            state.event_bus.publish(EngineEvent::new(
+                "mcp.server.updated",
+                json!({
+                    "name": name,
+                    "enabled": enabled,
+                }),
+            ));
+        }
+    }
+    Json(json!({"ok": changed}))
+}
+
+async fn refresh_mcp(State(state): State<AppState>, Path(name): Path<String>) -> Json<Value> {
+    let result = state.mcp.refresh(&name).await;
+    match result {
+        Ok(tools) => {
+            let count = sync_mcp_tools_for_server(&state, &name).await;
+            state.event_bus.publish(EngineEvent::new(
+                "mcp.tools.updated",
+                json!({
+                    "name": name,
+                    "count": count,
+                }),
+            ));
+            Json(json!({
+                "ok": true,
+                "count": tools.len(),
+            }))
+        }
+        Err(error) => Json(json!({
+            "ok": false,
+            "error": error
+        })),
+    }
 }
 async fn auth_mcp(Path(name): Path<String>) -> Json<Value> {
     Json(json!({"authorizationUrl": format!("https://example.invalid/mcp/{name}/authorize")}))
@@ -2636,6 +2862,9 @@ async fn authenticate_mcp(Path(name): Path<String>) -> Json<Value> {
 }
 async fn delete_auth_mcp(Path(name): Path<String>) -> Json<Value> {
     Json(json!({"ok": true, "name": name}))
+}
+async fn mcp_tools(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(state.mcp.list_tools().await))
 }
 async fn mcp_resources(State(state): State<AppState>) -> Json<Value> {
     let resources = state
@@ -4676,6 +4905,15 @@ async fn routines_run_now(
     match evaluate_routine_execution_policy(&routine, trigger_type) {
         RoutineExecutionDecision::Allowed => {
             let _ = state.mark_routine_fired(&routine.routine_id, now).await;
+            let run = state
+                .create_routine_run(
+                    &routine,
+                    trigger_type,
+                    run_count,
+                    RoutineRunStatus::Queued,
+                    input.reason.clone(),
+                )
+                .await;
             state
                 .append_routine_history(RoutineHistoryEvent {
                     routine_id: routine.routine_id.clone(),
@@ -4690,20 +4928,37 @@ async fn routines_run_now(
                 "routine.fired",
                 json!({
                     "routineID": routine.routine_id,
+                    "runID": run.run_id,
                     "runCount": run_count,
                     "triggerType": trigger_type,
                     "firedAtMs": now,
+                }),
+            ));
+            state.event_bus.publish(EngineEvent::new(
+                "routine.run.created",
+                json!({
+                    "run": run,
                 }),
             ));
             Ok(Json(json!({
                 "ok": true,
                 "status": "queued",
                 "routineID": id,
+                "runID": run.run_id,
                 "runCount": run_count,
                 "firedAtMs": now,
             })))
         }
         RoutineExecutionDecision::RequiresApproval { reason } => {
+            let run = state
+                .create_routine_run(
+                    &routine,
+                    trigger_type,
+                    run_count,
+                    RoutineRunStatus::PendingApproval,
+                    Some(reason.clone()),
+                )
+                .await;
             state
                 .append_routine_history(RoutineHistoryEvent {
                     routine_id: routine.routine_id.clone(),
@@ -4718,19 +4973,36 @@ async fn routines_run_now(
                 "routine.approval_required",
                 json!({
                     "routineID": routine.routine_id,
+                    "runID": run.run_id,
                     "runCount": run_count,
                     "triggerType": trigger_type,
                     "reason": reason,
+                }),
+            ));
+            state.event_bus.publish(EngineEvent::new(
+                "routine.run.created",
+                json!({
+                    "run": run,
                 }),
             ));
             Ok(Json(json!({
                 "ok": true,
                 "status": "pending_approval",
                 "routineID": id,
+                "runID": run.run_id,
                 "runCount": run_count,
             })))
         }
         RoutineExecutionDecision::Blocked { reason } => {
+            let run = state
+                .create_routine_run(
+                    &routine,
+                    trigger_type,
+                    run_count,
+                    RoutineRunStatus::BlockedPolicy,
+                    Some(reason.clone()),
+                )
+                .await;
             state
                 .append_routine_history(RoutineHistoryEvent {
                     routine_id: routine.routine_id.clone(),
@@ -4745,9 +5017,16 @@ async fn routines_run_now(
                 "routine.blocked",
                 json!({
                     "routineID": routine.routine_id,
+                    "runID": run.run_id,
                     "runCount": run_count,
                     "triggerType": trigger_type,
                     "reason": reason,
+                }),
+            ));
+            state.event_bus.publish(EngineEvent::new(
+                "routine.run.created",
+                json!({
+                    "run": run,
                 }),
             ));
             Err((
@@ -4756,6 +5035,7 @@ async fn routines_run_now(
                     "error": "Routine blocked by policy",
                     "code": "ROUTINE_POLICY_BLOCKED",
                     "routineID": id,
+                    "runID": run.run_id,
                     "reason": reason,
                 })),
             ))
@@ -4775,6 +5055,311 @@ async fn routines_history(
         "events": events,
         "count": events.len(),
     }))
+}
+
+async fn routines_runs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<RoutineRunsQuery>,
+) -> Json<Value> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let runs = state.list_routine_runs(Some(&id), limit).await;
+    Json(json!({
+        "routineID": id,
+        "runs": runs,
+        "count": runs.len(),
+    }))
+}
+
+async fn routines_run_get(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(run) = state.get_routine_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Routine run not found",
+                "code": "ROUTINE_RUN_NOT_FOUND",
+                "runID": run_id,
+            })),
+        ));
+    };
+    Ok(Json(json!({ "run": run })))
+}
+
+fn reason_or_default(input: Option<String>, fallback: &str) -> String {
+    input
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+async fn routines_run_approve(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(current) = state.get_routine_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Routine run not found",
+                "code": "ROUTINE_RUN_NOT_FOUND",
+                "runID": run_id,
+            })),
+        ));
+    };
+    if current.status != RoutineRunStatus::PendingApproval {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Routine run is not waiting for approval",
+                "code": "ROUTINE_RUN_NOT_PENDING_APPROVAL",
+                "runID": run_id,
+            })),
+        ));
+    }
+    let reason = reason_or_default(input.reason, "approved by operator");
+    let updated = state
+        .update_routine_run_status(&run_id, RoutineRunStatus::Queued, Some(reason.clone()))
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error":"Failed to update routine run",
+                    "code":"ROUTINE_RUN_UPDATE_FAILED",
+                    "runID": run_id,
+                })),
+            )
+        })?;
+    state.event_bus.publish(EngineEvent::new(
+        "routine.run.approved",
+        json!({
+            "runID": run_id,
+            "routineID": updated.routine_id,
+            "reason": reason,
+        }),
+    ));
+    Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
+async fn routines_run_deny(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(current) = state.get_routine_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Routine run not found",
+                "code": "ROUTINE_RUN_NOT_FOUND",
+                "runID": run_id,
+            })),
+        ));
+    };
+    if current.status != RoutineRunStatus::PendingApproval {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Routine run is not waiting for approval",
+                "code": "ROUTINE_RUN_NOT_PENDING_APPROVAL",
+                "runID": run_id,
+            })),
+        ));
+    }
+    let reason = reason_or_default(input.reason, "denied by operator");
+    let updated = state
+        .update_routine_run_status(&run_id, RoutineRunStatus::Denied, Some(reason.clone()))
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error":"Failed to update routine run",
+                    "code":"ROUTINE_RUN_UPDATE_FAILED",
+                    "runID": run_id,
+                })),
+            )
+        })?;
+    state.event_bus.publish(EngineEvent::new(
+        "routine.run.denied",
+        json!({
+            "runID": run_id,
+            "routineID": updated.routine_id,
+            "reason": reason,
+        }),
+    ));
+    Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
+async fn routines_run_pause(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(current) = state.get_routine_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Routine run not found",
+                "code": "ROUTINE_RUN_NOT_FOUND",
+                "runID": run_id,
+            })),
+        ));
+    };
+    if !matches!(current.status, RoutineRunStatus::Queued | RoutineRunStatus::Running) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Routine run is not pausable",
+                "code": "ROUTINE_RUN_NOT_PAUSABLE",
+                "runID": run_id,
+            })),
+        ));
+    }
+    let reason = reason_or_default(input.reason, "paused by operator");
+    let updated = state
+        .update_routine_run_status(&run_id, RoutineRunStatus::Paused, Some(reason.clone()))
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error":"Failed to update routine run",
+                    "code":"ROUTINE_RUN_UPDATE_FAILED",
+                    "runID": run_id,
+                })),
+            )
+        })?;
+    state.event_bus.publish(EngineEvent::new(
+        "routine.run.paused",
+        json!({
+            "runID": run_id,
+            "routineID": updated.routine_id,
+            "reason": reason,
+        }),
+    ));
+    Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
+async fn routines_run_resume(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(current) = state.get_routine_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Routine run not found",
+                "code": "ROUTINE_RUN_NOT_FOUND",
+                "runID": run_id,
+            })),
+        ));
+    };
+    if current.status != RoutineRunStatus::Paused {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Routine run is not paused",
+                "code": "ROUTINE_RUN_NOT_PAUSED",
+                "runID": run_id,
+            })),
+        ));
+    }
+    let reason = reason_or_default(input.reason, "resumed by operator");
+    let updated = state
+        .update_routine_run_status(&run_id, RoutineRunStatus::Queued, Some(reason.clone()))
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error":"Failed to update routine run",
+                    "code":"ROUTINE_RUN_UPDATE_FAILED",
+                    "runID": run_id,
+                })),
+            )
+        })?;
+    state.event_bus.publish(EngineEvent::new(
+        "routine.run.resumed",
+        json!({
+            "runID": run_id,
+            "routineID": updated.routine_id,
+            "reason": reason,
+        }),
+    ));
+    Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
+async fn routines_run_artifacts(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(run) = state.get_routine_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Routine run not found",
+                "code": "ROUTINE_RUN_NOT_FOUND",
+                "runID": run_id,
+            })),
+        ));
+    };
+    Ok(Json(json!({
+        "runID": run_id,
+        "artifacts": run.artifacts,
+        "count": run.artifacts.len(),
+    })))
+}
+
+async fn routines_run_artifact_add(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunArtifactInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if input.uri.trim().is_empty() || input.kind.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error":"Artifact requires uri and kind",
+                "code":"ROUTINE_ARTIFACT_INVALID",
+            })),
+        ));
+    }
+    let artifact = RoutineRunArtifact {
+        artifact_id: format!("artifact-{}", Uuid::new_v4()),
+        uri: input.uri.trim().to_string(),
+        kind: input.kind.trim().to_string(),
+        label: input.label.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        created_at_ms: crate::now_ms(),
+        metadata: input.metadata,
+    };
+    let updated = state
+        .append_routine_run_artifact(&run_id, artifact.clone())
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error":"Routine run not found",
+                    "code":"ROUTINE_RUN_NOT_FOUND",
+                    "runID": run_id,
+                })),
+            )
+        })?;
+    state.event_bus.publish(EngineEvent::new(
+        "routine.run.artifact_added",
+        json!({
+            "runID": run_id,
+            "routineID": updated.routine_id,
+            "artifact": artifact,
+        }),
+    ));
+    Ok(Json(json!({ "ok": true, "run": updated })))
 }
 
 fn routines_sse_stream(

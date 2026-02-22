@@ -84,6 +84,28 @@ impl ToolRegistry {
         schemas
     }
 
+    pub async fn register_tool(&self, name: String, tool: Arc<dyn Tool>) {
+        self.tools.write().await.insert(name, tool);
+    }
+
+    pub async fn unregister_tool(&self, name: &str) -> bool {
+        self.tools.write().await.remove(name).is_some()
+    }
+
+    pub async fn unregister_by_prefix(&self, prefix: &str) -> usize {
+        let mut tools = self.tools.write().await;
+        let keys = tools
+            .keys()
+            .filter(|name| name.starts_with(prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        let removed = keys.len();
+        for key in keys {
+            tools.remove(&key);
+        }
+        removed
+    }
+
     pub async fn execute(&self, name: &str, args: Value) -> anyhow::Result<ToolResult> {
         let tool = {
             let tools = self.tools.read().await;
