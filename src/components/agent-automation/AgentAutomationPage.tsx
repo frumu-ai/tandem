@@ -27,6 +27,20 @@ import {
 } from "@/lib/tauri";
 
 type AgentAutomationTab = "automated-bots" | "agent-ops";
+type BotTemplateId = "daily-research" | "issue-triage" | "release-reporter";
+
+interface BotTemplate {
+  id: BotTemplateId;
+  label: string;
+  description: string;
+  name: string;
+  intervalSeconds: number;
+  entrypoint: "mission.default" | "mcp_first_tool";
+  allowedTools: string[];
+  requiresApproval: boolean;
+  externalAllowed: boolean;
+  outputTargets: string[];
+}
 
 interface AgentAutomationPageProps {
   userProjects: UserProject[];
@@ -69,6 +83,48 @@ export function AgentAutomationPage({
   const [routineRuns, setRoutineRuns] = useState<RoutineRunRecord[]>([]);
   const [routineRunsLoading, setRoutineRunsLoading] = useState(false);
   const [routineActionBusyRunId, setRoutineActionBusyRunId] = useState<string | null>(null);
+
+  const templates: BotTemplate[] = useMemo(
+    () => [
+      {
+        id: "daily-research",
+        label: "Daily Research",
+        description: "Web + MCP research with markdown extraction output.",
+        name: "Daily MCP Research",
+        intervalSeconds: 86400,
+        entrypoint: "mission.default",
+        allowedTools: ["websearch", "webfetch_document", "read", "write"],
+        requiresApproval: true,
+        externalAllowed: true,
+        outputTargets: ["file://reports/daily-mcp-research.md"],
+      },
+      {
+        id: "issue-triage",
+        label: "Issue Triage",
+        description: "Classify inbound issues and post suggested actions.",
+        name: "Issue Triage Bot",
+        intervalSeconds: 900,
+        entrypoint: "mission.default",
+        allowedTools: ["read", "write", "websearch", "webfetch_document"],
+        requiresApproval: true,
+        externalAllowed: true,
+        outputTargets: ["file://reports/issue-triage.json"],
+      },
+      {
+        id: "release-reporter",
+        label: "Release Reporter",
+        description: "Compile status updates into a periodic artifact report.",
+        name: "Release Reporter",
+        intervalSeconds: 3600,
+        entrypoint: "mission.default",
+        allowedTools: ["read", "websearch", "webfetch_document", "write"],
+        requiresApproval: false,
+        externalAllowed: true,
+        outputTargets: ["file://reports/release-status.md"],
+      },
+    ],
+    []
+  );
 
   const loadMcpStatus = useCallback(async () => {
     setMcpLoading(true);
@@ -166,7 +222,7 @@ export function AgentAutomationPage({
 
   const allowlistChoices = useMemo(
     () =>
-      [...new Set(["read", "write", "bash", "websearch", ...mcpToolIds])]
+      [...new Set(["read", "write", "bash", "websearch", "webfetch_document", ...mcpToolIds])]
         .filter((tool) => tool.trim().length > 0)
         .sort(),
     [mcpToolIds]
@@ -174,12 +230,49 @@ export function AgentAutomationPage({
 
   useEffect(() => {
     if (routineAllowedToolsDraft.length > 0) return;
-    if (mcpToolIds.length === 0) return;
-    setRoutineAllowedToolsDraft(["read", mcpToolIds[0]]);
-    if (routineEntrypointDraft === "mission.default") {
+    const defaults = ["read", "websearch", "webfetch_document"];
+    if (mcpToolIds.length > 0) {
+      defaults.push(mcpToolIds[0]);
+    }
+    setRoutineAllowedToolsDraft(defaults);
+    if (routineEntrypointDraft === "mission.default" && mcpToolIds.length > 0) {
       setRoutineEntrypointDraft(mcpToolIds[0]);
     }
   }, [mcpToolIds, routineAllowedToolsDraft.length, routineEntrypointDraft]);
+
+  const applyTemplate = (template: BotTemplate) => {
+    const firstMcpTool = mcpToolIds[0];
+    const nextEntrypoint =
+      template.entrypoint === "mcp_first_tool" && firstMcpTool ? firstMcpTool : "mission.default";
+    const mergedTools = [...template.allowedTools];
+    if (firstMcpTool && !mergedTools.includes(firstMcpTool)) {
+      mergedTools.push(firstMcpTool);
+    }
+    setRoutineNameDraft(template.name);
+    setRoutineIntervalSecondsDraft(template.intervalSeconds);
+    setRoutineEntrypointDraft(nextEntrypoint);
+    setRoutineAllowedToolsDraft(mergedTools);
+    setRoutineRequiresApprovalDraft(template.requiresApproval);
+    setRoutineExternalAllowedDraft(template.externalAllowed);
+    setRoutineOutputTargetsDraft(template.outputTargets.join(", "));
+  };
+
+  const formatIntervalHint = (seconds: number): string => {
+    if (!Number.isFinite(seconds) || seconds <= 0) return "";
+    if (seconds % 86400 === 0) {
+      const days = seconds / 86400;
+      return `every ${days} day${days === 1 ? "" : "s"}`;
+    }
+    if (seconds % 3600 === 0) {
+      const hours = seconds / 3600;
+      return `every ${hours} hour${hours === 1 ? "" : "s"}`;
+    }
+    if (seconds % 60 === 0) {
+      const mins = seconds / 60;
+      return `every ${mins} minute${mins === 1 ? "" : "s"}`;
+    }
+    return `every ${seconds} second${seconds === 1 ? "" : "s"}`;
+  };
 
   const toggleRoutineAllowedTool = (toolId: string) => {
     setRoutineAllowedToolsDraft((prev) => {
@@ -389,6 +482,29 @@ export function AgentAutomationPage({
               <div className="mt-2 grid grid-cols-1 gap-3 lg:grid-cols-2">
                 <div className="rounded-md border border-border bg-surface-elevated/40 p-3">
                   <div className="text-xs font-semibold text-text">Create Scheduled Bot</div>
+                  <div className="mt-2">
+                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                      Ready Templates
+                    </div>
+                    <div className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-3">
+                      {templates.map((template) => (
+                        <button
+                          key={template.id}
+                          type="button"
+                          className="rounded border border-border bg-surface px-2 py-1 text-left hover:border-primary/40 hover:bg-surface-elevated"
+                          onClick={() => applyTemplate(template)}
+                          title={template.description}
+                        >
+                          <div className="text-[11px] font-semibold text-text">
+                            {template.label}
+                          </div>
+                          <div className="truncate text-[10px] text-text-muted">
+                            {template.description}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <div className="mt-2 space-y-2">
                     <input
                       value={routineNameDraft}
@@ -397,18 +513,23 @@ export function AgentAutomationPage({
                       placeholder="Routine name"
                     />
                     <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="number"
-                        min={1}
-                        value={routineIntervalSecondsDraft}
-                        onChange={(event) =>
-                          setRoutineIntervalSecondsDraft(
-                            Number.parseInt(event.target.value || "300", 10)
-                          )
-                        }
-                        className="w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-primary/60"
-                        placeholder="Interval seconds"
-                      />
+                      <div className="space-y-1">
+                        <input
+                          type="number"
+                          min={1}
+                          value={routineIntervalSecondsDraft}
+                          onChange={(event) =>
+                            setRoutineIntervalSecondsDraft(
+                              Number.parseInt(event.target.value || "300", 10)
+                            )
+                          }
+                          className="w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-primary/60"
+                          placeholder="Interval (seconds)"
+                        />
+                        <div className="text-[10px] text-text-subtle">
+                          Unit: seconds ({formatIntervalHint(routineIntervalSecondsDraft)})
+                        </div>
+                      </div>
                       <select
                         value={routineEntrypointDraft}
                         onChange={(event) => setRoutineEntrypointDraft(event.target.value)}

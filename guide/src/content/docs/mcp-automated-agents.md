@@ -175,6 +175,80 @@ Use one read channel + one write channel + one source-of-truth system:
 
 Start with **3-8 allowed tools** max per routine. Increase only after you get predictable run history.
 
+## 2.6) Ready-Made Routine Templates (Copy/Paste)
+
+Replace MCP tool IDs with your connector namespaces (for example `mcp.arcade.search` or `mcp.composio.github_issues_list`).
+
+### Template A: Daily Research Digest
+
+```bash
+curl -sS -X POST http://127.0.0.1:39731/routines \
+  -H "content-type: application/json" \
+  -d '{
+    "routine_id": "daily-research-digest",
+    "name": "Daily Research Digest",
+    "schedule": { "interval_seconds": { "seconds": 86400 } },
+    "entrypoint": "mission.default",
+    "allowed_tools": [
+      "websearch",
+      "webfetch_document",
+      "read",
+      "write",
+      "mcp.arcade.search"
+    ],
+    "output_targets": ["file://reports/daily-research-digest.md"],
+    "requires_approval": true,
+    "external_integrations_allowed": true
+  }'
+```
+
+### Template B: 15-Min Issue Triage
+
+```bash
+curl -sS -X POST http://127.0.0.1:39731/routines \
+  -H "content-type: application/json" \
+  -d '{
+    "routine_id": "issue-triage-bot",
+    "name": "Issue Triage Bot",
+    "schedule": { "interval_seconds": { "seconds": 900 } },
+    "entrypoint": "mission.default",
+    "allowed_tools": [
+      "read",
+      "write",
+      "websearch",
+      "webfetch_document",
+      "mcp.composio.github_issues_list",
+      "mcp.composio.github_issue_comment_create"
+    ],
+    "output_targets": ["file://reports/issue-triage.json"],
+    "requires_approval": true,
+    "external_integrations_allowed": true
+  }'
+```
+
+### Template C: Hourly Release Reporter (Unattended)
+
+```bash
+curl -sS -X POST http://127.0.0.1:39731/routines \
+  -H "content-type: application/json" \
+  -d '{
+    "routine_id": "hourly-release-reporter",
+    "name": "Hourly Release Reporter",
+    "schedule": { "interval_seconds": { "seconds": 3600 } },
+    "entrypoint": "mission.default",
+    "allowed_tools": [
+      "read",
+      "websearch",
+      "webfetch_document",
+      "write",
+      "mcp.arcade.search"
+    ],
+    "output_targets": ["file://reports/release-status.md"],
+    "requires_approval": false,
+    "external_integrations_allowed": true
+  }'
+```
+
 ## 3) Desktop Flow (Agent Automation)
 
 From desktop:
