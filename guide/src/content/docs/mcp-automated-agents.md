@@ -430,6 +430,39 @@ Watch for:
 
 Run `tandem-engine serve` under a process supervisor (systemd, PM2, container orchestrator, or Windows Task Scheduler/service wrapper) so it auto-restarts after reboots/crashes.
 
+### F) Benchmark mission/automation cold start
+
+If someone asks "how fast is mission startup?" benchmark exactly this:
+
+1. Engine launch to `ready=true`
+2. `run_now` API ack latency
+3. Time until run record is visible
+
+Scripts:
+
+- `examples/headless/mcp_tools_allowlist/benchmark_cold_start.ps1`
+- `examples/headless/mcp_tools_allowlist/benchmark_cold_start.sh`
+
+PowerShell:
+
+```powershell
+cd examples/headless/mcp_tools_allowlist
+$env:BENCH_RUNS = "10"
+.\benchmark_cold_start.ps1
+```
+
+Bash:
+
+```bash
+cd examples/headless/mcp_tools_allowlist
+chmod +x benchmark_cold_start.sh
+BENCH_RUNS=10 ./benchmark_cold_start.sh
+```
+
+Both scripts output p50/p95 summary and write per-trial data to:
+
+- `examples/headless/mcp_tools_allowlist/cold_start_results.json`
+
 ## 7) App Testing Checklist (Release Readiness)
 
 Use this checklist before shipping:

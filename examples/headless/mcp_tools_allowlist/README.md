@@ -54,3 +54,44 @@ You should see events including:
 - `mcp.server.connected`
 - `mcp.tools.updated`
 - `routine.run.created`
+
+## Mission/Automation Cold Start Benchmark
+
+If you want to answer "how long does it take to launch the engine and start a mission/automation run?", use the benchmark scripts in this folder.
+
+What is measured per trial:
+
+1. `engine_boot_ms`: engine process launch -> `/global/health` reports `ready=true`
+2. `run_now_ack_ms`: `POST /routines/{id}/run_now` (or `/automations/{id}/run_now`) request latency
+3. `run_visible_ms`: `run_now` sent -> `GET /routines/runs/{run_id}` (or `/automations/runs/{run_id}`) first returns 200
+4. `cold_start_to_run_visible_ms`: `engine_boot_ms + run_visible_ms`
+
+### PowerShell
+
+```powershell
+cd examples/headless/mcp_tools_allowlist
+$env:BENCH_RUNS = "10"
+.\benchmark_cold_start.ps1
+```
+
+Optional env:
+
+- `TANDEM_AUTOMATION_API=routines|automations` (default: `routines`)
+- `TANDEM_BASE_URL` (default: `http://127.0.0.1:39731`)
+- `TANDEM_ENGINE_CMD` (override engine launch command)
+
+### Bash
+
+```bash
+cd examples/headless/mcp_tools_allowlist
+chmod +x benchmark_cold_start.sh
+BENCH_RUNS=10 ./benchmark_cold_start.sh
+```
+
+Optional env:
+
+- `TANDEM_AUTOMATION_API=routines|automations` (default: `routines`)
+- `TANDEM_BASE_URL` (default: `http://127.0.0.1:39731`)
+- `TANDEM_ENGINE_CMD` (override engine launch command)
+
+Both scripts write raw trial data to `cold_start_results.json` in this folder so you can post exact p50/p95 numbers publicly.
