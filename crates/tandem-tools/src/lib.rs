@@ -423,6 +423,7 @@ impl Tool for BashTool {
         }
         let shell = match build_shell_command(cmd) {
             ShellCommandPlan::Execute(plan) => plan,
+            #[cfg(windows)]
             ShellCommandPlan::Blocked(result) => return Ok(result),
         };
         let ShellExecutionPlan {
@@ -463,6 +464,7 @@ impl Tool for BashTool {
         }
         let shell = match build_shell_command(cmd) {
             ShellCommandPlan::Execute(plan) => plan,
+            #[cfg(windows)]
             ShellCommandPlan::Blocked(result) => return Ok(result),
         };
         let ShellExecutionPlan {
@@ -552,6 +554,7 @@ fn shell_metadata(
 
 enum ShellCommandPlan {
     Execute(ShellExecutionPlan),
+    #[cfg(windows)]
     Blocked(ToolResult),
 }
 
@@ -599,6 +602,7 @@ fn build_shell_command(raw_cmd: &str) -> ShellCommandPlan {
     }
 }
 
+#[cfg(any(windows, test))]
 fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
     let trimmed = raw_cmd.trim();
     if trimmed.is_empty() {
@@ -614,6 +618,7 @@ fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
     None
 }
 
+#[cfg(any(windows, test))]
 fn translate_windows_ls_command(trimmed: &str) -> Option<String> {
     let mut force = false;
     let mut paths: Vec<&str> = Vec::new();
@@ -639,6 +644,7 @@ fn translate_windows_ls_command(trimmed: &str) -> Option<String> {
     Some(translated)
 }
 
+#[cfg(any(windows, test))]
 fn translate_windows_find_command(trimmed: &str) -> Option<String> {
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
     if tokens.is_empty() || !tokens[0].eq_ignore_ascii_case("find") {
@@ -704,6 +710,7 @@ fn translate_windows_find_command(trimmed: &str) -> Option<String> {
     Some(translated)
 }
 
+#[cfg(any(windows, test))]
 fn normalize_shell_token(token: &str) -> String {
     let trimmed = token.trim();
     if trimmed.len() >= 2
@@ -715,10 +722,12 @@ fn normalize_shell_token(token: &str) -> String {
     trimmed.to_string()
 }
 
+#[cfg(any(windows, test))]
 fn quote_powershell_single(input: &str) -> String {
     format!("'{}'", input.replace('\'', "''"))
 }
 
+#[cfg(any(windows, test))]
 fn windows_guardrail_reason(raw_cmd: &str) -> Option<&'static str> {
     let trimmed = raw_cmd.trim().to_ascii_lowercase();
     if trimmed.is_empty() {
