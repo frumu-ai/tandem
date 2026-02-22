@@ -295,6 +295,11 @@ For orchestrated mode with stricter tool discipline, set:
 - `mode: "orchestrated"`
 - `orchestrator_only_tool_calls: true`
 
+Desktop mapping:
+
+- In `Agent Automation`, choose `Mode = orchestrated`
+- Enable `Orchestrator-only tool calls` in the form
+
 ## 4) SSE Visibility
 
 Watch routine stream:

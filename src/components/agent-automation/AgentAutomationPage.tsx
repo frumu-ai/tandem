@@ -126,6 +126,8 @@ export function AgentAutomationPage({
   const [routineModeDraft, setRoutineModeDraft] = useState<"standalone" | "orchestrated">(
     "standalone"
   );
+  const [routineOrchestratorOnlyToolCallsDraft, setRoutineOrchestratorOnlyToolCallsDraft] =
+    useState(false);
   const [routineOutputTargetsDraft, setRoutineOutputTargetsDraft] = useState("");
   const [routineRequiresApprovalDraft, setRoutineRequiresApprovalDraft] = useState(true);
   const [routineExternalAllowedDraft, setRoutineExternalAllowedDraft] = useState(true);
@@ -362,6 +364,7 @@ export function AgentAutomationPage({
     setRoutineMissionObjectiveDraft(template.missionObjective);
     setRoutineSuccessCriteriaDraft(template.successCriteria.join("\n"));
     setRoutineModeDraft("standalone");
+    setRoutineOrchestratorOnlyToolCallsDraft(false);
   };
 
   useEffect(() => {
@@ -463,6 +466,7 @@ export function AgentAutomationPage({
           prompt: missionObjective,
           success_criteria: successCriteria,
           mode: routineModeDraft,
+          orchestrator_only_tool_calls: routineOrchestratorOnlyToolCallsDraft,
         },
         allowed_tools: routineAllowedToolsDraft,
         output_targets: outputTargets,
@@ -476,6 +480,7 @@ export function AgentAutomationPage({
       setRoutineMissionObjectiveDraft("");
       setRoutineSuccessCriteriaDraft("");
       setRoutineModeDraft("standalone");
+      setRoutineOrchestratorOnlyToolCallsDraft(false);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setError(`Create routine failed: ${message}`);
@@ -767,6 +772,16 @@ export function AgentAutomationPage({
                           <option value="orchestrated">orchestrated</option>
                         </select>
                       </label>
+                      <label className="inline-flex items-center gap-2 self-end text-[11px] text-text-subtle">
+                        <input
+                          type="checkbox"
+                          checked={routineOrchestratorOnlyToolCallsDraft}
+                          onChange={(event) =>
+                            setRoutineOrchestratorOnlyToolCallsDraft(event.target.checked)
+                          }
+                        />
+                        Orchestrator-only tool calls
+                      </label>
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-[11px] text-text-subtle">
                       <label className="inline-flex items-center gap-1">
@@ -849,6 +864,11 @@ export function AgentAutomationPage({
                               {routine.entrypoint} | {routine.status} | mode:{" "}
                               {modeFromArgs(routine.args)}
                             </div>
+                            {routine.args?.["orchestrator_only_tool_calls"] ? (
+                              <div className="truncate text-[11px] text-text-subtle">
+                                policy: orchestrator-only tool calls
+                              </div>
+                            ) : null}
                             {typeof routine.args?.["prompt"] === "string" &&
                             routine.args["prompt"].trim().length > 0 ? (
                               <div className="line-clamp-2 text-[11px] text-text-subtle">
@@ -906,6 +926,11 @@ export function AgentAutomationPage({
                           <div className="mt-0.5 truncate text-[11px] text-text-muted">
                             run {run.run_id} | {run.trigger_type} | mode: {modeFromArgs(run.args)}
                           </div>
+                          {run.args?.["orchestrator_only_tool_calls"] ? (
+                            <div className="mt-0.5 text-[11px] text-text-subtle">
+                              policy: orchestrator-only tool calls
+                            </div>
+                          ) : null}
                           {run.allowed_tools.length > 0 ? (
                             <div className="mt-1 flex flex-wrap gap-1">
                               {run.allowed_tools.slice(0, 3).map((toolId) => (
