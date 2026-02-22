@@ -40,6 +40,15 @@ export function SidecarDownloader({
   onComplete,
   showUpdateButton = false,
 }: SidecarDownloaderProps) {
+  const displayVersion = (raw: string | null | undefined): string => {
+    if (!raw) return "";
+    const trimmed = raw.trim();
+    if (!trimmed) return "";
+    const withoutPrefix = trimmed.replace(/^[vV]\s*/, "");
+    const stable = withoutPrefix.split("-")[0];
+    return stable || withoutPrefix;
+  };
+
   const [state, setState] = useState<DownloadState>("checking");
   const [progress, setProgress] = useState<DownloadProgress>({
     downloaded: 0,
@@ -135,7 +144,9 @@ export function SidecarDownloader({
       <div className="flex items-center justify-between p-4 rounded-lg bg-surface border border-border">
         <div>
           <p className="text-sm font-medium text-text">Tandem Engine</p>
-          <p className="text-xs text-text-muted">Version {status.version} • Up to date</p>
+          <p className="text-xs text-text-muted">
+            Version v{displayVersion(status.version)} • Up to date
+          </p>
         </div>
         <Button variant="ghost" size="sm" onClick={checkSidecar} className="gap-2">
           <RefreshCw className="h-3 w-3" />
@@ -154,7 +165,7 @@ export function SidecarDownloader({
   const description = status?.compatibilityMessage
     ? status.compatibilityMessage
     : status?.updateAvailable && status?.version
-      ? `Tandem Engine ${status.latestVersion} is available. You have ${status.version}.`
+      ? `Tandem Engine v${displayVersion(status.latestVersion)} is available. You have v${displayVersion(status.version)}.`
       : "Tandem requires the Tandem engine sidecar. This is a one-time download (~50MB).";
 
   const showSkip = !!status?.installed;

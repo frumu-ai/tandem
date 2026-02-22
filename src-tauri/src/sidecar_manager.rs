@@ -342,7 +342,7 @@ struct ReleaseDiscovery {
 async fn fetch_release_discovery(app: &AppHandle) -> Result<ReleaseDiscovery> {
     let client = reqwest::Client::new();
     let releases = fetch_releases(app, &client, false).await?;
-    Ok(build_release_discovery(&releases, beta_channel_enabled()))
+    Ok(build_release_discovery(&releases, false))
 }
 
 fn build_release_discovery(
@@ -656,29 +656,8 @@ fn log_release_selection(context: &str, selected: &CompatibleRelease<'_>) {
 }
 
 fn select_release_for_download<'a>(releases: &'a [GitHubRelease]) -> Result<CompatibleRelease<'a>> {
-    let include_prerelease = beta_channel_enabled();
-
-    match select_latest_compatible_release(releases, include_prerelease) {
-        Ok(selected) => Ok(selected),
-        Err(primary_error) => {
-            if include_prerelease {
-                return Err(primary_error);
-            }
-
-            // Fallback: if stable filtering finds nothing compatible, allow prerelease releases.
-            // This keeps sidecar download functional when only prerelease artifacts are available.
-            match select_latest_compatible_release(releases, true) {
-                Ok(selected) => {
-                    tracing::warn!(
-                        selected_tag = %selected.release.tag_name,
-                        "No stable compatible tandem-engine release found; falling back to prerelease"
-                    );
-                    Ok(selected)
-                }
-                Err(_) => Err(primary_error),
-            }
-        }
-    }
+    // Stable-only updater policy: never opt into prerelease artifacts.
+    select_latest_compatible_release(releases, false)
 }
 
 fn should_offer_update(installed_version: Option<&str>, latest_version: Option<&str>) -> bool {
@@ -771,12 +750,6 @@ fn asset_name_matches_current_target(asset_name: &str) -> bool {
     {
         return asset_name.contains("linux") && asset_name.contains("arm64");
     }
-}
-
-fn beta_channel_enabled() -> bool {
-    std::env::var("TANDEM_OPENCODE_UPDATE_CHANNEL")
-        .map(|value| value.eq_ignore_ascii_case("beta"))
-        .unwrap_or(false)
 }
 
 fn get_release_cache_path(app: &AppHandle) -> Option<PathBuf> {
