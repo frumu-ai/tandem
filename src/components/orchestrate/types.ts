@@ -9,6 +9,8 @@ export interface OrchestratorConfig {
   max_subagent_runs: number;
   max_web_sources: number;
   max_task_retries: number;
+  max_agent_call_secs?: number;
+  max_timeout_retries_per_task_attempt?: number;
   require_write_approval: boolean;
   enable_research: boolean;
   allow_dangerous_actions: boolean;
@@ -28,11 +30,7 @@ export interface OrchestratorModelSelection {
   provider?: string | null;
 }
 
-export interface OrchestratorModelRouting {
-  planner?: OrchestratorModelSelection | null;
-  builder?: OrchestratorModelSelection | null;
-  validator?: OrchestratorModelSelection | null;
-}
+export type OrchestratorModelRouting = Record<string, OrchestratorModelSelection | null>;
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   max_iterations: 500,
@@ -42,6 +40,8 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   max_subagent_runs: 2000,
   max_web_sources: 30,
   max_task_retries: 3,
+  max_agent_call_secs: 600,
+  max_timeout_retries_per_task_attempt: 1,
   require_write_approval: true,
   enable_research: false,
   allow_dangerous_actions: false,
@@ -67,6 +67,8 @@ export type RunStatus =
   | "failed"
   | "cancelled";
 
+export type RunSource = "orchestrator" | "command_center";
+
 export type TaskState = "pending" | "in_progress" | "blocked" | "done" | "failed";
 
 export interface Task {
@@ -75,6 +77,9 @@ export interface Task {
   description: string;
   dependencies: string[];
   acceptance_criteria: string[];
+  assigned_role?: string;
+  template_id?: string;
+  gate?: "review" | "test";
   state: TaskState;
   retry_count: number;
   error_message?: string;
@@ -113,6 +118,7 @@ export interface RunSnapshot {
 export interface RunSummary {
   run_id: string;
   session_id: string;
+  source?: RunSource;
   objective: string;
   status: RunStatus;
   created_at: string;

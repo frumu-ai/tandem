@@ -1,0 +1,8 @@
+{
+  "default_provider": "openrouter",
+  "providers": {
+    "openrouter": { "default_model": "google/gemini-3.1-pro-preview" },
+    "openai": { "default_model": "gpt-4o-mini" },
+    "anthropic": { "default_model": "claude-4-6-sonnet-latest" }
+  }
+}

@@ -1,6 +1,7 @@
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -63,6 +64,8 @@ impl ToolRegistry {
         map.insert("question".to_string(), Arc::new(QuestionTool));
         map.insert("spawn_agent".to_string(), Arc::new(SpawnAgentTool));
         map.insert("skill".to_string(), Arc::new(SkillTool));
+        map.insert("memory_store".to_string(), Arc::new(MemoryStoreTool));
+        map.insert("memory_list".to_string(), Arc::new(MemoryListTool));
         map.insert("memory_search".to_string(), Arc::new(MemorySearchTool));
         map.insert("apply_patch".to_string(), Arc::new(ApplyPatchTool));
         map.insert("batch".to_string(), Arc::new(BatchTool));
@@ -83,8 +86,11 @@ impl ToolRegistry {
     }
 
     pub async fn execute(&self, name: &str, args: Value) -> anyhow::Result<ToolResult> {
-        let tools = self.tools.read().await;
-        let Some(tool) = tools.get(name) else {
+        let tool = {
+            let tools = self.tools.read().await;
+            resolve_registered_tool(&tools, name)
+        };
+        let Some(tool) = tool else {
             return Ok(ToolResult {
                 output: format!("Unknown tool: {name}"),
                 metadata: json!({}),
@@ -99,14 +105,146 @@ impl ToolRegistry {
         args: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let tools = self.tools.read().await;
-        let Some(tool) = tools.get(name) else {
+        let tool = {
+            let tools = self.tools.read().await;
+            resolve_registered_tool(&tools, name)
+        };
+        let Some(tool) = tool else {
             return Ok(ToolResult {
                 output: format!("Unknown tool: {name}"),
                 metadata: json!({}),
             });
         };
         tool.execute_with_cancel(args, cancel).await
+    }
+}
+
+fn canonical_tool_name(name: &str) -> String {
+    match name.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        "run_command" | "shell" | "powershell" | "cmd" => "bash".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn strip_known_tool_namespace(name: &str) -> Option<String> {
+    const PREFIXES: [&str; 8] = [
+        "default_api:",
+        "default_api.",
+        "functions.",
+        "function.",
+        "tools.",
+        "tool.",
+        "builtin:",
+        "builtin.",
+    ];
+    for prefix in PREFIXES {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn resolve_registered_tool(
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    requested_name: &str,
+) -> Option<Arc<dyn Tool>> {
+    let canonical = canonical_tool_name(requested_name);
+    if let Some(tool) = tools.get(&canonical) {
+        return Some(tool.clone());
+    }
+    if let Some(stripped) = strip_known_tool_namespace(&canonical) {
+        let stripped = canonical_tool_name(&stripped);
+        if let Some(tool) = tools.get(&stripped) {
+            return Some(tool.clone());
+        }
+    }
+    None
+}
+
+fn is_batch_wrapper_tool_name(name: &str) -> bool {
+    matches!(
+        canonical_tool_name(name).as_str(),
+        "default_api" | "default" | "api" | "function" | "functions" | "tool" | "tools"
+    )
+}
+
+fn non_empty_batch_str<'a>(value: Option<&'a Value>) -> Option<&'a str> {
+    value
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn resolve_batch_call_tool_name(call: &Value) -> Option<String> {
+    let tool = non_empty_batch_str(call.get("tool"))
+        .or_else(|| {
+            call.get("tool")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("name")))
+        })
+        .or_else(|| {
+            call.get("function")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("tool")))
+        })
+        .or_else(|| {
+            call.get("function_call")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("tool")))
+        })
+        .or_else(|| {
+            call.get("call")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("tool")))
+        });
+    let name = non_empty_batch_str(call.get("name"))
+        .or_else(|| {
+            call.get("function")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("name")))
+        })
+        .or_else(|| {
+            call.get("function_call")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("name")))
+        })
+        .or_else(|| {
+            call.get("call")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("name")))
+        })
+        .or_else(|| {
+            call.get("tool")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| non_empty_batch_str(obj.get("name")))
+        });
+
+    match (tool, name) {
+        (Some(t), Some(n)) => {
+            if is_batch_wrapper_tool_name(t) {
+                Some(n.to_string())
+            } else if let Some(stripped) = strip_known_tool_namespace(t) {
+                Some(stripped)
+            } else {
+                Some(t.to_string())
+            }
+        }
+        (Some(t), None) => {
+            if is_batch_wrapper_tool_name(t) {
+                None
+            } else if let Some(stripped) = strip_known_tool_namespace(t) {
+                Some(stripped)
+            } else {
+                Some(t.to_string())
+            }
+        }
+        (None, Some(n)) => Some(n.to_string()),
+        (None, None) => None,
     }
 }
 
@@ -199,12 +337,57 @@ fn validate_schema_node(
 }
 
 fn is_path_allowed(path: &str) -> bool {
-    let raw = Path::new(path);
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if is_root_only_path_token(trimmed) || is_malformed_tool_path_token(trimmed) {
+        return false;
+    }
+    let raw = Path::new(trimmed);
     if raw.is_absolute() {
         return false;
     }
     !raw.components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+fn is_root_only_path_token(path: &str) -> bool {
+    if matches!(path, "/" | "\\" | "." | ".." | "~") {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() == 2 && bytes[1] == b':' && (bytes[0] as char).is_ascii_alphabetic() {
+        return true;
+    }
+    if bytes.len() == 3
+        && bytes[1] == b':'
+        && (bytes[0] as char).is_ascii_alphabetic()
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        return true;
+    }
+    false
+}
+
+fn is_malformed_tool_path_token(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    if lower.contains("<tool_call")
+        || lower.contains("</tool_call")
+        || lower.contains("<function=")
+        || lower.contains("<parameter=")
+        || lower.contains("</function>")
+        || lower.contains("</parameter>")
+    {
+        return true;
+    }
+    if path.contains('\n') || path.contains('\r') {
+        return true;
+    }
+    if path.contains('*') || path.contains('?') {
+        return true;
+    }
+    false
 }
 
 fn is_document_file(path: &Path) -> bool {
@@ -225,13 +408,30 @@ impl Tool for BashTool {
         ToolSchema {
             name: "bash".to_string(),
             description: "Run shell command".to_string(),
-            input_schema: json!({"type":"object","properties":{"command":{"type":"string"}}}),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "command":{"type":"string"}
+                },
+                "required":["command"]
+            }),
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
-        let cmd = args["command"].as_str().unwrap_or("");
-        let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-Command", cmd]);
+        let cmd = args["command"].as_str().unwrap_or("").trim();
+        if cmd.is_empty() {
+            anyhow::bail!("BASH_COMMAND_MISSING");
+        }
+        let shell = match build_shell_command(cmd) {
+            ShellCommandPlan::Execute(plan) => plan,
+            ShellCommandPlan::Blocked(result) => return Ok(result),
+        };
+        let ShellExecutionPlan {
+            mut command,
+            translated_command,
+            os_guardrail_applied,
+            guardrail_reason,
+        } = shell;
         if let Some(env) = args.get("env").and_then(|v| v.as_object()) {
             for (k, v) in env {
                 if let Some(value) = v.as_str() {
@@ -240,9 +440,16 @@ impl Tool for BashTool {
             }
         }
         let output = command.output().await?;
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let metadata = shell_metadata(
+            translated_command.as_deref(),
+            os_guardrail_applied,
+            guardrail_reason.as_deref(),
+            stderr,
+        );
         Ok(ToolResult {
             output: String::from_utf8_lossy(&output.stdout).to_string(),
-            metadata: json!({"stderr": String::from_utf8_lossy(&output.stderr)}),
+            metadata,
         })
     }
 
@@ -251,9 +458,20 @@ impl Tool for BashTool {
         args: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let cmd = args["command"].as_str().unwrap_or("");
-        let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-Command", cmd]);
+        let cmd = args["command"].as_str().unwrap_or("").trim();
+        if cmd.is_empty() {
+            anyhow::bail!("BASH_COMMAND_MISSING");
+        }
+        let shell = match build_shell_command(cmd) {
+            ShellCommandPlan::Execute(plan) => plan,
+            ShellCommandPlan::Blocked(result) => return Ok(result),
+        };
+        let ShellExecutionPlan {
+            mut command,
+            translated_command,
+            os_guardrail_applied,
+            guardrail_reason,
+        } = shell;
         if let Some(env) = args.get("env").and_then(|v| v.as_object()) {
             for (k, v) in env {
                 if let Some(value) = v.as_str() {
@@ -261,6 +479,8 @@ impl Tool for BashTool {
                 }
             }
         }
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::piped());
         let mut child = command.spawn()?;
         let status = tokio::select! {
             _ = cancel.cancelled() => {
@@ -272,11 +492,253 @@ impl Tool for BashTool {
             }
             result = child.wait() => result?
         };
+        let stderr = match child.stderr.take() {
+            Some(mut handle) => {
+                use tokio::io::AsyncReadExt;
+                let mut buf = Vec::new();
+                let _ = handle.read_to_end(&mut buf).await;
+                String::from_utf8_lossy(&buf).to_string()
+            }
+            None => String::new(),
+        };
+        let mut metadata = shell_metadata(
+            translated_command.as_deref(),
+            os_guardrail_applied,
+            guardrail_reason.as_deref(),
+            stderr,
+        );
+        if let Some(obj) = metadata.as_object_mut() {
+            obj.insert("exit_code".to_string(), json!(status.code()));
+        }
         Ok(ToolResult {
             output: format!("command exited: {}", status),
-            metadata: json!({}),
+            metadata,
         })
     }
+}
+
+struct ShellExecutionPlan {
+    command: Command,
+    translated_command: Option<String>,
+    os_guardrail_applied: bool,
+    guardrail_reason: Option<String>,
+}
+
+fn shell_metadata(
+    translated_command: Option<&str>,
+    os_guardrail_applied: bool,
+    guardrail_reason: Option<&str>,
+    stderr: String,
+) -> Value {
+    let mut metadata = json!({
+        "stderr": stderr,
+        "os_guardrail_applied": os_guardrail_applied,
+    });
+    if let Some(obj) = metadata.as_object_mut() {
+        if let Some(translated) = translated_command {
+            obj.insert(
+                "translated_command".to_string(),
+                Value::String(translated.to_string()),
+            );
+        }
+        if let Some(reason) = guardrail_reason {
+            obj.insert(
+                "guardrail_reason".to_string(),
+                Value::String(reason.to_string()),
+            );
+        }
+    }
+    metadata
+}
+
+enum ShellCommandPlan {
+    Execute(ShellExecutionPlan),
+    Blocked(ToolResult),
+}
+
+fn build_shell_command(raw_cmd: &str) -> ShellCommandPlan {
+    #[cfg(windows)]
+    {
+        let reason = windows_guardrail_reason(raw_cmd);
+        let translated = translate_windows_shell_command(raw_cmd);
+        let translated_applied = translated.is_some();
+        if let Some(reason) = reason {
+            if translated.is_none() {
+                return ShellCommandPlan::Blocked(ToolResult {
+                    output: format!(
+                        "Shell command blocked on Windows ({reason}). Use cross-platform tools (`read`, `glob`, `grep`) or PowerShell-native syntax."
+                    ),
+                    metadata: json!({
+                        "os_guardrail_applied": true,
+                        "guardrail_reason": reason,
+                        "blocked": true
+                    }),
+                });
+            }
+        }
+        let effective = translated.clone().unwrap_or_else(|| raw_cmd.to_string());
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-Command", &effective]);
+        return ShellCommandPlan::Execute(ShellExecutionPlan {
+            command,
+            translated_command: translated,
+            os_guardrail_applied: reason.is_some() || translated_applied,
+            guardrail_reason: reason.map(str::to_string),
+        });
+    }
+
+    #[allow(unreachable_code)]
+    {
+        let mut command = Command::new("sh");
+        command.args(["-lc", raw_cmd]);
+        ShellCommandPlan::Execute(ShellExecutionPlan {
+            command,
+            translated_command: None,
+            os_guardrail_applied: false,
+            guardrail_reason: None,
+        })
+    }
+}
+
+fn translate_windows_shell_command(raw_cmd: &str) -> Option<String> {
+    let trimmed = raw_cmd.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered.starts_with("ls") {
+        return translate_windows_ls_command(trimmed);
+    }
+    if lowered.starts_with("find ") {
+        return translate_windows_find_command(trimmed);
+    }
+    None
+}
+
+fn translate_windows_ls_command(trimmed: &str) -> Option<String> {
+    let mut force = false;
+    let mut paths: Vec<&str> = Vec::new();
+    for token in trimmed.split_whitespace().skip(1) {
+        if token.starts_with('-') {
+            let flags = token.trim_start_matches('-').to_ascii_lowercase();
+            if flags.contains('a') {
+                force = true;
+            }
+            continue;
+        }
+        paths.push(token);
+    }
+
+    let mut translated = String::from("Get-ChildItem");
+    if force {
+        translated.push_str(" -Force");
+    }
+    if !paths.is_empty() {
+        translated.push_str(" -Path ");
+        translated.push_str(&quote_powershell_single(&paths.join(" ")));
+    }
+    Some(translated)
+}
+
+fn translate_windows_find_command(trimmed: &str) -> Option<String> {
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.is_empty() || !tokens[0].eq_ignore_ascii_case("find") {
+        return None;
+    }
+
+    let mut idx = 1usize;
+    let mut path = ".".to_string();
+    let mut file_only = false;
+    let mut patterns: Vec<String> = Vec::new();
+
+    if idx < tokens.len() && !tokens[idx].starts_with('-') {
+        path = normalize_shell_token(tokens[idx]);
+        idx += 1;
+    }
+
+    while idx < tokens.len() {
+        let token = tokens[idx].to_ascii_lowercase();
+        match token.as_str() {
+            "-type" => {
+                if idx + 1 < tokens.len() && tokens[idx + 1].eq_ignore_ascii_case("f") {
+                    file_only = true;
+                }
+                idx += 2;
+            }
+            "-name" => {
+                if idx + 1 < tokens.len() {
+                    let pattern = normalize_shell_token(tokens[idx + 1]);
+                    if !pattern.is_empty() {
+                        patterns.push(pattern);
+                    }
+                }
+                idx += 2;
+            }
+            "-o" | "-or" | "(" | ")" => {
+                idx += 1;
+            }
+            _ => {
+                idx += 1;
+            }
+        }
+    }
+
+    let mut translated = format!("Get-ChildItem -Path {}", quote_powershell_single(&path));
+    translated.push_str(" -Recurse");
+    if file_only {
+        translated.push_str(" -File");
+    }
+
+    if patterns.len() == 1 {
+        translated.push_str(" -Filter ");
+        translated.push_str(&quote_powershell_single(&patterns[0]));
+    } else if patterns.len() > 1 {
+        translated.push_str(" -Include ");
+        let include_list = patterns
+            .iter()
+            .map(|p| quote_powershell_single(p))
+            .collect::<Vec<_>>()
+            .join(",");
+        translated.push_str(&include_list);
+    }
+
+    Some(translated)
+}
+
+fn normalize_shell_token(token: &str) -> String {
+    let trimmed = token.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        return trimmed[1..trimmed.len() - 1].to_string();
+    }
+    trimmed.to_string()
+}
+
+fn quote_powershell_single(input: &str) -> String {
+    format!("'{}'", input.replace('\'', "''"))
+}
+
+fn windows_guardrail_reason(raw_cmd: &str) -> Option<&'static str> {
+    let trimmed = raw_cmd.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let unix_only_prefixes = [
+        "awk ", "sed ", "xargs ", "chmod ", "chown ", "sudo ", "apt ", "apt-get ", "yum ", "dnf ",
+        "brew ", "zsh ", "bash ", "sh ", "uname", "pwd",
+    ];
+    if unix_only_prefixes
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+    {
+        return Some("unix_command_untranslatable");
+    }
+    if trimmed.contains("/dev/null") || trimmed.contains("~/.") {
+        return Some("posix_path_pattern");
+    }
+    None
 }
 
 struct ReadTool;
@@ -370,17 +832,46 @@ impl Tool for WriteTool {
         ToolSchema {
             name: "write".to_string(),
             description: "Write file contents".to_string(),
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "content":{"type":"string"},
+                    "allow_empty":{"type":"boolean"}
+                },
+                "required":["path", "content"]
+            }),
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
-        let path = args["path"].as_str().unwrap_or("");
-        let content = args["content"].as_str().unwrap_or("");
+        let path = args["path"].as_str().unwrap_or("").trim();
+        let content = args["content"].as_str();
+        let allow_empty = args
+            .get("allow_empty")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !is_path_allowed(path) {
             return Ok(ToolResult {
                 output: "path denied by sandbox policy".to_string(),
                 metadata: json!({"path": path}),
             });
+        }
+        let Some(content) = content else {
+            return Ok(ToolResult {
+                output: "write requires `content`".to_string(),
+                metadata: json!({"ok": false, "reason": "missing_content", "path": path}),
+            });
+        };
+        if content.is_empty() && !allow_empty {
+            return Ok(ToolResult {
+                output: "write requires non-empty `content` (or set allow_empty=true)".to_string(),
+                metadata: json!({"ok": false, "reason": "empty_content", "path": path}),
+            });
+        }
+        if let Some(parent) = Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).await?;
+            }
         }
         fs::write(path, content).await?;
         Ok(ToolResult {
@@ -397,7 +888,15 @@ impl Tool for EditTool {
         ToolSchema {
             name: "edit".to_string(),
             description: "String replacement edit".to_string(),
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"}}}),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "old":{"type":"string"},
+                    "new":{"type":"string"}
+                },
+                "required":["path", "old", "new"]
+            }),
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
@@ -440,6 +939,9 @@ impl Tool for GlobTool {
         }
         let mut files = Vec::new();
         for path in (glob::glob(pattern)?).flatten() {
+            if is_discovery_ignored_path(&path) {
+                continue;
+            }
             files.push(path.display().to_string());
             if files.len() >= 100 {
                 break;
@@ -450,6 +952,11 @@ impl Tool for GlobTool {
             metadata: json!({"count": files.len()}),
         })
     }
+}
+
+fn is_discovery_ignored_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == ".tandem")
 }
 
 struct GrepTool;
@@ -478,6 +985,9 @@ impl Tool for GrepTool {
                 continue;
             }
             let path = entry.path();
+            if is_discovery_ignored_path(path) {
+                continue;
+            }
             if let Ok(content) = fs::read_to_string(path).await {
                 for (idx, line) in content.lines().enumerate() {
                     if regex.is_match(line) {
@@ -1276,15 +1786,16 @@ impl Tool for MemorySearchTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "memory_search".to_string(),
-            description: "Search tandem memory with strict session/project scoping. Requires session_id and/or project_id; global search is blocked.".to_string(),
+            description: "Search tandem memory across session/project/global tiers. Global scope is opt-in via allow_global=true (or TANDEM_ENABLE_GLOBAL_MEMORY=1).".to_string(),
             input_schema: json!({
                 "type":"object",
                 "properties":{
                     "query":{"type":"string"},
                     "session_id":{"type":"string"},
                     "project_id":{"type":"string"},
-                    "tier":{"type":"string","enum":["session","project"]},
+                    "tier":{"type":"string","enum":["session","project","global"]},
                     "limit":{"type":"integer","minimum":1,"maximum":20},
+                    "allow_global":{"type":"boolean"},
                     "db_path":{"type":"string"}
                 },
                 "required":["query"]
@@ -1318,9 +1829,10 @@ impl Tool for MemorySearchTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(ToString::to_string);
-        if session_id.is_none() && project_id.is_none() {
+        let allow_global = global_memory_enabled(&args);
+        if session_id.is_none() && project_id.is_none() && !allow_global {
             return Ok(ToolResult {
-                output: "memory_search requires at least one scope: session_id or project_id"
+                output: "memory_search requires at least one scope: session_id or project_id (or allow_global=true)"
                     .to_string(),
                 metadata: json!({"ok": false, "reason": "missing_scope"}),
             });
@@ -1333,15 +1845,11 @@ impl Tool for MemorySearchTool {
         {
             Some(t) if t == "session" => Some(MemoryTier::Session),
             Some(t) if t == "project" => Some(MemoryTier::Project),
-            Some(t) if t == "global" => {
-                return Ok(ToolResult {
-                    output: "memory_search blocks global tier for strict isolation".to_string(),
-                    metadata: json!({"ok": false, "reason": "global_scope_blocked"}),
-                });
-            }
+            Some(t) if t == "global" => Some(MemoryTier::Global),
             Some(_) => {
                 return Ok(ToolResult {
-                    output: "memory_search tier must be one of: session, project".to_string(),
+                    output: "memory_search tier must be one of: session, project, global"
+                        .to_string(),
                     metadata: json!({"ok": false, "reason": "invalid_tier"}),
                 });
             }
@@ -1357,6 +1865,12 @@ impl Tool for MemorySearchTool {
             return Ok(ToolResult {
                 output: "tier=project requires project_id".to_string(),
                 metadata: json!({"ok": false, "reason": "missing_project_scope"}),
+            });
+        }
+        if matches!(tier, Some(MemoryTier::Global)) && !allow_global {
+            return Ok(ToolResult {
+                output: "tier=global requires allow_global=true".to_string(),
+                metadata: json!({"ok": false, "reason": "global_scope_disabled"}),
             });
         }
 
@@ -1421,6 +1935,13 @@ impl Tool for MemorySearchTool {
                         .await?,
                 );
             }
+            Some(MemoryTier::Global) => {
+                results.extend(
+                    manager
+                        .search(query, Some(MemoryTier::Global), None, None, Some(limit))
+                        .await?,
+                );
+            }
             _ => {
                 if session_id.is_some() {
                     results.extend(
@@ -1445,6 +1966,13 @@ impl Tool for MemorySearchTool {
                                 session_id.as_deref(),
                                 Some(limit),
                             )
+                            .await?,
+                    );
+                }
+                if allow_global {
+                    results.extend(
+                        manager
+                            .search(query, Some(MemoryTier::Global), None, None, Some(limit))
                             .await?,
                     );
                 }
@@ -1489,9 +2017,309 @@ impl Tool for MemorySearchTool {
                 "query": query,
                 "session_id": session_id,
                 "project_id": project_id,
+                "allow_global": allow_global,
                 "embedding_status": health.status,
                 "embedding_reason": health.reason,
-                "strict_scope": true,
+                "strict_scope": !allow_global,
+            }),
+        })
+    }
+}
+
+struct MemoryStoreTool;
+#[async_trait]
+impl Tool for MemoryStoreTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "memory_store".to_string(),
+            description: "Store memory chunks in session/project/global tiers. Global writes are opt-in via allow_global=true (or TANDEM_ENABLE_GLOBAL_MEMORY=1).".to_string(),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "content":{"type":"string"},
+                    "tier":{"type":"string","enum":["session","project","global"]},
+                    "session_id":{"type":"string"},
+                    "project_id":{"type":"string"},
+                    "source":{"type":"string"},
+                    "metadata":{"type":"object"},
+                    "allow_global":{"type":"boolean"},
+                    "db_path":{"type":"string"}
+                },
+                "required":["content"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        if content.is_empty() {
+            return Ok(ToolResult {
+                output: "memory_store requires non-empty content".to_string(),
+                metadata: json!({"ok": false, "reason": "missing_content"}),
+            });
+        }
+
+        let session_id = args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let project_id = args
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let allow_global = global_memory_enabled(&args);
+
+        let tier = match args
+            .get("tier")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_ascii_lowercase())
+        {
+            Some(t) if t == "session" => MemoryTier::Session,
+            Some(t) if t == "project" => MemoryTier::Project,
+            Some(t) if t == "global" => MemoryTier::Global,
+            Some(_) => {
+                return Ok(ToolResult {
+                    output: "memory_store tier must be one of: session, project, global"
+                        .to_string(),
+                    metadata: json!({"ok": false, "reason": "invalid_tier"}),
+                });
+            }
+            None => {
+                if project_id.is_some() {
+                    MemoryTier::Project
+                } else if session_id.is_some() {
+                    MemoryTier::Session
+                } else if allow_global {
+                    MemoryTier::Global
+                } else {
+                    return Ok(ToolResult {
+                        output: "memory_store requires scope: session_id or project_id (or allow_global=true)"
+                            .to_string(),
+                        metadata: json!({"ok": false, "reason": "missing_scope"}),
+                    });
+                }
+            }
+        };
+
+        if matches!(tier, MemoryTier::Session) && session_id.is_none() {
+            return Ok(ToolResult {
+                output: "tier=session requires session_id".to_string(),
+                metadata: json!({"ok": false, "reason": "missing_session_scope"}),
+            });
+        }
+        if matches!(tier, MemoryTier::Project) && project_id.is_none() {
+            return Ok(ToolResult {
+                output: "tier=project requires project_id".to_string(),
+                metadata: json!({"ok": false, "reason": "missing_project_scope"}),
+            });
+        }
+        if matches!(tier, MemoryTier::Global) && !allow_global {
+            return Ok(ToolResult {
+                output: "tier=global requires allow_global=true".to_string(),
+                metadata: json!({"ok": false, "reason": "global_scope_disabled"}),
+            });
+        }
+
+        let db_path = resolve_memory_db_path(&args);
+        let manager = MemoryManager::new(&db_path).await?;
+        let health = manager.embedding_health().await;
+        if health.status != "ok" {
+            return Ok(ToolResult {
+                output: "memory embeddings unavailable; semantic memory store is disabled"
+                    .to_string(),
+                metadata: json!({
+                    "ok": false,
+                    "reason": "embeddings_unavailable",
+                    "embedding_status": health.status,
+                    "embedding_reason": health.reason,
+                }),
+            });
+        }
+
+        let source = args
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("agent_note")
+            .to_string();
+        let metadata = args.get("metadata").cloned();
+
+        let request = tandem_memory::types::StoreMessageRequest {
+            content: content.to_string(),
+            tier,
+            session_id: session_id.clone(),
+            project_id: project_id.clone(),
+            source,
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: None,
+            metadata,
+        };
+        let chunk_ids = manager.store_message(request).await?;
+
+        Ok(ToolResult {
+            output: format!("stored {} chunk(s) in {} memory", chunk_ids.len(), tier),
+            metadata: json!({
+                "ok": true,
+                "chunk_ids": chunk_ids,
+                "count": chunk_ids.len(),
+                "tier": tier.to_string(),
+                "session_id": session_id,
+                "project_id": project_id,
+                "allow_global": allow_global,
+                "embedding_status": health.status,
+                "embedding_reason": health.reason,
+                "db_path": db_path,
+            }),
+        })
+    }
+}
+
+struct MemoryListTool;
+#[async_trait]
+impl Tool for MemoryListTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "memory_list".to_string(),
+            description: "List stored memory chunks for auditing and knowledge-base browsing."
+                .to_string(),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "tier":{"type":"string","enum":["session","project","global","all"]},
+                    "session_id":{"type":"string"},
+                    "project_id":{"type":"string"},
+                    "limit":{"type":"integer","minimum":1,"maximum":200},
+                    "allow_global":{"type":"boolean"},
+                    "db_path":{"type":"string"}
+                }
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let session_id = args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let project_id = args
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let allow_global = global_memory_enabled(&args);
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(50)
+            .clamp(1, 200) as usize;
+
+        let tier = args
+            .get("tier")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_ascii_lowercase())
+            .unwrap_or_else(|| "all".to_string());
+        if tier == "global" && !allow_global {
+            return Ok(ToolResult {
+                output: "tier=global requires allow_global=true".to_string(),
+                metadata: json!({"ok": false, "reason": "global_scope_disabled"}),
+            });
+        }
+        if session_id.is_none() && project_id.is_none() && tier != "global" && !allow_global {
+            return Ok(ToolResult {
+                output: "memory_list requires session_id/project_id, or allow_global=true for global listing".to_string(),
+                metadata: json!({"ok": false, "reason": "missing_scope"}),
+            });
+        }
+
+        let db_path = resolve_memory_db_path(&args);
+        let manager = MemoryManager::new(&db_path).await?;
+
+        let mut chunks: Vec<tandem_memory::types::MemoryChunk> = Vec::new();
+        match tier.as_str() {
+            "session" => {
+                let Some(sid) = session_id.as_deref() else {
+                    return Ok(ToolResult {
+                        output: "tier=session requires session_id".to_string(),
+                        metadata: json!({"ok": false, "reason": "missing_session_scope"}),
+                    });
+                };
+                chunks.extend(manager.db().get_session_chunks(sid).await?);
+            }
+            "project" => {
+                let Some(pid) = project_id.as_deref() else {
+                    return Ok(ToolResult {
+                        output: "tier=project requires project_id".to_string(),
+                        metadata: json!({"ok": false, "reason": "missing_project_scope"}),
+                    });
+                };
+                chunks.extend(manager.db().get_project_chunks(pid).await?);
+            }
+            "global" => {
+                chunks.extend(manager.db().get_global_chunks(limit as i64).await?);
+            }
+            "all" => {
+                if let Some(sid) = session_id.as_deref() {
+                    chunks.extend(manager.db().get_session_chunks(sid).await?);
+                }
+                if let Some(pid) = project_id.as_deref() {
+                    chunks.extend(manager.db().get_project_chunks(pid).await?);
+                }
+                if allow_global {
+                    chunks.extend(manager.db().get_global_chunks(limit as i64).await?);
+                }
+            }
+            _ => {
+                return Ok(ToolResult {
+                    output: "memory_list tier must be one of: session, project, global, all"
+                        .to_string(),
+                    metadata: json!({"ok": false, "reason": "invalid_tier"}),
+                });
+            }
+        }
+
+        chunks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        chunks.truncate(limit);
+        let rows = chunks
+            .iter()
+            .map(|chunk| {
+                json!({
+                    "chunk_id": chunk.id,
+                    "tier": chunk.tier.to_string(),
+                    "session_id": chunk.session_id,
+                    "project_id": chunk.project_id,
+                    "source": chunk.source,
+                    "content": chunk.content,
+                    "created_at": chunk.created_at,
+                    "metadata": chunk.metadata,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&rows).unwrap_or_default(),
+            metadata: json!({
+                "ok": true,
+                "count": rows.len(),
+                "limit": limit,
+                "tier": tier,
+                "session_id": session_id,
+                "project_id": project_id,
+                "allow_global": allow_global,
+                "db_path": db_path,
             }),
         })
     }
@@ -1513,6 +2341,23 @@ fn resolve_memory_db_path(args: &Value) -> PathBuf {
         }
     }
     PathBuf::from("memory.sqlite")
+}
+
+fn global_memory_enabled(args: &Value) -> bool {
+    if args
+        .get("allow_global")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let Ok(raw) = std::env::var("TANDEM_ENABLE_GLOBAL_MEMORY") else {
+        return false;
+    };
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 struct SkillTool;
@@ -1721,16 +2566,24 @@ impl Tool for BatchTool {
         let registry = ToolRegistry::new();
         let mut outputs = Vec::new();
         for call in calls.iter().take(20) {
-            let tool = call
-                .get("tool")
-                .or_else(|| call.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let Some(tool) = resolve_batch_call_tool_name(call) else {
+                continue;
+            };
             if tool.is_empty() || tool == "batch" {
                 continue;
             }
             let call_args = call.get("args").cloned().unwrap_or_else(|| json!({}));
-            let result = registry.execute(tool, call_args).await?;
+            let mut result = registry.execute(&tool, call_args.clone()).await?;
+            if result.output.starts_with("Unknown tool:") {
+                if let Some(fallback_name) = call
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && *s != tool)
+                {
+                    result = registry.execute(fallback_name, call_args).await?;
+                }
+            }
             outputs.push(json!({
                 "tool": tool,
                 "output": result.output,
@@ -2033,7 +2886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_search_blocks_global_tier() {
+    async fn memory_search_global_requires_opt_in() {
         let tool = MemorySearchTool;
         let result = tool
             .execute(json!({
@@ -2043,9 +2896,143 @@ mod tests {
             }))
             .await
             .expect("memory_search should return ToolResult");
-        assert!(result.output.contains("blocks global tier"));
+        assert!(result.output.contains("requires allow_global=true"));
         assert_eq!(result.metadata["ok"], json!(false));
-        assert_eq!(result.metadata["reason"], json!("global_scope_blocked"));
+        assert_eq!(result.metadata["reason"], json!("global_scope_disabled"));
+    }
+
+    #[tokio::test]
+    async fn memory_store_global_requires_opt_in() {
+        let tool = MemoryStoreTool;
+        let result = tool
+            .execute(json!({
+                "content": "global pattern",
+                "tier": "global"
+            }))
+            .await
+            .expect("memory_store should return ToolResult");
+        assert!(result.output.contains("requires allow_global=true"));
+        assert_eq!(result.metadata["ok"], json!(false));
+        assert_eq!(result.metadata["reason"], json!("global_scope_disabled"));
+    }
+
+    #[test]
+    fn translate_windows_ls_with_all_flag() {
+        let translated = translate_windows_shell_command("ls -la").expect("translation");
+        assert!(translated.contains("Get-ChildItem"));
+        assert!(translated.contains("-Force"));
+    }
+
+    #[test]
+    fn translate_windows_find_name_pattern() {
+        let translated =
+            translate_windows_shell_command("find . -type f -name \"*.rs\"").expect("translation");
+        assert!(translated.contains("Get-ChildItem"));
+        assert!(translated.contains("-Recurse"));
+        assert!(translated.contains("-Filter"));
+    }
+
+    #[test]
+    fn windows_guardrail_blocks_untranslatable_unix_command() {
+        assert_eq!(
+            windows_guardrail_reason("sed -n '1,5p' README.md"),
+            Some("unix_command_untranslatable")
+        );
+    }
+
+    #[test]
+    fn path_policy_rejects_tool_markup_and_globs() {
+        assert!(!is_path_allowed(
+            "<tool_call><function=glob><parameter=pattern>**/*</parameter></function></tool_call>"
+        ));
+        assert!(!is_path_allowed("**/*"));
+        assert!(!is_path_allowed("/"));
+        assert!(!is_path_allowed("C:\\"));
+    }
+
+    #[tokio::test]
+    async fn write_tool_rejects_empty_content_by_default() {
+        let tool = WriteTool;
+        let result = tool
+            .execute(json!({
+                "path":"target/write_guard_test.txt",
+                "content":""
+            }))
+            .await
+            .expect("write tool should return ToolResult");
+        assert!(result.output.contains("non-empty `content`"));
+        assert_eq!(result.metadata["reason"], json!("empty_content"));
+        assert!(!Path::new("target/write_guard_test.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn registry_resolves_default_api_namespaced_tool() {
+        let registry = ToolRegistry::new();
+        let result = registry
+            .execute("default_api:read", json!({"path":"Cargo.toml"}))
+            .await
+            .expect("registry execute should return ToolResult");
+        assert!(!result.output.starts_with("Unknown tool:"));
+    }
+
+    #[tokio::test]
+    async fn batch_resolves_default_api_namespaced_tool() {
+        let tool = BatchTool;
+        let result = tool
+            .execute(json!({
+                "tool_calls":[
+                    {"tool":"default_api:read","args":{"path":"Cargo.toml"}}
+                ]
+            }))
+            .await
+            .expect("batch should return ToolResult");
+        assert!(!result.output.contains("Unknown tool: default_api:read"));
+    }
+
+    #[tokio::test]
+    async fn batch_prefers_name_when_tool_is_default_api_wrapper() {
+        let tool = BatchTool;
+        let result = tool
+            .execute(json!({
+                "tool_calls":[
+                    {"tool":"default_api","name":"read","args":{"path":"Cargo.toml"}}
+                ]
+            }))
+            .await
+            .expect("batch should return ToolResult");
+        assert!(!result.output.contains("Unknown tool: default_api"));
+    }
+
+    #[tokio::test]
+    async fn batch_resolves_nested_function_name_for_wrapper_tool() {
+        let tool = BatchTool;
+        let result = tool
+            .execute(json!({
+                "tool_calls":[
+                    {
+                        "tool":"default_api",
+                        "function":{"name":"read"},
+                        "args":{"path":"Cargo.toml"}
+                    }
+                ]
+            }))
+            .await
+            .expect("batch should return ToolResult");
+        assert!(!result.output.contains("Unknown tool: default_api"));
+    }
+
+    #[tokio::test]
+    async fn batch_drops_wrapper_calls_without_resolvable_name() {
+        let tool = BatchTool;
+        let result = tool
+            .execute(json!({
+                "tool_calls":[
+                    {"tool":"default_api","args":{"path":"Cargo.toml"}}
+                ]
+            }))
+            .await
+            .expect("batch should return ToolResult");
+        assert_eq!(result.metadata["count"], json!(0));
     }
 }
 

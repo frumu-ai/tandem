@@ -493,7 +493,9 @@ impl RalphRunHandle {
                                 break;
                             }
                         }
-                        StreamEvent::SessionError { session_id, error } => {
+                        StreamEvent::SessionError {
+                            session_id, error, ..
+                        } => {
                             if session_id == &self.session_id {
                                 errors.push(error.clone());
                                 break;

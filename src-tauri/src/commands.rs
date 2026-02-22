@@ -15,8 +15,8 @@ use crate::orchestrator::{
     policy::{PolicyConfig, PolicyEngine},
     store::OrchestratorStore,
     types::{
-        AgentModelRouting, Budget, ModelSelection, OrchestratorConfig, Run, RunSnapshot, RunStatus,
-        RunSummary, Task, TaskState,
+        AgentModelRouting, Budget, ModelSelection, OrchestratorConfig, Run, RunSnapshot, RunSource,
+        RunStatus, RunSummary, Task, TaskState,
     },
 };
 use crate::python_env;
@@ -153,6 +153,19 @@ pub fn get_vault_status(vault_state: State<'_, VaultState>) -> VaultStatus {
     vault_state.get_status()
 }
 
+async fn initialize_keystore_after_unlock(app: AppHandle, master_key: Vec<u8>) {
+    let app_clone = app.clone();
+    let init_result = tauri::async_runtime::spawn_blocking(move || {
+        crate::init_keystore_and_keys(&app_clone, &master_key);
+    })
+    .await;
+
+    match init_result {
+        Ok(()) => tracing::info!("Keystore initialization complete"),
+        Err(err) => tracing::error!("Keystore initialization task failed: {}", err),
+    }
+}
+
 /// Create a new vault with a PIN
 #[tauri::command]
 pub async fn create_vault(
@@ -188,13 +201,8 @@ pub async fn create_vault(
     // Store master key and mark as unlocked
     vault_state.set_master_key(master_key.clone());
 
-    // Initialize keystore in background thread (it's CPU-intensive)
-    let app_clone = app.clone();
-    let master_key_clone = master_key.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::init_keystore_and_keys(&app_clone, &master_key_clone);
-        tracing::info!("Keystore initialization complete");
-    });
+    // Ensure keystore is initialized before sidecar startup so provider auth is available immediately.
+    initialize_keystore_after_unlock(app.clone(), master_key.clone()).await;
 
     // Start the sidecar as part of lock-screen unlock/create flow.
     // Startup failures must not block vault creation.
@@ -429,13 +437,8 @@ pub async fn unlock_vault(
     // Store master key and mark as unlocked
     vault_state.set_master_key(master_key.clone());
 
-    // Initialize keystore in background thread (it's CPU-intensive)
-    let app_clone = app.clone();
-    let master_key_clone = master_key.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::init_keystore_and_keys(&app_clone, &master_key_clone);
-        tracing::info!("Keystore initialization complete");
-    });
+    // Ensure keystore is initialized before sidecar startup so provider auth is available immediately.
+    initialize_keystore_after_unlock(app.clone(), master_key.clone()).await;
 
     // Start the sidecar as part of lock-screen unlock flow.
     // Startup failures must not block vault unlock.
@@ -458,8 +461,8 @@ pub fn lock_vault(vault_state: State<'_, VaultState>) -> Result<()> {
 }
 
 fn resolve_default_model_spec(config: &ProvidersConfig) -> Option<ModelSpec> {
-    // If the user explicitly selected a model/provider (including custom provider IDs),
-    // prefer that over the fixed provider slots.
+    // Strict routing: only use the explicit selected model/provider.
+    // Do not silently fall back to enabled/default provider slots.
     if let Some(sel) = &config.selected_model {
         let provider_id = if sel.provider_id == "opencode_zen" {
             // Back-compat: frontend uses "opencode_zen", sidecar expects "opencode".
@@ -475,43 +478,38 @@ fn resolve_default_model_spec(config: &ProvidersConfig) -> Option<ModelSpec> {
             });
         }
     }
-
-    let candidates: Vec<(&str, &crate::state::ProviderConfig)> = vec![
-        ("openrouter", &config.openrouter),
-        ("opencode", &config.opencode_zen), // OpenCode expects "opencode" not "opencode_zen"
-        ("anthropic", &config.anthropic),
-        ("openai", &config.openai),
-        ("ollama", &config.ollama),
-        ("poe", &config.poe),
-    ];
-
-    // Prefer explicit default provider
-    if let Some((provider_id, provider)) = candidates
-        .iter()
-        .find(|(_, p)| p.enabled && p.default)
-        .map(|(id, p)| (*id, *p))
-    {
-        if let Some(model_id) = provider.model.clone() {
-            return Some(ModelSpec {
-                provider_id: provider_id.to_string(),
-                model_id,
-            });
-        }
-    }
-
-    // Fallback to first enabled provider with a model
-    for (provider_id, provider) in candidates {
-        if provider.enabled {
-            if let Some(model_id) = provider.model.clone() {
-                return Some(ModelSpec {
-                    provider_id: provider_id.to_string(),
-                    model_id,
-                });
-            }
-        }
-    }
-
     None
+}
+
+fn resolve_required_model_spec(
+    config: &ProvidersConfig,
+    model: Option<String>,
+    provider: Option<String>,
+    context: &str,
+) -> Result<ModelSpec> {
+    let explicit_provider = normalize_provider_id_for_sidecar(provider)
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    let explicit_model = model
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty());
+
+    match (explicit_provider, explicit_model) {
+        (Some(provider_id), Some(model_id)) => Ok(ModelSpec {
+            provider_id,
+            model_id,
+        }),
+        (Some(_), None) | (None, Some(_)) => Err(TandemError::InvalidConfig(format!(
+            "{} requires both provider and model to be set together.",
+            context
+        ))),
+        (None, None) => resolve_default_model_spec(config).ok_or_else(|| {
+            TandemError::InvalidConfig(format!(
+                "{} could not resolve a model/provider. Select one in the model picker.",
+                context
+            ))
+        }),
+    }
 }
 
 fn resolve_default_provider_and_model(
@@ -553,6 +551,191 @@ fn resolve_default_provider_and_model(
     }
 
     (None, None)
+}
+
+fn selected_provider_slot(config: &ProvidersConfig) -> Option<&'static str> {
+    let provider_id = config
+        .selected_model
+        .as_ref()?
+        .provider_id
+        .trim()
+        .to_lowercase();
+    match provider_id.as_str() {
+        "openrouter" => Some("openrouter"),
+        "openai" => Some("openai"),
+        "anthropic" => Some("anthropic"),
+        "poe" => Some("poe"),
+        "opencode" | "opencode_zen" | "zen" => Some("opencode_zen"),
+        "ollama" => Some("ollama"),
+        _ => None,
+    }
+}
+
+fn provider_slot_active(config: &ProvidersConfig, slot: &str) -> bool {
+    let selected_slot = selected_provider_slot(config);
+    let selected_active = selected_slot.is_some_and(|s| s == slot);
+    match slot {
+        "openrouter" => config.openrouter.enabled || selected_active,
+        "opencode_zen" => config.opencode_zen.enabled || selected_active,
+        "anthropic" => config.anthropic.enabled || selected_active,
+        "openai" => config.openai.enabled || selected_active,
+        "poe" => config.poe.enabled || selected_active,
+        "ollama" => config.ollama.enabled || selected_active,
+        _ => selected_active,
+    }
+}
+
+async fn validate_model_provider_auth_if_required(
+    app: &AppHandle,
+    config: &ProvidersConfig,
+    model: Option<&str>,
+    provider: Option<&str>,
+) -> Result<()> {
+    let provider_id = provider.map(|p| p.trim().to_lowercase()).or_else(|| {
+        if model.is_some() {
+            resolve_default_provider_and_model(config)
+                .0
+                .map(|p| p.trim().to_lowercase())
+        } else {
+            None
+        }
+    });
+
+    let Some(provider_id) = provider_id else {
+        return Ok(());
+    };
+
+    let key_type = match provider_id.as_str() {
+        "openrouter" => Some("openrouter"),
+        "openai" => Some("openai"),
+        "anthropic" => Some("anthropic"),
+        "poe" => Some("poe"),
+        _ => None,
+    };
+
+    let Some(key_type) = key_type else {
+        return Ok(());
+    };
+
+    let has_key = get_api_key(app, key_type)
+        .await
+        .ok()
+        .flatten()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+
+    if !has_key {
+        return Err(TandemError::InvalidConfig(format!(
+            "Provider '{}' is selected but no API key is configured. Add the key in Settings > Providers.",
+            provider_id
+        )));
+    }
+
+    Ok(())
+}
+
+async fn wait_for_sidecar_api_ready(state: &AppState, timeout: Duration) -> Result<()> {
+    let started = Instant::now();
+    loop {
+        let sidecar_state = state.sidecar.state().await;
+        match sidecar_state {
+            SidecarState::Running => match state.sidecar.startup_health().await {
+                Ok(health) => {
+                    if health.ready {
+                        return Ok(());
+                    }
+                    if started.elapsed() >= timeout {
+                        return Err(TandemError::Sidecar(format!(
+                            "Engine still starting: phase={} attempt_id={} elapsed_ms={}",
+                            health.phase, health.startup_attempt_id, health.startup_elapsed_ms
+                        )));
+                    }
+                }
+                Err(_) => {
+                    // Older engine builds may not expose /global/health consistently; if sidecar
+                    // reports running, allow request path retries to handle transient readiness.
+                    return Ok(());
+                }
+            },
+            SidecarState::Starting => {
+                if started.elapsed() >= timeout {
+                    return Err(TandemError::Sidecar(
+                        "Engine is still starting; please retry in a moment.".to_string(),
+                    ));
+                }
+            }
+            SidecarState::Stopped | SidecarState::Failed | SidecarState::Stopping => {
+                return Err(TandemError::Sidecar(format!(
+                    "Engine is not ready (state={:?}). Start/reconnect the engine and retry.",
+                    sidecar_state
+                )));
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+async fn validate_model_provider_in_sidecar_catalog(
+    state: &AppState,
+    model: Option<&str>,
+    provider: Option<&str>,
+) -> Result<()> {
+    let model = model.map(str::trim).filter(|m| !m.is_empty());
+    let provider = provider.map(str::trim).filter(|p| !p.is_empty());
+
+    match (model, provider) {
+        (None, None) => return Ok(()),
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(TandemError::InvalidConfig(
+                "Model/provider selection is incomplete. Select both a provider and model."
+                    .to_string(),
+            ));
+        }
+        _ => {}
+    }
+
+    let model = model.unwrap();
+    let provider = provider.unwrap().to_lowercase();
+    let models = state.sidecar.list_models().await.map_err(|e| {
+        TandemError::Sidecar(format!(
+            "Failed to validate selected model/provider against sidecar catalog: {}",
+            e
+        ))
+    })?;
+
+    let provider_models: Vec<&crate::sidecar::ModelInfo> = models
+        .iter()
+        .filter(|m| {
+            m.provider
+                .as_deref()
+                .map(|p| p.eq_ignore_ascii_case(provider.as_str()))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    if provider_models.is_empty() {
+        return Err(TandemError::InvalidConfig(format!(
+            "Selected provider '{}' is not available in the current engine catalog.",
+            provider
+        )));
+    }
+
+    let exact_match = provider_models.iter().any(|m| m.id == model);
+    let name_match = provider_models.iter().any(|m| m.name == model);
+    if !exact_match && !name_match {
+        let examples = provider_models
+            .iter()
+            .take(8)
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(TandemError::InvalidConfig(format!(
+            "Model '{}' is not available for provider '{}'. Available examples: {}",
+            model, provider, examples
+        )));
+    }
+
+    Ok(())
 }
 
 fn resolve_effective_mode(
@@ -1829,7 +2012,7 @@ pub(crate) async fn sync_channel_tokens_env(app: &AppHandle, state: &AppState) {
 
 async fn sync_provider_keys_env(app: &AppHandle, state: &AppState, config: &ProvidersConfig) {
     // OPENROUTER
-    if config.openrouter.enabled {
+    if provider_slot_active(config, "openrouter") {
         if let Ok(Some(key)) = get_api_key(app, "openrouter").await {
             state.sidecar.set_env("OPENROUTER_API_KEY", &key).await;
         } else {
@@ -1840,7 +2023,7 @@ async fn sync_provider_keys_env(app: &AppHandle, state: &AppState, config: &Prov
     }
 
     // OpenCode Zen
-    if config.opencode_zen.enabled {
+    if provider_slot_active(config, "opencode_zen") {
         if let Ok(Some(key)) = get_api_key(app, "opencode_zen").await {
             state.sidecar.set_env("OPENCODE_ZEN_API_KEY", &key).await;
         } else {
@@ -1851,7 +2034,7 @@ async fn sync_provider_keys_env(app: &AppHandle, state: &AppState, config: &Prov
     }
 
     // Anthropic
-    if config.anthropic.enabled {
+    if provider_slot_active(config, "anthropic") {
         if let Ok(Some(key)) = get_api_key(app, "anthropic").await {
             state.sidecar.set_env("ANTHROPIC_API_KEY", &key).await;
         } else {
@@ -1862,7 +2045,7 @@ async fn sync_provider_keys_env(app: &AppHandle, state: &AppState, config: &Prov
     }
 
     // OpenAI
-    if config.openai.enabled {
+    if provider_slot_active(config, "openai") {
         if let Ok(Some(key)) = get_api_key(app, "openai").await {
             state.sidecar.set_env("OPENAI_API_KEY", &key).await;
         } else {
@@ -1873,7 +2056,7 @@ async fn sync_provider_keys_env(app: &AppHandle, state: &AppState, config: &Prov
     }
 
     // Poe
-    if config.poe.enabled {
+    if provider_slot_active(config, "poe") {
         if let Ok(Some(key)) = get_api_key(app, "poe").await {
             state.sidecar.set_env("POE_API_KEY", &key).await;
         } else {
@@ -1893,27 +2076,27 @@ async fn sync_provider_keys_runtime_auth(
         return;
     }
 
-    if config.openrouter.enabled {
+    if provider_slot_active(config, "openrouter") {
         if let Ok(Some(key)) = get_api_key(app, "openrouter").await {
             let _ = state.sidecar.set_provider_auth("openrouter", &key).await;
         }
     }
-    if config.opencode_zen.enabled {
+    if provider_slot_active(config, "opencode_zen") {
         if let Ok(Some(key)) = get_api_key(app, "opencode_zen").await {
             let _ = state.sidecar.set_provider_auth("zen", &key).await;
         }
     }
-    if config.anthropic.enabled {
+    if provider_slot_active(config, "anthropic") {
         if let Ok(Some(key)) = get_api_key(app, "anthropic").await {
             let _ = state.sidecar.set_provider_auth("anthropic", &key).await;
         }
     }
-    if config.openai.enabled {
+    if provider_slot_active(config, "openai") {
         if let Ok(Some(key)) = get_api_key(app, "openai").await {
             let _ = state.sidecar.set_provider_auth("openai", &key).await;
         }
     }
-    if config.poe.enabled {
+    if provider_slot_active(config, "poe") {
         if let Ok(Some(key)) = get_api_key(app, "poe").await {
             let _ = state.sidecar.set_provider_auth("poe", &key).await;
         }
@@ -1955,7 +2138,8 @@ pub async fn set_providers_config(
         || previous_config.opencode_zen.enabled != config.opencode_zen.enabled
         || previous_config.anthropic.enabled != config.anthropic.enabled
         || previous_config.openai.enabled != config.openai.enabled
-        || previous_config.poe.enabled != config.poe.enabled;
+        || previous_config.poe.enabled != config.poe.enabled
+        || selected_provider_slot(&previous_config) != selected_provider_slot(&config);
 
     if ollama_changed || key_providers_changed {
         sync_ollama_env(&state, &config).await;
@@ -2605,10 +2789,9 @@ pub async fn create_session(
     allow_all_tools: Option<bool>,
     mode_id: Option<String>,
 ) -> Result<Session> {
-    let (default_provider, default_model) = {
-        let config = state.providers_config.read().unwrap();
-        resolve_default_provider_and_model(&config)
-    };
+    let config_snapshot = { state.providers_config.read().unwrap().clone() };
+    let model_spec =
+        resolve_required_model_spec(&config_snapshot, model, provider, "Chat session creation")?;
 
     // IMPORTANT:
     // We intentionally do NOT send `permission="*"` allow to OpenCode.
@@ -2627,13 +2810,21 @@ pub async fn create_session(
         Some(permissions)
     };
 
-    let selected_provider = normalize_provider_id_for_sidecar(provider.or(default_provider));
-    let selected_model = model.or(default_model);
+    validate_model_provider_auth_if_required(
+        &app,
+        &config_snapshot,
+        Some(model_spec.model_id.as_str()),
+        Some(model_spec.provider_id.as_str()),
+    )
+    .await?;
     let request = CreateSessionRequest {
         parent_id: None,
         title,
-        model: build_sidecar_session_model(selected_model, selected_provider.clone()),
-        provider: selected_provider,
+        model: build_sidecar_session_model(
+            Some(model_spec.model_id.clone()),
+            Some(model_spec.provider_id.clone()),
+        ),
+        provider: Some(model_spec.provider_id),
         permission,
         directory: state
             .get_workspace_path()
@@ -3249,6 +3440,8 @@ pub async fn send_message(
         attachments,
         None,
         None,
+        None,
+        None,
         false,
     )
     .await
@@ -3265,6 +3458,8 @@ pub async fn send_message_and_start_run(
     attachments: Option<Vec<FileAttachmentInput>>,
     agent: Option<String>,
     mode_id: Option<String>,
+    model: Option<String>,
+    provider: Option<String>,
 ) -> Result<()> {
     send_message_and_start_run_internal(
         &app,
@@ -3274,6 +3469,8 @@ pub async fn send_message_and_start_run(
         attachments,
         agent,
         mode_id,
+        model,
+        provider,
         true,
     )
     .await
@@ -3287,6 +3484,8 @@ async fn send_message_and_start_run_internal(
     attachments: Option<Vec<FileAttachmentInput>>,
     agent: Option<String>,
     mode_id: Option<String>,
+    model: Option<String>,
+    provider: Option<String>,
     streaming_label: bool,
 ) -> Result<()> {
     let correlation_id = Uuid::new_v4().to_string();
@@ -3357,34 +3556,47 @@ async fn send_message_and_start_run_internal(
         SendMessageRequest::text(prepared_content)
     };
 
-    let model_spec = {
-        let config = state.providers_config.read().unwrap();
-        let resolved = resolve_default_model_spec(&config);
-        if let Some(spec) = &resolved {
-            tracing::debug!(
-                "Resolved model spec ({}): provider={} model={} (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
-                if streaming_label { "streaming" } else { "standard" },
-                spec.provider_id,
-                spec.model_id,
-                config.openrouter.enabled,
-                config.openrouter.default,
-                config.openrouter.has_key,
-                config.ollama.enabled,
-                config.ollama.default
-            );
+    let config_snapshot = { state.providers_config.read().unwrap().clone() };
+    let model_spec = resolve_required_model_spec(
+        &config_snapshot,
+        model.clone(),
+        provider.clone(),
+        if streaming_label {
+            "Streaming dispatch"
         } else {
-            tracing::debug!(
-                "No model spec resolved for streaming (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
-                config.openrouter.enabled,
-                config.openrouter.default,
-                config.openrouter.has_key,
-                config.ollama.enabled,
-                config.ollama.default
-            );
-        }
-        resolved
-    };
-    request.model = model_spec;
+            "Message dispatch"
+        },
+    )?;
+    tracing::debug!(
+        "Resolved model spec ({}): provider={} model={} (openrouter enabled={} default={} has_key={}, ollama enabled={} default={})",
+        if streaming_label { "streaming" } else { "standard" },
+        model_spec.provider_id,
+        model_spec.model_id,
+        config_snapshot.openrouter.enabled,
+        config_snapshot.openrouter.default,
+        config_snapshot.openrouter.has_key,
+        config_snapshot.ollama.enabled,
+        config_snapshot.ollama.default
+    );
+
+    {
+        validate_model_provider_auth_if_required(
+            app,
+            &config_snapshot,
+            Some(model_spec.model_id.as_str()),
+            Some(model_spec.provider_id.as_str()),
+        )
+        .await?;
+    }
+
+    tracing::info!(
+        "chat.dispatch.model session_id={} provider={} model={}",
+        session_id,
+        model_spec.provider_id,
+        model_spec.model_id
+    );
+
+    request.model = Some(model_spec);
 
     if let Some(agent_name) = mode_resolution.mode.sidecar_agent() {
         request.agent = Some(agent_name);
@@ -3540,6 +3752,10 @@ async fn queue_send_next_internal(
     state: &AppState,
     session_id: &str,
 ) -> Result<bool> {
+    let config_snapshot = { state.providers_config.read().unwrap().clone() };
+    let model_spec =
+        resolve_required_model_spec(&config_snapshot, None, None, "Queued message dispatch")?;
+
     let next = {
         let mut guard = state.message_queue.lock().await;
         let Some(queue) = guard.get_mut(session_id) else {
@@ -3560,6 +3776,8 @@ async fn queue_send_next_internal(
         attachments,
         None,
         None,
+        Some(model_spec.model_id),
+        Some(model_spec.provider_id),
         true,
     )
     .await;
@@ -4361,18 +4579,20 @@ pub async fn rewind_to_message(
     })?;
 
     // 3. Create a new session
-    let (default_provider, default_model) = {
-        let config = state.providers_config.read().unwrap();
-        resolve_default_provider_and_model(&config)
-    };
+    let config_snapshot = { state.providers_config.read().unwrap().clone() };
+    let model_spec =
+        resolve_required_model_spec(&config_snapshot, None, None, "Conversation rewind")?;
 
     let new_session = state
         .sidecar
         .create_session(CreateSessionRequest {
             parent_id: None,
             title: Some(format!("Rewind from {}", session_id)),
-            model: build_sidecar_session_model(default_model, default_provider.clone()),
-            provider: default_provider,
+            model: build_sidecar_session_model(
+                Some(model_spec.model_id.clone()),
+                Some(model_spec.provider_id.clone()),
+            ),
+            provider: Some(model_spec.provider_id.clone()),
             permission: Some(vec![
                 crate::sidecar::PermissionRule {
                     permission: "ls".to_string(),
@@ -4395,7 +4615,7 @@ pub async fn rewind_to_message(
                     action: "allow".to_string(),
                 },
                 crate::sidecar::PermissionRule {
-                    permission: "webfetch".to_string(),
+                    permission: "webfetch_document".to_string(),
                     pattern: "*".to_string(),
                     action: "allow".to_string(),
                 },
@@ -4421,7 +4641,11 @@ pub async fn rewind_to_message(
     // If edited content is provided, send it as the first message
     if let Some(content) = edited_content {
         tracing::info!("Sending edited message to new session");
-        let request = SendMessageRequest::text(content);
+        let mut request = SendMessageRequest::text(content);
+        request.model = Some(ModelSpec {
+            provider_id: model_spec.provider_id.clone(),
+            model_id: model_spec.model_id.clone(),
+        });
         state
             .sidecar
             .append_message_and_start_run(&new_session.id, request)
@@ -4504,9 +4728,17 @@ pub async fn redo_message(state: State<'_, AppState>, session_id: String) -> Res
 pub async fn undo_via_command(state: State<'_, AppState>, session_id: String) -> Result<()> {
     tracing::info!("Executing /undo via prompt in session {}", session_id);
 
+    let config_snapshot = { state.providers_config.read().unwrap().clone() };
+    let model_spec =
+        resolve_required_model_spec(&config_snapshot, None, None, "Undo command dispatch")?;
+
     // Send "/undo" as a regular prompt - same as typing it in the TUI
     // OpenCode intercepts slash commands and handles them specially
-    let request = crate::sidecar::SendMessageRequest::text("/undo".to_string());
+    let mut request = crate::sidecar::SendMessageRequest::text("/undo".to_string());
+    request.model = Some(ModelSpec {
+        provider_id: model_spec.provider_id,
+        model_id: model_spec.model_id,
+    });
     state
         .sidecar
         .append_message_and_start_run(&session_id, request)
@@ -4616,8 +4848,28 @@ fn effective_session_mode(state: &AppState, session_id: &str) -> ResolvedMode {
 }
 
 fn normalize_tool_name_for_approval(name: &str) -> String {
-    match name.trim().to_ascii_lowercase().as_str() {
+    let mut normalized = name.trim().to_ascii_lowercase().replace('-', "_");
+    for prefix in [
+        "default_api:",
+        "default_api.",
+        "functions.",
+        "function.",
+        "tools.",
+        "tool.",
+        "builtin:",
+        "builtin.",
+    ] {
+        if let Some(rest) = normalized.strip_prefix(prefix) {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() {
+                normalized = trimmed.to_string();
+                break;
+            }
+        }
+    }
+    match normalized.as_str() {
         "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        "run_command" | "shell" | "powershell" | "cmd" => "bash".to_string(),
         other => other.to_string(),
     }
 }
@@ -5839,18 +6091,18 @@ Use this capability for finding information, verifying facts, or gathering data 
 
 ## Best Practices:
 1. **Search First:** Always start with `websearch` to find valid, up-to-date URLs.
-2. **Avoid Dead Links:** Do not `webfetch` URLs that likely don't exist or are deep links without verifying them first.
+2. **Avoid Dead Links:** Do not `webfetch_document` URLs that likely don't exist or are deep links without verifying them first.
 3. **Handle Blocking:** Many sites (e.g., Statista, Airbnb, LinkedIn) block bots.
-   - If `webfetch` returns 403/404/Timeout:
+   - If `webfetch_document` returns 403/404/Timeout:
      - Do NOT retry the exact same URL immediately.
      - Try searching for the specific information on a different site.
      - Try fetching the root domain or a generic page if appropriate.
-4. **Prefer Text:** `webfetch` works best on content-heavy pages (docs, blogs, articles). It may fail on heavy SPAs.
+4. **Prefer Text:** `webfetch_document` works best on content-heavy pages (docs, blogs, articles). It may fail on heavy SPAs.
 
 ## Workflow:
 1. **Search:** `websearch` query: "latest real estate trends asia 2025"
 2. **Select:** Pick 1-2 promising URLs from the search results.
-3. **Fetch:** `webfetch` url: "..."
+3. **Fetch:** `webfetch_document` url: "..."
 4. **Fallback:** If fetch fails, go back to step 1 with a refined query or try the next URL.
 "#.to_string(),
                     json_schema: serde_json::json!({
@@ -7525,7 +7777,7 @@ pub struct PlanSessionResult {
 /// Start a new planning session with a guaranteed pre-created plan file
 #[tauri::command]
 pub async fn start_plan_session(
-    _app: AppHandle,
+    app: AppHandle,
     state: State<'_, AppState>,
     goal: Option<String>,
 ) -> Result<PlanSessionResult> {
@@ -7581,18 +7833,27 @@ pub async fn start_plan_session(
     // or the "System" recognizes this session type.
     // For now, we create the session with a specific Title that hints at the plan.
 
-    let (default_provider, default_model) = {
-        let config = state.providers_config.read().unwrap();
-        crate::commands::resolve_default_provider_and_model(&config)
-    };
+    let config_snapshot = { state.providers_config.read().unwrap().clone() };
+    let model_spec =
+        resolve_required_model_spec(&config_snapshot, None, None, "Plan session creation")?;
+    validate_model_provider_auth_if_required(
+        &app,
+        &config_snapshot,
+        Some(model_spec.model_id.as_str()),
+        Some(model_spec.provider_id.as_str()),
+    )
+    .await?;
 
     let session = state
         .sidecar
         .create_session(CreateSessionRequest {
             parent_id: None,
             title: Some(goal.clone().unwrap_or_else(|| "Plan Mode".to_string())),
-            model: build_sidecar_session_model(default_model, default_provider.clone()),
-            provider: default_provider,
+            model: build_sidecar_session_model(
+                Some(model_spec.model_id.clone()),
+                Some(model_spec.provider_id.clone()),
+            ),
+            provider: Some(model_spec.provider_id.clone()),
             permission: None,
             directory: Some(workspace_path.to_string_lossy().to_string()),
             workspace_root: Some(workspace_path.to_string_lossy().to_string()),
@@ -7609,7 +7870,11 @@ pub async fn start_plan_session(
 
     // We fire-and-forget this message so the frontend doesn't hang waiting for a response (though it returns quickly)
     // Actually, we should wait to ensure it's in history before the user chats.
-    let request = SendMessageRequest::text(system_directive);
+    let mut request = SendMessageRequest::text(system_directive);
+    request.model = Some(ModelSpec {
+        provider_id: model_spec.provider_id.clone(),
+        model_id: model_spec.model_id.clone(),
+    });
 
     // We ignore the result of the message send itself, as long as session exists
     if let Err(e) = state
@@ -7727,6 +7992,15 @@ pub struct OrchestratorModelSelection {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OrchestratorModelRouting {
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::HashMap::is_empty",
+        flatten
+    )]
+    pub dynamic_roles: std::collections::HashMap<String, OrchestratorModelSelection>,
+    // Optional compatibility bucket form: { roles: { ... } }
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub roles: std::collections::HashMap<String, OrchestratorModelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner: Option<OrchestratorModelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -7777,64 +8051,122 @@ fn normalize_orchestrator_model_routing(
     let Some(input) = input else {
         return AgentModelRouting::default();
     };
-    AgentModelRouting {
-        planner: normalize_orchestrator_model_selection(input.planner),
-        builder: normalize_orchestrator_model_selection(input.builder),
-        validator: normalize_orchestrator_model_selection(input.validator),
+
+    let mut roles = std::collections::HashMap::new();
+    for (role, selection) in input.roles {
+        if let Some(normalized_selection) = normalize_orchestrator_model_selection(Some(selection))
+        {
+            let normalized_role = crate::orchestrator::types::normalize_role_key(&role);
+            roles.entry(normalized_role).or_insert(normalized_selection);
+        }
     }
+    for (role, selection) in input.dynamic_roles {
+        if let Some(normalized_selection) = normalize_orchestrator_model_selection(Some(selection))
+        {
+            let normalized_role = crate::orchestrator::types::normalize_role_key(&role);
+            roles.entry(normalized_role).or_insert(normalized_selection);
+        }
+    }
+
+    if let Some(selection) = normalize_orchestrator_model_selection(input.planner) {
+        roles
+            .entry(crate::orchestrator::types::ROLE_ORCHESTRATOR.to_string())
+            .or_insert(selection);
+    }
+    if let Some(selection) = normalize_orchestrator_model_selection(input.builder) {
+        roles
+            .entry(crate::orchestrator::types::ROLE_WORKER.to_string())
+            .or_insert(selection);
+    }
+    if let Some(selection) = normalize_orchestrator_model_selection(input.validator) {
+        roles
+            .entry(crate::orchestrator::types::ROLE_REVIEWER.to_string())
+            .or_insert(selection);
+    }
+
+    AgentModelRouting {
+        roles,
+        planner: None,
+        builder: None,
+        validator: None,
+    }
+    .canonicalized()
 }
 
 fn to_orchestrator_model_routing(routing: AgentModelRouting) -> OrchestratorModelRouting {
+    let mut roles = std::collections::HashMap::new();
+    for (role, selection) in routing.canonicalized().roles {
+        if let Some(serialized) = to_orchestrator_model_selection(Some(selection)) {
+            roles.insert(role, serialized);
+        }
+    }
+
     OrchestratorModelRouting {
-        planner: to_orchestrator_model_selection(routing.planner),
-        builder: to_orchestrator_model_selection(routing.builder),
-        validator: to_orchestrator_model_selection(routing.validator),
+        dynamic_roles: roles.clone(),
+        roles: std::collections::HashMap::new(),
+        planner: None,
+        builder: None,
+        validator: None,
     }
 }
 
 fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
-    vec![
-        crate::sidecar::PermissionRule {
-            permission: "ls".to_string(),
+    let allowed_tools = vec![
+        "ls".to_string(),
+        "list".to_string(),
+        "glob".to_string(),
+        "search".to_string(),
+        "grep".to_string(),
+        "codesearch".to_string(),
+        "read".to_string(),
+        "todowrite".to_string(),
+        "todo_write".to_string(),
+        "update_todo_list".to_string(),
+        "websearch".to_string(),
+        "webfetch_document".to_string(),
+        "task".to_string(),
+    ];
+
+    let mut rules = tandem_core::build_mode_permission_rules(Some(&allowed_tools))
+        .into_iter()
+        .map(|rule| crate::sidecar::PermissionRule {
+            permission: rule.permission,
+            pattern: rule.pattern,
+            action: rule.action,
+        })
+        .collect::<Vec<_>>();
+
+    for permission in [
+        "todowrite",
+        "todo_write",
+        "update_todo_list",
+        "websearch",
+        "webfetch_document",
+        "task",
+    ] {
+        rules.push(crate::sidecar::PermissionRule {
+            permission: permission.to_string(),
             pattern: "*".to_string(),
             action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "read".to_string(),
+        });
+    }
+
+    for permission in [
+        "write",
+        "edit",
+        "apply_patch",
+        "bash",
+        "batch",
+        "spawn_agent",
+    ] {
+        rules.push(crate::sidecar::PermissionRule {
+            permission: permission.to_string(),
             pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "todowrite".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "websearch".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "webfetch".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "glob".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "grep".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-        crate::sidecar::PermissionRule {
-            permission: "search".to_string(),
-            pattern: "*".to_string(),
-            action: "allow".to_string(),
-        },
-    ]
+            action: "deny".to_string(),
+        });
+    }
+
+    rules
 }
 
 fn normalize_provider_id_for_sidecar(provider: Option<String>) -> Option<String> {
@@ -7853,11 +8185,25 @@ fn build_sidecar_session_model(
 ) -> Option<serde_json::Value> {
     match (model, provider) {
         (Some(model_id), Some(provider_id)) => Some(serde_json::json!({
-            "provider_id": provider_id,
-            "model_id": model_id
+            "providerID": provider_id,
+            "modelID": model_id
         })),
         _ => None,
     }
+}
+
+fn existing_workspace_dir_for_session(state: &AppState) -> Option<String> {
+    state.get_workspace_path().and_then(|p| {
+        if p.is_dir() {
+            Some(p.to_string_lossy().to_string())
+        } else {
+            tracing::warn!(
+                "Workspace path no longer exists or is not a directory: {}. Falling back to sidecar default cwd.",
+                p.display()
+            );
+            None
+        }
+    })
 }
 
 fn orchestrator_strict_contract_flag() -> bool {
@@ -7870,6 +8216,10 @@ fn orchestrator_strict_contract_flag() -> bool {
     }
 }
 
+fn is_legacy_low_wall_time_for_command_center(source: RunSource, wall_time_secs: u64) -> bool {
+    matches!(source, RunSource::CommandCenter) && wall_time_secs <= 60 * 60
+}
+
 /// Create a new orchestration run
 #[tauri::command]
 pub async fn orchestrator_create_run(
@@ -7880,22 +8230,37 @@ pub async fn orchestrator_create_run(
     model: Option<String>,
     provider: Option<String>,
     agent_model_routing: Option<OrchestratorModelRouting>,
+    source: Option<RunSource>,
 ) -> Result<String> {
     use crate::sidecar::CreateSessionRequest;
 
     let run_id = Uuid::new_v4().to_string();
-
-    // Get default provider/model (same as chat sessions)
-    let (default_provider, default_model) = {
-        let config = state.providers_config.read().unwrap();
-        resolve_default_provider_and_model(&config)
-    };
-
-    // Use provided values or fallback to defaults
-    let final_model = model.or(default_model);
-    let final_provider = normalize_provider_id_for_sidecar(provider.or(default_provider));
+    let config_snapshot = { state.providers_config.read().unwrap().clone() };
+    let resolved_model_spec = resolve_required_model_spec(
+        &config_snapshot,
+        model,
+        provider,
+        "Orchestrator run creation",
+    )?;
+    let final_model = Some(resolved_model_spec.model_id.clone());
+    let final_provider = Some(resolved_model_spec.provider_id.clone());
+    wait_for_sidecar_api_ready(state.inner(), Duration::from_secs(25)).await?;
+    validate_model_provider_in_sidecar_catalog(
+        state.inner(),
+        final_model.as_deref(),
+        final_provider.as_deref(),
+    )
+    .await?;
+    validate_model_provider_auth_if_required(
+        &app,
+        &config_snapshot,
+        Some(resolved_model_spec.model_id.as_str()),
+        Some(resolved_model_spec.provider_id.as_str()),
+    )
+    .await?;
 
     // Create a NEW session specifically for the orchestrator
+    let workspace_dir = existing_workspace_dir_for_session(state.inner());
     let session_request = CreateSessionRequest {
         parent_id: None,
         title: Some(format!(
@@ -7906,12 +8271,8 @@ pub async fn orchestrator_create_run(
         model: build_sidecar_session_model(final_model.clone(), final_provider.clone()),
         provider: final_provider.clone(),
         permission: Some(orchestrator_permission_rules()),
-        directory: state
-            .get_workspace_path()
-            .map(|p| p.to_string_lossy().to_string()),
-        workspace_root: state
-            .get_workspace_path()
-            .map(|p| p.to_string_lossy().to_string()),
+        directory: workspace_dir.clone(),
+        workspace_root: workspace_dir,
     };
 
     let session = state
@@ -7929,8 +8290,19 @@ pub async fn orchestrator_create_run(
         session.model,
         session.provider
     );
+    if let (Some(expected_provider), Some(expected_model)) = (&final_provider, &final_model) {
+        if let (Some(actual_provider), Some(actual_model)) = (&session.provider, &session.model) {
+            if actual_provider != expected_provider || actual_model != expected_model {
+                return Err(TandemError::Sidecar(format!(
+                    "Created session model/provider mismatch (expected {} / {}, got {} / {}).",
+                    expected_provider, expected_model, actual_provider, actual_model
+                )));
+            }
+        }
+    }
 
     // Guard against old UI defaults when creating new runs.
+    let run_source = source.unwrap_or(RunSource::Orchestrator);
     let mut config = config;
     if config.max_iterations == 10 || config.max_iterations == 30 || config.max_iterations == 200 {
         config.max_iterations = 500;
@@ -7943,6 +8315,9 @@ pub async fn orchestrator_create_run(
     }
     if config.max_wall_time_secs == 20 * 60 {
         config.max_wall_time_secs = 60 * 60;
+    }
+    if is_legacy_low_wall_time_for_command_center(run_source, config.max_wall_time_secs) {
+        config.max_wall_time_secs = 48 * 60 * 60;
     }
     if orchestrator_strict_contract_flag() {
         config.strict_planner_json = true;
@@ -7958,6 +8333,7 @@ pub async fn orchestrator_create_run(
 
     // Create the run object
     let mut run = Run::new(run_id.clone(), session_id, objective, config);
+    run.source = run_source;
     // Persist model/provider selection into the run so the orchestrator can always send explicit
     // model specs even if the sidecar session object doesn't echo them back.
     run.model = final_model.clone();
@@ -7968,6 +8344,12 @@ pub async fn orchestrator_create_run(
     let workspace_path = state
         .get_workspace_path()
         .ok_or_else(|| TandemError::InvalidConfig("No workspace selected".to_string()))?;
+    if !workspace_path.is_dir() {
+        return Err(TandemError::InvalidConfig(format!(
+            "Selected workspace does not exist or is not a directory: {}",
+            workspace_path.display()
+        )));
+    }
 
     let policy_config = PolicyConfig::new(workspace_path.clone());
     let policy = PolicyEngine::new(policy_config);
@@ -8078,6 +8460,25 @@ pub async fn orchestrator_list_tasks(
     };
 
     Ok(engine.get_tasks().await)
+}
+
+/// Re-queue a failed task so it can run again without restarting the whole run.
+#[tauri::command]
+pub async fn orchestrator_retry_task(
+    state: State<'_, AppState>,
+    run_id: String,
+    task_id: String,
+) -> Result<()> {
+    let engine = {
+        let engines = state.orchestrator_engines.read().unwrap();
+        engines
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| TandemError::NotFound(format!("Run not found: {}", run_id)))?
+    };
+
+    engine.retry_failed_task(&task_id).await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -8207,6 +8608,7 @@ pub async fn orchestrator_set_model_routing(
 
 #[tauri::command]
 pub async fn orchestrator_set_resume_model(
+    app: AppHandle,
     state: State<'_, AppState>,
     run_id: String,
     model: String,
@@ -8234,6 +8636,14 @@ pub async fn orchestrator_set_resume_model(
 
     let parent_id = engine.get_base_session_id().await;
     let normalized_provider = normalize_provider_id_for_sidecar(Some(provider.clone()));
+    let config_snapshot = { state.providers_config.read().unwrap().clone() };
+    validate_model_provider_auth_if_required(
+        &app,
+        &config_snapshot,
+        Some(model.as_str()),
+        normalized_provider.as_deref(),
+    )
+    .await?;
     let request = CreateSessionRequest {
         parent_id: Some(parent_id),
         title: Some(format!(
@@ -8402,6 +8812,7 @@ pub async fn orchestrator_list_runs(state: State<'_, AppState>) -> Result<Vec<Ru
                 summaries.push(RunSummary {
                     run_id: run.run_id,
                     session_id: run.session_id,
+                    source: run.source,
                     objective: run.objective,
                     status: run.status,
                     created_at: run.started_at,
@@ -8452,6 +8863,15 @@ pub async fn orchestrator_load_run(
     // However, the `Run` struct loaded from disk has the OLD config.
     // We should patch the config here before creating the engine.
     let mut run_to_load = run.clone();
+    run_to_load.agent_model_routing = run_to_load.agent_model_routing.canonicalized();
+    for task in run_to_load.tasks.iter_mut() {
+        let normalized = crate::orchestrator::types::normalize_role_key(&task.assigned_role);
+        if normalized.trim().is_empty() {
+            task.assigned_role = crate::orchestrator::types::ROLE_WORKER.to_string();
+        } else {
+            task.assigned_role = normalized;
+        }
+    }
 
     // Patch limits if they match the old defaults (to allow continuation)
     if run_to_load.config.max_subagent_runs == 20
@@ -8468,6 +8888,12 @@ pub async fn orchestrator_load_run(
     }
     if run_to_load.config.max_wall_time_secs == 20 * 60 {
         run_to_load.config.max_wall_time_secs = 60 * 60;
+    }
+    if is_legacy_low_wall_time_for_command_center(
+        run_to_load.source,
+        run_to_load.config.max_wall_time_secs,
+    ) {
+        run_to_load.config.max_wall_time_secs = 48 * 60 * 60;
     }
 
     // Keep budget max values aligned with config so "still_exceeded" is accurate.

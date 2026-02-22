@@ -2,16 +2,48 @@
 
 This project contains a highly-polished, multi-page showcase that connects directly to the `tandem-engine` running as a headless server on a Linux VPS. It provides a secure UI wrapper and a Node/Express backend that handles reverse-proxying and authentication, safeguarding the engine's open ports from the public internet.
 
-## Prerequisites
+## Auto Setup Script (recommended)
+
+If you want the fastest setup, use the install script. It handles almost everything:
+
+- Installs/uses `@frumu/tandem`
+- Generates (or reuses) API token
+- Creates `/etc/tandem/engine.env`
+- Bootstraps `$TANDEM_STATE_DIR/config.json` when missing
+- Builds the portal
+- Creates and starts both systemd services
+  - `tandem-engine.service`
+  - `tandem-portal.service`
+
+```bash
+cd examples/vps-web-portal
+sudo TANDEM_STATE_DIR=/srv/tandem bash setup-vps.sh
+```
+
+Optional: pre-create `.env` in this folder with provider keys (`OPENROUTER_API_KEY`, etc.).  
+The script merges those into `/etc/tandem/engine.env` automatically.
+
+If you are using this script, you can skip the manual setup section and jump to `Usage`.
+
+## Manual Setup
+
+### Prerequisites
 
 - A Linux VPS (Ubuntu/Debian recommended)
 - Node.js (v18+)
-- PM2 (optional, for running the project in the background)
-- The [Tandem Engine CLI](https://github.com/your-org/tandem)
+- `sudo` access
+- PM2 (optional, only for manual run path)
+- The Tandem Engine CLI (only required for manual setup path)
 
-## 1. Setup the Tandem Engine
+### 1. Setup the Tandem Engine
+
+Use this section only if you are not running `setup-vps.sh`.
 
 First, install the tandem engine directly on your VPS. Provide it access to local AI providers or proxies as well as MCP components.
+
+```bash
+npm install -g @frumu/tandem
+```
 
 Generate a secure Server Token. Do NOT lose this.
 
@@ -21,15 +53,103 @@ tandem-engine token generate
 
 _(Copy the generated UUID. We'll need it later)._
 
-Start the headless engine running in the background. It will bind to `localhost:39731` by default.
+Start the engine running in the background. It will bind to `localhost:39731` by default.
 
 ```bash
-nohup tandem-engine serve --headless &
+nohup tandem-engine serve --hostname 127.0.0.1 --port 39731 --api-token "<YOUR_TOKEN>" &
 ```
 
-_(Alternatively, run it using a robust service manager like SystemD)._
+#### Systemd (recommended)
 
-## 2. Setup the Web Portal
+For a one-command setup (engine + portal systemd services), run:
+
+```bash
+cd vps-web-portal
+sudo TANDEM_API_TOKEN=your-generated-tandem-token-here TANDEM_STATE_DIR=/srv/tandem bash setup-vps.sh
+```
+
+This command installs dependencies, builds the web app, and creates both:
+
+- `/etc/systemd/system/tandem-engine.service`
+- `/etc/systemd/system/tandem-portal.service`
+
+using the invoking user (via `SUDO_USER`) and discovered absolute binary paths automatically.
+
+Tool resolution is deterministic and does not depend on interactive shell startup files (`.bashrc`, `.profile`):
+
+1. Prefer `pnpm` (`PNPM_HOME`, user-local and common system paths, then `corepack pnpm`).
+2. Fallback to `npm` if `pnpm` is not available.
+3. Resolve `node` and `tandem-engine` from absolute paths for use in systemd `ExecStart`.
+4. If no standalone `tandem-engine` binary is usable, fallback to `npx -y @frumu/tandem`.
+
+Or follow the manual steps below.
+
+Create `/etc/systemd/system/tandem-engine.service`:
+
+```ini
+[Unit]
+Description=Tandem Engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tandem
+Group=tandem
+EnvironmentFile=/etc/tandem/engine.env
+ExecStart=/usr/bin/env tandem-engine serve --hostname 127.0.0.1 --port 39731
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/srv/tandem
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Create `/etc/tandem/engine.env`:
+
+```bash
+sudo mkdir -p /etc/tandem
+TANDEM_API_TOKEN=your-generated-tandem-token-here
+TANDEM_STATE_DIR=/srv/tandem
+```
+
+For persistent provider keys (recommended on VPS), use the template in this folder:
+
+```bash
+sudo cp engine.env.example /etc/tandem/engine.env
+sudo nano /etc/tandem/engine.env
+```
+
+Uncomment and fill the provider keys you actually use (for example `OPENROUTER_API_KEY`).
+This should be done before you use the web portal.
+
+Persistent provider/model config file (engine startup source):
+
+- `$TANDEM_STATE_DIR/config.json` (for example `/srv/tandem/config.json`)
+
+You can start from:
+
+```bash
+sudo cp engine.config.example.json /srv/tandem/config.json
+sudo chown $(id -un):$(id -gn) /srv/tandem/config.json
+```
+
+The `TANDEM_STATE_DIR` in `engine.env` is the state path. If you prefer CLI flags, add `--state-dir /srv/tandem` to `ExecStart` instead.
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now tandem-engine
+```
+
+### 2. Setup the Web Portal
+
+Use this section only if you are not running `setup-vps.sh`.
 
 Clone this repository or copy the `vps-web-portal` directory to your VPS.
 
@@ -37,7 +157,7 @@ Navigate to the project directory and install the required dependencies:
 
 ```bash
 cd vps-web-portal
-npm install
+pnpm install
 ```
 
 ### Environment Configuration
@@ -48,37 +168,71 @@ Create a `.env` file in the root of the portal directory:
 # The port the Node/Express proxy will listen on (Publicly accessible)
 PORT=80
 
-# The Secret Key used to login to the secure Web Portal URL
-VITE_PORTAL_KEY=my_secret_password_123
-
 # The Token generated by 'tandem-engine token generate' in Step 1
-VITE_ENGINE_TOKEN=your-generated-tandem-token-here
+# This is also the login key for the portal.
+VITE_PORTAL_KEY=your-generated-tandem-token-here
 
 # (Optional) Engine local address
 VITE_TANDEM_ENGINE_URL=http://127.0.0.1:39731
 ```
 
-## 3. Build & Run
+### 3. Build & Run
+
+Use this section only if you are not running `setup-vps.sh`.
 
 Build the Vite React frontend for production:
 
 ```bash
-npm run build
+pnpm run build
 ```
 
 Start the Node.js Express server to host the application. We recommend using PM2 to keep the server alive forever:
 
 ```bash
-npm install -g pm2
-pm2 start npm --name "tandem-portal" -- run start:server
+pnpm install -g pm2
+pm2 start npm --name "tandem-portal" -- run start
 ```
 
-_(Alternatively, you can just run `npm run start:server` directly for testing)._
+_(Alternatively, you can just run `npm run start` directly for testing)._
+
+## Troubleshooting Setup Script
+
+If setup fails, run with debug output:
+
+```bash
+bash -x setup-vps.sh
+```
+
+Then verify services and local connectivity:
+
+```bash
+sudo systemctl status tandem-engine --no-pager
+sudo systemctl status tandem-portal --no-pager
+sudo ss -ltnp | grep ':80 '
+curl -I http://127.0.0.1:80
+```
 
 ## Usage
 
 Visit your server's public IP or Domain name in your browser (e.g., `http://your-server-ip:80`).
-You will be greeted by the Login portal. Enter the `VITE_PORTAL_KEY` you configured earlier to unlock the dashboards.
+You will be greeted by the Login portal. Enter the `VITE_PORTAL_KEY` you configured earlier.
+
+On first login (or when no provider/model is configured), the portal now opens a **Provider Setup** screen where you:
+
+1. Select a provider
+2. Enter an API key (if required)
+3. Pick a default model
+
+Storage behavior:
+
+- Provider API keys are sent via engine runtime auth (`PUT /auth/{provider}`), which is runtime-only.
+- Default provider/model are persisted via `PATCH /config`.
+
+For production persistence across restarts:
+
+- Store provider keys in `/etc/tandem/engine.env` (see `engine.env.example`).
+- Store default provider/model via `PATCH /config` (saved in `$TANDEM_STATE_DIR/config.json`).
+- `setup-vps.sh` now bootstraps `$TANDEM_STATE_DIR/config.json` if missing.
 
 ### Included Dashboards
 

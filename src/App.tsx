@@ -376,6 +376,7 @@ function App() {
   // Orchestrator panel state
   const [orchestratorOpen, setOrchestratorOpen] = useState(false);
   const [currentOrchestratorRunId, setCurrentOrchestratorRunId] = useState<string | null>(null);
+  const [commandCenterRunId, setCommandCenterRunId] = useState<string | null>(null);
   const [orchestratorRuns, setOrchestratorRuns] = useState<RunSummary[]>([]);
   const skipOrchestratorAutoResumeRef = useRef(false);
 
@@ -492,8 +493,10 @@ function App() {
     invoke<RunSummary[]>("orchestrator_list_runs")
       .then((runs) => {
         if (!runs || runs.length === 0) return;
-        const preferred = runs.find((r) =>
-          ["planning", "awaiting_approval", "executing", "paused"].includes(r.status)
+        const preferred = runs.find(
+          (r) =>
+            r.source !== "command_center" &&
+            ["planning", "awaiting_approval", "executing", "paused"].includes(r.status)
         );
         if (!preferred) return;
         setCurrentOrchestratorRunId(preferred.run_id);
@@ -512,6 +515,16 @@ function App() {
       setCurrentOrchestratorRunId(null);
     }
   }, [activeProject?.id, orchestratorRuns, currentOrchestratorRunId]);
+
+  useEffect(() => {
+    if (!commandCenterRunId) return;
+    const existsInActiveWorkspace = orchestratorRuns.some(
+      (run) => run.run_id === commandCenterRunId
+    );
+    if (!existsInActiveWorkspace) {
+      setCommandCenterRunId(null);
+    }
+  }, [activeProject?.id, orchestratorRuns, commandCenterRunId]);
 
   // Todos for task sidebar
   const todosData = useTodos(currentSessionId);
@@ -909,6 +922,9 @@ function App() {
     setSidecarReady(true);
     // Navigate to appropriate view
     if (state?.has_workspace) {
+      // TODO(startup-routing): Revisit last-open-area restore once we have a proper
+      // starter/boot page that can coordinate sidecar readiness checks for all views.
+      // For now, always land in chat on startup to avoid command-center-first boot races.
       setView("chat");
 
       // If there's a saved session, trigger Chat to reload it now that sidecar is ready
@@ -920,8 +936,17 @@ function App() {
           .then((runs) => {
             const run = runs.find((r) => r.session_id === currentSessionId);
             if (run) {
-              setOrchestratorOpen(true);
-              setCurrentOrchestratorRunId(run.run_id);
+              if (run.source === "command_center") {
+                setOrchestratorOpen(false);
+                setCurrentOrchestratorRunId(null);
+                setCommandCenterRunId(run.run_id);
+                setView("command-center");
+              } else {
+                setCommandCenterRunId(null);
+                setCurrentOrchestratorRunId(run.run_id);
+                setOrchestratorOpen(true);
+                setView("chat");
+              }
               setCurrentSessionId(null); // Clear session ID as we're in orchestrator mode
             } else {
               const savedId = currentSessionId;
@@ -1146,12 +1171,21 @@ function App() {
     const run = orchestratorRuns.find((r) => r.session_id === sessionId);
     if (run) {
       setCurrentSessionId(null);
-      setCurrentOrchestratorRunId(run.run_id);
-      setOrchestratorOpen(true);
-      setView("chat");
+      if (run.source === "command_center") {
+        setCurrentOrchestratorRunId(null);
+        setCommandCenterRunId(run.run_id);
+        setOrchestratorOpen(false);
+        setView("command-center");
+      } else {
+        setCommandCenterRunId(null);
+        setCurrentOrchestratorRunId(run.run_id);
+        setOrchestratorOpen(true);
+        setView("chat");
+      }
       return;
     }
     setView("chat");
+    setCommandCenterRunId(null);
     setOrchestratorOpen(false);
     setCurrentOrchestratorRunId(null);
     // If the user clicks the already-selected session, React won't emit a state change,
@@ -1168,6 +1202,7 @@ function App() {
     skipOrchestratorAutoResumeRef.current = true;
     setOrchestratorOpen(false);
     setCurrentOrchestratorRunId(null);
+    setCommandCenterRunId(null);
     setCurrentSessionId(null);
     setView("chat");
   };
@@ -1204,6 +1239,9 @@ function App() {
 
       if (currentOrchestratorRunId === runId) {
         setCurrentOrchestratorRunId(null);
+      }
+      if (commandCenterRunId === runId) {
+        setCommandCenterRunId(null);
       }
     } catch (e) {
       console.error("Failed to delete orchestrator run:", e);
@@ -1334,6 +1372,31 @@ function App() {
     }
   };
 
+  const openFilePreview = useCallback((file: FileEntry) => {
+    setSelectedFile(file);
+    setSidebarTab("files");
+  }, []);
+
+  const openFilePreviewFromPath = useCallback(
+    (filePath: string) => {
+      const workspacePath = activeProject?.path || state?.workspace_path;
+      let absolutePath = filePath;
+
+      if (workspacePath && !filePath.match(/^([a-zA-Z]:[\\/]|\/)/)) {
+        absolutePath = `${workspacePath}/${filePath}`.replace(/\\/g, "/");
+      }
+
+      const fileName = absolutePath.split(/[\\/]/).pop() || absolutePath;
+      openFilePreview({
+        path: absolutePath,
+        name: fileName,
+        is_directory: false,
+        extension: fileName.includes(".") ? fileName.split(".").pop() : undefined,
+      });
+    },
+    [activeProject?.path, state?.workspace_path, openFilePreview]
+  );
+
   const visibleChatSessionIds = useMemo(() => {
     const runBaseSessionIds = new Set(orchestratorRuns.map((r) => r.session_id));
     return new Set(
@@ -1421,7 +1484,7 @@ function App() {
                     ? "bg-primary/20 text-primary"
                     : "text-text-muted hover:bg-surface-elevated hover:text-text"
                 }`}
-                title="Command Center"
+                title="Command Center (beta)"
               >
                 <Rocket className="h-5 w-5" />
               </button>
@@ -1558,11 +1621,21 @@ function App() {
                       projects={projects}
                       currentSessionId={currentSessionId}
                       currentRunId={currentOrchestratorRunId}
+                      currentCommandCenterRunId={commandCenterRunId}
                       activeChatSessionIds={Array.from(runningSessionIds)}
                       onSelectSession={handleSelectSession}
-                      onSelectRun={(runId) => {
+                      onSelectRun={(runId, runType) => {
+                        if (runType === "command-center") {
+                          setCurrentOrchestratorRunId(null);
+                          setCommandCenterRunId(runId);
+                          setOrchestratorOpen(false);
+                          setView("command-center");
+                          return;
+                        }
+                        setCommandCenterRunId(null);
                         setCurrentOrchestratorRunId(runId);
                         setOrchestratorOpen(true);
+                        setView("chat");
                       }}
                       onNewChat={handleNewChat}
                       onOpenPacks={() => setView("packs")}
@@ -1690,14 +1763,41 @@ function App() {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2, ease: "easeOut" }}
             >
-              <CommandCenterPage
-                userProjects={userProjects}
-                activeProject={activeProject}
-                onSwitchProject={handleSwitchProject}
-                onAddProject={handleAddProject}
-                onManageProjects={handleManageProjects}
-                projectSwitcherLoading={projectSwitcherLoading}
-              />
+              <div className={cn("h-full w-full flex", selectedFile && "gap-0")}>
+                <div className={cn("flex-1 min-w-0", selectedFile && "w-1/2")}>
+                  <CommandCenterPage
+                    userProjects={userProjects}
+                    activeProject={activeProject}
+                    onSwitchProject={handleSwitchProject}
+                    onAddProject={handleAddProject}
+                    onManageProjects={handleManageProjects}
+                    onFileOpen={openFilePreview}
+                    projectSwitcherLoading={projectSwitcherLoading}
+                    initialRunId={commandCenterRunId}
+                  />
+                </div>
+                <AnimatePresence>
+                  {selectedFile && (
+                    <motion.div
+                      initial={{ width: 0, opacity: 0 }}
+                      animate={{ width: "50%", opacity: 1 }}
+                      exit={{ width: 0, opacity: 0 }}
+                      transition={{ duration: 0.3 }}
+                      className="overflow-hidden"
+                    >
+                      <div ref={setFilePreviewDockEl} className="h-full" />
+                      {filePreviewDockEl && (
+                        <FilePreview
+                          file={selectedFile}
+                          dockEl={filePreviewDockEl}
+                          onClose={() => setSelectedFile(null)}
+                          onAddToChat={handleAddFileToChat}
+                        />
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
             </motion.div>
           ) : (
             <>
@@ -1754,27 +1854,7 @@ function App() {
                     onDraftMessageConsumed={() => setDraftMessage(null)}
                     activeChatRunningCount={activeChatRunningCount}
                     activeOrchestrationCount={activeOrchestrationCount}
-                    onFileOpen={(filePath) => {
-                      // Resolve relative paths to absolute using workspace path
-                      const workspacePath = activeProject?.path || state?.workspace_path;
-                      let absolutePath = filePath;
-
-                      // If path is not absolute, resolve it relative to workspace
-                      if (workspacePath && !filePath.match(/^([a-zA-Z]:[\\/]|\/)/)) {
-                        absolutePath = `${workspacePath}/${filePath}`.replace(/\\/g, "/");
-                      }
-
-                      // Create FileEntry from path and open in preview
-                      const fileName = absolutePath.split(/[\\/]/).pop() || absolutePath;
-                      const fileEntry: FileEntry = {
-                        path: absolutePath,
-                        name: fileName,
-                        is_directory: false,
-                        extension: fileName.includes(".") ? fileName.split(".").pop() : undefined,
-                      };
-                      setSelectedFile(fileEntry);
-                      setSidebarTab("files"); // Switch to files tab for context
-                    }}
+                    onFileOpen={(filePath) => openFilePreviewFromPath(filePath)}
                   />
                 )}
               </div>
@@ -1802,15 +1882,6 @@ function App() {
                 )}
               </AnimatePresence>
 
-              {/* Git Initialization Dialog */}
-              <GitInitDialog
-                isOpen={showGitDialog}
-                onClose={handleGitSkip}
-                onInitialize={handleGitInitialize}
-                gitInstalled={gitStatus?.git_installed ?? false}
-                folderPath={pendingProjectPath ?? ""}
-              />
-
               {/* Task Sidebar - only show in chat mode */}
               {!orchestratorOpen && (
                 <TaskSidebar
@@ -1828,6 +1899,13 @@ function App() {
             </>
           )}
         </main>
+        <GitInitDialog
+          isOpen={showGitDialog}
+          onClose={handleGitSkip}
+          onInitialize={handleGitInitialize}
+          gitInstalled={gitStatus?.git_installed ?? false}
+          folderPath={pendingProjectPath ?? ""}
+        />
         <AppUpdateOverlay />
         <WhatsNewOverlay
           open={shouldShowWhatsNew}

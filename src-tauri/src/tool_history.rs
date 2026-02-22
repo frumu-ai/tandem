@@ -252,7 +252,7 @@ fn open_conn(app: &AppHandle) -> Result<Connection> {
 
 fn normalize_call_id(part_id: &str, session_id: &str, message_id: &str, tool: &str) -> String {
     if !part_id.trim().is_empty() {
-        part_id.to_string()
+        format!("{}:{}:{}:{}", session_id, message_id, part_id, tool)
     } else {
         format!("{}:{}:{}", session_id, message_id, tool)
     }
@@ -345,6 +345,7 @@ pub fn record_stream_event(app: &AppHandle, event: &StreamEvent) -> Result<()> {
             tool,
             result,
             error,
+            ..
         } => {
             let conn = open_conn(app)?;
             let now_ms = now_ms_i64()?;

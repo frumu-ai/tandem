@@ -2,11 +2,7 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## Unreleased
-
-- No unreleased changes.
-
-## v0.3.8 - 2026-02-19
+## v0.3.8 (Unreleased)
 
 - Headless web admin: Added embedded single-file `/admin` UI served by `tandem-server` (no external runtime assets).
 - Realtime admin updates: Added SSE-driven refresh behavior with polling fallback for live admin visibility.
@@ -25,6 +21,42 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Agent-Team approvals: Added explicit spawn approval decision endpoints (`POST /agent-team/approvals/spawn/{id}/approve|deny`).
 - Docs: Updated engine command reference for web admin flags and headless control surface.
 - Desktop channels: Fixed a startup race so saved Telegram/Discord/Slack bot-token connections persist correctly across app/engine restarts after vault unlock.
+- Model routing: Fixed provider/model dispatch so selected models are used across chat/session/orchestrator flows instead of fallback defaults.
+- Model selection persistence: Chat and Command Center now persist explicit `selected_model` routing in provider config.
+- Provider runtime behavior: Streaming/completion calls now honor per-request model overrides.
+- OpenRouter attribution: Added Tandem-origin headers for provider requests.
+- Memory reliability: Added startup backup + self-heal recovery for malformed/incompatible memory vector tables.
+- Command Center reliability: Fixed paused/failed status mapping and disabled launch while runs are active.
+- Autonomous swarm permissions: Orchestrator/Command Center sessions now auto-allow shell permissions in autonomous mode.
+- Shell robustness: Empty shell calls now fail fast with `BASH_COMMAND_MISSING` instead of hanging until timeout.
+- Windows compatibility: Added translation for common Unix-style agent shell commands (`ls -la`, `find ... -type f -name ...`) to PowerShell equivalents.
+- Stream stability: Reduced false stream watchdog degraded events while tools are still pending.
+- Command Center reliability: Added strict `read`/`write` tool-arg validation (JSON object + non-empty `path`) with fail-fast `INVALID_TOOL_ARGS` handling to prevent endless retry loops.
+- Orchestrator error clarity: Replaced generic Windows `os error 3` workspace mismatch messaging with structured classification (`WORKSPACE_NOT_FOUND`, path-not-found fail-fast, timeout codes).
+- Workspace safety: Task child sessions now pin explicitly to orchestrator workspace path and preflight-check workspace existence before session creation.
+- Tool history integrity: Tool execution IDs now include session/message/part context to avoid cross-session `part_id` collisions in diagnostics.
+- File-tool stability: Increased `read`/`write` timeout budget to reduce premature synthetic timeout terminals on larger repos.
+- Engine memory tools:
+  - Added `memory_store` for persisting agent-learned memory in `session`/`project`/`global` tiers.
+  - Added `memory_list` for browsing/auditing stored memory by scope/tier.
+- Global memory support:
+  - `memory_search` now supports `tier=global` with explicit opt-in (`allow_global=true` or `TANDEM_ENABLE_GLOBAL_MEMORY=1`).
+  - Global tier remains gated by default to preserve isolation without explicit enablement.
+- Engine memory DB alignment:
+  - `tandem-engine` now auto-sets `TANDEM_MEMORY_DB_PATH` to shared Tandem `memory.sqlite` when unset so connected apps/tools use the same knowledge base.
+- Engine-native OS awareness:
+  - Added canonical engine-detected runtime context (`os`, `arch`, `shell_family`, `path_style`) shared across server APIs/events and session metadata.
+  - `session.run.started` and `/global/health` now include `environment` metadata for cross-client diagnostics (Desktop, TUI, HTTP clients).
+  - `tandem-core` prompt assembly now injects a deterministic `[Execution Environment]` block by default (`TANDEM_OS_AWARE_PROMPTS` toggle).
+- Cross-platform shell hardening:
+  - Non-Windows shell execution now uses POSIX shell (`sh -lc`) instead of PowerShell fallback.
+  - Windows shell guardrails now translate common Unix command patterns, block unsafe untranslatable Unix-only commands, and return structured metadata (`os_guardrail_applied`, `translated_command`, `guardrail_reason`).
+  - Added OS/path mismatch classification (`OS_MISMATCH`) and suppression of repeated identical mismatch-prone shell retries.
+- Documentation:
+  - Added CLI examples for `memory_store`, `memory_list`, and global memory operations.
+  - Updated engine README with global memory enablement and shared DB behavior notes.
+- Quality:
+  - Added/updated tool tests for global-memory opt-in gating and scope validation.
 
 ## v0.3.7 - 2026-02-18
 

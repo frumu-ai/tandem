@@ -5,11 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-- No unreleased changes.
-
-## [0.3.8] - 2026-02-19
+## [0.3.8]
 
 ### Added
 
@@ -30,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Agent-Team approval action endpoints**: Added explicit spawn approval decision routes:
   - `POST /agent-team/approvals/spawn/{id}/approve`
   - `POST /agent-team/approvals/spawn/{id}/deny`
+- **Engine memory write/list tools**: Added `memory_store` and `memory_list` tools to `tandem-tools` so agents can persist and audit memory directly from engine tool calls.
+- **Global memory opt-in support**: `memory_search` now supports `tier=global` when explicitly enabled via `allow_global=true` or `TANDEM_ENABLE_GLOBAL_MEMORY=1`.
+- **Shared memory DB auto-wiring in engine**: `tandem-engine` now auto-configures `TANDEM_MEMORY_DB_PATH` to the shared Tandem `memory.sqlite` path when unset, aligning connected app/tool memory access by default.
+- **Engine host runtime context contract**: Added shared `HostRuntimeContext` (`os`, `arch`, `shell_family`, `path_style`) in shared types/wire payloads and surfaced it through engine health/session/run metadata.
+- **Server run-start environment observability**: `session.run.started` lifecycle events now include canonical engine environment metadata for cross-client parity.
 
 ### Changed
 
@@ -38,10 +39,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security headers for embedded UI**: Added strict response headers/CSP for admin HTML responses.
 - **Engine command docs**: Updated engine command reference to include new web-admin flags.
 - **Desktop-Tauri agent-team bridge**: Added typed Tauri commands and frontend API wrappers for template/mission/instance/approval listing, spawn, and cancel/decision actions.
+- **Startup navigation default**: Desktop now always opens in Chat view on startup (with a TODO for future starter/landing flow) instead of restoring Command Center directly.
+- **Command Center observability layout**: Added inline run-scoped Console panel and elevated workspace file browser support in Command Center to improve live swarm debugging.
+- **`memory_search` scope policy**: Reworked strict scope enforcement to allow controlled global search while preserving default isolation behavior unless global is explicitly enabled.
+- **Engine memory docs/examples**: Expanded CLI and engine README docs with `memory_store`, `memory_list`, and global memory usage examples.
+- **Engine prompt assembly (OS-aware)**: `tandem-core` now prepends a deterministic `[Execution Environment]` block (engine-detected OS/shell/path style) to model runs by default (`TANDEM_OS_AWARE_PROMPTS` toggle).
+- **Canonical OS authority policy**: Runtime behavior now trusts engine-detected host environment as the source of truth rather than client-provided OS hints.
+- **Engine health diagnostics**: `/global/health` now exposes `environment` metadata for troubleshooting and external clients.
 
 ### Fixed
 
+- **Command Center tool-arg hardening**: `read`/`write` tool calls now validate argument shape (`JSON object` + non-empty `path`) and fail fast with structured `INVALID_TOOL_ARGS` instead of retry loops.
+- **Workspace/path error taxonomy**: Replaced broad Windows `os error 3` pause messaging with clearer classification (`WORKSPACE_NOT_FOUND`, path-not-found fail-fast) so runs stop/recover deterministically.
+- **Orchestrator retry-loop suppression**: Invalid tool args and path-not-found failures now fail task attempts directly instead of repeatedly re-queuing.
+- **Task session workspace pinning**: Child task sessions are now pinned to the orchestrator workspace path, with preflight checks before session creation.
+- **Tool timeout resilience for file ops**: Increased `read`/`write` tool timeouts to reduce premature synthetic terminal errors on larger workspaces.
+- **Tool history ID collision fix**: Tool execution IDs now include session/message/part context (not just `part_id`) to prevent cross-session overwrite/correlation drift.
+- **Structured stream error codes**: Stream tool/session terminal events now carry optional `error_code` metadata for clearer diagnostics in orchestrator + UI.
+- **Builder prompt guardrails**: Builder-agent prompt now explicitly requires valid JSON tool args and non-empty `path` for file tools.
+
 - **Desktop channel token persistence across restart**: Fixed a vault-unlock/startup race where channel bot tokens (Telegram/Discord/Slack) could fail to rehydrate into sidecar env before restart, causing saved channel connections to appear unconfigured after engine/app restart.
+- **Model/provider routing hardening**: Chat, queue, rewind, undo, and command-center/orchestrator dispatches now require explicit provider+model instead of silently falling back.
+- **Model selection persistence**: Fixed picker drift by persisting `providers_config.selected_model` from both Chat and Command Center selectors.
+- **Provider runtime model override**: Provider calls now honor per-request model overrides, preventing unintended fallback execution (for example `gpt-4o-mini` when another model is selected).
+- **OpenRouter attribution**: Added consistent request attribution headers so calls are identified as Tandem instead of unknown source.
+- **Memory startup self-heal**: Corrupted/incompatible vector DB state is now detected, backed up, and auto-recovered to prevent repeated startup failures (`chunks iter error` / SQL logic errors).
+- **Command Center task state/UI correctness**: Fixed paused/failed run status mapping and disabled launch actions while a run is already active to prevent duplicate swarm starts.
+- **Autonomous swarm permission flow**: Orchestrator/Command Center sessions now auto-allow shell tool permissions in autonomous mode (no manual approve gate for each call).
+- **Shell-call robustness**: Empty shell invocations now fail fast with explicit `BASH_COMMAND_MISSING` instead of hanging until watchdog timeout.
+- **Windows shell compatibility**: Added Windows translation for common Unix shell calls used by agents (`ls -la`, `find ... -type f -name ...`) to PowerShell equivalents.
+- **Stream watchdog noise reduction**: Suppressed false stream-degraded watchdog events while tools are actively pending.
+- **Failed task recovery in Command Center**: Added per-task retry support that re-queues failed tasks, clears stale task failure state, and unblocks dependent tasks without forcing full run restart.
+- **Failed task diagnostics clarity**: Failed task cards now surface richer validator/error detail so failure causes are visible in-place instead of opaque `session.error` noise.
+- **Engine tool memory path mismatch**: Fixed default `memory_search`/memory tool DB resolution in headless engine runs by setting the shared memory DB path at runtime when not already provided.
+- **Memory tool test coverage**: Added/updated tests to validate global-memory opt-in gates and prevent accidental unrestricted global access.
+- **Cross-platform shell execution path**: Non-Windows engine shell tool execution now uses POSIX shell (`sh -lc`) instead of hardcoded PowerShell fallback.
+- **Windows shell mismatch loops**: Expanded Windows shell guardrails to translate common Unix patterns, block unsafe Unix-only commands with structured guidance, and emit `os_guardrail_applied`/`guardrail_reason` metadata.
+- **OS mismatch retry suppression**: Engine loop now suppresses repeated identical shell calls after path/shell mismatch signatures and steers model/tool flow toward cross-platform tools (`read`, `glob`, `grep`).
+- **OS mismatch error taxonomy**: Server dispatch now classifies common path/shell mismatch failures as `OS_MISMATCH` for clearer diagnostics.
 
 ## [0.3.7] - 2026-02-18
 
@@ -849,8 +884,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[Unreleased]: https://github.com/frumu-ai/tandem/compare/v0.3.8...HEAD
-[0.3.8]: https://github.com/frumu-ai/tandem/compare/v0.3.7...v0.3.8
+[0.3.8]: https://github.com/frumu-ai/tandem/compare/v0.3.7...HEAD
 [0.3.7]: https://github.com/frumu-ai/tandem/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/frumu-ai/tandem/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/frumu-ai/tandem/compare/v0.3.2...v0.3.5

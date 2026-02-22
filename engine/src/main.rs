@@ -9,15 +9,14 @@ use clap::{Parser, Subcommand};
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use tandem_core::{
-    migrate_legacy_storage_if_needed, resolve_shared_paths, AgentRegistry, CancellationRegistry,
-    ConfigStore, EngineLoop, EventBus, PermissionManager, PluginRegistry, Storage,
-    DEFAULT_ENGINE_HOST, DEFAULT_ENGINE_PORT,
+    resolve_shared_paths, AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus,
+    PermissionManager, PluginRegistry, Storage, DEFAULT_ENGINE_HOST, DEFAULT_ENGINE_PORT,
 };
 use tandem_observability::{
     canonical_logs_dir_from_root, emit_event, init_process_logging, ObservabilityEvent, ProcessKind,
 };
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
-use tandem_server::{serve, AppState, RuntimeState};
+use tandem_server::{detect_host_runtime_context, serve, AppState, RuntimeState};
 use tandem_tools::ToolRegistry;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -42,10 +41,16 @@ const SUPPORTED_PROVIDER_IDS: [&str; 12] = [
 
 const ENGINE_CLI_EXAMPLES: &str = r#"Examples:
   tandem-engine serve --hostname 127.0.0.1 --port 39731
+  tandem-engine status --hostname 127.0.0.1 --port 39731
   tandem-engine run "Summarize this repository" --provider openrouter --model openai/gpt-4o-mini
   tandem-engine tool --json @payload.json
   cat payload.json | tandem-engine tool --json -
   tandem-engine providers
+"#;
+
+const STATUS_EXAMPLES: &str = r#"Examples:
+  tandem-engine status
+  tandem-engine status --hostname 127.0.0.1 --port 39731
 "#;
 
 const SERVE_EXAMPLES: &str = r#"Examples:
@@ -103,6 +108,25 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    #[command(about = "Check engine health status (GET /global/health).")]
+    #[command(after_help = STATUS_EXAMPLES)]
+    Status {
+        #[arg(
+            long,
+            env = "TANDEM_ENGINE_HOST",
+            alias = "host",
+            default_value = DEFAULT_ENGINE_HOST,
+            help = "Hostname or IP address to check."
+        )]
+        hostname: String,
+        #[arg(
+            long,
+            env = "TANDEM_ENGINE_PORT",
+            default_value_t = DEFAULT_ENGINE_PORT,
+            help = "Port to check."
+        )]
+        port: u16,
+    },
     #[command(
         about = "Start the HTTP/SSE engine server (recommended for desktop/TUI integration)."
     )]
@@ -246,6 +270,20 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Status { hostname, port } => {
+            let url = format!("http://{hostname}:{port}/global/health");
+            let resp = reqwest::Client::new().get(&url).send().await?;
+            let status = resp.status();
+            let body = resp.text().await?;
+            if !status.is_success() {
+                anyhow::bail!("engine health check failed: {} {}", status, body);
+            }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            } else {
+                println!("{body}");
+            }
+        }
         Command::Serve {
             hostname,
             port,
@@ -683,40 +721,6 @@ async fn initialize_runtime(
     let attempt_id = startup.attempt_id;
     let init_started = Instant::now();
 
-    state.set_phase("migration").await;
-    emit_event(
-        tracing::Level::INFO,
-        ProcessKind::Engine,
-        ObservabilityEvent {
-            event: "engine.startup.phase",
-            component: "engine.main",
-            correlation_id: None,
-            session_id: None,
-            run_id: None,
-            message_id: None,
-            provider_id: None,
-            model_id: None,
-            status: Some("running"),
-            error_code: None,
-            detail: Some(&format!("attempt_id={} phase=migration", attempt_id)),
-        },
-    );
-    let _ = tokio::task::spawn_blocking(move || {
-        if let Ok(paths) = resolve_shared_paths() {
-            if let Ok(report) = migrate_legacy_storage_if_needed(&paths) {
-                info!(
-                    "storage migration status: reason={} performed={} copied={} skipped={} errors={}",
-                    report.reason,
-                    report.performed,
-                    report.copied.len(),
-                    report.skipped.len(),
-                    report.errors.len()
-                );
-            }
-        }
-    })
-    .await;
-
     let runtime = build_runtime(&state_dir, Some(&state), overrides, config_path).await?;
     state.mark_ready(runtime).await?;
     let _ = state.restart_channel_listeners().await;
@@ -751,6 +755,7 @@ async fn build_runtime(
     cli_overrides: Option<serde_json::Value>,
     override_config_path: Option<PathBuf>,
 ) -> anyhow::Result<RuntimeState> {
+    configure_memory_db_path_env(state_dir);
     let startup = Instant::now();
     if let Some(state) = startup_state {
         state.set_phase("storage_init").await;
@@ -800,6 +805,7 @@ async fn build_runtime(
     }
     let phase_start = Instant::now();
     let cancellations = CancellationRegistry::new();
+    let host_runtime_context = detect_host_runtime_context();
     let engine_loop = EngineLoop::new(
         storage.clone(),
         event_bus.clone(),
@@ -809,6 +815,7 @@ async fn build_runtime(
         permissions.clone(),
         tools.clone(),
         cancellations.clone(),
+        host_runtime_context.clone(),
     );
     info!(
         "engine.startup.phase engine_loop_init elapsed_ms={}",
@@ -836,7 +843,27 @@ async fn build_runtime(
         workspace_index,
         cancellations,
         engine_loop,
+        host_runtime_context,
     })
+}
+
+fn configure_memory_db_path_env(state_dir: &Path) {
+    if std::env::var("TANDEM_MEMORY_DB_PATH")
+        .ok()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    let candidate = resolve_shared_paths()
+        .map(|p| p.memory_db_path)
+        .unwrap_or_else(|_| state_dir.join("memory.sqlite"));
+    std::env::set_var("TANDEM_MEMORY_DB_PATH", candidate.as_os_str());
+    info!(
+        "configured TANDEM_MEMORY_DB_PATH={}",
+        candidate.to_string_lossy()
+    );
 }
 
 async fn emit_startup_phase_event(state: &AppState, phase: &str) {

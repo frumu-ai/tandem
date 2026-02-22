@@ -154,6 +154,22 @@ tandem-engine tool --json "{\"tool\":\"apply_patch\",\"args\":{\"patchText\":\"*
 tandem-engine tool --json '{"tool":"bash","args":{"command":"Get-ChildItem tandem/docs | Select-Object -First 5"}}'
 ```
 
+### OS-Aware Guardrail Demo (Windows)
+
+```bash
+# Translated command example
+tandem-engine tool --json '{"tool":"bash","args":{"command":"ls -la"}}'
+
+# Blocked Unix-only pattern example with guidance metadata
+tandem-engine tool --json '{"tool":"bash","args":{"command":"sed -n \"1,5p\" README.md"}}'
+```
+
+Inspect `metadata`:
+
+- `os_guardrail_applied`
+- `translated_command` (when rewritten)
+- `guardrail_reason` (when rewritten/blocked)
+
 ### Web Research
 
 ```bash
@@ -166,6 +182,11 @@ tandem-engine tool --json '{"tool":"websearch","args":{"query":"Tandem engine SS
 
 ```bash
 tandem-engine tool --json '{"tool":"memory_search","args":{"query":"engine loop","project_id":"tandem","tier":"project","limit":5}}'
+tandem-engine tool --json '{"tool":"memory_store","args":{"content":"Retry build once after cache busting if lockfile changed","project_id":"tandem","tier":"project","source":"postmortem_note"}}'
+tandem-engine tool --json '{"tool":"memory_list","args":{"project_id":"tandem","tier":"all","limit":20}}'
+# Global memory (cross-project) is opt-in:
+tandem-engine tool --json '{"tool":"memory_store","args":{"content":"Prefer rg over grep for repository search speed","tier":"global","allow_global":true,"source":"coding_preference"}}'
+tandem-engine tool --json '{"tool":"memory_search","args":{"query":"repository search speed","tier":"global","allow_global":true,"limit":5}}'
 tandem-engine tool --json '{"tool":"lsp","args":{"operation":"symbols","query":"EngineLoop"}}'
 ```
 

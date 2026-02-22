@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -8,6 +8,7 @@ interface TaskBoardProps {
   tasks: Task[];
   currentTaskId?: string;
   onTaskClick?: (task: Task) => void;
+  onRetryTask?: (task: Task) => void;
   className?: string;
 }
 
@@ -43,10 +44,25 @@ interface TaskCardProps {
   task: Task;
   isCurrent: boolean;
   onClick?: () => void;
+  onRetryTask?: (task: Task) => void;
 }
 
-function TaskCard({ task, isCurrent, onClick }: TaskCardProps) {
+function TaskCard({ task, isCurrent, onClick, onRetryTask }: TaskCardProps) {
   const config = STATE_CONFIG[task.state];
+  const [errorExpanded, setErrorExpanded] = useState(false);
+  const [copiedError, setCopiedError] = useState(false);
+  const hasLongError = (task.error_message?.length ?? 0) > 180;
+
+  const copyError = async () => {
+    if (!task.error_message) return;
+    try {
+      await globalThis.navigator?.clipboard?.writeText(task.error_message);
+      setCopiedError(true);
+      window.setTimeout(() => setCopiedError(false), 1200);
+    } catch {
+      setCopiedError(false);
+    }
+  };
 
   return (
     <motion.div
@@ -81,8 +97,57 @@ function TaskCard({ task, isCurrent, onClick }: TaskCardProps) {
         </p>
       )}
 
+      {(task.assigned_role || task.gate) && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {task.assigned_role ? (
+            <span className="inline-flex items-center rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-cyan-200">
+              role: {task.assigned_role}
+            </span>
+          ) : null}
+          {task.gate ? (
+            <span className="inline-flex items-center rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-amber-200">
+              gate: {task.gate}
+            </span>
+          ) : null}
+        </div>
+      )}
+
       {task.error_message && (
-        <p className="mt-1 text-xs text-red-400 line-clamp-1">{task.error_message}</p>
+        <div className="mt-1">
+          <p
+            className={cn(
+              "text-xs text-red-400 whitespace-pre-wrap break-words",
+              !errorExpanded && "line-clamp-3"
+            )}
+            title={task.error_message}
+          >
+            {task.error_message}
+          </p>
+          <div className="mt-1 flex items-center gap-2">
+            {hasLongError ? (
+              <button
+                type="button"
+                className="rounded border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] text-red-200 hover:bg-red-500/20"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setErrorExpanded((prev) => !prev);
+                }}
+              >
+                {errorExpanded ? "Show less" : "Show full error"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="rounded border border-border bg-surface px-2 py-0.5 text-[10px] text-text-muted hover:bg-surface-elevated"
+              onClick={(e) => {
+                e.stopPropagation();
+                void copyError();
+              }}
+            >
+              {copiedError ? "Copied" : "Copy error"}
+            </button>
+          </div>
+        </div>
       )}
 
       {task.dependencies.length > 0 && (
@@ -92,7 +157,7 @@ function TaskCard({ task, isCurrent, onClick }: TaskCardProps) {
               key={depId}
               className="inline-flex items-center rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-text-muted"
             >
-              ← {depId}
+              {"<-"} {depId}
             </span>
           ))}
         </div>
@@ -103,11 +168,32 @@ function TaskCard({ task, isCurrent, onClick }: TaskCardProps) {
           Retried {task.retry_count} time{task.retry_count > 1 ? "s" : ""}
         </div>
       )}
+
+      {task.state === "failed" && onRetryTask ? (
+        <div className="mt-2">
+          <button
+            type="button"
+            className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200 hover:bg-amber-500/20"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRetryTask(task);
+            }}
+          >
+            Retry Task
+          </button>
+        </div>
+      ) : null}
     </motion.div>
   );
 }
 
-export function TaskBoard({ tasks, currentTaskId, onTaskClick, className }: TaskBoardProps) {
+export function TaskBoard({
+  tasks,
+  currentTaskId,
+  onTaskClick,
+  onRetryTask,
+  className,
+}: TaskBoardProps) {
   const groupedTasks = useMemo(() => {
     const groups: Record<TaskState, Task[]> = {
       pending: [],
@@ -124,15 +210,34 @@ export function TaskBoard({ tasks, currentTaskId, onTaskClick, className }: Task
     return groups;
   }, [tasks]);
 
-  const columns = (
-    [
-      { state: "pending" as TaskState, tasks: groupedTasks.pending },
-      { state: "in_progress" as TaskState, tasks: groupedTasks.in_progress },
-      { state: "blocked" as TaskState, tasks: groupedTasks.blocked },
-      { state: "done" as TaskState, tasks: groupedTasks.done },
-      { state: "failed" as TaskState, tasks: groupedTasks.failed },
-    ] as const
-  ).filter((col) => col.tasks.length > 0 || col.state === "pending" || col.state === "done");
+  const pendingSplit = useMemo(() => {
+    const doneIds = new Set(groupedTasks.done.map((task) => task.id));
+    const runnable: Task[] = [];
+    const waiting: Task[] = [];
+
+    for (const task of groupedTasks.pending) {
+      const depsSatisfied =
+        task.dependencies.length === 0 || task.dependencies.every((depId) => doneIds.has(depId));
+      if (depsSatisfied) runnable.push(task);
+      else waiting.push(task);
+    }
+
+    return { runnable, waiting };
+  }, [groupedTasks.done, groupedTasks.pending]);
+
+  const columns: Array<{ state: TaskState; tasks: Task[]; label?: string }> = [
+    { state: "pending" as TaskState, tasks: pendingSplit.runnable, label: "Runnable" },
+    { state: "pending" as TaskState, tasks: pendingSplit.waiting, label: "Waiting on deps" },
+    { state: "in_progress" as TaskState, tasks: groupedTasks.in_progress },
+    { state: "blocked" as TaskState, tasks: groupedTasks.blocked },
+    { state: "done" as TaskState, tasks: groupedTasks.done },
+    { state: "failed" as TaskState, tasks: groupedTasks.failed },
+  ].filter(
+    (col) =>
+      col.tasks.length > 0 ||
+      (col.state === "pending" && col.label === "Runnable") ||
+      col.state === "done"
+  );
 
   if (tasks.length === 0) {
     return (
@@ -154,6 +259,14 @@ export function TaskBoard({ tasks, currentTaskId, onTaskClick, className }: Task
         <span>
           <span className="text-emerald-400">{groupedTasks.done.length}</span> done
         </span>
+        <span>
+          <span className="text-slate-300">{pendingSplit.runnable.length}</span> runnable
+        </span>
+        {pendingSplit.waiting.length > 0 && (
+          <span>
+            <span className="text-amber-300">{pendingSplit.waiting.length}</span> waiting
+          </span>
+        )}
         {groupedTasks.in_progress.length > 0 && (
           <span>
             <span className="text-blue-400">{groupedTasks.in_progress.length}</span> in progress
@@ -173,7 +286,7 @@ export function TaskBoard({ tasks, currentTaskId, onTaskClick, className }: Task
             <div className="flex items-center gap-2">
               {STATE_CONFIG[column.state].icon}
               <span className="text-xs font-medium text-text-subtle uppercase tracking-wide">
-                {STATE_CONFIG[column.state].label}
+                {column.label ?? STATE_CONFIG[column.state].label}
               </span>
               <span className="text-xs text-text-muted">({column.tasks.length})</span>
             </div>
@@ -184,6 +297,7 @@ export function TaskBoard({ tasks, currentTaskId, onTaskClick, className }: Task
                   task={task}
                   isCurrent={task.id === currentTaskId}
                   onClick={() => onTaskClick?.(task)}
+                  onRetryTask={onRetryTask}
                 />
               ))}
               {column.tasks.length === 0 && (

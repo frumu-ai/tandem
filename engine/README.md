@@ -35,6 +35,16 @@ Disable memory embeddings for a server run:
 cargo run -p tandem-ai -- serve --disable-embeddings
 ```
 
+Enable cross-project global memory tools (opt-in):
+
+```bash
+TANDEM_ENABLE_GLOBAL_MEMORY=1 cargo run -p tandem-ai -- serve
+```
+
+The engine now auto-configures `TANDEM_MEMORY_DB_PATH` to the shared Tandem
+`memory.sqlite` path when unset, so connected apps/tools use the same local
+knowledge base.
+
 Run a one-off prompt:
 
 ```bash

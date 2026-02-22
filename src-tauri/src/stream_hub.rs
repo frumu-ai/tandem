@@ -370,6 +370,7 @@ impl StreamHub {
                                         part_id,
                                         tool_timeout
                                     ),
+                                    error_code: Some("TOOL_TIMEOUT".to_string()),
                                 };
                                 let timeout_env = StreamEventEnvelopeV2 {
                                     event_id: Uuid::new_v4().to_string(),
@@ -390,6 +391,7 @@ impl StreamHub {
                                     tool: pending.tool.clone(),
                                     result: None,
                                     error: Some("failed_timeout".to_string()),
+                                    error_code: Some("TOOL_TIMEOUT".to_string()),
                                 };
                                 let _ = crate::tool_history::record_stream_event(&app, &synthetic_end);
                                 let synthetic_env = StreamEventEnvelopeV2 {
@@ -445,8 +447,12 @@ impl StreamHub {
 
                             let has_active_sessions =
                                 !active_sessions.is_empty() || !pending_tools.is_empty();
+                            // Long-running tool executions can legitimately go quiet for a while.
+                            // Avoid marking the stream degraded while at least one tool is still pending.
+                            let has_pending_tools = !pending_tools.is_empty();
                             if last_progress.elapsed() > no_event_watchdog
                                 && has_active_sessions
+                                && !has_pending_tools
                                 && !matches!(health, StreamHealthStatus::Degraded)
                             {
                                 emit_event(
@@ -587,6 +593,7 @@ impl StreamHub {
                                                 tool: tool.clone(),
                                                 result: None,
                                                 error: Some("interrupted".to_string()),
+                                                error_code: Some("INTERRUPTED".to_string()),
                                             };
                                             let synthetic_env = StreamEventEnvelopeV2 {
                                                 event_id: Uuid::new_v4().to_string(),
@@ -760,6 +767,7 @@ impl StreamHub {
                                                     tool: pending.tool.clone(),
                                                     result: None,
                                                     error: Some("interrupted".to_string()),
+                                                    error_code: Some("INTERRUPTED".to_string()),
                                                 };
                                                 let _ = crate::tool_history::record_stream_event(&app, &synthetic);
                                                 let synthetic_env = StreamEventEnvelopeV2 {
@@ -1064,16 +1072,42 @@ fn derive_correlation_id(event: &StreamEvent) -> String {
 
 fn tool_timeout_for(tool: &str) -> Duration {
     match tool.trim().to_ascii_lowercase().as_str() {
+        "read" | "write" => Duration::from_secs(5 * 60),
         // Workspace-wide file enumeration can be slow on large repos (especially Windows).
         "glob" => Duration::from_secs(10 * 60),
         "grep" | "search" | "codesearch" => Duration::from_secs(5 * 60),
+        // Shell operations in orchestrated runs can include dependency install/build/test flows.
+        // 120s is too aggressive and causes premature synthetic timeout terminals.
+        "bash" | "shell" | "powershell" | "cmd" => Duration::from_secs(15 * 60),
+        // Batch can wrap multi-step tool operations and often exceeds 120s in larger projects.
+        "batch" => Duration::from_secs(10 * 60),
         _ => Duration::from_secs(120),
     }
 }
 
 fn normalize_tool_name(name: &str) -> String {
-    match name.trim().to_ascii_lowercase().as_str() {
+    let mut normalized = name.trim().to_ascii_lowercase().replace('-', "_");
+    for prefix in [
+        "default_api:",
+        "default_api.",
+        "functions.",
+        "function.",
+        "tools.",
+        "tool.",
+        "builtin:",
+        "builtin.",
+    ] {
+        if let Some(rest) = normalized.strip_prefix(prefix) {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() {
+                normalized = trimmed.to_string();
+                break;
+            }
+        }
+    }
+    match normalized.as_str() {
         "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        "run_command" | "shell" | "powershell" | "cmd" => "bash".to_string(),
         other => other.to_string(),
     }
 }

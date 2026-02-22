@@ -14,6 +14,7 @@ interface ContextToolbarProps {
   onToolCategoriesChange: (categories: Set<string>) => void;
   // Provider indicator
   activeProviderLabel?: string;
+  activeModelId?: string;
   activeModelLabel?: string;
   allowAllTools?: boolean;
   onAllowAllToolsChange?: (allow: boolean) => void;
@@ -37,6 +38,7 @@ export function ContextToolbar({
   enabledToolCategories,
   onToolCategoriesChange,
   activeProviderLabel,
+  activeModelId,
   activeModelLabel,
   allowAllTools,
   onAllowAllToolsChange,
@@ -112,7 +114,7 @@ export function ContextToolbar({
         <>
           <div className="h-4 w-px bg-border" />
           <ModelSelector
-            currentModel={activeModelLabel} // Pass label/ID
+            currentModel={activeModelId || activeModelLabel}
             onModelSelect={onModelSelect}
             className="min-w-0 flex-shrink-0"
           />

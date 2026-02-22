@@ -1,6 +1,4 @@
-# Tandem v0.3.8 Release Notes
-
-## Release Date: 2026-02-19
+# Tandem v0.3.8 Release Notes (Unreleased)
 
 ### Highlights
 
@@ -24,6 +22,44 @@
 - **Agent-Team spawn approval decisions**: Added dedicated decision endpoints:
   - `POST /agent-team/approvals/spawn/{id}/approve`
   - `POST /agent-team/approvals/spawn/{id}/deny`
+- **Control Center role routing migration**: Orchestrator model routing now supports canonical role-map keys (`orchestrator`, `delegator`, `worker`, `watcher`, `reviewer`, `tester`) with compatibility aliases from legacy keys (`planner`, `builder`, `validator`, `researcher`).
+- **Model/provider routing fix**: Fixed request routing so selected provider/model is used consistently across chat, queue, command center, and orchestrator dispatch paths.
+- **Model selection persistence fix**: Chat and Command Center selectors now persist `providers_config.selected_model`.
+- **Provider runtime model-override fix**: Streaming and completion provider calls now honor explicit per-request model overrides.
+- **OpenRouter attribution fix**: Added Tandem-origin request headers for OpenRouter calls.
+- **Memory startup self-heal**: Added backup + auto-recovery for malformed/incompatible memory vector DB state during initialization.
+- **Command Center status/launch reliability**: Fixed paused/failed state mapping and disabled launch while runs are active to prevent duplicate swarm starts.
+- **Command Center retry-loop fix (Windows/path failures)**: Added strict `read`/`write` argument validation (`JSON object` + non-empty `path`) with fail-fast `INVALID_TOOL_ARGS` handling to stop endless task retries.
+- **Structured orchestrator error taxonomy**: Replaced generic `os error 3` workspace mismatch messaging with explicit categories (`WORKSPACE_NOT_FOUND`, path-not-found fail-fast, timeout codes).
+- **Workspace pinning + preflight**: Child task sessions now pin to the orchestrator workspace and validate workspace existence before session creation.
+- **Tool-history correlation integrity**: Tool execution IDs now include session/message/part context to prevent cross-session `part_id` collision overwrite.
+- **File-tool timeout tuning**: Increased `read`/`write` timeout budget to reduce premature synthetic timeout terminal events.
+- **Autonomous swarm approvals**: Command Center/orchestrator sessions now auto-allow shell permissions in autonomous mode instead of repeatedly prompting.
+- **Shell timeout/hang prevention**: Empty shell calls now fail immediately with explicit `BASH_COMMAND_MISSING` rather than stalling until watchdog timeout.
+- **Windows shell translation**: Added automatic translation for common Unix-style agent commands (`ls -la`, `find ... -type f -name ...`) into PowerShell equivalents on Windows.
+- **Watchdog signal quality**: Reduced false stream watchdog degradation events while tool executions are still pending.
+- **Command Center failed-task retry**: Added a one-click `Retry Task` action for failed tasks that re-queues the task and re-evaluates dependency blocks without requiring full run restart.
+- **Command Center failure visibility**: Failed task cards now show clearer validator/error context directly on the task card.
+- **Command Center live debugging UX**: Added an inline run-scoped Console panel and promoted workspace file browser visibility for in-context swarm troubleshooting.
+- **Startup view safety default**: Desktop startup now defaults to Chat view instead of restoring Command Center first (pending a dedicated starter page flow).
+- **Engine memory learning tools**: Added `memory_store` and `memory_list` to the engine tool registry so agents can write and inspect memory directly through tool calls.
+- **Global knowledge-base search (opt-in)**: Extended `memory_search` to support `tier=global` when explicitly enabled via `allow_global=true` or `TANDEM_ENABLE_GLOBAL_MEMORY=1`.
+- **Shared memory DB routing**: `tandem-engine` now auto-configures `TANDEM_MEMORY_DB_PATH` to the shared Tandem `memory.sqlite` path when unset, improving cross-app memory consistency.
+- **Engine-canonical OS context**: Added shared `HostRuntimeContext` (`os`, `arch`, `shell_family`, `path_style`) and exposed it via `/global/health`, session metadata, and `session.run.started` events.
+- **OS-aware prompt injection**: `tandem-core` now prepends deterministic `[Execution Environment]` context to model runs (default on, controlled by `TANDEM_OS_AWARE_PROMPTS`).
+- **Cross-platform shell guardrails**: Added stronger Windows Unix-command translation/blocking with structured guardrail metadata, plus POSIX-native shell execution path on non-Windows hosts.
+- **OS mismatch diagnostics and loop suppression**: Added `OS_MISMATCH` error classification and retry suppression for repeated identical shell mismatch patterns.
+- **Docs and examples refresh**: Added engine CLI examples for memory write/list/global flows and documented global-memory startup configuration.
+- **Safety and coverage**: Added/updated tests to enforce explicit global-memory gating and avoid accidental unrestricted global recall.
+
+### Orchestrator Routing Migration Notes
+
+- Legacy run payloads and API requests using `planner`/`builder`/`validator` continue to load and are normalized automatically.
+- New routing payloads can be sent as direct role-key maps; unknown roles are preserved but execution falls back to worker behavior when needed.
+- Task schema now supports role metadata:
+  - `assigned_role` (default: `worker`)
+  - `template_id` (optional hint)
+  - `gate` (`review` or `test`, optional)
 
 ### Complete Feature List - tandem-channels v0.3.8
 
@@ -60,13 +96,11 @@
   - `TANDEM_WEB_UI`, `TANDEM_WEB_UI_PREFIX`
 - Updated engine command docs to include web-admin serve options.
 
-
 ---
 
 # Tandem v0.3.7 Release Notes
 
 ## Release Date: 2026-02-18
-
 
 ### Highlights
 
@@ -901,4 +935,3 @@ _Release attempt failed on 2026-02-09 due to GitHub release asset upload errors 
 
 - **Vector Memory Store**: Implemented a local, zero-trust vector database (`sqlite-vec`) to store and retrieve semantic embeddings of your codebase and conversation history.
 - **Memory Context Injection**: The AI now automatically receives relevant context snippets based on your current query, reducing hallucinations and "I don't know" responses about your own code.
-

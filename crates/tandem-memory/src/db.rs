@@ -11,6 +11,7 @@ use sqlite_vec::sqlite3_vec_init;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 type ProjectIndexStatusRow = (
@@ -44,6 +45,7 @@ impl MemoryDatabase {
         }
 
         let conn = Connection::open(db_path)?;
+        conn.busy_timeout(Duration::from_secs(10))?;
 
         // Enable WAL mode for better concurrency
         // PRAGMA journal_mode returns a row, so we use query_row to ignore it
@@ -79,15 +81,40 @@ impl MemoryDatabase {
     /// Validate base SQLite integrity early so startup recovery can heal corrupt DB files.
     async fn validate_integrity(&self) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
-        let check: String = conn.query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
+        let check = match conn.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
+        {
+            Ok(value) => value,
+            Err(err) => {
+                // sqlite-vec virtual tables can intermittently return generic SQL logic errors
+                // during integrity probing even when runtime reads/writes still work.
+                // Do not block startup on this probe failure.
+                tracing::warn!(
+                    "Skipping strict PRAGMA quick_check due to probe error: {}",
+                    err
+                );
+                return Ok(());
+            }
+        };
         if check.trim().eq_ignore_ascii_case("ok") {
             return Ok(());
         }
 
-        Err(crate::types::MemoryError::InvalidConfig(format!(
-            "malformed database integrity check: {}",
+        let lowered = check.to_lowercase();
+        if lowered.contains("malformed")
+            || lowered.contains("corrupt")
+            || lowered.contains("database disk image is malformed")
+        {
+            return Err(crate::types::MemoryError::InvalidConfig(format!(
+                "malformed database integrity check: {}",
+                check
+            )));
+        }
+
+        tracing::warn!(
+            "PRAGMA quick_check returned non-ok status but not a hard corruption signal: {}",
             check
-        )))
+        );
+        Ok(())
     }
 
     /// Initialize database schema
@@ -329,6 +356,12 @@ impl MemoryDatabase {
     fn is_vector_table_error(err: &rusqlite::Error) -> bool {
         let text = err.to_string().to_lowercase();
         text.contains("vector blob")
+            || text.contains("chunks iter error")
+            || text.contains("chunks iter")
+            || text.contains("internal sqlite-vec error")
+            || text.contains("insert rowids id")
+            || text.contains("sql logic error")
+            || text.contains("database disk image is malformed")
             || text.contains("session_memory_vectors")
             || text.contains("project_memory_vectors")
             || text.contains("global_memory_vectors")
@@ -338,9 +371,37 @@ impl MemoryDatabase {
     async fn recreate_vector_tables(&self) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
 
-        conn.execute("DROP TABLE IF EXISTS session_memory_vectors", [])?;
-        conn.execute("DROP TABLE IF EXISTS project_memory_vectors", [])?;
-        conn.execute("DROP TABLE IF EXISTS global_memory_vectors", [])?;
+        for base in [
+            "session_memory_vectors",
+            "project_memory_vectors",
+            "global_memory_vectors",
+        ] {
+            // Drop vec virtual table and common sqlite-vec shadow tables first.
+            for name in [
+                base.to_string(),
+                format!("{}_chunks", base),
+                format!("{}_info", base),
+                format!("{}_rowids", base),
+                format!("{}_vector_chunks00", base),
+            ] {
+                let sql = format!("DROP TABLE IF EXISTS \"{}\"", name.replace('"', "\"\""));
+                conn.execute(&sql, [])?;
+            }
+
+            // Drop any additional shadow tables (e.g. *_vector_chunks01).
+            let like_pattern = format!("{base}_%");
+            let mut stmt = conn.prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?1 ORDER BY name",
+            )?;
+            let table_names = stmt
+                .query_map(params![like_pattern], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            for name in table_names {
+                let sql = format!("DROP TABLE IF EXISTS \"{}\"", name.replace('"', "\"\""));
+                conn.execute(&sql, [])?;
+            }
+        }
 
         conn.execute(
             &format!(
@@ -392,6 +453,54 @@ impl MemoryDatabase {
                 Ok(true)
             }
             Err(err) => Err(err),
+        }
+    }
+
+    /// Last-resort runtime repair for malformed DB states: drop user memory tables
+    /// and recreate the schema in-place so new writes can proceed.
+    /// This intentionally clears memory content for the active DB file.
+    pub async fn reset_all_memory_tables(&self) -> MemoryResult<()> {
+        let table_names = {
+            let conn = self.conn.lock().await;
+            let mut stmt = conn.prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type='table'
+                   AND name NOT LIKE 'sqlite_%'
+                 ORDER BY name",
+            )?;
+            let names = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            names
+        };
+
+        {
+            let conn = self.conn.lock().await;
+            for table in table_names {
+                let sql = format!("DROP TABLE IF EXISTS \"{}\"", table.replace('"', "\"\""));
+                let _ = conn.execute(&sql, []);
+            }
+        }
+
+        self.init_schema().await
+    }
+
+    /// Attempt an immediate vector-table repair when a concrete DB error indicates
+    /// sqlite-vec internals are failing at statement/rowid level.
+    pub async fn try_repair_after_error(
+        &self,
+        err: &crate::types::MemoryError,
+    ) -> MemoryResult<bool> {
+        match err {
+            crate::types::MemoryError::Database(db_err) if Self::is_vector_table_error(db_err) => {
+                tracing::warn!(
+                    "Memory write/read hit vector DB error ({}). Recreating vector tables immediately.",
+                    db_err
+                );
+                self.recreate_vector_tables().await?;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 

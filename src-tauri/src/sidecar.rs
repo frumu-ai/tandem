@@ -473,9 +473,9 @@ pub enum MessagePartInput {
 /// Model specification for prompt
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelSpec {
-    #[serde(alias = "providerID")]
+    #[serde(rename = "providerID", alias = "provider_id")]
     pub provider_id: String,
-    #[serde(alias = "modelID")]
+    #[serde(rename = "modelID", alias = "model_id")]
     pub model_id: String,
 }
 
@@ -669,6 +669,8 @@ pub struct SessionErrorProps {
     #[serde(rename = "sessionID")]
     pub session_id: String,
     pub error: String,
+    #[serde(default, rename = "errorCode")]
+    pub error_code: Option<String>,
 }
 
 /// Permission asked event properties (reserved for future use)
@@ -750,6 +752,8 @@ pub enum StreamEvent {
         tool: String,
         result: Option<serde_json::Value>,
         error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_code: Option<String>,
     },
     /// Session status changed
     SessionStatus { session_id: String, status: String },
@@ -778,7 +782,12 @@ pub enum StreamEvent {
     /// Session is idle (generation complete)
     SessionIdle { session_id: String },
     /// Session error
-    SessionError { session_id: String, error: String },
+    SessionError {
+        session_id: String,
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_code: Option<String>,
+    },
     /// Permission requested
     PermissionAsked {
         session_id: String,
@@ -1825,6 +1834,14 @@ impl SidecarManager {
             env_vars.contains_key("ANTHROPIC_API_KEY"),
             env_vars.contains_key("OPENAI_API_KEY")
         );
+        let has_openrouter_key = env_vars
+            .get("OPENROUTER_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        let has_openai_key = env_vars
+            .get("OPENAI_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
 
         // Build the command
         let mut cmd = Command::new(sidecar_path);
@@ -1893,6 +1910,45 @@ impl SidecarManager {
                 let models = serde_json::Value::Object(models_map);
 
                 if let Err(e) = crate::tandem_config::update_config_at(&config_path, |cfg| {
+                    // Keep sidecar defaults aligned with actual key availability to avoid
+                    // silent fallback to OpenAI defaults when only OpenRouter auth is present.
+                    if has_openrouter_key && !has_openai_key {
+                        if let Some(root) = cfg.as_object_mut() {
+                            let should_set_default = match root
+                                .get("default_provider")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.trim().to_lowercase())
+                            {
+                                Some(current) => current.is_empty() || current == "openai",
+                                None => true,
+                            };
+                            if should_set_default {
+                                root.insert(
+                                    "default_provider".to_string(),
+                                    serde_json::Value::String("openrouter".to_string()),
+                                );
+                            }
+
+                            let providers =
+                                root.entry("providers".to_string()).or_insert_with(|| {
+                                    serde_json::Value::Object(serde_json::Map::new())
+                                });
+                            if let Some(providers_obj) = providers.as_object_mut() {
+                                let openrouter = providers_obj
+                                    .entry("openrouter".to_string())
+                                    .or_insert_with(|| {
+                                        serde_json::Value::Object(serde_json::Map::new())
+                                    });
+                                if let Some(openrouter_obj) = openrouter.as_object_mut() {
+                                    openrouter_obj.entry("url".to_string()).or_insert_with(|| {
+                                        serde_json::Value::String(
+                                            "https://openrouter.ai/api/v1".to_string(),
+                                        )
+                                    });
+                                }
+                            }
+                        }
+                    }
                     crate::tandem_config::set_provider_ollama_models(cfg, models);
                     Ok(())
                 }) {
@@ -2501,18 +2557,98 @@ impl SidecarManager {
     pub async fn create_session(&self, request: CreateSessionRequest) -> Result<Session> {
         self.check_circuit_breaker().await?;
 
-        let url = format!("{}/session", self.base_url().await?);
+        let base = self.base_url().await?;
+        let url = format!("{}/session", base);
+        let fallback_url = format!("{}/api/session", base);
         tracing::debug!("Creating session at: {}", url);
 
-        let response = self
-            .http_client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to create session: {}", e)))?;
+        const ENGINE_STARTUP_RETRIES: usize = 10;
+        const ENGINE_STARTUP_RETRY_MS: u64 = 450;
+        let is_engine_starting = |text: &str| {
+            text.contains("ENGINE_STARTING")
+                || text.contains("Engine starting")
+                || text.contains("Service Unavailable")
+        };
 
-        self.handle_response(response).await
+        let mut last_error = String::new();
+        for attempt in 0..=ENGINE_STARTUP_RETRIES {
+            let response = self
+                .http_client
+                .post(&url)
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| TandemError::Sidecar(format!("Failed to create session: {}", e)))?;
+
+            if response.status().is_success() {
+                self.record_success().await;
+                let body = response.text().await.map_err(|e| {
+                    TandemError::Sidecar(format!("Failed to read response body: {}", e))
+                })?;
+                let session: Session = serde_json::from_str(&body).map_err(|e| {
+                    TandemError::Sidecar(format!(
+                        "Failed to parse response: {}. Body: {}",
+                        e,
+                        &body[..body.len().min(200)]
+                    ))
+                })?;
+                return Ok(session);
+            }
+
+            tracing::warn!(
+                "create_session failed on primary URL {}, retrying via {}",
+                url,
+                fallback_url
+            );
+            let fallback = self
+                .http_client
+                .post(&fallback_url)
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| TandemError::Sidecar(format!("Failed to create session: {}", e)))?;
+
+            if fallback.status().is_success() {
+                self.record_success().await;
+                let body = fallback.text().await.map_err(|e| {
+                    TandemError::Sidecar(format!("Failed to read response body: {}", e))
+                })?;
+                let session: Session = serde_json::from_str(&body).map_err(|e| {
+                    TandemError::Sidecar(format!(
+                        "Failed to parse response: {}. Body: {}",
+                        e,
+                        &body[..body.len().min(200)]
+                    ))
+                })?;
+                return Ok(session);
+            }
+
+            let status = fallback.status();
+            let body = fallback.text().await.unwrap_or_default();
+            last_error = format!("Failed to create session: {} {}", status, body);
+
+            if is_engine_starting(&body) && attempt < ENGINE_STARTUP_RETRIES {
+                tracing::warn!(
+                    "Engine still starting during create_session (attempt {}/{}). Retrying in {}ms.",
+                    attempt + 1,
+                    ENGINE_STARTUP_RETRIES + 1,
+                    ENGINE_STARTUP_RETRY_MS
+                );
+                tokio::time::sleep(Duration::from_millis(ENGINE_STARTUP_RETRY_MS)).await;
+                continue;
+            }
+
+            if !is_engine_starting(&body) {
+                self.record_failure().await;
+            }
+            return Err(TandemError::Sidecar(last_error));
+        }
+
+        Err(TandemError::Sidecar(if last_error.is_empty() {
+            "Failed to create session: engine did not become ready in time".to_string()
+        } else {
+            last_error
+        }))
     }
 
     /// Get a session by ID
@@ -2790,18 +2926,35 @@ impl SidecarManager {
 
         tracing::debug!("Sending prompt to: {} with {:?}", url, request);
 
-        let mut append_builder = self.http_client.post(&append_url);
-        if let Some(cid) = correlation_id {
-            append_builder = append_builder
-                .header("x-tandem-correlation-id", cid)
-                .header("x-tandem-session-id", session_id);
-        }
-        let append_response = append_builder
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to append message: {}", e)))?;
-        if !append_response.status().is_success() {
+        const ENGINE_STARTUP_RETRIES: usize = 10;
+        const ENGINE_STARTUP_RETRY_MS: u64 = 450;
+
+        let is_engine_starting = |text: &str| {
+            text.contains("ENGINE_STARTING")
+                || text.contains("Engine starting")
+                || text.contains("Service Unavailable")
+        };
+
+        // Phase 1: append message. Retry transient startup failures before surfacing error.
+        let mut append_ok = false;
+        let mut last_append_error = String::new();
+        for attempt in 0..=ENGINE_STARTUP_RETRIES {
+            let mut append_builder = self.http_client.post(&append_url);
+            if let Some(cid) = correlation_id {
+                append_builder = append_builder
+                    .header("x-tandem-correlation-id", cid)
+                    .header("x-tandem-session-id", session_id);
+            }
+            let append_response =
+                append_builder.json(&request).send().await.map_err(|e| {
+                    TandemError::Sidecar(format!("Failed to append message: {}", e))
+                })?;
+
+            if append_response.status().is_success() {
+                append_ok = true;
+                break;
+            }
+
             tracing::warn!(
                 "append message failed on primary URL {}, retrying via {}",
                 append_url,
@@ -2818,72 +2971,112 @@ impl SidecarManager {
                 .send()
                 .await
                 .map_err(|e| TandemError::Sidecar(format!("Failed to append message: {}", e)))?;
-            if !append_fallback_response.status().is_success() {
-                let status = append_fallback_response.status();
-                let body = append_fallback_response.text().await.unwrap_or_default();
-                self.record_failure().await;
-                return Err(TandemError::Sidecar(format!(
-                    "Failed to append message: {} {}",
-                    status, body
-                )));
-            }
-        }
 
-        let mut request_builder = self.http_client.post(&url);
-        if let Some(cid) = correlation_id {
-            request_builder = request_builder
-                .header("x-tandem-correlation-id", cid)
-                .header("x-tandem-session-id", session_id);
-        }
-        let response = request_builder
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
-
-        match Self::handle_prompt_async_response(response).await {
-            Ok(()) => {
-                self.record_success().await;
-                Ok(())
+            if append_fallback_response.status().is_success() {
+                append_ok = true;
+                break;
             }
-            Err(err) if err.starts_with("html_response") => {
+
+            let status = append_fallback_response.status();
+            let body = append_fallback_response.text().await.unwrap_or_default();
+            last_append_error = format!("Failed to append message: {} {}", status, body);
+
+            if is_engine_starting(&body) && attempt < ENGINE_STARTUP_RETRIES {
                 tracing::warn!(
-                    "prompt_async returned HTML from {}, retrying via {}",
-                    url,
-                    fallback_url
+                    "Engine still starting during append (attempt {}/{}). Retrying in {}ms.",
+                    attempt + 1,
+                    ENGINE_STARTUP_RETRIES + 1,
+                    ENGINE_STARTUP_RETRY_MS
                 );
-                let mut fallback_builder = self.http_client.post(&fallback_url);
-                if let Some(cid) = correlation_id {
-                    fallback_builder = fallback_builder
-                        .header("x-tandem-correlation-id", cid)
-                        .header("x-tandem-session-id", session_id);
-                }
-                let response =
-                    fallback_builder.json(&request).send().await.map_err(|e| {
+                tokio::time::sleep(Duration::from_millis(ENGINE_STARTUP_RETRY_MS)).await;
+                continue;
+            }
+
+            if !is_engine_starting(&body) {
+                self.record_failure().await;
+            }
+            return Err(TandemError::Sidecar(last_append_error));
+        }
+
+        if !append_ok {
+            return Err(TandemError::Sidecar(if last_append_error.is_empty() {
+                "Failed to append message: engine did not become ready in time".to_string()
+            } else {
+                last_append_error
+            }));
+        }
+
+        // Phase 2: start run. Retry ENGINE_STARTING responses; do not append again.
+        let mut last_send_error: Option<String> = None;
+        for attempt in 0..=ENGINE_STARTUP_RETRIES {
+            let mut request_builder = self.http_client.post(&url);
+            if let Some(cid) = correlation_id {
+                request_builder = request_builder
+                    .header("x-tandem-correlation-id", cid)
+                    .header("x-tandem-session-id", session_id);
+            }
+            let response = request_builder
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| TandemError::Sidecar(format!("Failed to send message: {}", e)))?;
+
+            let outcome = match Self::handle_prompt_async_response(response).await {
+                Ok(()) => Ok(()),
+                Err(err) if err.starts_with("html_response") => {
+                    tracing::warn!(
+                        "prompt_async returned HTML from {}, retrying via {}",
+                        url,
+                        fallback_url
+                    );
+                    let mut fallback_builder = self.http_client.post(&fallback_url);
+                    if let Some(cid) = correlation_id {
+                        fallback_builder = fallback_builder
+                            .header("x-tandem-correlation-id", cid)
+                            .header("x-tandem-session-id", session_id);
+                    }
+                    let response = fallback_builder.json(&request).send().await.map_err(|e| {
                         TandemError::Sidecar(format!("Failed to send message: {}", e))
                     })?;
-                match Self::handle_prompt_async_response(response).await {
-                    Ok(()) => {
-                        self.record_success().await;
-                        Ok(())
+                    Self::handle_prompt_async_response(response).await
+                }
+                Err(err) => Err(err),
+            };
+
+            match outcome {
+                Ok(()) => {
+                    self.record_success().await;
+                    return Ok(());
+                }
+                Err(err) => {
+                    if is_engine_starting(&err) && attempt < ENGINE_STARTUP_RETRIES {
+                        tracing::warn!(
+                            "Engine still starting during prompt_async (attempt {}/{}). Retrying in {}ms.",
+                            attempt + 1,
+                            ENGINE_STARTUP_RETRIES + 1,
+                            ENGINE_STARTUP_RETRY_MS
+                        );
+                        tokio::time::sleep(Duration::from_millis(ENGINE_STARTUP_RETRY_MS)).await;
+                        last_send_error = Some(err);
+                        continue;
                     }
-                    Err(err) => {
+                    if !is_engine_starting(&err) {
                         self.record_failure().await;
-                        Err(TandemError::Sidecar(format!(
-                            "Failed to send message: {}",
-                            err
-                        )))
                     }
+                    return Err(TandemError::Sidecar(format!(
+                        "Failed to send message: {}",
+                        err
+                    )));
                 }
             }
-            Err(err) => {
-                self.record_failure().await;
-                Err(TandemError::Sidecar(format!(
-                    "Failed to send message: {}",
-                    err
-                )))
-            }
         }
+
+        let final_err =
+            last_send_error.unwrap_or_else(|| "engine did not become ready in time".to_string());
+        Err(TandemError::Sidecar(format!(
+            "Failed to send message: {}",
+            final_err
+        )))
     }
 
     async fn handle_prompt_async_response(
@@ -4138,8 +4331,15 @@ impl SidecarManager {
                 ))
             })
         } else {
-            self.record_failure().await;
             let body = response.text().await.unwrap_or_default();
+            if !body.contains("ENGINE_STARTING") {
+                self.record_failure().await;
+            } else {
+                tracing::debug!(
+                    "Ignoring circuit breaker failure for ENGINE_STARTING: {}",
+                    url
+                );
+            }
             tracing::error!("Request to {} failed ({}): {}", url, status, body);
             Err(TandemError::Sidecar(format!(
                 "Request failed ({}): {}",
@@ -4401,11 +4601,25 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                         .and_then(|s| s.get("status"))
                         .and_then(|s| s.as_str())
                         .or_else(|| part.get("state").and_then(|s| s.as_str()));
-                    let args = state_value
+                    let raw_args = state_value
                         .and_then(|s| s.get("input"))
                         .cloned()
                         .or_else(|| part.get("args").cloned())
                         .unwrap_or(serde_json::Value::Null);
+                    let args = match normalize_tool_args(&tool, &raw_args) {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            // Be permissive on stream payload parsing: partial/odd args can occur
+                            // mid-stream and should not hard-fail the entire session.
+                            tracing::warn!(
+                                "tool args normalization fallback for tool={} part_id={} reason={}",
+                                tool,
+                                part_id,
+                                reason
+                            );
+                            raw_args.clone()
+                        }
+                    };
                     let has_output = state_value.and_then(|s| s.get("output")).is_some()
                         || part.get("result").is_some()
                         || part.get("output").is_some();
@@ -4455,6 +4669,8 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                                     None
                                 }
                             });
+                            let error_code =
+                                derive_tool_error_code(state_value, part, error.as_deref(), state);
                             Some(StreamEvent::ToolEnd {
                                 session_id,
                                 message_id,
@@ -4462,6 +4678,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                                 tool,
                                 result,
                                 error,
+                                error_code,
                             })
                         }
                         _ => None,
@@ -4499,7 +4716,12 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
 
             if let Some(error_value) = info.get("error") {
                 if let Some(error) = extract_error_message(error_value) {
-                    return Some(StreamEvent::SessionError { session_id, error });
+                    return Some(StreamEvent::SessionError {
+                        session_id,
+                        error_code: extract_error_code(error_value)
+                            .or_else(|| classify_error_code(&error)),
+                        error,
+                    });
                 }
             }
 
@@ -4620,7 +4842,13 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
             let error_value = props.get("error").unwrap_or(&serde_json::Value::Null);
             let error =
                 extract_error_message(error_value).unwrap_or_else(|| error_value.to_string());
-            Some(StreamEvent::SessionError { session_id, error })
+            Some(StreamEvent::SessionError {
+                session_id,
+                error_code: extract_error_code(props)
+                    .or_else(|| extract_error_code(error_value))
+                    .or_else(|| classify_error_code(&error)),
+                error,
+            })
         }
         "file.edited" => {
             let file_path = props.get("file").and_then(|s| s.as_str())?.to_string();
@@ -4908,6 +5136,155 @@ fn extract_error_message(value: &serde_json::Value) -> Option<String> {
         serde_json::Value::Null => None,
         _ => Some(value.to_string()),
     }
+}
+
+fn classify_error_code(message: &str) -> Option<String> {
+    let msg = message.to_ascii_lowercase();
+    if msg.contains("invalid_tool_args")
+        || msg.contains("invalid tool args")
+        || msg.contains("missing required 'path'")
+        || msg.contains("missing required 'content'")
+        || msg.contains("tool args must be a json object")
+        || msg.contains("write_content_missing")
+        || msg.contains("write requires `content`")
+        || msg.contains("write requires non-empty `content`")
+    {
+        return Some("INVALID_TOOL_ARGS".to_string());
+    }
+    if msg.contains("workspace_not_found") || msg.contains("workspace root not found") {
+        return Some("WORKSPACE_NOT_FOUND".to_string());
+    }
+    if msg.contains("exceeded timeout")
+        || msg.contains("timed out")
+        || msg.contains("stream_idle_timeout")
+    {
+        return Some("TOOL_TIMEOUT".to_string());
+    }
+    if msg.contains("(os error 3)") || msg.contains("system cannot find the path specified") {
+        return Some("PATH_NOT_FOUND".to_string());
+    }
+    None
+}
+
+fn normalize_tool_args(
+    tool: &str,
+    args: &serde_json::Value,
+) -> std::result::Result<serde_json::Value, String> {
+    let needs_path_validation =
+        matches!(tool.trim().to_ascii_lowercase().as_str(), "read" | "write");
+    if !needs_path_validation {
+        return Ok(args.clone());
+    }
+
+    let parsed = match args {
+        serde_json::Value::Object(_) => args.clone(),
+        serde_json::Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(serde_json::Value::Null);
+            }
+            // Plain-string path fallback.
+            if !(trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"')) {
+                let mut obj = serde_json::Map::new();
+                obj.insert(
+                    "path".to_string(),
+                    serde_json::Value::String(trimmed.to_string()),
+                );
+                return Ok(serde_json::Value::Object(obj));
+            }
+            serde_json::from_str::<serde_json::Value>(trimmed)
+                .map_err(|_| "tool args string was not valid JSON".to_string())?
+        }
+        // Running updates can legitimately omit args; don't fail-fast here.
+        serde_json::Value::Null => return Ok(serde_json::Value::Null),
+        _ => return Err("tool args must be a JSON object or string".to_string()),
+    };
+
+    let mut obj = match parsed {
+        serde_json::Value::Object(map) => map,
+        // Non-object JSON payloads are treated as pass-through to avoid false parser failures.
+        other => return Ok(other),
+    };
+
+    if obj
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
+        for key in [
+            "file_path",
+            "filePath",
+            "filepath",
+            "filename",
+            "file",
+            "target",
+        ] {
+            if let Some(alias) = obj
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                obj.insert(
+                    "path".to_string(),
+                    serde_json::Value::String(alias.to_string()),
+                );
+                break;
+            }
+        }
+    }
+
+    // Do not reject here for missing path: stream payloads are frequently partial in-flight.
+    Ok(serde_json::Value::Object(obj))
+}
+
+fn extract_error_code(value: &serde_json::Value) -> Option<String> {
+    if let Some(code) = value.get("errorCode").and_then(|v| v.as_str()) {
+        return Some(code.to_string());
+    }
+    if let Some(code) = value.get("code").and_then(|v| v.as_str()) {
+        return Some(code.to_string());
+    }
+    if let Some(code) = value
+        .get("error")
+        .and_then(|v| v.get("code"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(code.to_string());
+    }
+    if let Some(code) = value
+        .get("data")
+        .and_then(|v| v.get("error"))
+        .and_then(|v| v.get("code"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(code.to_string());
+    }
+    None
+}
+
+fn derive_tool_error_code(
+    state_value: Option<&serde_json::Value>,
+    part: &serde_json::Value,
+    error: Option<&str>,
+    state: &str,
+) -> Option<String> {
+    if let Some(code) = state_value.and_then(extract_error_code) {
+        return Some(code);
+    }
+    if let Some(code) = extract_error_code(part) {
+        return Some(code);
+    }
+    if matches!(state, "timeout" | "timed_out") {
+        return Some("TOOL_TIMEOUT".to_string());
+    }
+    error.and_then(classify_error_code)
+}
+
+fn tagged_error(error_code: &str, message: &str) -> String {
+    format!("[{}] {}", error_code, message)
 }
 
 fn parse_provider_catalog_response(raw: serde_json::Value) -> Option<ProviderCatalogResponse> {
@@ -5305,6 +5682,7 @@ mod tests {
                 tool,
                 result,
                 error,
+                ..
             }) => {
                 assert_eq!(session_id, "ses_123");
                 assert_eq!(message_id, "msg_456");

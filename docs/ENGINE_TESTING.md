@@ -79,6 +79,32 @@ Desktop/TUI token checks:
 - TUI supports `/engine token` for masked output and `/engine token show` for full output plus storage backend/path.
 - Storage backend is reported as `keychain`, `file`, `env`, or `memory`.
 
+## OS-Aware Runtime Validation
+
+Validate that engine-detected environment is surfaced to every client path:
+
+```bash
+curl -s http://127.0.0.1:39731/global/health | jq .environment
+```
+
+Expected fields:
+
+- `os`
+- `shell_family`
+- `path_style`
+- `arch`
+
+Optional: toggle environment prompt block:
+
+```bash
+TANDEM_OS_AWARE_PROMPTS=0 cargo run -p tandem-ai -- serve --host 127.0.0.1 --port 39731
+```
+
+On Windows, validate shell guardrails:
+
+- Unix-only commands that cannot be safely translated are blocked with `metadata.os_guardrail_applied=true` and `guardrail_reason`.
+- Translatable commands (for example `ls -la`, `find ... -type f -name ...`) include `metadata.translated_command`.
+
 ## CLI flags
 
 `serve` supports:

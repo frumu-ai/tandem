@@ -52,7 +52,6 @@ import {
   getToolGuidance,
   getProvidersConfig,
   setProvidersConfig,
-  type ProvidersConfig,
   type StreamEvent,
   type StreamEventEnvelopeV2,
   type QueuedMessage,
@@ -459,6 +458,10 @@ export function Chat({
   >({});
   const seenEventIdsRef = useRef<Set<string>>(new Set());
   const queueDrainRef = useRef(false);
+  const selectedModelRef = useRef<string | undefined>(undefined);
+  const selectedProviderRef = useRef<string | undefined>(undefined);
+  const [sessionModelId, setSessionModelId] = useState<string | undefined>(undefined);
+  const [sessionProviderId, setSessionProviderId] = useState<string | undefined>(undefined);
   const assistantFlushFrameRef = useRef<number | null>(null);
   const generationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -530,6 +533,48 @@ export function Chat({
     },
     []
   );
+
+  useEffect(() => {
+    let disposed = false;
+    const hydrateSessionModelSelection = async () => {
+      // Keep existing explicit in-session selection if present.
+      if (selectedModelRef.current && selectedProviderRef.current) {
+        if (!disposed) {
+          setSessionModelId(selectedModelRef.current);
+          setSessionProviderId(selectedProviderRef.current);
+        }
+        return;
+      }
+      try {
+        const config = await getProvidersConfig();
+        if (disposed) return;
+        const modelId = config.selected_model?.model_id?.trim();
+        const providerRaw = config.selected_model?.provider_id?.trim();
+        const providerId = providerRaw === "opencode_zen" ? "opencode" : providerRaw;
+        if (modelId && providerId) {
+          selectedModelRef.current = modelId;
+          selectedProviderRef.current = providerId;
+          setSessionModelId(modelId);
+          setSessionProviderId(providerId);
+        }
+      } catch {
+        // Best effort only.
+      }
+    };
+    void hydrateSessionModelSelection();
+    return () => {
+      disposed = true;
+    };
+  }, [currentSessionId]);
+
+  const effectiveProviderLabel =
+    sessionProviderId === "opencode"
+      ? "Opencode Zen"
+      : sessionProviderId
+        ? sessionProviderId.charAt(0).toUpperCase() + sessionProviderId.slice(1)
+        : activeProviderLabel;
+  const effectiveModelId = sessionModelId;
+  const effectiveModelLabel = sessionModelId ?? activeModelLabel;
 
   const startSidecarWithTimeout = useCallback(async () => {
     setSidecarStatus("starting");
@@ -2419,12 +2464,26 @@ Start with task #1 and continue through each one. IMPORTANT: After verifying eac
 
       // Create session if needed
       let sessionId = currentSessionId;
+      let selectedModelForDispatch = selectedModelRef.current;
+      let selectedProviderForDispatch = selectedProviderRef.current;
+      if (!selectedModelForDispatch || !selectedProviderForDispatch) {
+        try {
+          const providerConfig = await getProvidersConfig();
+          const selected = providerConfig.selected_model;
+          if (selected?.model_id && selected?.provider_id) {
+            selectedModelForDispatch = selected.model_id;
+            selectedProviderForDispatch = selected.provider_id;
+          }
+        } catch {
+          // Best-effort only.
+        }
+      }
       if (!sessionId) {
         try {
           const session = await createSession(
             undefined,
-            undefined,
-            undefined,
+            selectedModelForDispatch,
+            selectedProviderForDispatch,
             allowAllTools,
             effectiveModeId
           );
@@ -2617,7 +2676,9 @@ ${g.example}
           messageContent,
           attachmentsToSend.length > 0 ? attachmentsToSend : undefined,
           legacyAgent,
-          effectiveModeId
+          effectiveModeId,
+          selectedModelForDispatch,
+          selectedProviderForDispatch
         );
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
@@ -3500,87 +3561,35 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                 allowAllTools={allowAllTools}
                 onAllowAllToolsChange={setAllowAllTools}
                 allowAllToolsLocked={false}
-                activeProviderLabel={activeProviderLabel}
-                activeModelLabel={activeModelLabel}
+                activeProviderLabel={effectiveProviderLabel}
+                activeModelId={effectiveModelId}
+                activeModelLabel={effectiveModelLabel}
                 loopEnabled={loopEnabled}
                 onLoopToggle={handleLoopToggle}
                 loopStatus={ralphStatusSnapshot}
                 onLoopPanelOpen={() => setShowRalphPanel(true)}
                 onLogsOpen={() => setShowLogsDrawer(true)}
                 onModelSelect={async (modelId, providerIdRaw) => {
-                  // Update the global provider config to switch to this model
+                  const providerId = providerIdRaw === "opencode" ? "opencode_zen" : providerIdRaw;
+                  const providerIdForSidecar =
+                    providerId === "opencode_zen" ? "opencode" : providerId;
                   try {
-                    // Normalize provider ID (sidecar uses 'opencode', tandem use 'opencode_zen')
-                    const providerId =
-                      providerIdRaw === "opencode" ? "opencode_zen" : providerIdRaw;
-                    const providerIdForSidecar =
-                      providerId === "opencode_zen" ? "opencode" : providerId;
-
                     const config = await getProvidersConfig();
-
-                    // Determine which top-level provider to use
-                    const knownProviders = [
-                      "openai",
-                      "anthropic",
-                      "openrouter",
-                      "opencode_zen",
-                      "ollama",
-                    ];
-                    const isKnownTopLevel = knownProviders.includes(providerId);
-
-                    // Always persist the selected model (provider+model) so the backend can route
-                    // to arbitrary OpenCode providers (including user-defined ones).
-                    let updated: ProvidersConfig = {
+                    await setProvidersConfig({
                       ...config,
-                      selected_model: { provider_id: providerIdForSidecar, model_id: modelId },
-                    };
-
-                    if (isKnownTopLevel) {
-                      // For known providers, keep the existing behavior: enable one, disable others.
-                      updated = {
-                        ...updated,
-                        openrouter: {
-                          ...config.openrouter,
-                          enabled: providerId === "openrouter",
-                          default: providerId === "openrouter",
-                        },
-                        opencode_zen: {
-                          ...config.opencode_zen,
-                          enabled: providerId === "opencode_zen",
-                          default: providerId === "opencode_zen",
-                        },
-                        anthropic: {
-                          ...config.anthropic,
-                          enabled: providerId === "anthropic",
-                          default: providerId === "anthropic",
-                        },
-                        openai: {
-                          ...config.openai,
-                          enabled: providerId === "openai",
-                          default: providerId === "openai",
-                        },
-                        ollama: {
-                          ...config.ollama,
-                          enabled: providerId === "ollama",
-                          default: providerId === "ollama",
-                        },
-                        custom: config.custom,
-                      };
-
-                      // Update model for known providers (for display + defaults)
-                      if (providerId === "opencode_zen") updated.opencode_zen.model = modelId;
-                      if (providerId === "openrouter") updated.openrouter.model = modelId;
-                      if (providerId === "anthropic") updated.anthropic.model = modelId;
-                      if (providerId === "openai") updated.openai.model = modelId;
-                      if (providerId === "ollama") updated.ollama.model = modelId;
-                    }
-
-                    await setProvidersConfig(updated);
-                    // Trigger refresh in parent to update labels
-                    onProviderChange?.();
-                  } catch (e) {
-                    console.error("Failed to update model selection:", e);
+                      selected_model: {
+                        provider_id: providerId,
+                        model_id: modelId,
+                      },
+                    });
+                  } catch (error) {
+                    console.error("Failed to persist chat model selection:", error);
                   }
+                  selectedModelRef.current = modelId;
+                  selectedProviderRef.current = providerIdForSidecar;
+                  setSessionModelId(modelId);
+                  setSessionProviderId(providerIdForSidecar);
+                  onProviderChange?.();
                 }}
               />
             </>
@@ -3645,7 +3654,9 @@ Start with task #1 and execute each one. Use the 'write' tool to create files im
                       confirmMessage,
                       undefined,
                       usePlanMode ? "plan" : undefined,
-                      usePlanMode ? "plan" : "immediate"
+                      usePlanMode ? "plan" : "immediate",
+                      selectedModelRef.current,
+                      selectedProviderRef.current
                     );
                   } catch (err) {
                     console.error("[ExecutionPlan] Failed to send confirmation:", err);

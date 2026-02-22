@@ -26,6 +26,12 @@ pub struct OrchestratorConfig {
     pub max_web_sources: u32,
     /// Maximum retries per task before fail-block
     pub max_task_retries: u32,
+    /// Maximum seconds to wait for a single agent call before timeout recovery/fail
+    #[serde(default = "default_max_agent_call_secs")]
+    pub max_agent_call_secs: u64,
+    /// Automatic timeout retries per task attempt (session recreation + one retry)
+    #[serde(default = "default_max_timeout_retries_per_task_attempt")]
+    pub max_timeout_retries_per_task_attempt: u32,
     /// Require approval before writing files
     pub require_write_approval: bool,
     /// Enable research/web agent
@@ -78,6 +84,14 @@ fn default_contract_warnings_enabled() -> bool {
     true
 }
 
+fn default_max_agent_call_secs() -> u64 {
+    600
+}
+
+fn default_max_timeout_retries_per_task_attempt() -> u32 {
+    1
+}
+
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
@@ -93,6 +107,8 @@ impl Default for OrchestratorConfig {
             max_subagent_runs: 2000, // Increased from 500
             max_web_sources: 30,
             max_task_retries: 3,
+            max_agent_call_secs: default_max_agent_call_secs(),
+            max_timeout_retries_per_task_attempt: default_max_timeout_retries_per_task_attempt(),
             require_write_approval: true,
             enable_research: false,
             allow_dangerous_actions: false,
@@ -137,6 +153,15 @@ pub enum RunStatus {
     Cancelled,
 }
 
+/// Source that initiated an orchestration run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RunSource {
+    #[default]
+    Orchestrator,
+    CommandCenter,
+}
+
 /// Represents a complete orchestration run
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
@@ -144,6 +169,9 @@ pub struct Run {
     pub run_id: String,
     /// Session ID for sidecar communication
     pub session_id: String,
+    /// UI origin for this run (orchestrator panel vs command center).
+    #[serde(default)]
+    pub source: RunSource,
     /// Provider for this run's model (sidecar provider ID, e.g. "openrouter", "opencode")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -183,6 +211,7 @@ impl Run {
         Self {
             run_id,
             session_id,
+            source: RunSource::Orchestrator,
             provider: None,
             model: None,
             agent_model_routing: AgentModelRouting::default(),
@@ -209,12 +238,65 @@ pub struct ModelSelection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentModelRouting {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub roles: HashMap<String, ModelSelection>,
+    // Legacy compatibility fields: read old persisted payloads and map into `roles`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner: Option<ModelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builder: Option<ModelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validator: Option<ModelSelection>,
+}
+
+pub const ROLE_ORCHESTRATOR: &str = "orchestrator";
+pub const ROLE_DELEGATOR: &str = "delegator";
+pub const ROLE_WORKER: &str = "worker";
+pub const ROLE_WATCHER: &str = "watcher";
+pub const ROLE_REVIEWER: &str = "reviewer";
+pub const ROLE_TESTER: &str = "tester";
+
+pub fn normalize_role_key(raw: &str) -> String {
+    let key = raw.trim().to_lowercase();
+    match key.as_str() {
+        "planner" => ROLE_ORCHESTRATOR.to_string(),
+        "builder" => ROLE_WORKER.to_string(),
+        "validator" => ROLE_REVIEWER.to_string(),
+        "researcher" => ROLE_WATCHER.to_string(),
+        _ => key,
+    }
+}
+
+impl AgentModelRouting {
+    pub fn canonicalized(&self) -> Self {
+        let mut roles = HashMap::<String, ModelSelection>::new();
+        for (key, selection) in &self.roles {
+            let normalized = normalize_role_key(key);
+            roles.entry(normalized).or_insert_with(|| selection.clone());
+        }
+
+        if let Some(sel) = self.planner.clone() {
+            roles.entry(ROLE_ORCHESTRATOR.to_string()).or_insert(sel);
+        }
+        if let Some(sel) = self.builder.clone() {
+            roles.entry(ROLE_WORKER.to_string()).or_insert(sel);
+        }
+        if let Some(sel) = self.validator.clone() {
+            roles.entry(ROLE_REVIEWER.to_string()).or_insert(sel);
+        }
+
+        Self {
+            roles,
+            planner: None,
+            builder: None,
+            validator: None,
+        }
+    }
+
+    pub fn get_for_role(&self, role: &str) -> Option<&ModelSelection> {
+        let normalized = normalize_role_key(role);
+        self.roles.get(&normalized)
+    }
 }
 
 /// Snapshot of run state for UI consumption
@@ -238,6 +320,8 @@ pub struct RunSnapshot {
 pub struct RunSummary {
     pub run_id: String,
     pub session_id: String,
+    #[serde(default)]
+    pub source: RunSource,
     pub objective: String,
     pub status: RunStatus,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -311,6 +395,15 @@ pub struct Task {
     pub dependencies: Vec<String>,
     /// Acceptance criteria for validation
     pub acceptance_criteria: Vec<String>,
+    /// Assigned role for execution (canonical default: worker)
+    #[serde(default = "default_task_role")]
+    pub assigned_role: String,
+    /// Optional template hint for role-specific execution
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    /// Optional gate stage for this task
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<TaskGate>,
     /// Current task state
     pub state: TaskState,
     /// Number of retry attempts
@@ -333,6 +426,9 @@ impl Task {
             description,
             dependencies: Vec::new(),
             acceptance_criteria: Vec::new(),
+            assigned_role: default_task_role(),
+            template_id: None,
+            gate: None,
             state: TaskState::Pending,
             retry_count: 0,
             artifacts: Vec::new(),
@@ -341,6 +437,17 @@ impl Task {
             session_id: None,
         }
     }
+}
+
+fn default_task_role() -> String {
+    ROLE_WORKER.to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskGate {
+    Review,
+    Test,
 }
 
 // ============================================================================
@@ -604,10 +711,29 @@ pub struct ApprovalRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {
+    Orchestrator,
+    Delegator,
+    Worker,
+    Watcher,
+    Reviewer,
+    Tester,
     Planner,
     Builder,
     Validator,
     Researcher,
+}
+
+impl AgentRole {
+    pub fn role_key(&self) -> &'static str {
+        match self {
+            AgentRole::Orchestrator | AgentRole::Planner => ROLE_ORCHESTRATOR,
+            AgentRole::Delegator => ROLE_DELEGATOR,
+            AgentRole::Worker | AgentRole::Builder => ROLE_WORKER,
+            AgentRole::Watcher | AgentRole::Researcher => ROLE_WATCHER,
+            AgentRole::Reviewer | AgentRole::Validator => ROLE_REVIEWER,
+            AgentRole::Tester => ROLE_TESTER,
+        }
+    }
 }
 
 /// Result from a sub-agent call

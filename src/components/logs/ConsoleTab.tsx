@@ -29,7 +29,7 @@ import {
 // Types & Tool Categorization
 // ---------------------------------------------------------------------------
 
-type ToolCategory = "shell" | "file_read" | "file_write" | "search" | "other";
+type ToolCategory = "shell" | "file_read" | "file_write" | "search" | "batch" | "memory" | "other";
 
 interface ToolCategoryInfo {
   icon: typeof Terminal;
@@ -63,6 +63,18 @@ const TOOL_CATEGORIES: Record<ToolCategory, ToolCategoryInfo> = {
     bgColor: "bg-purple-500/10",
     borderColor: "border-purple-500/30",
   },
+  batch: {
+    icon: Cpu,
+    color: "text-cyan-300",
+    bgColor: "bg-cyan-500/12",
+    borderColor: "border-cyan-500/35",
+  },
+  memory: {
+    icon: Shield,
+    color: "text-fuchsia-300",
+    bgColor: "bg-fuchsia-500/12",
+    borderColor: "border-fuchsia-500/35",
+  },
   other: {
     icon: Cpu,
     color: "text-text-subtle",
@@ -73,6 +85,16 @@ const TOOL_CATEGORIES: Record<ToolCategory, ToolCategoryInfo> = {
 
 function categorizeTool(tool: string): ToolCategory {
   const t = tool.toLowerCase();
+
+  // Memory events
+  if (t === "memory.store" || t === "memory.lookup" || t.startsWith("memory.")) {
+    return "memory";
+  }
+
+  // Batch execution wrapper
+  if (t === "batch" || t.includes("batch")) {
+    return "batch";
+  }
 
   // Shell commands
   if (
@@ -402,20 +424,106 @@ const ConsoleCard = React.memo(function ConsoleCard({
 
 interface ConsoleTabProps {
   sessionId?: string | null;
+  sessionIds?: string[];
+  autoScroll?: boolean;
 }
 
-export function ConsoleTab({ sessionId }: ConsoleTabProps) {
+export function ConsoleTab({ sessionId, sessionIds, autoScroll = true }: ConsoleTabProps) {
   const [entries, setEntries] = useState<ConsoleEntry[]>([]);
   const [approvals, setApprovals] = useState<Map<string, PendingApproval>>(() => new Map());
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const syntheticIdSeqRef = useRef(0);
+  const recentMemoryEventRef = useRef<Map<string, number>>(new Map());
+  const [isFollowing, setIsFollowing] = useState(autoScroll);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const sessionScope = React.useMemo(() => {
+    const merged = new Set<string>();
+    for (const id of sessionIds ?? []) {
+      const next = id?.trim();
+      if (next) merged.add(next);
+    }
+    const primary = sessionId?.trim();
+    if (primary) merged.add(primary);
+    return merged;
+  }, [sessionId, sessionIds]);
+  const sessionScopeKey = React.useMemo(
+    () => Array.from(sessionScope).sort().join("|"),
+    [sessionScope]
+  );
+  const sessionScopeSet = React.useMemo(
+    () => new Set(sessionScopeKey ? sessionScopeKey.split("|") : []),
+    [sessionScopeKey]
+  );
+  const nextSyntheticId = useCallback((prefix: string) => {
+    syntheticIdSeqRef.current += 1;
+    return `${prefix}:${syntheticIdSeqRef.current}`;
+  }, []);
+  const shouldSkipDuplicateMemoryEvent = useCallback((signature: string) => {
+    const now = Date.now();
+    const cache = recentMemoryEventRef.current;
+    const previous = cache.get(signature);
+    cache.set(signature, now);
+
+    if (cache.size > 300) {
+      for (const [key, seenAt] of cache) {
+        if (now - seenAt > 10_000) {
+          cache.delete(key);
+        }
+      }
+    }
+
+    return previous !== undefined && now - previous < 750;
+  }, []);
+
+  const rowsToEntries = useCallback((rows: Awaited<ReturnType<typeof listToolExecutions>>) => {
+    const seen = new Set<string>();
+    return rows
+      .filter((row) => {
+        if (seen.has(row.id)) return false;
+        seen.add(row.id);
+        return true;
+      })
+      .map((row) => {
+        const status: EntryStatus =
+          row.status === "pending" || row.status === "running" || row.status === "completed"
+            ? row.status
+            : "failed";
+        const resultText =
+          row.result == null
+            ? undefined
+            : typeof row.result === "string"
+              ? row.result
+              : JSON.stringify(row.result, null, 2);
+        const timestamp = row.ended_at_ms ?? row.started_at_ms;
+
+        return {
+          id: row.id,
+          tool: row.tool,
+          args:
+            row.args && typeof row.args === "object" && !Array.isArray(row.args)
+              ? (row.args as Record<string, unknown>)
+              : {},
+          status,
+          result: resultText,
+          error: row.error,
+          timestamp: new Date(timestamp),
+          sessionId: row.session_id,
+          messageId: row.message_id,
+          category: categorizeTool(row.tool),
+        } satisfies ConsoleEntry;
+      });
+  }, []);
 
   // Load historical tool executions when session changes
   useEffect(() => {
     setEntries([]);
     setApprovals(new Map());
+    setIsFollowing(autoScroll);
+    setShowJumpToLatest(false);
 
-    if (!sessionId) {
+    if (sessionScopeSet.size === 0) {
       setIsLoadingHistory(false);
       return;
     }
@@ -424,41 +532,18 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
     const loadHistory = async () => {
       setIsLoadingHistory(true);
       try {
-        const rows = await listToolExecutions(sessionId, 400);
+        const scopeIds = Array.from(sessionScopeSet);
+        const allRows = (
+          await Promise.all(scopeIds.map((id) => listToolExecutions(id, 400)))
+        ).flat();
+        const rows = allRows.sort((a, b) => {
+          const aTs = a.ended_at_ms ?? a.started_at_ms;
+          const bTs = b.ended_at_ms ?? b.started_at_ms;
+          return aTs - bTs;
+        });
         if (cancelled) return;
 
-        const toolEntries = rows
-          .slice()
-          .reverse()
-          .map((row) => {
-            const status: EntryStatus =
-              row.status === "pending" || row.status === "running" || row.status === "completed"
-                ? row.status
-                : "failed";
-            const resultText =
-              row.result == null
-                ? undefined
-                : typeof row.result === "string"
-                  ? row.result
-                  : JSON.stringify(row.result, null, 2);
-            const timestamp = row.ended_at_ms ?? row.started_at_ms;
-
-            return {
-              id: row.id,
-              tool: row.tool,
-              args:
-                row.args && typeof row.args === "object" && !Array.isArray(row.args)
-                  ? (row.args as Record<string, unknown>)
-                  : {},
-              status,
-              result: resultText,
-              error: row.error,
-              timestamp: new Date(timestamp),
-              sessionId: row.session_id,
-              messageId: row.message_id,
-              category: categorizeTool(row.tool),
-            } satisfies ConsoleEntry;
-          });
+        const toolEntries = rowsToEntries(rows);
 
         setEntries(toolEntries);
         setApprovals(new Map());
@@ -480,23 +565,81 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [autoScroll, rowsToEntries, sessionScopeKey, sessionScopeSet]);
+
+  // Fallback polling: keep console in sync from persisted tool history if SSE lags/disconnects.
+  useEffect(() => {
+    if (sessionScopeSet.size === 0) return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const scopeIds = Array.from(sessionScopeSet);
+        const allRows = (await Promise.all(scopeIds.map((id) => listToolExecutions(id, 400))))
+          .flat()
+          .sort((a, b) => {
+            const aTs = a.ended_at_ms ?? a.started_at_ms;
+            const bTs = b.ended_at_ms ?? b.started_at_ms;
+            return aTs - bTs;
+          });
+        if (cancelled) return;
+
+        const polled = rowsToEntries(allRows);
+        setEntries((prev) => {
+          const byId = new Map(prev.map((entry) => [entry.id, entry]));
+          for (const entry of polled) {
+            byId.set(entry.id, entry);
+          }
+          return Array.from(byId.values()).sort(
+            (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+          );
+        });
+      } catch {
+        // best-effort fallback; keep SSE-driven state intact
+      }
+    };
+
+    const timer = setInterval(() => void poll(), 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [rowsToEntries, sessionScopeKey, sessionScopeSet]);
+
+  const isNearBottom = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return true;
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return remaining <= 24;
+  }, []);
+
+  const scrollToLatest = useCallback((behavior: "auto" | "smooth" = "smooth") => {
+    const el = listRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior });
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior });
+    }
+    setIsFollowing(true);
+    setShowJumpToLatest(false);
+  }, []);
 
   // Auto-scroll to bottom when new entries arrive
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [entries.length]);
+    if (!autoScroll || !isFollowing) return;
+    scrollToLatest("smooth");
+  }, [autoScroll, entries.length, isFollowing, scrollToLatest]);
 
   // -----------------------------------------------------------------------
   // SSE Listener
   // -----------------------------------------------------------------------
   const handleEvent = useCallback(
     (event: StreamEvent) => {
-      if (!sessionId) return;
+      if (sessionScopeSet.size === 0) return;
 
       switch (event.type) {
         case "tool_start": {
-          if (event.session_id !== sessionId) break;
+          if (!sessionScopeSet.has(event.session_id)) break;
           const category = categorizeTool(event.tool);
 
           setEntries((prev) => {
@@ -522,7 +665,7 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
         }
 
         case "tool_end": {
-          if (event.session_id !== sessionId) break;
+          if (!sessionScopeSet.has(event.session_id)) break;
           setEntries((prev) => {
             let matchedId = event.part_id;
             const hasExact = prev.some((e) => e.id === event.part_id);
@@ -569,29 +712,46 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
         case "session_idle":
         case "session_error": {
           const sid = event.session_id;
-          if (sid !== sessionId) break;
+          if (!sessionScopeSet.has(sid)) break;
           const terminalError =
             event.type === "session_error"
               ? event.error
               : event.type === "run_finished" && event.status !== "completed"
                 ? event.error || `run_${event.status}`
                 : "interrupted";
-          setEntries((prev) =>
-            prev.map((e) =>
+          setEntries((prev) => {
+            const next = prev.map((e) =>
               e.sessionId === sid && e.status === "running"
                 ? {
                     ...e,
-                    status: "failed",
+                    status: "failed" as const,
                     error: e.error || terminalError,
                   }
                 : e
-            )
-          );
+            );
+            const hadRunning = prev.some((e) => e.sessionId === sid && e.status === "running");
+            if (!hadRunning && terminalError) {
+              next.push({
+                id: nextSyntheticId(`session.error:${sid}`),
+                tool: "session.error",
+                args: {
+                  status: event.type === "run_finished" ? (event.status ?? "unknown") : event.type,
+                  error: terminalError,
+                },
+                status: "failed" as const,
+                error: terminalError,
+                timestamp: new Date(),
+                sessionId: sid,
+                category: "other",
+              });
+            }
+            return next;
+          });
           break;
         }
 
         case "permission_asked": {
-          if (event.session_id !== sessionId) break;
+          if (!sessionScopeSet.has(event.session_id)) break;
           if (!event.tool) return;
 
           const category = categorizeTool(event.tool);
@@ -638,14 +798,24 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
         }
 
         case "memory_retrieval": {
-          if (event.session_id !== sessionId) break;
+          if (!sessionScopeSet.has(event.session_id)) break;
           const eventStatus = event.status ?? "unknown";
-          const isFailure =
-            eventStatus === "error_fallback" || eventStatus === "degraded_disabled";
+          const isFailure = eventStatus === "error_fallback" || eventStatus === "degraded_disabled";
+          const signature = [
+            "memory_retrieval",
+            event.session_id,
+            event.query_hash ?? "none",
+            eventStatus,
+            String(event.used),
+            String(event.chunks_total),
+          ].join(":");
+          if (shouldSkipDuplicateMemoryEvent(signature)) break;
           setEntries((prev) => [
             ...prev,
             {
-              id: `memory.lookup:${event.session_id}:${event.query_hash}:${Date.now()}`,
+              id: nextSyntheticId(
+                `memory.lookup:${event.session_id}:${event.query_hash ?? "none"}:${eventStatus}`
+              ),
               tool: "memory.lookup",
               args: {
                 status: eventStatus,
@@ -671,13 +841,26 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
         }
 
         case "memory_storage": {
-          if (event.session_id !== sessionId) break;
+          if (!sessionScopeSet.has(event.session_id)) break;
           const eventStatus = event.status ?? "unknown";
           const isFailure = eventStatus === "error" || Boolean(event.error);
+          const signature = [
+            "memory_storage",
+            event.session_id,
+            event.message_id ?? "none",
+            event.role,
+            eventStatus,
+            String(event.session_chunks_stored),
+            String(event.project_chunks_stored),
+            event.error ?? "",
+          ].join(":");
+          if (shouldSkipDuplicateMemoryEvent(signature)) break;
           setEntries((prev) => [
             ...prev,
             {
-              id: `memory.store:${event.session_id}:${event.message_id ?? "none"}:${event.role}:${Date.now()}`,
+              id: nextSyntheticId(
+                `memory.store:${event.session_id}:${event.message_id ?? "none"}:${event.role}:${eventStatus}`
+              ),
               tool: "memory.store",
               args: {
                 role: event.role,
@@ -699,11 +882,11 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
         }
       }
     },
-    [sessionId]
+    [nextSyntheticId, sessionScopeSet, shouldSkipDuplicateMemoryEvent]
   );
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionScopeKey) return;
 
     let unlistenFn: (() => void) | null = null;
     const setup = async () => {
@@ -713,7 +896,7 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
     return () => {
       unlistenFn?.();
     };
-  }, [handleEvent, sessionId]);
+  }, [handleEvent, sessionScopeKey]);
 
   // -----------------------------------------------------------------------
   // Approval handlers
@@ -779,13 +962,13 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
   // Render
   // -----------------------------------------------------------------------
 
-  if (!sessionId) {
+  if (sessionScopeSet.size === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3 text-text-subtle">
         <Terminal className="h-8 w-8 opacity-40" />
         <p className="text-sm">Select a session to view tool calls.</p>
         <p className="text-xs text-text-muted max-w-xs text-center">
-          Console history and live tool execution events are scoped to one selected session.
+          Console history and live tool execution events are scoped to the active session set.
         </p>
       </div>
     );
@@ -813,7 +996,7 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Header bar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
         <span className="text-xs text-text-subtle">
@@ -833,17 +1016,38 @@ export function ConsoleTab({ sessionId }: ConsoleTabProps) {
       </div>
 
       {/* Scrollable tool list */}
-      <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
-        {entries.map((entry) => (
-          <ConsoleCard
-            key={entry.id}
-            entry={entry}
-            approval={getApproval(entry)}
-            onApprove={handleApprove}
-            onDeny={handleDeny}
-          />
-        ))}
-        <div ref={bottomRef} />
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={listRef}
+          className="h-full overflow-y-auto px-3 py-2 space-y-2"
+          onScroll={() => {
+            if (!autoScroll) return;
+            const nearBottom = isNearBottom();
+            setIsFollowing(nearBottom);
+            setShowJumpToLatest(!nearBottom);
+          }}
+        >
+          {entries.map((entry, idx) => (
+            <ConsoleCard
+              key={`${entry.id}:${idx}`}
+              entry={entry}
+              approval={getApproval(entry)}
+              onApprove={handleApprove}
+              onDeny={handleDeny}
+            />
+          ))}
+          <div ref={bottomRef} />
+        </div>
+        {autoScroll && showJumpToLatest ? (
+          <button
+            type="button"
+            onClick={() => scrollToLatest("smooth")}
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/15 px-3 py-1 text-xs text-primary hover:bg-primary/25 transition-colors"
+          >
+            <ChevronDown className="h-3.5 w-3.5" />
+            Jump to latest
+          </button>
+        ) : null}
       </div>
     </div>
   );

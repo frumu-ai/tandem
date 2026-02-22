@@ -170,11 +170,21 @@ impl TaskScheduler {
             .collect();
 
         for task in tasks.iter_mut() {
-            if task.state == TaskState::Pending {
-                let has_failed_dep = task.dependencies.iter().any(|dep| failed.contains(dep));
-                if has_failed_dep {
-                    task.state = TaskState::Blocked;
-                    task.error_message = Some("Blocked by failed dependency".to_string());
+            let has_failed_dep = task.dependencies.iter().any(|dep| failed.contains(dep));
+            if task.state == TaskState::Pending && has_failed_dep {
+                task.state = TaskState::Blocked;
+                task.error_message = Some("Blocked by failed dependency".to_string());
+                continue;
+            }
+
+            if task.state == TaskState::Blocked && !has_failed_dep {
+                task.state = TaskState::Pending;
+                if task
+                    .error_message
+                    .as_deref()
+                    .is_some_and(|msg| msg == "Blocked by failed dependency")
+                {
+                    task.error_message = None;
                 }
             }
         }
@@ -271,6 +281,9 @@ mod tests {
             description: String::new(),
             dependencies: deps.into_iter().map(String::from).collect(),
             acceptance_criteria: Vec::new(),
+            assigned_role: "worker".to_string(),
+            template_id: None,
+            gate: None,
             state,
             retry_count: 0,
             artifacts: Vec::new(),

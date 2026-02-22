@@ -64,10 +64,11 @@ pub struct TokenUsage {
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn info(&self) -> ProviderInfo;
-    async fn complete(&self, prompt: &str) -> anyhow::Result<String>;
+    async fn complete(&self, prompt: &str, model_override: Option<&str>) -> anyhow::Result<String>;
     async fn stream(
         &self,
         messages: Vec<ChatMessage>,
+        model_override: Option<&str>,
         _tools: Option<Vec<ToolSchema>>,
         _cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
@@ -76,7 +77,7 @@ pub trait Provider: Send + Sync {
             .map(|m| format!("{}: {}", m.role, m.content))
             .collect::<Vec<_>>()
             .join("\n");
-        let response = self.complete(&prompt).await?;
+        let response = self.complete(&prompt, model_override).await?;
         let stream = futures::stream::iter(vec![
             Ok(StreamChunk::TextDelta(response)),
             Ok(StreamChunk::Done {
@@ -120,16 +121,17 @@ impl ProviderRegistry {
 
     pub async fn default_complete(&self, prompt: &str) -> anyhow::Result<String> {
         let provider = self.select_provider(None).await?;
-        provider.complete(prompt).await
+        provider.complete(prompt, None).await
     }
 
     pub async fn complete_for_provider(
         &self,
         provider_id: Option<&str>,
         prompt: &str,
+        model_id: Option<&str>,
     ) -> anyhow::Result<String> {
         let provider = self.select_provider(provider_id).await?;
-        provider.complete(prompt).await
+        provider.complete(prompt, model_id).await
     }
 
     pub async fn default_stream(
@@ -138,19 +140,20 @@ impl ProviderRegistry {
         tools: Option<Vec<ToolSchema>>,
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
-        self.stream_for_provider(None, messages, tools, cancel)
+        self.stream_for_provider(None, None, messages, tools, cancel)
             .await
     }
 
     pub async fn stream_for_provider(
         &self,
         provider_id: Option<&str>,
+        model_id: Option<&str>,
         messages: Vec<ChatMessage>,
         tools: Option<Vec<ToolSchema>>,
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let provider = self.select_provider(provider_id).await?;
-        provider.stream(messages, tools, cancel).await
+        provider.stream(messages, model_id, tools, cancel).await
     }
 
     async fn select_provider(
@@ -414,7 +417,11 @@ impl Provider for LocalEchoProvider {
         }
     }
 
-    async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
+    async fn complete(
+        &self,
+        prompt: &str,
+        _model_override: Option<&str>,
+    ) -> anyhow::Result<String> {
         Ok(format!("Echo: {prompt}"))
     }
 }
@@ -443,13 +450,22 @@ impl Provider for OpenAICompatibleProvider {
         }
     }
 
-    async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
+    async fn complete(&self, prompt: &str, model_override: Option<&str>) -> anyhow::Result<String> {
+        let model = model_override
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .unwrap_or(self.default_model.as_str());
         let url = format!("{}/chat/completions", self.base_url);
         let mut req = self.client.post(url).json(&json!({
-            "model": self.default_model,
+            "model": model,
             "messages": [{"role":"user","content": prompt}],
             "stream": false,
         }));
+        if self.id == "openrouter" {
+            req = req
+                .header("HTTP-Referer", "https://tandem.frumu.ai")
+                .header("X-Title", "Tandem");
+        }
         if let Some(api_key) = &self.api_key {
             req = req.bearer_auth(api_key);
         }
@@ -474,7 +490,7 @@ impl Provider for OpenAICompatibleProvider {
         let body_preview = truncate_for_error(&value.to_string(), 500);
         anyhow::bail!(
             "provider returned no completion content for model `{}` (response: {})",
-            self.default_model,
+            model,
             body_preview
         );
     }
@@ -482,9 +498,14 @@ impl Provider for OpenAICompatibleProvider {
     async fn stream(
         &self,
         messages: Vec<ChatMessage>,
+        model_override: Option<&str>,
         tools: Option<Vec<ToolSchema>>,
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+        let model = model_override
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .unwrap_or(self.default_model.as_str());
         let url = format!("{}/chat/completions", self.base_url);
         let wire_messages = messages
             .into_iter()
@@ -507,7 +528,7 @@ impl Provider for OpenAICompatibleProvider {
             .collect::<Vec<_>>();
 
         let mut body = json!({
-            "model": self.default_model,
+            "model": model,
             "messages": wire_messages,
             "stream": true,
         });
@@ -517,6 +538,11 @@ impl Provider for OpenAICompatibleProvider {
         }
 
         let mut req = self.client.post(url).json(&body);
+        if self.id == "openrouter" {
+            req = req
+                .header("HTTP-Referer", "https://tandem.frumu.ai")
+                .header("X-Title", "Tandem");
+        }
         if let Some(api_key) = &self.api_key {
             req = req.bearer_auth(api_key);
         }
@@ -678,13 +704,17 @@ impl Provider for AnthropicProvider {
         }
     }
 
-    async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
+    async fn complete(&self, prompt: &str, model_override: Option<&str>) -> anyhow::Result<String> {
+        let model = model_override
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .unwrap_or(self.default_model.as_str());
         let mut req = self
             .client
             .post("https://api.anthropic.com/v1/messages")
             .header("anthropic-version", "2023-06-01")
             .json(&json!({
-                "model": self.default_model,
+                "model": model,
                 "max_tokens": 1024,
                 "messages": [{"role":"user","content": prompt}],
             }));
@@ -702,15 +732,20 @@ impl Provider for AnthropicProvider {
     async fn stream(
         &self,
         messages: Vec<ChatMessage>,
+        model_override: Option<&str>,
         _tools: Option<Vec<ToolSchema>>,
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+        let model = model_override
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .unwrap_or(self.default_model.as_str());
         let mut req = self
             .client
             .post("https://api.anthropic.com/v1/messages")
             .header("anthropic-version", "2023-06-01")
             .json(&json!({
-                "model": self.default_model,
+                "model": model,
                 "max_tokens": 1024,
                 "stream": true,
                 "messages": messages
@@ -795,12 +830,16 @@ impl Provider for CohereProvider {
         }
     }
 
-    async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
+    async fn complete(&self, prompt: &str, model_override: Option<&str>) -> anyhow::Result<String> {
+        let model = model_override
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .unwrap_or(self.default_model.as_str());
         let mut req = self
             .client
             .post(format!("{}/chat", self.base_url))
             .json(&json!({
-                "model": self.default_model,
+                "model": model,
                 "messages": [{"role":"user","content": prompt}],
             }));
         if let Some(key) = &self.api_key {

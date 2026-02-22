@@ -31,6 +31,7 @@ interface ChatInputProps {
   enabledToolCategories?: Set<string>;
   onToolCategoriesChange?: (categories: Set<string>) => void;
   activeProviderLabel?: string;
+  activeModelId?: string;
   activeModelLabel?: string;
   allowAllTools?: boolean;
   onAllowAllToolsChange?: (allow: boolean) => void;
@@ -60,6 +61,7 @@ export function ChatInput({
   enabledToolCategories,
   onToolCategoriesChange,
   activeProviderLabel,
+  activeModelId,
   activeModelLabel,
   allowAllTools,
   onAllowAllToolsChange,
@@ -571,6 +573,7 @@ export function ChatInput({
           enabledToolCategories={enabledToolCategories || new Set()}
           onToolCategoriesChange={onToolCategoriesChange || (() => {})}
           activeProviderLabel={activeProviderLabel}
+          activeModelId={activeModelId}
           activeModelLabel={activeModelLabel}
           allowAllTools={allowAllTools}
           onAllowAllToolsChange={onAllowAllToolsChange}

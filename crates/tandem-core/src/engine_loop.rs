@@ -9,7 +9,8 @@ use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
 use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk, TokenUsage};
 use tandem_tools::{validate_tool_schemas, ToolRegistry};
 use tandem_types::{
-    EngineEvent, Message, MessagePart, MessagePartInput, MessageRole, SendMessageRequest,
+    EngineEvent, HostOs, HostRuntimeContext, Message, MessagePart, MessagePartInput, MessageRole,
+    ModelSpec, PathStyle, SendMessageRequest, ShellFamily,
 };
 use tandem_wire::WireMessagePart;
 use tokio_util::sync::CancellationToken;
@@ -79,6 +80,7 @@ pub struct EngineLoop {
     permissions: PermissionManager,
     tools: ToolRegistry,
     cancellations: CancellationRegistry,
+    host_runtime_context: HostRuntimeContext,
     workspace_overrides: std::sync::Arc<RwLock<HashMap<String, u64>>>,
     spawn_agent_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn SpawnAgentHook>>>>,
     tool_policy_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn ToolPolicyHook>>>>,
@@ -95,6 +97,7 @@ impl EngineLoop {
         permissions: PermissionManager,
         tools: ToolRegistry,
         cancellations: CancellationRegistry,
+        host_runtime_context: HostRuntimeContext,
     ) -> Self {
         Self {
             storage,
@@ -105,6 +108,7 @@ impl EngineLoop {
             permissions,
             tools,
             cancellations,
+            host_runtime_context,
             workspace_overrides: std::sync::Arc::new(RwLock::new(HashMap::new())),
             spawn_agent_hook: std::sync::Arc::new(RwLock::new(None)),
             tool_policy_hook: std::sync::Arc::new(RwLock::new(None)),
@@ -151,18 +155,19 @@ impl EngineLoop {
         req: SendMessageRequest,
         correlation_id: Option<String>,
     ) -> anyhow::Result<()> {
-        let session_provider = self
+        let session_model = self
             .storage
             .get_session(&session_id)
             .await
-            .and_then(|s| s.provider);
-        let provider_hint = req
-            .model
-            .as_ref()
-            .map(|m| m.provider_id.clone())
-            .or(session_provider);
+            .and_then(|s| s.model);
+        let (provider_id, model_id_value) =
+            resolve_model_route(req.model.as_ref(), session_model.as_ref()).ok_or_else(|| {
+                anyhow::anyhow!(
+                "MODEL_SELECTION_REQUIRED: explicit provider/model is required for this request."
+            )
+            })?;
         let correlation_ref = correlation_id.as_deref();
-        let model_id = req.model.as_ref().map(|m| m.model_id.as_str());
+        let model_id = Some(model_id_value.as_str());
         let cancel = self.cancellations.create(&session_id).await;
         emit_event(
             Level::INFO,
@@ -174,7 +179,7 @@ impl EngineLoop {
                 session_id: Some(&session_id),
                 run_id: None,
                 message_id: None,
-                provider_id: provider_hint.as_deref(),
+                provider_id: Some(provider_id.as_str()),
                 model_id,
                 status: Some("start"),
                 error_code: None,
@@ -273,13 +278,15 @@ impl EngineLoop {
             let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
             let mut readonly_tool_cache: HashMap<String, String> = HashMap::new();
             let mut readonly_signature_counts: HashMap<String, usize> = HashMap::new();
+            let mut shell_mismatch_signatures: HashSet<String> = HashSet::new();
             let mut websearch_query_blocked = false;
             let mut auto_workspace_probe_attempted = false;
 
             while max_iterations > 0 && !cancel.is_cancelled() {
                 max_iterations -= 1;
                 let mut messages = load_chat_history(self.storage.clone(), &session_id).await;
-                let mut system_parts = vec![tandem_runtime_system_prompt().to_string()];
+                let mut system_parts =
+                    vec![tandem_runtime_system_prompt(&self.host_runtime_context)];
                 if let Some(system) = active_agent.system_prompt.as_ref() {
                     system_parts.push(system.clone());
                 }
@@ -309,7 +316,7 @@ impl EngineLoop {
                             session_id: Some(&session_id),
                             run_id: None,
                             message_id: Some(&user_message_id),
-                            provider_id: provider_hint.as_deref(),
+                            provider_id: Some(provider_id.as_str()),
                             model_id,
                             status: Some("failed"),
                             error_code: Some("TOOL_SCHEMA_INVALID"),
@@ -321,7 +328,8 @@ impl EngineLoop {
                 let stream = self
                     .providers
                     .stream_for_provider(
-                        provider_hint.as_deref(),
+                        Some(provider_id.as_str()),
+                        Some(model_id_value.as_str()),
                         messages,
                         Some(tool_schemas),
                         cancel.clone(),
@@ -341,7 +349,7 @@ impl EngineLoop {
                                 session_id: Some(&session_id),
                                 run_id: None,
                                 message_id: Some(&user_message_id),
-                                provider_id: provider_hint.as_deref(),
+                                provider_id: Some(provider_id.as_str()),
                                 model_id,
                                 status: Some("failed"),
                                 error_code: Some(error_code),
@@ -370,7 +378,7 @@ impl EngineLoop {
                                     session_id: Some(&session_id),
                                     run_id: None,
                                     message_id: Some(&user_message_id),
-                                    provider_id: provider_hint.as_deref(),
+                                    provider_id: Some(provider_id.as_str()),
                                     model_id,
                                     status: Some("failed"),
                                     error_code: Some(error_code),
@@ -395,7 +403,7 @@ impl EngineLoop {
                                         session_id: Some(&session_id),
                                         run_id: None,
                                         message_id: Some(&user_message_id),
-                                        provider_id: provider_hint.as_deref(),
+                                        provider_id: Some(provider_id.as_str()),
                                         model_id,
                                         status: Some("streaming"),
                                         error_code: None,
@@ -462,6 +470,7 @@ impl EngineLoop {
                 }
                 if !tool_calls.is_empty() {
                     let mut outputs = Vec::new();
+                    let mut executed_productive_tool = false;
                     for (tool, args) in tool_calls {
                         if !agent_can_use_tool(&active_agent, &tool) {
                             continue;
@@ -498,9 +507,25 @@ impl EngineLoop {
                                 continue;
                             }
                         }
-                        let signature = tool_signature(&tool_key, &args);
+                        let signature = if tool_key == "batch" {
+                            batch_tool_signature(&args)
+                                .unwrap_or_else(|| tool_signature(&tool_key, &args))
+                        } else {
+                            tool_signature(&tool_key, &args)
+                        };
+                        if is_shell_tool_name(&tool_key)
+                            && shell_mismatch_signatures.contains(&signature)
+                        {
+                            outputs.push(
+                                "Tool `bash` call skipped: previous invocation hit an OS/path mismatch. Use `read`, `glob`, or `grep`."
+                                    .to_string(),
+                            );
+                            continue;
+                        }
                         let mut signature_count = 1usize;
-                        if is_read_only_tool(&tool_key) {
+                        if is_read_only_tool(&tool_key)
+                            || (tool_key == "batch" && is_read_only_batch_call(&args))
+                        {
                             let count = readonly_signature_counts
                                 .entry(signature.clone())
                                 .and_modify(|v| *v = v.saturating_add(1))
@@ -549,8 +574,14 @@ impl EngineLoop {
                             )
                             .await?
                         {
+                            let productive =
+                                !(tool_key == "batch" && is_non_productive_batch_output(&output));
                             if output.contains("WEBSEARCH_QUERY_MISSING") {
                                 websearch_query_blocked = true;
+                            }
+                            if is_shell_tool_name(&tool_key) && is_os_mismatch_tool_output(&output)
+                            {
+                                shell_mismatch_signatures.insert(signature.clone());
                             }
                             if is_read_only_tool(&tool_key)
                                 && tool_key != "websearch"
@@ -558,16 +589,23 @@ impl EngineLoop {
                             {
                                 readonly_tool_cache.insert(signature, output.clone());
                             }
+                            if productive {
+                                executed_productive_tool = true;
+                            }
                             outputs.push(output);
                         }
                     }
                     if !outputs.is_empty() {
                         last_tool_outputs = outputs.clone();
-                        followup_context = Some(format!(
-                            "{}\nContinue with a concise final response and avoid repeating identical tool calls.",
-                            summarize_tool_outputs(&outputs)
-                        ));
-                        continue;
+                        if executed_productive_tool {
+                            followup_context = Some(format!(
+                                "{}\nContinue with a concise final response and avoid repeating identical tool calls.",
+                                summarize_tool_outputs(&outputs)
+                            ));
+                            continue;
+                        }
+                        completion.clear();
+                        break;
                     }
                 }
 
@@ -591,7 +629,8 @@ impl EngineLoop {
                     .generate_final_narrative_without_tools(
                         &session_id,
                         &active_agent,
-                        provider_hint.as_deref(),
+                        Some(provider_id.as_str()),
+                        Some(model_id_value.as_str()),
                         cancel.clone(),
                         &last_tool_outputs,
                     )
@@ -624,7 +663,7 @@ impl EngineLoop {
                 session_id: Some(&session_id),
                 run_id: None,
                 message_id: Some(&user_message_id),
-                provider_id: provider_hint.as_deref(),
+                provider_id: Some(provider_id.as_str()),
                 model_id,
                 status: Some("ok"),
                 error_code: None,
@@ -699,7 +738,7 @@ impl EngineLoop {
         provider_id: Option<&str>,
     ) -> anyhow::Result<String> {
         self.providers
-            .complete_for_provider(provider_id, &prompt)
+            .complete_for_provider(provider_id, &prompt, None)
             .await
     }
 
@@ -750,6 +789,10 @@ impl EngineLoop {
             ));
         }
         if normalized.missing_terminal {
+            let missing_reason = normalized
+                .missing_terminal_reason
+                .clone()
+                .unwrap_or_else(|| "TOOL_ARGUMENTS_MISSING".to_string());
             self.event_bus.publish(EngineEvent::new(
                 "tool.args.missing_terminal",
                 json!({
@@ -759,18 +802,18 @@ impl EngineLoop {
                     "argsSource": normalized.args_source,
                     "argsIntegrity": normalized.args_integrity,
                     "requestID": Value::Null,
-                    "error": "WEBSEARCH_QUERY_MISSING"
+                    "error": missing_reason
                 }),
             ));
             let mut failed_part =
                 WireMessagePart::tool_result(session_id, message_id, tool.clone(), json!(null));
             failed_part.state = Some("failed".to_string());
-            failed_part.error = Some("WEBSEARCH_QUERY_MISSING".to_string());
+            failed_part.error = Some(missing_reason.clone());
             self.event_bus.publish(EngineEvent::new(
                 "message.part.updated",
                 json!({"part": failed_part}),
             ));
-            return Ok(Some("WEBSEARCH_QUERY_MISSING".to_string()));
+            return Ok(Some(missing_reason));
         }
 
         let args = match enforce_skill_scope(&tool, normalized.args, equipped_skills) {
@@ -1089,6 +1132,7 @@ impl EngineLoop {
         session_id: &str,
         active_agent: &AgentDefinition,
         provider_hint: Option<&str>,
+        model_id: Option<&str>,
         cancel: CancellationToken,
         tool_outputs: &[String],
     ) -> Option<String> {
@@ -1096,7 +1140,7 @@ impl EngineLoop {
             return None;
         }
         let mut messages = load_chat_history(self.storage.clone(), session_id).await;
-        let mut system_parts = vec![tandem_runtime_system_prompt().to_string()];
+        let mut system_parts = vec![tandem_runtime_system_prompt(&self.host_runtime_context)];
         if let Some(system) = active_agent.system_prompt.as_ref() {
             system_parts.push(system.clone());
         }
@@ -1116,7 +1160,7 @@ impl EngineLoop {
         });
         let stream = self
             .providers
-            .stream_for_provider(provider_hint, messages, None, cancel.clone())
+            .stream_for_provider(provider_hint, model_id, messages, None, cancel.clone())
             .await
             .ok()?;
         tokio::pin!(stream);
@@ -1139,6 +1183,24 @@ impl EngineLoop {
             Some(completion)
         }
     }
+}
+
+fn resolve_model_route(
+    request_model: Option<&ModelSpec>,
+    session_model: Option<&ModelSpec>,
+) -> Option<(String, String)> {
+    fn normalize(spec: &ModelSpec) -> Option<(String, String)> {
+        let provider_id = spec.provider_id.trim();
+        let model_id = spec.model_id.trim();
+        if provider_id.is_empty() || model_id.is_empty() {
+            return None;
+        }
+        Some((provider_id.to_string(), model_id.to_string()))
+    }
+
+    request_model
+        .and_then(normalize)
+        .or_else(|| session_model.and_then(normalize))
 }
 
 fn truncate_text(input: &str, max_len: usize) -> String {
@@ -1190,8 +1252,28 @@ fn provider_error_code(error_text: &str) -> &'static str {
 }
 
 fn normalize_tool_name(name: &str) -> String {
-    match name.trim().to_lowercase().replace('-', "_").as_str() {
+    let mut normalized = name.trim().to_ascii_lowercase().replace('-', "_");
+    for prefix in [
+        "default_api:",
+        "default_api.",
+        "functions.",
+        "function.",
+        "tools.",
+        "tool.",
+        "builtin:",
+        "builtin.",
+    ] {
+        if let Some(rest) = normalized.strip_prefix(prefix) {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() {
+                normalized = trimmed.to_string();
+                break;
+            }
+        }
+    }
+    match normalized.as_str() {
         "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
+        "run_command" | "shell" | "powershell" | "cmd" => "bash".to_string(),
         other => other.to_string(),
     }
 }
@@ -1293,11 +1375,113 @@ fn is_read_only_tool(tool_name: &str) -> bool {
     )
 }
 
+fn is_batch_wrapper_tool_name(name: &str) -> bool {
+    matches!(
+        normalize_tool_name(name).as_str(),
+        "default_api" | "default" | "api" | "function" | "functions" | "tool" | "tools"
+    )
+}
+
+fn non_empty_string_at<'a>(obj: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    obj.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn nested_non_empty_string_at<'a>(
+    obj: &'a Map<String, Value>,
+    parent: &str,
+    key: &str,
+) -> Option<&'a str> {
+    obj.get(parent)
+        .and_then(|v| v.as_object())
+        .and_then(|nested| nested.get(key))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn extract_batch_calls(args: &Value) -> Vec<(String, Value)> {
+    let calls = args
+        .get("tool_calls")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    calls
+        .into_iter()
+        .filter_map(|call| {
+            let obj = call.as_object()?;
+            let tool_raw = non_empty_string_at(obj, "tool")
+                .or_else(|| nested_non_empty_string_at(obj, "tool", "name"))
+                .or_else(|| nested_non_empty_string_at(obj, "function", "tool"))
+                .or_else(|| nested_non_empty_string_at(obj, "function_call", "tool"))
+                .or_else(|| nested_non_empty_string_at(obj, "call", "tool"));
+            let name_raw = non_empty_string_at(obj, "name")
+                .or_else(|| nested_non_empty_string_at(obj, "function", "name"))
+                .or_else(|| nested_non_empty_string_at(obj, "function_call", "name"))
+                .or_else(|| nested_non_empty_string_at(obj, "call", "name"))
+                .or_else(|| nested_non_empty_string_at(obj, "tool", "name"));
+            let effective = match (tool_raw, name_raw) {
+                (Some(t), Some(n)) if is_batch_wrapper_tool_name(t) => n,
+                (Some(t), _) => t,
+                (None, Some(n)) => n,
+                (None, None) => return None,
+            };
+            let normalized = normalize_tool_name(effective);
+            let call_args = obj.get("args").cloned().unwrap_or_else(|| json!({}));
+            Some((normalized, call_args))
+        })
+        .collect()
+}
+
+fn is_read_only_batch_call(args: &Value) -> bool {
+    let calls = extract_batch_calls(args);
+    !calls.is_empty() && calls.iter().all(|(tool, _)| is_read_only_tool(tool))
+}
+
+fn batch_tool_signature(args: &Value) -> Option<String> {
+    let calls = extract_batch_calls(args);
+    if calls.is_empty() {
+        return None;
+    }
+    let parts = calls
+        .into_iter()
+        .map(|(tool, call_args)| tool_signature(&tool, &call_args))
+        .collect::<Vec<_>>();
+    Some(format!("batch:{}", parts.join("|")))
+}
+
+fn is_non_productive_batch_output(output: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(output.trim()) else {
+        return false;
+    };
+    let Some(items) = value.as_array() else {
+        return false;
+    };
+    if items.is_empty() {
+        return true;
+    }
+    items.iter().all(|item| {
+        let text = item
+            .get("output")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        text.is_empty()
+            || text.starts_with("unknown tool:")
+            || text.contains("call skipped")
+            || text.contains("guard budget exceeded")
+    })
+}
+
 fn tool_budget_for(tool_name: &str) -> usize {
     match normalize_tool_name(tool_name).as_str() {
         "glob" => 4,
         "read" => 8,
         "websearch" => 3,
+        "batch" => 4,
         "grep" | "search" | "codesearch" => 6,
         _ => 10,
     }
@@ -1310,6 +1494,7 @@ struct NormalizedToolArgs {
     args_integrity: String,
     query: Option<String>,
     missing_terminal: bool,
+    missing_terminal_reason: Option<String>,
 }
 
 fn normalize_tool_args(
@@ -1328,6 +1513,7 @@ fn normalize_tool_args(
     let mut args_integrity = "ok".to_string();
     let mut query = None;
     let mut missing_terminal = false;
+    let mut missing_terminal_reason = None;
 
     if normalized_tool == "websearch" {
         if let Some(found) = extract_websearch_query(&args) {
@@ -1347,6 +1533,52 @@ fn normalize_tool_args(
             args_source = "missing".to_string();
             args_integrity = "empty".to_string();
             missing_terminal = true;
+            missing_terminal_reason = Some("WEBSEARCH_QUERY_MISSING".to_string());
+        }
+    } else if is_shell_tool_name(&normalized_tool) {
+        if let Some(command) = extract_shell_command(&args) {
+            args = set_shell_command(args, command);
+        } else if let Some(inferred) = infer_shell_command_from_text(latest_assistant_context) {
+            args_source = "inferred_from_context".to_string();
+            args_integrity = "recovered".to_string();
+            args = set_shell_command(args, inferred);
+        } else if let Some(inferred) = infer_shell_command_from_text(latest_user_text) {
+            args_source = "inferred_from_user".to_string();
+            args_integrity = "recovered".to_string();
+            args = set_shell_command(args, inferred);
+        } else {
+            args_source = "missing".to_string();
+            args_integrity = "empty".to_string();
+            missing_terminal = true;
+            missing_terminal_reason = Some("BASH_COMMAND_MISSING".to_string());
+        }
+    } else if matches!(normalized_tool.as_str(), "read" | "write" | "edit") {
+        if let Some(path) = extract_file_path_arg(&args) {
+            args = set_file_path_arg(args, path);
+        } else if let Some(inferred) = infer_file_path_from_text(latest_assistant_context) {
+            args_source = "inferred_from_context".to_string();
+            args_integrity = "recovered".to_string();
+            args = set_file_path_arg(args, inferred);
+        } else if let Some(inferred) = infer_file_path_from_text(latest_user_text) {
+            args_source = "inferred_from_user".to_string();
+            args_integrity = "recovered".to_string();
+            args = set_file_path_arg(args, inferred);
+        } else {
+            args_source = "missing".to_string();
+            args_integrity = "empty".to_string();
+            missing_terminal = true;
+            missing_terminal_reason = Some("FILE_PATH_MISSING".to_string());
+        }
+
+        if !missing_terminal && normalized_tool == "write" {
+            if let Some(content) = extract_write_content_arg(&args) {
+                args = set_write_content_arg(args, content);
+            } else {
+                args_source = "missing".to_string();
+                args_integrity = "empty".to_string();
+                missing_terminal = true;
+                missing_terminal_reason = Some("WRITE_CONTENT_MISSING".to_string());
+            }
         }
     }
 
@@ -1356,7 +1588,244 @@ fn normalize_tool_args(
         args_integrity,
         query,
         missing_terminal,
+        missing_terminal_reason,
     }
+}
+
+fn is_shell_tool_name(tool_name: &str) -> bool {
+    matches!(
+        tool_name.trim().to_ascii_lowercase().as_str(),
+        "bash" | "shell" | "powershell" | "cmd"
+    )
+}
+
+fn set_file_path_arg(args: Value, path: String) -> Value {
+    let mut obj = args.as_object().cloned().unwrap_or_default();
+    obj.insert("path".to_string(), Value::String(path));
+    Value::Object(obj)
+}
+
+fn set_write_content_arg(args: Value, content: String) -> Value {
+    let mut obj = args.as_object().cloned().unwrap_or_default();
+    obj.insert("content".to_string(), Value::String(content));
+    Value::Object(obj)
+}
+
+fn extract_file_path_arg(args: &Value) -> Option<String> {
+    extract_file_path_arg_internal(args, 0)
+}
+
+fn extract_write_content_arg(args: &Value) -> Option<String> {
+    extract_write_content_arg_internal(args, 0)
+}
+
+fn extract_file_path_arg_internal(args: &Value, depth: usize) -> Option<String> {
+    if depth > 5 {
+        return None;
+    }
+
+    match args {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            // If the provider sent plain string args, treat it as a path directly.
+            if !(trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"')) {
+                return sanitize_path_candidate(trimmed);
+            }
+            if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                return extract_file_path_arg_internal(&parsed, depth + 1);
+            }
+            sanitize_path_candidate(trimmed)
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| extract_file_path_arg_internal(item, depth + 1)),
+        Value::Object(obj) => {
+            for key in FILE_PATH_KEYS {
+                if let Some(raw) = obj.get(key).and_then(|v| v.as_str()) {
+                    if let Some(path) = sanitize_path_candidate(raw) {
+                        return Some(path);
+                    }
+                }
+            }
+            for container in NESTED_ARGS_KEYS {
+                if let Some(nested) = obj.get(container) {
+                    if let Some(path) = extract_file_path_arg_internal(nested, depth + 1) {
+                        return Some(path);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn extract_write_content_arg_internal(args: &Value, depth: usize) -> Option<String> {
+    if depth > 5 {
+        return None;
+    }
+
+    match args {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                return extract_write_content_arg_internal(&parsed, depth + 1);
+            }
+            // Some providers collapse args to a plain string. Recover as content only when
+            // it does not look like a standalone file path token.
+            if sanitize_path_candidate(trimmed).is_some()
+                && !trimmed.contains('\n')
+                && trimmed.split_whitespace().count() <= 3
+            {
+                return None;
+            }
+            Some(trimmed.to_string())
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| extract_write_content_arg_internal(item, depth + 1)),
+        Value::Object(obj) => {
+            for key in WRITE_CONTENT_KEYS {
+                if let Some(value) = obj.get(key) {
+                    if let Some(raw) = value.as_str() {
+                        if !raw.is_empty() {
+                            return Some(raw.to_string());
+                        }
+                    } else if let Some(recovered) =
+                        extract_write_content_arg_internal(value, depth + 1)
+                    {
+                        return Some(recovered);
+                    }
+                }
+            }
+            for container in NESTED_ARGS_KEYS {
+                if let Some(nested) = obj.get(container) {
+                    if let Some(content) = extract_write_content_arg_internal(nested, depth + 1) {
+                        return Some(content);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn set_shell_command(args: Value, command: String) -> Value {
+    let mut obj = args.as_object().cloned().unwrap_or_default();
+    obj.insert("command".to_string(), Value::String(command));
+    Value::Object(obj)
+}
+
+fn extract_shell_command(args: &Value) -> Option<String> {
+    extract_shell_command_internal(args, 0)
+}
+
+fn extract_shell_command_internal(args: &Value, depth: usize) -> Option<String> {
+    if depth > 5 {
+        return None;
+    }
+
+    match args {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if !(trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"')) {
+                return sanitize_shell_command_candidate(trimmed);
+            }
+            if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                return extract_shell_command_internal(&parsed, depth + 1);
+            }
+            sanitize_shell_command_candidate(trimmed)
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| extract_shell_command_internal(item, depth + 1)),
+        Value::Object(obj) => {
+            for key in SHELL_COMMAND_KEYS {
+                if let Some(raw) = obj.get(key).and_then(|v| v.as_str()) {
+                    if let Some(command) = sanitize_shell_command_candidate(raw) {
+                        return Some(command);
+                    }
+                }
+            }
+            for container in NESTED_ARGS_KEYS {
+                if let Some(nested) = obj.get(container) {
+                    if let Some(command) = extract_shell_command_internal(nested, depth + 1) {
+                        return Some(command);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn infer_shell_command_from_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Prefer explicit backtick commands first.
+    let mut in_tick = false;
+    let mut tick_buf = String::new();
+    for ch in trimmed.chars() {
+        if ch == '`' {
+            if in_tick {
+                if let Some(candidate) = sanitize_shell_command_candidate(&tick_buf) {
+                    if looks_like_shell_command(&candidate) {
+                        return Some(candidate);
+                    }
+                }
+                tick_buf.clear();
+            }
+            in_tick = !in_tick;
+            continue;
+        }
+        if in_tick {
+            tick_buf.push(ch);
+        }
+    }
+
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        for prefix in [
+            "run ",
+            "execute ",
+            "call ",
+            "use bash ",
+            "use shell ",
+            "bash ",
+            "shell ",
+            "powershell ",
+            "pwsh ",
+        ] {
+            if lower.starts_with(prefix) {
+                let candidate = line[prefix.len()..].trim();
+                if let Some(command) = sanitize_shell_command_candidate(candidate) {
+                    if looks_like_shell_command(&command) {
+                        return Some(command);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn set_websearch_query_and_source(args: Value, query: Option<String>, query_source: &str) -> Value {
@@ -1443,6 +1912,226 @@ fn infer_websearch_query_from_text(text: &str) -> Option<String> {
     Some(normalized)
 }
 
+fn infer_file_path_from_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut candidates: Vec<String> = Vec::new();
+
+    // Prefer backtick-delimited paths when available.
+    let mut in_tick = false;
+    let mut tick_buf = String::new();
+    for ch in trimmed.chars() {
+        if ch == '`' {
+            if in_tick {
+                let cand = sanitize_path_candidate(&tick_buf);
+                if let Some(path) = cand {
+                    candidates.push(path);
+                }
+                tick_buf.clear();
+            }
+            in_tick = !in_tick;
+            continue;
+        }
+        if in_tick {
+            tick_buf.push(ch);
+        }
+    }
+
+    // Fallback: scan whitespace tokens.
+    for raw in trimmed.split_whitespace() {
+        if let Some(path) = sanitize_path_candidate(raw) {
+            candidates.push(path);
+        }
+    }
+
+    let mut deduped = Vec::new();
+    let mut seen = HashSet::new();
+    for candidate in candidates {
+        if seen.insert(candidate.clone()) {
+            deduped.push(candidate);
+        }
+    }
+
+    deduped.into_iter().next()
+}
+
+fn sanitize_path_candidate(raw: &str) -> Option<String> {
+    let token = raw
+        .trim()
+        .trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | '*' | '|'))
+        .trim_start_matches(|c: char| matches!(c, '(' | '[' | '{' | '<'))
+        .trim_end_matches(|c: char| matches!(c, ',' | ';' | ':' | ')' | ']' | '}' | '>'))
+        .trim_end_matches('.')
+        .trim();
+
+    if token.is_empty() {
+        return None;
+    }
+    let lower = token.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return None;
+    }
+    if is_malformed_tool_path_token(token) {
+        return None;
+    }
+    if is_root_only_path_token(token) {
+        return None;
+    }
+
+    let looks_like_path = token.contains('/') || token.contains('\\');
+    let has_file_ext = [
+        ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".rs", ".ts", ".tsx", ".js", ".jsx",
+        ".py", ".go", ".java", ".cpp", ".c", ".h",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext));
+
+    if !looks_like_path && !has_file_ext {
+        return None;
+    }
+
+    Some(token.to_string())
+}
+
+fn is_malformed_tool_path_token(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    // XML-ish tool-call wrappers emitted by some model responses.
+    if lower.contains("<tool_call")
+        || lower.contains("</tool_call")
+        || lower.contains("<function=")
+        || lower.contains("<parameter=")
+        || lower.contains("</function>")
+        || lower.contains("</parameter>")
+    {
+        return true;
+    }
+    // Multiline payloads are not valid single file paths.
+    if token.contains('\n') || token.contains('\r') {
+        return true;
+    }
+    // Glob patterns are not concrete file paths for read/write/edit.
+    if token.contains('*') || token.contains('?') {
+        return true;
+    }
+    false
+}
+
+fn is_root_only_path_token(token: &str) -> bool {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if matches!(trimmed, "/" | "\\" | "." | ".." | "~") {
+        return true;
+    }
+    // Windows drive root placeholders, e.g. `C:` or `C:\`.
+    let bytes = trimmed.as_bytes();
+    if bytes.len() == 2 && bytes[1] == b':' && (bytes[0] as char).is_ascii_alphabetic() {
+        return true;
+    }
+    if bytes.len() == 3
+        && bytes[1] == b':'
+        && (bytes[0] as char).is_ascii_alphabetic()
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        return true;
+    }
+    false
+}
+
+fn sanitize_shell_command_candidate(raw: &str) -> Option<String> {
+    let token = raw
+        .trim()
+        .trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | ';'))
+        .trim();
+    if token.is_empty() {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+fn looks_like_shell_command(candidate: &str) -> bool {
+    let lower = candidate.to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    let first = lower.split_whitespace().next().unwrap_or_default();
+    let common = [
+        "rg",
+        "git",
+        "cargo",
+        "pnpm",
+        "npm",
+        "node",
+        "python",
+        "pytest",
+        "pwsh",
+        "powershell",
+        "cmd",
+        "dir",
+        "ls",
+        "cat",
+        "type",
+        "echo",
+        "cd",
+        "mkdir",
+        "cp",
+        "copy",
+        "move",
+        "del",
+        "rm",
+    ];
+    common.contains(&first)
+        || first.starts_with("get-")
+        || first.starts_with("./")
+        || first.starts_with(".\\")
+        || lower.contains(" | ")
+        || lower.contains(" && ")
+        || lower.contains(" ; ")
+}
+
+const FILE_PATH_KEYS: [&str; 10] = [
+    "path",
+    "file_path",
+    "filePath",
+    "filepath",
+    "filename",
+    "file",
+    "target",
+    "targetFile",
+    "absolutePath",
+    "uri",
+];
+
+const SHELL_COMMAND_KEYS: [&str; 4] = ["command", "cmd", "script", "line"];
+
+const WRITE_CONTENT_KEYS: [&str; 8] = [
+    "content",
+    "text",
+    "body",
+    "value",
+    "markdown",
+    "document",
+    "output",
+    "file_content",
+];
+
+const NESTED_ARGS_KEYS: [&str; 10] = [
+    "arguments",
+    "args",
+    "input",
+    "params",
+    "payload",
+    "data",
+    "tool_input",
+    "toolInput",
+    "tool_args",
+    "toolArgs",
+];
+
 fn tool_signature(tool_name: &str, args: &Value) -> String {
     let normalized = normalize_tool_name(tool_name);
     if normalized == "websearch" {
@@ -1481,11 +2170,80 @@ fn summarize_tool_outputs(outputs: &[String]) -> String {
         .join("\n\n")
 }
 
-fn tandem_runtime_system_prompt() -> &'static str {
-    "You are operating inside Tandem (Desktop/TUI) as an engine-backed coding assistant.
+fn is_os_mismatch_tool_output(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("os error 3")
+        || lower.contains("system cannot find the path specified")
+        || lower.contains("command not found")
+        || lower.contains("is not recognized as an internal or external command")
+        || lower.contains("shell command blocked on windows")
+}
+
+fn tandem_runtime_system_prompt(host: &HostRuntimeContext) -> String {
+    let mut sections = Vec::new();
+    if os_aware_prompts_enabled() {
+        sections.push(format!(
+            "[Execution Environment]\nHost OS: {}\nShell: {}\nPath style: {}\nArchitecture: {}",
+            host_os_label(host.os),
+            shell_family_label(host.shell_family),
+            path_style_label(host.path_style),
+            host.arch
+        ));
+    }
+    sections.push(
+        "You are operating inside Tandem (Desktop/TUI) as an engine-backed coding assistant.
 Use tool calls to inspect and modify the workspace when needed instead of asking the user
 to manually run basic discovery steps. Permission prompts may occur for some tools; if
 a tool is denied or blocked, explain what was blocked and suggest a concrete next step."
+            .to_string(),
+    );
+    if host.os == HostOs::Windows {
+        sections.push(
+            "Windows guidance: prefer cross-platform tools (`glob`, `grep`, `read`, `write`, `edit`) and PowerShell-native commands.
+Avoid Unix-only shell syntax (`ls -la`, `find ... -type f`, `cat` pipelines) unless translated.
+If a shell command fails with a path/shell mismatch, immediately switch to cross-platform tools (`read`, `glob`, `grep`)."
+                .to_string(),
+        );
+    } else {
+        sections.push(
+            "POSIX guidance: standard shell commands are available.
+Use cross-platform tools (`glob`, `grep`, `read`) when they are simpler and safer for codebase exploration."
+                .to_string(),
+        );
+    }
+    sections.join("\n\n")
+}
+
+fn os_aware_prompts_enabled() -> bool {
+    std::env::var("TANDEM_OS_AWARE_PROMPTS")
+        .ok()
+        .map(|v| {
+            let normalized = v.trim().to_ascii_lowercase();
+            !(normalized == "0" || normalized == "false" || normalized == "off")
+        })
+        .unwrap_or(true)
+}
+
+fn host_os_label(os: HostOs) -> &'static str {
+    match os {
+        HostOs::Windows => "windows",
+        HostOs::Linux => "linux",
+        HostOs::Macos => "macos",
+    }
+}
+
+fn shell_family_label(shell: ShellFamily) -> &'static str {
+    match shell {
+        ShellFamily::Powershell => "powershell",
+        ShellFamily::Posix => "posix",
+    }
+}
+
+fn path_style_label(path_style: PathStyle) -> &'static str {
+    match path_style {
+        PathStyle::Windows => "windows",
+        PathStyle::Posix => "posix",
+    }
 }
 
 fn should_force_workspace_probe(user_text: &str, completion: &str) -> bool {
@@ -2733,5 +3491,276 @@ Call: todowrite(task_id=3, status="in_progress")
         assert!(normalized.missing_terminal);
         assert_eq!(normalized.args_source, "missing");
         assert_eq!(normalized.args_integrity, "empty");
+    }
+
+    #[test]
+    fn normalize_tool_args_write_requires_path() {
+        let normalized = normalize_tool_args("write", json!({}), "", "");
+        assert!(normalized.missing_terminal);
+        assert_eq!(
+            normalized.missing_terminal_reason.as_deref(),
+            Some("FILE_PATH_MISSING")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_write_recovers_alias_path_key() {
+        let normalized = normalize_tool_args(
+            "write",
+            json!({"filePath":"docs/CONCEPT.md","content":"hello"}),
+            "",
+            "",
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("path").and_then(|v| v.as_str()),
+            Some("docs/CONCEPT.md")
+        );
+        assert_eq!(
+            normalized.args.get("content").and_then(|v| v.as_str()),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_read_infers_path_from_user_prompt() {
+        let normalized = normalize_tool_args(
+            "read",
+            json!({}),
+            "Please inspect `FEATURE_LIST.md` and summarize key sections.",
+            "",
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("path").and_then(|v| v.as_str()),
+            Some("FEATURE_LIST.md")
+        );
+        assert_eq!(normalized.args_source, "inferred_from_user");
+        assert_eq!(normalized.args_integrity, "recovered");
+    }
+
+    #[test]
+    fn normalize_tool_args_read_infers_path_from_assistant_context() {
+        let normalized = normalize_tool_args(
+            "read",
+            json!({}),
+            "generic instruction",
+            "I will read src-tauri/src/orchestrator/engine.rs first.",
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("path").and_then(|v| v.as_str()),
+            Some("src-tauri/src/orchestrator/engine.rs")
+        );
+        assert_eq!(normalized.args_source, "inferred_from_context");
+        assert_eq!(normalized.args_integrity, "recovered");
+    }
+
+    #[test]
+    fn normalize_tool_args_write_recovers_path_from_nested_array_payload() {
+        let normalized = normalize_tool_args(
+            "write",
+            json!({"args":[{"file_path":"docs/CONCEPT.md"}],"content":"hello"}),
+            "",
+            "",
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("path").and_then(|v| v.as_str()),
+            Some("docs/CONCEPT.md")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_write_recovers_content_alias() {
+        let normalized = normalize_tool_args(
+            "write",
+            json!({"path":"docs/FEATURES.md","body":"feature notes"}),
+            "",
+            "",
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("content").and_then(|v| v.as_str()),
+            Some("feature notes")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_write_fails_when_content_missing() {
+        let normalized = normalize_tool_args("write", json!({"path":"docs/FEATURES.md"}), "", "");
+        assert!(normalized.missing_terminal);
+        assert_eq!(
+            normalized.missing_terminal_reason.as_deref(),
+            Some("WRITE_CONTENT_MISSING")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_write_recovers_raw_nested_string_content() {
+        let normalized = normalize_tool_args(
+            "write",
+            json!({"path":"docs/FEATURES.md","args":"Line 1\nLine 2"}),
+            "",
+            "",
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("path").and_then(|v| v.as_str()),
+            Some("docs/FEATURES.md")
+        );
+        assert_eq!(
+            normalized.args.get("content").and_then(|v| v.as_str()),
+            Some("Line 1\nLine 2")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_write_does_not_treat_path_as_content() {
+        let normalized = normalize_tool_args("write", json!("docs/FEATURES.md"), "", "");
+        assert!(normalized.missing_terminal);
+        assert_eq!(
+            normalized.missing_terminal_reason.as_deref(),
+            Some("WRITE_CONTENT_MISSING")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_read_infers_path_from_bold_markdown() {
+        let normalized = normalize_tool_args(
+            "read",
+            json!({}),
+            "Please read **FEATURE_LIST.md** and summarize.",
+            "",
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("path").and_then(|v| v.as_str()),
+            Some("FEATURE_LIST.md")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_shell_infers_command_from_user_prompt() {
+        let normalized = normalize_tool_args("bash", json!({}), "Run `rg -n \"TODO\" .`", "");
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("command").and_then(|v| v.as_str()),
+            Some("rg -n \"TODO\" .")
+        );
+        assert_eq!(normalized.args_source, "inferred_from_user");
+        assert_eq!(normalized.args_integrity, "recovered");
+    }
+
+    #[test]
+    fn normalize_tool_args_read_rejects_root_only_path() {
+        let normalized = normalize_tool_args("read", json!({"path":"/"}), "", "");
+        assert!(normalized.missing_terminal);
+        assert_eq!(
+            normalized.missing_terminal_reason.as_deref(),
+            Some("FILE_PATH_MISSING")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_read_recovers_when_provider_path_is_root_only() {
+        let normalized =
+            normalize_tool_args("read", json!({"path":"/"}), "Please open `CONCEPT.md`", "");
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("path").and_then(|v| v.as_str()),
+            Some("CONCEPT.md")
+        );
+        assert_eq!(normalized.args_source, "inferred_from_user");
+        assert_eq!(normalized.args_integrity, "recovered");
+    }
+
+    #[test]
+    fn normalize_tool_args_read_rejects_tool_call_markup_path() {
+        let normalized = normalize_tool_args(
+            "read",
+            json!({
+                "path":"<tool_call>\n<function=glob>\n<parameter=pattern>**/*</parameter>\n</function>\n</tool_call>"
+            }),
+            "",
+            "",
+        );
+        assert!(normalized.missing_terminal);
+        assert_eq!(
+            normalized.missing_terminal_reason.as_deref(),
+            Some("FILE_PATH_MISSING")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_read_rejects_glob_pattern_path() {
+        let normalized = normalize_tool_args("read", json!({"path":"**/*"}), "", "");
+        assert!(normalized.missing_terminal);
+        assert_eq!(
+            normalized.missing_terminal_reason.as_deref(),
+            Some("FILE_PATH_MISSING")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_name_strips_default_api_namespace() {
+        assert_eq!(normalize_tool_name("default_api:read"), "read");
+        assert_eq!(normalize_tool_name("functions.shell"), "bash");
+    }
+
+    #[test]
+    fn batch_helpers_use_name_when_tool_is_wrapper() {
+        let args = json!({
+            "tool_calls":[
+                {"tool":"default_api","name":"read","args":{"path":"CONCEPT.md"}},
+                {"tool":"default_api:glob","args":{"pattern":"*.md"}}
+            ]
+        });
+        let calls = extract_batch_calls(&args);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "read");
+        assert_eq!(calls[1].0, "glob");
+        assert!(is_read_only_batch_call(&args));
+        let sig = batch_tool_signature(&args).unwrap_or_default();
+        assert!(sig.contains("read:"));
+        assert!(sig.contains("glob:"));
+    }
+
+    #[test]
+    fn batch_helpers_resolve_nested_function_name() {
+        let args = json!({
+            "tool_calls":[
+                {"tool":"default_api","function":{"name":"read"},"args":{"path":"CONCEPT.md"}}
+            ]
+        });
+        let calls = extract_batch_calls(&args);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "read");
+        assert!(is_read_only_batch_call(&args));
+    }
+
+    #[test]
+    fn batch_output_classifier_detects_non_productive_unknown_results() {
+        let output = r#"
+[
+  {"tool":"default_api","output":"Unknown tool: default_api","metadata":{}},
+  {"tool":"default_api","output":"Unknown tool: default_api","metadata":{}}
+]
+"#;
+        assert!(is_non_productive_batch_output(output));
+    }
+
+    #[test]
+    fn runtime_prompt_includes_execution_environment_block() {
+        let prompt = tandem_runtime_system_prompt(&HostRuntimeContext {
+            os: HostOs::Windows,
+            arch: "x86_64".to_string(),
+            shell_family: ShellFamily::Powershell,
+            path_style: PathStyle::Windows,
+        });
+        assert!(prompt.contains("[Execution Environment]"));
+        assert!(prompt.contains("Host OS: windows"));
+        assert!(prompt.contains("Shell: powershell"));
+        assert!(prompt.contains("Path style: windows"));
     }
 }

@@ -2,7 +2,6 @@
 // Security policy for tool/file gating and secret redaction
 // See: docs/orchestration_plan.md
 
-use crate::error::{Result, TandemError};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

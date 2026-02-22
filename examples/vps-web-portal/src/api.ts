@@ -72,7 +72,92 @@ export class EngineAPI {
     if (!res.ok) throw new Error(`Health check failed: ${res.statusText}`);
     return res.json();
   }
+
+  async getSessionMessages(sessionId: string): Promise<EngineMessage[]> {
+    const res = await fetch(`${this.baseUrl}/session/${sessionId}/message`, {
+      headers: this.headers,
+    });
+    if (!res.ok) throw new Error(`Failed to fetch session messages: ${res.statusText}`);
+    return res.json();
+  }
+
+  async getProviderCatalog(): Promise<ProviderCatalog> {
+    const res = await fetch(`${this.baseUrl}/provider`, {
+      headers: this.headers,
+    });
+    if (!res.ok) throw new Error(`Provider catalog failed: ${res.statusText}`);
+    return res.json();
+  }
+
+  async getProvidersConfig(): Promise<ProvidersConfigResponse> {
+    const res = await fetch(`${this.baseUrl}/config/providers`, {
+      headers: this.headers,
+    });
+    if (!res.ok) throw new Error(`Provider config failed: ${res.statusText}`);
+    return res.json();
+  }
+
+  async setProviderAuth(providerId: string, apiKey: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/auth/${encodeURIComponent(providerId)}`, {
+      method: "PUT",
+      headers: this.headers,
+      body: JSON.stringify({ apiKey }),
+    });
+    if (!res.ok) throw new Error(`Provider auth failed: ${res.statusText}`);
+  }
+
+  async setProviderDefaults(providerId: string, modelId: string): Promise<void> {
+    const payload = {
+      default_provider: providerId,
+      providers: {
+        [providerId]: {
+          default_model: modelId,
+        },
+      },
+    };
+    const res = await fetch(`${this.baseUrl}/config`, {
+      method: "PATCH",
+      headers: this.headers,
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`Saving provider defaults failed: ${res.statusText}`);
+  }
 }
 
 // Global singleton
 export const api = new EngineAPI();
+
+export interface ProviderModelEntry {
+  name?: string;
+}
+
+export interface ProviderEntry {
+  id: string;
+  name?: string;
+  models?: Record<string, ProviderModelEntry>;
+}
+
+export interface ProviderCatalog {
+  all: ProviderEntry[];
+  connected?: string[];
+  default?: string | null;
+}
+
+export interface ProviderConfigEntry {
+  default_model?: string;
+}
+
+export interface ProvidersConfigResponse {
+  default?: string | null;
+  providers: Record<string, ProviderConfigEntry>;
+}
+
+export interface EngineMessage {
+  info?: {
+    role?: string;
+  };
+  parts?: Array<{
+    type?: string;
+    text?: string;
+  }>;
+}

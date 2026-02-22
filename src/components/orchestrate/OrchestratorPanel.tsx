@@ -301,9 +301,6 @@ export function OrchestratorPanel({
 
         setRunModel(model);
         setRunProvider(provider);
-
-        if (model) setSelectedModel(model);
-        if (provider) setSelectedProvider(provider);
       } catch {
         // Best-effort only; run may not be fully rehydrated yet.
       }
@@ -532,6 +529,7 @@ export function OrchestratorPanel({
         model: selectedModel,
         provider: selectedProvider,
         agentModelRouting: modelRouting,
+        source: "orchestrator",
       });
 
       setRunId(newRunId);
@@ -585,6 +583,28 @@ export function OrchestratorPanel({
   const handleResume = async () => {
     if (!runId) return;
     try {
+      if (resumeModelChanged && selectedModel && selectedProvider) {
+        const applySelected = window.confirm(
+          `Resume with selected model ${selectedProvider}/${selectedModel}?` +
+            `\n\nChoose OK to switch this run to the selected model first.` +
+            `\nChoose Cancel to keep the run's current model.`
+        );
+        if (applySelected) {
+          const selection = await invoke<OrchestratorModelSelection>(
+            "orchestrator_set_resume_model",
+            {
+              runId,
+              model: selectedModel,
+              provider: selectedProvider,
+            }
+          );
+          setRunModel(selection.model ?? selectedModel);
+          setRunProvider(selection.provider ?? selectedProvider);
+        } else {
+          setSelectedModel(runModel);
+          setSelectedProvider(runProvider);
+        }
+      }
       await invoke("orchestrator_resume", { runId });
     } catch (e) {
       setError(`Failed to resume: ${e}`);
@@ -712,7 +732,7 @@ export function OrchestratorPanel({
     canAdjustResumeModel && hasModelSelection && resumeModelChanged && !isLoading
   );
   const canApplyAgentModelRouting = Boolean(canAdjustResumeModel && runId && !isLoading);
-  const canResume = isPaused && !resumeModelChanged;
+  const canResume = isPaused;
   const canCancel = Boolean(
     snapshot &&
     !isCompleted &&

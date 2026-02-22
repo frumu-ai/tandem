@@ -17,7 +17,7 @@ export const Login: React.FC = () => {
 
     const success = await login(key);
     if (success) {
-      navigate("/research");
+      navigate("/setup");
     } else {
       setError("Connection failed. Verify your server key or engine status.");
     }

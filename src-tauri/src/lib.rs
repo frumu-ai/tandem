@@ -115,9 +115,22 @@ fn init_tracing(app_data_dir: &std::path::Path) {
 fn is_recoverable_memory_error(err: &memory::types::MemoryError) -> bool {
     let msg = err.to_string().to_lowercase();
     msg.contains("vector blob")
+        || msg.contains("chunks iter error")
+        || msg.contains("chunks iter")
+        || msg.contains("sql logic error")
         || msg.contains("project_memory_vectors_vector_chunks")
         || msg.contains("database disk image is malformed")
         || msg.contains("malformed")
+}
+
+fn is_transient_memory_init_error(err: &memory::types::MemoryError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("unknown error")
+        || msg.contains("database is locked")
+        || msg.contains("database is busy")
+        || msg.contains("unable to open database file")
+        || msg.contains("disk i/o error")
+        || msg.contains("resource temporarily unavailable")
 }
 
 fn memory_db_file_paths(db_path: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -168,33 +181,101 @@ fn init_memory_manager_with_recovery(
     app_data_dir: &std::path::Path,
     db_path: &std::path::Path,
 ) -> Result<memory::MemoryManager, memory::types::MemoryError> {
-    match tauri::async_runtime::block_on(memory::MemoryManager::new(db_path)) {
-        Ok(manager) => return Ok(manager),
-        Err(err) if is_recoverable_memory_error(&err) => {
-            tracing::warn!(
-                "Memory DB appears incompatible/corrupt, attempting self-heal: {}",
-                err
-            );
-            match backup_and_reset_memory_db(app_data_dir, db_path) {
-                Ok(Some(backup_dir)) => {
-                    tracing::warn!(
-                        "Backed up memory DB files before reset: {}",
-                        backup_dir.display()
-                    );
+    const MEMORY_INIT_RETRIES: usize = 10;
+    const MEMORY_INIT_RETRY_MS: u64 = 500;
+
+    for attempt in 0..=MEMORY_INIT_RETRIES {
+        match tauri::async_runtime::block_on(memory::MemoryManager::new(db_path)) {
+            Ok(manager) => return Ok(manager),
+            Err(err) if is_recoverable_memory_error(&err) => {
+                tracing::warn!(
+                    "Memory DB appears incompatible/corrupt, attempting self-heal: {}",
+                    err
+                );
+                match backup_and_reset_memory_db(app_data_dir, db_path) {
+                    Ok(Some(backup_dir)) => {
+                        tracing::warn!(
+                            "Backed up memory DB files before reset: {}",
+                            backup_dir.display()
+                        );
+                    }
+                    Ok(None) => {
+                        tracing::warn!("No memory DB files found to back up before reset");
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to back up/reset memory DB: {}", e);
+                        return Err(err);
+                    }
                 }
-                Ok(None) => {
-                    tracing::warn!("No memory DB files found to back up before reset");
-                }
-                Err(e) => {
-                    tracing::error!("Failed to back up/reset memory DB: {}", e);
-                    return Err(err);
+
+                let retry = tauri::async_runtime::block_on(memory::MemoryManager::new(db_path));
+                match retry {
+                    Ok(manager) => return Ok(manager),
+                    Err(retry_err) => {
+                        if is_transient_memory_init_error(&retry_err)
+                            && attempt < MEMORY_INIT_RETRIES
+                        {
+                            tracing::warn!(
+                                "Memory manager init still transient after self-heal (attempt {}/{}): {}. Retrying...",
+                                attempt + 1,
+                                MEMORY_INIT_RETRIES + 1,
+                                retry_err
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                MEMORY_INIT_RETRY_MS,
+                            ));
+                            continue;
+                        }
+                        return Err(retry_err);
+                    }
                 }
             }
+            Err(err) => {
+                if is_transient_memory_init_error(&err) && attempt < MEMORY_INIT_RETRIES {
+                    tracing::warn!(
+                        "Transient memory manager init error (attempt {}/{}): {}. Retrying...",
+                        attempt + 1,
+                        MEMORY_INIT_RETRIES + 1,
+                        err
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(MEMORY_INIT_RETRY_MS));
+                    continue;
+                }
+                if is_transient_memory_init_error(&err) {
+                    tracing::warn!(
+                        "Memory manager init exhausted transient retries; attempting final DB reset recovery: {}",
+                        err
+                    );
+                    match backup_and_reset_memory_db(app_data_dir, db_path) {
+                        Ok(Some(backup_dir)) => {
+                            tracing::warn!(
+                                "Backed up memory DB files before final reset retry: {}",
+                                backup_dir.display()
+                            );
+                        }
+                        Ok(None) => {
+                            tracing::warn!("No memory DB files found during final reset retry");
+                        }
+                        Err(reset_err) => {
+                            tracing::error!(
+                                "Final memory DB reset retry failed to back up/reset DB: {}",
+                                reset_err
+                            );
+                            return Err(err);
+                        }
+                    }
 
-            tauri::async_runtime::block_on(memory::MemoryManager::new(db_path))
+                    match tauri::async_runtime::block_on(memory::MemoryManager::new(db_path)) {
+                        Ok(manager) => return Ok(manager),
+                        Err(final_err) => return Err(final_err),
+                    }
+                }
+                return Err(err);
+            }
         }
-        Err(err) => Err(err),
     }
+
+    unreachable!("memory manager init retry loop should always return");
 }
 
 /// Initialize keystore with the given master key and load API keys
@@ -268,35 +349,12 @@ fn initialize_keystore_and_keys(app: &tauri::AppHandle, master_key: &[u8]) {
     app.manage(keystore);
 
     // Ensure channel bot tokens are restored from the vault as soon as the keystore is ready.
-    // This avoids a startup race where sidecar restarts can occur before channel env vars exist.
+    // We intentionally avoid auto-restarting a live sidecar here because that can interrupt
+    // active orchestrator runs and produce "Sidecar not running" cascades.
     let app_clone = app.clone();
-    let sidecar_for_restart = sidecar.clone();
     tauri::async_runtime::spawn(async move {
         if let Some(app_state) = app_clone.try_state::<state::AppState>() {
             commands::sync_channel_tokens_env(&app_clone, app_state.inner()).await;
-        }
-
-        // Restart sidecar to ensure it picks up newly loaded env vars (keys are applied on start).
-        if sidecar_for_restart.state().await == sidecar::SidecarState::Running {
-            tracing::debug!("Restarting sidecar to apply updated API keys");
-            if let Err(e) = sidecar_for_restart.stop().await {
-                tracing::warn!("Failed to stop sidecar for key refresh: {}", e);
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            match sidecar_manager::get_sidecar_binary_path(&app_clone) {
-                Ok(path) => {
-                    if let Err(e) = sidecar_for_restart
-                        .start(path.to_string_lossy().as_ref())
-                        .await
-                    {
-                        tracing::error!("Failed to restart sidecar for key refresh: {}", e);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to resolve sidecar path for key refresh: {}", e);
-                }
-            }
         }
     });
 }
@@ -353,7 +411,11 @@ pub fn run() {
                     app_state.memory_manager = Some(std::sync::Arc::new(manager));
                 }
                 Err(e) => {
-                    tracing::error!("Failed to initialize memory manager: {}", e);
+                    tracing::error!(
+                        "Failed to initialize memory manager: {} | debug={:?}",
+                        e,
+                        e
+                    );
                 }
             }
 
@@ -696,6 +758,7 @@ pub fn run() {
             commands::orchestrator_get_run,
             commands::orchestrator_get_budget,
             commands::orchestrator_list_tasks,
+            commands::orchestrator_retry_task,
             commands::orchestrator_get_config,
             commands::orchestrator_extend_budget,
             commands::orchestrator_get_run_model,

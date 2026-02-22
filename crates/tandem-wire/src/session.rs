@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tandem_types::HostRuntimeContext;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +51,8 @@ pub struct WireSession {
     pub model: Option<WireModelSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<HostRuntimeContext>,
     #[serde(default)]
     pub messages: Vec<WireSessionMessage>,
 }

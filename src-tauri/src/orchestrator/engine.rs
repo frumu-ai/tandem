@@ -13,11 +13,14 @@ use crate::orchestrator::{
 };
 use crate::sidecar::SidecarManager;
 use crate::stream_hub::StreamHub;
+use ignore::WalkBuilder;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
+use tokio::fs;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -51,6 +54,32 @@ fn extract_text_from_message_part(part: &serde_json::Value) -> Option<String> {
     }
 
     None
+}
+
+fn is_nested_agent_tool(tool_name: &str) -> bool {
+    let normalized = tool_name
+        .split(':')
+        .next_back()
+        .unwrap_or(tool_name)
+        .trim()
+        .to_lowercase();
+    matches!(normalized.as_str(), "task" | "spawn_agent")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileFingerprint {
+    size: u64,
+    modified_ms: u128,
+    content_hash: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct WorkspaceChangeSummary {
+    has_changes: bool,
+    created: Vec<String>,
+    updated: Vec<String>,
+    deleted: Vec<String>,
+    diff_text: String,
 }
 
 // ============================================================================
@@ -96,10 +125,177 @@ pub struct OrchestratorEngine {
 }
 
 impl OrchestratorEngine {
+    fn existing_dir_string(path: &Path) -> Option<String> {
+        if path.is_dir() {
+            Some(path.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    }
+
+    fn existing_dir_string_from_opt(value: Option<&str>) -> Option<String> {
+        let raw = value?.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let path = PathBuf::from(raw);
+        Self::existing_dir_string(&path)
+    }
+
+    fn role_tool_allowlist(role: AgentRole) -> Vec<&'static str> {
+        match role {
+            AgentRole::Orchestrator | AgentRole::Planner | AgentRole::Delegator => vec![
+                "ls",
+                "list",
+                "glob",
+                "search",
+                "grep",
+                "codesearch",
+                "read",
+                "todowrite",
+                "todo_write",
+                "update_todo_list",
+                "websearch",
+                "webfetch_document",
+                "task",
+            ],
+            AgentRole::Worker | AgentRole::Builder => vec![
+                "ls",
+                "list",
+                "glob",
+                "search",
+                "grep",
+                "codesearch",
+                "read",
+                "write",
+                "edit",
+                "apply_patch",
+                "todowrite",
+                "todo_write",
+                "update_todo_list",
+                "websearch",
+                "webfetch_document",
+            ],
+            AgentRole::Watcher | AgentRole::Researcher => vec![
+                "ls",
+                "list",
+                "glob",
+                "search",
+                "grep",
+                "codesearch",
+                "read",
+                "websearch",
+                "webfetch_document",
+            ],
+            AgentRole::Reviewer | AgentRole::Validator | AgentRole::Tester => vec![
+                "ls",
+                "list",
+                "glob",
+                "search",
+                "grep",
+                "codesearch",
+                "read",
+                "websearch",
+                "webfetch_document",
+            ],
+        }
+    }
+
+    fn known_orchestrator_tools() -> &'static [&'static str] {
+        &[
+            "ls",
+            "list",
+            "glob",
+            "search",
+            "grep",
+            "codesearch",
+            "read",
+            "write",
+            "edit",
+            "apply_patch",
+            "todowrite",
+            "todo_write",
+            "update_todo_list",
+            "websearch",
+            "webfetch_document",
+            "bash",
+            "task",
+            "spawn_agent",
+            "batch",
+        ]
+    }
+
+    fn orchestrator_permission_rules(role: AgentRole) -> Vec<crate::sidecar::PermissionRule> {
+        let allowlist = Self::role_tool_allowlist(role);
+        let allow_set = allowlist
+            .iter()
+            .map(|tool| tool.to_string())
+            .collect::<HashSet<_>>();
+
+        let mut rules = tandem_core::build_mode_permission_rules(Some(
+            &allowlist
+                .iter()
+                .map(|tool| tool.to_string())
+                .collect::<Vec<_>>(),
+        ))
+        .into_iter()
+        .map(|rule| crate::sidecar::PermissionRule {
+            permission: rule.permission,
+            pattern: rule.pattern,
+            action: rule.action,
+        })
+        .collect::<Vec<_>>();
+
+        for permission in [
+            "write",
+            "edit",
+            "apply_patch",
+            "todowrite",
+            "todo_write",
+            "update_todo_list",
+            "websearch",
+            "webfetch_document",
+            "task",
+        ] {
+            if allow_set.contains(permission) {
+                rules.push(crate::sidecar::PermissionRule {
+                    permission: permission.to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                });
+            }
+        }
+
+        for permission in Self::known_orchestrator_tools() {
+            if allow_set.contains(*permission) {
+                continue;
+            }
+            rules.push(crate::sidecar::PermissionRule {
+                permission: (*permission).to_string(),
+                pattern: "*".to_string(),
+                action: "deny".to_string(),
+            });
+        }
+
+        rules
+    }
+
     const RELAXED_MAX_ITERATIONS: u32 = 1_000_000;
     const RELAXED_MAX_TOTAL_TOKENS: u64 = 100_000_000;
     const RELAXED_MAX_WALL_TIME_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
     const RELAXED_MAX_SUBAGENT_RUNS: u32 = 100_000;
+
+    fn extract_error_code(error: &str) -> Option<String> {
+        let trimmed = error.trim();
+        if let Some(rest) = trimmed.strip_prefix('[') {
+            let end = rest.find(']')?;
+            let code = &rest[..end];
+            if !code.trim().is_empty() {
+                return Some(code.trim().to_string());
+            }
+        }
+        None
+    }
 
     fn is_rate_limit_error(error: &str) -> bool {
         let e = error.to_lowercase();
@@ -119,6 +315,62 @@ impl OrchestratorEngine {
             || e.contains("out of credits")
             || e.contains("billing")
             || e.contains("payment required")
+    }
+
+    fn is_auth_error(error: &str) -> bool {
+        let e = error.to_lowercase();
+        (e.contains("401") || e.contains("unauthorized") || e.contains("forbidden"))
+            && (e.contains("provider") || e.contains("auth") || e.contains("api key"))
+            || e.contains("no cookie auth credentials found")
+    }
+
+    fn is_transient_timeout_error(error: &str) -> bool {
+        let e = error.to_lowercase();
+        e.contains("exceeded timeout")
+            || e.contains("timed out")
+            || e.contains("timeout")
+            || e.contains("stream_idle_timeout")
+    }
+
+    fn is_workspace_not_found_error(error: &str) -> bool {
+        let e = error.to_lowercase();
+        e.contains("[workspace_not_found]")
+            || e.contains("workspace root not found")
+            || e.contains("working directory does not exist")
+    }
+
+    fn is_path_not_found_error(error: &str) -> bool {
+        let e = error.to_lowercase();
+        e.contains("(os error 3)")
+            || e.contains("the system cannot find the path specified")
+            || e.contains("system cannot find the path specified")
+            || e.contains("os error 3")
+    }
+
+    fn is_invalid_tool_args_error(error: &str) -> bool {
+        let e = error.to_lowercase();
+        e.contains("[invalid_tool_args]")
+            || e.contains("invalid tool args")
+            || e.contains("tool args must be a json object")
+            || e.contains("missing required 'path'")
+            || e.contains("missing required 'content'")
+            || e.contains("file_path_missing")
+            || e.contains("write_content_missing")
+            || e.contains("write requires `content`")
+            || e.contains("write requires non-empty `content`")
+    }
+
+    fn should_clear_error_on_resume(error: &str) -> bool {
+        Self::is_transient_timeout_error(error)
+            || Self::is_rate_limit_error(error)
+            || Self::is_provider_quota_error(error)
+            || Self::is_auth_error(error)
+            || Self::is_workspace_not_found_error(error)
+            || Self::is_invalid_tool_args_error(error)
+            || Self::is_path_not_found_error(error)
+            || error
+                .to_lowercase()
+                .contains("run paused so you can resume and continue")
     }
     /// Create a new orchestrator engine
     pub fn new(
@@ -175,10 +427,20 @@ impl OrchestratorEngine {
     pub async fn start(&self) -> Result<()> {
         // Phase 1: Planning
         if let Err(e) = self.run_planning_phase().await {
-            // Ensure the run transitions to a terminal state instead of leaving the UI stuck
-            // in "planning" forever.
             let reason = e.to_string();
-            let _ = self.handle_failure(&reason).await;
+            // Planning can fail before task-level retries kick in. For transient conditions,
+            // pause instead of failing so users can continue from Command Center.
+            if Self::is_transient_timeout_error(&reason)
+                || Self::is_rate_limit_error(&reason)
+                || Self::is_provider_quota_error(&reason)
+                || Self::is_auth_error(&reason)
+            {
+                let _ = self.handle_transient_start_failure(&reason).await;
+            } else {
+                // Ensure the run transitions to a terminal state instead of leaving the UI stuck
+                // in "planning" forever.
+                let _ = self.handle_failure(&reason).await;
+            }
             return Err(e);
         }
 
@@ -283,15 +545,9 @@ impl OrchestratorEngine {
             run.session_id.clone()
         };
 
-        // Record budget
-        {
-            let mut tracker = self.budget_tracker.write().await;
-            tracker.record_subagent_run();
-        }
-
         // Send message and wait for response
         let response = self
-            .call_agent(None, &session_id, &prompt, AgentRole::Planner)
+            .call_agent(None, &session_id, &prompt, AgentRole::Orchestrator)
             .await?;
 
         // Record tokens (estimate from response length)
@@ -566,6 +822,8 @@ impl OrchestratorEngine {
                             continue;
                         }
                         run.tasks[idx].state = TaskState::InProgress;
+                        // Clear stale per-task error once a fresh execution attempt starts.
+                        run.tasks[idx].error_message = None;
                         run.tasks[idx].clone()
                     } else {
                         continue;
@@ -720,7 +978,10 @@ impl OrchestratorEngine {
         // stuck in `in_progress` (otherwise the orphan-recovery logic will keep re-queuing
         // it forever and budgets will "explode").
         let execution_result: Result<(String, bool, Option<ValidationResult>)> = async {
-            let mut session_id = self.get_or_create_task_session_id(&task).await?;
+            let execution_role = self.resolve_task_execution_role(&task).await;
+            let mut session_id = self
+                .get_or_create_task_session_id(&task, execution_role)
+                .await?;
             self.emit_task_trace(&task_id, Some(&session_id), "EXEC_STARTED", None);
 
             self.emit_event(OrchestratorEvent::TaskStarted {
@@ -728,27 +989,34 @@ impl OrchestratorEngine {
                 task_id: task_id.clone(),
                 timestamp: chrono::Utc::now(),
             });
+            let workspace_before = self.capture_workspace_snapshot().await?;
+            let hinted_targets = Self::extract_target_file_hints(&task);
+            let hinted_before = self.capture_target_file_snapshot(&hinted_targets).await?;
 
-            // Build context for builder
+            // Build context for execution role
             let file_context = self.get_task_file_context(&task).await?;
 
-            // Build builder prompt
+            if let Some(template_id) = task.template_id.as_deref() {
+                self.emit_task_trace(
+                    &task_id,
+                    Some(&session_id),
+                    "TEMPLATE_HINT",
+                    Some(format!(
+                        "template '{}' is advisory; falling back to role prompt templates",
+                        template_id
+                    )),
+                );
+            }
             let prompt = AgentPrompts::build_builder_prompt(&task, &file_context, None);
 
             // Record budget
             {
                 let mut tracker = self.budget_tracker.write().await;
-                tracker.record_subagent_run();
                 tracker.record_iteration();
             }
 
-            let builder_response = self
-                .call_agent_for_task_with_recovery(
-                    &task,
-                    &mut session_id,
-                    &prompt,
-                    AgentRole::Builder,
-                )
+            let mut builder_response = self
+                .call_agent_for_task_with_recovery(&task, &mut session_id, &prompt, execution_role)
                 .await?;
 
             // Record tokens
@@ -757,24 +1025,106 @@ impl OrchestratorEngine {
                 tracker.record_tokens(None, Some(builder_response.len()));
             }
 
-            // Get changes for validation
-            let changes_diff = self.get_recent_changes().await?;
+            // Get per-task workspace changes for validation.
+            let mut workspace_changes = self
+                .get_recent_changes_since(&workspace_before)
+                .await?;
+            let hinted_changes = self
+                .summarize_target_file_changes(&hinted_before, &hinted_targets)
+                .await?;
+            if !hinted_changes.is_empty() {
+                workspace_changes.has_changes = true;
+                if !workspace_changes.diff_text.is_empty() {
+                    workspace_changes.diff_text.push('\n');
+                }
+                workspace_changes.diff_text.push_str("Hint-target file changes:");
+                for line in hinted_changes.iter().take(20) {
+                    workspace_changes.diff_text.push('\n');
+                    workspace_changes.diff_text.push_str(line);
+                }
+            }
+            if self.task_requires_workspace_changes(&task) && !workspace_changes.has_changes {
+                // One targeted recovery pass: force explicit file-tool usage with concrete paths.
+                self.emit_task_trace(
+                    &task.id,
+                    Some(session_id.as_str()),
+                    "NO_CHANGES_RECOVERY_RETRY",
+                    Some("retry=1/1 reason=no_workspace_changes_captured".to_string()),
+                );
+                let target_hint = if hinted_targets.is_empty() {
+                    "the expected artifact file".to_string()
+                } else {
+                    hinted_targets.join(", ")
+                };
+                let recovery_prompt = format!(
+                    "{}\n\n[Critical Recovery]\n\
+Your previous attempt did not persist any workspace file changes.\n\
+You MUST perform concrete file edits now.\n\
+- Use `write`, `edit`, or `apply_patch` with explicit JSON args.\n\
+- For file tools, include a non-empty `path` string.\n\
+- Prefer these target files when relevant: {}\n\
+- Do not finish until at least one target file has actually changed on disk.",
+                    AgentPrompts::build_builder_prompt(
+                        &task,
+                        &file_context,
+                        Some(builder_response.as_str())
+                    ),
+                    target_hint
+                );
+                builder_response = self
+                    .call_agent_for_task_with_recovery(
+                        &task,
+                        &mut session_id,
+                        &recovery_prompt,
+                        execution_role,
+                    )
+                    .await?;
+                {
+                    let mut tracker = self.budget_tracker.write().await;
+                    tracker.record_tokens(None, Some(builder_response.len()));
+                }
+
+                workspace_changes = self
+                    .get_recent_changes_since(&workspace_before)
+                    .await?;
+                let hinted_changes = self
+                    .summarize_target_file_changes(&hinted_before, &hinted_targets)
+                    .await?;
+                if !hinted_changes.is_empty() {
+                    workspace_changes.has_changes = true;
+                    if !workspace_changes.diff_text.is_empty() {
+                        workspace_changes.diff_text.push('\n');
+                    }
+                    workspace_changes.diff_text.push_str("Hint-target file changes:");
+                    for line in hinted_changes.iter().take(20) {
+                        workspace_changes.diff_text.push('\n');
+                        workspace_changes.diff_text.push_str(line);
+                    }
+                }
+
+                if !workspace_changes.has_changes {
+                    return Err(TandemError::Orchestrator(format!(
+                        "Task requires file changes but none were captured. Use write/edit/apply_patch to update {} before completing.",
+                        target_hint
+                    )));
+                }
+            }
+            let changes_diff = workspace_changes.diff_text;
 
             // Build validator prompt
-            let validator_prompt = AgentPrompts::build_validator_prompt(&task, &changes_diff, None);
+            let validator_prompt = AgentPrompts::build_validator_prompt(
+                &task,
+                &changes_diff,
+                Some(builder_response.as_str()),
+            );
 
             // Call validator
-            {
-                let mut tracker = self.budget_tracker.write().await;
-                tracker.record_subagent_run();
-            }
-
             let validator_response = self
                 .call_agent_for_task_with_recovery(
                     &task,
                     &mut session_id,
                     &validator_prompt,
-                    AgentRole::Validator,
+                    self.resolve_task_validation_role(&task, execution_role),
                 )
                 .await?;
 
@@ -882,7 +1232,21 @@ impl OrchestratorEngine {
 
                             if t.retry_count >= max_retries {
                                 t.state = TaskState::Failed;
-                                t.error_message = Some("Max retries exceeded".to_string());
+                                let validator_feedback = t
+                                    .validation_result
+                                    .as_ref()
+                                    .map(|v| v.feedback.trim())
+                                    .filter(|v| !v.is_empty())
+                                    .map(|v| v.to_string());
+                                t.error_message = Some(match validator_feedback {
+                                    Some(feedback) => {
+                                        format!(
+                                            "Max retries exceeded. Last validator feedback: {}",
+                                            feedback
+                                        )
+                                    }
+                                    None => "Max retries exceeded".to_string(),
+                                });
                             } else {
                                 // Reset to pending for retry
                                 t.state = TaskState::Pending;
@@ -927,7 +1291,19 @@ impl OrchestratorEngine {
     async fn mark_task_error(&self, task_id: &str, error: &str) -> Result<()> {
         let rate_limited = Self::is_rate_limit_error(error);
         let quota_exceeded = Self::is_provider_quota_error(error);
-        let should_pause = rate_limited || quota_exceeded;
+        let auth_failed = Self::is_auth_error(error);
+        let transient_timeout = Self::is_transient_timeout_error(error);
+        let workspace_not_found = Self::is_workspace_not_found_error(error);
+        let invalid_tool_args = Self::is_invalid_tool_args_error(error);
+        let path_not_found = Self::is_path_not_found_error(error);
+        let error_code = Self::extract_error_code(error);
+        let path_or_args_issue = invalid_tool_args || path_not_found;
+        let should_pause = rate_limited
+            || quota_exceeded
+            || auth_failed
+            || transient_timeout
+            || workspace_not_found
+            || path_or_args_issue;
 
         let session_id = {
             let mut run = self.run.write().await;
@@ -952,9 +1328,49 @@ impl OrchestratorEngine {
                         t.error_message = Some(
                             "Provider rate-limited. Switch model/provider and retry.".to_string(),
                         );
+                    } else if auth_failed {
+                        t.error_message = Some(
+                            "Provider authentication failed (401/403). Check API key/provider selection and retry."
+                                .to_string(),
+                        );
+                    } else if workspace_not_found {
+                        t.error_message = Some(
+                            "Workspace root not found. Verify workspace path and continue."
+                                .to_string(),
+                        );
+                    } else if invalid_tool_args {
+                        t.error_message = Some(
+                            "Invalid tool arguments detected (missing/invalid file path). Run paused so you can resume after guardrails."
+                                .to_string(),
+                        );
+                    } else if path_not_found {
+                        t.error_message = Some(
+                            "Path not found detected (os error 3). Verify workspace/file paths and continue."
+                                .to_string(),
+                        );
+                    } else if transient_timeout {
+                        t.error_message = Some(
+                            "Tool timeout detected. Run paused so you can resume and continue."
+                                .to_string(),
+                        );
                     }
                     run.error_message = Some(if quota_exceeded {
                         "Paused: provider quota/credits exceeded. Switch model/provider and retry."
+                            .to_string()
+                    } else if auth_failed {
+                        "Paused: provider authentication failed (401/403). Check API key/provider selection and continue."
+                            .to_string()
+                    } else if workspace_not_found {
+                        "Paused: workspace root not found. Verify workspace path and continue."
+                            .to_string()
+                    } else if invalid_tool_args {
+                        "Paused: invalid tool args (missing file path). Resume to retry with strict path guardrails."
+                            .to_string()
+                    } else if path_not_found {
+                        "Paused: path not found (os error 3). Verify workspace/file paths and continue."
+                            .to_string()
+                    } else if transient_timeout {
+                        "Paused: transient tool timeout detected. Resume run to continue."
                             .to_string()
                     } else {
                         "Paused: provider rate-limited. Switch model/provider and retry."
@@ -992,14 +1408,28 @@ impl OrchestratorEngine {
             task_id,
             session_id.as_deref(),
             "EXEC_FINISHED",
-            Some(format!("error: {}", error)),
+            Some(format!(
+                "error: {}{}",
+                error,
+                error_code
+                    .as_deref()
+                    .map(|code| format!(" code={}", code))
+                    .unwrap_or_default()
+            )),
         );
 
         Ok(())
     }
 
-    async fn get_or_create_task_session_id(&self, task: &Task) -> Result<String> {
-        use crate::sidecar::{CreateSessionRequest, PermissionRule};
+    async fn get_or_create_task_session_id(&self, task: &Task, role: AgentRole) -> Result<String> {
+        use crate::sidecar::CreateSessionRequest;
+
+        if !self.workspace_path.is_dir() {
+            return Err(TandemError::Sidecar(format!(
+                "[WORKSPACE_NOT_FOUND] workspace root not found: {}",
+                self.workspace_path.display()
+            )));
+        }
 
         if let Some(existing) = self.task_sessions.read().await.get(&task.id).cloned() {
             return Ok(existing);
@@ -1023,54 +1453,13 @@ impl OrchestratorEngine {
             Err(e) => return Err(e),
         };
 
-        let permission = Some(vec![
-            PermissionRule {
-                permission: "ls".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "read".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "todowrite".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "websearch".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "webfetch".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "glob".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "grep".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-            PermissionRule {
-                permission: "search".to_string(),
-                pattern: "*".to_string(),
-                action: "allow".to_string(),
-            },
-        ]);
+        let permission = Some(Self::orchestrator_permission_rules(role));
 
         let provider = base_session.provider.clone();
         let model = match (base_session.model.clone(), provider.clone()) {
             (Some(model_id), Some(provider_id)) => Some(json!({
-                "provider_id": provider_id,
-                "model_id": model_id
+                "providerID": provider_id,
+                "modelID": model_id
             })),
             _ => None,
         };
@@ -1085,8 +1474,12 @@ impl OrchestratorEngine {
             model,
             provider,
             permission,
+            // Pin task sessions to the known engine workspace to avoid drift across projects.
             directory: Some(self.workspace_path.to_string_lossy().to_string()),
-            workspace_root: Some(self.workspace_path.to_string_lossy().to_string()),
+            workspace_root: Self::existing_dir_string_from_opt(
+                base_session.workspace_root.as_deref(),
+            )
+            .or_else(|| Some(self.workspace_path.to_string_lossy().to_string())),
         };
 
         let session = self.sidecar.create_session(request).await?;
@@ -1119,23 +1512,118 @@ impl OrchestratorEngine {
         prompt: &str,
         role: AgentRole,
     ) -> Result<String> {
-        match self
-            .call_agent(Some(&task.id), session_id.as_str(), prompt, role)
-            .await
-        {
-            Ok(response) => Ok(response),
-            Err(e) if is_sidecar_session_not_found(&e) => {
-                tracing::warn!(
-                    "Task {} session {} missing (404). Recreating task session and retrying once.",
-                    task.id,
-                    session_id
-                );
-                self.invalidate_task_session(&task.id).await;
-                *session_id = self.get_or_create_task_session_id(task).await?;
-                self.call_agent(Some(&task.id), session_id.as_str(), prompt, role)
-                    .await
+        let max_timeout_retries = {
+            let run = self.run.read().await;
+            run.config.max_timeout_retries_per_task_attempt
+        };
+        let mut timeout_retries_used: u32 = 0;
+        let mut session_recreated_after_404 = false;
+        let mut invalid_tool_args_retry_used = false;
+        let mut path_not_found_retry_used = false;
+        let mut effective_prompt = prompt.to_string();
+
+        loop {
+            match self
+                .call_agent(Some(&task.id), session_id.as_str(), &effective_prompt, role)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(e) if is_sidecar_session_not_found(&e) && !session_recreated_after_404 => {
+                    session_recreated_after_404 = true;
+                    tracing::warn!(
+                        "Task {} session {} missing (404). Recreating task session and retrying once.",
+                        task.id,
+                        session_id
+                    );
+                    self.invalidate_task_session(&task.id).await;
+                    *session_id = self.get_or_create_task_session_id(task, role).await?;
+                }
+                Err(e)
+                    if Self::is_invalid_tool_args_error(&e.to_string())
+                        && !invalid_tool_args_retry_used =>
+                {
+                    invalid_tool_args_retry_used = true;
+                    tracing::warn!(
+                        "Task {} role {:?} emitted invalid tool args on session {}. Retrying once with strict tool-arg reminder.",
+                        task.id,
+                        role,
+                        session_id
+                    );
+                    self.emit_task_trace(
+                        &task.id,
+                        Some(session_id.as_str()),
+                        "AGENT_INVALID_TOOL_ARGS_RETRY",
+                        Some("retry=1/1 reason=missing_read_path".to_string()),
+                    );
+                    effective_prompt = format!(
+                        "{prompt}\n\n[Tool Argument Guardrail]\n\
+When you call file tools, arguments MUST be a JSON object.\n\
+- `read` requires: {{\"path\":\"relative/or/absolute/path\"}}\n\
+- `write` requires: {{\"path\":\"relative/or/absolute/path\", \"content\":\"...\"}}\n\
+Never call `read` or `write` with empty args (`{{}}`) or missing required fields.\n\
+For `write`, always include a non-empty `content` string.\n\
+If unsure, run `glob` first to discover files, then call `read` with a concrete path."
+                    );
+                    self.invalidate_task_session(&task.id).await;
+                    *session_id = self.get_or_create_task_session_id(task, role).await?;
+                }
+                Err(e)
+                    if Self::is_path_not_found_error(&e.to_string())
+                        && !path_not_found_retry_used =>
+                {
+                    path_not_found_retry_used = true;
+                    tracing::warn!(
+                        "Task {} role {:?} hit path-not-found on session {}. Retrying once with strict path guardrail.",
+                        task.id,
+                        role,
+                        session_id
+                    );
+                    self.emit_task_trace(
+                        &task.id,
+                        Some(session_id.as_str()),
+                        "AGENT_PATH_NOT_FOUND_RETRY",
+                        Some("retry=1/1 reason=os_error_3".to_string()),
+                    );
+                    effective_prompt = format!(
+                        "{prompt}\n\n[Path Guardrail]\n\
+Your previous attempt hit a path-not-found error (Windows os error 3).\n\
+When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
+- Never call file tools with empty args (`{{}}`) or missing `path`.\n\
+- For `write`, include a non-empty `content` string.\n\
+- Use `glob` first to discover real files/dirs in this workspace.\n\
+- Prefer workspace-relative paths that already exist.\n\
+- If creating a new file, ensure the parent directory exists first."
+                    );
+                    self.invalidate_task_session(&task.id).await;
+                    *session_id = self.get_or_create_task_session_id(task, role).await?;
+                }
+                Err(e)
+                    if Self::is_transient_timeout_error(&e.to_string())
+                        && timeout_retries_used < max_timeout_retries =>
+                {
+                    timeout_retries_used += 1;
+                    tracing::warn!(
+                        "Task {} role {:?} timed out on session {} (retry {}/{}). Recreating task session and retrying.",
+                        task.id,
+                        role,
+                        session_id,
+                        timeout_retries_used,
+                        max_timeout_retries
+                    );
+                    self.emit_task_trace(
+                        &task.id,
+                        Some(session_id.as_str()),
+                        "AGENT_TIMEOUT_RETRY",
+                        Some(format!(
+                            "retry={}/{} role={:?}",
+                            timeout_retries_used, max_timeout_retries, role
+                        )),
+                    );
+                    self.invalidate_task_session(&task.id).await;
+                    *session_id = self.get_or_create_task_session_id(task, role).await?;
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => Err(e),
         }
     }
 
@@ -1153,7 +1641,7 @@ impl OrchestratorEngine {
     }
 
     async fn recreate_base_run_session(&self) -> Result<String> {
-        use crate::sidecar::{CreateSessionRequest, PermissionRule};
+        use crate::sidecar::CreateSessionRequest;
 
         let (objective, run_model, run_provider) = {
             let run = self.run.read().await;
@@ -1169,8 +1657,8 @@ impl OrchestratorEngine {
                 if !provider_id.trim().is_empty() && !model_id.trim().is_empty() =>
             {
                 Some(json!({
-                    "provider_id": provider_id,
-                    "model_id": model_id
+                    "providerID": provider_id,
+                    "modelID": model_id
                 }))
             }
             _ => None,
@@ -1184,50 +1672,9 @@ impl OrchestratorEngine {
             )),
             model,
             provider: run_provider,
-            permission: Some(vec![
-                PermissionRule {
-                    permission: "ls".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "read".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "todowrite".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "websearch".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "webfetch".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "glob".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "grep".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-                PermissionRule {
-                    permission: "search".to_string(),
-                    pattern: "*".to_string(),
-                    action: "allow".to_string(),
-                },
-            ]),
-            directory: Some(self.workspace_path.to_string_lossy().to_string()),
-            workspace_root: Some(self.workspace_path.to_string_lossy().to_string()),
+            permission: Some(Self::orchestrator_permission_rules(AgentRole::Orchestrator)),
+            directory: Self::existing_dir_string(&self.workspace_path),
+            workspace_root: Self::existing_dir_string(&self.workspace_path),
         };
 
         let session = self.sidecar.create_session(request).await?;
@@ -1328,10 +1775,18 @@ impl OrchestratorEngine {
 
         let mut stream = self.stream_hub.subscribe();
         let mut active_session_id = session_id.to_string();
+        let agent_call_timeout_secs = {
+            let run = self.run.read().await;
+            run.config.max_agent_call_secs.max(60)
+        };
 
         // Then send message to sidecar
         let mut request = SendMessageRequest::text(prompt.to_string());
         request.model = model_spec.clone();
+        {
+            let mut tracker = self.budget_tracker.write().await;
+            tracker.record_subagent_run();
+        }
         if let Err(e) = self
             .sidecar
             .append_message_and_start_run(&active_session_id, request)
@@ -1347,6 +1802,10 @@ impl OrchestratorEngine {
                 active_session_id = self.recreate_base_run_session().await?;
                 let mut retry_request = SendMessageRequest::text(prompt.to_string());
                 retry_request.model = model_spec;
+                {
+                    let mut tracker = self.budget_tracker.write().await;
+                    tracker.record_subagent_run();
+                }
                 self.sidecar
                     .append_message_and_start_run(&active_session_id, retry_request)
                     .await?;
@@ -1361,186 +1820,250 @@ impl OrchestratorEngine {
         let mut first_tool_finished = false;
         let mut stalled_windows: usize = 0;
         const MAX_STALLED_WINDOWS_BEFORE_FAIL: usize = 4;
+        let mut last_relevant_event_at = Instant::now();
 
         // Add a hard timeout to prevent hanging forever (even if the sidecar only sends heartbeats).
         // Planning can legitimately take a while (large repos, slower models, cold starts).
         // Keep this reasonably high so we don't fail healthy runs, but still fail-fast for true hangs.
-        let timeout = tokio::time::Duration::from_secs(300);
+        let timeout = tokio::time::Duration::from_secs(agent_call_timeout_secs);
         let consume = async {
             let per_event_timeout = tokio::time::Duration::from_secs(60);
             loop {
                 let next = tokio::time::timeout(per_event_timeout, stream.recv()).await;
                 let event = match next {
-                    Ok(Ok(env)) => {
-                        stalled_windows = 0;
-                        env.payload
-                    }
+                    Ok(Ok(env)) => Some(env.payload),
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
                         tracing::warn!("Orchestrator stream lagged by {} events", skipped);
                         continue;
                     }
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
                     Err(_) => {
-                        stalled_windows = stalled_windows.saturating_add(1);
-                        tracing::warn!(
-                            "No SSE events for {}s (window {}/{}), probing active run for session {}",
-                            stalled_windows * 60,
-                            stalled_windows,
-                            MAX_STALLED_WINDOWS_BEFORE_FAIL,
-                            active_session_id
-                        );
-
-                        match self.sidecar.get_active_run(&active_session_id).await {
-                            Ok(Some(active)) => {
+                        // Still run the per-session stall detection below even when no event arrived.
+                        None
+                    }
+                };
+                if let Some(event) = event.as_ref() {
+                    match event {
+                        StreamEvent::Content {
+                            session_id: sid,
+                            delta,
+                            content: full_content,
+                            ..
+                        } => {
+                            if sid == &active_session_id {
+                                // Prefer delta if available, otherwise use full content
+                                if let Some(text) = delta {
+                                    content.push_str(text);
+                                    tracing::debug!("Got content delta: {} chars", text.len());
+                                } else if !full_content.is_empty() && content.is_empty() {
+                                    content = full_content.clone();
+                                    tracing::debug!(
+                                        "Got full content: {} chars",
+                                        full_content.len()
+                                    );
+                                }
+                            }
+                        }
+                        StreamEvent::SessionIdle { session_id: sid } => {
+                            if sid == &active_session_id {
+                                tracing::info!(
+                                    "Session {} is idle, response complete",
+                                    active_session_id
+                                );
+                                break;
+                            }
+                        }
+                        StreamEvent::ToolStart {
+                            session_id: sid,
+                            part_id,
+                            tool,
+                            ..
+                        } => {
+                            if sid == &active_session_id && first_tool_part_id.is_none() {
+                                first_tool_part_id = Some(part_id.clone());
                                 if let Some(task_id) = task_id {
                                     self.emit_task_trace(
                                         task_id,
                                         Some(&active_session_id),
-                                        "STREAM_STALLED",
-                                        Some(format!(
-                                            "run={} last_activity_ms={}",
-                                            active.run_id, active.last_activity_at_ms
-                                        )),
+                                        "FIRST_TOOL_CALL",
+                                        Some(tool.clone()),
                                     );
                                 }
-
-                                if stalled_windows >= MAX_STALLED_WINDOWS_BEFORE_FAIL {
-                                    errors.push(format!(
-                                        "No SSE events received for {}s while run {} remained active",
-                                        stalled_windows * 60,
-                                        active.run_id
-                                    ));
-                                    break;
-                                }
-
-                                continue;
                             }
-                            Ok(None) => {
-                                tracing::info!(
-                                    "No active run found for {}; treating stall as terminal boundary",
-                                    active_session_id
-                                );
-                                if content.trim().is_empty() {
-                                    if let Some(recovered) = self
-                                        .recover_agent_response_from_history(&active_session_id)
-                                        .await
-                                    {
-                                        content = recovered;
+                            if sid == &active_session_id && is_nested_agent_tool(tool) {
+                                let mut tracker = self.budget_tracker.write().await;
+                                tracker.record_subagent_run();
+                                if let Some(task_id) = task_id {
+                                    self.emit_task_trace(
+                                        task_id,
+                                        Some(&active_session_id),
+                                        "AGENT_CALL_NESTED",
+                                        Some(format!("via_tool={}", tool)),
+                                    );
+                                }
+                            }
+                        }
+                        StreamEvent::ToolEnd {
+                            session_id: sid,
+                            part_id,
+                            tool,
+                            error,
+                            ..
+                        } => {
+                            if sid == &active_session_id
+                                && !first_tool_finished
+                                && first_tool_part_id.as_deref() == Some(part_id)
+                            {
+                                first_tool_finished = true;
+                                if let Some(task_id) = task_id {
+                                    let detail = match error.as_ref() {
+                                        Some(e) => Some(format!("{}:{}", tool, e)),
+                                        None => Some(tool.clone()),
+                                    };
+                                    self.emit_task_trace(
+                                        task_id,
+                                        Some(&active_session_id),
+                                        "TOOL_CALL_FINISHED",
+                                        detail,
+                                    );
+                                }
+                            }
+                        }
+                        StreamEvent::SessionError {
+                            session_id: sid,
+                            error,
+                            error_code,
+                        } => {
+                            if sid == &active_session_id {
+                                tracing::error!("Session {} error: {}", active_session_id, error);
+                                if let Some(code) = error_code {
+                                    if error.starts_with('[') {
+                                        errors.push(error.clone());
+                                    } else {
+                                        errors.push(format!("[{}] {}", code, error));
                                     }
+                                } else {
+                                    errors.push(error.clone());
                                 }
                                 break;
                             }
-                            Err(probe_err) => {
-                                tracing::warn!(
-                                    "Failed to probe active run for {} during stall recovery: {}",
-                                    active_session_id,
-                                    probe_err
-                                );
-                                if stalled_windows >= MAX_STALLED_WINDOWS_BEFORE_FAIL {
-                                    errors.push(format!(
-                                        "No SSE events received for {}s and run probe failed: {}",
-                                        stalled_windows * 60,
-                                        probe_err
-                                    ));
-                                    break;
-                                }
-                                continue;
-                            }
                         }
+                        StreamEvent::Raw { event_type, data } => {
+                            tracing::debug!(
+                                "Raw event for orchestrator: {} - {:?}",
+                                event_type,
+                                data
+                            );
+                        }
+                        _ => {}
                     }
                 };
-                match &event {
-                    StreamEvent::Content {
-                        session_id: sid,
-                        delta,
-                        content: full_content,
-                        ..
-                    } => {
-                        if sid == &active_session_id {
-                            // Prefer delta if available, otherwise use full content
-                            if let Some(text) = delta {
-                                content.push_str(text);
-                                tracing::debug!("Got content delta: {} chars", text.len());
-                            } else if !full_content.is_empty() && content.is_empty() {
-                                content = full_content.clone();
-                                tracing::debug!("Got full content: {} chars", full_content.len());
-                            }
-                        }
-                    }
-                    StreamEvent::SessionIdle { session_id: sid } => {
-                        if sid == &active_session_id {
-                            tracing::info!(
-                                "Session {} is idle, response complete",
-                                active_session_id
+
+                let is_relevant_event = match event.as_ref() {
+                    Some(StreamEvent::Content {
+                        session_id: sid, ..
+                    })
+                    | Some(StreamEvent::SessionIdle { session_id: sid })
+                    | Some(StreamEvent::ToolStart {
+                        session_id: sid, ..
+                    })
+                    | Some(StreamEvent::ToolEnd {
+                        session_id: sid, ..
+                    })
+                    | Some(StreamEvent::SessionError {
+                        session_id: sid, ..
+                    }) => sid == &active_session_id,
+                    _ => false,
+                };
+
+                if is_relevant_event {
+                    stalled_windows = 0;
+                    last_relevant_event_at = Instant::now();
+                    continue;
+                }
+
+                let elapsed = last_relevant_event_at.elapsed().as_secs();
+                let next_window_secs = (stalled_windows as u64 + 1) * 60;
+                if elapsed < next_window_secs {
+                    continue;
+                }
+
+                stalled_windows = stalled_windows.saturating_add(1);
+                tracing::warn!(
+                    "No relevant SSE events for session {} for {}s (window {}/{}), probing active run",
+                    active_session_id,
+                    elapsed,
+                    stalled_windows,
+                    MAX_STALLED_WINDOWS_BEFORE_FAIL
+                );
+
+                match self.sidecar.get_active_run(&active_session_id).await {
+                    Ok(Some(active)) => {
+                        if let Some(task_id) = task_id {
+                            self.emit_task_trace(
+                                task_id,
+                                Some(&active_session_id),
+                                "STREAM_STALLED",
+                                Some(format!(
+                                    "run={} last_activity_ms={} stalled_for_secs={}",
+                                    active.run_id, active.last_activity_at_ms, elapsed
+                                )),
                             );
+                        }
+
+                        if stalled_windows >= MAX_STALLED_WINDOWS_BEFORE_FAIL {
+                            errors.push(format!(
+                                "No relevant SSE events for {}s while run {} remained active (session {})",
+                                elapsed, active.run_id, active_session_id
+                            ));
                             break;
                         }
                     }
-                    StreamEvent::ToolStart {
-                        session_id: sid,
-                        part_id,
-                        tool,
-                        ..
-                    } => {
-                        if sid == &active_session_id && first_tool_part_id.is_none() {
-                            first_tool_part_id = Some(part_id.clone());
-                            if let Some(task_id) = task_id {
-                                self.emit_task_trace(
-                                    task_id,
-                                    Some(&active_session_id),
-                                    "FIRST_TOOL_CALL",
-                                    Some(tool.clone()),
-                                );
+                    Ok(None) => {
+                        tracing::info!(
+                            "No active run found for {}; treating session stall as terminal boundary",
+                            active_session_id
+                        );
+                        if content.trim().is_empty() {
+                            if let Some(recovered) = self
+                                .recover_agent_response_from_history(&active_session_id)
+                                .await
+                            {
+                                content = recovered;
                             }
                         }
+                        break;
                     }
-                    StreamEvent::ToolEnd {
-                        session_id: sid,
-                        part_id,
-                        tool,
-                        error,
-                        ..
-                    } => {
-                        if sid == &active_session_id
-                            && !first_tool_finished
-                            && first_tool_part_id.as_deref() == Some(part_id)
-                        {
-                            first_tool_finished = true;
-                            if let Some(task_id) = task_id {
-                                let detail = match error.as_ref() {
-                                    Some(e) => Some(format!("{}:{}", tool, e)),
-                                    None => Some(tool.clone()),
-                                };
-                                self.emit_task_trace(
-                                    task_id,
-                                    Some(&active_session_id),
-                                    "TOOL_CALL_FINISHED",
-                                    detail,
-                                );
-                            }
-                        }
-                    }
-                    StreamEvent::SessionError {
-                        session_id: sid,
-                        error,
-                    } => {
-                        if sid == &active_session_id {
-                            tracing::error!("Session {} error: {}", active_session_id, error);
-                            errors.push(error.clone());
+                    Err(probe_err) => {
+                        tracing::warn!(
+                            "Failed to probe active run for {} during stall recovery: {}",
+                            active_session_id,
+                            probe_err
+                        );
+                        if stalled_windows >= MAX_STALLED_WINDOWS_BEFORE_FAIL {
+                            errors.push(format!(
+                                "No relevant SSE events for {}s and run probe failed for session {}: {}",
+                                elapsed, active_session_id, probe_err
+                            ));
                             break;
                         }
                     }
-                    StreamEvent::Raw { event_type, data } => {
-                        tracing::debug!("Raw event for orchestrator: {} - {:?}", event_type, data);
-                    }
-                    _ => {}
                 }
             }
         };
 
         if tokio::time::timeout(timeout, consume).await.is_err() {
-            tracing::warn!("Agent call timed out after {:?}", timeout);
-            errors.push(format!("Timed out after {:?}", timeout));
+            tracing::warn!(
+                "Agent call timed out after {:?} (task={:?} role={:?} session={})",
+                timeout,
+                task_id,
+                role,
+                active_session_id
+            );
+            errors.push(format!(
+                "Timed out after {:?} (task={:?} role={:?} session={})",
+                timeout, task_id, role, active_session_id
+            ));
         }
 
         if content.trim().is_empty() && errors.is_empty() {
@@ -1584,23 +2107,435 @@ impl OrchestratorEngine {
 
     /// Build a summary of the workspace
     async fn build_workspace_summary(&self) -> Result<String> {
-        // TODO: Implement actual workspace analysis
+        let mut top_level_entries: Vec<String> = Vec::new();
+        let mut non_meta_entries: Vec<String> = Vec::new();
+
+        let mut dir = match fs::read_dir(&self.workspace_path).await {
+            Ok(dir) => dir,
+            Err(err) => {
+                return Ok(format!(
+                    "Workspace: {}\nWorkspace scan unavailable: {}",
+                    self.workspace_path.display(),
+                    err
+                ));
+            }
+        };
+
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".tandem" {
+                continue;
+            }
+            top_level_entries.push(name.clone());
+            if name != ".git" {
+                non_meta_entries.push(name);
+            }
+        }
+
+        top_level_entries.sort();
+        non_meta_entries.sort();
+
+        let preview = if top_level_entries.is_empty() {
+            "(none)".to_string()
+        } else {
+            top_level_entries
+                .iter()
+                .take(20)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        let sparse_note = if non_meta_entries.is_empty() {
+            "\nWorkspace appears empty or metadata-only. Prefer research-first planning and create starter project artifacts rather than repeated local shell discovery."
+        } else {
+            ""
+        };
+
         Ok(format!(
-            "Workspace: {}\nFiles: (summary pending)",
-            self.workspace_path.display()
+            "Workspace: {}\nTop-level entries (excluding .tandem): {}\nNon-metadata entry count: {}{}",
+            self.workspace_path.display(),
+            preview,
+            non_meta_entries.len(),
+            sparse_note
         ))
     }
 
     /// Get file context relevant to a task
     async fn get_task_file_context(&self, _task: &Task) -> Result<String> {
-        // TODO: Implement context selection based on task description
-        Ok("File context pending implementation".to_string())
+        let mut dir = match fs::read_dir(&self.workspace_path).await {
+            Ok(dir) => dir,
+            Err(err) => {
+                return Ok(format!("File context unavailable: {}", err));
+            }
+        };
+
+        let mut entries: Vec<String> = Vec::new();
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".tandem" {
+                continue;
+            }
+            entries.push(name);
+        }
+        entries.sort();
+
+        let non_meta: Vec<String> = entries
+            .iter()
+            .filter(|name| name.as_str() != ".git")
+            .cloned()
+            .collect();
+
+        if non_meta.is_empty() {
+            return Ok("Workspace appears metadata-only (.git and/or empty after excluding .tandem). Prefer web research and generating initial scaffold files; avoid repeated shell discovery loops.".to_string());
+        }
+
+        Ok(format!(
+            "Top-level files/directories: {}",
+            non_meta.into_iter().take(25).collect::<Vec<_>>().join(", ")
+        ))
     }
 
-    /// Get recent changes (git diff)
-    async fn get_recent_changes(&self) -> Result<String> {
-        // TODO: Implement git diff capture
-        Ok("No changes captured".to_string())
+    fn should_track_workspace_path(rel_path: &str) -> bool {
+        let normalized = rel_path.replace('\\', "/");
+        !normalized.is_empty()
+            && !normalized.starts_with(".git/")
+            && normalized != ".git"
+            && !normalized.starts_with(".tandem/")
+            && normalized != ".tandem"
+            && !normalized.starts_with("node_modules/")
+            && !normalized.starts_with("target/")
+    }
+
+    fn hash_file_contents(path: &Path) -> Option<u64> {
+        let bytes = std::fs::read(path).ok()?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        Some(hasher.finish())
+    }
+
+    fn fingerprint_path(path: &Path) -> Option<FileFingerprint> {
+        if !path.is_file() {
+            return None;
+        }
+        let meta = std::fs::metadata(path).ok()?;
+        let modified_ms = meta
+            .modified()
+            .ok()
+            .and_then(|ts| {
+                ts.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis())
+            })
+            .unwrap_or(0);
+        let size = meta.len();
+        let content_hash = if size <= 1_048_576 {
+            Self::hash_file_contents(path)
+        } else {
+            None
+        };
+        Some(FileFingerprint {
+            size,
+            modified_ms,
+            content_hash,
+        })
+    }
+
+    async fn capture_workspace_snapshot(&self) -> Result<HashMap<String, FileFingerprint>> {
+        let root = self.workspace_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut snapshot: HashMap<String, FileFingerprint> = HashMap::new();
+            let mut walker = WalkBuilder::new(&root);
+            walker.hidden(false);
+            walker.git_ignore(true);
+            walker.git_global(true);
+            walker.git_exclude(true);
+            for entry in walker.build().flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let rel = match path.strip_prefix(&root) {
+                    Ok(p) => p.to_string_lossy().replace('\\', "/"),
+                    Err(_) => continue,
+                };
+                if !Self::should_track_workspace_path(&rel) {
+                    continue;
+                }
+                let Some(fingerprint) = Self::fingerprint_path(path) else {
+                    continue;
+                };
+                snapshot.insert(rel, fingerprint);
+            }
+            Ok::<_, TandemError>(snapshot)
+        })
+        .await
+        .map_err(|e| TandemError::Orchestrator(format!("workspace snapshot task failed: {}", e)))?
+    }
+
+    async fn capture_target_file_snapshot(
+        &self,
+        targets: &[String],
+    ) -> Result<HashMap<String, Option<FileFingerprint>>> {
+        if targets.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let root = self.workspace_path.clone();
+        let targets = targets.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let mut out = HashMap::new();
+            for target in targets {
+                let raw = target.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                let path = {
+                    let candidate = PathBuf::from(raw);
+                    if candidate.is_absolute() {
+                        candidate
+                    } else {
+                        root.join(candidate)
+                    }
+                };
+                out.insert(target, Self::fingerprint_path(&path));
+            }
+            Ok::<_, TandemError>(out)
+        })
+        .await
+        .map_err(|e| TandemError::Orchestrator(format!("target snapshot task failed: {}", e)))?
+    }
+
+    async fn summarize_target_file_changes(
+        &self,
+        before: &HashMap<String, Option<FileFingerprint>>,
+        targets: &[String],
+    ) -> Result<Vec<String>> {
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let after = self.capture_target_file_snapshot(targets).await?;
+        let mut changed = Vec::new();
+        for target in targets {
+            let old_fp = before.get(target).cloned().flatten();
+            let new_fp = after.get(target).cloned().flatten();
+            if old_fp != new_fp {
+                let symbol = match (old_fp.is_some(), new_fp.is_some()) {
+                    (false, true) => "+",
+                    (true, false) => "-",
+                    _ => "~",
+                };
+                changed.push(format!("{} {}", symbol, target));
+            }
+        }
+        Ok(changed)
+    }
+
+    fn summarize_workspace_changes(
+        before: &HashMap<String, FileFingerprint>,
+        after: &HashMap<String, FileFingerprint>,
+    ) -> WorkspaceChangeSummary {
+        let mut created = Vec::new();
+        let mut updated = Vec::new();
+        let mut deleted = Vec::new();
+
+        for (path, after_meta) in after {
+            match before.get(path) {
+                None => created.push(path.clone()),
+                Some(before_meta) => {
+                    let changed = before_meta.size != after_meta.size
+                        || before_meta.modified_ms != after_meta.modified_ms
+                        || before_meta.content_hash != after_meta.content_hash;
+                    if changed {
+                        updated.push(path.clone());
+                    }
+                }
+            }
+        }
+        for path in before.keys() {
+            if !after.contains_key(path) {
+                deleted.push(path.clone());
+            }
+        }
+
+        created.sort();
+        updated.sort();
+        deleted.sort();
+
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Workspace changes: {} created, {} updated, {} deleted",
+            created.len(),
+            updated.len(),
+            deleted.len()
+        ));
+        for path in created.iter().take(20) {
+            lines.push(format!("+ {}", path));
+        }
+        for path in updated.iter().take(40) {
+            lines.push(format!("~ {}", path));
+        }
+        for path in deleted.iter().take(20) {
+            lines.push(format!("- {}", path));
+        }
+
+        WorkspaceChangeSummary {
+            has_changes: !(created.is_empty() && updated.is_empty() && deleted.is_empty()),
+            created,
+            updated,
+            deleted,
+            diff_text: lines.join("\n"),
+        }
+    }
+
+    async fn get_recent_changes_since(
+        &self,
+        before: &HashMap<String, FileFingerprint>,
+    ) -> Result<WorkspaceChangeSummary> {
+        let after = self.capture_workspace_snapshot().await?;
+        Ok(Self::summarize_workspace_changes(before, &after))
+    }
+
+    fn task_requires_workspace_changes(&self, task: &Task) -> bool {
+        let mut text = format!("{} {}", task.title, task.description);
+        if !task.acceptance_criteria.is_empty() {
+            text.push(' ');
+            text.push_str(&task.acceptance_criteria.join(" "));
+        }
+        let lowered = text.to_lowercase();
+        let explicit_no_write_markers = [
+            "no code changes",
+            "read-only",
+            "read only",
+            "analysis only",
+            "do not modify",
+            "without modifying",
+            "without changes",
+        ];
+        if explicit_no_write_markers
+            .iter()
+            .any(|kw| lowered.contains(kw))
+        {
+            return false;
+        }
+
+        let explicit_write_tool_markers = ["`write`", "`edit`", "`apply_patch`", "apply_patch"];
+        if explicit_write_tool_markers
+            .iter()
+            .any(|kw| lowered.contains(kw))
+        {
+            return true;
+        }
+
+        let write_verbs = [
+            "write",
+            "create",
+            "update",
+            "modify",
+            "edit",
+            "save",
+            "implement",
+            "add",
+            "patch",
+            "refactor",
+            "rewrite",
+            "generate",
+            "draft",
+            "produce",
+        ];
+        let artifact_terms = [
+            "file",
+            "files",
+            "document",
+            "documents",
+            "doc",
+            "docs",
+            "artifact",
+            "artifacts",
+            "markdown",
+            "readme",
+            "spec",
+            "specification",
+            ".md",
+            ".ts",
+            ".tsx",
+            ".rs",
+            ".json",
+            ".yaml",
+            ".yml",
+            ".py",
+            ".js",
+        ];
+        let read_only_intents = [
+            "review",
+            "read",
+            "analyze",
+            "analyse",
+            "audit",
+            "inspect",
+            "summarize",
+            "summarise",
+            "brainstorm",
+            "research",
+            "discover",
+            "map",
+            "plan",
+        ];
+
+        let has_write_verb = write_verbs.iter().any(|kw| lowered.contains(kw));
+        let has_artifact_term = artifact_terms.iter().any(|kw| lowered.contains(kw));
+        if has_write_verb && has_artifact_term {
+            return true;
+        }
+
+        let has_read_only_intent = read_only_intents.iter().any(|kw| lowered.contains(kw));
+        if has_read_only_intent && !has_write_verb {
+            return false;
+        }
+
+        false
+    }
+
+    fn extract_target_file_hints(task: &Task) -> Vec<String> {
+        let mut tokens = Vec::new();
+        tokens.extend(task.title.split_whitespace().map(|s| s.to_string()));
+        tokens.extend(task.description.split_whitespace().map(|s| s.to_string()));
+        for criterion in &task.acceptance_criteria {
+            tokens.extend(criterion.split_whitespace().map(|s| s.to_string()));
+        }
+        let mut hints = HashSet::new();
+        for raw in tokens {
+            let token = raw
+                .trim_matches(|c: char| {
+                    c == '`'
+                        || c == '"'
+                        || c == '\''
+                        || c == ','
+                        || c == '.'
+                        || c == ';'
+                        || c == ':'
+                        || c == '('
+                        || c == ')'
+                })
+                .to_string();
+            if token.contains('/')
+                || token.contains('\\')
+                || token.contains(".md")
+                || token.contains(".ts")
+                || token.contains(".tsx")
+                || token.contains(".rs")
+                || token.contains(".json")
+                || token.contains(".yaml")
+                || token.contains(".yml")
+                || token.contains(".py")
+                || token.contains(".js")
+            {
+                hints.insert(token);
+            }
+        }
+        let mut out: Vec<String> = hints.into_iter().collect();
+        out.sort();
+        out.truncate(5);
+        out
     }
 
     // ========================================================================
@@ -1676,6 +2611,23 @@ impl OrchestratorEngine {
             }
             run.status = RunStatus::Executing;
             run.ended_at = None;
+            if run
+                .error_message
+                .as_deref()
+                .is_some_and(Self::should_clear_error_on_resume)
+            {
+                run.error_message = None;
+            }
+            for task in run.tasks.iter_mut() {
+                if task.state == TaskState::Pending
+                    && task
+                        .error_message
+                        .as_deref()
+                        .is_some_and(Self::should_clear_error_on_resume)
+                {
+                    task.error_message = None;
+                }
+            }
         }
 
         {
@@ -1689,6 +2641,64 @@ impl OrchestratorEngine {
             run_id: self.get_run_id().await,
             timestamp: chrono::Utc::now(),
         });
+
+        Ok(())
+    }
+
+    /// Re-queue a failed task so it can be attempted again without restarting the entire run.
+    pub async fn retry_failed_task(&self, task_id: &str) -> Result<()> {
+        {
+            let mut run = self.run.write().await;
+            let task = run
+                .tasks
+                .iter_mut()
+                .find(|t| t.id == task_id)
+                .ok_or_else(|| TandemError::NotFound(format!("Task not found: {}", task_id)))?;
+
+            if task.state != TaskState::Failed {
+                return Err(TandemError::InvalidOperation(format!(
+                    "Task {} is not failed (current state: {:?})",
+                    task_id, task.state
+                )));
+            }
+
+            task.state = TaskState::Pending;
+            task.retry_count = 0;
+            task.error_message = None;
+            task.validation_result = None;
+            // Force a fresh child session for the retried task.
+            task.session_id = None;
+
+            TaskScheduler::update_blocked_tasks(&mut run.tasks);
+
+            if matches!(run.status, RunStatus::Failed | RunStatus::Cancelled) {
+                run.status = RunStatus::Paused;
+                run.ended_at = None;
+            }
+
+            if run
+                .error_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains(task_id) || msg.contains("Deadlock detected"))
+            {
+                run.error_message = None;
+            } else if run
+                .error_message
+                .as_deref()
+                .is_some_and(Self::should_clear_error_on_resume)
+            {
+                run.error_message = None;
+            }
+        }
+
+        {
+            let mut sessions = self.task_sessions.write().await;
+            sessions.remove(task_id);
+        }
+
+        self.save_state().await?;
+
+        self.emit_task_trace(task_id, None, "TASK_REQUEUED", None);
 
         Ok(())
     }
@@ -1876,6 +2886,44 @@ impl OrchestratorEngine {
         Ok(())
     }
 
+    async fn handle_transient_start_failure(&self, reason: &str) -> Result<()> {
+        {
+            let run = self.run.read().await;
+            if run.status == RunStatus::Cancelled {
+                return Ok(());
+            }
+        }
+        self.budget_tracker.write().await.set_active(false);
+        {
+            let mut run = self.run.write().await;
+            run.status = RunStatus::Paused;
+            run.ended_at = None;
+            run.error_message = Some(if Self::is_provider_quota_error(reason) {
+                "Paused: provider quota/credits exceeded during planning. Switch model/provider and continue."
+                    .to_string()
+            } else if Self::is_auth_error(reason) {
+                "Paused: provider authentication failed during planning (401/403). Check API key/provider selection and continue."
+                    .to_string()
+            } else if Self::is_rate_limit_error(reason) {
+                "Paused: provider rate-limited during planning. Retry or switch model/provider and continue."
+                    .to_string()
+            } else {
+                "Paused: transient timeout during planning. Continue run to retry planning."
+                    .to_string()
+            });
+            self.reset_in_progress_tasks_to_pending(&mut run);
+        }
+
+        self.save_state().await?;
+
+        self.emit_event(OrchestratorEvent::RunPaused {
+            run_id: self.get_run_id().await,
+            timestamp: chrono::Utc::now(),
+        });
+
+        Ok(())
+    }
+
     async fn handle_completion(&self) -> Result<()> {
         {
             let run = self.run.read().await;
@@ -1935,6 +2983,45 @@ impl OrchestratorEngine {
         self.run_id.clone()
     }
 
+    async fn resolve_task_execution_role(&self, task: &Task) -> AgentRole {
+        match task.assigned_role.as_str() {
+            crate::orchestrator::types::ROLE_ORCHESTRATOR => AgentRole::Orchestrator,
+            crate::orchestrator::types::ROLE_DELEGATOR => AgentRole::Delegator,
+            crate::orchestrator::types::ROLE_WORKER => AgentRole::Worker,
+            crate::orchestrator::types::ROLE_WATCHER => AgentRole::Watcher,
+            crate::orchestrator::types::ROLE_REVIEWER => AgentRole::Reviewer,
+            crate::orchestrator::types::ROLE_TESTER => AgentRole::Tester,
+            _ => {
+                self.emit_contract_warning(
+                    Some(task.id.clone()),
+                    "planner",
+                    "task_role",
+                    "unknown assigned_role; fallback to worker",
+                    true,
+                    Some(task.assigned_role.clone()),
+                )
+                .await;
+                AgentRole::Worker
+            }
+        }
+    }
+
+    fn resolve_task_validation_role(&self, task: &Task, execution_role: AgentRole) -> AgentRole {
+        if matches!(task.gate, Some(crate::orchestrator::types::TaskGate::Test)) {
+            return AgentRole::Tester;
+        }
+        if matches!(
+            task.gate,
+            Some(crate::orchestrator::types::TaskGate::Review)
+        ) {
+            return AgentRole::Reviewer;
+        }
+        if execution_role == AgentRole::Reviewer || execution_role == AgentRole::Tester {
+            return execution_role;
+        }
+        AgentRole::Reviewer
+    }
+
     pub async fn get_run_model_provider(&self) -> (Option<String>, Option<String>) {
         let run = self.run.read().await;
         (run.model.clone(), run.provider.clone())
@@ -1945,12 +3032,7 @@ impl OrchestratorEngine {
         role: AgentRole,
     ) -> (Option<String>, Option<String>) {
         let run = self.run.read().await;
-        let role_selection = match role {
-            AgentRole::Planner => run.agent_model_routing.planner.as_ref(),
-            AgentRole::Builder => run.agent_model_routing.builder.as_ref(),
-            AgentRole::Validator => run.agent_model_routing.validator.as_ref(),
-            AgentRole::Researcher => None,
-        };
+        let role_selection = run.agent_model_routing.get_for_role(role.role_key());
 
         if let Some(selection) = role_selection {
             let model = selection
@@ -1973,7 +3055,7 @@ impl OrchestratorEngine {
 
     pub async fn get_run_model_routing(&self) -> AgentModelRouting {
         let run = self.run.read().await;
-        run.agent_model_routing.clone()
+        run.agent_model_routing.canonicalized()
     }
 
     pub async fn set_run_model_provider(&self, model: Option<String>, provider: Option<String>) {
@@ -1985,7 +3067,7 @@ impl OrchestratorEngine {
     pub async fn set_run_model_routing(&self, routing: AgentModelRouting) -> Result<()> {
         {
             let mut run = self.run.write().await;
-            run.agent_model_routing = routing;
+            run.agent_model_routing = routing.canonicalized();
         }
         self.save_state().await
     }
@@ -2258,6 +3340,12 @@ impl OrchestratorEngine {
         }
         if run.config.max_wall_time_secs == 20 * 60 {
             run.config.max_wall_time_secs = 60 * 60;
+            changed = true;
+        }
+        if matches!(run.source, RunSource::CommandCenter)
+            && run.config.max_wall_time_secs <= 60 * 60
+        {
+            run.config.max_wall_time_secs = 48 * 60 * 60;
             changed = true;
         }
 

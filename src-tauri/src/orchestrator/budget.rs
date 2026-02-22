@@ -2,9 +2,8 @@
 // Cost tracking and enforcement with hard limits
 // See: docs/orchestration_plan.md
 
-use crate::error::{Result, TandemError};
 use crate::orchestrator::types::{Budget, OrchestratorConfig};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::time::Instant;
 
 // ============================================================================

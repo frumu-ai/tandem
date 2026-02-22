@@ -58,7 +58,7 @@ tandem-types = { path = "../crates/tandem-types" }
 tandem-document = { path = "../crates/tandem-document" }
 tandem-observability = { path = "../crates/tandem-observability" }
 tandem-skills = { path = "../crates/tandem-skills" }
-tandem-memory = { path = "../crates/tandem-memory" }
+tandem-memory = { path = "../crates/tandem-memory", features = ["local-embeddings"] }
 
 # Memory context dependencies
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }

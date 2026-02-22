@@ -969,7 +969,9 @@ export async function sendMessageAndStartRun(
   content: string,
   attachments?: FileAttachmentInput[],
   agent?: string,
-  modeId?: string
+  modeId?: string,
+  model?: string,
+  provider?: string
 ): Promise<void> {
   return invoke("send_message_and_start_run", {
     sessionId,
@@ -977,6 +979,8 @@ export async function sendMessageAndStartRun(
     attachments,
     agent,
     modeId,
+    model,
+    provider,
   });
 }
 

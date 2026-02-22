@@ -19,7 +19,15 @@ import {
   type StreamEventEnvelopeV2,
 } from "@/lib/tauri";
 import { Button } from "@/components/ui";
-import { CheckCircle2, PauseCircle, PlayCircle, ShieldAlert, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  PauseCircle,
+  PlayCircle,
+  ShieldAlert,
+  XCircle,
+  Wrench,
+  List,
+} from "lucide-react";
 
 const ROLE_OPTIONS = ["orchestrator", "delegator", "worker", "watcher", "reviewer", "tester"];
 const STATUS_FILTER_OPTIONS = ["all", "queued", "running", "completed", "failed", "cancelled"];
@@ -738,36 +746,19 @@ export function AgentCommandCenter() {
               placeholder="What should this agent do?"
             />
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-              <button
-                className={`rounded border p-2 text-left text-xs ${
-                  simpleRole === "worker"
-                    ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-100"
-                    : "border-border text-text-muted"
-                }`}
-                onClick={() => setSimpleRole("worker")}
-              >
-                Worker
-              </button>
-              <button
-                className={`rounded border p-2 text-left text-xs ${
-                  simpleRole === "reviewer"
-                    ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-100"
-                    : "border-border text-text-muted"
-                }`}
-                onClick={() => setSimpleRole("reviewer")}
-              >
-                Reviewer
-              </button>
-              <button
-                className={`rounded border p-2 text-left text-xs ${
-                  simpleRole === "tester"
-                    ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-100"
-                    : "border-border text-text-muted"
-                }`}
-                onClick={() => setSimpleRole("tester")}
-              >
-                Tester
-              </button>
+              {ROLE_OPTIONS.map((role) => (
+                <button
+                  key={role}
+                  className={`rounded border p-2 text-left text-xs ${
+                    simpleRole === role
+                      ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-100"
+                      : "border-border text-text-muted"
+                  }`}
+                  onClick={() => setSimpleRole(role)}
+                >
+                  {role.charAt(0).toUpperCase() + role.slice(1)}
+                </button>
+              ))}
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <select
@@ -1074,9 +1065,25 @@ export function AgentCommandCenter() {
                       Cancel
                     </Button>
                   </div>
-                  <div className="mt-1 text-xs text-text-muted">
-                    total {mission.instance_count} | running {mission.running_count} | done{" "}
-                    {mission.completed_count} | failed {mission.failed_count}
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-muted mb-1">
+                    <span>total {mission.instance_count}</span>
+                    <span>running {mission.running_count}</span>
+                    <span>done {mission.completed_count}</span>
+                    <span>failed {mission.failed_count}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-subtle">
+                    <span className="flex items-center gap-1" title="Tokens used">
+                      <span className="text-[9px] font-bold border border-text-subtle/30 px-1 rounded">
+                        TOK
+                      </span>{" "}
+                      {mission.token_used_total.toLocaleString()}
+                    </span>
+                    <span className="flex items-center gap-1" title="Tool calls used">
+                      <Wrench className="h-3 w-3" /> {mission.tool_calls_used_total}
+                    </span>
+                    <span className="flex items-center gap-1" title="Steps used">
+                      <List className="h-3 w-3" /> {mission.steps_used_total}
+                    </span>
                   </div>
                 </div>
               ))
@@ -1150,11 +1157,39 @@ export function AgentCommandCenter() {
                   completed {selectedMission.completed_count} | failed{" "}
                   {selectedMission.failed_count} | cancelled {selectedMission.cancelled_count}
                 </div>
-                <div className="pt-1">
-                  tokens {selectedMission.token_used_total} | toolCalls{" "}
-                  {selectedMission.tool_calls_used_total} | steps {selectedMission.steps_used_total}
+                <div className="pt-2 flex flex-wrap gap-x-4 gap-y-2">
+                  <div
+                    className="flex items-center gap-1.5 text-xs text-text-muted"
+                    title="Tokens used"
+                  >
+                    <span className="text-[10px] font-bold border border-text-muted/30 px-1 rounded">
+                      TOK
+                    </span>
+                    <span className="font-mono">
+                      {selectedMission.token_used_total.toLocaleString()}
+                    </span>
+                  </div>
+                  <div
+                    className="flex items-center gap-1.5 text-xs text-text-muted"
+                    title="Tool calls used"
+                  >
+                    <Wrench className="h-3.5 w-3.5" />
+                    <span>{selectedMission.tool_calls_used_total}</span>
+                  </div>
+                  <div
+                    className="flex items-center gap-1.5 text-xs text-text-muted"
+                    title="Steps used"
+                  >
+                    <List className="h-3.5 w-3.5" />
+                    <span>{selectedMission.steps_used_total}</span>
+                  </div>
+                  <div
+                    className="flex items-center gap-1.5 text-xs text-text-muted"
+                    title="Estimated cost"
+                  >
+                    <span>${selectedMission.cost_used_usd_total.toFixed(4)}</span>
+                  </div>
                 </div>
-                <div>cost ${selectedMission.cost_used_usd_total.toFixed(4)}</div>
               </div>
             ) : (
               <div className="text-xs text-text-muted">Select a mission to inspect details.</div>

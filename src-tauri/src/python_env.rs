@@ -201,7 +201,7 @@ pub fn get_status(workspace: Option<&Path>) -> PythonStatus {
 }
 
 pub fn create_venv(workspace: &Path, selected_kind: Option<String>) -> Result<PythonStatus> {
-    let mut candidates = discover_python_candidates();
+    let candidates = discover_python_candidates();
     if candidates.is_empty() {
         return Err(TandemError::InvalidConfig(
             "Python was not found. Install Python 3 and re-try.".to_string(),

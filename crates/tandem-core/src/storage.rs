@@ -966,6 +966,7 @@ fn load_legacy_opencode_sessions(base: &Path) -> anyhow::Result<HashMap<String, 
                     time: tandem_types::SessionTime { created, updated },
                     model: None,
                     provider: None,
+                    environment: None,
                     messages: load_legacy_session_messages(base, &session_id),
                 },
             );

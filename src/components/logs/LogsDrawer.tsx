@@ -227,10 +227,12 @@ function pickNewest(files: LogFileInfo[]): string | null {
 export function LogsDrawer({
   onClose,
   sessionId,
+  sessionIds,
   embedded = false,
 }: {
   onClose?: () => void;
   sessionId?: string | null;
+  sessionIds?: string[];
   embedded?: boolean;
 }) {
   const { t } = useTranslation("common");
@@ -885,7 +887,7 @@ export function LogsDrawer({
           style={{ display: tab === "console" ? "flex" : "none" }}
           className="min-h-0 flex-1 flex-col"
         >
-          <ConsoleTab sessionId={sessionId} />
+          <ConsoleTab sessionId={sessionId} sessionIds={sessionIds} />
         </div>
 
         {/* Tandem Logs Tab - always mounted, visibility toggled via CSS */}

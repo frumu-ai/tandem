@@ -10,6 +10,31 @@ interface LogEvent {
   toolName?: string;
 }
 
+const RESEARCH_SESSION_KEY = "tandem_portal_research_session_id";
+
+const buildLogsFromMessages = (
+  messages: Awaited<ReturnType<typeof api.getSessionMessages>>
+): LogEvent[] => {
+  return messages.flatMap((m) => {
+    const role = m.info?.role;
+    if (role !== "user" && role !== "assistant") return [];
+    const text = (m.parts || [])
+      .filter((p) => p.type === "text" && p.text)
+      .map((p) => p.text)
+      .join("\n")
+      .trim();
+    if (!text) return [];
+    return [
+      {
+        id: Math.random().toString(36).substring(7),
+        timestamp: new Date(),
+        type: "text" as const,
+        content: role === "assistant" ? text : `User: ${text}`,
+      },
+    ];
+  });
+};
+
 export const ResearchDashboard: React.FC = () => {
   const [query, setQuery] = useState("");
   const [isRunning, setIsRunning] = useState(false);
@@ -20,6 +45,28 @@ export const ResearchDashboard: React.FC = () => {
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  useEffect(() => {
+    const restore = async () => {
+      const sessionId = localStorage.getItem(RESEARCH_SESSION_KEY);
+      if (!sessionId) return;
+      try {
+        const messages = await api.getSessionMessages(sessionId);
+        const restoredLogs = buildLogsFromMessages(messages);
+        if (restoredLogs.length > 0) {
+          setLogs(restoredLogs);
+          addLog({
+            type: "system",
+            content: `Restored session: ${sessionId.substring(0, 8)}`,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to restore research session", err);
+      }
+    };
+    void restore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addLog = (event: Omit<LogEvent, "id" | "timestamp">) => {
     setLogs((prev) => [
@@ -43,6 +90,7 @@ export const ResearchDashboard: React.FC = () => {
     try {
       // 1. Create a session
       const sessionId = await api.createSession("Deep Research Session");
+      localStorage.setItem(RESEARCH_SESSION_KEY, sessionId);
       addLog({ type: "system", content: `Session Created: ${sessionId.substring(0, 8)}` });
 
       // 2. Start the Run
@@ -52,6 +100,33 @@ export const ResearchDashboard: React.FC = () => {
 
       // 3. Connect to the SSE stream
       const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
+      let finalized = false;
+
+      const finalizeRun = async (status: string) => {
+        if (finalized) return;
+        finalized = true;
+        try {
+          const messages = await api.getSessionMessages(sessionId);
+          const lastAssistant = [...messages].reverse().find((m) => m.info?.role === "assistant");
+          const finalText = (lastAssistant?.parts || [])
+            .filter((p) => p.type === "text" && p.text)
+            .map((p) => p.text)
+            .join("\n")
+            .trim();
+          if (finalText) {
+            addLog({ type: "text", content: finalText });
+          }
+        } catch (err) {
+          console.error("Failed to fetch final run output", err);
+        } finally {
+          addLog({
+            type: "system",
+            content: `Run finished with status: ${status}`,
+          });
+          setIsRunning(false);
+          eventSource.close();
+        }
+      };
 
       eventSource.onmessage = (evt) => {
         try {
@@ -84,12 +159,12 @@ export const ResearchDashboard: React.FC = () => {
             data.type === "run.status.updated" &&
             (data.properties.status === "completed" || data.properties.status === "failed")
           ) {
-            addLog({
-              type: "system",
-              content: `Run finished with status: ${data.properties.status}`,
-            });
-            setIsRunning(false);
-            eventSource.close();
+            void finalizeRun(data.properties.status);
+          } else if (
+            data.type === "session.run.finished" &&
+            (data.properties?.status === "completed" || data.properties?.status === "failed")
+          ) {
+            void finalizeRun(data.properties.status);
           }
         } catch (err) {
           console.error("Failed to parse SSE event", err);

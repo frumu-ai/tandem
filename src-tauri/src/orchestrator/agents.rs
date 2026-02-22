@@ -2,7 +2,7 @@
 // Defines prompts for Planner, Builder, Validator, and Researcher agents
 // See: docs/orchestration_plan.md
 
-use crate::orchestrator::types::{Task, ValidationResult};
+use crate::orchestrator::types::{normalize_role_key, Task, TaskGate, ValidationResult};
 use std::collections::HashSet;
 
 // ============================================================================
@@ -42,6 +42,9 @@ You MUST output a valid JSON array of tasks. Each task must have:
 - "description": detailed task description
 - "dependencies": array of task IDs that must complete first (can be empty)
 - "acceptance_criteria": array of specific criteria to verify completion
+- "assigned_role": orchestrator/delegator/worker/watcher/reviewer/tester (default worker)
+- Optional "template_id": role template hint
+- Optional "gate": "review" or "test"
 
 Example:
 ```json
@@ -51,24 +54,34 @@ Example:
     "title": "Analyze existing code structure",
     "description": "Review the current implementation to understand the codebase",
     "dependencies": [],
-    "acceptance_criteria": ["Identified key files", "Documented dependencies"]
+    "acceptance_criteria": ["Identified key files", "Documented dependencies"],
+    "assigned_role": "orchestrator"
   }},
   {{
     "id": "task_2",
     "title": "Implement feature X",
     "description": "Add the new feature based on analysis",
     "dependencies": ["task_1"],
-    "acceptance_criteria": ["Feature works as specified", "No regressions"]
+    "acceptance_criteria": ["Feature works as specified", "No regressions"],
+    "assigned_role": "worker"
   }}
 ]
 ```
 
 ## Rules
 1. Be CONCISE - no essays, just actionable tasks
-2. Order tasks logically with proper dependencies
-3. Each task should be achievable in one sub-agent call
-4. Include clear acceptance criteria for validation
-5. Maximum {max_tasks} tasks
+2. Maximize safe parallelism:
+   - Prefer independent tasks with empty dependencies when possible
+   - Add dependencies ONLY when strictly required by task outputs
+   - Avoid over-serializing work into unnecessary chains
+3. Order tasks logically with proper dependencies
+4. Each task should be achievable in one sub-agent call
+5. Include clear acceptance criteria for validation
+6. Maximum {max_tasks} tasks
+7. If workspace context indicates sparse/empty files, create research-first and scaffold-first tasks
+   (avoid repeated local shell discovery loops; use web research and produce concrete starter artifacts)
+8. The first wave of work should include multiple runnable tasks whenever objective scope allows it.
+   Only final synthesis/integration tasks should depend on many prior tasks.
 
 Output ONLY the JSON array, no other text."#,
             objective = objective,
@@ -106,12 +119,23 @@ Output ONLY the JSON array, no other text."#,
 1. Make the necessary code changes to complete this task
 2. Write a brief note explaining what you did
 3. Include verification hints for the validator
+4. If the task/criteria mention creating or updating files, you MUST use `write`, `edit`, or `apply_patch`
+   and ensure the target file exists in the workspace before finishing.
 
 ## Rules
 - Only modify files within the workspace
 - Do not run dangerous commands (shell, install) unless absolutely necessary
 - Be precise and minimal in your changes
 - If you cannot complete the task, explain why
+- If workspace context is sparse/empty, avoid repeated shell discovery loops and pivot to research + initial scaffold artifacts
+- Before claiming the workspace is empty or that templates/prior work are missing, you MUST gather concrete evidence with tools:
+  - Run `glob` with pattern `**/*` (or `*` as fallback) and summarize results.
+  - Cite at least a few observed paths (or explicitly report that no non-metadata files were found).
+  - Do not rely on assumptions without tool-produced evidence.
+- Tool arguments MUST be valid JSON objects. Never emit empty `{{}}` for file tools.
+- For `read`/`write`, always include a non-empty string `path` field.
+- For `write`, always include a non-empty string `content` field.
+- If your tool call arguments are malformed, the task will fail immediately.
 
 Complete this task now."#,
             title = task.title,
@@ -527,6 +551,9 @@ fn parse_tasks_from_markdown(output: &str) -> Vec<ParsedTask> {
             description: title,
             dependencies: Vec::new(),
             acceptance_criteria: vec!["Task completed successfully".to_string()],
+            assigned_role: Some("worker".to_string()),
+            template_id: None,
+            gate: None,
         });
     }
 
@@ -559,6 +586,18 @@ fn normalize_and_validate_parsed_tasks(
             .map(|c| c.trim().to_string())
             .filter(|c| !c.is_empty())
             .collect();
+        task.assigned_role = task
+            .assigned_role
+            .map(|r| normalize_role_key(&r))
+            .or_else(|| Some("worker".to_string()));
+        task.template_id = task
+            .template_id
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        task.gate = task
+            .gate
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| v == "review" || v == "test");
 
         if task.id.is_empty() {
             task.id = format!("task_{}", idx + 1);
@@ -632,16 +671,35 @@ pub struct ParsedTask {
     pub dependencies: Vec<String>,
     #[serde(default)]
     pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub assigned_role: Option<String>,
+    #[serde(default)]
+    pub template_id: Option<String>,
+    #[serde(default)]
+    pub gate: Option<String>,
 }
 
 impl From<ParsedTask> for Task {
     fn from(parsed: ParsedTask) -> Self {
+        let assigned_role = normalize_role_key(parsed.assigned_role.as_deref().unwrap_or("worker"));
+        let gate =
+            parsed
+                .gate
+                .as_deref()
+                .and_then(|value| match value.trim().to_lowercase().as_str() {
+                    "review" => Some(TaskGate::Review),
+                    "test" => Some(TaskGate::Test),
+                    _ => None,
+                });
         Task {
             id: parsed.id,
             title: parsed.title,
             description: parsed.description,
             dependencies: parsed.dependencies,
             acceptance_criteria: parsed.acceptance_criteria,
+            assigned_role,
+            template_id: parsed.template_id.filter(|v| !v.trim().is_empty()),
+            gate,
             state: crate::orchestrator::types::TaskState::Pending,
             retry_count: 0,
             artifacts: Vec::new(),
