@@ -136,6 +136,6 @@ They automate:
 
 - [Headless Service](./headless-service/)
 - [Agent Command Center](./agent-command-center/)
+- [WebMCP for Agents](./webmcp-for-agents/)
 - [Engine Commands](./reference/engine-commands/)
 - [Tools Reference](./reference/tools/)
-

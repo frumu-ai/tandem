@@ -1,0 +1,56 @@
+# Tandem Engine Docs (Full Index)
+
+> Expanded agent-readable index for the Tandem guide.
+
+## Top-level
+
+- / - Guide home.
+- /start-here/
+- /install-cli-binaries/
+- /first-run/
+- /build-from-source/
+- /installation/
+- /usage/
+- /headless-service/
+- /mcp-automated-agents/
+- /webmcp-for-agents/
+- /tui-guide/
+- /configuration/
+- /agents-and-sessions/
+- /agent-teams/
+- /agent-command-center/
+- /agent-teams-rollout/
+- /design-system/
+- /architecture/
+- /engine-testing/
+- /cli-vision/
+- /sdk-vision/
+
+## Desktop docs
+
+- /desktop/overview/
+- /desktop/first-10-minutes/
+- /desktop/workflows/
+- /desktop/settings-and-safety/
+- /desktop/learn-walkthroughs/
+- /desktop/troubleshooting/
+- /desktop/headless-deployment/
+
+## Reference docs
+
+- /reference/engine-commands/
+- /reference/tui-commands/
+- /reference/tools/
+- /reference/spawn-policy/
+- /reference/agent-team-api/
+- /reference/agent-team-events/
+- /protocol-matrix/
+
+## Related docs
+
+- /channel-integrations/
+- /index/
+
+## External resources
+
+- https://webmcp.dev/

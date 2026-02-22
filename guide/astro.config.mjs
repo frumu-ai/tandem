@@ -34,6 +34,7 @@ export default defineConfig({
             "installation",
             "usage",
             "headless-service",
+            "webmcp-for-agents",
           ],
         },
         {
@@ -44,6 +45,8 @@ export default defineConfig({
             "agents-and-sessions",
             "desktop/headless-deployment",
             "agent-teams",
+            "mcp-automated-agents",
+            "webmcp-for-agents",
             "design-system",
           ],
         },

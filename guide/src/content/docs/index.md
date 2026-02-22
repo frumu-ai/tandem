@@ -14,6 +14,7 @@ Welcome to the Tandem documentation focused on the TUI and engine runtime.
 - [Running Tandem](./usage/)
 - [Headless Service](./headless-service/)
 - [MCP Automated Agents](./mcp-automated-agents/)
+- [WebMCP for Agents](./webmcp-for-agents/)
 
 ## User Guide
 
@@ -24,6 +25,7 @@ Welcome to the Tandem documentation focused on the TUI and engine runtime.
 - [Agent Teams](./agent-teams/)
 - [Agent Command Center](./agent-command-center/)
 - [MCP Automated Agents](./mcp-automated-agents/)
+- [WebMCP for Agents](./webmcp-for-agents/)
 - [Agent Teams Rollout Plan](./agent-teams-rollout/)
 - [Design System](./design-system/)
 

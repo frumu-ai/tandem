@@ -1,0 +1,34 @@
+# Tandem Engine Docs
+
+> Agent-friendly index for Tandem Engine documentation.
+
+## Primary docs
+
+- /start-here/ - Fast setup path for new users.
+- /install-cli-binaries/ - Install CLI binaries.
+- /first-run/ - First-run checklist and validation.
+- /usage/ - Core usage patterns.
+- /headless-service/ - Run Tandem as a headless service.
+- /mcp-automated-agents/ - MCP connectors and automated routines.
+- /webmcp-for-agents/ - WebMCP workflow guidance for agent builders.
+
+## Agent and orchestration docs
+
+- /agents-and-sessions/ - Sessions and agent execution model.
+- /agent-teams/ - Agent team architecture and behavior.
+- /agent-command-center/ - Command Center operations.
+- /agent-teams-rollout/ - Rollout and migration details.
+
+## Reference docs
+
+- /reference/engine-commands/ - Engine CLI and serve commands.
+- /reference/tui-commands/ - TUI command reference.
+- /reference/tools/ - Tool APIs and expected arguments.
+- /reference/spawn-policy/ - Spawn policy and safety gates.
+- /reference/agent-team-api/ - HTTP API for agent teams.
+- /reference/agent-team-events/ - Event stream contract.
+- /protocol-matrix/ - Protocol compatibility matrix.
+
+## External resources
+
+- https://webmcp.dev/ - Browser-first MCP environment for tool prototyping and validation.
