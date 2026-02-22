@@ -69,7 +69,7 @@
 
 - Thanks to [@iridite](https://github.com/iridite) for:
   - **PR #12**: Provider settings i18n namespace fix (`ProviderCard` translation resolution).
-  - Earlier document-read architecture work that moved file-reading extraction from app-local paths toward shared engine-side usage via the `tandem-document` crate.
+  - **PR #11**: [`feat: enhance ReadTool to support document formats`](https://github.com/frumu-ai/tandem/pull/11), moving document/file-reading extraction toward shared engine-side crate usage (`tandem-document`).
 
 ### Orchestrator Routing Migration Notes
 
