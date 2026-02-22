@@ -82,6 +82,7 @@ pub struct EngineLoop {
     cancellations: CancellationRegistry,
     host_runtime_context: HostRuntimeContext,
     workspace_overrides: std::sync::Arc<RwLock<HashMap<String, u64>>>,
+    session_allowed_tools: std::sync::Arc<RwLock<HashMap<String, Vec<String>>>>,
     spawn_agent_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn SpawnAgentHook>>>>,
     tool_policy_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn ToolPolicyHook>>>>,
 }
@@ -110,6 +111,7 @@ impl EngineLoop {
             cancellations,
             host_runtime_context,
             workspace_overrides: std::sync::Arc::new(RwLock::new(HashMap::new())),
+            session_allowed_tools: std::sync::Arc::new(RwLock::new(HashMap::new())),
             spawn_agent_hook: std::sync::Arc::new(RwLock::new(None)),
             tool_policy_hook: std::sync::Arc::new(RwLock::new(None)),
         }
@@ -121,6 +123,22 @@ impl EngineLoop {
 
     pub async fn set_tool_policy_hook(&self, hook: std::sync::Arc<dyn ToolPolicyHook>) {
         *self.tool_policy_hook.write().await = Some(hook);
+    }
+
+    pub async fn set_session_allowed_tools(&self, session_id: &str, allowed_tools: Vec<String>) {
+        let normalized = allowed_tools
+            .into_iter()
+            .map(|tool| normalize_tool_name(&tool))
+            .filter(|tool| !tool.trim().is_empty())
+            .collect::<Vec<_>>();
+        self.session_allowed_tools
+            .write()
+            .await
+            .insert(session_id.to_string(), normalized);
+    }
+
+    pub async fn clear_session_allowed_tools(&self, session_id: &str) {
+        self.session_allowed_tools.write().await.remove(session_id);
     }
 
     pub async fn grant_workspace_override_for_session(
@@ -306,6 +324,16 @@ impl EngineLoop {
                 let mut tool_schemas = self.tools.list().await;
                 if active_agent.tools.is_some() {
                     tool_schemas.retain(|schema| agent_can_use_tool(&active_agent, &schema.name));
+                }
+                if let Some(allowed_tools) =
+                    self.session_allowed_tools.read().await.get(&session_id).cloned()
+                {
+                    if !allowed_tools.is_empty() {
+                        tool_schemas.retain(|schema| {
+                            let normalized = normalize_tool_name(&schema.name);
+                            allowed_tools.iter().any(|tool| tool == &normalized)
+                        });
+                    }
                 }
                 if let Err(validation_err) = validate_tool_schemas(&tool_schemas) {
                     let detail = validation_err.to_string();
@@ -823,6 +851,19 @@ impl EngineLoop {
             Ok(args) => args,
             Err(message) => return Ok(Some(message)),
         };
+        if let Some(allowed_tools) = self
+            .session_allowed_tools
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
+        {
+            if !allowed_tools.is_empty() && !allowed_tools.iter().any(|name| name == &tool) {
+                return Ok(Some(format!(
+                    "Tool `{tool}` is not allowed for this run."
+                )));
+            }
+        }
         if let Some(hook) = self.tool_policy_hook.read().await.clone() {
             let decision = hook
                 .evaluate_tool(ToolPolicyContext {
