@@ -43,6 +43,12 @@ export function UpdateProgressUI({
   actionLabel,
   showSkip = false,
 }: UpdateProgressUIProps) {
+  const normalizeVersion = (raw: string): string => {
+    const trimmed = raw.trim();
+    if (!trimmed) return "";
+    return trimmed.replace(/^[vV]\s*/, "");
+  };
+
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return "0 B";
     const k = 1024;
@@ -86,7 +92,9 @@ export function UpdateProgressUI({
             <div className="text-center">
               <h3 className="text-lg font-semibold text-text mb-2">{title}</h3>
               <p className="text-sm text-text-muted max-w-xs">{description}</p>
-              {version && <p className="text-xs text-text-subtle mt-2">v{version}</p>}
+              {version && (
+                <p className="text-xs text-text-subtle mt-2">v{normalizeVersion(version)}</p>
+              )}
             </div>
 
             <div className="flex gap-3">

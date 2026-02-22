@@ -28,11 +28,13 @@ export class EngineAPI {
   private baseUrl: string;
   private portalBaseUrl: string;
   private token: string | null;
+  private requestTimeoutMs: number;
 
   constructor(token: string | null = null) {
     this.baseUrl = "/engine";
     this.portalBaseUrl = "/portal";
     this.token = token;
+    this.requestTimeoutMs = 20000;
   }
 
   setToken(token: string) {
@@ -60,13 +62,29 @@ export class EngineAPI {
     options: { portal?: boolean } = {}
   ): Promise<T> {
     const base = options.portal ? this.portalBaseUrl : this.baseUrl;
-    const res = await fetch(`${base}${path}`, {
-      ...init,
-      headers: {
-        ...this.headers,
-        ...(init.headers || {}),
-      },
-    });
+    const controller = new AbortController();
+    const timeoutHandle = window.setTimeout(() => {
+      controller.abort();
+    }, this.requestTimeoutMs);
+
+    let res: Response;
+    try {
+      res = await fetch(`${base}${path}`, {
+        ...init,
+        headers: {
+          ...this.headers,
+          ...(init.headers || {}),
+        },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error(`Request timed out after ${this.requestTimeoutMs}ms: ${path}`);
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutHandle);
+    }
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
