@@ -5805,6 +5805,8 @@ MULTI-AGENT KEYS:
                     misfire_policy: Some(crate::net::client::RoutineMisfirePolicy::RunOnce),
                     entrypoint: entrypoint.clone(),
                     args: Some(json!({})),
+                    allowed_tools: None,
+                    output_targets: None,
                     creator_type: Some("user".to_string()),
                     creator_id: Some("tui".to_string()),
                     requires_approval: Some(true),

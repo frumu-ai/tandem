@@ -369,6 +369,8 @@ pub struct RoutineSpec {
     pub args: Value,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub output_targets: Vec<String>,
     pub creator_type: String,
     pub creator_id: String,
     pub requires_approval: bool,
@@ -445,6 +447,8 @@ pub struct RoutineRunRecord {
     pub args: Value,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub output_targets: Vec<String>,
     #[serde(default)]
     pub artifacts: Vec<RoutineRunArtifact>,
 }
@@ -1009,6 +1013,7 @@ impl AppState {
         }
 
         routine.allowed_tools = normalize_allowed_tools(routine.allowed_tools);
+        routine.output_targets = normalize_non_empty_list(routine.output_targets);
 
         let interval = match routine.schedule {
             RoutineSchedule::IntervalSeconds { seconds } => {
@@ -1190,6 +1195,7 @@ impl AppState {
             entrypoint: routine.entrypoint.clone(),
             args: routine.args.clone(),
             allowed_tools: routine.allowed_tools.clone(),
+            output_targets: routine.output_targets.clone(),
             artifacts: Vec::new(),
         };
         self.routine_runs
@@ -1395,6 +1401,10 @@ fn default_discord_mention_only() -> bool {
 }
 
 fn normalize_allowed_tools(raw: Vec<String>) -> Vec<String> {
+    normalize_non_empty_list(raw)
+}
+
+fn normalize_non_empty_list(raw: Vec<String>) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for item in raw {
@@ -1902,6 +1912,7 @@ pub async fn run_routine_executor(state: AppState) {
 
         match run_result {
             Ok(()) => {
+                append_configured_output_artifacts(&state, &run).await;
                 let _ = state
                     .update_routine_run_status(
                         &run.run_id,
@@ -1977,6 +1988,37 @@ fn truncate_text(input: &str, max_len: usize) -> String {
     let mut out = input[..max_len].to_string();
     out.push_str("...<truncated>");
     out
+}
+
+async fn append_configured_output_artifacts(state: &AppState, run: &RoutineRunRecord) {
+    if run.output_targets.is_empty() {
+        return;
+    }
+    for target in &run.output_targets {
+        let artifact = RoutineRunArtifact {
+            artifact_id: format!("artifact-{}", uuid::Uuid::new_v4()),
+            uri: target.clone(),
+            kind: "output_target".to_string(),
+            label: Some("configured output target".to_string()),
+            created_at_ms: now_ms(),
+            metadata: Some(serde_json::json!({
+                "source": "routine.output_targets",
+                "runID": run.run_id,
+                "routineID": run.routine_id,
+            })),
+        };
+        let _ = state
+            .append_routine_run_artifact(&run.run_id, artifact.clone())
+            .await;
+        state.event_bus.publish(EngineEvent::new(
+            "routine.run.artifact_added",
+            serde_json::json!({
+                "runID": run.run_id,
+                "routineID": run.routine_id,
+                "artifact": artifact,
+            }),
+        ));
+    }
 }
 
 async fn resolve_routine_model_spec(state: &AppState) -> Option<ModelSpec> {
@@ -2211,6 +2253,7 @@ mod tests {
             entrypoint: "mission.default".to_string(),
             args: serde_json::json!({"topic":"status"}),
             allowed_tools: vec![],
+            output_targets: vec![],
             creator_type: "user".to_string(),
             creator_id: "user-1".to_string(),
             requires_approval: true,
@@ -2247,6 +2290,7 @@ mod tests {
             entrypoint: "mission.default".to_string(),
             args: serde_json::json!({}),
             allowed_tools: vec![],
+            output_targets: vec![],
             creator_type: "user".to_string(),
             creator_id: "u-1".to_string(),
             requires_approval: false,
@@ -2303,6 +2347,7 @@ mod tests {
             entrypoint: "connector.email.reply".to_string(),
             args: serde_json::json!({}),
             allowed_tools: vec![],
+            output_targets: vec![],
             creator_type: "user".to_string(),
             creator_id: "u-1".to_string(),
             requires_approval: true,
@@ -2327,6 +2372,7 @@ mod tests {
             entrypoint: "connector.email.reply".to_string(),
             args: serde_json::json!({}),
             allowed_tools: vec![],
+            output_targets: vec![],
             creator_type: "user".to_string(),
             creator_id: "u-1".to_string(),
             requires_approval: true,
@@ -2354,6 +2400,7 @@ mod tests {
             entrypoint: "mission.default".to_string(),
             args: serde_json::json!({}),
             allowed_tools: vec![],
+            output_targets: vec![],
             creator_type: "user".to_string(),
             creator_id: "u-1".to_string(),
             requires_approval: true,
@@ -2390,6 +2437,7 @@ mod tests {
             entrypoint: "mission.default".to_string(),
             args: serde_json::json!({}),
             allowed_tools: vec![],
+            output_targets: vec![],
             artifacts: vec![],
         };
 

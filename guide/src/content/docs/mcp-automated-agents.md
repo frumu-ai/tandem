@@ -66,6 +66,7 @@ curl -sS -X POST http://127.0.0.1:39731/routines \
     "schedule": { "interval_seconds": { "seconds": 86400 } },
     "entrypoint": "mission.default",
     "allowed_tools": ["mcp.arcade.search", "read"],
+    "output_targets": ["file://reports/daily-mcp-research.json"],
     "requires_approval": true,
     "external_integrations_allowed": true
   }'
@@ -128,8 +129,8 @@ They automate:
 
 1. MCP add/connect
 2. MCP + global tool listing
-3. Routine creation with `allowed_tools`
-4. Run trigger + run record verification
+3. Routine creation with `allowed_tools` + `output_targets`
+4. Run trigger + run record/artifact verification
 
 ## Safety Notes
 

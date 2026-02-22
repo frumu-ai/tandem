@@ -46,6 +46,7 @@ $routineBody = @{
   }
   entrypoint = "mission.default"
   allowed_tools = @($toolOne, $toolTwo)
+  output_targets = @("file://reports/$routineId.json")
   requires_approval = $true
   external_integrations_allowed = $true
 }
@@ -66,4 +67,3 @@ Invoke-RestMethod -Method Get -Uri "$baseUrl/routines/runs/$runId" | ConvertTo-J
 Write-Host "== Done =="
 Write-Host "Routine: $routineId"
 Write-Host "Run:     $runId"
-

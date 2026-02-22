@@ -243,6 +243,8 @@ pub struct RoutineSpec {
     pub args: serde_json::Value,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub output_targets: Vec<String>,
     pub creator_type: String,
     pub creator_id: String,
     pub requires_approval: bool,
@@ -280,6 +282,8 @@ pub struct RoutineCreateRequest {
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
     #[serde(default)]
+    pub output_targets: Option<Vec<String>>,
+    #[serde(default)]
     pub creator_type: Option<String>,
     #[serde(default)]
     pub creator_id: Option<String>,
@@ -309,6 +313,8 @@ pub struct RoutinePatchRequest {
     pub args: Option<serde_json::Value>,
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub output_targets: Option<Vec<String>>,
     #[serde(default)]
     pub requires_approval: Option<bool>,
     #[serde(default)]

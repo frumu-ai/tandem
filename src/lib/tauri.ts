@@ -899,6 +899,7 @@ export interface RoutineSpec {
   entrypoint: string;
   args: Record<string, unknown>;
   allowed_tools: string[];
+  output_targets: string[];
   creator_type: string;
   creator_id: string;
   requires_approval: boolean;
@@ -916,6 +917,7 @@ export interface RoutineCreateRequest {
   entrypoint: string;
   args?: Record<string, unknown>;
   allowed_tools?: string[];
+  output_targets?: string[];
   creator_type?: string;
   creator_id?: string;
   requires_approval?: boolean;
@@ -932,6 +934,7 @@ export interface RoutinePatchRequest {
   entrypoint?: string;
   args?: Record<string, unknown>;
   allowed_tools?: string[];
+  output_targets?: string[];
   requires_approval?: boolean;
   external_integrations_allowed?: boolean;
   next_fire_at_ms?: number;
@@ -995,6 +998,7 @@ export interface RoutineRunRecord {
   entrypoint: string;
   args: Record<string, unknown>;
   allowed_tools: string[];
+  output_targets: string[];
   artifacts: RoutineRunArtifact[];
 }
 

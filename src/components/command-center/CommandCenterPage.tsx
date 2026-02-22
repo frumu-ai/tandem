@@ -220,6 +220,7 @@ export function CommandCenterPage({
   const [routineEntrypointDraft, setRoutineEntrypointDraft] = useState("mission.default");
   const [routineIntervalSecondsDraft, setRoutineIntervalSecondsDraft] = useState(300);
   const [routineAllowedToolsDraft, setRoutineAllowedToolsDraft] = useState<string[]>([]);
+  const [routineOutputTargetsDraft, setRoutineOutputTargetsDraft] = useState("");
   const [routineRequiresApprovalDraft, setRoutineRequiresApprovalDraft] = useState(true);
   const [routineExternalAllowedDraft, setRoutineExternalAllowedDraft] = useState(true);
   const [showLogsDrawer, setShowLogsDrawer] = useState(false);
@@ -633,6 +634,10 @@ export function CommandCenterPage({
       return;
     }
     const intervalSeconds = Math.max(1, Math.floor(routineIntervalSecondsDraft));
+    const outputTargets = routineOutputTargetsDraft
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
     setCreateRoutineLoading(true);
     try {
       await routinesCreate({
@@ -645,12 +650,14 @@ export function CommandCenterPage({
         entrypoint: routineEntrypointDraft.trim() || "mission.default",
         args: {},
         allowed_tools: routineAllowedToolsDraft,
+        output_targets: outputTargets,
         requires_approval: routineRequiresApprovalDraft,
         external_integrations_allowed: routineExternalAllowedDraft,
       });
       await Promise.all([loadRoutines(), loadRoutineRuns()]);
       setRoutineNameDraft("MCP Automation");
       setRoutineIntervalSecondsDraft(300);
+      setRoutineOutputTargetsDraft("");
       const at = new Date().toLocaleTimeString();
       setEventFeed((prev) => [`${at} routine created ${trimmedName}`, ...prev].slice(0, 40));
     } catch (e) {
@@ -1163,6 +1170,12 @@ export function CommandCenterPage({
                     ) : null}
                   </div>
                 </div>
+                <input
+                  value={routineOutputTargetsDraft}
+                  onChange={(event) => setRoutineOutputTargetsDraft(event.target.value)}
+                  className="w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-primary/60"
+                  placeholder="Output targets (comma-separated URIs)"
+                />
                 <Button
                   size="sm"
                   variant="primary"
@@ -1188,6 +1201,11 @@ export function CommandCenterPage({
                         <div className="truncate text-[11px] text-text-subtle">
                           {routine.entrypoint} · {routine.status}
                         </div>
+                        {routine.output_targets.length > 0 ? (
+                          <div className="truncate text-[11px] text-text-subtle">
+                            outputs: {routine.output_targets.length}
+                          </div>
+                        ) : null}
                       </div>
                       <Button
                         size="sm"
@@ -1286,6 +1304,11 @@ export function CommandCenterPage({
                       ) : (
                         <div className="mt-0.5 text-[11px] text-text-subtle">tool scope: all</div>
                       )}
+                      {run.output_targets.length > 0 ? (
+                        <div className="mt-0.5 text-[11px] text-text-subtle">
+                          outputs: {run.output_targets.length}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-1">
                       {run.status === "pending_approval" ? (

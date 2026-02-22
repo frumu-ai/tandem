@@ -47,6 +47,7 @@ curl -sS -X POST "$BASE_URL/routines" \
     \"schedule\": { \"interval_seconds\": { \"seconds\": 300 } },
     \"entrypoint\": \"mission.default\",
     \"allowed_tools\": [\"$TOOL_ONE\", \"$TOOL_TWO\"],
+    \"output_targets\": [\"file://reports/$ROUTINE_ID.json\"],
     \"requires_approval\": true,
     \"external_integrations_allowed\": true
   }"
@@ -75,4 +76,3 @@ echo
 echo "== Done =="
 echo "Routine: $ROUTINE_ID"
 echo "Run:     $RUN_ID"
-

@@ -348,6 +348,7 @@ struct RoutineCreateInput {
     entrypoint: String,
     args: Option<Value>,
     allowed_tools: Option<Vec<String>>,
+    output_targets: Option<Vec<String>>,
     creator_type: Option<String>,
     creator_id: Option<String>,
     requires_approval: Option<bool>,
@@ -365,6 +366,7 @@ struct RoutinePatchInput {
     entrypoint: Option<String>,
     args: Option<Value>,
     allowed_tools: Option<Vec<String>>,
+    output_targets: Option<Vec<String>>,
     requires_approval: Option<bool>,
     external_integrations_allowed: Option<bool>,
     next_fire_at_ms: Option<u64>,
@@ -4766,6 +4768,7 @@ async fn routines_create(
         entrypoint: input.entrypoint,
         args: input.args.unwrap_or_else(|| json!({})),
         allowed_tools: input.allowed_tools.unwrap_or_default(),
+        output_targets: input.output_targets.unwrap_or_default(),
         creator_type: input.creator_type.unwrap_or_else(|| "user".to_string()),
         creator_id: input.creator_id.unwrap_or_else(|| "unknown".to_string()),
         requires_approval: input.requires_approval.unwrap_or(true),
@@ -4836,6 +4839,9 @@ async fn routines_patch(
     }
     if let Some(allowed_tools) = input.allowed_tools {
         routine.allowed_tools = allowed_tools;
+    }
+    if let Some(output_targets) = input.output_targets {
+        routine.output_targets = output_targets;
     }
     if let Some(requires_approval) = input.requires_approval {
         routine.requires_approval = requires_approval;
@@ -8747,7 +8753,8 @@ mod tests {
                     "name": "Tool-scoped routine",
                     "schedule": { "interval_seconds": { "seconds": 90 } },
                     "entrypoint": "mission.default",
-                    "allowed_tools": ["  mcp.arcade.search  ", "read", "read", ""]
+                    "allowed_tools": ["  mcp.arcade.search  ", "read", "read", ""],
+                    "output_targets": ["  s3://reports/daily.json  ", "s3://reports/daily.json", ""]
                 })
                 .to_string(),
             ))
@@ -8773,6 +8780,17 @@ mod tests {
                     .collect::<Vec<_>>()),
             Some(vec!["mcp.arcade.search".to_string(), "read".to_string()])
         );
+        assert_eq!(
+            create_payload
+                .get("routine")
+                .and_then(|v| v.get("output_targets"))
+                .and_then(|v| v.as_array())
+                .map(|rows| rows
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect::<Vec<_>>()),
+            Some(vec!["s3://reports/daily.json".to_string()])
+        );
 
         let patch_req = Request::builder()
             .method("PATCH")
@@ -8780,7 +8798,8 @@ mod tests {
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
-                    "allowed_tools": ["mcp.arcade.send_email", "bash"]
+                    "allowed_tools": ["mcp.arcade.send_email", "bash"],
+                    "output_targets": ["https://storage.example/run/output.md"]
                 })
                 .to_string(),
             ))
@@ -8804,6 +8823,17 @@ mod tests {
                 "mcp.arcade.send_email".to_string(),
                 "bash".to_string()
             ])
+        );
+        assert_eq!(
+            patch_payload
+                .get("routine")
+                .and_then(|v| v.get("output_targets"))
+                .and_then(|v| v.as_array())
+                .map(|rows| rows
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect::<Vec<_>>()),
+            Some(vec!["https://storage.example/run/output.md".to_string()])
         );
 
         let run_now_req = Request::builder()
@@ -8855,6 +8885,17 @@ mod tests {
                 "mcp.arcade.send_email".to_string(),
                 "bash".to_string()
             ])
+        );
+        assert_eq!(
+            run_get_payload
+                .get("run")
+                .and_then(|v| v.get("output_targets"))
+                .and_then(|v| v.as_array())
+                .map(|rows| rows
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect::<Vec<_>>()),
+            Some(vec!["https://storage.example/run/output.md".to_string()])
         );
     }
 

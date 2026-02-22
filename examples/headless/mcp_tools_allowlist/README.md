@@ -8,7 +8,8 @@ This example demonstrates a full headless flow for MCP connector tools and routi
 2. Connect and auto-discover MCP tools (`initialize` + `tools/list`)
 3. List MCP tools and global tool registry entries
 4. Create a routine with an explicit `allowed_tools` subset
-5. Trigger a run and verify the run record includes the same `allowed_tools`
+5. Configure routine `output_targets` for artifact destination wiring
+6. Trigger a run and verify the run record includes the same `allowed_tools`
 6. Watch SSE for MCP and routine events
 
 ## Prerequisites
@@ -52,4 +53,3 @@ You should see events including:
 - `mcp.server.connected`
 - `mcp.tools.updated`
 - `routine.run.created`
-
