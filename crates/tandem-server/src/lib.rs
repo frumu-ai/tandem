@@ -1899,11 +1899,25 @@ pub async fn run_routine_executor(state: AppState) {
             .set_session_allowed_tools(&session_id, run.allowed_tools.clone())
             .await;
 
+        let (selected_model, model_source) = resolve_routine_model_spec_for_run(&state, &run).await;
+        if let Some(spec) = selected_model.as_ref() {
+            state.event_bus.publish(EngineEvent::new(
+                "routine.run.model_selected",
+                serde_json::json!({
+                    "runID": run.run_id,
+                    "routineID": run.routine_id,
+                    "providerID": spec.provider_id,
+                    "modelID": spec.model_id,
+                    "source": model_source,
+                }),
+            ));
+        }
+
         let request = SendMessageRequest {
             parts: vec![MessagePartInput::Text {
                 text: build_routine_prompt(&state, &run).await,
             }],
-            model: resolve_routine_model_spec(&state).await,
+            model: selected_model,
             agent: None,
         };
 
@@ -2124,9 +2138,66 @@ async fn append_configured_output_artifacts(state: &AppState, run: &RoutineRunRe
     }
 }
 
-async fn resolve_routine_model_spec(state: &AppState) -> Option<ModelSpec> {
+fn parse_model_spec(value: &Value) -> Option<ModelSpec> {
+    let obj = value.as_object()?;
+    let provider_id = obj.get("provider_id")?.as_str()?.trim();
+    let model_id = obj.get("model_id")?.as_str()?.trim();
+    if provider_id.is_empty() || model_id.is_empty() {
+        return None;
+    }
+    Some(ModelSpec {
+        provider_id: provider_id.to_string(),
+        model_id: model_id.to_string(),
+    })
+}
+
+fn model_spec_for_role_from_args(args: &Value, role: &str) -> Option<ModelSpec> {
+    args.get("model_policy")
+        .and_then(|v| v.get("role_models"))
+        .and_then(|v| v.get(role))
+        .and_then(parse_model_spec)
+}
+
+fn default_model_spec_from_args(args: &Value) -> Option<ModelSpec> {
+    args.get("model_policy")
+        .and_then(|v| v.get("default_model"))
+        .and_then(parse_model_spec)
+}
+
+fn provider_catalog_has_model(providers: &[tandem_types::ProviderInfo], spec: &ModelSpec) -> bool {
+    providers.iter().any(|provider| {
+        provider.id == spec.provider_id
+            && provider
+                .models
+                .iter()
+                .any(|model| model.id == spec.model_id)
+    })
+}
+
+async fn resolve_routine_model_spec_for_run(
+    state: &AppState,
+    run: &RoutineRunRecord,
+) -> (Option<ModelSpec>, String) {
     let providers = state.providers.list().await;
-    providers
+    let mode = routine_mode_from_args(&run.args);
+    let mut requested: Vec<(ModelSpec, &str)> = Vec::new();
+
+    if mode.eq_ignore_ascii_case("orchestrated") {
+        if let Some(orchestrator) = model_spec_for_role_from_args(&run.args, "orchestrator") {
+            requested.push((orchestrator, "args.model_policy.role_models.orchestrator"));
+        }
+    }
+    if let Some(default_model) = default_model_spec_from_args(&run.args) {
+        requested.push((default_model, "args.model_policy.default_model"));
+    }
+
+    for (candidate, source) in requested {
+        if provider_catalog_has_model(&providers, &candidate) {
+            return (Some(candidate), source.to_string());
+        }
+    }
+
+    let fallback = providers
         .into_iter()
         .find(|provider| !provider.models.is_empty())
         .and_then(|provider| {
@@ -2135,7 +2206,9 @@ async fn resolve_routine_model_spec(state: &AppState) -> Option<ModelSpec> {
                 provider_id: provider.id,
                 model_id: model.id.clone(),
             })
-        })
+        });
+
+    (fallback, "provider_catalog_fallback".to_string())
 }
 
 #[cfg(test)]
