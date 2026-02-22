@@ -264,7 +264,7 @@ From desktop:
 1. Open `Extensions -> MCP` and add/connect connector servers.
 2. Open `Agent Automation` (robot icon in the left nav) and use `Automated Bots`.
 3. Create a scheduled bot:
-   - choose interval
+   - choose interval (seconds)
    - set a clear mission objective (required)
    - optionally use Mission Workshop to generate objective + success criteria
    - choose entrypoint (for example `mcp.arcade.search`)
@@ -302,6 +302,49 @@ Desktop mapping:
 
 - In `Agent Automation`, choose `Mode = orchestrated`
 - Enable `Orchestrator-only tool calls` in the form
+
+### Model Provider + Model Selection (Desktop + Headless)
+
+Each automation can now carry a model routing policy in `args.model_policy`:
+
+- `default_model`: used by standalone runs and as fallback for orchestrated runs
+- `role_models.orchestrator`: preferred model for orchestrated mode today
+- `role_models.planner|worker|verifier|notifier`: stored now for upcoming deeper role routing
+
+Desktop mapping:
+
+- In `Agent Automation`, use `Model Routing`
+- Pick provider/model directly or apply a preset
+
+Example policy payload:
+
+```json
+{
+  "model_policy": {
+    "default_model": {
+      "provider_id": "openrouter",
+      "model_id": "openai/gpt-4.1-mini"
+    },
+    "role_models": {
+      "orchestrator": {
+        "provider_id": "openrouter",
+        "model_id": "anthropic/claude-3.5-sonnet"
+      },
+      "verifier": {
+        "provider_id": "openrouter",
+        "model_id": "anthropic/claude-3.5-sonnet"
+      }
+    }
+  }
+}
+```
+
+Recommended starting examples:
+
+- OpenRouter (balanced): `openrouter/openai/gpt-4.1-mini`
+- OpenRouter (orchestrator+verifier): `openrouter/anthropic/claude-3.5-sonnet`
+- OpenCode Zen fast profile: `opencode_zen/zen/fast`
+- OpenCode Zen quality profile: `opencode_zen/zen/pro`
 
 ## 4) SSE Visibility
 

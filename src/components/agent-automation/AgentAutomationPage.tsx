@@ -10,6 +10,7 @@ import {
   mcpRefresh,
   mcpSetEnabled,
   onSidecarEventV2,
+  listProvidersFromSidecar,
   routinesCreate,
   routinesList,
   routinesPatch,
@@ -21,6 +22,7 @@ import {
   toolIds,
   type McpRemoteTool,
   type McpServerRecord,
+  type ProviderInfo,
   type RoutineRunRecord,
   type RoutineSpec,
   type StreamEventEnvelopeV2,
@@ -30,6 +32,66 @@ import {
 type AgentAutomationTab = "automated-bots" | "agent-ops";
 type BotTemplateId = "daily-research" | "issue-triage" | "release-reporter";
 type RunFilter = "all" | "pending" | "blocked" | "failed";
+type AgentRoleId = "orchestrator" | "planner" | "worker" | "verifier" | "notifier";
+
+interface ModelChoice {
+  provider_id: string;
+  model_id: string;
+}
+
+interface ModelPolicyDraft {
+  default_model?: ModelChoice;
+  role_models?: Partial<Record<AgentRoleId, ModelChoice>>;
+}
+
+interface ModelPreset {
+  id: string;
+  label: string;
+  description: string;
+  mode: "standalone" | "orchestrated" | "both";
+  defaultModel: ModelChoice;
+  roleModels?: Partial<Record<AgentRoleId, ModelChoice>>;
+}
+
+const AGENT_ROLES: AgentRoleId[] = ["orchestrator", "planner", "worker", "verifier", "notifier"];
+
+const MODEL_PRESETS: ModelPreset[] = [
+  {
+    id: "openrouter-balanced",
+    label: "OpenRouter Balanced",
+    description: "Good default quality/cost balance for solo bots.",
+    mode: "both",
+    defaultModel: { provider_id: "openrouter", model_id: "openai/gpt-4.1-mini" },
+  },
+  {
+    id: "openrouter-orchestrated",
+    label: "OpenRouter Orchestrated",
+    description: "Role-aware mapping for orchestrated runs.",
+    mode: "orchestrated",
+    defaultModel: { provider_id: "openrouter", model_id: "openai/gpt-4.1-mini" },
+    roleModels: {
+      orchestrator: { provider_id: "openrouter", model_id: "anthropic/claude-3.5-sonnet" },
+      planner: { provider_id: "openrouter", model_id: "openai/gpt-4.1-mini" },
+      worker: { provider_id: "openrouter", model_id: "openai/gpt-4.1-mini" },
+      verifier: { provider_id: "openrouter", model_id: "anthropic/claude-3.5-sonnet" },
+      notifier: { provider_id: "openrouter", model_id: "openai/gpt-4.1-mini" },
+    },
+  },
+  {
+    id: "opencode-zen-fast",
+    label: "OpenCode Zen Fast",
+    description: "Low-latency automation profile.",
+    mode: "both",
+    defaultModel: { provider_id: "opencode_zen", model_id: "zen/fast" },
+  },
+  {
+    id: "opencode-zen-quality",
+    label: "OpenCode Zen Quality",
+    description: "Higher-quality output profile.",
+    mode: "both",
+    defaultModel: { provider_id: "opencode_zen", model_id: "zen/pro" },
+  },
+];
 
 interface BotTemplate {
   id: BotTemplateId;
@@ -92,6 +154,44 @@ function buildMissionDraft(brief: string, tools: string[]): MissionDraft {
 function modeFromArgs(args: Record<string, unknown> | undefined): string {
   const value = typeof args?.["mode"] === "string" ? args["mode"].trim() : "";
   return value || "standalone";
+}
+
+function parseModelChoice(value: unknown): ModelChoice | null {
+  if (!isRecord(value)) return null;
+  const provider_id = asString(value["provider_id"]);
+  const model_id = asString(value["model_id"]);
+  if (!provider_id || !model_id) return null;
+  return { provider_id, model_id };
+}
+
+function parseModelPolicy(args: Record<string, unknown> | undefined): ModelPolicyDraft | null {
+  if (!args) return null;
+  const policyRaw = args["model_policy"];
+  if (!isRecord(policyRaw)) return null;
+  const policy: ModelPolicyDraft = {};
+  const defaultModel = parseModelChoice(policyRaw["default_model"]);
+  if (defaultModel) {
+    policy.default_model = defaultModel;
+  }
+  const roleModelsRaw = policyRaw["role_models"];
+  if (isRecord(roleModelsRaw)) {
+    const roleModels: Partial<Record<AgentRoleId, ModelChoice>> = {};
+    for (const role of AGENT_ROLES) {
+      const parsed = parseModelChoice(roleModelsRaw[role]);
+      if (parsed) {
+        roleModels[role] = parsed;
+      }
+    }
+    if (Object.keys(roleModels).length > 0) {
+      policy.role_models = roleModels;
+    }
+  }
+  return Object.keys(policy).length > 0 ? policy : null;
+}
+
+function modelChoiceLabel(choice: ModelChoice | null | undefined): string | null {
+  if (!choice) return null;
+  return `${choice.provider_id}/${choice.model_id}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -215,6 +315,7 @@ export function AgentAutomationPage({
 
   const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
   const [mcpTools, setMcpTools] = useState<McpRemoteTool[]>([]);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [mcpLoading, setMcpLoading] = useState(false);
   const [busyConnector, setBusyConnector] = useState<string | null>(null);
   const [availableToolIds, setAvailableToolIds] = useState<string[]>([]);
@@ -231,6 +332,12 @@ export function AgentAutomationPage({
   const [routineModeDraft, setRoutineModeDraft] = useState<"standalone" | "orchestrated">(
     "standalone"
   );
+  const [routineModelProviderDraft, setRoutineModelProviderDraft] = useState("");
+  const [routineModelIdDraft, setRoutineModelIdDraft] = useState("");
+  const [routineRoleModelDrafts, setRoutineRoleModelDrafts] = useState<
+    Partial<Record<AgentRoleId, ModelChoice>>
+  >({});
+  const [routineModelPresetDraft, setRoutineModelPresetDraft] = useState(MODEL_PRESETS[0].id);
   const [routineOrchestratorOnlyToolCallsDraft, setRoutineOrchestratorOnlyToolCallsDraft] =
     useState(false);
   const [routineOutputTargetsDraft, setRoutineOutputTargetsDraft] = useState("");
@@ -329,6 +436,15 @@ export function AgentAutomationPage({
     }
   }, []);
 
+  const loadProviders = useCallback(async () => {
+    try {
+      const rows = await listProvidersFromSidecar();
+      setProviders(rows.filter((row) => row.models.length > 0));
+    } catch {
+      setProviders([]);
+    }
+  }, []);
+
   const loadToolCatalog = useCallback(async () => {
     try {
       const ids = await toolIds();
@@ -371,6 +487,12 @@ export function AgentAutomationPage({
     const timer = setInterval(() => void loadMcpStatus(), 10000);
     return () => clearInterval(timer);
   }, [loadMcpStatus]);
+
+  useEffect(() => {
+    void loadProviders();
+    const timer = setInterval(() => void loadProviders(), 20000);
+    return () => clearInterval(timer);
+  }, [loadProviders]);
 
   useEffect(() => {
     void loadToolCatalog();
@@ -485,6 +607,24 @@ export function AgentAutomationPage({
     [availableToolIds, mcpToolIds]
   );
 
+  const providerModelMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const provider of providers) {
+      map.set(provider.id, [...provider.models]);
+    }
+    return map;
+  }, [providers]);
+
+  const defaultProviderModels = useMemo(
+    () => providerModelMap.get(routineModelProviderDraft) ?? [],
+    [providerModelMap, routineModelProviderDraft]
+  );
+
+  const providerOptions = useMemo(
+    () => providers.map((provider) => provider.id).sort((a, b) => a.localeCompare(b)),
+    [providers]
+  );
+
   useEffect(() => {
     if (routineAllowedToolsDraft.length > 0) return;
     const defaults = ["read", "websearch", "webfetch_document"];
@@ -493,6 +633,29 @@ export function AgentAutomationPage({
     }
     setRoutineAllowedToolsDraft(defaults);
   }, [mcpToolIds, routineAllowedToolsDraft.length]);
+
+  useEffect(() => {
+    if (providerOptions.length === 0) return;
+    if (!routineModelProviderDraft || !providerModelMap.has(routineModelProviderDraft)) {
+      const firstProvider = providerOptions[0];
+      const firstModel = providerModelMap.get(firstProvider)?.[0] ?? "";
+      setRoutineModelProviderDraft(firstProvider);
+      setRoutineModelIdDraft(firstModel);
+      return;
+    }
+    const models = providerModelMap.get(routineModelProviderDraft) ?? [];
+    if (models.length === 0) return;
+    if (!models.includes(routineModelIdDraft)) {
+      setRoutineModelIdDraft(models[0]);
+    }
+  }, [
+    providerOptions,
+    providerModelMap,
+    routineModelIdDraft,
+    routineModelProviderDraft,
+    setRoutineModelIdDraft,
+    setRoutineModelProviderDraft,
+  ]);
 
   const applyTemplate = (template: BotTemplate) => {
     const firstMcpTool = mcpToolIds[0];
@@ -512,6 +675,7 @@ export function AgentAutomationPage({
     setRoutineMissionObjectiveDraft(template.missionObjective);
     setRoutineSuccessCriteriaDraft(template.successCriteria.join("\n"));
     setRoutineModeDraft("standalone");
+    setRoutineRoleModelDrafts({});
     setRoutineOrchestratorOnlyToolCallsDraft(false);
   };
 
@@ -549,6 +713,30 @@ export function AgentAutomationPage({
       }
       return [...prev, toolId];
     });
+  };
+
+  const setRoleModelDraft = (role: AgentRoleId, providerId: string, modelId: string) => {
+    setRoutineRoleModelDrafts((prev) => {
+      const next = { ...prev };
+      if (!providerId || !modelId) {
+        delete next[role];
+      } else {
+        next[role] = { provider_id: providerId, model_id: modelId };
+      }
+      return next;
+    });
+  };
+
+  const applyModelPreset = () => {
+    const preset = MODEL_PRESETS.find((row) => row.id === routineModelPresetDraft);
+    if (!preset) return;
+
+    setRoutineModelProviderDraft(preset.defaultModel.provider_id);
+    setRoutineModelIdDraft(preset.defaultModel.model_id);
+    if (preset.mode === "orchestrated") {
+      setRoutineModeDraft("orchestrated");
+    }
+    setRoutineRoleModelDrafts(preset.roleModels ?? {});
   };
 
   const applyMissionDraft = (draft: MissionDraft) => {
@@ -602,6 +790,27 @@ export function AgentAutomationPage({
       .split(",")
       .map((value) => value.trim())
       .filter((value) => value.length > 0);
+    const modelPolicy: ModelPolicyDraft = {};
+    if (routineModelProviderDraft.trim() && routineModelIdDraft.trim()) {
+      modelPolicy.default_model = {
+        provider_id: routineModelProviderDraft.trim(),
+        model_id: routineModelIdDraft.trim(),
+      };
+    }
+    const roleModels: Partial<Record<AgentRoleId, ModelChoice>> = {};
+    for (const role of AGENT_ROLES) {
+      const draft = routineRoleModelDrafts[role];
+      if (draft?.provider_id?.trim() && draft.model_id?.trim()) {
+        roleModels[role] = {
+          provider_id: draft.provider_id.trim(),
+          model_id: draft.model_id.trim(),
+        };
+      }
+    }
+    if (Object.keys(roleModels).length > 0) {
+      modelPolicy.role_models = roleModels;
+    }
+    const hasModelPolicy = Object.keys(modelPolicy).length > 0;
 
     setCreateRoutineLoading(true);
     setError(null);
@@ -615,6 +824,7 @@ export function AgentAutomationPage({
           success_criteria: successCriteria,
           mode: routineModeDraft,
           orchestrator_only_tool_calls: routineOrchestratorOnlyToolCallsDraft,
+          ...(hasModelPolicy ? { model_policy: modelPolicy } : {}),
         },
         allowed_tools: routineAllowedToolsDraft,
         output_targets: outputTargets,
@@ -628,6 +838,7 @@ export function AgentAutomationPage({
       setRoutineMissionObjectiveDraft("");
       setRoutineSuccessCriteriaDraft("");
       setRoutineModeDraft("standalone");
+      setRoutineRoleModelDrafts({});
       setRoutineOrchestratorOnlyToolCallsDraft(false);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -944,6 +1155,132 @@ export function AgentAutomationPage({
                         Orchestrator-only tool calls
                       </label>
                     </div>
+                    <div className="rounded border border-border bg-surface p-2">
+                      <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                        Model Routing
+                      </div>
+                      <div className="mt-1 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+                        <select
+                          value={routineModelPresetDraft}
+                          onChange={(event) => setRoutineModelPresetDraft(event.target.value)}
+                          className="w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-primary/60"
+                        >
+                          {MODEL_PRESETS.filter(
+                            (preset) => preset.mode === "both" || preset.mode === routineModeDraft
+                          ).map((preset) => (
+                            <option key={preset.id} value={preset.id}>
+                              {preset.label}
+                            </option>
+                          ))}
+                        </select>
+                        <Button size="sm" variant="secondary" onClick={applyModelPreset}>
+                          Apply preset
+                        </Button>
+                      </div>
+                      <div className="mt-1 text-[10px] text-text-subtle">
+                        {
+                          MODEL_PRESETS.find((preset) => preset.id === routineModelPresetDraft)
+                            ?.description
+                        }
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <label className="text-[11px] text-text-subtle">
+                          Default provider
+                          <select
+                            value={routineModelProviderDraft}
+                            onChange={(event) => {
+                              const nextProvider = event.target.value;
+                              const nextModel = providerModelMap.get(nextProvider)?.[0] ?? "";
+                              setRoutineModelProviderDraft(nextProvider);
+                              setRoutineModelIdDraft(nextModel);
+                            }}
+                            className="mt-1 w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-primary/60"
+                          >
+                            {providerOptions.map((providerId) => (
+                              <option key={`provider-${providerId}`} value={providerId}>
+                                {providerId}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="text-[11px] text-text-subtle">
+                          Default model
+                          <select
+                            value={routineModelIdDraft}
+                            onChange={(event) => setRoutineModelIdDraft(event.target.value)}
+                            className="mt-1 w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-primary/60"
+                          >
+                            {defaultProviderModels.map((modelId) => (
+                              <option key={`model-${modelId}`} value={modelId}>
+                                {modelId}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      {providerOptions.length === 0 ? (
+                        <div className="mt-1 text-[10px] text-text-muted">
+                          No provider catalog available yet. Start/connect your model providers.
+                        </div>
+                      ) : null}
+                      {routineModeDraft === "orchestrated" ? (
+                        <div className="mt-2">
+                          <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                            Role Models (optional)
+                          </div>
+                          <div className="mt-1 space-y-1">
+                            {AGENT_ROLES.map((role) => {
+                              const selected = routineRoleModelDrafts[role];
+                              const providerId = selected?.provider_id ?? "";
+                              const roleModels = providerId
+                                ? (providerModelMap.get(providerId) ?? [])
+                                : [];
+                              return (
+                                <div key={`role-model-${role}`} className="grid grid-cols-3 gap-1">
+                                  <div className="truncate pt-1 text-[10px] uppercase text-text-subtle">
+                                    {role}
+                                  </div>
+                                  <select
+                                    value={providerId}
+                                    onChange={(event) => {
+                                      const nextProvider = event.target.value;
+                                      const nextModel =
+                                        providerModelMap.get(nextProvider)?.[0] ?? "";
+                                      setRoleModelDraft(role, nextProvider, nextModel);
+                                    }}
+                                    className="rounded border border-border bg-surface px-1 py-1 text-[11px] text-text outline-none focus:border-primary/60"
+                                  >
+                                    <option value="">inherit default</option>
+                                    {providerOptions.map((id) => (
+                                      <option key={`role-${role}-provider-${id}`} value={id}>
+                                        {id}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <select
+                                    value={selected?.model_id ?? ""}
+                                    onChange={(event) =>
+                                      setRoleModelDraft(role, providerId, event.target.value)
+                                    }
+                                    disabled={!providerId}
+                                    className="rounded border border-border bg-surface px-1 py-1 text-[11px] text-text outline-none focus:border-primary/60 disabled:opacity-50"
+                                  >
+                                    <option value="">
+                                      {providerId ? "inherit default" : "select provider first"}
+                                    </option>
+                                    {roleModels.map((modelId) => (
+                                      <option key={`role-${role}-model-${modelId}`} value={modelId}>
+                                        {modelId}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
                     <div className="grid grid-cols-2 gap-2 text-[11px] text-text-subtle">
                       <label className="inline-flex items-center gap-1">
                         <input
@@ -1036,6 +1373,21 @@ export function AgentAutomationPage({
                                 mission: {routine.args["prompt"]}
                               </div>
                             ) : null}
+                            {(() => {
+                              const policy = parseModelPolicy(routine.args);
+                              const orchestrator =
+                                modeFromArgs(routine.args) === "orchestrated"
+                                  ? modelChoiceLabel(policy?.role_models?.orchestrator)
+                                  : null;
+                              const fallback = modelChoiceLabel(policy?.default_model);
+                              const modelLabel = orchestrator ?? fallback;
+                              if (!modelLabel) return null;
+                              return (
+                                <div className="truncate text-[11px] text-text-subtle">
+                                  model: {modelLabel}
+                                </div>
+                              );
+                            })()}
                             {routine.output_targets.length > 0 ? (
                               <div className="truncate text-[11px] text-text-subtle">
                                 outputs: {routine.output_targets.length}
@@ -1139,6 +1491,21 @@ export function AgentAutomationPage({
                               policy: orchestrator-only tool calls
                             </div>
                           ) : null}
+                          {(() => {
+                            const policy = parseModelPolicy(run.args);
+                            const orchestrator =
+                              modeFromArgs(run.args) === "orchestrated"
+                                ? modelChoiceLabel(policy?.role_models?.orchestrator)
+                                : null;
+                            const fallback = modelChoiceLabel(policy?.default_model);
+                            const modelLabel = orchestrator ?? fallback;
+                            if (!modelLabel) return null;
+                            return (
+                              <div className="mt-0.5 text-[11px] text-text-subtle">
+                                model: {modelLabel}
+                              </div>
+                            );
+                          })()}
                           {run.allowed_tools.length > 0 ? (
                             <div className="mt-1 flex flex-wrap gap-1">
                               {run.allowed_tools.slice(0, 3).map((toolId) => (
@@ -1248,6 +1615,19 @@ export function AgentAutomationPage({
                       reason: {runReason(selectedRun)}
                     </div>
                   ) : null}
+                  {(() => {
+                    const policy = parseModelPolicy(selectedRun.args);
+                    const orchestrator =
+                      modeFromArgs(selectedRun.args) === "orchestrated"
+                        ? modelChoiceLabel(policy?.role_models?.orchestrator)
+                        : null;
+                    const fallback = modelChoiceLabel(policy?.default_model);
+                    const modelLabel = orchestrator ?? fallback;
+                    if (!modelLabel) return null;
+                    return (
+                      <div className="mt-1 text-[11px] text-text-subtle">model: {modelLabel}</div>
+                    );
+                  })()}
                   {selectedRunLatestEvent ? (
                     <div className="mt-1 text-[11px] text-text-subtle">
                       latest event: {selectedRunLatestEvent.eventType}
