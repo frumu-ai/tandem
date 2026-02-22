@@ -1,6 +1,6 @@
 {
   "name": "tandem-ai",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Tandem AI CLI installer/launcher",
   "license": "MIT",
   "bin": {
@@ -15,3 +15,4 @@
     "scripts"
   ]
 }
+

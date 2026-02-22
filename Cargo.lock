@@ -6987,7 +6987,7 @@ dependencies = [
 
 [[package]]
 name = "tandem"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -7049,7 +7049,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-ai"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -7085,7 +7085,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-channels"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7103,7 +7103,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-core"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7127,7 +7127,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-document"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "calamine",
  "pdf-extract",
@@ -7139,7 +7139,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-memory"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7162,7 +7162,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-observability"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7175,7 +7175,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-orchestrator"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -7184,7 +7184,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-providers"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -7200,7 +7200,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-runtime"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7217,7 +7217,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-server"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7251,7 +7251,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-skills"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -7264,7 +7264,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-tools"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7288,7 +7288,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-tui"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -7321,7 +7321,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-types"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "chrono",
  "serde",
@@ -7331,7 +7331,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-wire"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "chrono",
  "serde",

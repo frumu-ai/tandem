@@ -2,7 +2,7 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.3.8 (Unreleased)
+## v0.3.9 (Unreleased)
 
 - Headless web admin: Added embedded single-file `/admin` UI served by `tandem-server` (no external runtime assets).
 - Realtime admin updates: Added SSE-driven refresh behavior with polling fallback for live admin visibility.
@@ -290,3 +290,4 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 ## v0.2.3 (2026-02-08)
 
 - Fixed Orchestration Mode creating endless new root chat sessions during execution.
+
