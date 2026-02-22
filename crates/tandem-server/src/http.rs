@@ -53,8 +53,7 @@ use crate::{
     evaluate_routine_execution_policy, ActiveRun, AppState, ChannelStatus, DiscordConfigFile,
     RoutineExecutionDecision, RoutineHistoryEvent, RoutineMisfirePolicy, RoutineRunArtifact,
     RoutineRunRecord, RoutineRunStatus, RoutineSchedule, RoutineSpec, RoutineStatus,
-    RoutineStoreError,
-    SlackConfigFile, StartupStatus, TelegramConfigFile,
+    RoutineStoreError, SlackConfigFile, StartupStatus, TelegramConfigFile,
 };
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -892,7 +891,10 @@ fn app_router(state: AppState) -> Router {
             "/routines/runs/{run_id}/artifacts",
             get(routines_run_artifacts).post(routines_run_artifact_add),
         )
-        .route("/automations", get(automations_list).post(automations_create))
+        .route(
+            "/automations",
+            get(automations_list).post(automations_create),
+        )
         .route("/automations/events", get(automations_events))
         .route(
             "/automations/{id}",
@@ -907,9 +909,18 @@ fn app_router(state: AppState) -> Router {
             "/automations/runs/{run_id}/approve",
             post(automations_run_approve),
         )
-        .route("/automations/runs/{run_id}/deny", post(automations_run_deny))
-        .route("/automations/runs/{run_id}/pause", post(automations_run_pause))
-        .route("/automations/runs/{run_id}/resume", post(automations_run_resume))
+        .route(
+            "/automations/runs/{run_id}/deny",
+            post(automations_run_deny),
+        )
+        .route(
+            "/automations/runs/{run_id}/pause",
+            post(automations_run_pause),
+        )
+        .route(
+            "/automations/runs/{run_id}/resume",
+            post(automations_run_resume),
+        )
         .route(
             "/automations/runs/{run_id}/artifacts",
             get(automations_run_artifacts).post(automations_run_artifact_add),
@@ -2800,16 +2811,9 @@ async fn global_dispose(State(state): State<AppState>) -> Json<Value> {
 async fn list_mcp(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.mcp.list().await))
 }
-async fn add_mcp(
-    State(state): State<AppState>,
-    Json(input): Json<McpAddInput>,
-) -> Json<Value> {
-    let name = input
-        .name
-        .unwrap_or_else(|| "default".to_string());
-    let transport = input
-        .transport
-        .unwrap_or_else(|| "stdio".to_string());
+async fn add_mcp(State(state): State<AppState>, Json(input): Json<McpAddInput>) -> Json<Value> {
+    let name = input.name.unwrap_or_else(|| "default".to_string());
+    let transport = input.transport.unwrap_or_else(|| "stdio".to_string());
     state
         .mcp
         .add_or_update(
@@ -5354,7 +5358,10 @@ async fn routines_run_pause(
             })),
         ));
     };
-    if !matches!(current.status, RoutineRunStatus::Queued | RoutineRunStatus::Running) {
+    if !matches!(
+        current.status,
+        RoutineRunStatus::Queued | RoutineRunStatus::Running
+    ) {
         return Err((
             StatusCode::CONFLICT,
             Json(json!({
@@ -5478,7 +5485,10 @@ async fn routines_run_artifact_add(
         artifact_id: format!("artifact-{}", Uuid::new_v4()),
         uri: input.uri.trim().to_string(),
         kind: input.kind.trim().to_string(),
-        label: input.label.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        label: input
+            .label
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         created_at_ms: crate::now_ms(),
         metadata: input.metadata,
     };
@@ -5556,7 +5566,9 @@ fn objective_from_args(args: &Value, routine_id: &str, entrypoint: &str) -> Stri
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(ToString::to_string)
-        .unwrap_or_else(|| format!("Execute automation '{routine_id}' with entrypoint '{entrypoint}'."))
+        .unwrap_or_else(|| {
+            format!("Execute automation '{routine_id}' with entrypoint '{entrypoint}'.")
+        })
 }
 
 fn success_criteria_from_args(args: &Value) -> Vec<String> {
@@ -5580,6 +5592,20 @@ fn mode_from_args(args: &Value) -> String {
         .filter(|v| !v.is_empty())
         .unwrap_or("standalone")
         .to_string()
+}
+
+fn normalize_automation_mode(raw: Option<&str>) -> Result<String, String> {
+    let value = raw.unwrap_or("standalone").trim();
+    if value.is_empty() {
+        return Ok("standalone".to_string());
+    }
+    if value.eq_ignore_ascii_case("standalone") {
+        return Ok("standalone".to_string());
+    }
+    if value.eq_ignore_ascii_case("orchestrated") {
+        return Ok("orchestrated".to_string());
+    }
+    Err("mode must be one of standalone|orchestrated".to_string())
 }
 
 fn routine_to_automation_wire(routine: RoutineSpec) -> Value {
@@ -5678,7 +5704,8 @@ fn routine_event_to_run_event(event: &EngineEvent) -> Option<EngineEvent> {
             .expect("object")
             .insert("automationID".to_string(), Value::String(routine_id));
     }
-    if event.event_type == "routine.run.started" || event.event_type == "routine.run.artifact_added" {
+    if event.event_type == "routine.run.started" || event.event_type == "routine.run.artifact_added"
+    {
         props
             .as_object_mut()
             .expect("object")
@@ -5691,10 +5718,11 @@ fn automation_create_to_routine(input: AutomationCreateInput) -> Result<RoutineS
     if input.mission.objective.trim().is_empty() {
         return Err("mission.objective is required".to_string());
     }
+    let mode = normalize_automation_mode(input.mode.as_deref())?;
     let mut args = json!({
         "prompt": input.mission.objective.trim(),
         "success_criteria": input.mission.success_criteria,
-        "mode": input.mode.unwrap_or_else(|| "standalone".to_string()),
+        "mode": mode,
     });
     if let Some(briefing) = input.mission.briefing {
         if let Some(obj) = args.as_object_mut() {
@@ -5704,28 +5732,34 @@ fn automation_create_to_routine(input: AutomationCreateInput) -> Result<RoutineS
     if let Some(policy) = input.policy.as_ref() {
         if let Some(value) = policy.tool.orchestrator_only_tool_calls {
             if let Some(obj) = args.as_object_mut() {
-                obj.insert("orchestrator_only_tool_calls".to_string(), Value::Bool(value));
+                obj.insert(
+                    "orchestrator_only_tool_calls".to_string(),
+                    Value::Bool(value),
+                );
             }
         }
     }
-    let (allowed_tools, external_integrations_allowed, requires_approval) = if let Some(policy) = input.policy {
-        (
-            policy.tool.run_allowlist.unwrap_or_default(),
-            policy.tool.external_integrations_allowed.unwrap_or(false),
-            policy.approval.requires_approval.unwrap_or(true),
-        )
-    } else {
-        (Vec::new(), false, true)
-    };
+    let (allowed_tools, external_integrations_allowed, requires_approval) =
+        if let Some(policy) = input.policy {
+            (
+                policy.tool.run_allowlist.unwrap_or_default(),
+                policy.tool.external_integrations_allowed.unwrap_or(false),
+                policy.approval.requires_approval.unwrap_or(true),
+            )
+        } else {
+            (Vec::new(), false, true)
+        };
     Ok(RoutineSpec {
-        routine_id: input.automation_id.unwrap_or_else(|| {
-            format!("automation-{}", uuid::Uuid::new_v4().simple())
-        }),
+        routine_id: input
+            .automation_id
+            .unwrap_or_else(|| format!("automation-{}", uuid::Uuid::new_v4().simple())),
         name: input.name,
         status: RoutineStatus::Active,
         schedule: input.schedule,
         timezone: input.timezone.unwrap_or_else(|| "UTC".to_string()),
-        misfire_policy: input.misfire_policy.unwrap_or(RoutineMisfirePolicy::RunOnce),
+        misfire_policy: input
+            .misfire_policy
+            .unwrap_or(RoutineMisfirePolicy::RunOnce),
         entrypoint: input
             .mission
             .entrypoint_compat
@@ -5756,7 +5790,10 @@ async fn automations_create(
             })),
         )
     })?;
-    let saved = state.put_routine(routine).await.map_err(routine_error_response)?;
+    let saved = state
+        .put_routine(routine)
+        .await
+        .map_err(routine_error_response)?;
     state.event_bus.publish(EngineEvent::new(
         "automation.updated",
         json!({
@@ -5837,8 +5874,18 @@ async fn automations_patch(
         }
     }
     if let Some(mode) = input.mode.as_ref() {
+        let normalized_mode = normalize_automation_mode(Some(mode.as_str())).map_err(|detail| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "Invalid automation patch",
+                    "code": "AUTOMATION_INVALID",
+                    "detail": detail,
+                })),
+            )
+        })?;
         let mut args = routine.args.as_object().cloned().unwrap_or_default();
-        args.insert("mode".to_string(), Value::String(mode.clone()));
+        args.insert("mode".to_string(), Value::String(normalized_mode));
         routine.args = Value::Object(args);
     }
     if let Some(mission) = input.mission.as_ref() {
@@ -5857,7 +5904,10 @@ async fn automations_patch(
         }
         routine.args = Value::Object(args);
     }
-    let updated = state.put_routine(routine).await.map_err(routine_error_response)?;
+    let updated = state
+        .put_routine(routine)
+        .await
+        .map_err(routine_error_response)?;
     Ok(Json(json!({
         "automation": routine_to_automation_wire(updated)
     })))
@@ -5903,15 +5953,12 @@ async fn automations_run_now(
                 Json(json!({"error": "Run ID missing", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
             )
         })?;
-    let run = state
-        .get_routine_run(run_id)
-        .await
-        .ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Run lookup failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
-            )
-        })?;
+    let run = state.get_routine_run(run_id).await.ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Run lookup failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+        )
+    })?;
     Ok(Json(json!({
         "ok": true,
         "status": payload.get("status").cloned().unwrap_or(Value::String("queued".to_string())),
@@ -6000,10 +6047,14 @@ async fn automations_run_approve(
         .ok_or_else(|| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+                Json(
+                    json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"}),
+                ),
             )
         })?;
-    Ok(Json(json!({ "ok": true, "run": routine_run_to_automation_wire(run) })))
+    Ok(Json(
+        json!({ "ok": true, "run": routine_run_to_automation_wire(run) }),
+    ))
 }
 
 async fn automations_run_deny(
@@ -6019,10 +6070,14 @@ async fn automations_run_deny(
         .ok_or_else(|| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+                Json(
+                    json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"}),
+                ),
             )
         })?;
-    Ok(Json(json!({ "ok": true, "run": routine_run_to_automation_wire(run) })))
+    Ok(Json(
+        json!({ "ok": true, "run": routine_run_to_automation_wire(run) }),
+    ))
 }
 
 async fn automations_run_pause(
@@ -6038,10 +6093,14 @@ async fn automations_run_pause(
         .ok_or_else(|| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+                Json(
+                    json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"}),
+                ),
             )
         })?;
-    Ok(Json(json!({ "ok": true, "run": routine_run_to_automation_wire(run) })))
+    Ok(Json(
+        json!({ "ok": true, "run": routine_run_to_automation_wire(run) }),
+    ))
 }
 
 async fn automations_run_resume(
@@ -6057,10 +6116,14 @@ async fn automations_run_resume(
         .ok_or_else(|| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+                Json(
+                    json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"}),
+                ),
             )
-    })?;
-    Ok(Json(json!({ "ok": true, "run": routine_run_to_automation_wire(run) })))
+        })?;
+    Ok(Json(
+        json!({ "ok": true, "run": routine_run_to_automation_wire(run) }),
+    ))
 }
 
 async fn automations_run_artifacts(
@@ -6094,7 +6157,9 @@ async fn automations_run_artifact_add(
                 ),
             )
         })?;
-    Ok(Json(json!({ "ok": true, "run": routine_run_to_automation_wire(run) })))
+    Ok(Json(
+        json!({ "ok": true, "run": routine_run_to_automation_wire(run) }),
+    ))
 }
 
 fn automations_sse_stream(
@@ -9534,7 +9599,11 @@ mod tests {
                 .to_string(),
             ))
             .expect("patch request");
-        let patch_resp = app.clone().oneshot(patch_req).await.expect("patch response");
+        let patch_resp = app
+            .clone()
+            .oneshot(patch_req)
+            .await
+            .expect("patch response");
         assert_eq!(patch_resp.status(), StatusCode::OK);
         let patch_body = to_bytes(patch_resp.into_body(), usize::MAX)
             .await
@@ -9675,18 +9744,20 @@ mod tests {
             .uri("/routines/runs?limit=10")
             .body(Body::empty())
             .expect("runs all request");
-        let all_resp = app.clone().oneshot(all_req).await.expect("runs all response");
+        let all_resp = app
+            .clone()
+            .oneshot(all_req)
+            .await
+            .expect("runs all response");
         assert_eq!(all_resp.status(), StatusCode::OK);
         let all_body = to_bytes(all_resp.into_body(), usize::MAX)
             .await
             .expect("runs all body");
         let all_payload: Value = serde_json::from_slice(&all_body).expect("runs all json");
-        assert!(
-            all_payload
-                .get("count")
-                .and_then(|v| v.as_u64())
-                .is_some_and(|count| count >= 2)
-        );
+        assert!(all_payload
+            .get("count")
+            .and_then(|v| v.as_u64())
+            .is_some_and(|count| count >= 2));
 
         let filtered_req = Request::builder()
             .method("GET")
@@ -9704,12 +9775,10 @@ mod tests {
             .expect("runs filtered body");
         let filtered_payload: Value =
             serde_json::from_slice(&filtered_body).expect("runs filtered json");
-        assert!(
-            filtered_payload
-                .get("count")
-                .and_then(|v| v.as_u64())
-                .is_some_and(|count| count >= 1)
-        );
+        assert!(filtered_payload
+            .get("count")
+            .and_then(|v| v.as_u64())
+            .is_some_and(|count| count >= 1));
         let all_match_routine = filtered_payload
             .get("runs")
             .and_then(|v| v.as_array())
@@ -9740,6 +9809,36 @@ mod tests {
                     "schedule": { "interval_seconds": { "seconds": 300 } },
                     "mission": {
                         "objective": "   "
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("automation create request");
+        let create_resp = app
+            .clone()
+            .oneshot(create_req)
+            .await
+            .expect("automation create response");
+        assert_eq!(create_resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn automations_create_rejects_invalid_mode() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/automations")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "automation_id": "auto-invalid-mode",
+                    "name": "Automation invalid mode",
+                    "schedule": { "interval_seconds": { "seconds": 300 } },
+                    "mode": "swarm-ish",
+                    "mission": {
+                        "objective": "Execute a mission with invalid mode."
                     }
                 })
                 .to_string(),
@@ -9847,9 +9946,7 @@ mod tests {
         let history_payload: Value =
             serde_json::from_slice(&history_body).expect("automation history json");
         assert_eq!(
-            history_payload
-                .get("automationID")
-                .and_then(|v| v.as_str()),
+            history_payload.get("automationID").and_then(|v| v.as_str()),
             Some("auto-digest")
         );
 
@@ -9895,11 +9992,39 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some(run_id.as_str())
         );
-        assert!(
-            list_artifacts_payload
-                .get("count")
-                .and_then(|v| v.as_u64())
-                .is_some_and(|count| count >= 1)
+        assert!(list_artifacts_payload
+            .get("count")
+            .and_then(|v| v.as_u64())
+            .is_some_and(|count| count >= 1));
+
+        let patch_req = Request::builder()
+            .method("PATCH")
+            .uri("/automations/auto-digest")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "mode": "ORCHESTRATED"
+                })
+                .to_string(),
+            ))
+            .expect("automation patch request");
+        let patch_resp = app
+            .clone()
+            .oneshot(patch_req)
+            .await
+            .expect("automation patch response");
+        assert_eq!(patch_resp.status(), StatusCode::OK);
+        let patch_body = to_bytes(patch_resp.into_body(), usize::MAX)
+            .await
+            .expect("automation patch body");
+        let patch_payload: Value =
+            serde_json::from_slice(&patch_body).expect("automation patch json");
+        assert_eq!(
+            patch_payload
+                .get("automation")
+                .and_then(|v| v.get("mode"))
+                .and_then(|v| v.as_str()),
+            Some("orchestrated")
         );
     }
 
@@ -10663,7 +10788,11 @@ mod tests {
         let state = test_state().await;
         let session = Session::new(Some("routine-session".to_string()), Some(".".to_string()));
         let session_id = session.id.clone();
-        state.storage.save_session(session).await.expect("save session");
+        state
+            .storage
+            .save_session(session)
+            .await
+            .expect("save session");
 
         state
             .set_routine_session_policy(
@@ -10686,12 +10815,10 @@ mod tests {
             .expect("policy decision");
 
         assert!(!decision.allowed);
-        assert!(
-            decision
-                .reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("not allowed for routine")
-        );
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not allowed for routine"));
     }
 }
