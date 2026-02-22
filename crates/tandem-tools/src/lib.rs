@@ -421,11 +421,13 @@ impl Tool for BashTool {
         if cmd.is_empty() {
             anyhow::bail!("BASH_COMMAND_MISSING");
         }
+        #[cfg(windows)]
         let shell = match build_shell_command(cmd) {
             ShellCommandPlan::Execute(plan) => plan,
-            #[cfg(windows)]
             ShellCommandPlan::Blocked(result) => return Ok(result),
         };
+        #[cfg(not(windows))]
+        let ShellCommandPlan::Execute(shell) = build_shell_command(cmd);
         let ShellExecutionPlan {
             mut command,
             translated_command,
@@ -462,11 +464,13 @@ impl Tool for BashTool {
         if cmd.is_empty() {
             anyhow::bail!("BASH_COMMAND_MISSING");
         }
+        #[cfg(windows)]
         let shell = match build_shell_command(cmd) {
             ShellCommandPlan::Execute(plan) => plan,
-            #[cfg(windows)]
             ShellCommandPlan::Blocked(result) => return Ok(result),
         };
+        #[cfg(not(windows))]
+        let ShellCommandPlan::Execute(shell) = build_shell_command(cmd);
         let ShellExecutionPlan {
             mut command,
             translated_command,
