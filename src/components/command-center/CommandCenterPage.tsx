@@ -1026,6 +1026,25 @@ export function CommandCenterPage({
                           {run.artifacts.length} artifact{run.artifacts.length === 1 ? "" : "s"}
                         </div>
                       ) : null}
+                      {run.allowed_tools.length > 0 ? (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {run.allowed_tools.slice(0, 3).map((toolId) => (
+                            <span
+                              key={`${run.run_id}-${toolId}`}
+                              className="rounded border border-border bg-surface px-1.5 py-0.5 text-[10px] text-text-subtle"
+                            >
+                              {toolId}
+                            </span>
+                          ))}
+                          {run.allowed_tools.length > 3 ? (
+                            <span className="rounded border border-border bg-surface px-1.5 py-0.5 text-[10px] text-text-subtle">
+                              +{run.allowed_tools.length - 3} more
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="mt-0.5 text-[11px] text-text-subtle">tool scope: all</div>
+                      )}
                     </div>
                     <div className="flex items-center gap-1">
                       {run.status === "pending_approval" ? (
