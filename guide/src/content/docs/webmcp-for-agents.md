@@ -23,7 +23,7 @@ When you are building agent flows around `tandem-engine`, WebMCP can shorten ite
 1. Build and validate MCP tools in WebMCP.
 2. Register/connect the same MCP server in Tandem (`/mcp`, `/mcp/{name}/connect`).
 3. Confirm namespaced tool IDs via `/mcp/tools` and `/tool/ids`.
-4. Restrict production automation with explicit `allowed_tools` on routines.
+4. Restrict production automation with explicit `allowed_tools` on automations (`routines/*` is still supported).
 
 ## Good Practices
 

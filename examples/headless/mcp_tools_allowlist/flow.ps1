@@ -1,8 +1,9 @@
 $ErrorActionPreference = "Stop"
 
-$baseUrl = if ($env:TANDEM_BASE_URL) { $env:TANDEM_BASE_URL } else { "http://127.0.0.1:8080" }
+$baseUrl = if ($env:TANDEM_BASE_URL) { $env:TANDEM_BASE_URL } else { "http://127.0.0.1:39731" }
 $serverName = if ($env:MCP_SERVER_NAME) { $env:MCP_SERVER_NAME } else { "arcade" }
 $transport = $env:MCP_TRANSPORT
+$apiFamily = if ($env:TANDEM_AUTOMATION_API) { $env:TANDEM_AUTOMATION_API } else { "routines" }
 $routineId = "routine-mcp-allowlist-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
 
 if ([string]::IsNullOrWhiteSpace($transport)) {
@@ -35,6 +36,18 @@ Invoke-RestMethod -Method Get -Uri "$baseUrl/tool/ids" | ConvertTo-Json -Depth 8
 $toolOne = "mcp.$serverName.search"
 $toolTwo = "read"
 
+if ($apiFamily -eq "automations") {
+  $createPath = "/automations"
+  $runNowPath = "/automations/$routineId/run_now"
+  $runPathPrefix = "/automations/runs"
+  $resourceLabel = "Automation"
+} else {
+  $createPath = "/routines"
+  $runNowPath = "/routines/$routineId/run_now"
+  $runPathPrefix = "/routines/runs"
+  $resourceLabel = "Routine"
+}
+
 Write-Host "== Create routine with allowlist =="
 $routineBody = @{
   routine_id = $routineId
@@ -50,20 +63,29 @@ $routineBody = @{
   requires_approval = $true
   external_integrations_allowed = $true
 }
-Invoke-RestMethod -Method Post -Uri "$baseUrl/routines" -ContentType "application/json" -Body ($routineBody | ConvertTo-Json -Depth 12) | ConvertTo-Json -Depth 12
+Invoke-RestMethod -Method Post -Uri "$baseUrl$createPath" -ContentType "application/json" -Body ($routineBody | ConvertTo-Json -Depth 12) | ConvertTo-Json -Depth 12
 
 Write-Host "== Trigger routine run =="
-$runNow = Invoke-RestMethod -Method Post -Uri "$baseUrl/routines/$routineId/run_now" -ContentType "application/json" -Body "{}"
+$runNow = Invoke-RestMethod -Method Post -Uri "$baseUrl$runNowPath" -ContentType "application/json" -Body "{}"
 $runNow | ConvertTo-Json -Depth 12
 
 $runId = $runNow.runID
+if ([string]::IsNullOrWhiteSpace($runId)) { $runId = $runNow.runId }
+if ([string]::IsNullOrWhiteSpace($runId)) { $runId = $runNow.run_id }
+if ([string]::IsNullOrWhiteSpace($runId) -and $runNow.run) {
+  $runId = $runNow.run.runID
+  if ([string]::IsNullOrWhiteSpace($runId)) { $runId = $runNow.run.runId }
+  if ([string]::IsNullOrWhiteSpace($runId)) { $runId = $runNow.run.run_id }
+  if ([string]::IsNullOrWhiteSpace($runId)) { $runId = $runNow.run.id }
+}
+if ([string]::IsNullOrWhiteSpace($runId)) { $runId = $runNow.id }
 if ([string]::IsNullOrWhiteSpace($runId)) {
-  throw "Could not parse runID from response"
+  throw "Could not parse run ID from response"
 }
 
 Write-Host "== Fetch run record and verify allowed_tools =="
-Invoke-RestMethod -Method Get -Uri "$baseUrl/routines/runs/$runId" | ConvertTo-Json -Depth 12
+Invoke-RestMethod -Method Get -Uri "$baseUrl$runPathPrefix/$runId" | ConvertTo-Json -Depth 12
 
 Write-Host "== Done =="
-Write-Host "Routine: $routineId"
+Write-Host "$resourceLabel: $routineId"
 Write-Host "Run:     $runId"

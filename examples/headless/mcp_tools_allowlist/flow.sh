@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${TANDEM_BASE_URL:-http://127.0.0.1:8080}"
+BASE_URL="${TANDEM_BASE_URL:-http://127.0.0.1:39731}"
 SERVER_NAME="${MCP_SERVER_NAME:-arcade}"
 TRANSPORT="${MCP_TRANSPORT:-}"
+API_FAMILY="${TANDEM_AUTOMATION_API:-routines}"
 ROUTINE_ID="routine-mcp-allowlist-$(date +%s)"
 
 if [[ -z "$TRANSPORT" ]]; then
@@ -38,8 +39,20 @@ echo
 TOOL_ONE="mcp.${SERVER_NAME}.search"
 TOOL_TWO="read"
 
+if [[ "$API_FAMILY" == "automations" ]]; then
+  CREATE_PATH="/automations"
+  RUN_NOW_PATH="/automations/$ROUTINE_ID/run_now"
+  RUN_PATH_PREFIX="/automations/runs"
+  RESOURCE_LABEL="Automation"
+else
+  CREATE_PATH="/routines"
+  RUN_NOW_PATH="/routines/$ROUTINE_ID/run_now"
+  RUN_PATH_PREFIX="/routines/runs"
+  RESOURCE_LABEL="Routine"
+fi
+
 echo "== Create routine with allowlist =="
-curl -sS -X POST "$BASE_URL/routines" \
+curl -sS -X POST "$BASE_URL$CREATE_PATH" \
   -H "content-type: application/json" \
   -d "{
     \"routine_id\": \"$ROUTINE_ID\",
@@ -54,25 +67,25 @@ curl -sS -X POST "$BASE_URL/routines" \
 echo
 
 echo "== Trigger routine run =="
-RUN_NOW="$(curl -sS -X POST "$BASE_URL/routines/$ROUTINE_ID/run_now" -H "content-type: application/json" -d "{}")"
+RUN_NOW="$(curl -sS -X POST "$BASE_URL$RUN_NOW_PATH" -H "content-type: application/json" -d "{}")"
 echo "$RUN_NOW"
 echo
 
 if command -v jq >/dev/null 2>&1; then
-  RUN_ID="$(echo "$RUN_NOW" | jq -r '.runID')"
+  RUN_ID="$(echo "$RUN_NOW" | jq -r '.runID // .runId // .run_id // .id // .run.runID // .run.runId // .run.run_id // .run.id')"
 else
   RUN_ID="$(echo "$RUN_NOW" | sed -n 's/.*"runID":"\([^"]*\)".*/\1/p')"
 fi
 
 if [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]]; then
-  echo "Could not parse runID from response"
+  echo "Could not parse run ID from response"
   exit 1
 fi
 
 echo "== Fetch run record and verify allowed_tools =="
-curl -sS "$BASE_URL/routines/runs/$RUN_ID"
+curl -sS "$BASE_URL$RUN_PATH_PREFIX/$RUN_ID"
 echo
 
 echo "== Done =="
-echo "Routine: $ROUTINE_ID"
+echo "$RESOURCE_LABEL: $ROUTINE_ID"
 echo "Run:     $RUN_ID"
