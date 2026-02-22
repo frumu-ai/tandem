@@ -381,6 +381,7 @@ struct RoutineHistoryQuery {
 
 #[derive(Debug, Deserialize, Default)]
 struct RoutineRunsQuery {
+    routine_id: Option<String>,
     limit: Option<usize>,
 }
 
@@ -779,6 +780,7 @@ fn app_router(state: AppState) -> Router {
         )
         .route("/routines/{id}/run_now", post(routines_run_now))
         .route("/routines/{id}/history", get(routines_history))
+        .route("/routines/runs", get(routines_runs_all))
         .route("/routines/{id}/runs", get(routines_runs))
         .route("/routines/runs/{run_id}", get(routines_run_get))
         .route(
@@ -5066,6 +5068,20 @@ async fn routines_runs(
     let runs = state.list_routine_runs(Some(&id), limit).await;
     Json(json!({
         "routineID": id,
+        "runs": runs,
+        "count": runs.len(),
+    }))
+}
+
+async fn routines_runs_all(
+    State(state): State<AppState>,
+    Query(query): Query<RoutineRunsQuery>,
+) -> Json<Value> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let runs = state
+        .list_routine_runs(query.routine_id.as_deref(), limit)
+        .await;
+    Json(json!({
         "runs": runs,
         "count": runs.len(),
     }))

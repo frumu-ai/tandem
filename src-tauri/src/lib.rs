@@ -686,6 +686,7 @@ pub fn run() {
             commands::routines_run_now,
             commands::routines_history,
             commands::routines_runs,
+            commands::routines_runs_all,
             commands::routines_run_get,
             commands::routines_run_approve,
             commands::routines_run_deny,

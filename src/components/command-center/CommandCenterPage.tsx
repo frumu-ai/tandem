@@ -22,7 +22,7 @@ import {
   routinesRunDeny,
   routinesRunPause,
   routinesRunResume,
-  routinesRuns,
+  routinesRunsAll,
   type McpRemoteTool,
   type McpServerRecord,
   type RoutineRunRecord,
@@ -80,12 +80,6 @@ interface CommandCenterPageProps {
 interface RunModelSelection {
   model?: string | null;
   provider?: string | null;
-}
-
-interface RoutineSpecLite {
-  routine_id: string;
-  name: string;
-  status: "active" | "paused";
 }
 
 interface MissionLimits {
@@ -378,16 +372,8 @@ export function CommandCenterPage({
   const loadRoutineRuns = useCallback(async () => {
     setRoutineRunsLoading(true);
     try {
-      const routines = await invoke<RoutineSpecLite[]>("routines_list");
-      const topRoutines = routines.slice(0, 8);
-      const runsByRoutine = await Promise.all(
-        topRoutines.map((routine) => routinesRuns(routine.routine_id, 10))
-      );
-      const merged = runsByRoutine
-        .flat()
-        .sort((a, b) => b.created_at_ms - a.created_at_ms)
-        .slice(0, 20);
-      setRoutineRuns(merged);
+      const merged = await routinesRunsAll(undefined, 30);
+      setRoutineRuns(merged.sort((a, b) => b.created_at_ms - a.created_at_ms));
     } catch {
       setRoutineRuns([]);
     } finally {
@@ -963,6 +949,38 @@ export function CommandCenterPage({
             </div>
           </div>
           <div className="mt-2 grid grid-cols-1 gap-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+              <div className="rounded-md border border-border bg-surface-elevated/50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                  Needs Approval
+                </div>
+                <div className="text-sm font-semibold text-text">
+                  {routineRuns.filter((run) => run.status === "pending_approval").length}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-surface-elevated/50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wide text-text-subtle">Blocked</div>
+                <div className="text-sm font-semibold text-text">
+                  {routineRuns.filter((run) => run.status === "blocked_policy").length}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-surface-elevated/50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                  Paused
+                </div>
+                <div className="text-sm font-semibold text-text">
+                  {routineRuns.filter((run) => run.status === "paused").length}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-surface-elevated/50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                  Artifacts
+                </div>
+                <div className="text-sm font-semibold text-text">
+                  {routineRuns.reduce((sum, run) => sum + run.artifacts.length, 0)}
+                </div>
+              </div>
+            </div>
             {routineRuns.slice(0, 8).map((run) => {
               const busy = routineActionBusyRunId === run.run_id;
               return (
@@ -978,6 +996,11 @@ export function CommandCenterPage({
                       <div className="mt-0.5 truncate text-[11px] text-text-muted">
                         run {run.run_id} · {run.trigger_type}
                       </div>
+                      {run.artifacts.length > 0 ? (
+                        <div className="mt-0.5 text-[11px] text-text-subtle">
+                          {run.artifacts.length} artifact{run.artifacts.length === 1 ? "" : "s"}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-1">
                       {run.status === "pending_approval" ? (

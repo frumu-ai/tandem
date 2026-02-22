@@ -3763,6 +3763,33 @@ impl SidecarManager {
         Ok(payload.runs)
     }
 
+    pub async fn routines_runs_all(
+        &self,
+        routine_id: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<RoutineRunRecord>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/routines/runs", self.base_url().await?);
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(id) = routine_id {
+            query.push(("routine_id", id.to_string()));
+        }
+        if let Some(limit) = limit {
+            query.push(("limit", limit.to_string()));
+        }
+        let response = self
+            .http_client
+            .get(&url)
+            .query(&query)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to load all routine runs: {}", e))
+            })?;
+        let payload: RoutineRunsResponse = self.handle_response(response).await?;
+        Ok(payload.runs)
+    }
+
     pub async fn routines_run_get(&self, run_id: &str) -> Result<RoutineRunRecord> {
         self.check_circuit_breaker().await?;
         let url = format!("{}/routines/runs/{}", self.base_url().await?, run_id);
