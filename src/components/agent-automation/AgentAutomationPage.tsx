@@ -40,6 +40,44 @@ interface BotTemplate {
   requiresApproval: boolean;
   externalAllowed: boolean;
   outputTargets: string[];
+  missionObjective: string;
+  successCriteria: string[];
+}
+
+interface WorkshopMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+}
+
+interface MissionDraft {
+  objective: string;
+  successCriteria: string[];
+  suggestedMode: "standalone" | "orchestrated";
+}
+
+function buildMissionDraft(brief: string, tools: string[]): MissionDraft {
+  const normalized = brief.trim();
+  const lower = normalized.toLowerCase();
+  const suggestedMode =
+    lower.includes("verify") || lower.includes("multi") || lower.includes("workflow")
+      ? "orchestrated"
+      : "standalone";
+  const objective =
+    normalized.length > 0
+      ? normalized
+      : "Run a scheduled automation that gathers context, performs the task, and produces a clear artifact.";
+  const successCriteria = [
+    "Produces at least one output artifact at configured output targets.",
+    "Uses only allowed tools and records run events.",
+    suggestedMode === "orchestrated"
+      ? "Verifier confirms output quality before completion."
+      : "Completes without blocked policy or approval timeout.",
+  ];
+  if (tools.some((tool) => tool === "webfetch_document")) {
+    successCriteria.push("Uses webfetch_document for web content extraction when relevant.");
+  }
+  return { objective, successCriteria, suggestedMode };
 }
 
 interface AgentAutomationPageProps {
@@ -76,9 +114,22 @@ export function AgentAutomationPage({
   const [routineEntrypointDraft, setRoutineEntrypointDraft] = useState("mission.default");
   const [routineIntervalSecondsDraft, setRoutineIntervalSecondsDraft] = useState(300);
   const [routineAllowedToolsDraft, setRoutineAllowedToolsDraft] = useState<string[]>([]);
+  const [routineMissionObjectiveDraft, setRoutineMissionObjectiveDraft] = useState("");
+  const [routineSuccessCriteriaDraft, setRoutineSuccessCriteriaDraft] = useState("");
+  const [routineModeDraft, setRoutineModeDraft] = useState<"standalone" | "orchestrated">(
+    "standalone"
+  );
   const [routineOutputTargetsDraft, setRoutineOutputTargetsDraft] = useState("");
   const [routineRequiresApprovalDraft, setRoutineRequiresApprovalDraft] = useState(true);
   const [routineExternalAllowedDraft, setRoutineExternalAllowedDraft] = useState(true);
+  const [workshopInputDraft, setWorkshopInputDraft] = useState("");
+  const [workshopMessages, setWorkshopMessages] = useState<WorkshopMessage[]>([
+    {
+      id: "workshop-welcome",
+      role: "assistant",
+      text: "Mission Workshop: describe the bot mission in plain language. I will suggest an objective, success criteria, and default mode.",
+    },
+  ]);
 
   const [routineRuns, setRoutineRuns] = useState<RoutineRunRecord[]>([]);
   const [routineRunsLoading, setRoutineRunsLoading] = useState(false);
@@ -97,6 +148,13 @@ export function AgentAutomationPage({
         requiresApproval: true,
         externalAllowed: true,
         outputTargets: ["file://reports/daily-mcp-research.md"],
+        missionObjective:
+          "Research daily topic signals and produce a concise markdown digest with citations.",
+        successCriteria: [
+          "Includes top findings with source URLs.",
+          "Writes an artifact to the configured report path.",
+          "Highlights uncertain claims and verification notes.",
+        ],
       },
       {
         id: "issue-triage",
@@ -109,6 +167,13 @@ export function AgentAutomationPage({
         requiresApproval: true,
         externalAllowed: true,
         outputTargets: ["file://reports/issue-triage.json"],
+        missionObjective:
+          "Review incoming issues, classify severity, and draft recommended next actions.",
+        successCriteria: [
+          "Classifies each issue into priority buckets.",
+          "Includes suggested owner/team when inferable.",
+          "Produces a machine-readable triage artifact.",
+        ],
       },
       {
         id: "release-reporter",
@@ -121,6 +186,13 @@ export function AgentAutomationPage({
         requiresApproval: false,
         externalAllowed: true,
         outputTargets: ["file://reports/release-status.md"],
+        missionObjective:
+          "Compile release readiness status and generate an hourly summary report for operators.",
+        successCriteria: [
+          "Summarizes current release blockers and risks.",
+          "Writes a markdown status report artifact.",
+          "Runs unattended without policy violations.",
+        ],
       },
     ],
     []
@@ -235,10 +307,7 @@ export function AgentAutomationPage({
       defaults.push(mcpToolIds[0]);
     }
     setRoutineAllowedToolsDraft(defaults);
-    if (routineEntrypointDraft === "mission.default" && mcpToolIds.length > 0) {
-      setRoutineEntrypointDraft(mcpToolIds[0]);
-    }
-  }, [mcpToolIds, routineAllowedToolsDraft.length, routineEntrypointDraft]);
+  }, [mcpToolIds, routineAllowedToolsDraft.length]);
 
   const applyTemplate = (template: BotTemplate) => {
     const firstMcpTool = mcpToolIds[0];
@@ -255,7 +324,20 @@ export function AgentAutomationPage({
     setRoutineRequiresApprovalDraft(template.requiresApproval);
     setRoutineExternalAllowedDraft(template.externalAllowed);
     setRoutineOutputTargetsDraft(template.outputTargets.join(", "));
+    setRoutineMissionObjectiveDraft(template.missionObjective);
+    setRoutineSuccessCriteriaDraft(template.successCriteria.join("\n"));
+    setRoutineModeDraft("standalone");
   };
+
+  useEffect(() => {
+    if (routineMissionObjectiveDraft.trim().length > 0) return;
+    setRoutineMissionObjectiveDraft(
+      "Run a scheduled automation with a clear mission objective and artifact output."
+    );
+    setRoutineSuccessCriteriaDraft(
+      "Produces one artifact per run.\nUses only allowed tools.\nLogs run events for observability."
+    );
+  }, [routineMissionObjectiveDraft]);
 
   const formatIntervalHint = (seconds: number): string => {
     if (!Number.isFinite(seconds) || seconds <= 0) return "";
@@ -283,12 +365,52 @@ export function AgentAutomationPage({
     });
   };
 
+  const applyMissionDraft = (draft: MissionDraft) => {
+    setRoutineMissionObjectiveDraft(draft.objective);
+    setRoutineSuccessCriteriaDraft(draft.successCriteria.join("\n"));
+    setRoutineModeDraft(draft.suggestedMode);
+  };
+
+  const handleWorkshopSubmit = () => {
+    const text = workshopInputDraft.trim();
+    if (!text) return;
+    const userMessage: WorkshopMessage = {
+      id: `workshop-user-${Date.now()}`,
+      role: "user",
+      text,
+    };
+    const draft = buildMissionDraft(text, routineAllowedToolsDraft);
+    const assistantText = [
+      `Suggested objective: ${draft.objective}`,
+      `Suggested mode: ${draft.suggestedMode}`,
+      "Suggested success criteria:",
+      ...draft.successCriteria.map((row, index) => `${index + 1}. ${row}`),
+    ].join("\n");
+    const assistantMessage: WorkshopMessage = {
+      id: `workshop-assistant-${Date.now()}`,
+      role: "assistant",
+      text: assistantText,
+    };
+    setWorkshopMessages((prev) => [...prev, userMessage, assistantMessage]);
+    setWorkshopInputDraft("");
+    applyMissionDraft(draft);
+  };
+
   const handleCreateRoutine = async () => {
     const trimmedName = routineNameDraft.trim();
     if (!trimmedName) {
       setError("Routine name is required.");
       return;
     }
+    const missionObjective = routineMissionObjectiveDraft.trim();
+    if (!missionObjective) {
+      setError("Mission objective is required.");
+      return;
+    }
+    const successCriteria = routineSuccessCriteriaDraft
+      .split("\n")
+      .map((row) => row.trim())
+      .filter((row) => row.length > 0);
     const intervalSeconds = Math.max(1, Math.floor(routineIntervalSecondsDraft));
     const outputTargets = routineOutputTargetsDraft
       .split(",")
@@ -302,7 +424,11 @@ export function AgentAutomationPage({
         name: trimmedName,
         schedule: { interval_seconds: { seconds: intervalSeconds } },
         entrypoint: routineEntrypointDraft.trim() || "mission.default",
-        args: {},
+        args: {
+          prompt: missionObjective,
+          success_criteria: successCriteria,
+          mode: routineModeDraft,
+        },
         allowed_tools: routineAllowedToolsDraft,
         output_targets: outputTargets,
         requires_approval: routineRequiresApprovalDraft,
@@ -312,6 +438,9 @@ export function AgentAutomationPage({
       setRoutineNameDraft("MCP Automation");
       setRoutineIntervalSecondsDraft(300);
       setRoutineOutputTargetsDraft("");
+      setRoutineMissionObjectiveDraft("");
+      setRoutineSuccessCriteriaDraft("");
+      setRoutineModeDraft("standalone");
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setError(`Create routine failed: ${message}`);
@@ -505,6 +634,38 @@ export function AgentAutomationPage({
                       ))}
                     </div>
                   </div>
+                  <div className="mt-3 rounded border border-border bg-surface p-2">
+                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                      Mission Workshop
+                    </div>
+                    <div className="mt-1 max-h-28 space-y-1 overflow-y-auto rounded border border-border/60 bg-surface-elevated/30 p-2">
+                      {workshopMessages.slice(-6).map((message) => (
+                        <div key={message.id} className="text-[11px] text-text">
+                          <span className="font-semibold text-text-subtle">
+                            {message.role === "assistant" ? "Workshop" : "You"}:
+                          </span>{" "}
+                          <span className="whitespace-pre-wrap">{message.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        value={workshopInputDraft}
+                        onChange={(event) => setWorkshopInputDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            handleWorkshopSubmit();
+                          }
+                        }}
+                        className="w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-primary/60"
+                        placeholder="Describe the mission in plain language..."
+                      />
+                      <Button size="sm" variant="secondary" onClick={handleWorkshopSubmit}>
+                        Suggest
+                      </Button>
+                    </div>
+                  </div>
                   <div className="mt-2 space-y-2">
                     <input
                       value={routineNameDraft}
@@ -542,6 +703,35 @@ export function AgentAutomationPage({
                           </option>
                         ))}
                       </select>
+                    </div>
+                    <textarea
+                      value={routineMissionObjectiveDraft}
+                      onChange={(event) => setRoutineMissionObjectiveDraft(event.target.value)}
+                      className="min-h-[72px] w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-primary/60"
+                      placeholder="Mission objective (required)"
+                    />
+                    <textarea
+                      value={routineSuccessCriteriaDraft}
+                      onChange={(event) => setRoutineSuccessCriteriaDraft(event.target.value)}
+                      className="min-h-[64px] w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-primary/60"
+                      placeholder="Success criteria (one per line)"
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="text-[11px] text-text-subtle">
+                        Mode
+                        <select
+                          value={routineModeDraft}
+                          onChange={(event) =>
+                            setRoutineModeDraft(
+                              event.target.value === "orchestrated" ? "orchestrated" : "standalone"
+                            )
+                          }
+                          className="mt-1 w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-primary/60"
+                        >
+                          <option value="standalone">standalone</option>
+                          <option value="orchestrated">orchestrated</option>
+                        </select>
+                      </label>
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-[11px] text-text-subtle">
                       <label className="inline-flex items-center gap-1">
@@ -623,6 +813,12 @@ export function AgentAutomationPage({
                             <div className="truncate text-[11px] text-text-subtle">
                               {routine.entrypoint} · {routine.status}
                             </div>
+                            {typeof routine.args?.["prompt"] === "string" &&
+                            routine.args["prompt"].trim().length > 0 ? (
+                              <div className="line-clamp-2 text-[11px] text-text-subtle">
+                                mission: {routine.args["prompt"]}
+                              </div>
+                            ) : null}
                             {routine.output_targets.length > 0 ? (
                               <div className="truncate text-[11px] text-text-subtle">
                                 outputs: {routine.output_targets.length}

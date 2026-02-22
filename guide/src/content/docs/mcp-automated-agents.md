@@ -257,11 +257,25 @@ From desktop:
 2. Open `Agent Automation` (robot icon in the left nav) and use `Automated Bots`.
 3. Create a scheduled bot:
    - choose interval
+   - set a clear mission objective (required)
+   - optionally use Mission Workshop to generate objective + success criteria
    - choose entrypoint (for example `mcp.arcade.search`)
    - choose `allowed_tools` from MCP and built-ins
 4. Use `Configured Routines` actions to pause/resume routines.
 5. Use `Scheduled Bots` run actions (`Approve`, `Deny`, `Pause`, `Resume`) for gated runs.
 6. In `Scheduled Bots`, inspect tool scope shown on each run card.
+
+### Mission Workshop (Desktop)
+
+`Agent Automation -> Automated Bots -> Mission Workshop` provides a chat-style drafting helper.
+
+Use it to:
+
+- describe what the bot should achieve in plain language
+- generate a mission objective + success criteria
+- apply the draft into the automation form before saving
+
+The resulting mission is stored in routine args (`prompt` + `success_criteria`) and is what the run executes.
 
 ## 4) SSE Visibility
 

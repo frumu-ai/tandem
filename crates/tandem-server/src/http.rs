@@ -52,7 +52,8 @@ use crate::{
     agent_teams::{emit_spawn_approved, emit_spawn_denied, emit_spawn_requested},
     evaluate_routine_execution_policy, ActiveRun, AppState, ChannelStatus, DiscordConfigFile,
     RoutineExecutionDecision, RoutineHistoryEvent, RoutineMisfirePolicy, RoutineRunArtifact,
-    RoutineRunStatus, RoutineSchedule, RoutineSpec, RoutineStatus, RoutineStoreError,
+    RoutineRunRecord, RoutineRunStatus, RoutineSchedule, RoutineSpec, RoutineStatus,
+    RoutineStoreError,
     SlackConfigFile, StartupStatus, TelegramConfigFile,
 };
 
@@ -356,6 +357,90 @@ struct RoutineCreateInput {
     next_fire_at_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AutomationMissionInput {
+    objective: String,
+    #[serde(default)]
+    success_criteria: Vec<String>,
+    #[serde(default)]
+    briefing: Option<String>,
+    #[serde(default)]
+    entrypoint_compat: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AutomationToolPolicyInput {
+    #[serde(default)]
+    run_allowlist: Option<Vec<String>>,
+    #[serde(default)]
+    external_integrations_allowed: Option<bool>,
+    #[serde(default)]
+    orchestrator_only_tool_calls: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AutomationApprovalPolicyInput {
+    #[serde(default)]
+    requires_approval: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AutomationPolicyInput {
+    #[serde(default)]
+    tool: AutomationToolPolicyInput,
+    #[serde(default)]
+    approval: AutomationApprovalPolicyInput,
+}
+
+#[derive(Debug, Deserialize)]
+struct AutomationCreateInput {
+    automation_id: Option<String>,
+    name: String,
+    schedule: RoutineSchedule,
+    timezone: Option<String>,
+    misfire_policy: Option<RoutineMisfirePolicy>,
+    mission: AutomationMissionInput,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    policy: Option<AutomationPolicyInput>,
+    #[serde(default)]
+    output_targets: Option<Vec<String>>,
+    creator_type: Option<String>,
+    creator_id: Option<String>,
+    next_fire_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AutomationMissionPatchInput {
+    #[serde(default)]
+    objective: Option<String>,
+    #[serde(default)]
+    success_criteria: Option<Vec<String>>,
+    #[serde(default)]
+    briefing: Option<String>,
+    #[serde(default)]
+    entrypoint_compat: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AutomationPatchInput {
+    name: Option<String>,
+    status: Option<RoutineStatus>,
+    schedule: Option<RoutineSchedule>,
+    timezone: Option<String>,
+    misfire_policy: Option<RoutineMisfirePolicy>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    mission: Option<AutomationMissionPatchInput>,
+    #[serde(default)]
+    policy: Option<AutomationPolicyInput>,
+    #[serde(default)]
+    output_targets: Option<Vec<String>>,
+    next_fire_at_ms: Option<u64>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct RoutinePatchInput {
     name: Option<String>,
@@ -407,6 +492,12 @@ struct RoutineRunArtifactInput {
 #[derive(Debug, Deserialize, Default)]
 struct RoutineEventsQuery {
     routine_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AutomationEventsQuery {
+    automation_id: Option<String>,
+    run_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -801,6 +892,23 @@ fn app_router(state: AppState) -> Router {
             "/routines/runs/{run_id}/artifacts",
             get(routines_run_artifacts).post(routines_run_artifact_add),
         )
+        .route("/automations", get(automations_list).post(automations_create))
+        .route("/automations/events", get(automations_events))
+        .route(
+            "/automations/{id}",
+            axum::routing::patch(automations_patch).delete(automations_delete),
+        )
+        .route("/automations/{id}/run_now", post(automations_run_now))
+        .route("/automations/runs", get(automations_runs_all))
+        .route("/automations/{id}/runs", get(automations_runs))
+        .route("/automations/runs/{run_id}", get(automations_run_get))
+        .route(
+            "/automations/runs/{run_id}/approve",
+            post(automations_run_approve),
+        )
+        .route("/automations/runs/{run_id}/deny", post(automations_run_deny))
+        .route("/automations/runs/{run_id}/pause", post(automations_run_pause))
+        .route("/automations/runs/{run_id}/resume", post(automations_run_resume))
         .route("/resource", get(resource_list))
         .route("/resource/events", get(resource_events))
         .route(
@@ -5437,6 +5545,562 @@ async fn routines_events(
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
 }
 
+fn objective_from_args(args: &Value, routine_id: &str, entrypoint: &str) -> String {
+    args.get("prompt")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("Execute automation '{routine_id}' with entrypoint '{entrypoint}'."))
+}
+
+fn success_criteria_from_args(args: &Value) -> Vec<String> {
+    args.get("success_criteria")
+        .and_then(|v| v.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.as_str())
+                .map(str::trim)
+                .filter(|row| !row.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn mode_from_args(args: &Value) -> String {
+    args.get("mode")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("standalone")
+        .to_string()
+}
+
+fn routine_to_automation_wire(routine: RoutineSpec) -> Value {
+    json!({
+        "automation_id": routine.routine_id,
+        "name": routine.name,
+        "status": routine.status,
+        "schedule": routine.schedule,
+        "timezone": routine.timezone,
+        "misfire_policy": routine.misfire_policy,
+        "mode": mode_from_args(&routine.args),
+        "mission": {
+            "objective": objective_from_args(&routine.args, &routine.routine_id, &routine.entrypoint),
+            "success_criteria": success_criteria_from_args(&routine.args),
+            "briefing": routine.args.get("briefing").cloned(),
+            "entrypoint_compat": routine.entrypoint,
+        },
+        "policy": {
+            "tool": {
+                "run_allowlist": routine.allowed_tools,
+                "external_integrations_allowed": routine.external_integrations_allowed,
+                "orchestrator_only_tool_calls": routine
+                    .args
+                    .get("orchestrator_only_tool_calls")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            },
+            "approval": {
+                "requires_approval": routine.requires_approval
+            }
+        },
+        "output_targets": routine.output_targets,
+        "creator_type": routine.creator_type,
+        "creator_id": routine.creator_id,
+        "next_fire_at_ms": routine.next_fire_at_ms,
+        "last_fired_at_ms": routine.last_fired_at_ms
+    })
+}
+
+fn routine_run_to_automation_wire(run: RoutineRunRecord) -> Value {
+    json!({
+        "run_id": run.run_id,
+        "automation_id": run.routine_id,
+        "trigger_type": run.trigger_type,
+        "run_count": run.run_count,
+        "status": run.status,
+        "created_at_ms": run.created_at_ms,
+        "updated_at_ms": run.updated_at_ms,
+        "fired_at_ms": run.fired_at_ms,
+        "started_at_ms": run.started_at_ms,
+        "finished_at_ms": run.finished_at_ms,
+        "mode": mode_from_args(&run.args),
+        "mission_snapshot": {
+            "objective": objective_from_args(&run.args, &run.routine_id, &run.entrypoint),
+            "success_criteria": success_criteria_from_args(&run.args),
+            "entrypoint_compat": run.entrypoint,
+        },
+        "policy_snapshot": {
+            "tool": {
+                "run_allowlist": run.allowed_tools,
+            },
+            "approval": {
+                "requires_approval": run.requires_approval
+            }
+        },
+        "requires_approval": run.requires_approval,
+        "approval_reason": run.approval_reason,
+        "denial_reason": run.denial_reason,
+        "paused_reason": run.paused_reason,
+        "detail": run.detail,
+        "output_targets": run.output_targets,
+        "artifacts": run.artifacts,
+        "correlation_id": run.run_id,
+    })
+}
+
+fn routine_event_to_run_event(event: &EngineEvent) -> Option<EngineEvent> {
+    let mut props = event.properties.clone();
+    let event_type = match event.event_type.as_str() {
+        "routine.run.created" => "run.started",
+        "routine.run.started" => "run.step",
+        "routine.run.completed" => "run.completed",
+        "routine.run.failed" => "run.failed",
+        "routine.approval_required" => "approval.required",
+        "routine.run.artifact_added" => "run.step",
+        "routine.blocked" => "run.failed",
+        _ => return None,
+    };
+    if let Some(routine_id) = props
+        .get("routineID")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+    {
+        props
+            .as_object_mut()
+            .expect("object")
+            .insert("automationID".to_string(), Value::String(routine_id));
+    }
+    if event.event_type == "routine.run.started" || event.event_type == "routine.run.artifact_added" {
+        props
+            .as_object_mut()
+            .expect("object")
+            .insert("phase".to_string(), Value::String("do".to_string()));
+    }
+    Some(EngineEvent::new(event_type, props))
+}
+
+fn automation_create_to_routine(input: AutomationCreateInput) -> Result<RoutineSpec, String> {
+    if input.mission.objective.trim().is_empty() {
+        return Err("mission.objective is required".to_string());
+    }
+    let mut args = json!({
+        "prompt": input.mission.objective.trim(),
+        "success_criteria": input.mission.success_criteria,
+        "mode": input.mode.unwrap_or_else(|| "standalone".to_string()),
+    });
+    if let Some(briefing) = input.mission.briefing {
+        if let Some(obj) = args.as_object_mut() {
+            obj.insert("briefing".to_string(), Value::String(briefing));
+        }
+    }
+    if let Some(policy) = input.policy.as_ref() {
+        if let Some(value) = policy.tool.orchestrator_only_tool_calls {
+            if let Some(obj) = args.as_object_mut() {
+                obj.insert("orchestrator_only_tool_calls".to_string(), Value::Bool(value));
+            }
+        }
+    }
+    let (allowed_tools, external_integrations_allowed, requires_approval) = if let Some(policy) = input.policy {
+        (
+            policy.tool.run_allowlist.unwrap_or_default(),
+            policy.tool.external_integrations_allowed.unwrap_or(false),
+            policy.approval.requires_approval.unwrap_or(true),
+        )
+    } else {
+        (Vec::new(), false, true)
+    };
+    Ok(RoutineSpec {
+        routine_id: input.automation_id.unwrap_or_else(|| {
+            format!("automation-{}", uuid::Uuid::new_v4().simple())
+        }),
+        name: input.name,
+        status: RoutineStatus::Active,
+        schedule: input.schedule,
+        timezone: input.timezone.unwrap_or_else(|| "UTC".to_string()),
+        misfire_policy: input.misfire_policy.unwrap_or(RoutineMisfirePolicy::RunOnce),
+        entrypoint: input
+            .mission
+            .entrypoint_compat
+            .unwrap_or_else(|| "mission.default".to_string()),
+        args: Value::Object(args.as_object().cloned().unwrap_or_default()),
+        allowed_tools,
+        output_targets: input.output_targets.unwrap_or_default(),
+        creator_type: input.creator_type.unwrap_or_else(|| "user".to_string()),
+        creator_id: input.creator_id.unwrap_or_else(|| "desktop".to_string()),
+        requires_approval,
+        external_integrations_allowed,
+        next_fire_at_ms: input.next_fire_at_ms,
+        last_fired_at_ms: None,
+    })
+}
+
+async fn automations_create(
+    State(state): State<AppState>,
+    Json(input): Json<AutomationCreateInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let routine = automation_create_to_routine(input).map_err(|detail| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Invalid automation definition",
+                "code": "AUTOMATION_INVALID",
+                "detail": detail,
+            })),
+        )
+    })?;
+    let saved = state.put_routine(routine).await.map_err(routine_error_response)?;
+    state.event_bus.publish(EngineEvent::new(
+        "automation.updated",
+        json!({
+            "automationID": saved.routine_id,
+        }),
+    ));
+    Ok(Json(json!({
+        "automation": routine_to_automation_wire(saved)
+    })))
+}
+
+async fn automations_list(State(state): State<AppState>) -> Json<Value> {
+    let rows = state
+        .list_routines()
+        .await
+        .into_iter()
+        .map(routine_to_automation_wire)
+        .collect::<Vec<_>>();
+    Json(json!({
+        "automations": rows,
+        "count": rows.len(),
+    }))
+}
+
+async fn automations_patch(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<AutomationPatchInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let mut routine = state.get_routine(&id).await.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error":"Automation not found",
+                "code":"AUTOMATION_NOT_FOUND",
+                "automationID": id,
+            })),
+        )
+    })?;
+    if let Some(name) = input.name.as_ref() {
+        routine.name = name.clone();
+    }
+    if let Some(status) = input.status.as_ref() {
+        routine.status = status.clone();
+    }
+    if let Some(schedule) = input.schedule.as_ref() {
+        routine.schedule = schedule.clone();
+    }
+    if let Some(timezone) = input.timezone.as_ref() {
+        routine.timezone = timezone.clone();
+    }
+    if let Some(misfire_policy) = input.misfire_policy.as_ref() {
+        routine.misfire_policy = misfire_policy.clone();
+    }
+    if let Some(next_fire_at_ms) = input.next_fire_at_ms {
+        routine.next_fire_at_ms = Some(next_fire_at_ms);
+    }
+    if let Some(output_targets) = input.output_targets.as_ref() {
+        routine.output_targets = output_targets.clone();
+    }
+    if let Some(policy) = input.policy.as_ref() {
+        if let Some(allowed) = policy.tool.run_allowlist.as_ref() {
+            routine.allowed_tools = allowed.clone();
+        }
+        if let Some(external_allowed) = policy.tool.external_integrations_allowed {
+            routine.external_integrations_allowed = external_allowed;
+        }
+        if let Some(requires_approval) = policy.approval.requires_approval {
+            routine.requires_approval = requires_approval;
+        }
+        if let Some(orchestrator_only) = policy.tool.orchestrator_only_tool_calls {
+            let mut args = routine.args.as_object().cloned().unwrap_or_default();
+            args.insert(
+                "orchestrator_only_tool_calls".to_string(),
+                Value::Bool(orchestrator_only),
+            );
+            routine.args = Value::Object(args);
+        }
+    }
+    if let Some(mode) = input.mode.as_ref() {
+        let mut args = routine.args.as_object().cloned().unwrap_or_default();
+        args.insert("mode".to_string(), Value::String(mode.clone()));
+        routine.args = Value::Object(args);
+    }
+    if let Some(mission) = input.mission.as_ref() {
+        let mut args = routine.args.as_object().cloned().unwrap_or_default();
+        if let Some(objective) = mission.objective.as_ref() {
+            args.insert("prompt".to_string(), Value::String(objective.clone()));
+        }
+        if let Some(success_criteria) = mission.success_criteria.as_ref() {
+            args.insert("success_criteria".to_string(), json!(success_criteria));
+        }
+        if let Some(briefing) = mission.briefing.as_ref() {
+            args.insert("briefing".to_string(), Value::String(briefing.clone()));
+        }
+        if let Some(entrypoint) = mission.entrypoint_compat.as_ref() {
+            routine.entrypoint = entrypoint.clone();
+        }
+        routine.args = Value::Object(args);
+    }
+    let updated = state.put_routine(routine).await.map_err(routine_error_response)?;
+    Ok(Json(json!({
+        "automation": routine_to_automation_wire(updated)
+    })))
+}
+
+async fn automations_delete(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let deleted = state
+        .delete_routine(&id)
+        .await
+        .map_err(routine_error_response)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error":"Automation not found",
+                    "code":"AUTOMATION_NOT_FOUND",
+                    "automationID": id,
+                })),
+            )
+        })?;
+    Ok(Json(json!({
+        "ok": true,
+        "automation": routine_to_automation_wire(deleted)
+    })))
+}
+
+async fn automations_run_now(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<RoutineRunNowInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let response = routines_run_now(State(state.clone()), Path(id), Json(input)).await?;
+    let payload = response.0;
+    let run_id = payload
+        .get("runID")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Run ID missing", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+            )
+        })?;
+    let run = state
+        .get_routine_run(run_id)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Run lookup failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+            )
+        })?;
+    Ok(Json(json!({
+        "ok": true,
+        "status": payload.get("status").cloned().unwrap_or(Value::String("queued".to_string())),
+        "run": routine_run_to_automation_wire(run),
+    })))
+}
+
+async fn automations_runs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<RoutineRunsQuery>,
+) -> Json<Value> {
+    let limit = query.limit.unwrap_or(25).clamp(1, 200);
+    let rows = state
+        .list_routine_runs(Some(&id), limit)
+        .await
+        .into_iter()
+        .map(routine_run_to_automation_wire)
+        .collect::<Vec<_>>();
+    Json(json!({
+        "runs": rows,
+        "count": rows.len(),
+    }))
+}
+
+async fn automations_runs_all(
+    State(state): State<AppState>,
+    Query(query): Query<RoutineRunsQuery>,
+) -> Json<Value> {
+    let limit = query.limit.unwrap_or(25).clamp(1, 200);
+    let rows = state
+        .list_routine_runs(query.routine_id.as_deref(), limit)
+        .await
+        .into_iter()
+        .map(routine_run_to_automation_wire)
+        .collect::<Vec<_>>();
+    Json(json!({
+        "runs": rows,
+        "count": rows.len(),
+    }))
+}
+
+async fn automations_run_get(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let run = state.get_routine_run(&run_id).await.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error":"Automation run not found",
+                "code":"AUTOMATION_RUN_NOT_FOUND",
+                "runID": run_id,
+            })),
+        )
+    })?;
+    Ok(Json(json!({
+        "run": routine_run_to_automation_wire(run)
+    })))
+}
+
+async fn automations_run_approve(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let response = routines_run_approve(State(state), Path(run_id), Json(input)).await?;
+    let run = response
+        .0
+        .get("run")
+        .and_then(|v| serde_json::from_value::<RoutineRunRecord>(v.clone()).ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+            )
+        })?;
+    Ok(Json(json!({ "ok": true, "run": routine_run_to_automation_wire(run) })))
+}
+
+async fn automations_run_deny(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let response = routines_run_deny(State(state), Path(run_id), Json(input)).await?;
+    let run = response
+        .0
+        .get("run")
+        .and_then(|v| serde_json::from_value::<RoutineRunRecord>(v.clone()).ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+            )
+        })?;
+    Ok(Json(json!({ "ok": true, "run": routine_run_to_automation_wire(run) })))
+}
+
+async fn automations_run_pause(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let response = routines_run_pause(State(state), Path(run_id), Json(input)).await?;
+    let run = response
+        .0
+        .get("run")
+        .and_then(|v| serde_json::from_value::<RoutineRunRecord>(v.clone()).ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+            )
+        })?;
+    Ok(Json(json!({ "ok": true, "run": routine_run_to_automation_wire(run) })))
+}
+
+async fn automations_run_resume(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let response = routines_run_resume(State(state), Path(run_id), Json(input)).await?;
+    let run = response
+        .0
+        .get("run")
+        .and_then(|v| serde_json::from_value::<RoutineRunRecord>(v.clone()).ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Run mapping failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
+            )
+        })?;
+    Ok(Json(json!({ "ok": true, "run": routine_run_to_automation_wire(run) })))
+}
+
+fn automations_sse_stream(
+    state: AppState,
+    automation_id: Option<String>,
+    run_id: Option<String>,
+) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
+    let ready = tokio_stream::once(Ok(Event::default().data(
+        serde_json::to_string(&json!({
+            "status": "ready",
+            "stream": "automations",
+            "timestamp_ms": crate::now_ms(),
+        }))
+        .unwrap_or_default(),
+    )));
+    let rx = state.event_bus.subscribe();
+    let live = BroadcastStream::new(rx).filter_map(move |msg| match msg {
+        Ok(event) => {
+            let mapped = routine_event_to_run_event(&event)?;
+            if let Some(automation_id) = automation_id.as_deref() {
+                let event_automation_id = mapped
+                    .properties
+                    .get("automationID")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if event_automation_id != automation_id {
+                    return None;
+                }
+            }
+            if let Some(run_id) = run_id.as_deref() {
+                let event_run_id = mapped
+                    .properties
+                    .get("runID")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if event_run_id != run_id {
+                    return None;
+                }
+            }
+            let payload = serde_json::to_string(&mapped).unwrap_or_default();
+            Some(Ok(Event::default().data(payload)))
+        }
+        Err(_) => None,
+    });
+    ready.chain(live)
+}
+
+async fn automations_events(
+    State(state): State<AppState>,
+    Query(query): Query<AutomationEventsQuery>,
+) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    Sse::new(automations_sse_stream(
+        state,
+        query.automation_id,
+        query.run_id,
+    ))
+    .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
+}
+
 fn resource_error_response(error: ResourceStoreError) -> (StatusCode, Json<Value>) {
     match error {
         ResourceStoreError::InvalidKey { key } => (
@@ -5743,6 +6407,17 @@ async fn openapi_doc() -> Json<Value> {
             "/routines/runs/{run_id}/resume":{"post":{"summary":"Resume a paused routine run"}},
             "/routines/runs/{run_id}/artifacts":{"get":{"summary":"List routine run artifacts"},"post":{"summary":"Attach artifact to routine run"}},
             "/routines/events":{"get":{"summary":"SSE stream for routine lifecycle events"}},
+            "/automations":{"get":{"summary":"List automations"},"post":{"summary":"Create automation"}},
+            "/automations/{id}":{"patch":{"summary":"Update automation"},"delete":{"summary":"Delete automation"}},
+            "/automations/{id}/run_now":{"post":{"summary":"Trigger automation immediately"}},
+            "/automations/{id}/runs":{"get":{"summary":"List runs for an automation"}},
+            "/automations/runs":{"get":{"summary":"List automation runs"}},
+            "/automations/runs/{run_id}":{"get":{"summary":"Get an automation run"}},
+            "/automations/runs/{run_id}/approve":{"post":{"summary":"Approve a pending automation run"}},
+            "/automations/runs/{run_id}/deny":{"post":{"summary":"Deny a pending automation run"}},
+            "/automations/runs/{run_id}/pause":{"post":{"summary":"Pause an automation run"}},
+            "/automations/runs/{run_id}/resume":{"post":{"summary":"Resume a paused automation run"}},
+            "/automations/events":{"get":{"summary":"SSE stream for automation run events"}},
             "/resource":{"get":{"summary":"List shared resources by prefix"}},
             "/resource/{key}":{"get":{"summary":"Get shared resource"},"put":{"summary":"Put shared resource with optional revision guard"},"patch":{"summary":"Patch shared resource with optional revision guard"},"delete":{"summary":"Delete shared resource with optional revision guard"}},
             "/resource/events":{"get":{"summary":"SSE stream for shared resource events"}},
@@ -8992,6 +9667,107 @@ mod tests {
             })
             .unwrap_or(false);
         assert!(all_match_routine);
+    }
+
+    #[tokio::test]
+    async fn automations_create_requires_mission_objective() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/automations")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "automation_id": "auto-empty-objective",
+                    "name": "Automation without objective",
+                    "schedule": { "interval_seconds": { "seconds": 300 } },
+                    "mission": {
+                        "objective": "   "
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("automation create request");
+        let create_resp = app
+            .clone()
+            .oneshot(create_req)
+            .await
+            .expect("automation create response");
+        assert_eq!(create_resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn automations_create_and_run_now_roundtrip() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/automations")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "automation_id": "auto-digest",
+                    "name": "Daily Digest Automation",
+                    "schedule": { "interval_seconds": { "seconds": 600 } },
+                    "mission": {
+                        "objective": "Generate a daily digest with clear sources.",
+                        "success_criteria": ["Contains source URLs", "Writes one artifact"]
+                    },
+                    "policy": {
+                        "tool": {
+                            "run_allowlist": ["read", "websearch", "webfetch_document", "write"],
+                            "external_integrations_allowed": true
+                        },
+                        "approval": {
+                            "requires_approval": true
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("automation create request");
+        let create_resp = app
+            .clone()
+            .oneshot(create_req)
+            .await
+            .expect("automation create response");
+        assert_eq!(create_resp.status(), StatusCode::OK);
+
+        let run_now_req = Request::builder()
+            .method("POST")
+            .uri("/automations/auto-digest/run_now")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({}).to_string()))
+            .expect("automation run_now request");
+        let run_now_resp = app
+            .clone()
+            .oneshot(run_now_req)
+            .await
+            .expect("automation run_now response");
+        assert_eq!(run_now_resp.status(), StatusCode::OK);
+        let run_now_body = to_bytes(run_now_resp.into_body(), usize::MAX)
+            .await
+            .expect("automation run_now body");
+        let run_now_payload: Value =
+            serde_json::from_slice(&run_now_body).expect("automation run_now json");
+        assert_eq!(
+            run_now_payload
+                .get("run")
+                .and_then(|v| v.get("automation_id"))
+                .and_then(|v| v.as_str()),
+            Some("auto-digest")
+        );
+        assert_eq!(
+            run_now_payload
+                .get("run")
+                .and_then(|v| v.get("mission_snapshot"))
+                .and_then(|v| v.get("objective"))
+                .and_then(|v| v.as_str()),
+            Some("Generate a daily digest with clear sources.")
+        );
     }
 
     #[tokio::test]
