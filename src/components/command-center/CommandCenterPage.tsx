@@ -882,6 +882,12 @@ export function CommandCenterPage({
           </div>
         </div>
 
+        <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-3 text-xs text-cyan-100">
+          MCP connectors and scheduled bot automation moved to the new{" "}
+          <span className="font-semibold">Agent Automation</span> page (robot icon in the left nav).
+          Command Center now focuses on orchestrator swarm runs.
+        </div>
+
         <div className="rounded-lg border border-border bg-surface p-4">
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs uppercase tracking-wide text-text-subtle">Workspace Files</div>

@@ -23,8 +23,8 @@ Agent Teams add policy-gated multi-agent spawning to `tandem-engine`.
   - `POST /agent-team/approvals/spawn/{id}/deny`
   - `POST /agent-team/instance/{id}/cancel`
   - `POST /agent-team/mission/{id}/cancel`
-- Desktop command center surface:
-  - Orchestrator panel now includes an `Agent Command Center` section for spawn, approvals, and mission/instance control.
+- Desktop operator surface:
+  - `Agent Automation` page includes an `Agent Ops` tab for spawn, approvals, and mission/instance control.
 - Structured events:
   - `agent_team.spawn.requested`
   - `agent_team.spawn.denied`
