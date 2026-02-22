@@ -5768,7 +5768,7 @@ mod tests {
     use std::time::Duration;
     use tandem_core::{
         AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus, PermissionManager,
-        PluginRegistry, Storage,
+        PluginRegistry, Storage, ToolPolicyContext, ToolPolicyHook,
     };
     use tandem_providers::ProviderRegistry;
     use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
@@ -9705,6 +9705,43 @@ mod tests {
                 .and_then(|v| v.get("bot_token"))
                 .and_then(Value::as_str),
             Some("[REDACTED]")
+        );
+    }
+
+    #[tokio::test]
+    async fn routine_tool_policy_hook_denies_disallowed_tool_for_session_scope() {
+        let state = test_state().await;
+        let session = Session::new(Some("routine-session".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        state.storage.save_session(session).await.expect("save session");
+
+        state
+            .set_routine_session_policy(
+                session_id.clone(),
+                "run-routine-hook-1".to_string(),
+                "routine-hook-1".to_string(),
+                vec!["read".to_string(), "mcp.arcade.search".to_string()],
+            )
+            .await;
+
+        let hook = crate::agent_teams::ServerToolPolicyHook::new(state.clone());
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id,
+                message_id: "msg-1".to_string(),
+                tool: "bash".to_string(),
+                args: json!({"command":"echo hi"}),
+            })
+            .await
+            .expect("policy decision");
+
+        assert!(!decision.allowed);
+        assert!(
+            decision
+                .reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not allowed for routine")
         );
     }
 }
