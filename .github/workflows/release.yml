@@ -115,6 +115,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}
+      release_body: ${{ steps.release-body.outputs.release_body }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -128,6 +129,16 @@ jobs:
 
       - name: Generate release notes
         run: node scripts/extract-release-notes.js "${{ github.ref_name }}" > release_notes.md
+
+      - name: Export release body output
+        id: release-body
+        shell: bash
+        run: |
+          {
+            echo "release_body<<EOF"
+            cat release_notes.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create Release
         id: create-release
@@ -283,6 +294,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          releaseBody: ${{ needs.create-release.outputs.release_body }}
           retryAttempts: 3
           args: --target ${{ matrix.target }}
           updaterJsonPreferNsis: true
@@ -308,6 +320,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          releaseBody: ${{ needs.create-release.outputs.release_body }}
           retryAttempts: 3
           args: --target ${{ matrix.target }}
           updaterJsonPreferNsis: true
@@ -387,6 +400,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          releaseBody: ${{ needs.create-release.outputs.release_body }}
           retryAttempts: 3
           args: --target ${{ matrix.target }}
           updaterJsonPreferNsis: true

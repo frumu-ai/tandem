@@ -5,6 +5,10 @@ import { UpdateProgressUI, UpdateState } from "@/components/ui/UpdateProgressUI"
 export function AppUpdateOverlay() {
   const { status, updateInfo, progress, error, installUpdate, dismissUpdate, isDismissed } =
     useUpdater();
+  const updateNotes =
+    typeof updateInfo?.body === "string" && updateInfo.body.trim().length > 0
+      ? updateInfo.body.trim()
+      : null;
 
   // Map updater status to UI state
   const getUiState = (): UpdateState => {
@@ -42,7 +46,7 @@ export function AppUpdateOverlay() {
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
       >
-        <div className="w-full max-w-lg rounded-2xl border border-border bg-surface shadow-2xl">
+        <div className="w-full max-w-2xl rounded-2xl border border-border bg-surface shadow-2xl">
           <UpdateProgressUI
             state={getUiState()}
             progress={progress || { downloaded: 0, total: 0, percent: 0 }}
@@ -55,6 +59,16 @@ export function AppUpdateOverlay() {
             actionLabel="Update Now"
             showSkip={!isActive} // Can't skip once started
           />
+          {updateNotes ? (
+            <div className="border-t border-border px-5 pb-5 pt-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-text-subtle">
+                What&apos;s New
+              </div>
+              <div className="mt-2 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-surface-elevated/40 p-3 text-xs text-text-subtle">
+                {updateNotes}
+              </div>
+            </div>
+          ) : null}
         </div>
       </motion.div>
     </AnimatePresence>

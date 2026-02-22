@@ -56,6 +56,14 @@
 - **OS mismatch diagnostics and loop suppression**: Added `OS_MISMATCH` error classification and retry suppression for repeated identical shell mismatch patterns.
 - **Docs and examples refresh**: Added engine CLI examples for memory write/list/global flows and documented global-memory startup configuration.
 - **Safety and coverage**: Added/updated tests to enforce explicit global-memory gating and avoid accidental unrestricted global recall.
+- **MCP Automated Agents (Desktop IA)**: Added a dedicated `Agent Automation` page (robot icon) for scheduled bots and MCP connector operations, separate from Command Center swarm workflows.
+- **Mission Workshop + templates**: Added mission drafting helper and ready templates (Daily Research, Issue Triage, Release Reporter) with default `webfetch_document`-first workflows.
+- **Automation run triage UX**: Added run event rail, run filters (`All`, `Pending`, `Blocked`, `Failed`), and run details panel with reason/timeline/output/artifact visibility.
+- **Automations API compatibility**: Desktop sidecar now falls back to legacy `/routines` endpoints when `/automations` is unavailable, reducing mixed-version 404 failures.
+- **Automation model routing**: Added provider/model routing controls and presets (OpenRouter/OpenCode Zen examples), plus orchestrated role model hints.
+- **Model selection observability**: Runs now emit `routine.run.model_selected` events so selected provider/model and source are visible in event streams.
+- **Server model policy hardening**: Added strict `model_policy` validation in automation create/patch handlers and explicit clear semantics (`model_policy: {}`).
+- **Docs rollout for automated agents**: Expanded MCP automated agent guide with headless setup, provider onboarding (Arcade/Composio), mission quality guidance, model-policy examples, and release test checklist.
 
 ### Orchestrator Routing Migration Notes
 

@@ -225,6 +225,19 @@ export function About() {
                       ? updateError || t("aboutPage.updateCheckFailed", { ns: "common" })
                       : ""}
             </p>
+            {updateStatus === "available" &&
+            updateInfo &&
+            typeof updateInfo.body === "string" &&
+            updateInfo.body.trim().length > 0 ? (
+              <div className="w-full max-w-2xl space-y-1 rounded-lg border border-border bg-surface-elevated/30 p-3 text-left">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-text-subtle">
+                  What&apos;s New
+                </div>
+                <div className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs text-text-subtle">
+                  {updateInfo.body.trim()}
+                </div>
+              </div>
+            ) : null}
           </div>
         </motion.div>
       </div>

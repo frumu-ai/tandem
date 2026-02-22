@@ -79,6 +79,14 @@ interface SettingsProps {
   onInitialSectionConsumed?: () => void;
 }
 
+interface LatestReleaseSummary {
+  tag: string;
+  title: string;
+  body: string;
+  htmlUrl: string;
+  publishedAt: string | null;
+}
+
 export function Settings({
   onClose,
   onProjectChange,
@@ -139,10 +147,14 @@ export function Settings({
     null
   );
   const [migrationRunning, setMigrationRunning] = useState(false);
+  const [latestRelease, setLatestRelease] = useState<LatestReleaseSummary | null>(null);
+  const [latestReleaseLoading, setLatestReleaseLoading] = useState(false);
+  const [latestReleaseError, setLatestReleaseError] = useState<string | null>(null);
 
   useEffect(() => {
     loadSettings();
     void loadCustomBackground();
+    void loadLatestReleaseNotes();
     getVersion().then(setAppVersion);
   }, []);
 
@@ -224,6 +236,40 @@ export function Settings({
       console.error("Failed to load settings:", err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadLatestReleaseNotes = async () => {
+    setLatestReleaseLoading(true);
+    setLatestReleaseError(null);
+    try {
+      const response = await globalThis.fetch(
+        "https://api.github.com/repos/frumu-ai/tandem/releases/latest",
+        {
+          headers: {
+            Accept: "application/vnd.github+json",
+          },
+        }
+      );
+      if (!response.ok) {
+        throw new Error(`Release notes request failed (${response.status})`);
+      }
+      const payload = (await response.json()) as Record<string, unknown>;
+      const tag = typeof payload.tag_name === "string" ? payload.tag_name : "latest";
+      const title = typeof payload.name === "string" && payload.name.trim() ? payload.name : tag;
+      const body = typeof payload.body === "string" ? payload.body.trim() : "";
+      const htmlUrl = typeof payload.html_url === "string" ? payload.html_url : "";
+      const publishedAt =
+        typeof payload.published_at === "string" && payload.published_at.trim().length > 0
+          ? payload.published_at
+          : null;
+      setLatestRelease({ tag, title, body, htmlUrl, publishedAt });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setLatestReleaseError(message);
+      setLatestRelease(null);
+    } finally {
+      setLatestReleaseLoading(false);
     }
   };
 
@@ -844,6 +890,19 @@ export function Settings({
                             ? t("updates.downloadingUpdate", { ns: "settings" })
                             : ""}
             </div>
+            {updateStatus === "available" &&
+            updateInfo &&
+            typeof updateInfo.body === "string" &&
+            updateInfo.body.trim().length > 0 ? (
+              <div className="space-y-1">
+                <div className="text-xs font-semibold uppercase tracking-wide text-text-subtle">
+                  What&apos;s New
+                </div>
+                <div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-surface-elevated/30 p-3 text-xs text-text-subtle">
+                  {updateInfo.body.trim()}
+                </div>
+              </div>
+            ) : null}
 
             {updateStatus === "downloading" && updateProgress && (
               <div className="space-y-2">
@@ -865,6 +924,55 @@ export function Settings({
                 </div>
               </div>
             )}
+
+            <div className="space-y-2 rounded-md border border-border bg-surface-elevated/20 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-text-subtle">
+                    Latest Release Notes
+                  </div>
+                  <div className="text-[11px] text-text-muted">
+                    {latestRelease?.tag ?? "No release metadata loaded"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => void loadLatestReleaseNotes()}
+                    disabled={latestReleaseLoading}
+                  >
+                    {latestReleaseLoading ? "Loading..." : "Refresh"}
+                  </Button>
+                  {latestRelease?.htmlUrl ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => globalThis.open(latestRelease.htmlUrl, "_blank", "noopener")}
+                    >
+                      Open Full Notes
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              {latestReleaseError ? (
+                <div className="text-xs text-red-300">{latestReleaseError}</div>
+              ) : null}
+              {latestRelease?.publishedAt ? (
+                <div className="text-[11px] text-text-subtle">
+                  Published: {new Date(latestRelease.publishedAt).toLocaleString()}
+                </div>
+              ) : null}
+              {latestRelease?.body ? (
+                <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded border border-border bg-surface p-3 text-xs text-text-subtle">
+                  {latestRelease.body}
+                </div>
+              ) : latestReleaseLoading ? null : (
+                <div className="text-xs text-text-subtle">
+                  No release notes body found for latest release.
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
 

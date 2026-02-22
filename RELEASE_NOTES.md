@@ -61,6 +61,14 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Updated engine README with global memory enablement and shared DB behavior notes.
 - Quality:
   - Added/updated tool tests for global-memory opt-in gating and scope validation.
+- MCP Automated Agents:
+  - Added dedicated `Agent Automation` desktop page (separate from Command Center) for scheduled bots + MCP connector control.
+  - Added Mission Workshop and ready templates (Daily Research, Issue Triage, Release Reporter) with `webfetch_document`-forward defaults.
+  - Added run triage UX: event rail chips, run filters, and run-details panel with reason/timeline/output/artifact visibility.
+  - Added sidecar compatibility fallback from `/automations` to legacy `/routines` to reduce mixed-version 404 loops.
+  - Added automation model-routing controls and presets (OpenRouter/OpenCode Zen examples) and emitted `routine.run.model_selected` events.
+  - Hardened automation `model_policy` validation/patch semantics (including clear with `model_policy: {}`).
+  - Expanded guide docs for MCP automated agent setup, headless operation, provider onboarding, and release-readiness checklist.
 
 ## v0.3.7 - 2026-02-18
 

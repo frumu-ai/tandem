@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shared memory DB auto-wiring in engine**: `tandem-engine` now auto-configures `TANDEM_MEMORY_DB_PATH` to the shared Tandem `memory.sqlite` path when unset, aligning connected app/tool memory access by default.
 - **Engine host runtime context contract**: Added shared `HostRuntimeContext` (`os`, `arch`, `shell_family`, `path_style`) in shared types/wire payloads and surfaced it through engine health/session/run metadata.
 - **Server run-start environment observability**: `session.run.started` lifecycle events now include canonical engine environment metadata for cross-client parity.
+- **MCP Automated Agents surface (Desktop)**: Added a dedicated `Agent Automation` page (robot-nav entry) for connector operations, scheduled routine wiring, and run triage separate from Command Center orchestration.
+- **Mission Workshop (Desktop)**: Added in-page mission drafting assistance that converts plain-language goals into routine objective, success criteria, and suggested execution mode.
+- **Ready-made automation templates**: Added starter templates for daily research, issue triage, and release reporting with built-in `webfetch_document` inclusion patterns.
+- **Automation run observability UX**: Added per-run event rail chips (`Plan/Do/Verify/Approval/Blocked/Failed`), run filters (`All/Pending/Blocked/Failed`), and run details panel (timeline/reasons/outputs/artifacts).
+- **Automation model routing controls**: Added provider/model selection and preset-based model routing for standalone + orchestrated automations, including role model hints for orchestrator/planner/worker/verifier/notifier.
+- **Automation model-selection run events**: Added `routine.run.model_selected` emission so selected provider/model and selection source are visible in run streams.
 
 ### Changed
 
@@ -46,6 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Engine prompt assembly (OS-aware)**: `tandem-core` now prepends a deterministic `[Execution Environment]` block (engine-detected OS/shell/path style) to model runs by default (`TANDEM_OS_AWARE_PROMPTS` toggle).
 - **Canonical OS authority policy**: Runtime behavior now trusts engine-detected host environment as the source of truth rather than client-provided OS hints.
 - **Engine health diagnostics**: `/global/health` now exposes `environment` metadata for troubleshooting and external clients.
+- **Routines/automations API compatibility in sidecar bridge**: Desktop routine calls now gracefully fall back to legacy `/routines` endpoints when `/automations` returns `404`, enabling mixed-version app/engine operation.
+- **Automation docs expansion**: Added setup and usage guidance for MCP automated agents, provider notes (Arcade/Composio), headless “just run” flow, model-routing examples, and release-readiness test checklist.
 
 ### Fixed
 
@@ -81,6 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Windows shell mismatch loops**: Expanded Windows shell guardrails to translate common Unix patterns, block unsafe Unix-only commands with structured guidance, and emit `os_guardrail_applied`/`guardrail_reason` metadata.
 - **OS mismatch retry suppression**: Engine loop now suppresses repeated identical shell calls after path/shell mismatch signatures and steers model/tool flow toward cross-platform tools (`read`, `glob`, `grep`).
 - **OS mismatch error taxonomy**: Server dispatch now classifies common path/shell mismatch failures as `OS_MISMATCH` for clearer diagnostics.
+- **Automation endpoint 404 startup noise**: Reduced desktop sidecar error loops/circuit-breaker churn when new automation routes are unavailable on older engines via endpoint fallback handling.
+- **Automation model policy validation**: Hardened create/patch validation for `model_policy` shape (`default_model`, `role_models.*` with required `provider_id` + `model_id`) and explicit clear semantics (`model_policy: {}` on patch).
 
 ## [0.3.7] - 2026-02-18
 
