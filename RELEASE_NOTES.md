@@ -4,6 +4,9 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## v0.3.9 (Unreleased)
 
+- Memory Consolidation: Added opt-in LLM summarization of session memory using the cheapest available configured provider (prioritizing local/free options like Ollama, Groq, OpenRouter). Automatically triggers as a background task when a session completes.
+- Channel Tool Policy: Added `channels.tool_policy` config option (`allow_all`, `deny_all`, `require_approval`) and `TANDEM_CHANNEL_TOOL_POLICY` env var to govern agent tool execution in messaging channels.
+- Channel Session Metadata: Upgraded channel session tracking to persist detailed `SessionRecord` mapping (timestamps, channel, sender) instead of bare session IDs.
 - Headless web admin: Added embedded single-file `/admin` UI served by `tandem-server` (no external runtime assets).
 - Realtime admin updates: Added SSE-driven refresh behavior with polling fallback for live admin visibility.
 - New channel admin APIs:

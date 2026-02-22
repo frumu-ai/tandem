@@ -49,8 +49,17 @@ fn add_auth(rb: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder
 // Session map + persistence
 // ---------------------------------------------------------------------------
 
-/// `{channel_name}:{sender_id}` → Tandem `session_id`
-pub type SessionMap = Arc<Mutex<HashMap<String, String>>>;
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionRecord {
+    pub session_id: String,
+    pub created_at_ms: u64,
+    pub last_seen_at_ms: u64,
+    pub channel: String,
+    pub sender: String,
+}
+
+/// `{channel_name}:{sender_id}` → Tandem `SessionRecord`
+pub type SessionMap = Arc<Mutex<HashMap<String, SessionRecord>>>;
 
 fn persistence_path() -> PathBuf {
     // Prefer XDG_DATA_HOME, fall back to ~/.local/share
@@ -74,16 +83,46 @@ fn dirs_path() -> Option<PathBuf> {
 
 /// Load the session map from disk. Returns an empty map if the file doesn't
 /// exist or cannot be parsed.
-async fn load_session_map() -> HashMap<String, String> {
+async fn load_session_map() -> HashMap<String, SessionRecord> {
     let path = persistence_path();
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        Err(_) => HashMap::new(),
+    let Ok(bytes) = tokio::fs::read(&path).await else {
+        return HashMap::new();
+    };
+
+    if let Ok(map) = serde_json::from_slice::<HashMap<String, SessionRecord>>(&bytes) {
+        return map;
     }
+
+    // Migration from old String format
+    if let Ok(old_map) = serde_json::from_slice::<HashMap<String, String>>(&bytes) {
+        let mut new_map = HashMap::new();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        for (key, session_id) in old_map {
+            let mut parts = key.splitn(2, ':');
+            let channel = parts.next().unwrap_or("unknown").to_string();
+            let sender = parts.next().unwrap_or("unknown").to_string();
+            new_map.insert(
+                key,
+                SessionRecord {
+                    session_id,
+                    created_at_ms: now,
+                    last_seen_at_ms: now,
+                    channel,
+                    sender,
+                },
+            );
+        }
+        return new_map;
+    }
+
+    HashMap::new()
 }
 
 /// Persist the session map to disk. Silently ignores I/O errors.
-async fn save_session_map(map: &HashMap<String, String>) {
+async fn save_session_map(map: &HashMap<String, SessionRecord>) {
     let path = persistence_path();
     if let Some(parent) = path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
@@ -105,6 +144,8 @@ enum SlashCommand {
     Rename { name: String },
     Status,
     Help,
+    Approve { tool_call_id: String },
+    Deny { tool_call_id: String },
 }
 
 fn parse_slash_command(content: &str) -> Option<SlashCommand> {
@@ -135,6 +176,16 @@ fn parse_slash_command(content: &str) -> Option<SlashCommand> {
     }
     if trimmed == "/help" || trimmed == "/?" {
         return Some(SlashCommand::Help);
+    }
+    if let Some(id) = trimmed.strip_prefix("/approve ") {
+        return Some(SlashCommand::Approve {
+            tool_call_id: id.trim().to_string(),
+        });
+    }
+    if let Some(id) = trimmed.strip_prefix("/deny ") {
+        return Some(SlashCommand::Deny {
+            tool_call_id: id.trim().to_string(),
+        });
     }
     None
 }
@@ -298,9 +349,16 @@ async fn get_or_create_session(
     session_map: &SessionMap,
 ) -> Option<String> {
     {
-        let guard = session_map.lock().await;
-        if let Some(id) = guard.get(map_key) {
-            return Some(id.clone());
+        let mut guard = session_map.lock().await;
+        if let Some(record) = guard.get_mut(map_key) {
+            record.last_seen_at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            let sid = record.session_id.clone();
+            // Persist the updated last_seen_at_ms
+            save_session_map(&guard).await;
+            return Some(sid);
         }
     }
 
@@ -337,35 +395,52 @@ async fn get_or_create_session(
         .map(|s| s.to_string())?;
 
     let mut guard = session_map.lock().await;
-    guard.insert(map_key.to_string(), session_id.clone());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    guard.insert(
+        map_key.to_string(),
+        SessionRecord {
+            session_id: session_id.clone(),
+            created_at_ms: now,
+            last_seen_at_ms: now,
+            channel: msg.channel.clone(),
+            sender: msg.sender.clone(),
+        },
+    );
     save_session_map(&guard).await;
 
     Some(session_id)
 }
 
-/// Submit a message to an existing Tandem session and collect the last
-/// assistant text via `POST /session/{id}/prompt_sync`.
+/// Submit a message to a Tandem session using `prompt_async` and stream
+/// the result via the SSE event bus (`GET /event?sessionID=...&runID=...`).
 ///
-/// The request body is `SendMessageRequest { parts: [{ type: "text", text: "..." }] }`.
-/// The response is a `Vec<WireSessionMessage>`. We extract the last assistant
-/// message's text parts and join them.
+/// Falls back to an error string if the initial fire fails or the stream
+/// never completes within `timeout_secs`.
 async fn run_in_session(
     session_id: &str,
     content: &str,
     base_url: &str,
     api_token: &str,
 ) -> anyhow::Result<String> {
+    let timeout_secs: u64 = std::env::var("TANDEM_CHANNEL_MAX_WAIT_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
+
     let client = reqwest::Client::builder()
-        // Give the LLM up to 5 minutes for long responses
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(timeout_secs + 30))
         .build()?;
 
     let body = serde_json::json!({
         "parts": [{ "type": "text", "text": content }]
     });
 
+    // Fire-and-forget: prompt_async returns immediately with {runID}
     let resp = add_auth(
-        client.post(format!("{base_url}/session/{session_id}/prompt_sync")),
+        client.post(format!("{base_url}/session/{session_id}/prompt_async")),
         api_token,
     )
     .json(&body)
@@ -375,56 +450,118 @@ async fn run_in_session(
     if !resp.status().is_success() {
         let status = resp.status();
         let err = resp.text().await.unwrap_or_default();
-        anyhow::bail!("prompt_sync failed ({status}): {err}");
+        anyhow::bail!("prompt_async failed ({status}): {err}");
     }
 
-    let messages: serde_json::Value = resp.json().await?;
+    let fire_json: serde_json::Value = resp.json().await?;
+    let run_id = fire_json
+        .get("runID")
+        .or_else(|| fire_json.get("run_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    // Find the last assistant message and concatenate its text parts.
-    let assistant_text = extract_last_assistant_text(&messages);
-    Ok(assistant_text)
+    // Stream the SSE event bus until the run finishes or we timeout.
+    let event_url = format!(
+        "{base_url}/event?sessionID={session_id}{}",
+        if run_id.is_empty() {
+            String::new()
+        } else {
+            format!("&runID={run_id}")
+        }
+    );
+
+    let sse_resp = add_auth(client.get(&event_url), api_token)
+        .header("Accept", "text/event-stream")
+        .send()
+        .await?;
+
+    use futures_util::StreamExt;
+    let mut content_buf = String::new();
+    let mut body_stream = sse_resp.bytes_stream();
+    let mut line_buf = String::new();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+
+    'outer: loop {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        match tokio::time::timeout(Duration::from_secs(60), body_stream.next()).await {
+            Ok(Some(Ok(chunk))) => {
+                line_buf.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            Ok(Some(Err(e))) => {
+                tracing::warn!("SSE stream error: {e}");
+                break 'outer;
+            }
+            Ok(None) | Err(_) => break 'outer,
+        }
+
+        // Process complete SSE lines
+        while let Some(pos) = line_buf.find('\n') {
+            let raw = line_buf[..pos].trim_end_matches('\r').to_string();
+            line_buf = line_buf[pos + 1..].to_string();
+
+            let data = raw.strip_prefix("data:").map(str::trim);
+            let Some(data) = data else { continue };
+            if data == "[DONE]" {
+                break 'outer;
+            }
+
+            let Ok(evt) = serde_json::from_str::<serde_json::Value>(data) else {
+                continue;
+            };
+
+            let event_type = evt
+                .get("type")
+                .or_else(|| evt.get("event"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            match event_type {
+                "session.message.delta" | "content" => {
+                    if let Some(delta) = evt
+                        .get("delta")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| evt.get("text").and_then(|v| v.as_str()))
+                    {
+                        content_buf.push_str(delta);
+                    }
+                }
+                "session.run.finished" | "done" => break 'outer,
+                _ => {}
+            }
+        }
+    }
+
+    Ok(if content_buf.is_empty() {
+        "(no response)".to_string()
+    } else {
+        content_buf
+    })
 }
 
-/// Extract the last assistant message's text from the `WireSessionMessage[]`
-/// returned by `prompt_sync`.
-///
-/// Each message is `{ info: { role: "..." }, parts: [{ type: "text", text: "..." }] }`.
-fn extract_last_assistant_text(messages: &serde_json::Value) -> String {
-    let arr = match messages.as_array() {
-        Some(a) => a,
-        None => return String::new(),
-    };
-
-    let last_assistant = arr.iter().rev().find(|m| {
-        m.get("info")
-            .and_then(|i| i.get("role"))
-            .and_then(|r| r.as_str())
-            .map(|r| r == "assistant")
-            .unwrap_or(false)
-    });
-
-    let msg = match last_assistant {
-        Some(m) => m,
-        None => return String::new(),
-    };
-
-    let parts = msg.get("parts").and_then(|p| p.as_array());
-    let Some(parts) = parts else {
-        return String::new();
-    };
-
-    parts
-        .iter()
-        .filter(|p| {
-            p.get("type")
-                .and_then(|t| t.as_str())
-                .map(|t| t == "text")
-                .unwrap_or(false)
-        })
-        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-        .filter(|t| !t.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Send an approve or deny decision to the tandem-server tool approval endpoint.
+/// Path: POST /sessions/{session_id}/tools/{tool_call_id}/approve|deny
+async fn relay_tool_decision(
+    base_url: &str,
+    api_token: &str,
+    session_id: &str,
+    tool_call_id: &str,
+    approved: bool,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let action = if approved { "approve" } else { "deny" };
+    let url = format!("{base_url}/sessions/{session_id}/tools/{tool_call_id}/{action}");
+    let resp = add_auth(client.post(&url), api_token).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        anyhow::bail!("relay_tool_decision failed ({status})");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +590,40 @@ async fn handle_slash_command(
         SlashCommand::Rename { name } => {
             rename_session_text(name, msg, base_url, api_token, session_map).await
         }
+        SlashCommand::Approve { tool_call_id } => {
+            let map_key = format!("{}:{}", msg.channel, msg.sender);
+            let session_id = {
+                let guard = session_map.lock().await;
+                guard.get(&map_key).map(|r| r.session_id.clone())
+            };
+            match session_id {
+                None => "⚠️ No active session — nothing to approve.".to_string(),
+                Some(sid) => {
+                    match relay_tool_decision(base_url, api_token, &sid, &tool_call_id, true).await
+                    {
+                        Ok(()) => format!("✅ Approved tool call `{tool_call_id}`."),
+                        Err(e) => format!("⚠️ Could not approve: {e}"),
+                    }
+                }
+            }
+        }
+        SlashCommand::Deny { tool_call_id } => {
+            let map_key = format!("{}:{}", msg.channel, msg.sender);
+            let session_id = {
+                let guard = session_map.lock().await;
+                guard.get(&map_key).map(|r| r.session_id.clone())
+            };
+            match session_id {
+                None => "⚠️ No active session — nothing to deny.".to_string(),
+                Some(sid) => {
+                    match relay_tool_decision(base_url, api_token, &sid, &tool_call_id, false).await
+                    {
+                        Ok(()) => format!("🚫 Denied tool call `{tool_call_id}`."),
+                        Err(e) => format!("⚠️ Could not deny: {e}"),
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -467,6 +638,8 @@ fn help_text() -> String {
     /resume <id or name> — switch to a previous session\n\
     /rename <name> — rename the current session\n\
     /status — show current session info\n\
+    /approve <tool_call_id> — approve a pending tool call\n\
+    /deny <tool_call_id> — deny a pending tool call\n\
     /help — show this message"
         .to_string()
 }
@@ -561,7 +734,20 @@ async fn new_session_text(
     };
 
     let mut guard = session_map.lock().await;
-    guard.insert(map_key, session_id.clone());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    guard.insert(
+        map_key,
+        SessionRecord {
+            session_id: session_id.clone(),
+            created_at_ms: now,
+            last_seen_at_ms: now,
+            channel: msg.channel.clone(),
+            sender: msg.sender.clone(),
+        },
+    );
     save_session_map(&guard).await;
 
     format!(
@@ -621,7 +807,20 @@ async fn resume_session_text(
                 .unwrap_or("Untitled");
 
             let mut guard = session_map.lock().await;
-            guard.insert(map_key, id.to_string());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            guard.insert(
+                map_key,
+                SessionRecord {
+                    session_id: id.to_string(),
+                    created_at_ms: now,
+                    last_seen_at_ms: now,
+                    channel: msg.channel.clone(),
+                    sender: msg.sender.clone(),
+                },
+            );
             save_session_map(&guard).await;
 
             format!(
@@ -644,7 +843,11 @@ async fn status_text(
     session_map: &SessionMap,
 ) -> String {
     let map_key = format!("{}:{}", msg.channel, msg.sender);
-    let session_id = session_map.lock().await.get(&map_key).cloned();
+    let session_id = session_map
+        .lock()
+        .await
+        .get(&map_key)
+        .map(|r| r.session_id.clone());
     let Some(sid) = session_id else {
         return "ℹ️ No active session. Send a message to start one, or use /new.".to_string();
     };
@@ -686,7 +889,11 @@ async fn rename_session_text(
     session_map: &SessionMap,
 ) -> String {
     let map_key = format!("{}:{}", msg.channel, msg.sender);
-    let session_id = session_map.lock().await.get(&map_key).cloned();
+    let session_id = session_map
+        .lock()
+        .await
+        .get(&map_key)
+        .map(|r| r.session_id.clone());
     let Some(sid) = session_id else {
         return "⚠️ No active session to rename. Send a message first.".to_string();
     };
@@ -796,77 +1003,23 @@ mod tests {
         ));
     }
 
-    // ── Assistant text extraction ─────────────────────────────────────────
+    // ── SessionRecord ─────────────────────────────────────────────────────
 
     #[test]
-    fn extract_assistant_text_from_prompt_sync_response() {
-        let messages = serde_json::json!([
-            {
-                "info": { "role": "user", "sessionID": "s1", "id": "m1",
-                           "time": { "created": 0 } },
-                "parts": [{ "type": "text", "text": "hello" }]
-            },
-            {
-                "info": { "role": "assistant", "sessionID": "s1", "id": "m2",
-                           "time": { "created": 1 } },
-                "parts": [
-                    { "type": "text", "text": "Hi there!" },
-                    { "type": "text", "text": "How can I help?" }
-                ]
-            }
-        ]);
-        let text = extract_last_assistant_text(&messages);
-        assert_eq!(text, "Hi there!\nHow can I help?");
-    }
-
-    #[test]
-    fn extract_skips_tool_invocation_parts() {
-        let messages = serde_json::json!([
-            {
-                "info": { "role": "assistant", "sessionID": "s1", "id": "m1",
-                           "time": { "created": 0 } },
-                "parts": [
-                    { "type": "tool_invocation", "tool": "bash", "args": {} },
-                    { "type": "text", "text": "Done!" }
-                ]
-            }
-        ]);
-        let text = extract_last_assistant_text(&messages);
-        assert_eq!(text, "Done!");
-    }
-
-    #[test]
-    fn extract_empty_when_no_assistant_message() {
-        let messages = serde_json::json!([
-            {
-                "info": { "role": "user", "sessionID": "s1", "id": "m1",
-                           "time": { "created": 0 } },
-                "parts": [{ "type": "text", "text": "hello" }]
-            }
-        ]);
-        assert_eq!(extract_last_assistant_text(&messages), "");
-    }
-
-    #[test]
-    fn extract_empty_on_empty_array() {
-        let messages = serde_json::json!([]);
-        assert_eq!(extract_last_assistant_text(&messages), "");
-    }
-
-    #[test]
-    fn extract_uses_last_assistant_message() {
-        let messages = serde_json::json!([
-            {
-                "info": { "role": "assistant", "sessionID": "s1", "id": "m1",
-                           "time": { "created": 0 } },
-                "parts": [{ "type": "text", "text": "first" }]
-            },
-            {
-                "info": { "role": "assistant", "sessionID": "s1", "id": "m2",
-                           "time": { "created": 1 } },
-                "parts": [{ "type": "text", "text": "second" }]
-            }
-        ]);
-        assert_eq!(extract_last_assistant_text(&messages), "second");
+    fn session_record_roundtrip() {
+        let record = SessionRecord {
+            session_id: "s1".to_string(),
+            created_at_ms: 1000,
+            last_seen_at_ms: 2000,
+            channel: "telegram".to_string(),
+            sender: "user1".to_string(),
+        };
+        let serialized = serde_json::to_string(&record).unwrap();
+        let deserialized: SessionRecord = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.session_id, "s1");
+        assert_eq!(deserialized.created_at_ms, 1000);
+        assert_eq!(deserialized.last_seen_at_ms, 2000);
+        assert_eq!(deserialized.channel, "telegram");
+        assert_eq!(deserialized.sender, "user1");
     }
 }

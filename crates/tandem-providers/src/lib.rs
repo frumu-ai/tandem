@@ -27,6 +27,21 @@ pub struct AppConfig {
     pub default_provider: Option<String>,
 }
 
+/// Configuration for background memory consolidation via a cheap/free LLM.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryConsolidationConfig {
+    /// Set to `true` to enable automatic session memory consolidation when a session ends.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Override the provider to use for consolidation.
+    /// Defaults to cheapest available: ollama → groq → openrouter → mistral → openai → default.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Override the model to use for consolidation.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: String,
@@ -132,6 +147,71 @@ impl ProviderRegistry {
     ) -> anyhow::Result<String> {
         let provider = self.select_provider(provider_id).await?;
         provider.complete(prompt, model_id).await
+    }
+
+    /// Complete a prompt using the cheapest available configured provider.
+    ///
+    /// Tries providers in this cost order (first configured one wins):
+    /// `ollama` (free/local) → `groq` (free tier) → `openrouter` (free models) →
+    /// `mistral` ($0.10/1M) → `openai` ($0.15/1M) → `anthropic` → default provider.
+    ///
+    /// Optionally accepts an explicit `provider_override` and `model_override` from
+    /// `MemoryConsolidationConfig` to let users pin a specific provider/model.
+    pub async fn complete_cheapest(
+        &self,
+        prompt: &str,
+        provider_override: Option<&str>,
+        model_override: Option<&str>,
+    ) -> anyhow::Result<String> {
+        // If the user has explicitly pinned a provider, use it directly.
+        if let Some(pid) = provider_override {
+            return self
+                .complete_for_provider(Some(pid), prompt, model_override)
+                .await;
+        }
+
+        let best_provider = self.select_cheapest_provider_id().await;
+        let openrouter_free_model = "meta-llama/llama-3.3-70b-instruct:free";
+
+        match best_provider {
+            Some(pid @ "openrouter") if model_override.is_none() => {
+                self.complete_for_provider(Some(pid), prompt, Some(openrouter_free_model))
+                    .await
+            }
+            Some(pid) => {
+                self.complete_for_provider(Some(pid), prompt, model_override)
+                    .await
+            }
+            None => {
+                // No known cheap provider configured — fall back to default.
+                self.complete_for_provider(None, prompt, model_override)
+                    .await
+            }
+        }
+    }
+
+    /// Returns the string ID of the cheapest available configured provider.
+    pub async fn select_cheapest_provider_id(&self) -> Option<&'static str> {
+        let providers = self.providers.read().await;
+        let configured_ids: Vec<String> = providers.iter().map(|p| p.info().id).collect();
+        drop(providers);
+
+        // Cost-ordered priority: local/free first, paid last.
+        let priority_order = [
+            "ollama",
+            "groq",
+            "openrouter",
+            "together",
+            "mistral",
+            "openai",
+            "anthropic",
+            "cohere",
+        ];
+
+        priority_order
+            .iter()
+            .find(|id| configured_ids.iter().any(|c| c == **id))
+            .copied()
     }
 
     pub async fn default_stream(
@@ -1046,5 +1126,21 @@ mod tests {
         assert!(err
             .to_string()
             .contains("provider `openruter` is not configured"));
+    }
+
+    #[tokio::test]
+    async fn complete_cheapest_picks_ollama_first() {
+        // Test priority parsing logic
+        let registry = ProviderRegistry::new(cfg(&["openai", "groq", "ollama"], None, true));
+        let cheapest = registry.select_cheapest_provider_id().await;
+        assert_eq!(cheapest, Some("ollama"));
+
+        let registry = ProviderRegistry::new(cfg(&["openai", "openai", "openrouter"], None, true));
+        let cheapest = registry.select_cheapest_provider_id().await;
+        assert_eq!(cheapest, Some("openrouter"));
+
+        let registry = ProviderRegistry::new(cfg(&["unknown_provider"], None, true));
+        let cheapest = registry.select_cheapest_provider_id().await;
+        assert_eq!(cheapest, None);
     }
 }

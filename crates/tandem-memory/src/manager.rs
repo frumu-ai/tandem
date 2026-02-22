@@ -11,6 +11,7 @@ use crate::types::{
 use chrono::Utc;
 use std::path::Path;
 use std::sync::Arc;
+use tandem_providers::{MemoryConsolidationConfig, ProviderRegistry};
 use tokio::sync::Mutex;
 
 /// High-level memory manager that coordinates database, embeddings, and chunking
@@ -542,6 +543,97 @@ impl MemoryManager {
                 reason: service.disabled_reason().map(ToString::to_string),
             }
         }
+    }
+
+    /// Consolidate a session's memory into a summary chunk using the cheapest available provider.
+    pub async fn consolidate_session(
+        &self,
+        session_id: &str,
+        project_id: Option<&str>,
+        providers: &ProviderRegistry,
+        config: &MemoryConsolidationConfig,
+    ) -> MemoryResult<Option<String>> {
+        if !config.enabled {
+            return Ok(None);
+        }
+
+        let chunks = self.db.get_session_chunks(session_id).await?;
+        if chunks.is_empty() {
+            return Ok(None);
+        }
+
+        // Assemble text
+        let mut text_parts = Vec::new();
+        for chunk in &chunks {
+            text_parts.push(chunk.content.clone());
+        }
+        let full_text = text_parts.join("\n\n---\n\n");
+
+        // Build prompt
+        let prompt = format!(
+            "Please provide a concise but comprehensive summary of the following chat session. \
+            Focus on the key decisions, technical details, code changes, and unresolved issues. \
+            Do NOT include conversational filler, greetings, or sign-offs. \
+            This summary will be used as long-term memory to recall the context of this work.\n\n\
+            Session transcripts:\n\n{}",
+            full_text
+        );
+
+        let provider_override = config.provider.as_deref().filter(|s| !s.is_empty());
+        let model_override = config.model.as_deref().filter(|s| !s.is_empty());
+
+        let summary_text = match providers
+            .complete_cheapest(&prompt, provider_override, model_override)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Memory consolidation LLM failed for session {session_id}: {e}");
+                return Ok(None);
+            }
+        };
+
+        if summary_text.trim().is_empty() {
+            return Ok(None);
+        }
+
+        // Generate embedding for the summary
+        let embedding = {
+            let service = self.embedding_service.lock().await;
+            service
+                .embed(&summary_text)
+                .await
+                .map_err(|e| crate::types::MemoryError::Embedding(e.to_string()))?
+        };
+
+        // Store the summary chunk
+        let chunk_id = uuid::Uuid::new_v4().to_string();
+        let chunk = MemoryChunk {
+            id: chunk_id,
+            content: summary_text.clone(),
+            tier: MemoryTier::Project,
+            session_id: None, // The summary belongs to the project, not the ephemeral session
+            project_id: project_id.map(ToString::to_string),
+            created_at: Utc::now(),
+            source: "consolidation".to_string(),
+            token_count: self.count_tokens(&summary_text) as i64,
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: None,
+            metadata: None,
+        };
+
+        self.db.store_chunk(&chunk, &embedding).await?;
+
+        // Clear original chunks now that they are consolidated
+        self.db.clear_session_memory(session_id).await?;
+
+        tracing::info!(
+            "Session {session_id} consolidated into summary chunk. Original chunks cleared."
+        );
+
+        Ok(Some(summary_text))
     }
 }
 

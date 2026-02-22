@@ -16,6 +16,17 @@ pub struct ChannelsConfig {
     pub server_base_url: String,
     /// Value of `TANDEM_API_TOKEN` — used as `Authorization: Bearer <token>`.
     pub api_token: String,
+    /// Default policy for tool execution coming from channel commands
+    pub tool_policy: ChannelToolPolicy,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelToolPolicy {
+    #[default]
+    RequireApproval,
+    AllowAll,
+    DenyAll,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +85,12 @@ impl ChannelsConfig {
             .unwrap_or_else(|_| "http://127.0.0.1:39731".to_string());
         let api_token = std::env::var("TANDEM_API_TOKEN").unwrap_or_default();
 
+        let tool_policy = match std::env::var("TANDEM_CHANNEL_TOOL_POLICY").as_deref() {
+            Ok("allow_all") => ChannelToolPolicy::AllowAll,
+            Ok("deny_all") => ChannelToolPolicy::DenyAll,
+            _ => ChannelToolPolicy::RequireApproval,
+        };
+
         let telegram = Self::telegram_from_env();
         let discord = Self::discord_from_env();
         let slack = Self::slack_from_env();
@@ -91,6 +108,7 @@ impl ChannelsConfig {
             slack,
             server_base_url,
             api_token,
+            tool_policy,
         })
     }
 
@@ -182,5 +200,27 @@ mod tests {
     fn test_parse_allowed_users_list() {
         let result = parse_allowed_users("@evan, @alice, @bob");
         assert_eq!(result, vec!["@evan", "@alice", "@bob"]);
+    }
+
+    #[test]
+    fn parse_tool_policy_from_env() {
+        std::env::set_var("TANDEM_TELEGRAM_BOT_TOKEN", "test");
+
+        std::env::set_var("TANDEM_CHANNEL_TOOL_POLICY", "allow_all");
+        let config = ChannelsConfig::from_env().unwrap();
+        assert!(matches!(config.tool_policy, ChannelToolPolicy::AllowAll));
+
+        std::env::set_var("TANDEM_CHANNEL_TOOL_POLICY", "deny_all");
+        let config = ChannelsConfig::from_env().unwrap();
+        assert!(matches!(config.tool_policy, ChannelToolPolicy::DenyAll));
+
+        std::env::set_var("TANDEM_CHANNEL_TOOL_POLICY", "unknown");
+        let config = ChannelsConfig::from_env().unwrap();
+        assert!(matches!(
+            config.tool_policy,
+            ChannelToolPolicy::RequireApproval
+        ));
+
+        std::env::remove_var("TANDEM_CHANNEL_TOOL_POLICY");
     }
 }

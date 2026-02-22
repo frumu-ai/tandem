@@ -1854,6 +1854,38 @@ async fn execute_run(
             "error": error_msg,
         }),
     ));
+
+    // Consolidate memory if enabled
+    let effective = state.config.get_effective_value().await;
+    let parsed: crate::EffectiveAppConfig = serde_json::from_value(effective).unwrap_or_default();
+    if parsed.memory_consolidation.enabled {
+        let providers = state.providers.clone();
+        let consolidation_cfg = parsed.memory_consolidation.clone();
+        let session_id_clone = session_id.clone();
+        tokio::spawn(async move {
+            if let Ok(paths) = tandem_core::resolve_shared_paths() {
+                // Open a fresh connection for the background task
+                if let Ok(mem) =
+                    tandem_memory::manager::MemoryManager::new(&paths.memory_db_path).await
+                {
+                    if let Err(e) = mem
+                        .consolidate_session(
+                            &session_id_clone,
+                            None,
+                            &providers,
+                            &consolidation_cfg,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "memory consolidation failed for session {session_id_clone}: {e}"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     Ok(())
 }
 

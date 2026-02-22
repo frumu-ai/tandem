@@ -7106,6 +7106,7 @@ name = "tandem-core"
 version = "0.3.9"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "dirs 6.0.0",
  "futures",
@@ -7152,6 +7153,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlite-vec",
+ "tandem-providers",
  "tempfile",
  "thiserror 1.0.69",
  "tiktoken-rs",

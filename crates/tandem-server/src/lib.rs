@@ -55,6 +55,8 @@ pub struct ChannelsConfigFile {
     pub telegram: Option<TelegramConfigFile>,
     pub discord: Option<DiscordConfigFile>,
     pub slack: Option<SlackConfigFile>,
+    #[serde(default)]
+    pub tool_policy: tandem_channels::config::ChannelToolPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +93,8 @@ struct EffectiveAppConfig {
     pub channels: ChannelsConfigFile,
     #[serde(default)]
     pub web_ui: WebUiConfig,
+    #[serde(default)]
+    pub memory_consolidation: tandem_providers::MemoryConsolidationConfig,
 }
 
 #[derive(Default)]
@@ -1372,6 +1376,7 @@ async fn build_channels_config(
         }),
         server_base_url: state.server_base_url(),
         api_token: state.api_token().await.unwrap_or_default(),
+        tool_policy: channels.tool_policy.clone(),
     })
 }
 

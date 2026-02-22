@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Memory Consolidation**: Added opt-in LLM summarization of session memory using the cheapest available configured provider (prioritizing local/free options like Ollama, Groq, OpenRouter).
+- **Channel Tool Policy**: Added explicit policy controls (`allow_all`, `deny_all`, `require_approval`) for tool execution in messaging channels, configurable via `config.json` or `TANDEM_CHANNEL_TOOL_POLICY` env var.
+- **Richer Channel Session Metadata**: Upgraded channel session tracking to persist detailed `SessionRecord` metadata (created/last-seen timestamps, channel, sender) instead of bare IDs.
 - **Headless Web Admin UI (embedded, single-file)**: Added an embedded `/admin` web interface served directly by `tandem-server` using a baked-in `admin.html` shell (no external assets/build pipeline at runtime).
 - **Realtime Admin UX**: Added SSE-driven UI refresh behavior (with polling fallback) for channel/session/memory visibility in the headless admin surface.
 - **Channel Admin API surface**: Added channel-management endpoints for headless control:

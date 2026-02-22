@@ -1413,6 +1413,81 @@ impl MemoryDatabase {
             did_vacuum: vacuum,
         })
     }
+
+    // ------------------------------------------------------------------
+    // Memory hygiene
+    // ------------------------------------------------------------------
+
+    /// Delete session memory chunks older than `retention_days` days.
+    ///
+    /// Also removes orphaned vector entries for the deleted chunks so the
+    /// sqlite-vec virtual table stays consistent.
+    ///
+    /// Returns the number of chunk rows deleted.
+    /// If `retention_days` is 0 hygiene is disabled and this returns Ok(0).
+    pub async fn prune_old_session_chunks(&self, retention_days: u32) -> MemoryResult<u64> {
+        if retention_days == 0 {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock().await;
+
+        // WAL is already active (set in new()) — no need to set it again here.
+        let cutoff =
+            (chrono::Utc::now() - chrono::Duration::days(i64::from(retention_days))).to_rfc3339();
+
+        // Remove orphaned vector entries first (chunk_id FK would dangle otherwise)
+        conn.execute(
+            "DELETE FROM session_memory_vectors
+             WHERE chunk_id IN (
+                 SELECT id FROM session_memory_chunks WHERE created_at < ?1
+             )",
+            params![cutoff],
+        )?;
+
+        let deleted = conn.execute(
+            "DELETE FROM session_memory_chunks WHERE created_at < ?1",
+            params![cutoff],
+        )?;
+
+        if deleted > 0 {
+            tracing::info!(
+                retention_days,
+                deleted,
+                "memory hygiene: pruned old session chunks"
+            );
+        }
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Ok(deleted as u64)
+    }
+
+    /// Run scheduled hygiene: read `session_retention_days` from `memory_config`
+    /// (falling back to `env_override` if provided) and prune stale session chunks.
+    ///
+    /// Returns `Ok(chunks_deleted)`. This method is intentionally best-effort —
+    /// callers should log errors and continue.
+    pub async fn run_hygiene(&self, env_override_days: u32) -> MemoryResult<u64> {
+        // Prefer the env override, fall back to the DB config for the null project.
+        let retention_days = if env_override_days > 0 {
+            env_override_days
+        } else {
+            // Try to read the global (project_id = '__global__') config if present.
+            let conn = self.conn.lock().await;
+            let days: Option<i64> = conn
+                .query_row(
+                    "SELECT session_retention_days FROM memory_config
+                     WHERE project_id = '__global__' LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            drop(conn);
+            days.unwrap_or(30) as u32
+        };
+
+        self.prune_old_session_chunks(retention_days).await
+    }
 }
 
 /// Convert a database row to a MemoryChunk
