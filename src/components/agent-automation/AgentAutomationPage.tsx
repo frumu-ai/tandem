@@ -29,6 +29,7 @@ import {
 
 type AgentAutomationTab = "automated-bots" | "agent-ops";
 type BotTemplateId = "daily-research" | "issue-triage" | "release-reporter";
+type RunFilter = "all" | "pending" | "blocked" | "failed";
 
 interface BotTemplate {
   id: BotTemplateId;
@@ -249,6 +250,7 @@ export function AgentAutomationPage({
   const [routineActionBusyRunId, setRoutineActionBusyRunId] = useState<string | null>(null);
   const [runTimeline, setRunTimeline] = useState<Record<string, RunTimelineEvent[]>>({});
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [runFilter, setRunFilter] = useState<RunFilter>("all");
 
   const templates: BotTemplate[] = useMemo(
     () => [
@@ -701,7 +703,14 @@ export function AgentAutomationPage({
   const activeRoutines = routines.filter((routine) => routine.status === "active").length;
   const pendingApprovals = routineRuns.filter((run) => run.status === "pending_approval").length;
   const blockedRuns = routineRuns.filter((run) => run.status === "blocked_policy").length;
+  const failedRuns = routineRuns.filter((run) => run.status === "failed").length;
   const artifactCount = routineRuns.reduce((sum, run) => sum + run.artifacts.length, 0);
+  const visibleRuns = routineRuns.filter((run) => {
+    if (runFilter === "pending") return run.status === "pending_approval";
+    if (runFilter === "blocked") return run.status === "blocked_policy";
+    if (runFilter === "failed") return run.status === "failed";
+    return true;
+  });
   const selectedRun = selectedRunId
     ? (routineRuns.find((run) => run.run_id === selectedRunId) ?? null)
     : null;
@@ -1059,11 +1068,41 @@ export function AgentAutomationPage({
                   Scheduled Bots
                 </div>
                 <div className="text-xs text-text-muted">
-                  {routineRunsLoading ? "Refreshing..." : `${routineRuns.length} recent runs`}
+                  {routineRunsLoading ? "Refreshing..." : `${visibleRuns.length} shown`}
                 </div>
               </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant={runFilter === "all" ? "primary" : "secondary"}
+                  onClick={() => setRunFilter("all")}
+                >
+                  All ({routineRuns.length})
+                </Button>
+                <Button
+                  size="sm"
+                  variant={runFilter === "pending" ? "primary" : "secondary"}
+                  onClick={() => setRunFilter("pending")}
+                >
+                  Pending ({pendingApprovals})
+                </Button>
+                <Button
+                  size="sm"
+                  variant={runFilter === "blocked" ? "primary" : "secondary"}
+                  onClick={() => setRunFilter("blocked")}
+                >
+                  Blocked ({blockedRuns})
+                </Button>
+                <Button
+                  size="sm"
+                  variant={runFilter === "failed" ? "primary" : "secondary"}
+                  onClick={() => setRunFilter("failed")}
+                >
+                  Failed ({failedRuns})
+                </Button>
+              </div>
               <div className="mt-2 space-y-2">
-                {routineRuns.slice(0, 8).map((run) => {
+                {visibleRuns.slice(0, 8).map((run) => {
                   const busy = routineActionBusyRunId === run.run_id;
                   return (
                     <div
@@ -1185,9 +1224,9 @@ export function AgentAutomationPage({
                     </div>
                   );
                 })}
-                {!routineRunsLoading && routineRuns.length === 0 ? (
+                {!routineRunsLoading && visibleRuns.length === 0 ? (
                   <div className="rounded-md border border-border bg-surface-elevated/50 px-3 py-2 text-xs text-text-muted">
-                    No recent routine runs.
+                    No runs for this filter.
                   </div>
                 ) : null}
               </div>
