@@ -1669,11 +1669,7 @@ fn automation_run_to_routine_run(run: AutomationRunRecord) -> RoutineRunRecord {
         fired_at_ms: run.fired_at_ms,
         started_at_ms: run.started_at_ms,
         finished_at_ms: run.finished_at_ms,
-        requires_approval: run
-            .policy_snapshot
-            .approval
-            .requires_approval
-            || run.requires_approval,
+        requires_approval: run.policy_snapshot.approval.requires_approval || run.requires_approval,
         approval_reason: run.approval_reason,
         denial_reason: run.denial_reason,
         paused_reason: run.paused_reason,
@@ -3967,24 +3963,18 @@ impl SidecarManager {
     pub async fn mcp_connect(&self, name: &str) -> Result<McpActionResponse> {
         self.check_circuit_breaker().await?;
         let url = format!("{}/mcp/{}/connect", self.base_url().await?, name);
-        let response = self
-            .http_client
-            .post(&url)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to connect MCP server: {}", e)))?;
+        let response =
+            self.http_client.post(&url).send().await.map_err(|e| {
+                TandemError::Sidecar(format!("Failed to connect MCP server: {}", e))
+            })?;
         self.handle_response(response).await
     }
 
     pub async fn mcp_disconnect(&self, name: &str) -> Result<McpActionResponse> {
         self.check_circuit_breaker().await?;
         let url = format!("{}/mcp/{}/disconnect", self.base_url().await?, name);
-        let response = self
-            .http_client
-            .post(&url)
-            .send()
-            .await
-            .map_err(|e| {
+        let response =
+            self.http_client.post(&url).send().await.map_err(|e| {
                 TandemError::Sidecar(format!("Failed to disconnect MCP server: {}", e))
             })?;
         self.handle_response(response).await
@@ -4011,6 +4001,18 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to list MCP tools: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn tool_ids(&self) -> Result<Vec<String>> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/tool/ids", self.base_url().await?);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list tool ids: {}", e)))?;
         self.handle_response(response).await
     }
 
@@ -4092,7 +4094,11 @@ impl SidecarManager {
         request: RoutineRunNowRequest,
     ) -> Result<RoutineRunNowResponse> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/automations/{}/run_now", self.base_url().await?, routine_id);
+        let url = format!(
+            "{}/automations/{}/run_now",
+            self.base_url().await?,
+            routine_id
+        );
         let response = self
             .http_client
             .post(&url)
@@ -4116,7 +4122,11 @@ impl SidecarManager {
         limit: Option<usize>,
     ) -> Result<Vec<RoutineHistoryEvent>> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/automations/{}/history", self.base_url().await?, routine_id);
+        let url = format!(
+            "{}/automations/{}/history",
+            self.base_url().await?,
+            routine_id
+        );
         let mut request = self.http_client.get(&url);
         if let Some(limit) = limit {
             request = request.query(&[("limit", limit)]);
@@ -4186,12 +4196,10 @@ impl SidecarManager {
     pub async fn routines_run_get(&self, run_id: &str) -> Result<RoutineRunRecord> {
         self.check_circuit_breaker().await?;
         let url = format!("{}/automations/runs/{}", self.base_url().await?, run_id);
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| TandemError::Sidecar(format!("Failed to load automation run: {}", e)))?;
+        let response =
+            self.http_client.get(&url).send().await.map_err(|e| {
+                TandemError::Sidecar(format!("Failed to load automation run: {}", e))
+            })?;
         let payload: AutomationRunResponse = self.handle_response(response).await?;
         Ok(automation_run_to_routine_run(payload.run))
     }
@@ -4264,14 +4272,9 @@ impl SidecarManager {
             self.base_url().await?,
             run_id
         );
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                TandemError::Sidecar(format!("Failed to load routine run artifacts: {}", e))
-            })?;
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to load routine run artifacts: {}", e))
+        })?;
         let payload: RoutineRunArtifactsResponse = self.handle_response(response).await?;
         Ok(payload.artifacts)
     }

@@ -5409,6 +5409,11 @@ pub async fn mcp_list_tools(state: State<'_, AppState>) -> Result<Vec<McpRemoteT
     state.sidecar.mcp_list_tools().await
 }
 
+#[tauri::command]
+pub async fn tool_ids(state: State<'_, AppState>) -> Result<Vec<String>> {
+    state.sidecar.tool_ids().await
+}
+
 // ============================================================================
 // Routines
 // ============================================================================

@@ -878,6 +878,10 @@ export async function mcpListTools(): Promise<McpRemoteTool[]> {
   return invoke("mcp_list_tools");
 }
 
+export async function toolIds(): Promise<string[]> {
+  return invoke("tool_ids");
+}
+
 export type RoutineStatus = "active" | "paused";
 
 export type RoutineSchedule =
@@ -1013,10 +1017,7 @@ export interface RoutineRunArtifactAddRequest {
   metadata?: Record<string, unknown>;
 }
 
-export async function routinesRuns(
-  routineId: string,
-  limit?: number
-): Promise<RoutineRunRecord[]> {
+export async function routinesRuns(routineId: string, limit?: number): Promise<RoutineRunRecord[]> {
   return invoke("routines_runs", { routineId, limit });
 }
 

@@ -18,6 +18,7 @@ import {
   routinesRunPause,
   routinesRunResume,
   routinesRunsAll,
+  toolIds,
   type McpRemoteTool,
   type McpServerRecord,
   type RoutineRunRecord,
@@ -106,6 +107,7 @@ export function AgentAutomationPage({
   const [mcpTools, setMcpTools] = useState<McpRemoteTool[]>([]);
   const [mcpLoading, setMcpLoading] = useState(false);
   const [busyConnector, setBusyConnector] = useState<string | null>(null);
+  const [availableToolIds, setAvailableToolIds] = useState<string[]>([]);
 
   const [routines, setRoutines] = useState<RoutineSpec[]>([]);
   const [routinesLoading, setRoutinesLoading] = useState(false);
@@ -212,6 +214,17 @@ export function AgentAutomationPage({
     }
   }, []);
 
+  const loadToolCatalog = useCallback(async () => {
+    try {
+      const ids = await toolIds();
+      setAvailableToolIds(
+        [...new Set(ids.map((id) => id.trim()).filter((id) => id.length > 0))].sort()
+      );
+    } catch {
+      setAvailableToolIds([]);
+    }
+  }, []);
+
   const loadRoutines = useCallback(async () => {
     setRoutinesLoading(true);
     try {
@@ -245,6 +258,12 @@ export function AgentAutomationPage({
   }, [loadMcpStatus]);
 
   useEffect(() => {
+    void loadToolCatalog();
+    const timer = setInterval(() => void loadToolCatalog(), 15000);
+    return () => clearInterval(timer);
+  }, [loadToolCatalog]);
+
+  useEffect(() => {
     void loadRoutines();
     const timer = setInterval(() => void loadRoutines(), 15000);
     return () => clearInterval(timer);
@@ -266,6 +285,7 @@ export function AgentAutomationPage({
         const eventType = envelope.payload.event_type;
         if (eventType.startsWith("mcp.")) {
           void loadMcpStatus();
+          void loadToolCatalog();
           return;
         }
         if (eventType.startsWith("routine.")) {
@@ -282,7 +302,7 @@ export function AgentAutomationPage({
     return () => {
       if (unlisten) unlisten();
     };
-  }, [loadMcpStatus, loadRoutineRuns, loadRoutines]);
+  }, [loadMcpStatus, loadRoutineRuns, loadRoutines, loadToolCatalog]);
 
   const mcpToolIds = useMemo(
     () =>
@@ -294,10 +314,20 @@ export function AgentAutomationPage({
 
   const allowlistChoices = useMemo(
     () =>
-      [...new Set(["read", "write", "bash", "websearch", "webfetch_document", ...mcpToolIds])]
+      [
+        ...new Set([
+          ...availableToolIds,
+          "read",
+          "write",
+          "bash",
+          "websearch",
+          "webfetch_document",
+          ...mcpToolIds,
+        ]),
+      ]
         .filter((tool) => tool.trim().length > 0)
         .sort(),
-    [mcpToolIds]
+    [availableToolIds, mcpToolIds]
   );
 
   useEffect(() => {

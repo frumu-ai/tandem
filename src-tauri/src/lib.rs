@@ -678,6 +678,7 @@ pub fn run() {
             commands::mcp_disconnect,
             commands::mcp_refresh,
             commands::mcp_list_tools,
+            commands::tool_ids,
             // Routine controls
             commands::routines_list,
             commands::routines_create,
