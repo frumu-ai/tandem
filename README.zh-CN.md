@@ -128,7 +128,7 @@ Tandem 不让单一 AI 独自处理全部事务，而是构建任务依赖图并
 ### 前置要求
 
 - [Node.js](https://nodejs.org/) 20+
-- [Rust](https://rustup.rs/) 1.75+
+- [Rust](https://rustup.rs/) 1.75+（包含 `cargo`，通过 `rustup` 安装）
 - [pnpm](https://pnpm.io/)（推荐）或 npm
 
 **平台特定依赖：**
@@ -138,6 +138,9 @@ Tandem 不让单一 AI 独自处理全部事务，而是构建任务依赖图并
 | Windows  | [Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/)                   |
 | macOS    | Xcode Command Line Tools: `xcode-select --install`                                               |
 | Linux    | `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `build-essential`, `pkg-config` |
+
+> 说明：上面的 Linux 软件包用于桌面版/Tauri 构建。  
+> 它们不会安装 Rust/Cargo；Rust 需要通过 `rustup` 单独安装。
 
 ### 安装
 

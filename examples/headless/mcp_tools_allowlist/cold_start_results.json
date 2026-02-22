@@ -1,0 +1,228 @@
+{
+  "timestamp": "2026-02-22T19:41:04Z",
+  "base_url": "http://127.0.0.1:39731",
+  "api_family": "automations",
+  "runs": 20,
+  "results": [
+    {
+      "trial": 1,
+      "definition_id": "bench-cold-start-1771789264-1",
+      "engine_boot_ms": 644,
+      "mission_trigger_ack_ms": 154,
+      "mission_target_ms": 154,
+      "cold_start_to_mission_target_ms": 798,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-31918346-466e-409e-86a8-2f8c0a40bbcc"
+    },
+    {
+      "trial": 2,
+      "definition_id": "bench-cold-start-1771789264-2",
+      "engine_boot_ms": 522,
+      "mission_trigger_ack_ms": 90,
+      "mission_target_ms": 90,
+      "cold_start_to_mission_target_ms": 612,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-09c04b7e-c4ac-488c-b477-9a00ea20a393"
+    },
+    {
+      "trial": 3,
+      "definition_id": "bench-cold-start-1771789264-3",
+      "engine_boot_ms": 527,
+      "mission_trigger_ack_ms": 188,
+      "mission_target_ms": 188,
+      "cold_start_to_mission_target_ms": 715,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-d5f8e382-f22e-4bb4-835e-9cacd817f108"
+    },
+    {
+      "trial": 4,
+      "definition_id": "bench-cold-start-1771789264-4",
+      "engine_boot_ms": 484,
+      "mission_trigger_ack_ms": 157,
+      "mission_target_ms": 157,
+      "cold_start_to_mission_target_ms": 641,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-eef01dfb-8390-4f24-9058-04f103e32868"
+    },
+    {
+      "trial": 5,
+      "definition_id": "bench-cold-start-1771789264-5",
+      "engine_boot_ms": 436,
+      "mission_trigger_ack_ms": 116,
+      "mission_target_ms": 116,
+      "cold_start_to_mission_target_ms": 552,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-0397ce31-3a13-4082-bc0c-3378bd301ead"
+    },
+    {
+      "trial": 6,
+      "definition_id": "bench-cold-start-1771789264-6",
+      "engine_boot_ms": 556,
+      "mission_trigger_ack_ms": 147,
+      "mission_target_ms": 147,
+      "cold_start_to_mission_target_ms": 703,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-1e45ab3b-08b4-4a7f-ab4c-fb11fe4900ff"
+    },
+    {
+      "trial": 7,
+      "definition_id": "bench-cold-start-1771789264-7",
+      "engine_boot_ms": 564,
+      "mission_trigger_ack_ms": 118,
+      "mission_target_ms": 118,
+      "cold_start_to_mission_target_ms": 682,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-fd9d2d34-0743-4e8a-8175-a63ff69f02ed"
+    },
+    {
+      "trial": 8,
+      "definition_id": "bench-cold-start-1771789264-8",
+      "engine_boot_ms": 496,
+      "mission_trigger_ack_ms": 132,
+      "mission_target_ms": 132,
+      "cold_start_to_mission_target_ms": 628,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-51070b30-94fb-45e5-a3dd-b6984da9f14c"
+    },
+    {
+      "trial": 9,
+      "definition_id": "bench-cold-start-1771789264-9",
+      "engine_boot_ms": 422,
+      "mission_trigger_ack_ms": 82,
+      "mission_target_ms": 82,
+      "cold_start_to_mission_target_ms": 504,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-a00c0c14-3e21-4d7e-8300-6dc78a10edbe"
+    },
+    {
+      "trial": 10,
+      "definition_id": "bench-cold-start-1771789264-10",
+      "engine_boot_ms": 498,
+      "mission_trigger_ack_ms": 95,
+      "mission_target_ms": 95,
+      "cold_start_to_mission_target_ms": 593,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-50d7b1f4-f171-4a71-bdbf-c56713174b55"
+    },
+    {
+      "trial": 11,
+      "definition_id": "bench-cold-start-1771789264-11",
+      "engine_boot_ms": 481,
+      "mission_trigger_ack_ms": 99,
+      "mission_target_ms": 99,
+      "cold_start_to_mission_target_ms": 580,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-730dffb6-a61e-42f2-910c-83d2e506d22a"
+    },
+    {
+      "trial": 12,
+      "definition_id": "bench-cold-start-1771789264-12",
+      "engine_boot_ms": 486,
+      "mission_trigger_ack_ms": 99,
+      "mission_target_ms": 99,
+      "cold_start_to_mission_target_ms": 585,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-3ad191d1-ea8e-4c73-b164-7bc51b7e54c4"
+    },
+    {
+      "trial": 13,
+      "definition_id": "bench-cold-start-1771789264-13",
+      "engine_boot_ms": 505,
+      "mission_trigger_ack_ms": 88,
+      "mission_target_ms": 88,
+      "cold_start_to_mission_target_ms": 593,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-af71bd70-2ae1-4ea8-828a-2e4c21e920ed"
+    },
+    {
+      "trial": 14,
+      "definition_id": "bench-cold-start-1771789264-14",
+      "engine_boot_ms": 502,
+      "mission_trigger_ack_ms": 135,
+      "mission_target_ms": 135,
+      "cold_start_to_mission_target_ms": 637,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-1ff7321f-59ea-4038-99a0-6d1212bf0451"
+    },
+    {
+      "trial": 15,
+      "definition_id": "bench-cold-start-1771789264-15",
+      "engine_boot_ms": 435,
+      "mission_trigger_ack_ms": 110,
+      "mission_target_ms": 110,
+      "cold_start_to_mission_target_ms": 545,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-b32bb0ea-7975-4320-b39c-0a96206662b8"
+    },
+    {
+      "trial": 16,
+      "definition_id": "bench-cold-start-1771789264-16",
+      "engine_boot_ms": 437,
+      "mission_trigger_ack_ms": 86,
+      "mission_target_ms": 86,
+      "cold_start_to_mission_target_ms": 523,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-c2ff2177-093f-4f35-901a-9bb0e468c2d1"
+    },
+    {
+      "trial": 17,
+      "definition_id": "bench-cold-start-1771789264-17",
+      "engine_boot_ms": 425,
+      "mission_trigger_ack_ms": 90,
+      "mission_target_ms": 90,
+      "cold_start_to_mission_target_ms": 515,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-97d075e8-fa9f-4a14-a364-124b9d84f55c"
+    },
+    {
+      "trial": 18,
+      "definition_id": "bench-cold-start-1771789264-18",
+      "engine_boot_ms": 475,
+      "mission_trigger_ack_ms": 144,
+      "mission_target_ms": 144,
+      "cold_start_to_mission_target_ms": 619,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-c05b6662-5266-4db4-8752-4a73bf4a5a06"
+    },
+    {
+      "trial": 19,
+      "definition_id": "bench-cold-start-1771789264-19",
+      "engine_boot_ms": 499,
+      "mission_trigger_ack_ms": 117,
+      "mission_target_ms": 117,
+      "cold_start_to_mission_target_ms": 616,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-c6bc7c48-a72d-4608-921d-78b1fc57b512"
+    },
+    {
+      "trial": 20,
+      "definition_id": "bench-cold-start-1771789264-20",
+      "engine_boot_ms": 443,
+      "mission_trigger_ack_ms": 91,
+      "mission_target_ms": 91,
+      "cold_start_to_mission_target_ms": 534,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-85571aa8-d369-47bc-a792-ee2b1c144a94"
+    }
+  ]
+}

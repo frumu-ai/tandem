@@ -128,7 +128,7 @@ This supervised loop ensures complex features are implemented correctly with hum
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) 20+
-- [Rust](https://rustup.rs/) 1.75+
+- [Rust](https://rustup.rs/) 1.75+ (includes `cargo`; install via `rustup`)
 - [pnpm](https://pnpm.io/) (recommended) or npm
 
 **Platform-specific:**
@@ -138,6 +138,9 @@ This supervised loop ensures complex features are implemented correctly with hum
 | Windows  | [Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/)                   |
 | macOS    | Xcode Command Line Tools: `xcode-select --install`                                               |
 | Linux    | `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `build-essential`, `pkg-config` |
+
+> Note: The Linux packages above are required for desktop/Tauri builds.  
+> They do not install Rust/Cargo; install Rust separately via `rustup`.
 
 ### Installation
 

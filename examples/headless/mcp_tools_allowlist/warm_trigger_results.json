@@ -1,0 +1,188 @@
+{
+  "timestamp": "2026-02-22T19:48:08Z",
+  "base_url": "http://127.0.0.1:39731",
+  "api_family": "automations",
+  "runs": 20,
+  "results": [
+    {
+      "trial": 1,
+      "definition_id": "bench-warm-trigger-1771789688-1",
+      "mission_trigger_ack_ms": 106,
+      "mission_target_ms": 106,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-3d1c712e-a0e3-43c7-8465-c52387d0804c"
+    },
+    {
+      "trial": 2,
+      "definition_id": "bench-warm-trigger-1771789688-2",
+      "mission_trigger_ack_ms": 120,
+      "mission_target_ms": 120,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-bc9dbf80-541c-4bcd-8eb2-042f3a6bb381"
+    },
+    {
+      "trial": 3,
+      "definition_id": "bench-warm-trigger-1771789688-3",
+      "mission_trigger_ack_ms": 89,
+      "mission_target_ms": 89,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-b9c4ce39-3635-412f-9af0-1f7eb08674e1"
+    },
+    {
+      "trial": 4,
+      "definition_id": "bench-warm-trigger-1771789688-4",
+      "mission_trigger_ack_ms": 125,
+      "mission_target_ms": 125,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-6ccb2c74-e3a9-4040-a5d2-2bf509575699"
+    },
+    {
+      "trial": 5,
+      "definition_id": "bench-warm-trigger-1771789688-5",
+      "mission_trigger_ack_ms": 88,
+      "mission_target_ms": 88,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-ba214d2c-e263-4bac-a314-e9aee05de037"
+    },
+    {
+      "trial": 6,
+      "definition_id": "bench-warm-trigger-1771789688-6",
+      "mission_trigger_ack_ms": 109,
+      "mission_target_ms": 109,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-0066acb0-d937-44e6-b52b-a76708e227b8"
+    },
+    {
+      "trial": 7,
+      "definition_id": "bench-warm-trigger-1771789688-7",
+      "mission_trigger_ack_ms": 198,
+      "mission_target_ms": 198,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-88162447-b420-4387-87cd-32b82601a6ec"
+    },
+    {
+      "trial": 8,
+      "definition_id": "bench-warm-trigger-1771789688-8",
+      "mission_trigger_ack_ms": 121,
+      "mission_target_ms": 121,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-590059f9-6e27-4960-9175-ad416e00768a"
+    },
+    {
+      "trial": 9,
+      "definition_id": "bench-warm-trigger-1771789688-9",
+      "mission_trigger_ack_ms": 141,
+      "mission_target_ms": 141,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-a2532190-7ebb-4575-ae38-0d4696a923d8"
+    },
+    {
+      "trial": 10,
+      "definition_id": "bench-warm-trigger-1771789688-10",
+      "mission_trigger_ack_ms": 124,
+      "mission_target_ms": 124,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-2aa491e2-9ad6-4a23-87ca-67c32c1ab372"
+    },
+    {
+      "trial": 11,
+      "definition_id": "bench-warm-trigger-1771789688-11",
+      "mission_trigger_ack_ms": 115,
+      "mission_target_ms": 115,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-1ed01828-f655-43ba-bdd2-db3b1303d90a"
+    },
+    {
+      "trial": 12,
+      "definition_id": "bench-warm-trigger-1771789688-12",
+      "mission_trigger_ack_ms": 132,
+      "mission_target_ms": 132,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-d56c346f-d6b4-4ca4-a8c3-ee1b91adf277"
+    },
+    {
+      "trial": 13,
+      "definition_id": "bench-warm-trigger-1771789688-13",
+      "mission_trigger_ack_ms": 154,
+      "mission_target_ms": 154,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-cc575215-2698-4748-8319-dca6b2004342"
+    },
+    {
+      "trial": 14,
+      "definition_id": "bench-warm-trigger-1771789688-14",
+      "mission_trigger_ack_ms": 136,
+      "mission_target_ms": 136,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-575e469a-491c-4a3e-baa1-73eb442086f6"
+    },
+    {
+      "trial": 15,
+      "definition_id": "bench-warm-trigger-1771789688-15",
+      "mission_trigger_ack_ms": 108,
+      "mission_target_ms": 108,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-b2dd8af7-9bb1-44f6-89cb-594d7186c31a"
+    },
+    {
+      "trial": 16,
+      "definition_id": "bench-warm-trigger-1771789688-16",
+      "mission_trigger_ack_ms": 89,
+      "mission_target_ms": 89,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-de07235e-684f-40fc-a8d4-bd57e96e01bb"
+    },
+    {
+      "trial": 17,
+      "definition_id": "bench-warm-trigger-1771789688-17",
+      "mission_trigger_ack_ms": 113,
+      "mission_target_ms": 113,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-42ee3086-6633-49cf-8578-c51705e89f9f"
+    },
+    {
+      "trial": 18,
+      "definition_id": "bench-warm-trigger-1771789688-18",
+      "mission_trigger_ack_ms": 86,
+      "mission_target_ms": 86,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-88740c59-828a-445c-a12f-8332c3d2b617"
+    },
+    {
+      "trial": 19,
+      "definition_id": "bench-warm-trigger-1771789688-19",
+      "mission_trigger_ack_ms": 112,
+      "mission_target_ms": 112,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-6430a390-2301-49b9-94b5-585d04da7d34"
+    },
+    {
+      "trial": 20,
+      "definition_id": "bench-warm-trigger-1771789688-20",
+      "mission_trigger_ack_ms": 107,
+      "mission_target_ms": 107,
+      "status": "triggered",
+      "target_phase": "trigger",
+      "run_id": "routine-run-7ffd915e-f42b-4107-833b-00853e64d040"
+    }
+  ]
+}
