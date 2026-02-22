@@ -498,9 +498,8 @@ Group=$SERVICE_USER
 WorkingDirectory=$PROJECT_DIR
 EnvironmentFile=$PROJECT_DIR/.env
 ExecStart=$NODE_PATH server.js
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
 Restart=always
 RestartSec=2
 
