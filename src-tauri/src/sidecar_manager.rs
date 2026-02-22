@@ -128,8 +128,22 @@ pub fn get_sidecar_binary_path(app: &AppHandle) -> Result<PathBuf> {
     if let Some(app_data_dir) = shared_app_data_dir(app) {
         let updated_binary = app_data_dir.join("binaries").join(binary_name);
         if updated_binary.exists() {
-            tracing::debug!("Using updated sidecar from AppData: {:?}", updated_binary);
-            return Ok(updated_binary);
+            if let Some(stored_version) = get_stored_sidecar_version(app) {
+                let bundled_version = format!("v{}", app.package_info().version);
+                if is_version_newer(&bundled_version, &stored_version) {
+                    tracing::warn!(
+                        "Ignoring stale AppData sidecar {} in favor of bundled {}",
+                        stored_version,
+                        bundled_version
+                    );
+                } else {
+                    tracing::debug!("Using updated sidecar from AppData: {:?}", updated_binary);
+                    return Ok(updated_binary);
+                }
+            } else {
+                tracing::debug!("Using updated sidecar from AppData: {:?}", updated_binary);
+                return Ok(updated_binary);
+            }
         }
     }
 
@@ -230,16 +244,20 @@ fn get_asset_name() -> &'static str {
 /// If the sidecar is running from AppData (downloaded updater binary), prefer the persisted
 /// sidecar version from settings. If the sidecar is bundled with the desktop app resources,
 /// report the app package version to avoid stale values from old beta downloads.
+fn get_stored_sidecar_version(app: &AppHandle) -> Option<String> {
+    let store = app.store("settings.json").ok()?;
+    store
+        .get("sidecar_version")
+        .and_then(|v| v.as_str().map(String::from))
+}
+
 fn get_installed_version(app: &AppHandle, binary_path: Option<&Path>) -> Option<String> {
     let in_app_data = binary_path
         .and_then(|path| shared_app_data_dir(app).map(|dir| path.starts_with(dir)))
         .unwrap_or(false);
 
     if in_app_data {
-        let store = app.store("settings.json").ok()?;
-        return store
-            .get("sidecar_version")
-            .and_then(|v| v.as_str().map(String::from));
+        return get_stored_sidecar_version(app);
     }
 
     Some(format!("v{}", app.package_info().version))
