@@ -347,6 +347,7 @@ struct RoutineCreateInput {
     misfire_policy: Option<RoutineMisfirePolicy>,
     entrypoint: String,
     args: Option<Value>,
+    allowed_tools: Option<Vec<String>>,
     creator_type: Option<String>,
     creator_id: Option<String>,
     requires_approval: Option<bool>,
@@ -363,6 +364,7 @@ struct RoutinePatchInput {
     misfire_policy: Option<RoutineMisfirePolicy>,
     entrypoint: Option<String>,
     args: Option<Value>,
+    allowed_tools: Option<Vec<String>>,
     requires_approval: Option<bool>,
     external_integrations_allowed: Option<bool>,
     next_fire_at_ms: Option<u64>,
@@ -4760,6 +4762,7 @@ async fn routines_create(
             .unwrap_or(RoutineMisfirePolicy::RunOnce),
         entrypoint: input.entrypoint,
         args: input.args.unwrap_or_else(|| json!({})),
+        allowed_tools: input.allowed_tools.unwrap_or_default(),
         creator_type: input.creator_type.unwrap_or_else(|| "user".to_string()),
         creator_id: input.creator_id.unwrap_or_else(|| "unknown".to_string()),
         requires_approval: input.requires_approval.unwrap_or(true),
@@ -4827,6 +4830,9 @@ async fn routines_patch(
     }
     if let Some(args) = input.args {
         routine.args = args;
+    }
+    if let Some(allowed_tools) = input.allowed_tools {
+        routine.allowed_tools = allowed_tools;
     }
     if let Some(requires_approval) = input.requires_approval {
         routine.requires_approval = requires_approval;
@@ -5719,6 +5725,14 @@ async fn openapi_doc() -> Json<Value> {
             "/routines/{id}":{"patch":{"summary":"Update routine"},"delete":{"summary":"Delete routine"}},
             "/routines/{id}/run_now":{"post":{"summary":"Trigger routine immediately"}},
             "/routines/{id}/history":{"get":{"summary":"List routine history"}},
+            "/routines/{id}/runs":{"get":{"summary":"List routine runs for a routine"}},
+            "/routines/runs":{"get":{"summary":"List routine runs across routines"}},
+            "/routines/runs/{run_id}":{"get":{"summary":"Get a routine run record"}},
+            "/routines/runs/{run_id}/approve":{"post":{"summary":"Approve a pending routine run"}},
+            "/routines/runs/{run_id}/deny":{"post":{"summary":"Deny a pending routine run"}},
+            "/routines/runs/{run_id}/pause":{"post":{"summary":"Pause a routine run"}},
+            "/routines/runs/{run_id}/resume":{"post":{"summary":"Resume a paused routine run"}},
+            "/routines/runs/{run_id}/artifacts":{"get":{"summary":"List routine run artifacts"},"post":{"summary":"Attach artifact to routine run"}},
             "/routines/events":{"get":{"summary":"SSE stream for routine lifecycle events"}},
             "/resource":{"get":{"summary":"List shared resources by prefix"}},
             "/resource/{key}":{"get":{"summary":"Get shared resource"},"put":{"summary":"Put shared resource with optional revision guard"},"patch":{"summary":"Patch shared resource with optional revision guard"},"delete":{"summary":"Delete shared resource with optional revision guard"}},
@@ -8713,6 +8727,227 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("paused")
         );
+    }
+
+    #[tokio::test]
+    async fn routines_allowlist_is_persisted_and_copied_to_runs() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/routines")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "routine_id": "routine-tools",
+                    "name": "Tool-scoped routine",
+                    "schedule": { "interval_seconds": { "seconds": 90 } },
+                    "entrypoint": "mission.default",
+                    "allowed_tools": ["  mcp.arcade.search  ", "read", "read", ""]
+                })
+                .to_string(),
+            ))
+            .expect("create request");
+        let create_resp = app
+            .clone()
+            .oneshot(create_req)
+            .await
+            .expect("create response");
+        assert_eq!(create_resp.status(), StatusCode::OK);
+        let create_body = to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body");
+        let create_payload: Value = serde_json::from_slice(&create_body).expect("create json");
+        assert_eq!(
+            create_payload
+                .get("routine")
+                .and_then(|v| v.get("allowed_tools"))
+                .and_then(|v| v.as_array())
+                .map(|rows| rows
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect::<Vec<_>>()),
+            Some(vec!["mcp.arcade.search".to_string(), "read".to_string()])
+        );
+
+        let patch_req = Request::builder()
+            .method("PATCH")
+            .uri("/routines/routine-tools")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "allowed_tools": ["mcp.arcade.send_email", "bash"]
+                })
+                .to_string(),
+            ))
+            .expect("patch request");
+        let patch_resp = app.clone().oneshot(patch_req).await.expect("patch response");
+        assert_eq!(patch_resp.status(), StatusCode::OK);
+        let patch_body = to_bytes(patch_resp.into_body(), usize::MAX)
+            .await
+            .expect("patch body");
+        let patch_payload: Value = serde_json::from_slice(&patch_body).expect("patch json");
+        assert_eq!(
+            patch_payload
+                .get("routine")
+                .and_then(|v| v.get("allowed_tools"))
+                .and_then(|v| v.as_array())
+                .map(|rows| rows
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect::<Vec<_>>()),
+            Some(vec![
+                "mcp.arcade.send_email".to_string(),
+                "bash".to_string()
+            ])
+        );
+
+        let run_now_req = Request::builder()
+            .method("POST")
+            .uri("/routines/routine-tools/run_now")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({}).to_string()))
+            .expect("run_now request");
+        let run_now_resp = app
+            .clone()
+            .oneshot(run_now_req)
+            .await
+            .expect("run_now response");
+        assert_eq!(run_now_resp.status(), StatusCode::OK);
+        let run_now_body = to_bytes(run_now_resp.into_body(), usize::MAX)
+            .await
+            .expect("run_now body");
+        let run_now_payload: Value = serde_json::from_slice(&run_now_body).expect("run_now json");
+        let run_id = run_now_payload
+            .get("runID")
+            .and_then(|v| v.as_str())
+            .expect("runID");
+
+        let run_get_req = Request::builder()
+            .method("GET")
+            .uri(format!("/routines/runs/{run_id}"))
+            .body(Body::empty())
+            .expect("run get request");
+        let run_get_resp = app
+            .clone()
+            .oneshot(run_get_req)
+            .await
+            .expect("run get response");
+        assert_eq!(run_get_resp.status(), StatusCode::OK);
+        let run_get_body = to_bytes(run_get_resp.into_body(), usize::MAX)
+            .await
+            .expect("run get body");
+        let run_get_payload: Value = serde_json::from_slice(&run_get_body).expect("run get json");
+        assert_eq!(
+            run_get_payload
+                .get("run")
+                .and_then(|v| v.get("allowed_tools"))
+                .and_then(|v| v.as_array())
+                .map(|rows| rows
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect::<Vec<_>>()),
+            Some(vec![
+                "mcp.arcade.send_email".to_string(),
+                "bash".to_string()
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn routines_runs_all_can_filter_by_routine() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        for routine_id in ["routine-run-a", "routine-run-b"] {
+            let create_req = Request::builder()
+                .method("POST")
+                .uri("/routines")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "routine_id": routine_id,
+                        "name": format!("Routine {routine_id}"),
+                        "schedule": { "interval_seconds": { "seconds": 60 } },
+                        "entrypoint": "mission.default",
+                    })
+                    .to_string(),
+                ))
+                .expect("create request");
+            let create_resp = app
+                .clone()
+                .oneshot(create_req)
+                .await
+                .expect("create response");
+            assert_eq!(create_resp.status(), StatusCode::OK);
+
+            let run_now_req = Request::builder()
+                .method("POST")
+                .uri(format!("/routines/{routine_id}/run_now"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({}).to_string()))
+                .expect("run_now request");
+            let run_now_resp = app
+                .clone()
+                .oneshot(run_now_req)
+                .await
+                .expect("run_now response");
+            assert_eq!(run_now_resp.status(), StatusCode::OK);
+        }
+
+        let all_req = Request::builder()
+            .method("GET")
+            .uri("/routines/runs?limit=10")
+            .body(Body::empty())
+            .expect("runs all request");
+        let all_resp = app.clone().oneshot(all_req).await.expect("runs all response");
+        assert_eq!(all_resp.status(), StatusCode::OK);
+        let all_body = to_bytes(all_resp.into_body(), usize::MAX)
+            .await
+            .expect("runs all body");
+        let all_payload: Value = serde_json::from_slice(&all_body).expect("runs all json");
+        assert!(
+            all_payload
+                .get("count")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|count| count >= 2)
+        );
+
+        let filtered_req = Request::builder()
+            .method("GET")
+            .uri("/routines/runs?routine_id=routine-run-b&limit=10")
+            .body(Body::empty())
+            .expect("runs filtered request");
+        let filtered_resp = app
+            .clone()
+            .oneshot(filtered_req)
+            .await
+            .expect("runs filtered response");
+        assert_eq!(filtered_resp.status(), StatusCode::OK);
+        let filtered_body = to_bytes(filtered_resp.into_body(), usize::MAX)
+            .await
+            .expect("runs filtered body");
+        let filtered_payload: Value =
+            serde_json::from_slice(&filtered_body).expect("runs filtered json");
+        assert!(
+            filtered_payload
+                .get("count")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|count| count >= 1)
+        );
+        let all_match_routine = filtered_payload
+            .get("runs")
+            .and_then(|v| v.as_array())
+            .map(|rows| {
+                rows.iter().all(|row| {
+                    row.get("routine_id")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|id| id == "routine-run-b")
+                })
+            })
+            .unwrap_or(false);
+        assert!(all_match_routine);
     }
 
     #[tokio::test]

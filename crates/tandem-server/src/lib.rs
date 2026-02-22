@@ -364,6 +364,8 @@ pub struct RoutineSpec {
     pub entrypoint: String,
     #[serde(default)]
     pub args: Value,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
     pub creator_type: String,
     pub creator_id: String,
     pub requires_approval: bool,
@@ -438,6 +440,8 @@ pub struct RoutineRunRecord {
     pub entrypoint: String,
     #[serde(default)]
     pub args: Value,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub artifacts: Vec<RoutineRunArtifact>,
 }
@@ -991,6 +995,8 @@ impl AppState {
             });
         }
 
+        routine.allowed_tools = normalize_allowed_tools(routine.allowed_tools);
+
         let interval = match routine.schedule {
             RoutineSchedule::IntervalSeconds { seconds } => {
                 if seconds == 0 {
@@ -1170,6 +1176,7 @@ impl AppState {
             detail,
             entrypoint: routine.entrypoint.clone(),
             args: routine.args.clone(),
+            allowed_tools: routine.allowed_tools.clone(),
             artifacts: Vec::new(),
         };
         self.routine_runs
@@ -1310,6 +1317,21 @@ fn default_allow_all() -> Vec<String> {
 
 fn default_discord_mention_only() -> bool {
     true
+}
+
+fn normalize_allowed_tools(raw: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in raw {
+        let normalized = item.trim().to_string();
+        if normalized.is_empty() {
+            continue;
+        }
+        if seen.insert(normalized.clone()) {
+            out.push(normalized);
+        }
+    }
+    out
 }
 
 fn resolve_run_stale_ms() -> u64 {
@@ -1951,6 +1973,7 @@ mod tests {
             misfire_policy: RoutineMisfirePolicy::RunOnce,
             entrypoint: "mission.default".to_string(),
             args: serde_json::json!({"topic":"status"}),
+            allowed_tools: vec![],
             creator_type: "user".to_string(),
             creator_id: "user-1".to_string(),
             requires_approval: true,
@@ -1986,6 +2009,7 @@ mod tests {
             misfire_policy: policy,
             entrypoint: "mission.default".to_string(),
             args: serde_json::json!({}),
+            allowed_tools: vec![],
             creator_type: "user".to_string(),
             creator_id: "u-1".to_string(),
             requires_approval: false,
@@ -2041,6 +2065,7 @@ mod tests {
             misfire_policy: RoutineMisfirePolicy::RunOnce,
             entrypoint: "connector.email.reply".to_string(),
             args: serde_json::json!({}),
+            allowed_tools: vec![],
             creator_type: "user".to_string(),
             creator_id: "u-1".to_string(),
             requires_approval: true,
@@ -2064,6 +2089,7 @@ mod tests {
             misfire_policy: RoutineMisfirePolicy::RunOnce,
             entrypoint: "connector.email.reply".to_string(),
             args: serde_json::json!({}),
+            allowed_tools: vec![],
             creator_type: "user".to_string(),
             creator_id: "u-1".to_string(),
             requires_approval: true,
@@ -2090,6 +2116,7 @@ mod tests {
             misfire_policy: RoutineMisfirePolicy::RunOnce,
             entrypoint: "mission.default".to_string(),
             args: serde_json::json!({}),
+            allowed_tools: vec![],
             creator_type: "user".to_string(),
             creator_id: "u-1".to_string(),
             requires_approval: true,

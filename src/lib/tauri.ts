@@ -916,6 +916,7 @@ export interface RoutineRunRecord {
   detail?: string | null;
   entrypoint: string;
   args: Record<string, unknown>;
+  allowed_tools: string[];
   artifacts: RoutineRunArtifact[];
 }
 
