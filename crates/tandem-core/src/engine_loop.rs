@@ -303,7 +303,10 @@ impl EngineLoop {
                         content: extra,
                     });
                 }
-                let tool_schemas = self.tools.list().await;
+                let mut tool_schemas = self.tools.list().await;
+                if active_agent.tools.is_some() {
+                    tool_schemas.retain(|schema| agent_can_use_tool(&active_agent, &schema.name));
+                }
                 if let Err(validation_err) = validate_tool_schemas(&tool_schemas) {
                     let detail = validation_err.to_string();
                     emit_event(
