@@ -273,6 +273,7 @@ From desktop:
 5. Use `Scheduled Bots` run actions (`Approve`, `Deny`, `Pause`, `Resume`) for gated runs.
 6. In `Scheduled Bots`, inspect tool scope shown on each run card.
 7. Watch the per-run event rail chips (`Plan`, `Do`, `Verify`, `Approval`, `Blocked`, `Failed`) for live execution state.
+8. Click `Details` on a run to inspect latest event type/note, timestamps, output targets, and artifacts.
 
 ### Mission Workshop (Desktop)
 

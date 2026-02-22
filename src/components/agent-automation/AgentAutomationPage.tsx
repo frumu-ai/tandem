@@ -160,6 +160,36 @@ function eventLabel(event: RunTimelineEvent): string {
   return "Info";
 }
 
+function formatTimestamp(tsMs: number | null | undefined): string {
+  if (!tsMs || !Number.isFinite(tsMs)) return "n/a";
+  try {
+    return new Date(tsMs).toLocaleString();
+  } catch {
+    return "n/a";
+  }
+}
+
+function runReason(run: RoutineRunRecord): string | null {
+  const detail =
+    typeof run.detail === "string" && run.detail.trim().length > 0 ? run.detail.trim() : null;
+  if (detail) return detail;
+  const approval =
+    typeof run.approval_reason === "string" && run.approval_reason.trim().length > 0
+      ? run.approval_reason.trim()
+      : null;
+  if (approval) return approval;
+  const denial =
+    typeof run.denial_reason === "string" && run.denial_reason.trim().length > 0
+      ? run.denial_reason.trim()
+      : null;
+  if (denial) return denial;
+  const paused =
+    typeof run.paused_reason === "string" && run.paused_reason.trim().length > 0
+      ? run.paused_reason.trim()
+      : null;
+  return paused;
+}
+
 interface AgentAutomationPageProps {
   userProjects: UserProject[];
   activeProject: UserProject | null;
@@ -218,6 +248,7 @@ export function AgentAutomationPage({
   const [routineRunsLoading, setRoutineRunsLoading] = useState(false);
   const [routineActionBusyRunId, setRoutineActionBusyRunId] = useState<string | null>(null);
   const [runTimeline, setRunTimeline] = useState<Record<string, RunTimelineEvent[]>>({});
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
   const templates: BotTemplate[] = useMemo(
     () => [
@@ -359,6 +390,12 @@ export function AgentAutomationPage({
 
   useEffect(() => {
     const knownRunIds = new Set(routineRuns.map((run) => run.run_id));
+    if (routineRuns.length > 0 && !selectedRunId) {
+      setSelectedRunId(routineRuns[0].run_id);
+    }
+    if (selectedRunId && !knownRunIds.has(selectedRunId)) {
+      setSelectedRunId(routineRuns.length > 0 ? routineRuns[0].run_id : null);
+    }
     setRunTimeline((prev) => {
       const next: Record<string, RunTimelineEvent[]> = {};
       for (const [runId, events] of Object.entries(prev)) {
@@ -368,7 +405,7 @@ export function AgentAutomationPage({
       }
       return next;
     });
-  }, [routineRuns]);
+  }, [routineRuns, selectedRunId]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -665,6 +702,12 @@ export function AgentAutomationPage({
   const pendingApprovals = routineRuns.filter((run) => run.status === "pending_approval").length;
   const blockedRuns = routineRuns.filter((run) => run.status === "blocked_policy").length;
   const artifactCount = routineRuns.reduce((sum, run) => sum + run.artifacts.length, 0);
+  const selectedRun = selectedRunId
+    ? (routineRuns.find((run) => run.run_id === selectedRunId) ?? null)
+    : null;
+  const selectedRunEvents = selectedRun ? (runTimeline[selectedRun.run_id] ?? []) : [];
+  const selectedRunLatestEvent =
+    selectedRunEvents.length > 0 ? selectedRunEvents[selectedRunEvents.length - 1] : null;
 
   return (
     <div className="h-full overflow-y-auto p-4">
@@ -1090,6 +1133,13 @@ export function AgentAutomationPage({
                           ) : null}
                         </div>
                         <div className="flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setSelectedRunId(run.run_id)}
+                          >
+                            Details
+                          </Button>
                           {run.status === "pending_approval" ? (
                             <>
                               <Button
@@ -1141,6 +1191,66 @@ export function AgentAutomationPage({
                   </div>
                 ) : null}
               </div>
+              {selectedRun ? (
+                <div className="mt-3 rounded-md border border-border bg-surface-elevated/40 p-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-text-subtle">
+                    Run Details
+                  </div>
+                  <div className="mt-1 text-xs text-text">
+                    {selectedRun.routine_id} | {selectedRun.run_id}
+                  </div>
+                  <div className="mt-1 text-[11px] text-text-subtle">
+                    created: {formatTimestamp(selectedRun.created_at_ms)} | started:{" "}
+                    {formatTimestamp(selectedRun.started_at_ms ?? null)} | finished:{" "}
+                    {formatTimestamp(selectedRun.finished_at_ms ?? null)}
+                  </div>
+                  {runReason(selectedRun) ? (
+                    <div className="mt-1 text-[11px] text-text-subtle">
+                      reason: {runReason(selectedRun)}
+                    </div>
+                  ) : null}
+                  {selectedRunLatestEvent ? (
+                    <div className="mt-1 text-[11px] text-text-subtle">
+                      latest event: {selectedRunLatestEvent.eventType}
+                      {selectedRunLatestEvent.note ? ` | ${selectedRunLatestEvent.note}` : ""}
+                    </div>
+                  ) : null}
+                  {selectedRun.output_targets.length > 0 ? (
+                    <div className="mt-2">
+                      <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                        Output Targets
+                      </div>
+                      <div className="mt-1 space-y-1">
+                        {selectedRun.output_targets.slice(0, 5).map((target) => (
+                          <div
+                            key={`${selectedRun.run_id}-target-${target}`}
+                            className="truncate font-mono text-[10px] text-text-muted"
+                          >
+                            {target}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {selectedRun.artifacts.length > 0 ? (
+                    <div className="mt-2">
+                      <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                        Artifacts
+                      </div>
+                      <div className="mt-1 space-y-1">
+                        {selectedRun.artifacts.slice(0, 5).map((artifact) => (
+                          <div key={artifact.artifact_id} className="text-[11px] text-text-subtle">
+                            <span className="font-mono text-[10px] text-text-muted">
+                              {artifact.kind}
+                            </span>{" "}
+                            <span className="truncate font-mono text-[10px]">{artifact.uri}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
 
             <div className="rounded-lg border border-border bg-surface p-4">
