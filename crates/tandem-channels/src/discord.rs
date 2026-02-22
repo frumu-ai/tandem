@@ -272,7 +272,7 @@ impl Channel for DiscordChannel {
             }
         });
         write
-            .send(Message::Text(identify.to_string().into()))
+            .send(Message::Text(identify.to_string()))
             .await?;
         info!("Discord: identified, heartbeat every {heartbeat_interval}ms");
 
@@ -296,7 +296,7 @@ impl Channel for DiscordChannel {
                 _ = hb_rx.recv() => {
                     let d = if sequence >= 0 { json!(sequence) } else { json!(null) };
                     let hb = json!({"op": 1, "d": d});
-                    if write.send(Message::Text(hb.to_string().into())).await.is_err() {
+                    if write.send(Message::Text(hb.to_string())).await.is_err() {
                         break;
                     }
                 }
@@ -321,7 +321,7 @@ impl Channel for DiscordChannel {
                         1 => {
                             // Server requests immediate heartbeat
                             let d = if sequence >= 0 { json!(sequence) } else { json!(null) };
-                            if write.send(Message::Text(json!({"op":1,"d":d}).to_string().into())).await.is_err() {
+                            if write.send(Message::Text(json!({"op":1,"d":d}).to_string())).await.is_err() {
                                 break;
                             }
                             continue;

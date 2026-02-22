@@ -168,8 +168,8 @@ impl Channel for TelegramChannel {
                 // Strip bot-mention prefix if present
                 let content = if self.mention_only {
                     // Bot mention looks like "@botname text"
-                    text.splitn(2, ' ')
-                        .nth(1)
+                    text.split_once(' ')
+                        .map(|x| x.1)
                         .unwrap_or(text)
                         .trim()
                         .to_string()

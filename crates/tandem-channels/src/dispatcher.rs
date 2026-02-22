@@ -338,7 +338,7 @@ async fn get_or_create_session(
 
     let mut guard = session_map.lock().await;
     guard.insert(map_key.to_string(), session_id.clone());
-    save_session_map(&*guard).await;
+    save_session_map(&guard).await;
 
     Some(session_id)
 }
@@ -562,7 +562,7 @@ async fn new_session_text(
 
     let mut guard = session_map.lock().await;
     guard.insert(map_key, session_id.clone());
-    save_session_map(&*guard).await;
+    save_session_map(&guard).await;
 
     format!(
         "✅ Started new session \"{}\" (`{}`)\nFresh context — what would you like to work on?",
@@ -622,7 +622,7 @@ async fn resume_session_text(
 
             let mut guard = session_map.lock().await;
             guard.insert(map_key, id.to_string());
-            save_session_map(&*guard).await;
+            save_session_map(&guard).await;
 
             format!(
                 "✅ Resumed session \"{}\" (`{}`)\n→ Ready to continue.",

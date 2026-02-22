@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use ignore::WalkBuilder;
 use regex::Regex;
 use serde_json::{json, Value};
-use tandem_document;
 use tandem_skills::SkillService;
 use tokio::fs;
 use tokio::process::Command;
@@ -173,7 +172,7 @@ fn is_batch_wrapper_tool_name(name: &str) -> bool {
     )
 }
 
-fn non_empty_batch_str<'a>(value: Option<&'a Value>) -> Option<&'a str> {
+fn non_empty_batch_str(value: Option<&Value>) -> Option<&str> {
     value
         .and_then(|v| v.as_str())
         .map(str::trim)
