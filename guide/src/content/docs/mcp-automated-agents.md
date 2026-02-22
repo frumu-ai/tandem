@@ -119,10 +119,10 @@ Each scheduled run executes this loop:
 
 Mission quality is the primary control lever. If the mission objective is vague, run behavior will be vague.
 
-Create a routine that only allows selected tools:
+Create an automation that only allows selected tools (`routines/*` remains compatible):
 
 ```bash
-curl -sS -X POST http://127.0.0.1:39731/routines \
+curl -sS -X POST http://127.0.0.1:39731/automations \
   -H "content-type: application/json" \
   -d '{
     "routine_id": "daily-mcp-research",
@@ -139,7 +139,7 @@ curl -sS -X POST http://127.0.0.1:39731/routines \
 Trigger immediately:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:39731/routines/daily-mcp-research/run_now \
+curl -sS -X POST http://127.0.0.1:39731/automations/daily-mcp-research/run_now \
   -H "content-type: application/json" \
   -d '{}'
 ```
@@ -147,18 +147,10 @@ curl -sS -X POST http://127.0.0.1:39731/routines/daily-mcp-research/run_now \
 Check run records:
 
 ```bash
-curl -sS "http://127.0.0.1:39731/routines/runs?routine_id=daily-mcp-research&limit=10"
+curl -sS "http://127.0.0.1:39731/automations/runs?routine_id=daily-mcp-research&limit=10"
 ```
 
 Each run record includes `allowed_tools` so you can verify tool scope at execution time.
-
-Preferred API naming is now `automations/*` (the `routines/*` endpoints remain compatible):
-
-```bash
-curl -sS -X POST http://127.0.0.1:39731/automations/auto-digest/run_now \
-  -H "content-type: application/json" \
-  -d '{}'
-```
 
 ## 2.5) Which Tools Should You Start With?
 
@@ -368,19 +360,19 @@ To clear model policy on a patch/update, send an empty object:
 
 ## 4) SSE Visibility
 
-Watch routine stream:
+Watch automation stream:
 
 ```bash
-curl -N http://127.0.0.1:39731/routines/events
+curl -N http://127.0.0.1:39731/automations/events
 ```
 
 Relevant events include:
 
 - `mcp.server.connected`
 - `mcp.tools.updated`
-- `routine.run.created`
-- `routine.approval_required`
-- `routine.blocked`
+- `run.started`
+- `approval.required`
+- `run.failed`
 
 ## 5) End-to-End Headless Example Scripts
 
@@ -393,7 +385,7 @@ They automate:
 
 1. MCP add/connect
 2. MCP + global tool listing
-3. Routine creation with `allowed_tools` + `output_targets`
+3. Automation creation with `allowed_tools` + `output_targets`
 4. Run trigger + run record/artifact verification
 
 ## 6) Headless "Just Run" Setup
@@ -406,7 +398,7 @@ Use this when you want unattended operation without opening desktop.
 cargo run -p tandem-ai --bin tandem-engine -- serve --host 127.0.0.1 --port 39731
 ```
 
-### B) Register MCP and routine once
+### B) Register MCP and automation once
 
 Use Sections 1 and 2 above (or run the included script):
 
@@ -417,27 +409,26 @@ Use Sections 1 and 2 above (or run the included script):
 
 For no human intervention:
 
-- set `requires_approval: false` on routines you trust
+- set `requires_approval: false` on automations you trust
 - keep `allowed_tools` explicit and small
 - keep `output_targets` configured so every run leaves artifacts
 
 ### D) Observe continuously
 
 ```bash
-curl -N http://127.0.0.1:39731/routines/events
+curl -N http://127.0.0.1:39731/automations/events
 ```
 
 Watch for:
 
-- `routine.run.created`
-- `routine.blocked`
-- `routine.approval_required`
+- `run.started`
+- `run.failed`
+- `approval.required`
 - `mcp.tools.updated`
 
 ### E) Production tip
 
 Run `tandem-engine serve` under a process supervisor (systemd, PM2, container orchestrator, or Windows Task Scheduler/service wrapper) so it auto-restarts after reboots/crashes.
-
 
 ## 7) App Testing Checklist (Release Readiness)
 
@@ -462,6 +453,7 @@ Use this checklist before shipping:
 6. Headless:
    - run `examples/headless/mcp_tools_allowlist/flow.sh` or `.ps1`
    - confirm runs execute and artifacts are produced without desktop UI
+
 ## Safety Notes
 
 - Keep connector secrets in headers/env, not logs.
@@ -475,5 +467,3 @@ Use this checklist before shipping:
 - [WebMCP for Agents](./webmcp-for-agents/)
 - [Engine Commands](./reference/engine-commands/)
 - [Tools Reference](./reference/tools/)
-
-

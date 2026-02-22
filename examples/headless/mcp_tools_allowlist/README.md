@@ -10,21 +10,22 @@ This example demonstrates a full headless flow for MCP connector tools and routi
 4. Create a routine with an explicit `allowed_tools` subset
 5. Configure routine `output_targets` for artifact destination wiring
 6. Trigger a run and verify the run record includes the same `allowed_tools`
-6. Watch SSE for MCP and routine events
+7. Watch SSE for MCP and routine events
 
 ## Prerequisites
 
-- Tandem engine running with HTTP API (default: `http://127.0.0.1:8080`)
+- Tandem engine running with HTTP API (default: `http://127.0.0.1:39731`)
 - Optional: `jq` for shell script output formatting
 
 ## Environment
 
 Set these before running:
 
-- `TANDEM_BASE_URL` (optional, defaults to `http://127.0.0.1:8080`)
+- `TANDEM_BASE_URL` (optional, defaults to `http://127.0.0.1:39731`)
 - `MCP_SERVER_NAME` (optional, defaults to `arcade`)
 - `MCP_TRANSPORT` (required, example: `https://mcp.arcade.dev/mcp`)
 - `MCP_AUTH_BEARER` (optional bearer token; sent as `Authorization: Bearer ...`)
+- `TANDEM_AUTOMATION_API` (optional: `routines` or `automations`, defaults to `routines`)
 
 ## Run (Bash)
 

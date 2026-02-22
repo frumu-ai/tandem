@@ -17,24 +17,24 @@ This matrix summarizes the engine-backed contracts between Desktop/TUI clients a
 
 ## Tauri <-> Engine HTTP
 
-| Endpoint                                        | Contract                                                                                        |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `GET /session?scope=workspace&workspace=<abs>`  | Workspace-scoped session list (engine-enforced).                                                |
-| `GET /session?scope=global`                     | Explicit cross-workspace list for advanced/debug flows.                                         |
-| `POST /session/{id}/attach`                     | Explicit attach across workspaces with audit fields.                                            |
-| `POST /session/{id}/workspace/override`         | Temporary sandbox override with TTL.                                                            |
-| `GET /provider`                                 | Provider catalog with default/connected metadata.                                               |
-| `POST /mission` / `POST /routines`              | Mission/routine lifecycle endpoints.                                                            |
-| `POST /mission/{id}/event`                      | Mission reducer endpoint; `mission_started` can trigger orchestrator-runtime Agent Team spawns. |
-| `GET /agent-team/templates`                     | Lists loaded Agent Team templates from workspace config.                                        |
-| `GET /agent-team/instances`                     | Lists agent instances with mission/parent/status filters.                                       |
-| `GET /agent-team/missions`                      | Lists mission-level Agent Team status rollups and usage totals.                                 |
-| `GET /agent-team/approvals`                     | Lists pending spawn approvals + pending tool approvals for agent-team sessions.                 |
-| `POST /agent-team/spawn`                        | Server-gated spawn with policy, edge, and skill checks.                                         |
-| `POST /agent-team/approvals/spawn/{id}/approve` | Approves a queued spawn request and executes gated spawn path.                                  |
-| `POST /agent-team/approvals/spawn/{id}/deny`    | Denies a queued spawn request with auditable reason.                                            |
-| `POST /agent-team/instance/{id}/cancel`         | Cancels a single agent instance and child session execution.                                    |
-| `POST /agent-team/mission/{id}/cancel`          | Cancels all tracked agent instances for a mission.                                              |
+| Endpoint                                                 | Contract                                                                                        |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `GET /session?scope=workspace&workspace=<abs>`           | Workspace-scoped session list (engine-enforced).                                                |
+| `GET /session?scope=global`                              | Explicit cross-workspace list for advanced/debug flows.                                         |
+| `POST /session/{id}/attach`                              | Explicit attach across workspaces with audit fields.                                            |
+| `POST /session/{id}/workspace/override`                  | Temporary sandbox override with TTL.                                                            |
+| `GET /provider`                                          | Provider catalog with default/connected metadata.                                               |
+| `POST /mission` / `POST /automations` / `POST /routines` | Mission + automation lifecycle endpoints (`routines/*` remains compatible).                     |
+| `POST /mission/{id}/event`                               | Mission reducer endpoint; `mission_started` can trigger orchestrator-runtime Agent Team spawns. |
+| `GET /agent-team/templates`                              | Lists loaded Agent Team templates from workspace config.                                        |
+| `GET /agent-team/instances`                              | Lists agent instances with mission/parent/status filters.                                       |
+| `GET /agent-team/missions`                               | Lists mission-level Agent Team status rollups and usage totals.                                 |
+| `GET /agent-team/approvals`                              | Lists pending spawn approvals + pending tool approvals for agent-team sessions.                 |
+| `POST /agent-team/spawn`                                 | Server-gated spawn with policy, edge, and skill checks.                                         |
+| `POST /agent-team/approvals/spawn/{id}/approve`          | Approves a queued spawn request and executes gated spawn path.                                  |
+| `POST /agent-team/approvals/spawn/{id}/deny`             | Denies a queued spawn request with auditable reason.                                            |
+| `POST /agent-team/instance/{id}/cancel`                  | Cancels a single agent instance and child session execution.                                    |
+| `POST /agent-team/mission/{id}/cancel`                   | Cancels all tracked agent instances for a mission.                                              |
 
 ## Engine SSE -> Client Events
 
