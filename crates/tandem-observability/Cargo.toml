@@ -1,6 +1,6 @@
 [package]
 name = "tandem-observability"
-version = "0.3.8"
+version = "0.3.9"
 description = "Tracing and observability utilities for Tandem"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -14,3 +14,4 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
+

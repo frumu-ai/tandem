@@ -1,4 +1,4 @@
-# Tandem v0.3.8 Release Notes (Unreleased)
+# Tandem v0.3.9 Release Notes (Unreleased)
 
 ### Highlights
 
@@ -61,7 +61,7 @@
   - `template_id` (optional hint)
   - `gate` (`review` or `test`, optional)
 
-### Complete Feature List - tandem-channels v0.3.8
+### Complete Feature List - tandem-channels v0.3.9
 
 #### New Crate: `tandem-channels`
 
@@ -935,3 +935,4 @@ _Release attempt failed on 2026-02-09 due to GitHub release asset upload errors 
 
 - **Vector Memory Store**: Implemented a local, zero-trust vector database (`sqlite-vec`) to store and retrieve semantic embeddings of your codebase and conversation history.
 - **Memory Context Injection**: The AI now automatically receives relevant context snippets based on your current query, reducing hallucinations and "I don't know" responses about your own code.
+

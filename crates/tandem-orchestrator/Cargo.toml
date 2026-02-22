@@ -1,6 +1,6 @@
 [package]
 name = "tandem-orchestrator"
-version = "0.3.8"
+version = "0.3.9"
 description = "Orchestrator models for Tandem missions and routines"
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -10,4 +10,5 @@ repository = "https://github.com/frumu-ai/tandem"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
+
 

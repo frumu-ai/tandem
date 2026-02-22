@@ -1,6 +1,6 @@
 [package]
 name = "tandem-server"
-version = "0.3.8"
+version = "0.3.9"
 description = "HTTP server for Tandem engine APIs"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -24,16 +24,17 @@ tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
-tandem-core = { path = "../tandem-core", version = "0.3.8" }
-tandem-providers = { path = "../tandem-providers", version = "0.3.8" }
-tandem-runtime = { path = "../tandem-runtime", version = "0.3.8" }
-tandem-tools = { path = "../tandem-tools", version = "0.3.8" }
-tandem-skills = { path = "../tandem-skills", version = "0.3.8" }
-tandem-memory = { path = "../tandem-memory", version = "0.3.8", features = ["local-embeddings"] }
-tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.3.8" }
-tandem-types = { path = "../tandem-types", version = "0.3.8" }
-tandem-wire = { path = "../tandem-wire", version = "0.3.8" }
-tandem-channels = { path = "../tandem-channels", version = "0.3.8" }
+tandem-core = { path = "../tandem-core", version = "0.3.9" }
+tandem-providers = { path = "../tandem-providers", version = "0.3.9" }
+tandem-runtime = { path = "../tandem-runtime", version = "0.3.9" }
+tandem-tools = { path = "../tandem-tools", version = "0.3.9" }
+tandem-skills = { path = "../tandem-skills", version = "0.3.9" }
+tandem-memory = { path = "../tandem-memory", version = "0.3.9", features = ["local-embeddings"] }
+tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.3.9" }
+tandem-types = { path = "../tandem-types", version = "0.3.9" }
+tandem-wire = { path = "../tandem-wire", version = "0.3.9" }
+tandem-channels = { path = "../tandem-channels", version = "0.3.9" }
 
 [dev-dependencies]
 tower = "0.5"
+
