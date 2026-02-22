@@ -23,6 +23,7 @@ tandem-types = { path = "../tandem-types", version = "0.3.8" }
 html2md = "0.2"
 tandem-skills = { path = "../tandem-skills", version = "0.3.8" }
 tandem-memory = { path = "../tandem-memory", version = "0.3.8" }
+tandem-document = { path = "../tandem-document", version = "0.3.8" }
 
 [dev-dependencies]
 tempfile = "3"

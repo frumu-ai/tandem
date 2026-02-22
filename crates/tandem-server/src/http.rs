@@ -4175,7 +4175,7 @@ async fn run_orchestrator_runtime_spawns(
             justification: format!("mission work item {}", item.work_item_id),
             budget_override: None,
         };
-        emit_spawn_requested(&state, &req);
+        emit_spawn_requested(state, &req);
         let result = state.agent_teams.spawn(state, req.clone()).await;
         if !result.decision.allowed || result.instance.is_none() {
             emit_spawn_denied(state, &req, &result.decision);

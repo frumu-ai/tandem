@@ -55,6 +55,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 semver = "1"
 tandem-core = { path = "../crates/tandem-core" }
 tandem-types = { path = "../crates/tandem-types" }
+tandem-document = { path = "../crates/tandem-document" }
 tandem-observability = { path = "../crates/tandem-observability" }
 tandem-skills = { path = "../crates/tandem-skills" }
 tandem-memory = { path = "../crates/tandem-memory", features = ["local-embeddings"] }

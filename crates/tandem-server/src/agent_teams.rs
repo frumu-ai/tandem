@@ -798,9 +798,7 @@ impl AgentTeamRuntime {
         policy: &SpawnPolicy,
         mission_id: &str,
     ) -> Option<String> {
-        let Some(limit) = policy.mission_total_budget.as_ref() else {
-            return None;
-        };
+        let limit = policy.mission_total_budget.as_ref()?;
         let usage = self
             .mission_budgets
             .read()
@@ -1300,6 +1298,7 @@ impl AgentTeamRuntime {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn apply_mission_budget_delta(
         &self,
         state: &AppState,
@@ -2047,6 +2046,7 @@ pub fn emit_budget_usage(
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_budget_exhausted(
     state: &AppState,
     instance: &AgentInstance,

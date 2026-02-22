@@ -1962,8 +1962,8 @@ fn sanitize_path_candidate(raw: &str) -> Option<String> {
     let token = raw
         .trim()
         .trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | '*' | '|'))
-        .trim_start_matches(|c: char| matches!(c, '(' | '[' | '{' | '<'))
-        .trim_end_matches(|c: char| matches!(c, ',' | ';' | ':' | ')' | ']' | '}' | '>'))
+        .trim_start_matches(['(', '[', '{', '<'])
+        .trim_end_matches([',', ';', ':', ')', ']', '}', '>'])
         .trim_end_matches('.')
         .trim();
 

@@ -6789,7 +6789,7 @@ pub async fn read_file_text(
         limits.max_output_chars = max_chars;
     }
 
-    crate::document_text::extract_file_text(&file_path, limits)
+    Ok(crate::document_text::extract_file_text(&file_path, limits)?)
 }
 
 // ============================================================================
