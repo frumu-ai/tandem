@@ -272,6 +272,7 @@ From desktop:
 4. Use `Configured Routines` actions to pause/resume routines.
 5. Use `Scheduled Bots` run actions (`Approve`, `Deny`, `Pause`, `Resume`) for gated runs.
 6. In `Scheduled Bots`, inspect tool scope shown on each run card.
+7. Watch the per-run event rail chips (`Plan`, `Do`, `Verify`, `Approval`, `Blocked`, `Failed`) for live execution state.
 
 ### Mission Workshop (Desktop)
 

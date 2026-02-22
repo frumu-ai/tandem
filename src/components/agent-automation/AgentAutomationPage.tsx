@@ -57,6 +57,13 @@ interface MissionDraft {
   suggestedMode: "standalone" | "orchestrated";
 }
 
+interface RunTimelineEvent {
+  eventType: string;
+  phase: "plan" | "do" | "verify" | "approval" | "blocked" | "failed" | "info";
+  tsMs: number;
+  note?: string;
+}
+
 function buildMissionDraft(brief: string, tools: string[]): MissionDraft {
   const normalized = brief.trim();
   const lower = normalized.toLowerCase();
@@ -84,6 +91,73 @@ function buildMissionDraft(brief: string, tools: string[]): MissionDraft {
 function modeFromArgs(args: Record<string, unknown> | undefined): string {
   const value = typeof args?.["mode"] === "string" ? args["mode"].trim() : "";
   return value || "standalone";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function extractRunId(data: unknown): string | null {
+  if (!isRecord(data)) return null;
+  const direct = asString(data["runID"]) ?? asString(data["run_id"]);
+  if (direct) return direct;
+  const run = data["run"];
+  if (isRecord(run)) {
+    return asString(run["run_id"]) ?? asString(run["runID"]);
+  }
+  return null;
+}
+
+function extractRunNote(eventType: string, data: unknown): string | undefined {
+  if (!isRecord(data)) return undefined;
+  if (eventType === "routine.approval_required" || eventType === "approval.required") {
+    return asString(data["reason"]) ?? "Approval required";
+  }
+  if (eventType === "routine.blocked") {
+    return asString(data["reason"]) ?? "Blocked by policy";
+  }
+  if (eventType === "routine.run.failed" || eventType === "run.failed") {
+    return asString(data["reason"]) ?? asString(data["detail"]) ?? "Run failed";
+  }
+  if (eventType === "routine.run.artifact_added") {
+    const artifact = data["artifact"];
+    if (isRecord(artifact)) {
+      return asString(artifact["uri"]) ?? "Artifact added";
+    }
+    return "Artifact added";
+  }
+  return undefined;
+}
+
+function phaseFromEventType(eventType: string, data: unknown): RunTimelineEvent["phase"] {
+  if (eventType === "routine.run.created") return "plan";
+  if (eventType === "routine.run.started" || eventType === "routine.fired") return "do";
+  if (eventType === "routine.run.completed") return "verify";
+  if (eventType === "routine.approval_required" || eventType === "approval.required") {
+    return "approval";
+  }
+  if (eventType === "routine.blocked") return "blocked";
+  if (eventType === "routine.run.failed" || eventType === "run.failed") return "failed";
+  if (eventType === "run.step") {
+    if (isRecord(data) && asString(data["phase"]) === "do") return "do";
+    return "info";
+  }
+  if (eventType === "run.completed") return "verify";
+  return "info";
+}
+
+function eventLabel(event: RunTimelineEvent): string {
+  if (event.phase === "approval") return "Approval";
+  if (event.phase === "blocked") return "Blocked";
+  if (event.phase === "failed") return "Failed";
+  if (event.phase === "plan") return "Plan";
+  if (event.phase === "do") return "Do";
+  if (event.phase === "verify") return "Verify";
+  return "Info";
 }
 
 interface AgentAutomationPageProps {
@@ -143,6 +217,7 @@ export function AgentAutomationPage({
   const [routineRuns, setRoutineRuns] = useState<RoutineRunRecord[]>([]);
   const [routineRunsLoading, setRoutineRunsLoading] = useState(false);
   const [routineActionBusyRunId, setRoutineActionBusyRunId] = useState<string | null>(null);
+  const [runTimeline, setRunTimeline] = useState<Record<string, RunTimelineEvent[]>>({});
 
   const templates: BotTemplate[] = useMemo(
     () => [
@@ -283,6 +358,19 @@ export function AgentAutomationPage({
   }, [loadRoutineRuns]);
 
   useEffect(() => {
+    const knownRunIds = new Set(routineRuns.map((run) => run.run_id));
+    setRunTimeline((prev) => {
+      const next: Record<string, RunTimelineEvent[]> = {};
+      for (const [runId, events] of Object.entries(prev)) {
+        if (knownRunIds.has(runId)) {
+          next[runId] = events;
+        }
+      }
+      return next;
+    });
+  }, [routineRuns]);
+
+  useEffect(() => {
     let unlisten: (() => void) | null = null;
     const setup = async () => {
       unlisten = await onSidecarEventV2((envelope: StreamEventEnvelopeV2) => {
@@ -294,6 +382,23 @@ export function AgentAutomationPage({
           void loadMcpStatus();
           void loadToolCatalog();
           return;
+        }
+        if (eventType.startsWith("routine.") || eventType.startsWith("run.")) {
+          const data = envelope.payload.data;
+          const runId = extractRunId(data);
+          if (runId) {
+            const nextEvent: RunTimelineEvent = {
+              eventType,
+              phase: phaseFromEventType(eventType, data),
+              tsMs: envelope.ts_ms,
+              note: extractRunNote(eventType, data),
+            };
+            setRunTimeline((prev) => {
+              const current = prev[runId] ?? [];
+              const merged = [...current, nextEvent].slice(-8);
+              return { ...prev, [runId]: merged };
+            });
+          }
         }
         if (eventType.startsWith("routine.")) {
           void loadRoutines();
@@ -926,6 +1031,23 @@ export function AgentAutomationPage({
                           <div className="mt-0.5 truncate text-[11px] text-text-muted">
                             run {run.run_id} | {run.trigger_type} | mode: {modeFromArgs(run.args)}
                           </div>
+                          {runTimeline[run.run_id]?.length ? (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {runTimeline[run.run_id].map((event, index) => (
+                                <span
+                                  key={`${run.run_id}-${event.tsMs}-${index}`}
+                                  title={
+                                    event.note
+                                      ? `${event.eventType}: ${event.note}`
+                                      : `${event.eventType}`
+                                  }
+                                  className="rounded border border-border bg-surface px-1.5 py-0.5 text-[10px] text-text-subtle"
+                                >
+                                  {eventLabel(event)}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
                           {run.args?.["orchestrator_only_tool_calls"] ? (
                             <div className="mt-0.5 text-[11px] text-text-subtle">
                               policy: orchestrator-only tool calls
