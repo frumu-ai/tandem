@@ -219,6 +219,37 @@ impl ToolPolicyHook for ServerToolPolicyHook {
     ) -> BoxFuture<'static, anyhow::Result<ToolPolicyDecision>> {
         let state = self.state.clone();
         Box::pin(async move {
+            let tool = normalize_tool_name(&ctx.tool);
+            if let Some(policy) = state.routine_session_policy(&ctx.session_id).await {
+                if !policy.allowed_tools.is_empty()
+                    && !policy
+                        .allowed_tools
+                        .iter()
+                        .any(|name| normalize_tool_name(name) == tool)
+                {
+                    let reason = format!(
+                        "tool `{}` is not allowed for routine `{}` (run `{}`)",
+                        tool, policy.routine_id, policy.run_id
+                    );
+                    state.event_bus.publish(EngineEvent::new(
+                        "routine.tool.denied",
+                        json!({
+                            "sessionID": ctx.session_id,
+                            "messageID": ctx.message_id,
+                            "runID": policy.run_id,
+                            "routineID": policy.routine_id,
+                            "tool": tool,
+                            "reason": reason,
+                            "timestampMs": crate::now_ms(),
+                        }),
+                    ));
+                    return Ok(ToolPolicyDecision {
+                        allowed: false,
+                        reason: Some(reason),
+                    });
+                }
+            }
+
             let Some(instance) = state
                 .agent_teams
                 .instance_for_session(&ctx.session_id)
@@ -229,7 +260,6 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                     reason: None,
                 });
             };
-            let tool = normalize_tool_name(&ctx.tool);
             let caps = instance.capabilities.clone();
             let deny = evaluate_capability_deny(
                 &state,

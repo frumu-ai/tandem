@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tandem_memory::{GovernedMemoryTier, MemoryClassification, MemoryContentKind, MemoryPartition};
 use tandem_orchestrator::MissionState;
-use tandem_types::{EngineEvent, HostOs, HostRuntimeContext, PathStyle, ShellFamily};
+use tandem_types::{
+    EngineEvent, HostOs, HostRuntimeContext, MessagePartInput, ModelSpec, PathStyle,
+    SendMessageRequest, Session, ShellFamily,
+};
 use tokio::fs;
 use tokio::sync::RwLock;
 
@@ -446,6 +449,14 @@ pub struct RoutineRunRecord {
     pub artifacts: Vec<RoutineRunArtifact>,
 }
 
+#[derive(Debug, Clone)]
+pub struct RoutineSessionPolicy {
+    pub session_id: String,
+    pub run_id: String,
+    pub routine_id: String,
+    pub allowed_tools: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RoutineTriggerPlan {
     pub routine_id: String,
@@ -520,6 +531,7 @@ pub struct AppState {
     pub routines: Arc<RwLock<std::collections::HashMap<String, RoutineSpec>>>,
     pub routine_history: Arc<RwLock<std::collections::HashMap<String, Vec<RoutineHistoryEvent>>>>,
     pub routine_runs: Arc<RwLock<std::collections::HashMap<String, RoutineRunRecord>>>,
+    pub routine_session_policies: Arc<RwLock<std::collections::HashMap<String, RoutineSessionPolicy>>>,
     pub routines_path: PathBuf,
     pub routine_history_path: PathBuf,
     pub routine_runs_path: PathBuf,
@@ -561,6 +573,7 @@ impl AppState {
             routines: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_history: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            routine_session_policies: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routines_path: resolve_routines_path(),
             routine_history_path: resolve_routine_history_path(),
             routine_runs_path: resolve_routine_runs_path(),
@@ -1215,6 +1228,62 @@ impl AppState {
         rows
     }
 
+    pub async fn claim_next_queued_routine_run(&self) -> Option<RoutineRunRecord> {
+        let mut guard = self.routine_runs.write().await;
+        let next_run_id = guard
+            .values()
+            .filter(|row| row.status == RoutineRunStatus::Queued)
+            .min_by(|a, b| {
+                a.created_at_ms
+                    .cmp(&b.created_at_ms)
+                    .then_with(|| a.run_id.cmp(&b.run_id))
+            })
+            .map(|row| row.run_id.clone())?;
+        let now = now_ms();
+        let row = guard.get_mut(&next_run_id)?;
+        row.status = RoutineRunStatus::Running;
+        row.updated_at_ms = now;
+        row.started_at_ms = Some(now);
+        let claimed = row.clone();
+        drop(guard);
+        let _ = self.persist_routine_runs().await;
+        Some(claimed)
+    }
+
+    pub async fn set_routine_session_policy(
+        &self,
+        session_id: String,
+        run_id: String,
+        routine_id: String,
+        allowed_tools: Vec<String>,
+    ) {
+        let policy = RoutineSessionPolicy {
+            session_id: session_id.clone(),
+            run_id,
+            routine_id,
+            allowed_tools: normalize_allowed_tools(allowed_tools),
+        };
+        self.routine_session_policies
+            .write()
+            .await
+            .insert(session_id, policy);
+    }
+
+    pub async fn routine_session_policy(
+        &self,
+        session_id: &str,
+    ) -> Option<RoutineSessionPolicy> {
+        self.routine_session_policies
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
+    }
+
+    pub async fn clear_routine_session_policy(&self, session_id: &str) {
+        self.routine_session_policies.write().await.remove(session_id);
+    }
+
     pub async fn update_routine_run_status(
         &self,
         run_id: &str,
@@ -1227,6 +1296,12 @@ impl AppState {
         row.updated_at_ms = now_ms();
         match status {
             RoutineRunStatus::PendingApproval => row.approval_reason = reason,
+            RoutineRunStatus::Running => {
+                row.started_at_ms.get_or_insert_with(now_ms);
+                if let Some(detail) = reason {
+                    row.detail = Some(detail);
+                }
+            }
             RoutineRunStatus::Denied => row.denial_reason = reason,
             RoutineRunStatus::Paused => row.paused_reason = reason,
             RoutineRunStatus::Completed
@@ -1756,6 +1831,168 @@ pub async fn run_routine_scheduler(state: AppState) {
     }
 }
 
+pub async fn run_routine_executor(state: AppState) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let Some(run) = state.claim_next_queued_routine_run().await else {
+            continue;
+        };
+
+        state.event_bus.publish(EngineEvent::new(
+            "routine.run.started",
+            serde_json::json!({
+                "runID": run.run_id,
+                "routineID": run.routine_id,
+                "triggerType": run.trigger_type,
+                "startedAtMs": now_ms(),
+            }),
+        ));
+
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        let mut session = Session::new(
+            Some(format!("Routine {}", run.routine_id)),
+            Some(workspace_root.clone()),
+        );
+        let session_id = session.id.clone();
+        session.workspace_root = Some(workspace_root);
+
+        if let Err(error) = state.storage.save_session(session).await {
+            let detail = format!("failed to create routine session: {error}");
+            let _ = state
+                .update_routine_run_status(&run.run_id, RoutineRunStatus::Failed, Some(detail.clone()))
+                .await;
+            state.event_bus.publish(EngineEvent::new(
+                "routine.run.failed",
+                serde_json::json!({
+                    "runID": run.run_id,
+                    "routineID": run.routine_id,
+                    "reason": detail,
+                }),
+            ));
+            continue;
+        }
+
+        state
+            .set_routine_session_policy(
+                session_id.clone(),
+                run.run_id.clone(),
+                run.routine_id.clone(),
+                run.allowed_tools.clone(),
+            )
+            .await;
+
+        let request = SendMessageRequest {
+            parts: vec![MessagePartInput::Text {
+                text: build_routine_prompt(&state, &run).await,
+            }],
+            model: resolve_routine_model_spec(&state).await,
+            agent: None,
+        };
+
+        let run_result = state
+            .engine_loop
+            .run_prompt_async_with_context(
+                session_id.clone(),
+                request,
+                Some(format!("routine:{}", run.run_id)),
+            )
+            .await;
+
+        state.clear_routine_session_policy(&session_id).await;
+
+        match run_result {
+            Ok(()) => {
+                let _ = state
+                    .update_routine_run_status(
+                        &run.run_id,
+                        RoutineRunStatus::Completed,
+                        Some("routine run completed".to_string()),
+                    )
+                    .await;
+                state.event_bus.publish(EngineEvent::new(
+                    "routine.run.completed",
+                    serde_json::json!({
+                        "runID": run.run_id,
+                        "routineID": run.routine_id,
+                        "sessionID": session_id,
+                        "finishedAtMs": now_ms(),
+                    }),
+                ));
+            }
+            Err(error) => {
+                let detail = truncate_text(&error.to_string(), 500);
+                let _ = state
+                    .update_routine_run_status(
+                        &run.run_id,
+                        RoutineRunStatus::Failed,
+                        Some(detail.clone()),
+                    )
+                    .await;
+                state.event_bus.publish(EngineEvent::new(
+                    "routine.run.failed",
+                    serde_json::json!({
+                        "runID": run.run_id,
+                        "routineID": run.routine_id,
+                        "sessionID": session_id,
+                        "reason": detail,
+                        "finishedAtMs": now_ms(),
+                    }),
+                ));
+            }
+        }
+    }
+}
+
+async fn build_routine_prompt(state: &AppState, run: &RoutineRunRecord) -> String {
+    let normalized_entrypoint = run.entrypoint.trim();
+    let known_tool = state
+        .tools
+        .list()
+        .await
+        .into_iter()
+        .any(|schema| schema.name == normalized_entrypoint);
+    if known_tool {
+        let args = if run.args.is_object() {
+            run.args.clone()
+        } else {
+            serde_json::json!({})
+        };
+        return format!("/tool {} {}", normalized_entrypoint, args);
+    }
+    if let Some(prompt) = run.args.get("prompt").and_then(|v| v.as_str()) {
+        if !prompt.trim().is_empty() {
+            return prompt.trim().to_string();
+        }
+    }
+    format!(
+        "Execute routine '{}' using entrypoint '{}' with args: {}",
+        run.routine_id, run.entrypoint, run.args
+    )
+}
+
+fn truncate_text(input: &str, max_len: usize) -> String {
+    if input.len() <= max_len {
+        return input.to_string();
+    }
+    let mut out = input[..max_len].to_string();
+    out.push_str("...<truncated>");
+    out
+}
+
+async fn resolve_routine_model_spec(state: &AppState) -> Option<ModelSpec> {
+    let providers = state.providers.list().await;
+    providers
+        .into_iter()
+        .find(|provider| !provider.models.is_empty())
+        .and_then(|provider| {
+            let model = provider.models.first()?;
+            Some(ModelSpec {
+                provider_id: provider.id,
+                model_id: model.id.clone(),
+            })
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2127,5 +2364,75 @@ mod tests {
 
         let decision = evaluate_routine_execution_policy(&routine, "manual");
         assert_eq!(decision, RoutineExecutionDecision::Allowed);
+    }
+
+    #[tokio::test]
+    async fn claim_next_queued_routine_run_marks_oldest_running() {
+        let mut state = AppState::new_starting("routine-claim".to_string(), true);
+        state.routine_runs_path = tmp_routines_file("routine-claim-runs");
+
+        let mk = |run_id: &str, created_at_ms: u64| RoutineRunRecord {
+            run_id: run_id.to_string(),
+            routine_id: "routine-claim".to_string(),
+            trigger_type: "manual".to_string(),
+            run_count: 1,
+            status: RoutineRunStatus::Queued,
+            created_at_ms,
+            updated_at_ms: created_at_ms,
+            fired_at_ms: Some(created_at_ms),
+            started_at_ms: None,
+            finished_at_ms: None,
+            requires_approval: false,
+            approval_reason: None,
+            denial_reason: None,
+            paused_reason: None,
+            detail: None,
+            entrypoint: "mission.default".to_string(),
+            args: serde_json::json!({}),
+            allowed_tools: vec![],
+            artifacts: vec![],
+        };
+
+        {
+            let mut guard = state.routine_runs.write().await;
+            guard.insert("run-late".to_string(), mk("run-late", 2_000));
+            guard.insert("run-early".to_string(), mk("run-early", 1_000));
+        }
+        state.persist_routine_runs().await.expect("persist");
+
+        let claimed = state
+            .claim_next_queued_routine_run()
+            .await
+            .expect("claimed run");
+        assert_eq!(claimed.run_id, "run-early");
+        assert_eq!(claimed.status, RoutineRunStatus::Running);
+        assert!(claimed.started_at_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn routine_session_policy_roundtrip_normalizes_tools() {
+        let state = AppState::new_starting("routine-policy-hook".to_string(), true);
+        state
+            .set_routine_session_policy(
+                "session-routine-1".to_string(),
+                "run-1".to_string(),
+                "routine-1".to_string(),
+                vec![
+                    "read".to_string(),
+                    " mcp.arcade.search ".to_string(),
+                    "read".to_string(),
+                    "".to_string(),
+                ],
+            )
+            .await;
+
+        let policy = state
+            .routine_session_policy("session-routine-1")
+            .await
+            .expect("policy");
+        assert_eq!(
+            policy.allowed_tools,
+            vec!["read".to_string(), "mcp.arcade.search".to_string()]
+        );
     }
 }

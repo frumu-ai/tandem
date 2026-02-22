@@ -458,6 +458,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let reaper_state = state.clone();
     let status_indexer_state = state.clone();
     let routine_scheduler_state = state.clone();
+    let routine_executor_state = state.clone();
     let agent_team_supervisor_state = state.clone();
     let app = app_router(state);
     let reaper = tokio::spawn(async move {
@@ -483,6 +484,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     });
     let status_indexer = tokio::spawn(crate::run_status_indexer(status_indexer_state));
     let routine_scheduler = tokio::spawn(crate::run_routine_scheduler(routine_scheduler_state));
+    let routine_executor = tokio::spawn(crate::run_routine_executor(routine_executor_state));
     let agent_team_supervisor = tokio::spawn(crate::run_agent_team_supervisor(
         agent_team_supervisor_state,
     ));
@@ -513,6 +515,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     reaper.abort();
     status_indexer.abort();
     routine_scheduler.abort();
+    routine_executor.abort();
     agent_team_supervisor.abort();
     if let Some(mut set) = channel_listener_set {
         set.abort_all();
