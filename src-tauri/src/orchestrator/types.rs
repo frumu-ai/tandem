@@ -169,6 +169,9 @@ pub struct Run {
     pub run_id: String,
     /// Session ID for sidecar communication
     pub session_id: String,
+    /// Workspace root captured when the run was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
     /// UI origin for this run (orchestrator panel vs command center).
     #[serde(default)]
     pub source: RunSource,
@@ -211,6 +214,7 @@ impl Run {
         Self {
             run_id,
             session_id,
+            workspace_root: None,
             source: RunSource::Orchestrator,
             provider: None,
             model: None,
@@ -320,12 +324,19 @@ pub struct RunSnapshot {
 pub struct RunSummary {
     pub run_id: String,
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
     #[serde(default)]
     pub source: RunSource,
     pub objective: String,
     pub status: RunStatus,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 impl Run {

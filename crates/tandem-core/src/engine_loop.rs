@@ -923,7 +923,27 @@ impl EngineLoop {
             effective_args = args;
         }
 
-        let args = self.plugins.inject_tool_args(&tool, effective_args).await;
+        let mut args = self.plugins.inject_tool_args(&tool, effective_args).await;
+        let tool_context = self.resolve_tool_execution_context(session_id).await;
+        if let Some((workspace_root, effective_cwd)) = tool_context.as_ref() {
+            if let Some(obj) = args.as_object_mut() {
+                obj.insert(
+                    "__workspace_root".to_string(),
+                    Value::String(workspace_root.clone()),
+                );
+                obj.insert(
+                    "__effective_cwd".to_string(),
+                    Value::String(effective_cwd.clone()),
+                );
+            }
+            tracing::info!(
+                "tool execution context session_id={} tool={} workspace_root={} effective_cwd={}",
+                session_id,
+                tool,
+                workspace_root,
+                effective_cwd
+            );
+        }
         let mut invoke_part =
             WireMessagePart::tool_invocation(session_id, message_id, tool.clone(), args.clone());
         if let Some(call_id) = tool_call_id.clone() {
@@ -956,6 +976,8 @@ impl EngineLoop {
                     &tool,
                     &args_for_side_events,
                     &spawned.metadata,
+                    tool_context.as_ref().map(|ctx| ctx.0.as_str()),
+                    tool_context.as_ref().map(|ctx| ctx.1.as_str()),
                 )
                 .await;
                 let mut result_part = WireMessagePart::tool_result(
@@ -1013,6 +1035,8 @@ impl EngineLoop {
             &tool,
             &args_for_side_events,
             &result.metadata,
+            tool_context.as_ref().map(|ctx| ctx.0.as_str()),
+            tool_context.as_ref().map(|ctx| ctx.1.as_str()),
         )
         .await;
         let output = self.plugins.transform_tool_output(result.output).await;
@@ -1109,12 +1133,33 @@ impl EngineLoop {
         if candidate_paths.is_empty() {
             return None;
         }
-        let outside = candidate_paths
-            .iter()
-            .find(|path| !crate::is_within_workspace_root(Path::new(path), &workspace_path))?;
+        let outside = candidate_paths.iter().find(|path| {
+            let raw = Path::new(path);
+            let resolved = if raw.is_absolute() {
+                raw.to_path_buf()
+            } else {
+                workspace_path.join(raw)
+            };
+            !crate::is_within_workspace_root(&resolved, &workspace_path)
+        })?;
         Some(format!(
             "Sandbox blocked `{tool}` path `{outside}` (workspace root: `{workspace}`)"
         ))
+    }
+
+    async fn resolve_tool_execution_context(&self, session_id: &str) -> Option<(String, String)> {
+        let session = self.storage.get_session(session_id).await?;
+        let workspace_root = session
+            .workspace_root
+            .or_else(|| crate::normalize_workspace_path(&session.directory))?;
+        let effective_cwd = if session.directory.trim().is_empty()
+            || session.directory.trim() == "."
+        {
+            workspace_root.clone()
+        } else {
+            crate::normalize_workspace_path(&session.directory).unwrap_or(workspace_root.clone())
+        };
+        Some((workspace_root, effective_cwd))
     }
 
     async fn workspace_override_active(&self, session_id: &str) -> bool {
@@ -3004,6 +3049,8 @@ async fn emit_tool_side_events(
     tool: &str,
     args: &serde_json::Value,
     metadata: &serde_json::Value,
+    workspace_root: Option<&str>,
+    effective_cwd: Option<&str>,
 ) {
     if tool == "todo_write" {
         let todos_from_metadata = metadata
@@ -3026,7 +3073,9 @@ async fn emit_tool_side_events(
             "todo.updated",
             json!({
                 "sessionID": session_id,
-                "todos": normalized
+                "todos": normalized,
+                "workspaceRoot": workspace_root,
+                "effectiveCwd": effective_cwd
             }),
         ));
     }
@@ -3057,7 +3106,9 @@ async fn emit_tool_side_events(
                             "messageID": tool.message_id
                         })
                     })
-                })
+                }),
+                "workspaceRoot": workspace_root,
+                "effectiveCwd": effective_cwd
             }),
         ));
     }
@@ -3228,6 +3279,8 @@ mod tests {
             "todo_write",
             &json!({"todos":[{"content":"ship parity"}]}),
             &json!({"todos":[{"content":"ship parity"}]}),
+            Some("."),
+            Some("."),
         )
         .await;
 
@@ -3266,6 +3319,8 @@ mod tests {
             "question",
             &json!({"questions":[{"header":"Topic","question":"Pick one","options":[{"label":"A","description":"d"}]}]}),
             &json!({"questions":[{"header":"Topic","question":"Pick one","options":[{"label":"A","description":"d"}]}]}),
+            Some("."),
+            Some("."),
         )
         .await;
 

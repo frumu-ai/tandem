@@ -3216,6 +3216,10 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
         snapshot
     }
 
+    pub fn workspace_path_string(&self) -> String {
+        self.workspace_path.to_string_lossy().to_string()
+    }
+
     /// Get current budget snapshot
     pub async fn get_budget(&self) -> Budget {
         self.budget_tracker.write().await.snapshot()

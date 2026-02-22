@@ -357,20 +357,102 @@ fn validate_schema_node(
     Ok(())
 }
 
-fn is_path_allowed(path: &str) -> bool {
+fn workspace_root_from_args(args: &Value) -> Option<PathBuf> {
+    args.get("__workspace_root")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+fn effective_cwd_from_args(args: &Value) -> PathBuf {
+    args.get("__effective_cwd")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| workspace_root_from_args(args))
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn normalize_path_for_compare(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let _ = normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn normalize_existing_or_lexical(path: &Path) -> PathBuf {
+    path.canonicalize()
+        .unwrap_or_else(|_| normalize_path_for_compare(path))
+}
+
+fn is_within_workspace_root(path: &Path, workspace_root: &Path) -> bool {
+    let candidate = normalize_existing_or_lexical(path);
+    let root = normalize_existing_or_lexical(workspace_root);
+    candidate.starts_with(root)
+}
+
+fn resolve_tool_path(path: &str, args: &Value) -> Option<PathBuf> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
-        return false;
+        return None;
+    }
+    if trimmed == "." || trimmed == "./" || trimmed == ".\\" {
+        let cwd = effective_cwd_from_args(args);
+        if let Some(workspace_root) = workspace_root_from_args(args) {
+            if !is_within_workspace_root(&cwd, &workspace_root) {
+                return None;
+            }
+        }
+        return Some(cwd);
     }
     if is_root_only_path_token(trimmed) || is_malformed_tool_path_token(trimmed) {
-        return false;
+        return None;
     }
     let raw = Path::new(trimmed);
-    if raw.is_absolute() {
-        return false;
+    if !raw.is_absolute()
+        && raw
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
     }
-    !raw.components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
+
+    let resolved = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        effective_cwd_from_args(args).join(raw)
+    };
+
+    if let Some(workspace_root) = workspace_root_from_args(args) {
+        if !is_within_workspace_root(&resolved, &workspace_root) {
+            return None;
+        }
+    } else if raw.is_absolute() {
+        return None;
+    }
+
+    Some(resolved)
+}
+
+fn resolve_walk_root(path: &str, args: &Value) -> Option<PathBuf> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if is_malformed_tool_path_token(trimmed) {
+        return None;
+    }
+    resolve_tool_path(path, args)
 }
 
 fn is_root_only_path_token(path: &str) -> bool {
@@ -456,6 +538,8 @@ impl Tool for BashTool {
             os_guardrail_applied,
             guardrail_reason,
         } = shell;
+        let effective_cwd = effective_cwd_from_args(&args);
+        command.current_dir(&effective_cwd);
         if let Some(env) = args.get("env").and_then(|v| v.as_object()) {
             for (k, v) in env {
                 if let Some(value) = v.as_str() {
@@ -471,6 +555,19 @@ impl Tool for BashTool {
             guardrail_reason.as_deref(),
             stderr,
         );
+        let mut metadata = metadata;
+        if let Some(obj) = metadata.as_object_mut() {
+            obj.insert(
+                "effective_cwd".to_string(),
+                Value::String(effective_cwd.to_string_lossy().to_string()),
+            );
+            if let Some(workspace_root) = workspace_root_from_args(&args) {
+                obj.insert(
+                    "workspace_root".to_string(),
+                    Value::String(workspace_root.to_string_lossy().to_string()),
+                );
+            }
+        }
         Ok(ToolResult {
             output: String::from_utf8_lossy(&output.stdout).to_string(),
             metadata,
@@ -499,6 +596,8 @@ impl Tool for BashTool {
             os_guardrail_applied,
             guardrail_reason,
         } = shell;
+        let effective_cwd = effective_cwd_from_args(&args);
+        command.current_dir(&effective_cwd);
         if let Some(env) = args.get("env").and_then(|v| v.as_object()) {
             for (k, v) in env {
                 if let Some(value) = v.as_str() {
@@ -536,6 +635,16 @@ impl Tool for BashTool {
         );
         if let Some(obj) = metadata.as_object_mut() {
             obj.insert("exit_code".to_string(), json!(status.code()));
+            obj.insert(
+                "effective_cwd".to_string(),
+                Value::String(effective_cwd.to_string_lossy().to_string()),
+            );
+            if let Some(workspace_root) = workspace_root_from_args(&args) {
+                obj.insert(
+                    "workspace_root".to_string(),
+                    Value::String(workspace_root.to_string_lossy().to_string()),
+                );
+            }
         }
         Ok(ToolResult {
             output: format!("command exited: {}", status),
@@ -804,14 +913,12 @@ impl Tool for ReadTool {
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
         let path = args["path"].as_str().unwrap_or("");
-        if !is_path_allowed(path) {
+        let Some(path_buf) = resolve_tool_path(path, &args) else {
             return Ok(ToolResult {
                 output: "path denied by sandbox policy".to_string(),
                 metadata: json!({"path": path}),
             });
-        }
-
-        let path_buf = PathBuf::from(path);
+        };
 
         // Check if it's a document format
         if is_document_file(&path_buf) {
@@ -851,10 +958,10 @@ impl Tool for ReadTool {
         }
 
         // Fallback to text reading
-        let data = fs::read_to_string(path).await.unwrap_or_default();
+        let data = fs::read_to_string(&path_buf).await.unwrap_or_default();
         Ok(ToolResult {
             output: data,
-            metadata: json!({"path": path, "type": "text"}),
+            metadata: json!({"path": path_buf.to_string_lossy(), "type": "text"}),
         })
     }
 }
@@ -884,12 +991,12 @@ impl Tool for WriteTool {
             .get("allow_empty")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        if !is_path_allowed(path) {
+        let Some(path_buf) = resolve_tool_path(path, &args) else {
             return Ok(ToolResult {
                 output: "path denied by sandbox policy".to_string(),
                 metadata: json!({"path": path}),
             });
-        }
+        };
         let Some(content) = content else {
             return Ok(ToolResult {
                 output: "write requires `content`".to_string(),
@@ -902,15 +1009,15 @@ impl Tool for WriteTool {
                 metadata: json!({"ok": false, "reason": "empty_content", "path": path}),
             });
         }
-        if let Some(parent) = Path::new(path).parent() {
+        if let Some(parent) = path_buf.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent).await?;
             }
         }
-        fs::write(path, content).await?;
+        fs::write(&path_buf, content).await?;
         Ok(ToolResult {
             output: "ok".to_string(),
-            metadata: json!({}),
+            metadata: json!({"path": path_buf.to_string_lossy()}),
         })
     }
 }
@@ -937,18 +1044,18 @@ impl Tool for EditTool {
         let path = args["path"].as_str().unwrap_or("");
         let old = args["old"].as_str().unwrap_or("");
         let new = args["new"].as_str().unwrap_or("");
-        if !is_path_allowed(path) {
+        let Some(path_buf) = resolve_tool_path(path, &args) else {
             return Ok(ToolResult {
                 output: "path denied by sandbox policy".to_string(),
                 metadata: json!({"path": path}),
             });
-        }
-        let content = fs::read_to_string(path).await.unwrap_or_default();
+        };
+        let content = fs::read_to_string(&path_buf).await.unwrap_or_default();
         let updated = content.replace(old, new);
-        fs::write(path, updated).await?;
+        fs::write(&path_buf, updated).await?;
         Ok(ToolResult {
             output: "ok".to_string(),
-            metadata: json!({}),
+            metadata: json!({"path": path_buf.to_string_lossy()}),
         })
     }
 }
@@ -971,10 +1078,28 @@ impl Tool for GlobTool {
                 metadata: json!({"pattern": pattern}),
             });
         }
+        if is_malformed_tool_path_token(pattern) {
+            return Ok(ToolResult {
+                output: "pattern denied by sandbox policy".to_string(),
+                metadata: json!({"pattern": pattern}),
+            });
+        }
+        let workspace_root = workspace_root_from_args(&args);
+        let effective_cwd = effective_cwd_from_args(&args);
+        let scoped_pattern = if Path::new(pattern).is_absolute() {
+            pattern.to_string()
+        } else {
+            effective_cwd.join(pattern).to_string_lossy().to_string()
+        };
         let mut files = Vec::new();
-        for path in (glob::glob(pattern)?).flatten() {
+        for path in (glob::glob(&scoped_pattern)?).flatten() {
             if is_discovery_ignored_path(&path) {
                 continue;
+            }
+            if let Some(root) = workspace_root.as_ref() {
+                if !is_within_workspace_root(&path, root) {
+                    continue;
+                }
             }
             files.push(path.display().to_string());
             if files.len() >= 100 {
@@ -983,7 +1108,7 @@ impl Tool for GlobTool {
         }
         Ok(ToolResult {
             output: files.join("\n"),
-            metadata: json!({"count": files.len()}),
+            metadata: json!({"count": files.len(), "effective_cwd": effective_cwd, "workspace_root": workspace_root}),
         })
     }
 }
@@ -1006,15 +1131,15 @@ impl Tool for GrepTool {
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
         let pattern = args["pattern"].as_str().unwrap_or("");
         let root = args["path"].as_str().unwrap_or(".");
-        if !is_path_allowed(root) {
+        let Some(root_path) = resolve_walk_root(root, &args) else {
             return Ok(ToolResult {
                 output: "path denied by sandbox policy".to_string(),
                 metadata: json!({"path": root}),
             });
-        }
+        };
         let regex = Regex::new(pattern)?;
         let mut out = Vec::new();
-        for entry in WalkBuilder::new(root).build().flatten() {
+        for entry in WalkBuilder::new(&root_path).build().flatten() {
             if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                 continue;
             }
@@ -1038,7 +1163,7 @@ impl Tool for GrepTool {
         }
         Ok(ToolResult {
             output: out.join("\n"),
-            metadata: json!({"count": out.len()}),
+            metadata: json!({"count": out.len(), "path": root_path.to_string_lossy()}),
         })
     }
 }
@@ -1648,19 +1773,19 @@ impl Tool for CodeSearchTool {
             });
         }
         let root = args["path"].as_str().unwrap_or(".");
-        if !is_path_allowed(root) {
+        let Some(root_path) = resolve_walk_root(root, &args) else {
             return Ok(ToolResult {
                 output: "path denied by sandbox policy".to_string(),
                 metadata: json!({"path": root}),
             });
-        }
+        };
         let limit = args["limit"]
             .as_u64()
             .map(|v| v.clamp(1, 200) as usize)
             .unwrap_or(50);
         let mut hits = Vec::new();
         let lower = query.to_lowercase();
-        for entry in WalkBuilder::new(root).build().flatten() {
+        for entry in WalkBuilder::new(&root_path).build().flatten() {
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
             }
@@ -1688,7 +1813,7 @@ impl Tool for CodeSearchTool {
         }
         Ok(ToolResult {
             output: hits.join("\n"),
-            metadata: json!({"count": hits.len(), "query": query}),
+            metadata: json!({"count": hits.len(), "query": query, "path": root_path.to_string_lossy()}),
         })
     }
 }
@@ -2644,34 +2769,37 @@ impl Tool for LspTool {
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
         let operation = args["operation"].as_str().unwrap_or("symbols");
+        let workspace_root =
+            workspace_root_from_args(&args).unwrap_or_else(|| effective_cwd_from_args(&args));
         let output = match operation {
             "diagnostics" => {
                 let path = args["filePath"].as_str().unwrap_or("");
-                if path.is_empty() || !is_path_allowed(path) {
-                    "missing or unsafe filePath".to_string()
-                } else {
-                    diagnostics_for_path(path).await
+                match resolve_tool_path(path, &args) {
+                    Some(resolved_path) => {
+                        diagnostics_for_path(&resolved_path.to_string_lossy()).await
+                    }
+                    None => "missing or unsafe filePath".to_string(),
                 }
             }
             "definition" => {
                 let symbol = args["symbol"].as_str().unwrap_or("");
-                find_symbol_definition(symbol).await
+                find_symbol_definition(symbol, &workspace_root).await
             }
             "references" => {
                 let symbol = args["symbol"].as_str().unwrap_or("");
-                find_symbol_references(symbol).await
+                find_symbol_references(symbol, &workspace_root).await
             }
             _ => {
                 let query = args["query"]
                     .as_str()
                     .or_else(|| args["symbol"].as_str())
                     .unwrap_or("");
-                list_symbols(query).await
+                list_symbols(query, &workspace_root).await
             }
         };
         Ok(ToolResult {
             output,
-            metadata: json!({"operation": operation}),
+            metadata: json!({"operation": operation, "workspace_root": workspace_root.to_string_lossy()}),
         })
     }
 }
@@ -2743,12 +2871,12 @@ async fn diagnostics_for_path(path: &str) -> String {
     }
 }
 
-async fn list_symbols(query: &str) -> String {
+async fn list_symbols(query: &str, root: &Path) -> String {
     let query = query.to_lowercase();
     let rust_fn = Regex::new(r"^\s*(pub\s+)?(async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)")
         .unwrap_or_else(|_| Regex::new("$^").expect("regex"));
     let mut out = Vec::new();
-    for entry in WalkBuilder::new(".").build().flatten() {
+    for entry in WalkBuilder::new(root).build().flatten() {
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
@@ -2777,11 +2905,11 @@ async fn list_symbols(query: &str) -> String {
     out.join("\n")
 }
 
-async fn find_symbol_definition(symbol: &str) -> String {
+async fn find_symbol_definition(symbol: &str, root: &Path) -> String {
     if symbol.trim().is_empty() {
         return "missing symbol".to_string();
     }
-    let listed = list_symbols(symbol).await;
+    let listed = list_symbols(symbol, root).await;
     listed
         .lines()
         .find(|line| line.ends_with(&format!("fn {symbol}")))
@@ -2976,12 +3104,14 @@ mod tests {
 
     #[test]
     fn path_policy_rejects_tool_markup_and_globs() {
-        assert!(!is_path_allowed(
-            "<tool_call><function=glob><parameter=pattern>**/*</parameter></function></tool_call>"
-        ));
-        assert!(!is_path_allowed("**/*"));
-        assert!(!is_path_allowed("/"));
-        assert!(!is_path_allowed("C:\\"));
+        assert!(resolve_tool_path(
+            "<tool_call><function=glob><parameter=pattern>**/*</parameter></function></tool_call>",
+            &json!({})
+        )
+        .is_none());
+        assert!(resolve_tool_path("**/*", &json!({})).is_none());
+        assert!(resolve_tool_path("/", &json!({})).is_none());
+        assert!(resolve_tool_path("C:\\", &json!({})).is_none());
     }
 
     #[tokio::test]
@@ -3070,7 +3200,7 @@ mod tests {
     }
 }
 
-async fn find_symbol_references(symbol: &str) -> String {
+async fn find_symbol_references(symbol: &str, root: &Path) -> String {
     if symbol.trim().is_empty() {
         return "missing symbol".to_string();
     }
@@ -3080,7 +3210,7 @@ async fn find_symbol_references(symbol: &str) -> String {
         return "invalid symbol".to_string();
     };
     let mut refs = Vec::new();
-    for entry in WalkBuilder::new(".").build().flatten() {
+    for entry in WalkBuilder::new(root).build().flatten() {
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
