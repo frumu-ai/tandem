@@ -1890,6 +1890,10 @@ pub async fn run_routine_executor(state: AppState) {
                 run.allowed_tools.clone(),
             )
             .await;
+        state
+            .engine_loop
+            .set_session_allowed_tools(&session_id, run.allowed_tools.clone())
+            .await;
 
         let request = SendMessageRequest {
             parts: vec![MessagePartInput::Text {
@@ -1909,6 +1913,7 @@ pub async fn run_routine_executor(state: AppState) {
             .await;
 
         state.clear_routine_session_policy(&session_id).await;
+        state.engine_loop.clear_session_allowed_tools(&session_id).await;
 
         match run_result {
             Ok(()) => {
