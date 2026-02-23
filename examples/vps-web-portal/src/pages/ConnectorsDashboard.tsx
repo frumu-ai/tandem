@@ -18,6 +18,9 @@ export const ConnectorsDashboard: React.FC = () => {
   const [slackToken, setSlackToken] = useState("");
   const [slackChannel, setSlackChannel] = useState("");
   const [slackUsers, setSlackUsers] = useState("*");
+  const [telegramHasToken, setTelegramHasToken] = useState(false);
+  const [discordHasToken, setDiscordHasToken] = useState(false);
+  const [slackHasToken, setSlackHasToken] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -33,6 +36,14 @@ export const ConnectorsDashboard: React.FC = () => {
       setDiscordGuild(cfg.discord.guild_id || "");
       setSlackUsers((cfg.slack.allowed_users || ["*"]).join(","));
       setSlackChannel(cfg.slack.channel_id || "");
+      setTelegramHasToken(!!cfg.telegram.has_token);
+      setDiscordHasToken(!!cfg.discord.has_token);
+      setSlackHasToken(!!cfg.slack.has_token);
+
+      // Never show persisted secret values in the input field.
+      setTelegramToken("");
+      setDiscordToken("");
+      setSlackToken("");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("404")) {
@@ -151,14 +162,20 @@ export const ConnectorsDashboard: React.FC = () => {
               value={telegramToken}
               onChange={(e) => setTelegramToken(e.target.value)}
               className="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2 text-sm text-white"
-              placeholder="Bot token"
+              placeholder={
+                telegramHasToken ? "Token configured (leave blank to keep)" : "Bot token"
+              }
             />
             <input
               value={telegramUsers}
               onChange={(e) => setTelegramUsers(e.target.value)}
               className="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2 text-sm text-white"
-              placeholder="@alice,@bob,*"
+              placeholder="@alice,@bob,123456789,*"
             />
+            <p className="text-xs text-gray-500">
+              Allowed users are exact sender IDs: Telegram usernames (`@name`) or numeric account
+              IDs. Use `*` to allow everyone.
+            </p>
             <div className="flex gap-2">
               <button
                 onClick={() => void save("telegram")}
@@ -190,7 +207,7 @@ export const ConnectorsDashboard: React.FC = () => {
               value={discordToken}
               onChange={(e) => setDiscordToken(e.target.value)}
               className="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2 text-sm text-white"
-              placeholder="Bot token"
+              placeholder={discordHasToken ? "Token configured (leave blank to keep)" : "Bot token"}
             />
             <input
               value={discordGuild}
@@ -202,7 +219,7 @@ export const ConnectorsDashboard: React.FC = () => {
               value={discordUsers}
               onChange={(e) => setDiscordUsers(e.target.value)}
               className="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2 text-sm text-white"
-              placeholder="alice,bob,*"
+              placeholder="123456789012345678,*"
             />
             <div className="flex gap-2">
               <button
@@ -235,7 +252,7 @@ export const ConnectorsDashboard: React.FC = () => {
               value={slackToken}
               onChange={(e) => setSlackToken(e.target.value)}
               className="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2 text-sm text-white"
-              placeholder="xoxb-..."
+              placeholder={slackHasToken ? "Token configured (leave blank to keep)" : "xoxb-..."}
             />
             <input
               value={slackChannel}

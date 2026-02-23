@@ -109,41 +109,119 @@ export const SwarmDashboard: React.FC = () => {
           // 3. Listen to the event stream
           const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
           let finalized = false;
+          let sawRunEvent = false;
+          const watchdog = window.setTimeout(async () => {
+            if (finalized || sawRunEvent) return;
+            try {
+              const runState = await api.getActiveRun(sessionId);
+              if (!runState?.active) {
+                setAgents((prev) => {
+                  const updated = [...prev];
+                  updated[index].loading = false;
+                  if (!updated[index].response) {
+                    updated[index].error =
+                      "Run ended before live events arrived. Check provider key/model and logs.";
+                  }
+                  return updated;
+                });
+                void finalizeAgent();
+                return;
+              }
+              setAgents((prev) => {
+                const updated = [...prev];
+                if (!updated[index].response) {
+                  updated[index].response = "[Run active, waiting for live deltas...]";
+                }
+                return updated;
+              });
+            } catch {
+              setAgents((prev) => {
+                const updated = [...prev];
+                updated[index].error = "No live events yet and failed to query run state.";
+                return updated;
+              });
+            }
+          }, 4000);
+          const runStatePoll = window.setInterval(async () => {
+            if (finalized) return;
+            try {
+              const runState = await api.getActiveRun(sessionId);
+              if (!runState?.active) {
+                setAgents((prev) => {
+                  const updated = [...prev];
+                  updated[index].loading = false;
+                  if (!updated[index].response) {
+                    updated[index].error = "Run became inactive before a terminal stream event.";
+                  }
+                  return updated;
+                });
+                void finalizeAgent();
+              }
+            } catch {
+              // Non-fatal polling failure while stream remains attached.
+            }
+          }, 5000);
 
           const finalizeAgent = async () => {
             if (finalized) return;
             finalized = true;
+            window.clearTimeout(watchdog);
+            window.clearInterval(runStatePoll);
             await loadAgentResponse(persona.name, sessionId);
             eventSource.close();
           };
 
           eventSource.onmessage = (evt) => {
-            const data = JSON.parse(evt.data);
+            try {
+              const data = JSON.parse(evt.data);
+              if (data.type !== "server.connected" && data.type !== "engine.lifecycle.ready") {
+                sawRunEvent = true;
+              }
 
-            if (
-              data.type === "message.part.updated" &&
-              data.properties.part.type === "text" &&
-              data.properties.delta
-            ) {
+              if (
+                data.type === "message.part.updated" &&
+                data.properties?.part?.type === "text" &&
+                data.properties?.delta
+              ) {
+                setAgents((prev) => {
+                  const updated = [...prev];
+                  updated[index].response += data.properties.delta;
+                  return updated;
+                });
+              } else if (
+                data.type === "run.status.updated" &&
+                (data.properties?.status === "completed" || data.properties?.status === "failed")
+              ) {
+                void finalizeAgent();
+              } else if (
+                data.type === "session.run.finished" &&
+                (data.properties?.status === "completed" || data.properties?.status === "failed")
+              ) {
+                void finalizeAgent();
+              } else if (data.type === "session.error") {
+                setAgents((prev) => {
+                  const updated = [...prev];
+                  updated[index].loading = false;
+                  updated[index].error =
+                    data.properties?.error?.message || "Engine error during swarm run.";
+                  return updated;
+                });
+                void finalizeAgent();
+              }
+            } catch {
               setAgents((prev) => {
                 const updated = [...prev];
-                updated[index].response += data.properties.delta;
+                updated[index].loading = false;
+                updated[index].error = "Failed to parse stream event payload.";
                 return updated;
               });
-            } else if (
-              data.type === "run.status.updated" &&
-              (data.properties.status === "completed" || data.properties.status === "failed")
-            ) {
-              void finalizeAgent();
-            } else if (
-              data.type === "session.run.finished" &&
-              (data.properties?.status === "completed" || data.properties?.status === "failed")
-            ) {
               void finalizeAgent();
             }
           };
 
           eventSource.onerror = () => {
+            window.clearTimeout(watchdog);
+            window.clearInterval(runStatePoll);
             setAgents((prev) => {
               const updated = [...prev];
               updated[index].loading = false;

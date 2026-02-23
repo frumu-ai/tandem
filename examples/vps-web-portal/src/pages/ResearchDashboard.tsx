@@ -3,6 +3,7 @@ import { api } from "../api";
 import { Loader2, Play, BotMessageSquare } from "lucide-react";
 import { ToolCallResult } from "../components/ToolCallResult";
 import { SessionHistory } from "../components/SessionHistory";
+import { handleCommonRunEvent } from "../utils/liveEventDebug";
 
 interface LogEvent {
   id: string;
@@ -51,11 +52,143 @@ export const ResearchDashboard: React.FC = () => {
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   // Auto-scroll logs
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  const attachRunStream = (sessionId: string, runId: string) => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
+    eventSourceRef.current = eventSource;
+    let finalized = false;
+    let sawRunEvent = false;
+    const watchdog = window.setTimeout(async () => {
+      if (finalized || sawRunEvent) return;
+      try {
+        const runState = await api.getActiveRun(sessionId);
+        const active = runState?.active || null;
+        if (!active) {
+          addLog({
+            type: "system",
+            content:
+              "Run ended before live events arrived. Check provider key/model and engine logs.",
+          });
+          finalizeRun("unknown");
+        } else {
+          addLog({
+            type: "system",
+            content: "Run is active but no live deltas yet. Waiting for provider/tool output...",
+          });
+        }
+      } catch {
+        addLog({ type: "system", content: "No live events yet and failed to query run state." });
+      }
+    }, 4000);
+    const runStatePoll = window.setInterval(async () => {
+      if (finalized) return;
+      try {
+        const runState = await api.getActiveRun(sessionId);
+        if (!runState?.active) {
+          addLog({
+            type: "system",
+            content: "Run became inactive without a terminal stream event. Finalizing from poll.",
+          });
+          finalizeRun("inactive");
+        }
+      } catch {
+        // Keep stream attached; poll failure is non-fatal.
+      }
+    }, 5000);
+
+    const finalizeRun = (status: string) => {
+      if (finalized) return;
+      finalized = true;
+      window.clearTimeout(watchdog);
+      window.clearInterval(runStatePoll);
+      addLog({
+        type: "system",
+        content: `Run finished with status: ${status}`,
+      });
+      setIsRunning(false);
+      eventSource.close();
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
+    };
+
+    eventSource.onmessage = (evt) => {
+      try {
+        const data = JSON.parse(evt.data);
+        if (data.type !== "server.connected" && data.type !== "engine.lifecycle.ready") {
+          sawRunEvent = true;
+        }
+
+        if (
+          handleCommonRunEvent(
+            data,
+            (event) => addLog(event),
+            (status) => finalizeRun(status)
+          )
+        ) {
+          return;
+        }
+
+        if (data.type === "message.part.updated") {
+          const part = data.properties.part;
+
+          if (part.type === "tool") {
+            if (part.state.status === "running") {
+              addLog({
+                type: "tool_start",
+                content: `Tool started: ${part.tool}`,
+                toolName: part.tool,
+              });
+            } else if (part.state.status === "completed") {
+              let rString = "";
+              if (part.state.result) {
+                rString =
+                  typeof part.state.result === "string"
+                    ? part.state.result
+                    : JSON.stringify(part.state.result);
+              }
+
+              addLog({
+                type: "tool_end",
+                content: `Tool completed: ${part.tool}`,
+                toolName: part.tool,
+                toolResult: rString,
+              });
+            }
+          } else if (part.type === "text" && data.properties.delta) {
+            addLog({
+              type: "text",
+              content: data.properties.delta,
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to parse SSE event", err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      window.clearTimeout(watchdog);
+      window.clearInterval(runStatePoll);
+      console.error("SSE Error", err);
+      addLog({ type: "system", content: "Stream disconnected." });
+      setIsRunning(false);
+      eventSource.close();
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
+    };
+  };
 
   useEffect(() => {
     const restore = async () => {
@@ -64,6 +197,11 @@ export const ResearchDashboard: React.FC = () => {
       await loadSession(sessionId);
     };
     void restore();
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
   }, []);
 
   const loadSession = async (sessionId: string) => {
@@ -75,6 +213,9 @@ export const ResearchDashboard: React.FC = () => {
     }
 
     try {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
       setLogs([]);
       setCurrentSessionId(sessionId);
       localStorage.setItem(RESEARCH_SESSION_KEY, sessionId);
@@ -91,6 +232,21 @@ export const ResearchDashboard: React.FC = () => {
         },
         ...restoredLogs,
       ]);
+
+      const runState = await api.getActiveRun(sessionId);
+      const active = runState?.active || null;
+      const activeRunId =
+        (active?.runID as string | undefined) ||
+        (active?.runId as string | undefined) ||
+        (active?.run_id as string | undefined) ||
+        "";
+      if (activeRunId) {
+        setIsRunning(true);
+        addLog({ type: "system", content: `Resuming active run: ${activeRunId.substring(0, 8)}` });
+        attachRunStream(sessionId, activeRunId);
+      } else {
+        setIsRunning(false);
+      }
     } catch (err) {
       console.error("Failed to restore research session", err);
       setCurrentSessionId(null);
@@ -155,101 +311,7 @@ export const ResearchDashboard: React.FC = () => {
       const { runId } = await api.startAsyncRun(sessionId, prompt);
       addLog({ type: "system", content: `Run Started: ${runId.substring(0, 8)}` });
 
-      // 3. Connect to the SSE stream
-      const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
-      let finalized = false;
-
-      const finalizeRun = async (status: string) => {
-        if (finalized) return;
-        finalized = true;
-        try {
-          const messages = await api.getSessionMessages(sessionId);
-          const lastAssistant = [...messages]
-            .reverse()
-            .find(
-              (m) =>
-                m.info?.role === "assistant" && m.parts?.some((p) => p.type === "text" && p.text)
-            );
-          const finalText = (lastAssistant?.parts || [])
-            .filter((p) => p.type === "text" && p.text)
-            .map((p) => p.text)
-            .join("\n")
-            .trim();
-          if (finalText) {
-            addLog({ type: "text", content: finalText });
-          }
-        } catch (err) {
-          console.error("Failed to fetch final run output", err);
-        } finally {
-          addLog({
-            type: "system",
-            content: `Run finished with status: ${status}`,
-          });
-          setIsRunning(false);
-          eventSource.close();
-          // Force a small delay to let UI settle then trigger a history refresh via React state if we had a proper global state manager
-        }
-      };
-
-      eventSource.onmessage = (evt) => {
-        try {
-          const data = JSON.parse(evt.data);
-
-          if (data.type === "message.part.updated") {
-            const part = data.properties.part;
-
-            if (part.type === "tool") {
-              if (part.state.status === "running") {
-                addLog({
-                  type: "tool_start",
-                  content: `Tool started: ${part.tool}`,
-                  toolName: part.tool,
-                });
-              } else if (part.state.status === "completed") {
-                // Determine if we should parse the result if it was a webfetch
-                let rString = "";
-                if (part.state.result) {
-                  rString =
-                    typeof part.state.result === "string"
-                      ? part.state.result
-                      : JSON.stringify(part.state.result);
-                }
-
-                addLog({
-                  type: "tool_end",
-                  content: `Tool completed: ${part.tool}`,
-                  toolName: part.tool,
-                  toolResult: rString,
-                });
-              }
-            } else if (part.type === "text" && data.properties.delta) {
-              addLog({
-                type: "text",
-                content: data.properties.delta,
-              });
-            }
-          } else if (
-            data.type === "run.status.updated" &&
-            (data.properties.status === "completed" || data.properties.status === "failed")
-          ) {
-            void finalizeRun(data.properties.status);
-          } else if (
-            data.type === "session.run.finished" &&
-            (data.properties?.status === "completed" || data.properties?.status === "failed")
-          ) {
-            void finalizeRun(data.properties.status);
-          }
-        } catch (err) {
-          console.error("Failed to parse SSE event", err);
-        }
-      };
-
-      eventSource.onerror = (err) => {
-        console.error("SSE Error", err);
-        addLog({ type: "system", content: "Stream disconnected." });
-        setIsRunning(false);
-        eventSource.close();
-      };
+      attachRunStream(sessionId, runId);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       addLog({ type: "system", content: `Error: ${errorMessage}` });

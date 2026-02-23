@@ -184,6 +184,41 @@ const ensureArtifactPathAllowed = async (uri) => {
   return { filePath, realPath };
 };
 
+const toEnvStyle = (providerId) =>
+  String(providerId || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase();
+
+const resolveProviderKeyCandidates = (providerId) => {
+  const normalized = toEnvStyle(providerId);
+  const aliases = {
+    OPENROUTER: ['OPENROUTER_API_KEY'],
+    OPENAI: ['OPENAI_API_KEY'],
+    ANTHROPIC: ['ANTHROPIC_API_KEY'],
+    GOOGLE: ['GOOGLE_API_KEY', 'GEMINI_API_KEY'],
+    GEMINI: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+    XAI: ['XAI_API_KEY'],
+    GROQ: ['GROQ_API_KEY'],
+    COHERE: ['COHERE_API_KEY'],
+    MISTRAL: ['MISTRAL_API_KEY'],
+    TOGETHER: ['TOGETHER_API_KEY'],
+    PERPLEXITY: ['PERPLEXITY_API_KEY'],
+    DEEPSEEK: ['DEEPSEEK_API_KEY'],
+  };
+
+  const mapped = aliases[normalized] || [];
+  const fallback = normalized ? [`${normalized}_API_KEY`] : [];
+  return Array.from(new Set([...mapped, ...fallback]));
+};
+
+const maskKeyPreview = (value) => {
+  if (!value) return '';
+  if (value.length <= 6) return `${value.slice(0, 2)}...`;
+  return `${value.slice(0, 6)}...`;
+};
+
 app.get('/portal/system/capabilities', requireAuth, async (_req, res) => {
   const caps = await getControlCapabilities();
   res.json(caps);
@@ -239,6 +274,35 @@ app.get('/portal/artifacts/content', requireAuth, async (req, res) => {
   } catch (error) {
     res.status(400).json({ ok: false, error: String(error.message || error) });
   }
+});
+
+app.get('/portal/provider/key-preview', requireAuth, async (req, res) => {
+  const providerId = String(req.query.providerId || '').trim();
+  if (!providerId) {
+    res.status(400).json({ ok: false, error: 'providerId is required' });
+    return;
+  }
+
+  const candidates = resolveProviderKeyCandidates(providerId);
+  for (const envVar of candidates) {
+    const value = process.env[envVar];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      res.json({
+        ok: true,
+        present: true,
+        envVar,
+        preview: maskKeyPreview(value.trim()),
+      });
+      return;
+    }
+  }
+
+  res.json({
+    ok: true,
+    present: false,
+    envVar: candidates[0] || null,
+    preview: '',
+  });
 });
 
 app.use(

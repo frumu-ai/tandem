@@ -114,11 +114,25 @@ impl Channel for TelegramChannel {
             let resp = match resp {
                 Ok(r) => r,
                 Err(e) => {
-                    warn!("telegram poll error: {e}");
+                    warn!("telegram poll error: {e:?}");
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
             };
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                let preview = if body.chars().count() > 320 {
+                    let truncated: String = body.chars().take(320).collect();
+                    format!("{truncated}...")
+                } else {
+                    body
+                };
+                warn!("telegram getUpdates failed ({status}): {preview}");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
 
             let json: Value = match resp.json().await {
                 Ok(v) => v,
@@ -153,14 +167,33 @@ impl Channel for TelegramChannel {
 
                 let chat_id = msg["chat"]["id"].as_i64().unwrap_or(0).to_string();
 
-                // Sender = username or first_name fallback
-                let sender = msg["from"]["username"]
-                    .as_str()
-                    .map(|u| format!("@{u}"))
-                    .or_else(|| msg["from"]["first_name"].as_str().map(|n| n.to_string()))
-                    .unwrap_or_else(|| msg["from"]["id"].to_string());
+                let username = msg["from"]["username"].as_str().map(|u| format!("@{u}"));
+                let first_name = msg["from"]["first_name"].as_str().map(|n| n.to_string());
+                let numeric_id = msg["from"]["id"].as_i64().map(|id| id.to_string());
 
-                if !is_user_allowed(&sender, &self.allowed_users) {
+                // Sender (display/trace identity) prefers @username, then first_name, then numeric ID.
+                let sender = username
+                    .clone()
+                    .or_else(|| first_name.clone())
+                    .or_else(|| numeric_id.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                // Allow either username or numeric ID to match allowed_users.
+                let allowed = if self.allowed_users.iter().any(|a| a == "*") {
+                    true
+                } else {
+                    let candidates = [
+                        username.as_deref(),
+                        numeric_id.as_deref(),
+                        Some(sender.as_str()),
+                    ];
+                    candidates
+                        .iter()
+                        .flatten()
+                        .any(|candidate| is_user_allowed(candidate, &self.allowed_users))
+                };
+
+                if !allowed {
                     debug!("telegram: ignoring message from {sender} (not in allowed_users)");
                     continue;
                 }

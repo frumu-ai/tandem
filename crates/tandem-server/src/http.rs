@@ -4308,6 +4308,29 @@ async fn channels_put(
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
     let normalized = name.to_ascii_lowercase();
+    let effective = state.config.get_effective_value().await;
+    let existing_channel_cfg = |channel: &str| -> Option<&serde_json::Map<String, Value>> {
+        effective
+            .get("channels")
+            .and_then(Value::as_object)
+            .and_then(|obj| obj.get(channel))
+            .and_then(Value::as_object)
+    };
+    let existing_bot_token = |channel: &str| -> Option<String> {
+        existing_channel_cfg(channel)
+            .and_then(|cfg| cfg.get("bot_token"))
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let existing_channel_id = |channel: &str| -> Option<String> {
+        existing_channel_cfg(channel)
+            .and_then(|cfg| cfg.get("channel_id"))
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+
     let mut project = state.config.get_project_value().await;
     let Some(root) = project.as_object_mut() else {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -4320,24 +4343,36 @@ async fn channels_put(
     };
     match normalized.as_str() {
         "telegram" => {
-            let cfg: TelegramConfigFile =
+            let mut cfg: TelegramConfigFile =
                 serde_json::from_value(input).map_err(|_| StatusCode::BAD_REQUEST)?;
+            if cfg.bot_token.trim().is_empty() {
+                cfg.bot_token = existing_bot_token("telegram").unwrap_or_default();
+            }
             if cfg.bot_token.trim().is_empty() {
                 return Err(StatusCode::BAD_REQUEST);
             }
             channels_obj.insert("telegram".to_string(), json!(cfg));
         }
         "discord" => {
-            let cfg: DiscordConfigFile =
+            let mut cfg: DiscordConfigFile =
                 serde_json::from_value(input).map_err(|_| StatusCode::BAD_REQUEST)?;
+            if cfg.bot_token.trim().is_empty() {
+                cfg.bot_token = existing_bot_token("discord").unwrap_or_default();
+            }
             if cfg.bot_token.trim().is_empty() {
                 return Err(StatusCode::BAD_REQUEST);
             }
             channels_obj.insert("discord".to_string(), json!(cfg));
         }
         "slack" => {
-            let cfg: SlackConfigFile =
+            let mut cfg: SlackConfigFile =
                 serde_json::from_value(input).map_err(|_| StatusCode::BAD_REQUEST)?;
+            if cfg.bot_token.trim().is_empty() {
+                cfg.bot_token = existing_bot_token("slack").unwrap_or_default();
+            }
+            if cfg.channel_id.trim().is_empty() {
+                cfg.channel_id = existing_channel_id("slack").unwrap_or_default();
+            }
             if cfg.bot_token.trim().is_empty() || cfg.channel_id.trim().is_empty() {
                 return Err(StatusCode::BAD_REQUEST);
             }

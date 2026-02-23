@@ -47,9 +47,17 @@ resolve_cmd_path_for_user() {
 
 SERVICE_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin:$SERVICE_HOME/.local/share/pnpm"
 if compgen -G "$SERVICE_HOME/.nvm/versions/node/*/bin" >/dev/null; then
+  NVM_BIN_PATHS=""
   while IFS= read -r bin_dir; do
-    SERVICE_PATH="$bin_dir:$SERVICE_PATH"
+    if [[ -z "$NVM_BIN_PATHS" ]]; then
+      NVM_BIN_PATHS="$bin_dir"
+    else
+      NVM_BIN_PATHS="$NVM_BIN_PATHS:$bin_dir"
+    fi
   done < <(ls -d "$SERVICE_HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -r)
+  if [[ -n "$NVM_BIN_PATHS" ]]; then
+    SERVICE_PATH="$NVM_BIN_PATHS:$SERVICE_PATH"
+  fi
 fi
 
 resolve_node() {
@@ -77,6 +85,77 @@ resolve_node() {
   candidate="$(resolve_cmd_path_for_user node)"
   if [[ -n "$candidate" && -x "$candidate" ]]; then
     echo "$candidate"
+    return 0
+  fi
+  return 1
+}
+
+resolve_npm() {
+  local candidate
+  if compgen -G "$SERVICE_HOME/.nvm/versions/node/*/bin/npm" >/dev/null; then
+    while IFS= read -r candidate; do
+      if [[ -x "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+      fi
+    done < <(ls -d "$SERVICE_HOME"/.nvm/versions/node/*/bin/npm 2>/dev/null | sort -Vr)
+  fi
+
+  for candidate in \
+    "/usr/local/bin/npm" \
+    "/usr/bin/npm"; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  candidate="$(resolve_cmd_path_for_user npm)"
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    echo "$candidate"
+    return 0
+  fi
+  return 1
+}
+
+resolve_npm_global_bin() {
+  local npm_path="$1"
+  local npm_dir
+  npm_dir="$(dirname "$npm_path")"
+  if [[ -x "$npm_dir/node" ]]; then
+    echo "$npm_dir"
+    return 0
+  fi
+
+  local prefix
+  prefix="$(run_as_service_user "$npm_path" prefix -g 2>/dev/null || true)"
+  if [[ -n "$prefix" && "$prefix" != "undefined" ]]; then
+    echo "$prefix/bin"
+    return 0
+  fi
+
+  prefix="$(run_as_service_user "$npm_path" config get prefix 2>/dev/null || true)"
+  if [[ -n "$prefix" && "$prefix" != "undefined" ]]; then
+    echo "$prefix/bin"
+    return 0
+  fi
+  return 1
+}
+
+resolve_npm_install_prefix() {
+  local npm_path="$1"
+  local npm_dir
+  npm_dir="$(dirname "$npm_path")"
+  if [[ -x "$npm_dir/node" ]]; then
+    # npm lives in .../bin/npm, so prefix root is parent of bin
+    dirname "$npm_dir"
+    return 0
+  fi
+
+  local prefix
+  prefix="$(run_as_service_user "$npm_path" prefix -g 2>/dev/null || true)"
+  if [[ -n "$prefix" && "$prefix" != "undefined" ]]; then
+    echo "$prefix"
     return 0
   fi
   return 1
@@ -110,8 +189,23 @@ resolve_pnpm() {
 
 resolve_tandem_engine() {
   local candidate
+  if [[ -n "${NPM_INSTALL_PREFIX:-}" ]]; then
+    candidate="$NPM_INSTALL_PREFIX/bin/tandem-engine"
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  fi
+  if [[ -n "${NPM_GLOBAL_BIN_PATH:-}" ]]; then
+    candidate="$NPM_GLOBAL_BIN_PATH/tandem-engine"
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  fi
   for candidate in \
     "$SERVICE_HOME/.local/share/pnpm/tandem-engine" \
+    "$SERVICE_HOME/.npm-global/bin/tandem-engine" \
     "/usr/local/bin/tandem-engine" \
     "/usr/bin/tandem-engine"; do
     if [[ -x "$candidate" ]]; then
@@ -151,34 +245,48 @@ engine_cmd() {
 }
 
 install_tandem_engine() {
-  local pnpm_resolved="$1"
-  local npm_path
+  local npm_path="$1"
+  local pnpm_resolved="$2"
 
-  npm_path="$(resolve_cmd_path_for_user npm)"
-  if [[ -n "$npm_path" && -x "$npm_path" ]]; then
-    log "Installing @frumu/tandem with npm for user '$SERVICE_USER'"
-    run_as_service_user "$npm_path" install -g @frumu/tandem
-    return 0
-  fi
-
-  if [[ -n "$pnpm_resolved" ]]; then
-    log "npm unavailable; installing @frumu/tandem with pnpm for user '$SERVICE_USER'"
-    if [[ "$pnpm_resolved" == "corepack:pnpm" ]]; then
-      run_as_service_user corepack pnpm add -g @frumu/tandem
-    else
-      run_as_service_user "$pnpm_resolved" add -g @frumu/tandem
+  if [[ -z "$npm_path" || ! -x "$npm_path" ]]; then
+    if [[ "${SETUP_ALLOW_PNPM_FALLBACK:-0}" == "1" && -n "$pnpm_resolved" ]]; then
+      log "npm unavailable; SETUP_ALLOW_PNPM_FALLBACK=1 so installing @frumu/tandem with pnpm"
+      if [[ "$pnpm_resolved" == "corepack:pnpm" ]]; then
+        run_as_service_user corepack pnpm add -g @frumu/tandem
+      else
+        run_as_service_user "$pnpm_resolved" add -g @frumu/tandem
+      fi
+      return 0
     fi
-    return 0
+    fail "npm not found for user '$SERVICE_USER'. Install npm for that user and rerun setup-vps.sh. \
+If you intentionally need pnpm fallback, set SETUP_ALLOW_PNPM_FALLBACK=1."
   fi
 
-  fail "Could not find npm or pnpm for user '$SERVICE_USER'. Checked: \
-$(resolve_cmd_path_for_user npm || echo '<npm-missing>'), \
-${PNPM_HOME:-<unset>}/pnpm, $SERVICE_HOME/.local/share/pnpm/pnpm, corepack pnpm, PATH=$SERVICE_PATH"
+  log "Installing @frumu/tandem with npm for user '$SERVICE_USER'"
+  local npm_install_prefix="$NPM_INSTALL_PREFIX"
+  if [[ -z "$npm_install_prefix" ]]; then
+    npm_install_prefix="$(resolve_npm_install_prefix "$npm_path" || true)"
+  fi
+  if [[ -z "$npm_install_prefix" ]]; then
+    fail "Could not determine npm install prefix for $npm_path"
+  fi
+
+  # Clean stale/broken installs first so PATH doesn't resolve old shims.
+  run_as_service_user "$npm_path" --prefix "$npm_install_prefix" uninstall -g @frumu/tandem >/dev/null 2>&1 || true
+  if [[ -n "$pnpm_resolved" ]]; then
+    if [[ "$pnpm_resolved" == "corepack:pnpm" ]]; then
+      run_as_service_user corepack pnpm remove -g @frumu/tandem >/dev/null 2>&1 || true
+    else
+      run_as_service_user "$pnpm_resolved" remove -g @frumu/tandem >/dev/null 2>&1 || true
+    fi
+  fi
+  run_as_service_user rm -f "$SERVICE_HOME/.local/share/pnpm/tandem-engine" >/dev/null 2>&1 || true
+  run_as_service_user "$npm_path" --prefix "$npm_install_prefix" install -g @frumu/tandem
 }
 
 validate_tandem_engine() {
   if [[ -n "${ENGINE_PATH:-}" && -x "${ENGINE_PATH:-}" ]]; then
-    if "$ENGINE_PATH" token generate >/dev/null 2>&1; then
+    if "$ENGINE_PATH" --version >/dev/null 2>&1; then
       return 0
     fi
     log "Detected unusable tandem-engine binary at '$ENGINE_PATH'; falling back to npx runtime"
@@ -196,18 +304,52 @@ if [[ -z "$NODE_PATH" ]]; then
   fail "node not found for user '$SERVICE_USER'. Checked nvm/system paths and PATH=$SERVICE_PATH"
 fi
 
+NPM_PATH="$(resolve_npm || true)"
+NPM_GLOBAL_BIN_PATH=""
+NPM_INSTALL_PREFIX=""
+if [[ -n "$NPM_PATH" ]]; then
+  NPM_INSTALL_PREFIX="$(resolve_npm_install_prefix "$NPM_PATH" || true)"
+  NPM_GLOBAL_BIN_PATH="$(resolve_npm_global_bin "$NPM_PATH" || true)"
+  log "Resolved npm: $NPM_PATH"
+  if [[ -n "$NPM_INSTALL_PREFIX" ]]; then
+    log "Resolved npm install prefix: $NPM_INSTALL_PREFIX"
+  fi
+  if [[ -n "$NPM_GLOBAL_BIN_PATH" ]]; then
+    log "Resolved npm global bin: $NPM_GLOBAL_BIN_PATH"
+  fi
+else
+  log "npm not found for service user"
+fi
+
 PNPM_PATH="$(resolve_pnpm || true)"
 if [[ -n "$PNPM_PATH" ]]; then
   log "Resolved pnpm: $PNPM_PATH"
 else
-  log "pnpm not found; will fallback to npm if needed"
+  log "pnpm not found"
 fi
 
 ENGINE_PATH="$(resolve_tandem_engine || true)"
 if [[ -z "$ENGINE_PATH" ]]; then
-  install_tandem_engine "$PNPM_PATH"
+  install_tandem_engine "$NPM_PATH" "$PNPM_PATH"
   ENGINE_PATH="$(resolve_tandem_engine || true)"
+  if [[ -n "$ENGINE_PATH" ]]; then
+    validate_tandem_engine || true
+  fi
 fi
+if [[ -n "$ENGINE_PATH" ]]; then
+  if ! validate_tandem_engine; then
+    log "Reinstalling @frumu/tandem with npm because resolved binary is unusable"
+    install_tandem_engine "$NPM_PATH" "$PNPM_PATH"
+    ENGINE_PATH="$(resolve_tandem_engine || true)"
+    if [[ -z "$ENGINE_PATH" ]]; then
+      fail "tandem-engine is still unusable after npm reinstall"
+    fi
+    if ! validate_tandem_engine; then
+      fail "tandem-engine is still unusable after npm reinstall"
+    fi
+  fi
+fi
+
 if [[ -z "$ENGINE_PATH" ]]; then
   log "No standalone tandem-engine binary found; using npx @frumu/tandem fallback"
   NPX_PATH="$(resolve_npx || true)"
@@ -215,8 +357,6 @@ if [[ -z "$ENGINE_PATH" ]]; then
     fail "Cannot run fallback 'npx @frumu/tandem' because npx is unavailable for user '$SERVICE_USER'. \
 Install Node/npm for that user or ensure tandem-engine binary is installed."
   fi
-else
-  validate_tandem_engine || true
 fi
 log "Resolved node: $NODE_PATH"
 if [[ -n "$ENGINE_PATH" ]]; then

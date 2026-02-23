@@ -1,13 +1,23 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { BrainCircuit, CheckCircle2, KeyRound, Loader2, Wrench } from "lucide-react";
-import { api, type ProviderCatalog, type ProvidersConfigResponse } from "../api";
+import {
+  api,
+  type ProviderCatalog,
+  type ProviderKeyPreviewResponse,
+  type ProvidersConfigResponse,
+} from "../api";
 import { useAuth } from "../AuthContext";
 
 interface ModelOption {
   id: string;
   name: string;
 }
+
+const PREF_PROVIDER_KEY = "tandem_portal_pref_provider_id";
+const PREF_MODEL_KEY_PREFIX = "tandem_portal_pref_model_for_";
+
+const prefModelKey = (providerId: string) => `${PREF_MODEL_KEY_PREFIX}${providerId}`;
 
 export const ProviderSetup: React.FC = () => {
   const navigate = useNavigate();
@@ -25,6 +35,7 @@ export const ProviderSetup: React.FC = () => {
   const [modelId, setModelId] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [modelFilter, setModelFilter] = useState("");
+  const [keyPreview, setKeyPreview] = useState<ProviderKeyPreviewResponse | null>(null);
 
   const providers = useMemo(() => {
     if (!catalog?.all) return [];
@@ -50,6 +61,23 @@ export const ProviderSetup: React.FC = () => {
       .slice(0, 200);
   }, [models, modelFilter]);
 
+  const pickModelForProvider = (
+    pId: string,
+    providerCatalog: ProviderCatalog,
+    providerConfig: ProvidersConfigResponse
+  ): string => {
+    const fromLocal = localStorage.getItem(prefModelKey(pId));
+    if (fromLocal) return fromLocal;
+
+    const configuredModel = providerConfig.providers?.[pId]?.default_model;
+    if (configuredModel) return configuredModel;
+
+    const provider = providerCatalog.all.find((p) => p.id === pId);
+    if (!provider?.models) return "";
+    const firstModelId = Object.keys(provider.models)[0] || "";
+    return firstModelId;
+  };
+
   const load = async () => {
     setLoading(true);
     setError("");
@@ -62,23 +90,31 @@ export const ProviderSetup: React.FC = () => {
       setConfig(providerConfig);
 
       const providerIds = providerCatalog.all.map((p) => p.id).filter((id) => id !== "local");
+      const localPreferredProvider = localStorage.getItem(PREF_PROVIDER_KEY);
       const preferredProvider =
-        (providerConfig.default && providerIds.includes(providerConfig.default)
-          ? providerConfig.default
-          : providerIds[0]) || "";
+        (localPreferredProvider && providerIds.includes(localPreferredProvider)
+          ? localPreferredProvider
+          : providerConfig.default && providerIds.includes(providerConfig.default)
+            ? providerConfig.default
+            : providerIds[0]) || "";
       setProviderId(preferredProvider);
 
       if (preferredProvider) {
-        const configuredModel = providerConfig.providers?.[preferredProvider]?.default_model;
-        if (configuredModel) {
-          setModelId(configuredModel);
-          setModelFilter(configuredModel);
-        } else {
-          const provider = providerCatalog.all.find((p) => p.id === preferredProvider);
-          const firstModelId = provider?.models ? Object.keys(provider.models)[0] : "";
-          setModelId(firstModelId);
-          setModelFilter(firstModelId);
+        const preferredModel = pickModelForProvider(
+          preferredProvider,
+          providerCatalog,
+          providerConfig
+        );
+        setModelId(preferredModel);
+        setModelFilter(preferredModel);
+        try {
+          const preview = await api.getProviderKeyPreview(preferredProvider);
+          setKeyPreview(preview);
+        } catch {
+          setKeyPreview(null);
         }
+      } else {
+        setKeyPreview(null);
       }
     } catch (e) {
       console.error(e);
@@ -94,17 +130,36 @@ export const ProviderSetup: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!providerId) return;
-    const configuredModel = config?.providers?.[providerId]?.default_model;
-    if (configuredModel) {
-      setModelId(configuredModel);
-      setModelFilter(configuredModel);
+    if (!providerId || !modelFilter.trim()) return;
+    const exact = models.find((m) => m.id === modelFilter.trim());
+    if (exact && exact.id !== modelId) {
+      setModelId(exact.id);
+    }
+  }, [providerId, modelFilter, models, modelId]);
+
+  useEffect(() => {
+    if (!providerId) {
+      setKeyPreview(null);
       return;
     }
-    if (!models.length) return;
-    setModelId(models[0].id);
-    setModelFilter(models[0].id);
-  }, [providerId, config, models]);
+    let cancelled = false;
+    const loadPreview = async () => {
+      try {
+        const preview = await api.getProviderKeyPreview(providerId);
+        if (!cancelled) {
+          setKeyPreview(preview);
+        }
+      } catch {
+        if (!cancelled) {
+          setKeyPreview(null);
+        }
+      }
+    };
+    void loadPreview();
+    return () => {
+      cancelled = true;
+    };
+  }, [providerId]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -127,6 +182,23 @@ export const ProviderSetup: React.FC = () => {
       }
 
       await api.setProviderDefaults(providerId, modelId);
+      localStorage.setItem(PREF_PROVIDER_KEY, providerId);
+      localStorage.setItem(prefModelKey(providerId), modelId);
+
+      const refreshed = await api.getProvidersConfig();
+      setConfig(refreshed);
+      setProviderId(providerId);
+      setModelId(modelId);
+      setModelFilter(modelId);
+      try {
+        const preview = await api.getProviderKeyPreview(providerId);
+        setKeyPreview(preview);
+      } catch {
+        // If portal server has not been restarted with key-preview route yet,
+        // don't fail provider/model save.
+        setKeyPreview(null);
+      }
+
       await refreshProviderStatus();
       setSuccess("Provider and model saved.");
       navigate("/research", { replace: true });
@@ -191,7 +263,19 @@ export const ProviderSetup: React.FC = () => {
               <label className="block text-sm font-medium text-gray-300 mb-2">Provider</label>
               <select
                 value={providerId}
-                onChange={(e) => setProviderId(e.target.value)}
+                onChange={(e) => {
+                  const nextProviderId = e.target.value;
+                  setProviderId(nextProviderId);
+                  localStorage.setItem(PREF_PROVIDER_KEY, nextProviderId);
+                  if (catalog && config) {
+                    const nextModelId = pickModelForProvider(nextProviderId, catalog, config);
+                    setModelId(nextModelId);
+                    setModelFilter(nextModelId);
+                  } else {
+                    setModelId("");
+                    setModelFilter("");
+                  }
+                }}
                 className="w-full bg-gray-800 border border-gray-700 text-white rounded-md py-2 px-3 focus:ring-emerald-500 focus:border-emerald-500"
               >
                 {providers.map((p) => (
@@ -207,13 +291,27 @@ export const ProviderSetup: React.FC = () => {
               <input
                 type="text"
                 value={modelFilter}
-                onChange={(e) => setModelFilter(e.target.value)}
-                placeholder="Filter models..."
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setModelFilter(next);
+                  setModelId(next);
+                  if (providerId && next.trim()) {
+                    localStorage.setItem(prefModelKey(providerId), next.trim());
+                  }
+                }}
+                placeholder="Type model id or filter models..."
                 className="w-full mb-2 bg-gray-800 border border-gray-700 text-white rounded-md py-2 px-3"
               />
               <select
                 value={modelId}
-                onChange={(e) => setModelId(e.target.value)}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setModelId(next);
+                  setModelFilter(next);
+                  if (providerId) {
+                    localStorage.setItem(prefModelKey(providerId), next);
+                  }
+                }}
                 className="w-full bg-gray-800 border border-gray-700 text-white rounded-md py-2 px-3"
               >
                 {filteredModels.map((m) => (
@@ -248,6 +346,18 @@ export const ProviderSetup: React.FC = () => {
                 API keys are sent via engine runtime auth (`PUT /auth/provider`) and are not
                 persisted by config patching.
               </p>
+              {keyPreview?.present && (
+                <p className="text-xs text-emerald-400 mt-2">
+                  Detected in server env: <code>{keyPreview.envVar}</code> ={" "}
+                  <code>{keyPreview.preview}</code>
+                </p>
+              )}
+              {!keyPreview?.present && keyPreview?.envVar && (
+                <p className="text-xs text-yellow-400 mt-2">
+                  No env key detected for this provider. Expected variable:{" "}
+                  <code>{keyPreview.envVar}</code>
+                </p>
+              )}
             </div>
 
             {error && <div className="text-red-400 text-sm font-medium">{error}</div>}

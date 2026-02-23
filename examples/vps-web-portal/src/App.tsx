@@ -40,6 +40,7 @@ import {
   PenTool,
   Code,
 } from "lucide-react";
+import { api } from "./api";
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { token, isLoading } = useAuth();
@@ -57,6 +58,12 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
   const { logout } = useAuth();
   const navigate = useNavigate();
   const [showSetupHint, setShowSetupHint] = useState(false);
+  const [pendingApprovals, setPendingApprovals] = useState<
+    Array<{ id: string; tool: string; sessionID: string }>
+  >([]);
+  const [permissionRulesCount, setPermissionRulesCount] = useState(0);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [approving, setApproving] = useState(false);
 
   useEffect(() => {
     const key = "tandem_portal_setup_hint_dismissed";
@@ -65,9 +72,71 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
     }
   }, []);
 
+  useEffect(() => {
+    let stopped = false;
+    const refresh = async () => {
+      try {
+        const snapshot = await api.listPermissions();
+        const pending = (snapshot.requests || [])
+          .filter((req) => req.status === "pending")
+          .map((req) => ({
+            id: req.id,
+            tool: req.tool || req.permission || "tool",
+            sessionID: String(req.sessionID || req.session_id || "unknown"),
+          }));
+        if (!stopped) {
+          setPendingApprovals(pending);
+          setPermissionRulesCount((snapshot.rules || []).length);
+          setApprovalError(null);
+        }
+      } catch (error) {
+        if (!stopped) {
+          const message = error instanceof Error ? error.message : String(error);
+          setApprovalError(message);
+        }
+      }
+    };
+
+    void refresh();
+    const interval = window.setInterval(() => {
+      void refresh();
+    }, 5000);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+
   const dismissSetupHint = () => {
     localStorage.setItem("tandem_portal_setup_hint_dismissed", "1");
     setShowSetupHint(false);
+  };
+
+  const approveAllPending = async () => {
+    if (pendingApprovals.length === 0 || approving) return;
+    setApproving(true);
+    setApprovalError(null);
+    try {
+      for (const req of pendingApprovals) {
+        // `allow` is one-shot; keeps demos explicit while unblocking current run.
+        await api.replyPermission(req.id, "allow");
+      }
+      const snapshot = await api.listPermissions();
+      const pending = (snapshot.requests || [])
+        .filter((req) => req.status === "pending")
+        .map((req) => ({
+          id: req.id,
+          tool: req.tool || req.permission || "tool",
+          sessionID: String(req.sessionID || req.session_id || "unknown"),
+        }));
+      setPendingApprovals(pending);
+      setPermissionRulesCount((snapshot.rules || []).length);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setApprovalError(message);
+    } finally {
+      setApproving(false);
+    }
   };
 
   return (
@@ -178,6 +247,45 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
 
       {/* Main Content */}
       <div className="flex-1 overflow-auto">{children}</div>
+
+      <div className="fixed right-4 bottom-4 z-40 w-80 rounded-lg border border-gray-800 bg-gray-900/95 shadow-xl">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+          <p className="text-xs text-gray-300 tracking-wide">PENDING APPROVALS</p>
+          <span
+            className={`text-xs font-medium ${
+              pendingApprovals.length > 0 ? "text-amber-300" : "text-gray-500"
+            }`}
+          >
+            {pendingApprovals.length}
+          </span>
+        </div>
+        <div className="px-3 py-2 max-h-36 overflow-y-auto space-y-1">
+          {approvalError ? (
+            <p className="text-[11px] text-red-300">{approvalError}</p>
+          ) : pendingApprovals.length === 0 ? (
+            <p className="text-[11px] text-gray-500">
+              No pending permission prompts. Active rules: {permissionRulesCount}.
+            </p>
+          ) : (
+            pendingApprovals.slice(0, 8).map((req) => (
+              <p key={req.id} className="text-[11px] text-gray-300 font-mono">
+                <span className="text-amber-300">{req.tool}</span>{" "}
+                <span className="text-gray-500">[{req.sessionID.slice(0, 8)}]</span>
+              </p>
+            ))
+          )}
+        </div>
+        <div className="px-3 py-2 border-t border-gray-800 flex items-center justify-end">
+          <button
+            type="button"
+            onClick={() => void approveAllPending()}
+            disabled={pendingApprovals.length === 0 || approving}
+            className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {approving ? "Approving..." : "Approve All"}
+          </button>
+        </div>
+      </div>
 
       {showSetupHint && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">

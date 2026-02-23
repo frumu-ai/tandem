@@ -394,6 +394,26 @@ async fn process_channel_message(
 // Session management helpers
 // ---------------------------------------------------------------------------
 
+fn build_channel_session_create_body(title: &str) -> serde_json::Value {
+    serde_json::json!({
+        "title": title,
+        "directory": ".",
+        "permission": [
+            { "permission": "ls", "pattern": "*", "action": "allow" },
+            { "permission": "list", "pattern": "*", "action": "allow" },
+            { "permission": "glob", "pattern": "*", "action": "allow" },
+            { "permission": "search", "pattern": "*", "action": "allow" },
+            { "permission": "grep", "pattern": "*", "action": "allow" },
+            { "permission": "codesearch", "pattern": "*", "action": "allow" },
+            { "permission": "read", "pattern": "*", "action": "allow" },
+            { "permission": "websearch", "pattern": "*", "action": "allow" },
+            { "permission": "webfetch", "pattern": "*", "action": "allow" },
+            { "permission": "webfetch_html", "pattern": "*", "action": "allow" },
+            { "permission": "bash", "pattern": "*", "action": "allow" }
+        ]
+    })
+}
+
 /// Look up an existing session or create a new one via `POST /session`.
 async fn get_or_create_session(
     map_key: &str,
@@ -417,10 +437,8 @@ async fn get_or_create_session(
     }
 
     let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "title": format!("{} — {}", msg.channel, msg.sender),
-        "directory": "."
-    });
+    let title = format!("{} — {}", msg.channel, msg.sender);
+    let body = build_channel_session_create_body(&title);
 
     let resp = add_auth(client.post(format!("{base_url}/session")), api_token)
         .json(&body)
@@ -519,7 +537,7 @@ async fn run_in_session(
             anyhow::anyhow!("prompt_async run payload parse failed: {e}: {fire_text}")
         })?
     };
-    let run_id = fire_json
+    let _run_id = fire_json
         .get("runID")
         .or_else(|| fire_json.get("run_id"))
         .and_then(|v| v.as_str())
@@ -527,14 +545,9 @@ async fn run_in_session(
         .to_string();
 
     // Stream the SSE event bus until the run finishes or we timeout.
-    let event_url = format!(
-        "{base_url}/event?sessionID={session_id}{}",
-        if run_id.is_empty() {
-            String::new()
-        } else {
-            format!("&runID={run_id}")
-        }
-    );
+    // Run-filtered streams can miss events when engines emit session-scoped updates.
+    // Subscribe by session for robust delivery in channels.
+    let event_url = format!("{base_url}/event?sessionID={session_id}");
 
     let sse_resp = add_auth(client.get(&event_url), api_token)
         .header("Accept", "text/event-stream")
@@ -584,6 +597,23 @@ async fn run_in_session(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
+            if event_type == "message.part.updated" {
+                if let Some(props) = evt.get("properties") {
+                    let is_text = props
+                        .get("part")
+                        .and_then(|p| p.get("type"))
+                        .and_then(|v| v.as_str())
+                        .map(|v| v == "text")
+                        .unwrap_or(false);
+                    if is_text {
+                        if let Some(delta) = props.get("delta").and_then(|v| v.as_str()) {
+                            content_buf.push_str(delta);
+                        }
+                    }
+                }
+                continue;
+            }
+
             match event_type {
                 "session.message.delta" | "content" => {
                     if let Some(delta) = evt
@@ -594,7 +624,12 @@ async fn run_in_session(
                         content_buf.push_str(delta);
                     }
                 }
-                "session.run.finished" | "done" => break 'outer,
+                "session.run.finished"
+                | "session.run.completed"
+                | "session.run.failed"
+                | "session.run.cancelled"
+                | "session.run.canceled"
+                | "done" => break 'outer,
                 _ => {}
             }
         }
@@ -808,7 +843,7 @@ async fn new_session_text(
         .clone()
         .unwrap_or_else(|| format!("{} — {}", msg.channel, msg.sender));
     let client = reqwest::Client::new();
-    let body = serde_json::json!({ "title": display_name, "directory": "." });
+    let body = build_channel_session_create_body(&display_name);
 
     let Ok(resp) = add_auth(client.post(format!("{base_url}/session")), api_token)
         .json(&body)

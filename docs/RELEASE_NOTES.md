@@ -1,3 +1,19 @@
+# Tandem v0.3.17 Release Notes (Unreleased)
+
+### Highlights
+
+- **Channel runtime reliability updates**:
+  - Channel-created sessions now start with practical default permission rules to avoid hidden permission deadlocks in connector workflows.
+  - Channel dispatcher now attaches SSE at session scope and parses `message.part.updated` text deltas plus additional terminal run lifecycle variants.
+  - Improves reply reliability for Telegram/Discord/Slack message handling in long-lived sessions.
+- **Telegram production diagnostics improvements**:
+  - Telegram poll failures now emit richer diagnostics (`{e:?}` transport context and non-success status/body preview) to reduce blind debugging.
+- **Portal debugging/observability uplift (minimal UX scope)**:
+  - Added global pending-approval visibility/action in portal shell.
+  - Improved run watchdog trace messaging and session-level SSE attach behavior for web examples to reduce `connected/ready but no deltas` confusion.
+
+---
+
 # Tandem v0.3.16 Release Notes (Unreleased)
 
 ### Highlights

@@ -3,6 +3,7 @@ import { api } from "../api";
 import { BrainCircuit, Send, FileCode2, Database, FolderGit2, Loader2 } from "lucide-react";
 import { SessionHistory } from "../components/SessionHistory";
 import { ToolCallResult } from "../components/ToolCallResult";
+import { handleCommonRunEvent } from "../utils/liveEventDebug";
 
 interface ChatEvent {
   id: string;
@@ -11,6 +12,17 @@ interface ChatEvent {
   content: string;
   toolName?: string;
   toolResult?: string;
+}
+
+interface RuntimeTraceEntry {
+  id: string;
+  timestamp: Date;
+  content: string;
+}
+
+interface PendingApproval {
+  id: string;
+  tool: string;
 }
 
 const SECOND_BRAIN_SESSION_KEY = "tandem_portal_second_brain_session_id";
@@ -45,6 +57,8 @@ const buildChatEvents = (
 
 export const SecondBrainDashboard: React.FC = () => {
   const [messages, setMessages] = useState<ChatEvent[]>([]);
+  const [runtimeTrace, setRuntimeTrace] = useState<RuntimeTraceEntry[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [input, setInput] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isThinking, setIsThinking] = useState(false);
@@ -55,108 +69,100 @@ export const SecondBrainDashboard: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isThinking]);
 
-  const loadSession = async (sid: string) => {
-    if (!sid) {
-      setMessages([]);
-      setSessionId(null);
-      localStorage.removeItem(SECOND_BRAIN_SESSION_KEY);
-      return;
-    }
+  const addTrace = (content: string) => {
+    setRuntimeTrace((prev) => {
+      const next = [
+        ...prev,
+        { id: Math.random().toString(36).substring(2), timestamp: new Date(), content },
+      ];
+      return next.slice(-120);
+    });
+  };
 
+  const refreshPendingApprovals = async (sid: string): Promise<PendingApproval[]> => {
     try {
-      setSessionId(sid);
-      localStorage.setItem(SECOND_BRAIN_SESSION_KEY, sid);
-      const history = await api.getSessionMessages(sid);
-      const restored = buildChatEvents(history);
-
-      setMessages([
-        {
-          id: "sys-restored",
-          role: "system",
-          type: "text",
-          content: `Restored session ${sid.substring(0, 8)}`,
-        },
-        ...restored,
-      ]);
-    } catch (err) {
-      console.error("Failed to restore session", err);
-      setSessionId(null);
-      localStorage.removeItem(SECOND_BRAIN_SESSION_KEY);
+      const snapshot = await api.listPermissions();
+      const pending = (snapshot.requests || [])
+        .filter((req) => req.sessionID === sid && req.status === "pending")
+        .map((req) => ({
+          id: req.id,
+          tool: req.tool || req.permission || "tool",
+        }));
+      setPendingApprovals(pending);
+      return pending;
+    } catch {
+      return [];
     }
   };
 
-  useEffect(() => {
-    const initBrain = async () => {
+  const approvePendingForSession = async () => {
+    if (!sessionId || pendingApprovals.length === 0) return;
+    addTrace(`Approving ${pendingApprovals.length} pending permission request(s).`);
+    for (const req of pendingApprovals) {
       try {
-        const existingSessionId = localStorage.getItem(SECOND_BRAIN_SESSION_KEY);
-        if (existingSessionId) {
-          await loadSession(existingSessionId);
-          return;
-        }
-
-        const sid = await api.createSession("Second Brain MVP");
-        localStorage.setItem(SECOND_BRAIN_SESSION_KEY, sid);
-        setSessionId(sid);
-        // System prompt sets up the MCP expectation for new sessions only.
-        const prompt = `You are a Second Brain AI assistant. You have access to the local server's workspace via MCP tools and memory_store capabilities. When users ask you to learn a folder, use the memory_store tool to index local files, and output a summary into 'out/index_stats.json'. When answering questions, write your detailed answer to 'out/answers.md' alongside citing the file paths in your chat response.`;
-        await api.sendMessage(sid, prompt);
-        setMessages([
-          {
-            id: "welcome",
-            role: "agent",
-            type: "text",
-            content:
-              "Hello! I am connected to the local headless engine. I can use MCP tools to browse files, run commands, or interact with databases. What would you like to explore?",
-          },
-        ]);
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        setMessages([
-          {
-            id: "err",
-            role: "system",
-            type: "text",
-            content: `CRITICAL ERROR: Failed to connect to engine. ${errorMessage}`,
-          },
-        ]);
+        await api.replyPermission(req.id, "allow");
+      } catch {
+        addTrace(`Failed to approve permission request ${req.id.substring(0, 8)}.`);
       }
-    };
-    initBrain();
-  }, []);
+    }
+    const refreshed = await refreshPendingApprovals(sessionId);
+    if (refreshed.length === 0) {
+      addTrace("All pending permission requests approved.");
+    }
+  };
 
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isThinking || !sessionId) return;
+  const attachRunStream = (sid: string, runId: string) => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
 
-    const userMsg = input.trim();
-    setInput("");
-    setMessages((prev) => [
-      ...prev,
-      { id: Math.random().toString(), role: "user", type: "text", content: userMsg },
-    ]);
-    setIsThinking(true);
+    addTrace(`Attaching run stream: ${runId.substring(0, 8)}`);
+    const source = new EventSource(api.getEventStreamUrl(sid, runId));
+    eventSourceRef.current = source;
+    let finalized = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let watchdogHandle: ReturnType<typeof setTimeout> | null = null;
+    let runStatePollHandle: ReturnType<typeof setInterval> | null = null;
+    let sawRunEvent = false;
 
-    try {
-      const { runId } = await api.startAsyncRun(sessionId, userMsg);
-      const source = new EventSource(api.getEventStreamUrl(sessionId, runId));
-      eventSourceRef.current = source;
-      let finalized = false;
-      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-
-      const finalize = async (reason: "completed" | "failed" | "timeout" | "stream_error") => {
-        if (finalized) return;
-        finalized = true;
-        if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
-          timeoutHandle = null;
+    const finalize = async (reason: string) => {
+      if (finalized) return;
+      finalized = true;
+      addTrace(`Finalizing run: ${reason}`);
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+      if (watchdogHandle) {
+        clearTimeout(watchdogHandle);
+        watchdogHandle = null;
+      }
+      if (runStatePollHandle) {
+        clearInterval(runStatePollHandle);
+        runStatePollHandle = null;
+      }
+      try {
+        const history = await api.getSessionMessages(sid);
+        const restored = buildChatEvents(history);
+        if (restored.length > 0) {
+          setMessages(restored);
         }
-        try {
-          const history = await api.getSessionMessages(sessionId);
-          const restored = buildChatEvents(history);
-          if (restored.length > 0) {
-            setMessages(restored);
-          }
-          if (reason === "timeout") {
+        if (reason === "timeout") {
+          const pending = await refreshPendingApprovals(sid);
+          if (pending.length > 0) {
+            const tools = [...new Set(pending.map((p) => p.tool))].join(", ");
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: Math.random().toString(),
+                role: "system",
+                type: "text",
+                content: `[Run is waiting for permission approval: ${tools}. Use "Approve Pending" to continue.]`,
+              },
+            ]);
+            addTrace(`Timeout caused by pending permission approvals: ${tools}.`);
+          } else {
             setMessages((prev) => [
               ...prev,
               {
@@ -167,40 +173,140 @@ export const SecondBrainDashboard: React.FC = () => {
                   "[Run timed out in UI. Loaded latest saved session history so you can continue.]",
               },
             ]);
-          } else if (reason === "stream_error") {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Math.random().toString(),
-                role: "agent",
-                type: "text",
-                content: "[Stream disconnected. Loaded latest saved session history.]",
-              },
-            ]);
           }
-        } catch (err) {
-          console.error("Failed to load session history after run", err);
-        } finally {
-          setIsThinking(false);
-          source.close();
-          if (eventSourceRef.current === source) {
-            eventSourceRef.current = null;
-          }
+        } else if (reason === "stream_error") {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Math.random().toString(),
+              role: "agent",
+              type: "text",
+              content: "[Stream disconnected. Loaded latest saved session history.]",
+            },
+          ]);
+        } else if (reason === "inactive_no_events") {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Math.random().toString(),
+              role: "agent",
+              type: "text",
+              content:
+                "[Run ended before live deltas arrived. Check provider key/model and engine logs.]",
+            },
+          ]);
+        } else if (reason === "inactive") {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Math.random().toString(),
+              role: "system",
+              type: "text",
+              content:
+                "[Run became inactive with no terminal stream event. Synced latest history.]",
+            },
+          ]);
         }
-      };
+      } catch (err) {
+        console.error("Failed to load session history after run", err);
+        addTrace("Failed to reload session history after finalize.");
+      } finally {
+        setIsThinking(false);
+        source.close();
+        if (eventSourceRef.current === source) {
+          eventSourceRef.current = null;
+        }
+      }
+    };
 
-      timeoutHandle = setTimeout(() => {
-        void finalize("timeout");
-      }, RUN_TIMEOUT_MS);
+    timeoutHandle = setTimeout(() => {
+      addTrace(`Run timeout reached (${RUN_TIMEOUT_MS}ms).`);
+      void finalize("timeout");
+    }, RUN_TIMEOUT_MS);
+    watchdogHandle = setTimeout(async () => {
+      if (finalized || sawRunEvent) return;
+      try {
+        const runState = await api.getActiveRun(sid);
+        if (!runState?.active) {
+          addTrace("No events and run is already inactive.");
+          void finalize("inactive_no_events");
+          return;
+        }
+        const pending = await refreshPendingApprovals(sid);
+        if (pending.length > 0) {
+          const tools = [...new Set(pending.map((p) => p.tool))].join(", ");
+          addTrace(`Run is blocked on permission approval: ${tools}.`);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Math.random().toString(),
+              role: "system",
+              type: "text",
+              content: `Run is waiting for permission approval: ${tools}.`,
+            },
+          ]);
+          return;
+        }
+        addTrace("Run active but no live deltas yet.");
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Math.random().toString(),
+            role: "system",
+            type: "text",
+            content: "Run is active but no live deltas yet. Waiting for provider output...",
+          },
+        ]);
+      } catch {
+        addTrace("No events yet and run-state check failed.");
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Math.random().toString(),
+            role: "system",
+            type: "text",
+            content: "No live events yet and failed to query run state.",
+          },
+        ]);
+      }
+    }, 4000);
+    runStatePollHandle = setInterval(async () => {
+      if (finalized) return;
+      try {
+        const runState = await api.getActiveRun(sid);
+        if (!runState?.active) {
+          addTrace("Run became inactive from periodic poll.");
+          void finalize("inactive");
+        }
+      } catch {
+        // keep stream attached
+      }
+    }, 5000);
 
-      source.onmessage = (evt) => {
+    source.onmessage = (evt) => {
+      try {
         const data = JSON.parse(evt.data);
+        if (data.type !== "server.connected" && data.type !== "engine.lifecycle.ready") {
+          sawRunEvent = true;
+        }
+
+        if (
+          handleCommonRunEvent(
+            data,
+            (event) => addTrace(event.content),
+            (status) => finalize(status)
+          )
+        ) {
+          return;
+        }
 
         if (data.type === "message.part.updated") {
-          const part = data.properties.part;
+          const part = data.properties?.part;
+          if (!part) return;
 
           if (part.type === "tool") {
-            if (part.state.status === "running") {
+            if (part.state?.status === "running") {
+              addTrace(`Tool started: ${part.tool}`);
               setMessages((prev) => [
                 ...prev,
                 {
@@ -211,7 +317,7 @@ export const SecondBrainDashboard: React.FC = () => {
                   toolName: part.tool,
                 },
               ]);
-            } else if (part.state.status === "completed") {
+            } else if (part.state?.status === "completed") {
               let rString = "";
               if (part.state.result) {
                 rString =
@@ -219,6 +325,7 @@ export const SecondBrainDashboard: React.FC = () => {
                     ? part.state.result
                     : JSON.stringify(part.state.result);
               }
+              addTrace(`Tool completed: ${part.tool}`);
 
               setMessages((prev) => {
                 const updated = [...prev];
@@ -242,7 +349,7 @@ export const SecondBrainDashboard: React.FC = () => {
                 return prev;
               });
             }
-          } else if (part.type === "text" && data.properties.delta) {
+          } else if (part.type === "text" && data.properties?.delta) {
             setMessages((prev) => {
               const updated = [...prev];
               const last = updated[updated.length - 1];
@@ -265,23 +372,146 @@ export const SecondBrainDashboard: React.FC = () => {
               return updated;
             });
           }
-        } else if (
-          data.type === "run.status.updated" &&
-          (data.properties.status === "completed" || data.properties.status === "failed")
-        ) {
-          void finalize(data.properties.status === "failed" ? "failed" : "completed");
-        } else if (
-          data.type === "session.run.finished" &&
-          (data.properties?.status === "completed" || data.properties?.status === "failed")
-        ) {
-          void finalize(data.properties.status === "failed" ? "failed" : "completed");
         }
-      };
-      source.onerror = () => {
-        void finalize("stream_error");
-      };
+      } catch (err) {
+        console.error("Second Brain stream parse error", err);
+        addTrace("Failed to parse stream event payload.");
+      }
+    };
+    source.onerror = () => {
+      addTrace("Stream disconnected.");
+      void finalize("stream_error");
+    };
+  };
+
+  const loadSession = async (sid: string) => {
+    if (!sid) {
+      setMessages([]);
+      setSessionId(null);
+      setPendingApprovals([]);
+      localStorage.removeItem(SECOND_BRAIN_SESSION_KEY);
+      addTrace("Session cleared.");
+      return;
+    }
+
+    try {
+      setSessionId(sid);
+      localStorage.setItem(SECOND_BRAIN_SESSION_KEY, sid);
+      addTrace(`Loading session ${sid.substring(0, 8)}.`);
+      void refreshPendingApprovals(sid);
+      const history = await api.getSessionMessages(sid);
+      const restored = buildChatEvents(history);
+
+      setMessages([
+        {
+          id: "sys-restored",
+          role: "system",
+          type: "text",
+          content: `Restored session ${sid.substring(0, 8)}`,
+        },
+        ...restored,
+      ]);
+
+      const runState = await api.getActiveRun(sid);
+      const active = runState?.active || null;
+      const activeRunId =
+        (active?.runID as string | undefined) ||
+        (active?.runId as string | undefined) ||
+        (active?.run_id as string | undefined) ||
+        "";
+      if (activeRunId) {
+        setIsThinking(true);
+        addTrace(`Resuming active run ${activeRunId.substring(0, 8)}.`);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Math.random().toString(),
+            role: "system",
+            type: "text",
+            content: `Resuming active run ${activeRunId.substring(0, 8)}...`,
+          },
+        ]);
+        attachRunStream(sid, activeRunId);
+      } else {
+        setIsThinking(false);
+      }
+    } catch (err) {
+      console.error("Failed to restore session", err);
+      addTrace("Failed to restore saved session.");
+      setPendingApprovals([]);
+      setSessionId(null);
+      localStorage.removeItem(SECOND_BRAIN_SESSION_KEY);
+    }
+  };
+
+  useEffect(() => {
+    const initBrain = async () => {
+      try {
+        const existingSessionId = localStorage.getItem(SECOND_BRAIN_SESSION_KEY);
+        if (existingSessionId) {
+          addTrace(`Found saved session ${existingSessionId.substring(0, 8)}.`);
+          await loadSession(existingSessionId);
+          return;
+        }
+
+        const sid = await api.createSession("Second Brain MVP");
+        localStorage.setItem(SECOND_BRAIN_SESSION_KEY, sid);
+        setSessionId(sid);
+        // System prompt sets up the MCP expectation for new sessions only.
+        const prompt = `You are a Second Brain AI assistant. You have access to the local server's workspace via MCP tools and memory_store capabilities. When users ask you to learn a folder, use the memory_store tool to index local files, and output a summary into 'out/index_stats.json'. When answering questions, write your detailed answer to 'out/answers.md' alongside citing the file paths in your chat response.`;
+        await api.sendMessage(sid, prompt);
+        addTrace(`Created new session ${sid.substring(0, 8)} and primed instructions.`);
+        setMessages([
+          {
+            id: "welcome",
+            role: "agent",
+            type: "text",
+            content:
+              "Hello! I am connected to the local headless engine. I can use MCP tools to browse files, run commands, or interact with databases. What would you like to explore?",
+          },
+        ]);
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        addTrace(`Engine connection failed: ${errorMessage}`);
+        setMessages([
+          {
+            id: "err",
+            role: "system",
+            type: "text",
+            content: `CRITICAL ERROR: Failed to connect to engine. ${errorMessage}`,
+          },
+        ]);
+      }
+    };
+    initBrain();
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isThinking || !sessionId) return;
+
+    const userMsg = input.trim();
+    setInput("");
+    setMessages((prev) => [
+      ...prev,
+      { id: Math.random().toString(), role: "user", type: "text", content: userMsg },
+    ]);
+    setIsThinking(true);
+    addTrace("Submitting prompt to async run.");
+
+    try {
+      const { runId } = await api.startAsyncRun(sessionId, userMsg);
+      addTrace(`Run started ${runId.substring(0, 8)}.`);
+      attachRunStream(sessionId, runId);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
+      addTrace(`Failed to start run: ${errorMessage}`);
       setMessages((prev) => [
         ...prev,
         {
@@ -304,10 +534,13 @@ export const SecondBrainDashboard: React.FC = () => {
     setMessages([]);
     setSessionId(null);
     setIsThinking(false);
+    setRuntimeTrace([]);
+    setPendingApprovals([]);
     try {
       const sid = await api.createSession("Second Brain MVP");
       localStorage.setItem(SECOND_BRAIN_SESSION_KEY, sid);
       setSessionId(sid);
+      addTrace(`Session reset. New session ${sid.substring(0, 8)}.`);
       setMessages([
         {
           id: "welcome",
@@ -318,6 +551,7 @@ export const SecondBrainDashboard: React.FC = () => {
       ]);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
+      addTrace(`Reset failed: ${errorMessage}`);
       setMessages([
         {
           id: "err-reset",
@@ -361,6 +595,40 @@ export const SecondBrainDashboard: React.FC = () => {
           <p className="text-gray-500 mt-2 text-xs">
             Demonstrates MCP integration running on the local VPS engine daemon.
           </p>
+          <div className="mt-3 border border-gray-800 rounded bg-gray-950/70">
+            <div className="px-3 py-1.5 text-[11px] tracking-wide text-gray-400 border-b border-gray-800 flex items-center justify-between gap-2">
+              <span>RUNTIME TRACE</span>
+              <div className="flex items-center gap-2">
+                {pendingApprovals.length > 0 && (
+                  <span className="text-amber-300">
+                    Pending approvals: {pendingApprovals.length}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void approvePendingForSession()}
+                  disabled={!sessionId || pendingApprovals.length === 0}
+                  className="px-2 py-0.5 rounded border border-gray-700 text-gray-300 hover:text-white hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Approve Pending
+                </button>
+              </div>
+            </div>
+            <div className="px-3 py-2 max-h-24 overflow-y-auto space-y-1">
+              {runtimeTrace.length === 0 ? (
+                <p className="text-[11px] text-gray-600">No runtime events yet.</p>
+              ) : (
+                runtimeTrace.slice(-8).map((entry) => (
+                  <p key={entry.id} className="text-[11px] text-gray-300 font-mono">
+                    <span className="text-gray-500 mr-2">
+                      {entry.timestamp.toLocaleTimeString()}
+                    </span>
+                    {entry.content}
+                  </p>
+                ))
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Chat Area */}
@@ -445,6 +713,7 @@ export const SecondBrainDashboard: React.FC = () => {
         <SessionHistory
           currentSessionId={sessionId}
           onSelectSession={loadSession}
+          query="Second Brain"
           className="w-full"
         />
       </div>

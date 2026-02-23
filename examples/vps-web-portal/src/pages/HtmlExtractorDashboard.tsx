@@ -3,6 +3,7 @@ import { api } from "../api";
 import { Code, Send, Loader2, AlertTriangle } from "lucide-react";
 import { SessionHistory } from "../components/SessionHistory";
 import { ToolCallResult } from "../components/ToolCallResult";
+import { handleCommonRunEvent } from "../utils/liveEventDebug";
 
 interface LogEvent {
   id: string;
@@ -18,7 +19,7 @@ const HTML_SESSION_KEY = "tandem_portal_html_session_id";
 export const HtmlExtractorDashboard: React.FC = () => {
   const [targetUrl, setTargetUrl] = useState("");
   const [extractGoal, setExtractGoal] = useState(
-    "Extract the hidden <script> data payload representing the real estate properties."
+    "Extract a clean markdown summary of the page, then return any structured entities found."
   );
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEvent[]>([]);
@@ -30,6 +31,131 @@ export const HtmlExtractorDashboard: React.FC = () => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
 
+  const attachRunStream = (sessionId: string, runId: string) => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
+    eventSourceRef.current = eventSource;
+    let finalized = false;
+    let sawRunEvent = false;
+    const watchdog = window.setTimeout(async () => {
+      if (finalized || sawRunEvent) return;
+      try {
+        const runState = await api.getActiveRun(sessionId);
+        const active = runState?.active || null;
+        if (!active) {
+          addLog({
+            type: "system",
+            content:
+              "Run ended before live events arrived. Check provider key/model and engine logs.",
+          });
+          finalizeRun("unknown");
+        } else {
+          addLog({
+            type: "system",
+            content: "Run is active but no live deltas yet. Waiting for provider/tool output...",
+          });
+        }
+      } catch {
+        addLog({ type: "system", content: "No live events yet and failed to query run state." });
+      }
+    }, 4000);
+    const runStatePoll = window.setInterval(async () => {
+      if (finalized) return;
+      try {
+        const runState = await api.getActiveRun(sessionId);
+        if (!runState?.active) {
+          addLog({
+            type: "system",
+            content: "Run became inactive without a terminal stream event. Finalizing from poll.",
+          });
+          finalizeRun("inactive");
+        }
+      } catch {
+        // Keep stream attached; poll failure is non-fatal.
+      }
+    }, 5000);
+
+    const finalizeRun = (status: string) => {
+      if (finalized) return;
+      finalized = true;
+      window.clearTimeout(watchdog);
+      window.clearInterval(runStatePoll);
+      addLog({
+        type: "system",
+        content: `Extraction finished with status: ${status}. Results in out/url_extract.md and out/url_entities.json.`,
+      });
+      setIsRunning(false);
+      eventSource.close();
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
+    };
+
+    eventSource.onmessage = (evt) => {
+      try {
+        const data = JSON.parse(evt.data);
+        if (data.type !== "server.connected" && data.type !== "engine.lifecycle.ready") {
+          sawRunEvent = true;
+        }
+
+        if (
+          handleCommonRunEvent(
+            data,
+            (event) => addLog(event),
+            (status) => finalizeRun(status)
+          )
+        ) {
+          return;
+        }
+
+        if (data.type === "message.part.updated") {
+          const part = data.properties.part;
+          if (part.type === "tool") {
+            if (part.state.status === "running") {
+              addLog({
+                type: "tool_start",
+                content: `Executing Tool: ${part.tool}`,
+                toolName: part.tool,
+              });
+            } else if (part.state.status === "completed") {
+              let rString = "";
+              if (part.state.result) {
+                rString =
+                  typeof part.state.result === "string"
+                    ? part.state.result
+                    : JSON.stringify(part.state.result);
+              }
+              addLog({
+                type: "tool_end",
+                content: `Tool Completed: ${part.tool}`,
+                toolName: part.tool,
+                toolResult: rString,
+              });
+            }
+          } else if (part.type === "text" && data.properties.delta) {
+            addLog({ type: "text", content: data.properties.delta });
+          }
+        }
+      } catch (e) {
+        console.error("Stream parse error", e);
+      }
+    };
+
+    eventSource.onerror = () => {
+      window.clearTimeout(watchdog);
+      window.clearInterval(runStatePoll);
+      addLog({ type: "system", content: "Stream disconnected." });
+      setIsRunning(false);
+      eventSource.close();
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
+    };
+  };
+
   const loadSession = async (sessionId: string) => {
     if (!sessionId) {
       setLogs([]);
@@ -39,6 +165,9 @@ export const HtmlExtractorDashboard: React.FC = () => {
     }
 
     try {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
       setLogs([]);
       setCurrentSessionId(sessionId);
       localStorage.setItem(HTML_SESSION_KEY, sessionId);
@@ -71,6 +200,24 @@ export const HtmlExtractorDashboard: React.FC = () => {
         },
         ...restored,
       ]);
+
+      const runState = await api.getActiveRun(sessionId);
+      const active = runState?.active || null;
+      const activeRunId =
+        (active?.runID as string | undefined) ||
+        (active?.runId as string | undefined) ||
+        (active?.run_id as string | undefined) ||
+        "";
+      if (activeRunId) {
+        setIsRunning(true);
+        addLog({
+          type: "system",
+          content: `Resuming active run: ${activeRunId.substring(0, 8)}`,
+        });
+        attachRunStream(sessionId, activeRunId);
+      } else {
+        setIsRunning(false);
+      }
     } catch {
       setCurrentSessionId(null);
     }
@@ -82,6 +229,11 @@ export const HtmlExtractorDashboard: React.FC = () => {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       void loadSession(existingSessionId);
     }
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
   }, []);
 
   const addLog = (event: Omit<LogEvent, "id" | "timestamp">) => {
@@ -123,86 +275,26 @@ export const HtmlExtractorDashboard: React.FC = () => {
     setLogs([]);
     setIsRunning(true);
     setCurrentSessionId(null);
-    addLog({ type: "system", content: "Initializing HTML DOM Extraction..." });
+    addLog({ type: "system", content: "Initializing URL extraction (Markdown-first)..." });
 
     try {
       const sessionId = await api.createSession(`HTML Ext: ${targetUrl.substring(0, 15)}`);
       localStorage.setItem(HTML_SESSION_KEY, sessionId);
       setCurrentSessionId(sessionId);
 
-      const prompt = `You are a Raw DOM/HTML Data Extraction Agent.
+      const prompt = `You are a URL Data Extraction Agent (Markdown-first).
 Target URL: ${targetUrl}
 Extraction Goal: ${extractGoal}
 
 Instructions:
-1. Since the data is not visible in standard Markdown, you must use the webfetch tool with the mode explicitly set to "html". Provide a valid reason argument stating: "Standard markdown missed the hidden dom elements needed."
-2. Analyze the raw HTML string returned.
-3. Extract the requested elements or payloads.
-4. Output the structured JSON result to 'out/dom_extract.json'.`;
+1. First fetch and analyze the URL in Markdown mode.
+2. Produce a concise markdown extraction report and write it to 'out/url_extract.md'.
+3. If key data appears missing in Markdown, use webfetch in "html" mode with a reason that explains what was missing.
+4. If you used raw HTML fallback, extract hidden/script payloads and include them in 'out/dom_extract.json'.
+5. Always provide final structured entities in 'out/url_entities.json'.`;
 
       const { runId } = await api.startAsyncRun(sessionId, prompt);
-      const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
-      eventSourceRef.current = eventSource;
-      let finalized = false;
-
-      const finalizeRun = (status: string) => {
-        if (finalized) return;
-        finalized = true;
-        addLog({
-          type: "system",
-          content: `Extraction finished with status: ${status}. Results in out/dom_extract.json.`,
-        });
-        setIsRunning(false);
-        eventSource.close();
-      };
-
-      eventSource.onmessage = (evt) => {
-        try {
-          const data = JSON.parse(evt.data);
-
-          if (data.type === "message.part.updated") {
-            const part = data.properties.part;
-            if (part.type === "tool") {
-              if (part.state.status === "running") {
-                addLog({
-                  type: "tool_start",
-                  content: `Executing Tool: ${part.tool}`,
-                  toolName: part.tool,
-                });
-              } else if (part.state.status === "completed") {
-                let rString = "";
-                if (part.state.result) {
-                  rString =
-                    typeof part.state.result === "string"
-                      ? part.state.result
-                      : JSON.stringify(part.state.result);
-                }
-                addLog({
-                  type: "tool_end",
-                  content: `Tool Completed: ${part.tool}`,
-                  toolName: part.tool,
-                  toolResult: rString,
-                });
-              }
-            } else if (part.type === "text" && data.properties.delta) {
-              addLog({ type: "text", content: data.properties.delta });
-            }
-          } else if (
-            (data.type === "run.status.updated" || data.type === "session.run.finished") &&
-            (data.properties?.status === "completed" || data.properties?.status === "failed")
-          ) {
-            finalizeRun(data.properties.status);
-          }
-        } catch (e) {
-          console.error("Stream parse error", e);
-        }
-      };
-
-      eventSource.onerror = () => {
-        addLog({ type: "system", content: "Stream disconnected." });
-        setIsRunning(false);
-        eventSource.close();
-      };
+      attachRunStream(sessionId, runId);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       addLog({ type: "system", content: `Error: ${errorMessage}` });
@@ -217,16 +309,16 @@ Instructions:
           <div>
             <h2 className="text-2xl font-bold text-white flex items-center gap-2">
               <Code className="text-sky-500" />
-              HTML Escape-Hatch Demo
+              URL Markdown Extraction Demo
             </h2>
             <p className="text-gray-400 mt-1">
-              When Markdown compression strips necessary data (like hidden fields or script tags),
-              use the explicit Raw HTML mode.
+              Extract data from URLs in Markdown mode first for lower cost and cleaner output. Use
+              raw HTML only as an escape hatch when critical fields are missing.
             </p>
             <div className="mt-3 inline-flex items-center gap-2 bg-amber-900/30 border border-amber-500/50 text-amber-200 px-3 py-1.5 rounded-md text-sm">
               <AlertTriangle size={16} />
-              <strong>Warning:</strong> Requesting Raw HTML significantly increases token usage and
-              context size. The engine requires a justification reason to unlock this mode.
+              <strong>Note:</strong> Raw HTML fallback can increase token usage significantly and
+              requires a reason.
             </div>
           </div>
         </div>
@@ -263,7 +355,7 @@ Instructions:
               className="bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white px-6 py-2 rounded font-medium flex items-center gap-2 transition-colors"
             >
               {isRunning ? <Loader2 className="animate-spin" size={18} /> : <Send size={18} />}
-              {isRunning ? "Extracting Raw DOM..." : "Run Extraction"}
+              {isRunning ? "Extracting URL..." : "Run URL Extraction"}
             </button>
           </div>
         </form>

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.17]
+
+### Changed
+
+- **Channel session bootstrap defaults**: Channel-created sessions now include a practical default permission set so long-running channel workflows do not silently stall waiting for hidden permission prompts.
+- **Channel SSE attach strategy**: Channel run streaming now subscribes at the session level for better compatibility with engines that emit session-scoped events.
+- **Portal run observability UX**: Web example dashboards now include richer watchdog/runtime traces and clearer status transitions around stream-ready, run-activity, and poll-finalized completion paths.
+
+### Fixed
+
+- **Run stream event parsing for channels**: Channel dispatcher now consumes `message.part.updated` text deltas and additional terminal run lifecycle variants, improving reply reliability in chat connectors.
+- **Telegram diagnostics quality**: Telegram adapter now logs richer poll failure diagnostics (debug transport context + non-success HTTP status/body preview) for production debugging.
+- **Permission/approval visibility in portal**: Added global pending-approval visibility and one-click approval action in the portal shell, plus clearer no-pending messaging.
+- **Portal SSE reliability in examples**: Web examples now prefer session-level event streaming to avoid runs appearing as `connected/ready` with no live deltas.
+
 ## [0.3.16]
 
 ### Fixed
@@ -965,7 +980,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
-[0.3.16]: https://github.com/frumu-ai/tandem/compare/v0.3.15...HEAD
+[0.3.17]: https://github.com/frumu-ai/tandem/compare/v0.3.16...HEAD
+[0.3.16]: https://github.com/frumu-ai/tandem/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/frumu-ai/tandem/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/frumu-ai/tandem/compare/v0.3.13...v0.3.14
 [0.3.12]: https://github.com/frumu-ai/tandem/compare/v0.3.11...v0.3.12

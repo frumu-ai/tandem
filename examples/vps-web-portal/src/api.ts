@@ -24,6 +24,23 @@ const parseRunId = (payload: JsonObject): string => {
   throw new Error("Run ID missing in engine response");
 };
 
+const DEFAULT_PORTAL_PERMISSION_RULES: JsonObject[] = [
+  { permission: "ls", pattern: "*", action: "allow" },
+  { permission: "list", pattern: "*", action: "allow" },
+  { permission: "glob", pattern: "*", action: "allow" },
+  { permission: "search", pattern: "*", action: "allow" },
+  { permission: "grep", pattern: "*", action: "allow" },
+  { permission: "codesearch", pattern: "*", action: "allow" },
+  { permission: "read", pattern: "*", action: "allow" },
+  { permission: "todowrite", pattern: "*", action: "allow" },
+  { permission: "todo_write", pattern: "*", action: "allow" },
+  { permission: "websearch", pattern: "*", action: "allow" },
+  { permission: "webfetch", pattern: "*", action: "allow" },
+  { permission: "webfetch_html", pattern: "*", action: "allow" },
+  // Keep shell access explicit in demos to avoid hidden permission deadlocks.
+  { permission: "bash", pattern: "*", action: "allow" },
+];
+
 const asEpochMs = (value: unknown): number => {
   if (typeof value !== "number" || !Number.isFinite(value)) return Date.now();
   // Engine may return seconds in some payloads.
@@ -68,6 +85,11 @@ export class EngineAPI {
     if (!models) return null;
     const keys = Object.keys(models);
     return keys.length > 0 ? keys[0] : null;
+  }
+
+  private clearModelSpecCache() {
+    this.cachedModelSpec = null;
+    this.cachedModelSpecAtMs = 0;
   }
 
   private async resolveEngineModelSpec(): Promise<EngineModelSpec | null> {
@@ -165,13 +187,23 @@ export class EngineAPI {
     return `${this.baseUrl}/global/event?token=${encodeURIComponent(this.token || "")}`;
   }
 
-  getEventStreamUrl(sessionId: string, runId: string): string {
-    return `${this.baseUrl}/event?sessionID=${encodeURIComponent(sessionId)}&runID=${encodeURIComponent(runId)}&token=${encodeURIComponent(this.token || "")}`;
+  getEventStreamUrl(sessionId: string, runId?: string): string {
+    void runId;
+    const params = new URLSearchParams();
+    params.set("sessionID", sessionId);
+    // Run-filtered SSE can miss events on some engines where updates are session-scoped.
+    // Keep session-level stream as default for reliability across examples.
+    params.set("token", this.token || "");
+    return `${this.baseUrl}/event?${params.toString()}`;
   }
 
   async createSession(title = "Web Portal Session"): Promise<string> {
     const modelSpec = await this.resolveEngineModelSpec();
-    const payload: JsonObject = { title, directory: "." };
+    const payload: JsonObject = {
+      title,
+      directory: ".",
+      permission: DEFAULT_PORTAL_PERMISSION_RULES,
+    };
     if (modelSpec) {
       payload.model = modelSpec;
       payload.provider = modelSpec.providerID;
@@ -262,13 +294,53 @@ export class EngineAPI {
     const modelSpec = await this.resolveEngineModelSpec();
     const payload: JsonObject = messageText ? { parts: [{ type: "text", text: messageText }] } : {};
     if (modelSpec) payload.model = modelSpec;
-    const data = await this.request<JsonObject>(
-      `/session/${encodeURIComponent(sessionId)}/prompt_async?return=run`,
-      {
+
+    const path = `/session/${encodeURIComponent(sessionId)}/prompt_async?return=run`;
+    const controller = new AbortController();
+    const timeoutHandle = window.setTimeout(() => {
+      controller.abort();
+    }, this.requestTimeoutMs);
+
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}${path}`, {
         method: "POST",
+        headers: this.headers,
         body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error(`Request timed out after ${this.requestTimeoutMs}ms: ${path}`);
       }
-    );
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutHandle);
+    }
+
+    if (res.status === 409) {
+      const conflict = ((await res.json().catch(() => ({}))) || {}) as JsonObject;
+      const code = asString(conflict.code);
+      const activeRun = (conflict.activeRun || {}) as JsonObject;
+      const conflictRunId =
+        asString(activeRun.runID) || asString(activeRun.runId) || asString(activeRun.run_id);
+      const conflictAttach = asString(conflict.attachEventStream);
+      if (code === "SESSION_RUN_CONFLICT" && conflictRunId) {
+        return {
+          runId: conflictRunId,
+          attachPath:
+            conflictAttach ||
+            `${this.baseUrl}/event?sessionID=${encodeURIComponent(sessionId)}&runID=${encodeURIComponent(conflictRunId)}&token=${encodeURIComponent(this.token || "")}`,
+        };
+      }
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Request failed (${res.status} ${res.statusText}): ${body}`);
+    }
+
+    const data = ((await res.json().catch(() => ({}))) || {}) as JsonObject;
     const runId = parseRunId(data);
     return {
       runId,
@@ -284,12 +356,38 @@ export class EngineAPI {
     return this.request<EngineMessage[]>(`/session/${encodeURIComponent(sessionId)}/message`);
   }
 
+  async listPermissions(): Promise<PermissionSnapshotResponse> {
+    return this.request<PermissionSnapshotResponse>(`/permission`);
+  }
+
+  async replyPermission(
+    requestId: string,
+    reply: "allow" | "allow_always" | "deny"
+  ): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/permission/${encodeURIComponent(requestId)}/reply`, {
+      method: "POST",
+      body: JSON.stringify({ reply }),
+    });
+  }
+
+  async getActiveRun(sessionId: string): Promise<SessionRunStateResponse> {
+    return this.request<SessionRunStateResponse>(`/session/${encodeURIComponent(sessionId)}/run`);
+  }
+
   async getProviderCatalog(): Promise<ProviderCatalog> {
     return this.request<ProviderCatalog>(`/provider`);
   }
 
   async getProvidersConfig(): Promise<ProvidersConfigResponse> {
     return this.request<ProvidersConfigResponse>(`/config/providers`);
+  }
+
+  async getProviderKeyPreview(providerId: string): Promise<ProviderKeyPreviewResponse> {
+    return this.request<ProviderKeyPreviewResponse>(
+      `/provider/key-preview?providerId=${encodeURIComponent(providerId)}`,
+      {},
+      { portal: true }
+    );
   }
 
   async setProviderAuth(providerId: string, apiKey: string): Promise<void> {
@@ -311,6 +409,7 @@ export class EngineAPI {
         },
       }),
     });
+    this.clearModelSpecCache();
   }
 
   async getChannelsConfig(): Promise<ChannelsConfigResponse> {
@@ -646,6 +745,13 @@ export interface ProvidersConfigResponse {
   providers: Record<string, ProviderConfigEntry>;
 }
 
+export interface ProviderKeyPreviewResponse {
+  ok: boolean;
+  present: boolean;
+  envVar: string | null;
+  preview: string;
+}
+
 export interface EngineMessage {
   info?: {
     role?: string;
@@ -857,4 +963,37 @@ export interface SessionRecord {
 export interface SessionListResponse {
   sessions: SessionRecord[];
   count: number;
+}
+
+export interface SessionRunStateResponse {
+  active?: {
+    runID?: string;
+    runId?: string;
+    run_id?: string;
+    attachEventStream?: string;
+    [key: string]: unknown;
+  } | null;
+}
+
+export interface PermissionRequestRecord {
+  id: string;
+  permission?: string;
+  pattern?: string;
+  tool?: string;
+  status?: string;
+  sessionID?: string;
+  [key: string]: unknown;
+}
+
+export interface PermissionRuleRecord {
+  id: string;
+  permission: string;
+  pattern: string;
+  action: string;
+  [key: string]: unknown;
+}
+
+export interface PermissionSnapshotResponse {
+  requests?: PermissionRequestRecord[];
+  rules?: PermissionRuleRecord[];
 }

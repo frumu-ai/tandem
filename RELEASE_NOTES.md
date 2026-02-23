@@ -2,6 +2,17 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.3.17 (Unreleased)
+
+- Channel reliability and permission bootstrap
+  - Channel-created sessions now include practical default permission rules to avoid hidden permission deadlocks.
+  - Channel dispatcher now streams events at session scope and parses `message.part.updated` text deltas + additional terminal run variants for more reliable connector replies.
+- Telegram diagnostics quality
+  - Poll failures now include richer debug context and non-success status/body previews for easier production debugging.
+- Portal run-debug quality (limited to observability)
+  - Added global pending-approval visibility/action and clearer “no pending” messaging.
+  - Web examples now prefer session-level SSE attach plus clearer watchdog trace events to reduce “connected/ready with no deltas” confusion.
+
 ## v0.3.16 (Unreleased)
 
 - AI hotfix: What's New release-note alignment

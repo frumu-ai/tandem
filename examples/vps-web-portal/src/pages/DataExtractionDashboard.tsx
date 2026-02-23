@@ -3,6 +3,7 @@ import { api } from "../api";
 import { DatabaseZap, Send, Loader2 } from "lucide-react";
 import { SessionHistory } from "../components/SessionHistory";
 import { ToolCallResult } from "../components/ToolCallResult";
+import { handleCommonRunEvent } from "../utils/liveEventDebug";
 
 interface LogEvent {
   id: string;
@@ -29,6 +30,128 @@ export const DataExtractionDashboard: React.FC = () => {
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  const attachRunStream = (sessionId: string, runId: string) => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
+    eventSourceRef.current = eventSource;
+    let finalized = false;
+    let sawRunEvent = false;
+    const watchdog = window.setTimeout(async () => {
+      if (finalized || sawRunEvent) return;
+      try {
+        const runState = await api.getActiveRun(sessionId);
+        const active = runState?.active || null;
+        if (!active) {
+          addLog({
+            type: "system",
+            content:
+              "Run ended before live events arrived. Check provider key/model and engine logs.",
+          });
+          finalizeRun("unknown");
+        } else {
+          addLog({
+            type: "system",
+            content: "Run is active but no live deltas yet. Waiting for provider/tool output...",
+          });
+        }
+      } catch {
+        addLog({ type: "system", content: "No live events yet and failed to query run state." });
+      }
+    }, 4000);
+    const runStatePoll = window.setInterval(async () => {
+      if (finalized) return;
+      try {
+        const runState = await api.getActiveRun(sessionId);
+        if (!runState?.active) {
+          addLog({
+            type: "system",
+            content: "Run became inactive without a terminal stream event. Finalizing from poll.",
+          });
+          finalizeRun("inactive");
+        }
+      } catch {
+        // Keep stream attached; poll failure is non-fatal.
+      }
+    }, 5000);
+
+    const finalizeRun = (status: string) => {
+      if (finalized) return;
+      finalized = true;
+      window.clearTimeout(watchdog);
+      window.clearInterval(runStatePoll);
+      addLog({ type: "system", content: `Data extraction finished with status: ${status}` });
+      setIsRunning(false);
+      eventSource.close();
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
+    };
+
+    eventSource.onmessage = (evt) => {
+      try {
+        const data = JSON.parse(evt.data);
+        if (data.type !== "server.connected" && data.type !== "engine.lifecycle.ready") {
+          sawRunEvent = true;
+        }
+
+        if (
+          handleCommonRunEvent(
+            data,
+            (event) => addLog(event),
+            (status) => finalizeRun(status)
+          )
+        ) {
+          return;
+        }
+
+        if (data.type === "message.part.updated") {
+          const part = data.properties.part;
+          if (part.type === "tool") {
+            if (part.state.status === "running") {
+              addLog({
+                type: "tool_start",
+                content: `Extracting via tool: ${part.tool}`,
+                toolName: part.tool,
+              });
+            } else if (part.state.status === "completed") {
+              let rString = "";
+              if (part.state.result) {
+                rString =
+                  typeof part.state.result === "string"
+                    ? part.state.result
+                    : JSON.stringify(part.state.result);
+              }
+              addLog({
+                type: "tool_end",
+                content: `Tool completed: ${part.tool}`,
+                toolName: part.tool,
+                toolResult: rString,
+              });
+            }
+          } else if (part.type === "text" && data.properties.delta) {
+            addLog({ type: "text", content: data.properties.delta });
+          }
+        }
+      } catch (e) {
+        console.error("Stream parse error", e);
+      }
+    };
+
+    eventSource.onerror = () => {
+      window.clearTimeout(watchdog);
+      window.clearInterval(runStatePoll);
+      addLog({ type: "system", content: "Stream disconnected." });
+      setIsRunning(false);
+      eventSource.close();
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
+    };
+  };
 
   const loadSession = async (sessionId: string) => {
     if (!sessionId) {
@@ -71,6 +194,21 @@ export const DataExtractionDashboard: React.FC = () => {
         },
         ...restored,
       ]);
+
+      const runState = await api.getActiveRun(sessionId);
+      const active = runState?.active || null;
+      const activeRunId =
+        (active?.runID as string | undefined) ||
+        (active?.runId as string | undefined) ||
+        (active?.run_id as string | undefined) ||
+        "";
+      if (activeRunId) {
+        setIsRunning(true);
+        addLog({ type: "system", content: `Resuming active run: ${activeRunId.substring(0, 8)}` });
+        attachRunStream(sessionId, activeRunId);
+      } else {
+        setIsRunning(false);
+      }
     } catch {
       setCurrentSessionId(null);
     }
@@ -82,6 +220,11 @@ export const DataExtractionDashboard: React.FC = () => {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       void loadSession(existingSessionId);
     }
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
   }, []);
 
   const addLog = (event: Omit<LogEvent, "id" | "timestamp">) => {
@@ -147,65 +290,7 @@ Instructions:
 6. If any fields could not be mapped, write a note in 'out/validation_report.md'.`;
 
       const { runId } = await api.startAsyncRun(sessionId, prompt);
-      const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
-      eventSourceRef.current = eventSource;
-      let finalized = false;
-
-      const finalizeRun = (status: string) => {
-        if (finalized) return;
-        finalized = true;
-        addLog({ type: "system", content: `Data extraction finished with status: ${status}` });
-        setIsRunning(false);
-        eventSource.close();
-      };
-
-      eventSource.onmessage = (evt) => {
-        try {
-          const data = JSON.parse(evt.data);
-
-          if (data.type === "message.part.updated") {
-            const part = data.properties.part;
-            if (part.type === "tool") {
-              if (part.state.status === "running") {
-                addLog({
-                  type: "tool_start",
-                  content: `Extracting via tool: ${part.tool}`,
-                  toolName: part.tool,
-                });
-              } else if (part.state.status === "completed") {
-                let rString = "";
-                if (part.state.result) {
-                  rString =
-                    typeof part.state.result === "string"
-                      ? part.state.result
-                      : JSON.stringify(part.state.result);
-                }
-                addLog({
-                  type: "tool_end",
-                  content: `Tool completed: ${part.tool}`,
-                  toolName: part.tool,
-                  toolResult: rString,
-                });
-              }
-            } else if (part.type === "text" && data.properties.delta) {
-              addLog({ type: "text", content: data.properties.delta });
-            }
-          } else if (
-            (data.type === "run.status.updated" || data.type === "session.run.finished") &&
-            (data.properties?.status === "completed" || data.properties?.status === "failed")
-          ) {
-            finalizeRun(data.properties.status);
-          }
-        } catch (e) {
-          console.error("Stream parse error", e);
-        }
-      };
-
-      eventSource.onerror = () => {
-        addLog({ type: "system", content: "Stream disconnected." });
-        setIsRunning(false);
-        eventSource.close();
-      };
+      attachRunStream(sessionId, runId);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       addLog({ type: "system", content: `Error: ${errorMessage}` });
@@ -225,6 +310,16 @@ Instructions:
             <p className="text-gray-400 mt-1">
               Provide a URL or file path, along with a target JSON schema. The engine will scrape,
               parse, and structure messy data into normalized JSON/CSV artifacts.
+            </p>
+            <p className="text-sm mt-2">
+              <a
+                href="https://microsoftedge.github.io/Demos/json-dummy-data/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-400 hover:text-blue-300 underline"
+              >
+                Need sample JSON data? Open the JSON Dummy Data generator.
+              </a>
             </p>
           </div>
         </div>
