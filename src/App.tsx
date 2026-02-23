@@ -83,9 +83,15 @@ import {
   Blocks,
   Loader2,
 } from "lucide-react";
-import whatsNewMarkdown from "../docs/WHATS_NEW_v0.3.11.md?raw";
+const RELEASES_BASE_URL = "https://github.com/frumu-ai/tandem/releases";
 
 const WHATS_NEW_SEEN_KEY = "tandem_whats_new_seen_version";
+
+function normalizeVersionTag(version: string): string {
+  const trimmed = version.trim();
+  if (!trimmed) return "v0.0.0";
+  return trimmed.startsWith("v") ? trimmed : `v${trimmed}`;
+}
 
 type View =
   | "chat"
@@ -247,16 +253,52 @@ function App() {
   const [migrationResult, setMigrationResult] = useState<StorageMigrationRunResult | null>(null);
   const [showWhatsNew, setShowWhatsNew] = useState(false);
   const [whatsNewVersion, setWhatsNewVersion] = useState<string | null>(null);
+  const [whatsNewMarkdown, setWhatsNewMarkdown] = useState<string>("");
+  const [whatsNewReleaseUrl, setWhatsNewReleaseUrl] = useState<string>(RELEASES_BASE_URL);
   const migrationCheckedRef = useRef(false);
   const engineLeaseIdRef = useRef<string | null>(null);
   const engineLeaseTimerRef = useRef<ReturnType<typeof globalThis.setInterval> | null>(null);
 
   useEffect(() => {
-    const normalize = (version: string): string =>
-      version.startsWith("v") ? version : `v${version}`;
+    const loadReleaseNotes = async (versionTag: string) => {
+      const fallbackUrl = `${RELEASES_BASE_URL}/latest`;
+      try {
+        const response = await globalThis.fetch(
+          `https://api.github.com/repos/frumu-ai/tandem/releases/tags/${encodeURIComponent(versionTag)}`,
+          {
+            headers: {
+              Accept: "application/vnd.github+json",
+            },
+          }
+        );
+        if (!response.ok) {
+          setWhatsNewMarkdown("");
+          setWhatsNewReleaseUrl(fallbackUrl);
+          return;
+        }
+        const payload = (await response.json()) as Record<string, unknown>;
+        const body = typeof payload.body === "string" ? payload.body.trim() : "";
+        const htmlUrl = typeof payload.html_url === "string" ? payload.html_url : fallbackUrl;
+        setWhatsNewReleaseUrl(htmlUrl);
+        setWhatsNewMarkdown(body);
+      } catch {
+        setWhatsNewMarkdown("");
+        setWhatsNewReleaseUrl(fallbackUrl);
+      }
+    };
+
     void getVersion()
-      .then((version) => setWhatsNewVersion(normalize(version)))
-      .catch(() => setWhatsNewVersion("v0.0.0"));
+      .then((version) => {
+        const normalized = normalizeVersionTag(version);
+        setWhatsNewVersion(normalized);
+        void loadReleaseNotes(normalized);
+      })
+      .catch(() => {
+        const fallback = "v0.0.0";
+        setWhatsNewVersion(fallback);
+        setWhatsNewMarkdown("");
+        setWhatsNewReleaseUrl(`${RELEASES_BASE_URL}/latest`);
+      });
   }, []);
 
   useEffect(() => {
@@ -1959,6 +2001,7 @@ function App() {
           open={shouldShowWhatsNew}
           version={whatsNewVersion ?? "v0.0.0"}
           markdown={whatsNewMarkdown}
+          releaseUrl={whatsNewReleaseUrl}
           onClose={dismissWhatsNew}
         />
         <StorageMigrationOverlay

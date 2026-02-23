@@ -1,3 +1,13 @@
+# Tandem v0.3.16 Release Notes (Unreleased)
+
+### Highlights
+
+- **What's New release-note alignment hotfix**:
+  - The desktop What's New overlay now fetches release notes for the installed app tag from GitHub at runtime.
+  - If release-note fetch fails or the matched release has no body text, the overlay avoids stale local note content and links users to the latest release page.
+
+---
+
 # Tandem v0.3.15 Release Notes
 
 ### Highlights

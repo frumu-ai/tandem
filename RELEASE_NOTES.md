@@ -2,6 +2,12 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.3.16 (Unreleased)
+
+- AI hotfix: What's New release-note alignment
+  - The What's New overlay now fetches release notes by installed app tag from GitHub at runtime.
+  - If release-note fetch fails or body text is unavailable, the overlay no longer shows stale bundled notes and instead points users to the latest release page.
+
 ## v0.3.15
 
 - Breaking web tool migration:

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.16]
+
+### Fixed
+
+- **What's New release-note mismatch**: Desktop now fetches release notes for the installed app tag from GitHub at runtime instead of relying on a hardcoded local markdown import.
+- **Safe fallback behavior**: If release-note fetch fails or a version body is unavailable, the What's New overlay shows no stale notes and links users to the latest GitHub release page.
+
 ## [0.3.15]
 
 ### Added
@@ -956,6 +963,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-based organization
 - Real-time streaming responses
 
+[0.3.16]: https://github.com/frumu-ai/tandem/compare/v0.3.15...HEAD
 [0.3.15]: https://github.com/frumu-ai/tandem/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/frumu-ai/tandem/compare/v0.3.13...v0.3.14
 [0.3.12]: https://github.com/frumu-ai/tandem/compare/v0.3.11...v0.3.12
