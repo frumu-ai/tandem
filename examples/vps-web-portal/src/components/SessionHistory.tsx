@@ -8,6 +8,7 @@ interface SessionHistoryProps {
   currentSessionId?: string | null;
   className?: string;
   query?: string;
+  scopePrefix?: string;
 }
 
 export const SessionHistory: React.FC<SessionHistoryProps> = ({
@@ -15,6 +16,7 @@ export const SessionHistory: React.FC<SessionHistoryProps> = ({
   currentSessionId,
   className = "",
   query,
+  scopePrefix,
 }) => {
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,7 +29,12 @@ export const SessionHistory: React.FC<SessionHistoryProps> = ({
       setError(null);
       // Fetch the last 20 sessions globally
       const res = await api.listSessions({ pageSize: 20, q: query || undefined });
-      setSessions(res.sessions || []);
+      const scoped = (res.sessions || []).filter((session) => {
+        if (!scopePrefix || scopePrefix.trim().length === 0) return true;
+        const title = (session.title || "").trim();
+        return title.startsWith(scopePrefix);
+      });
+      setSessions(scoped);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to load history";
       setError(errorMessage);

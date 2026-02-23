@@ -3,7 +3,7 @@ import { api } from "../api";
 import { GitPullRequest, Send, Loader2, CheckCircle2, XCircle } from "lucide-react";
 import { SessionHistory } from "../components/SessionHistory";
 import { ToolCallResult } from "../components/ToolCallResult";
-import { handleCommonRunEvent } from "../utils/liveEventDebug";
+import { attachPortalRunStream } from "../utils/portalRunStream";
 
 interface LogEvent {
   id: string;
@@ -59,132 +59,32 @@ export const RepoAgentDashboard: React.FC = () => {
       onCompleted?: (status: string) => void;
     }
   ) => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
-    eventSourceRef.current = eventSource;
-    let finalized = false;
-    let sawRunEvent = false;
-    const watchdog = window.setTimeout(async () => {
-      if (finalized || sawRunEvent) return;
-      try {
-        const runState = await api.getActiveRun(sessionId);
-        const active = runState?.active || null;
-        if (!active) {
-          addLog({
-            type: "system",
-            content:
-              "Run ended before live events arrived. Check provider key/model and engine logs.",
-          });
-          finalizeRun("unknown");
+    attachPortalRunStream(eventSourceRef, sessionId, runId, {
+      addSystemLog: (content) => addLog({ type: "system", content }),
+      addTextDelta: (delta) => addLog({ type: "text", content: delta }),
+      onToolStart: ({ tool }) =>
+        addLog({
+          type: "tool_start",
+          content: `Tool started: ${tool}`,
+          toolName: tool,
+        }),
+      onToolEnd: ({ tool, result }) =>
+        addLog({
+          type: "tool_end",
+          content: `Tool completed: ${tool}`,
+          toolName: tool,
+          toolResult: result,
+        }),
+      onFinalize: (status) => {
+        if (options?.doneMessage) {
+          addLog({ type: "system", content: options.doneMessage.replace("{status}", status) });
         } else {
-          addLog({
-            type: "system",
-            content: "Run is active but no live deltas yet. Waiting for provider/tool output...",
-          });
+          addLog({ type: "system", content: `Run finished with status: ${status}` });
         }
-      } catch {
-        addLog({ type: "system", content: "No live events yet and failed to query run state." });
-      }
-    }, 4000);
-    const runStatePoll = window.setInterval(async () => {
-      if (finalized) return;
-      try {
-        const runState = await api.getActiveRun(sessionId);
-        if (!runState?.active) {
-          addLog({
-            type: "system",
-            content: "Run became inactive without a terminal stream event. Finalizing from poll.",
-          });
-          finalizeRun("inactive");
-        }
-      } catch {
-        // Keep stream attached; poll failure is non-fatal.
-      }
-    }, 5000);
-
-    const finalizeRun = (status: string) => {
-      if (finalized) return;
-      finalized = true;
-      window.clearTimeout(watchdog);
-      window.clearInterval(runStatePoll);
-      if (options?.doneMessage) {
-        addLog({ type: "system", content: options.doneMessage.replace("{status}", status) });
-      } else {
-        addLog({ type: "system", content: `Run finished with status: ${status}` });
-      }
-      setIsRunning(false);
-      eventSource.close();
-      if (eventSourceRef.current === eventSource) {
-        eventSourceRef.current = null;
-      }
-      if (options?.onCompleted) {
-        options.onCompleted(status);
-      }
-    };
-
-    eventSource.onmessage = (evt) => {
-      try {
-        const data = JSON.parse(evt.data);
-        if (data.type !== "server.connected" && data.type !== "engine.lifecycle.ready") {
-          sawRunEvent = true;
-        }
-
-        if (
-          handleCommonRunEvent(
-            data,
-            (event) => addLog(event),
-            (status) => finalizeRun(status)
-          )
-        ) {
-          return;
-        }
-
-        if (data.type === "message.part.updated") {
-          const part = data.properties.part;
-          if (part.type === "tool") {
-            if (part.state.status === "running") {
-              addLog({
-                type: "tool_start",
-                content: `Tool started: ${part.tool}`,
-                toolName: part.tool,
-              });
-            } else if (part.state.status === "completed") {
-              let rString = "";
-              if (part.state.result) {
-                rString =
-                  typeof part.state.result === "string"
-                    ? part.state.result
-                    : JSON.stringify(part.state.result);
-              }
-              addLog({
-                type: "tool_end",
-                content: `Tool completed: ${part.tool}`,
-                toolName: part.tool,
-                toolResult: rString,
-              });
-            }
-          } else if (part.type === "text" && data.properties.delta) {
-            addLog({ type: "text", content: data.properties.delta });
-          }
-        }
-      } catch (e) {
-        console.error("Stream parsing error", e);
-      }
-    };
-
-    eventSource.onerror = () => {
-      window.clearTimeout(watchdog);
-      window.clearInterval(runStatePoll);
-      addLog({ type: "system", content: "Stream disconnected." });
-      setIsRunning(false);
-      eventSource.close();
-      if (eventSourceRef.current === eventSource) {
-        eventSourceRef.current = null;
-      }
-    };
+        setIsRunning(false);
+        if (options?.onCompleted) options.onCompleted(status);
+      },
+    });
   };
 
   const loadSession = async (sessionId: string) => {
@@ -462,6 +362,7 @@ Use your tools to achieve this.`;
           currentSessionId={currentSessionId}
           onSelectSession={loadSession}
           query="Repo:"
+          scopePrefix="Repo:"
           className="w-full"
         />
       </div>

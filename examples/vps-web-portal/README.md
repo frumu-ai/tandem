@@ -78,7 +78,7 @@ using the invoking user (via `SUDO_USER`) and discovered absolute binary paths a
 Tool resolution is deterministic and does not depend on interactive shell startup files (`.bashrc`, `.profile`):
 
 1. Prefer `npm` for `@frumu/tandem` global install (ensures native postinstall runs consistently).
-2. Fallback to `pnpm` (`PNPM_HOME`, user-local and common system paths, then `corepack pnpm`) if `npm` is unavailable.
+2. Fallback to `pnpm` only when explicitly enabled with `SETUP_ALLOW_PNPM_FALLBACK=1`.
 3. Resolve `node` and `tandem-engine` from absolute paths for use in systemd `ExecStart`.
 4. If no standalone `tandem-engine` binary is usable, fallback to `npx -y @frumu/tandem`.
 
@@ -157,7 +157,7 @@ Navigate to the project directory and install the required dependencies:
 
 ```bash
 cd vps-web-portal
-pnpm install
+npm install
 ```
 
 ### Environment Configuration
@@ -183,13 +183,13 @@ Use this section only if you are not running `setup-vps.sh`.
 Build the Vite React frontend for production:
 
 ```bash
-pnpm run build
+npm run build
 ```
 
 Start the Node.js Express server to host the application. We recommend using PM2 to keep the server alive forever:
 
 ```bash
-pnpm install -g pm2
+npm install -g pm2
 pm2 start npm --name "tandem-portal" -- run start
 ```
 

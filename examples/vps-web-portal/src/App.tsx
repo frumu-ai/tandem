@@ -39,8 +39,9 @@ import {
   Clock,
   PenTool,
   Code,
+  FolderOpen,
 } from "lucide-react";
-import { api } from "./api";
+import { api, getPortalWorkspaceRoot, setPortalWorkspaceRoot } from "./api";
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { token, isLoading } = useAuth();
@@ -64,9 +65,15 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
   const [permissionRulesCount, setPermissionRulesCount] = useState(0);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [approving, setApproving] = useState(false);
+  const [workspaceInput, setWorkspaceInput] = useState("");
+  const [workspaceSaved, setWorkspaceSaved] = useState<string | null>(null);
 
   useEffect(() => {
     const key = "tandem_portal_setup_hint_dismissed";
+    const existingWorkspace = getPortalWorkspaceRoot();
+    if (existingWorkspace) {
+      setWorkspaceInput(existingWorkspace);
+    }
     if (!localStorage.getItem(key)) {
       setShowSetupHint(true);
     }
@@ -139,6 +146,17 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
+  const saveWorkspaceRoot = () => {
+    const trimmed = workspaceInput.trim();
+    if (!trimmed) {
+      setPortalWorkspaceRoot(null);
+      setWorkspaceSaved("Workspace cleared. New sessions will use engine default directory.");
+      return;
+    }
+    setPortalWorkspaceRoot(trimmed);
+    setWorkspaceSaved(`Workspace set for new sessions: ${trimmed}`);
+  };
+
   return (
     <div className="flex h-screen bg-gray-950">
       {/* Sidebar */}
@@ -150,6 +168,56 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
           </h1>
         </div>
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
+          <div className="mb-3 rounded-md border border-gray-800 bg-gray-950/60 p-3">
+            <p className="text-[11px] tracking-wide text-gray-400 flex items-center gap-1">
+              <FolderOpen size={12} />
+              Workspace Root
+            </p>
+            <input
+              type="text"
+              value={workspaceInput}
+              onChange={(e) => {
+                setWorkspaceSaved(null);
+                setWorkspaceInput(e.target.value);
+              }}
+              placeholder="/home/user/projects/my-repo"
+              className="mt-2 w-full rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-xs text-gray-200 placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            />
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={saveWorkspaceRoot}
+                className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-800"
+              >
+                Save Root
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceInput("");
+                  setPortalWorkspaceRoot(null);
+                  setWorkspaceSaved(
+                    "Workspace cleared. New sessions will use engine default directory."
+                  );
+                }}
+                className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-400 hover:text-white hover:bg-gray-800"
+              >
+                Clear
+              </button>
+            </div>
+            <p className="mt-2 text-[10px] text-gray-500">
+              Applies to new sessions. Use absolute paths (no `~`).
+            </p>
+            <p className="mt-1 text-[10px] text-gray-400 break-all">
+              Current:{" "}
+              <span className="text-gray-300">
+                {workspaceInput.trim().length > 0 ? workspaceInput.trim() : "(engine default)"}
+              </span>
+            </p>
+            {workspaceSaved && (
+              <p className="mt-1 text-[10px] text-emerald-300">{workspaceSaved}</p>
+            )}
+          </div>
           <Link
             to="/setup"
             className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"

@@ -1,4 +1,29 @@
 export type JsonObject = Record<string, unknown>;
+import { isLikelyToolCapableModel, toolCapablePolicyReason } from "./config/toolCapableModels";
+const PORTAL_WORKSPACE_ROOT_KEY = "tandem_portal_workspace_root";
+
+const readWorkspaceRootSetting = (): string | null => {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(PORTAL_WORKSPACE_ROOT_KEY);
+  if (!raw) return null;
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const writeWorkspaceRootSetting = (value: string | null): void => {
+  if (typeof window === "undefined") return;
+  if (!value || value.trim().length === 0) {
+    window.localStorage.removeItem(PORTAL_WORKSPACE_ROOT_KEY);
+    return;
+  }
+  window.localStorage.setItem(PORTAL_WORKSPACE_ROOT_KEY, value.trim());
+};
+
+export const getPortalWorkspaceRoot = (): string | null => readWorkspaceRootSetting();
+
+export const setPortalWorkspaceRoot = (value: string | null): void => {
+  writeWorkspaceRootSetting(value);
+};
 
 const asString = (value: unknown): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -90,6 +115,19 @@ export class EngineAPI {
   private clearModelSpecCache() {
     this.cachedModelSpec = null;
     this.cachedModelSpecAtMs = 0;
+  }
+
+  async ensureRunnableModel(): Promise<EngineModelSpec> {
+    const spec = await this.resolveEngineModelSpec();
+    if (!spec) {
+      throw new Error(
+        "No default provider/model configured. Open Provider Setup and choose a tool-capable model."
+      );
+    }
+    if (!isLikelyToolCapableModel(spec.modelID)) {
+      throw new Error(toolCapablePolicyReason(spec.modelID));
+    }
+    return spec;
   }
 
   private async resolveEngineModelSpec(): Promise<EngineModelSpec | null> {
@@ -199,11 +237,15 @@ export class EngineAPI {
 
   async createSession(title = "Web Portal Session"): Promise<string> {
     const modelSpec = await this.resolveEngineModelSpec();
+    const configuredWorkspace = readWorkspaceRootSetting();
     const payload: JsonObject = {
       title,
-      directory: ".",
+      directory: configuredWorkspace || ".",
       permission: DEFAULT_PORTAL_PERMISSION_RULES,
     };
+    if (configuredWorkspace) {
+      payload.workspace_root = configuredWorkspace;
+    }
     if (modelSpec) {
       payload.model = modelSpec;
       payload.provider = modelSpec.providerID;
@@ -291,7 +333,7 @@ export class EngineAPI {
     sessionId: string,
     messageText?: string
   ): Promise<{ runId: string; attachPath: string }> {
-    const modelSpec = await this.resolveEngineModelSpec();
+    const modelSpec = await this.ensureRunnableModel();
     const payload: JsonObject = messageText ? { parts: [{ type: "text", text: messageText }] } : {};
     if (modelSpec) payload.model = modelSpec;
 
@@ -354,6 +396,29 @@ export class EngineAPI {
 
   async getSessionMessages(sessionId: string): Promise<EngineMessage[]> {
     return this.request<EngineMessage[]>(`/session/${encodeURIComponent(sessionId)}/message`);
+  }
+
+  async getSession(sessionId: string): Promise<SessionRecord> {
+    return this.request<SessionRecord>(`/session/${encodeURIComponent(sessionId)}`);
+  }
+
+  async runSessionCommand(
+    sessionId: string,
+    command: string
+  ): Promise<{
+    ok?: boolean;
+    output?: string;
+    stdout?: string;
+    stderr?: string;
+    [key: string]: unknown;
+  }> {
+    return this.request<{ ok?: boolean; output?: string; stdout?: string; stderr?: string }>(
+      `/session/${encodeURIComponent(sessionId)}/command`,
+      {
+        method: "POST",
+        body: JSON.stringify({ command }),
+      }
+    );
   }
 
   async listPermissions(): Promise<PermissionSnapshotResponse> {
@@ -956,6 +1021,9 @@ export interface SessionRecord {
   id: string;
   title: string;
   created_at_ms: number;
+  directory?: string;
+  workspaceRoot?: string;
+  workspace_root?: string;
   workspace?: string;
   [key: string]: unknown;
 }

@@ -569,8 +569,13 @@ EOF
 
 # Build and setup portal service
 cd "$PROJECT_DIR"
-if [[ -n "$PNPM_PATH" ]]; then
-  log "Installing/building portal with pnpm"
+NPM_PATH="$(resolve_cmd_path_for_user npm)"
+if [[ -n "$NPM_PATH" && -x "$NPM_PATH" ]]; then
+  log "Installing/building portal with npm"
+  run_as_service_user "$NPM_PATH" install
+  run_as_service_user "$NPM_PATH" run build
+elif [[ "${SETUP_ALLOW_PNPM_FALLBACK:-0}" == "1" && -n "$PNPM_PATH" ]]; then
+  log "npm unavailable; SETUP_ALLOW_PNPM_FALLBACK=1 so using pnpm for portal build"
   if [[ "$PNPM_PATH" == "corepack:pnpm" ]]; then
     run_as_service_user corepack pnpm install --frozen-lockfile
     run_as_service_user corepack pnpm run build
@@ -579,13 +584,7 @@ if [[ -n "$PNPM_PATH" ]]; then
     run_as_service_user "$PNPM_PATH" run build
   fi
 else
-  NPM_PATH="$(resolve_cmd_path_for_user npm)"
-  if [[ -z "$NPM_PATH" || ! -x "$NPM_PATH" ]]; then
-    fail "Cannot build portal: neither pnpm nor npm available for user '$SERVICE_USER'"
-  fi
-  log "Building portal with npm fallback"
-  run_as_service_user "$NPM_PATH" install
-  run_as_service_user "$NPM_PATH" run build
+  fail "Cannot build portal: npm not available for user '$SERVICE_USER'. Install npm and rerun setup-vps.sh. If you intentionally need pnpm fallback, set SETUP_ALLOW_PNPM_FALLBACK=1."
 fi
 
 if [[ ! -f "$PROJECT_DIR/.env" ]]; then

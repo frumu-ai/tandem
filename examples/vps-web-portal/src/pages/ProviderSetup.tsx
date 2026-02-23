@@ -204,7 +204,8 @@ export const ProviderSetup: React.FC = () => {
       navigate("/research", { replace: true });
     } catch (e) {
       console.error(e);
-      setError("Failed to save provider settings. Verify key/model and try again.");
+      const message = e instanceof Error ? e.message : String(e);
+      setError(`Failed to save provider settings. ${message}`);
     } finally {
       setSaving(false);
     }

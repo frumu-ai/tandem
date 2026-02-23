@@ -3,7 +3,7 @@ import { api } from "../api";
 import { BrainCircuit, Send, FileCode2, Database, FolderGit2, Loader2 } from "lucide-react";
 import { SessionHistory } from "../components/SessionHistory";
 import { ToolCallResult } from "../components/ToolCallResult";
-import { handleCommonRunEvent } from "../utils/liveEventDebug";
+import { attachPortalRunStream } from "../utils/portalRunStream";
 
 interface ChatEvent {
   id: string;
@@ -61,6 +61,7 @@ export const SecondBrainDashboard: React.FC = () => {
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [input, setInput] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [currentWorkspace, setCurrentWorkspace] = useState<string | null>(null);
   const [isThinking, setIsThinking] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -77,6 +78,21 @@ export const SecondBrainDashboard: React.FC = () => {
       ];
       return next.slice(-120);
     });
+  };
+
+  const readSessionWorkspace = async (sid: string): Promise<string | null> => {
+    try {
+      const session = await api.getSession(sid);
+      const workspace =
+        (session.workspaceRoot as string | undefined) ||
+        (session.workspace_root as string | undefined) ||
+        (session.directory as string | undefined) ||
+        null;
+      const normalized = typeof workspace === "string" ? workspace.trim() : "";
+      return normalized.length > 0 ? normalized : null;
+    } catch {
+      return null;
+    }
   };
 
   const refreshPendingApprovals = async (sid: string): Promise<PendingApproval[]> => {
@@ -112,276 +128,168 @@ export const SecondBrainDashboard: React.FC = () => {
   };
 
   const attachRunStream = (sid: string, runId: string) => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
-
     addTrace(`Attaching run stream: ${runId.substring(0, 8)}`);
-    const source = new EventSource(api.getEventStreamUrl(sid, runId));
-    eventSourceRef.current = source;
-    let finalized = false;
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-    let watchdogHandle: ReturnType<typeof setTimeout> | null = null;
-    let runStatePollHandle: ReturnType<typeof setInterval> | null = null;
-    let sawRunEvent = false;
-
-    const finalize = async (reason: string) => {
-      if (finalized) return;
-      finalized = true;
-      addTrace(`Finalizing run: ${reason}`);
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-        timeoutHandle = null;
-      }
-      if (watchdogHandle) {
-        clearTimeout(watchdogHandle);
-        watchdogHandle = null;
-      }
-      if (runStatePollHandle) {
-        clearInterval(runStatePollHandle);
-        runStatePollHandle = null;
-      }
-      try {
-        const history = await api.getSessionMessages(sid);
-        const restored = buildChatEvents(history);
-        if (restored.length > 0) {
-          setMessages(restored);
-        }
-        if (reason === "timeout") {
-          const pending = await refreshPendingApprovals(sid);
-          if (pending.length > 0) {
-            const tools = [...new Set(pending.map((p) => p.tool))].join(", ");
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Math.random().toString(),
-                role: "system",
-                type: "text",
-                content: `[Run is waiting for permission approval: ${tools}. Use "Approve Pending" to continue.]`,
-              },
-            ]);
-            addTrace(`Timeout caused by pending permission approvals: ${tools}.`);
-          } else {
-            setMessages((prev) => [
-              ...prev,
-              {
+    attachPortalRunStream(
+      eventSourceRef,
+      sid,
+      runId,
+      {
+        addSystemLog: (content) => {
+          addTrace(content);
+        },
+        addTextDelta: (delta) => {
+          setMessages((prev) => {
+            const updated = [...prev];
+            const last = updated[updated.length - 1];
+            if (
+              last &&
+              last.role === "agent" &&
+              last.type === "text" &&
+              last.id !== "welcome" &&
+              last.id !== "err"
+            ) {
+              last.content += delta;
+            } else {
+              updated.push({
                 id: Math.random().toString(),
                 role: "agent",
                 type: "text",
-                content:
-                  "[Run timed out in UI. Loaded latest saved session history so you can continue.]",
-              },
-            ]);
-          }
-        } else if (reason === "stream_error") {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: Math.random().toString(),
-              role: "agent",
-              type: "text",
-              content: "[Stream disconnected. Loaded latest saved session history.]",
-            },
-          ]);
-        } else if (reason === "inactive_no_events") {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: Math.random().toString(),
-              role: "agent",
-              type: "text",
-              content:
-                "[Run ended before live deltas arrived. Check provider key/model and engine logs.]",
-            },
-          ]);
-        } else if (reason === "inactive") {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: Math.random().toString(),
-              role: "system",
-              type: "text",
-              content:
-                "[Run became inactive with no terminal stream event. Synced latest history.]",
-            },
-          ]);
-        }
-      } catch (err) {
-        console.error("Failed to load session history after run", err);
-        addTrace("Failed to reload session history after finalize.");
-      } finally {
-        setIsThinking(false);
-        source.close();
-        if (eventSourceRef.current === source) {
-          eventSourceRef.current = null;
-        }
-      }
-    };
-
-    timeoutHandle = setTimeout(() => {
-      addTrace(`Run timeout reached (${RUN_TIMEOUT_MS}ms).`);
-      void finalize("timeout");
-    }, RUN_TIMEOUT_MS);
-    watchdogHandle = setTimeout(async () => {
-      if (finalized || sawRunEvent) return;
-      try {
-        const runState = await api.getActiveRun(sid);
-        if (!runState?.active) {
-          addTrace("No events and run is already inactive.");
-          void finalize("inactive_no_events");
-          return;
-        }
-        const pending = await refreshPendingApprovals(sid);
-        if (pending.length > 0) {
-          const tools = [...new Set(pending.map((p) => p.tool))].join(", ");
-          addTrace(`Run is blocked on permission approval: ${tools}.`);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: Math.random().toString(),
-              role: "system",
-              type: "text",
-              content: `Run is waiting for permission approval: ${tools}.`,
-            },
-          ]);
-          return;
-        }
-        addTrace("Run active but no live deltas yet.");
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: Math.random().toString(),
-            role: "system",
-            type: "text",
-            content: "Run is active but no live deltas yet. Waiting for provider output...",
-          },
-        ]);
-      } catch {
-        addTrace("No events yet and run-state check failed.");
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: Math.random().toString(),
-            role: "system",
-            type: "text",
-            content: "No live events yet and failed to query run state.",
-          },
-        ]);
-      }
-    }, 4000);
-    runStatePollHandle = setInterval(async () => {
-      if (finalized) return;
-      try {
-        const runState = await api.getActiveRun(sid);
-        if (!runState?.active) {
-          addTrace("Run became inactive from periodic poll.");
-          void finalize("inactive");
-        }
-      } catch {
-        // keep stream attached
-      }
-    }, 5000);
-
-    source.onmessage = (evt) => {
-      try {
-        const data = JSON.parse(evt.data);
-        if (data.type !== "server.connected" && data.type !== "engine.lifecycle.ready") {
-          sawRunEvent = true;
-        }
-
-        if (
-          handleCommonRunEvent(
-            data,
-            (event) => addTrace(event.content),
-            (status) => finalize(status)
-          )
-        ) {
-          return;
-        }
-
-        if (data.type === "message.part.updated") {
-          const part = data.properties?.part;
-          if (!part) return;
-
-          if (part.type === "tool") {
-            if (part.state?.status === "running") {
-              addTrace(`Tool started: ${part.tool}`);
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: Math.random().toString(),
-                  role: "agent",
-                  type: "tool_start",
-                  content: `Using tool: ${part.tool}`,
-                  toolName: part.tool,
-                },
-              ]);
-            } else if (part.state?.status === "completed") {
-              let rString = "";
-              if (part.state.result) {
-                rString =
-                  typeof part.state.result === "string"
-                    ? part.state.result
-                    : JSON.stringify(part.state.result);
-              }
-              addTrace(`Tool completed: ${part.tool}`);
-
-              setMessages((prev) => {
-                const updated = [...prev];
-                let lastStartIdx = -1;
-                for (let i = prev.length - 1; i >= 0; i--) {
-                  if (prev[i].type === "tool_start" && prev[i].toolName === part.tool) {
-                    lastStartIdx = i;
-                    break;
-                  }
-                }
-
-                if (lastStartIdx !== -1) {
-                  updated[lastStartIdx] = {
-                    ...updated[lastStartIdx],
-                    type: "tool_end",
-                    content: `Tool completed: ${part.tool}`,
-                    toolResult: rString,
-                  };
-                  return updated;
-                }
-                return prev;
+                content: delta,
               });
             }
-          } else if (part.type === "text" && data.properties?.delta) {
-            setMessages((prev) => {
-              const updated = [...prev];
-              const last = updated[updated.length - 1];
-              if (
-                last &&
-                last.role === "agent" &&
-                last.type === "text" &&
-                last.id !== "welcome" &&
-                last.id !== "err"
-              ) {
-                last.content += data.properties.delta;
-              } else {
-                updated.push({
-                  id: Math.random().toString(),
-                  role: "agent",
-                  type: "text",
-                  content: data.properties.delta,
-                });
+            return updated;
+          });
+        },
+        onToolStart: ({ tool }) => {
+          addTrace(`Tool started: ${tool}`);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Math.random().toString(),
+              role: "agent",
+              type: "tool_start",
+              content: `Using tool: ${tool}`,
+              toolName: tool,
+            },
+          ]);
+        },
+        onToolEnd: ({ tool, result }) => {
+          addTrace(`Tool completed: ${tool}`);
+          setMessages((prev) => {
+            const updated = [...prev];
+            let lastStartIdx = -1;
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].type === "tool_start" && prev[i].toolName === tool) {
+                lastStartIdx = i;
+                break;
               }
+            }
+
+            if (lastStartIdx !== -1) {
+              updated[lastStartIdx] = {
+                ...updated[lastStartIdx],
+                type: "tool_end",
+                content: `Tool completed: ${tool}`,
+                toolResult: result,
+              };
               return updated;
-            });
-          }
-        }
-      } catch (err) {
-        console.error("Second Brain stream parse error", err);
-        addTrace("Failed to parse stream event payload.");
-      }
-    };
-    source.onerror = () => {
-      addTrace("Stream disconnected.");
-      void finalize("stream_error");
-    };
+            }
+            return prev;
+          });
+        },
+        onFinalize: (status) => {
+          void (async () => {
+            addTrace(`Finalizing run: ${status}`);
+            try {
+              const history = await api.getSessionMessages(sid);
+              const restored = buildChatEvents(history);
+              if (restored.length > 0) {
+                setMessages(restored);
+              }
+              const pending = await refreshPendingApprovals(sid);
+              if (status === "timeout") {
+                if (pending.length > 0) {
+                  const tools = [...new Set(pending.map((p) => p.tool))].join(", ");
+                  setMessages((prev) => [
+                    ...prev,
+                    {
+                      id: Math.random().toString(),
+                      role: "system",
+                      type: "text",
+                      content: `[Run is waiting for permission approval: ${tools}. Use "Approve Pending" to continue.]`,
+                    },
+                  ]);
+                  addTrace(`Timeout caused by pending permission approvals: ${tools}.`);
+                } else {
+                  setMessages((prev) => [
+                    ...prev,
+                    {
+                      id: Math.random().toString(),
+                      role: "agent",
+                      type: "text",
+                      content:
+                        "[Run timed out in UI. Loaded latest saved session history so you can continue.]",
+                    },
+                  ]);
+                }
+              } else if (status === "stream_error") {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: Math.random().toString(),
+                    role: "agent",
+                    type: "text",
+                    content: "[Stream disconnected. Loaded latest saved session history.]",
+                  },
+                ]);
+              } else if (status === "inactive_no_events") {
+                if (pending.length > 0) {
+                  const tools = [...new Set(pending.map((p) => p.tool))].join(", ");
+                  setMessages((prev) => [
+                    ...prev,
+                    {
+                      id: Math.random().toString(),
+                      role: "system",
+                      type: "text",
+                      content: `[Run is waiting for permission approval: ${tools}. Use "Approve Pending" to continue.]`,
+                    },
+                  ]);
+                  addTrace(`Run blocked on permission approval: ${tools}.`);
+                } else {
+                  setMessages((prev) => [
+                    ...prev,
+                    {
+                      id: Math.random().toString(),
+                      role: "agent",
+                      type: "text",
+                      content:
+                        "[Run ended before live deltas arrived. Check provider key/model and engine logs.]",
+                    },
+                  ]);
+                }
+              } else if (status === "inactive") {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: Math.random().toString(),
+                    role: "system",
+                    type: "text",
+                    content:
+                      "[Run became inactive with no terminal stream event. Synced latest history.]",
+                  },
+                ]);
+              }
+            } catch (err) {
+              console.error("Failed to load session history after run", err);
+              addTrace("Failed to reload session history after finalize.");
+            } finally {
+              setIsThinking(false);
+            }
+          })();
+        },
+      },
+      { runTimeoutMs: RUN_TIMEOUT_MS }
+    );
   };
 
   const loadSession = async (sid: string) => {
@@ -399,6 +307,9 @@ export const SecondBrainDashboard: React.FC = () => {
       localStorage.setItem(SECOND_BRAIN_SESSION_KEY, sid);
       addTrace(`Loading session ${sid.substring(0, 8)}.`);
       void refreshPendingApprovals(sid);
+      const workspacePath = (await readSessionWorkspace(sid)) || "unknown";
+      setCurrentWorkspace(workspacePath);
+      addTrace(`Session workspace: ${workspacePath}`);
       const history = await api.getSessionMessages(sid);
       const restored = buildChatEvents(history);
 
@@ -457,10 +368,22 @@ export const SecondBrainDashboard: React.FC = () => {
         const sid = await api.createSession("Second Brain MVP");
         localStorage.setItem(SECOND_BRAIN_SESSION_KEY, sid);
         setSessionId(sid);
+        const workspacePath = (await readSessionWorkspace(sid)) || ".";
+        setCurrentWorkspace(workspacePath);
         // System prompt sets up the MCP expectation for new sessions only.
-        const prompt = `You are a Second Brain AI assistant. You have access to the local server's workspace via MCP tools and memory_store capabilities. When users ask you to learn a folder, use the memory_store tool to index local files, and output a summary into 'out/index_stats.json'. When answering questions, write your detailed answer to 'out/answers.md' alongside citing the file paths in your chat response.`;
+        const prompt = `You are a Second Brain AI assistant with live tool access.
+Current workspace root: ${workspacePath}
+
+Operational rules:
+1. Never claim sandbox/permission restrictions unless a tool returns an explicit denial/error.
+2. For questions about files, folders, or current directory, run a tool first (for example bash with "pwd", or list/glob/read) and report the actual result.
+3. If a tool fails, include the exact failure message and suggest the next concrete step.
+4. When users ask you to learn a folder, use memory_store to index local files and output summary stats to 'out/index_stats.json'.
+5. When answering questions, write detailed output to 'out/answers.md' and cite file paths in your chat reply.`;
         await api.sendMessage(sid, prompt);
-        addTrace(`Created new session ${sid.substring(0, 8)} and primed instructions.`);
+        addTrace(
+          `Created new session ${sid.substring(0, 8)} with workspace ${workspacePath} and primed instructions.`
+        );
         setMessages([
           {
             id: "welcome",
@@ -502,6 +425,87 @@ export const SecondBrainDashboard: React.FC = () => {
       ...prev,
       { id: Math.random().toString(), role: "user", type: "text", content: userMsg },
     ]);
+
+    // Deterministic answer for workspace/cwd questions (avoids model-level hallucinated denials).
+    if (
+      /\b(cwd|working\s*dir(?:ectory)?|current\s*dir(?:ectory)?|what\s+directory|which\s+directory)\b/i.test(
+        userMsg
+      )
+    ) {
+      const workspacePath =
+        (sessionId ? await readSessionWorkspace(sessionId) : null) || currentWorkspace;
+      const resolved = workspacePath || "(unknown)";
+      addTrace(`Workspace question detected; executing 'pwd' for concrete answer.`);
+      try {
+        const result = await api.runSessionCommand(sessionId, "pwd");
+        const stdout =
+          (result.stdout || result.output || "").toString().trim().replace(/\r\n/g, "\n") ||
+          resolved;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Math.random().toString(),
+            role: "agent",
+            type: "text",
+            content: `Current workspace for this session: ${stdout}`,
+          },
+        ]);
+        addTrace(`pwd => ${stdout}`);
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        addTrace(`pwd command failed: ${errorMessage}`);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Math.random().toString(),
+            role: "agent",
+            type: "text",
+            content: `Current workspace for this session: ${resolved}\n(Command error: ${errorMessage})`,
+          },
+        ]);
+      }
+      return;
+    }
+
+    if (
+      /\b(list\s+files|show\s+files|what\s+files|which\s+files|ls\b|list\s+directory|files\s+in\s+this\s+directory)\b/i.test(
+        userMsg
+      )
+    ) {
+      addTrace(`File-list question detected; executing 'ls -la'.`);
+      try {
+        const result = await api.runSessionCommand(sessionId, "ls -la");
+        const output = (result.stdout || result.output || result.stderr || "")
+          .toString()
+          .trim()
+          .replace(/\r\n/g, "\n");
+        const content = output.length > 0 ? output : "(no output)";
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Math.random().toString(),
+            role: "agent",
+            type: "text",
+            content: `Directory listing:\n\n${content}`,
+          },
+        ]);
+        addTrace(`ls -la completed (${content.length} chars).`);
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        addTrace(`ls -la failed: ${errorMessage}`);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Math.random().toString(),
+            role: "agent",
+            type: "text",
+            content: `Failed to list files with 'ls -la': ${errorMessage}`,
+          },
+        ]);
+      }
+      return;
+    }
+
     setIsThinking(true);
     addTrace("Submitting prompt to async run.");
 
@@ -533,6 +537,7 @@ export const SecondBrainDashboard: React.FC = () => {
     localStorage.removeItem(SECOND_BRAIN_SESSION_KEY);
     setMessages([]);
     setSessionId(null);
+    setCurrentWorkspace(null);
     setIsThinking(false);
     setRuntimeTrace([]);
     setPendingApprovals([]);
@@ -540,7 +545,10 @@ export const SecondBrainDashboard: React.FC = () => {
       const sid = await api.createSession("Second Brain MVP");
       localStorage.setItem(SECOND_BRAIN_SESSION_KEY, sid);
       setSessionId(sid);
+      const workspacePath = (await readSessionWorkspace(sid)) || ".";
+      setCurrentWorkspace(workspacePath);
       addTrace(`Session reset. New session ${sid.substring(0, 8)}.`);
+      addTrace(`Session workspace: ${workspacePath}`);
       setMessages([
         {
           id: "welcome",
@@ -594,6 +602,10 @@ export const SecondBrainDashboard: React.FC = () => {
           </p>
           <p className="text-gray-500 mt-2 text-xs">
             Demonstrates MCP integration running on the local VPS engine daemon.
+          </p>
+          <p className="text-gray-400 mt-1 text-xs">
+            Current workspace:{" "}
+            <span className="font-mono text-gray-300">{currentWorkspace || "(loading...)"}</span>
           </p>
           <div className="mt-3 border border-gray-800 rounded bg-gray-950/70">
             <div className="px-3 py-1.5 text-[11px] tracking-wide text-gray-400 border-b border-gray-800 flex items-center justify-between gap-2">
@@ -714,6 +726,7 @@ export const SecondBrainDashboard: React.FC = () => {
           currentSessionId={sessionId}
           onSelectSession={loadSession}
           query="Second Brain"
+          scopePrefix="Second Brain"
           className="w-full"
         />
       </div>
