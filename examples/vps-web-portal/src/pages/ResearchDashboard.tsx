@@ -54,6 +54,33 @@ export const ResearchDashboard: React.FC = () => {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
+  const syncSessionHistoryIntoLogs = async (sessionId: string) => {
+    try {
+      const messages = await api.getSessionMessages(sessionId);
+      const restoredLogs = buildLogsFromMessages(messages).filter(
+        (entry) => !entry.content.startsWith("User:")
+      );
+      if (restoredLogs.length === 0) {
+        addLog({
+          type: "system",
+          content: "Run completed with no assistant transcript in session history.",
+        });
+        return;
+      }
+      setLogs((prev) => {
+        const existingText = new Set(
+          prev.filter((item) => item.type === "text").map((item) => item.content)
+        );
+        const missing = restoredLogs.filter((item) => !existingText.has(item.content));
+        if (missing.length === 0) return prev;
+        return [...prev, ...missing];
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      addLog({ type: "system", content: `Failed to sync session history: ${errorMessage}` });
+    }
+  };
+
   // Auto-scroll logs
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -77,8 +104,11 @@ export const ResearchDashboard: React.FC = () => {
           toolResult: result,
         }),
       onFinalize: (status) => {
-        addLog({ type: "system", content: `Run finished with status: ${status}` });
-        setIsRunning(false);
+        void (async () => {
+          addLog({ type: "system", content: `Run finished with status: ${status}` });
+          await syncSessionHistoryIntoLogs(sessionId);
+          setIsRunning(false);
+        })();
       },
     });
   };
