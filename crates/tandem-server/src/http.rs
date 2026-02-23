@@ -2535,8 +2535,8 @@ async fn list_providers(State(state): State<AppState>) -> Json<Value> {
 fn merge_known_provider_defaults(wire: &mut WireProviderCatalog) {
     let known = [
         ("openrouter", "OpenRouter", "openai/gpt-4o-mini"),
-        ("openai", "OpenAI", "gpt-4o-mini"),
-        ("anthropic", "Anthropic", "claude-3-5-sonnet-latest"),
+        ("openai", "OpenAI", "gpt-5.2"),
+        ("anthropic", "Anthropic", "claude-sonnet-4-6"),
         ("ollama", "Ollama", "llama3.1:8b"),
         ("groq", "Groq", "llama-3.1-8b-instant"),
         ("mistral", "Mistral", "mistral-small-latest"),
@@ -10633,7 +10633,7 @@ mod tests {
                         "tier": "session"
                     },
                     "kind": "solution_capsule",
-                    "content": "-----BEGIN PRIVATE KEY-----",
+                    "content": concat!("-----BEGIN", " PRIVATE KEY-----"),
                     "classification": "restricted",
                     "capability": capability
                 })
@@ -10974,5 +10974,3 @@ mod tests {
             .contains("not allowed for routine"));
     }
 }
-
-

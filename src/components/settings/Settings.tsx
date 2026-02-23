@@ -142,6 +142,10 @@ export function Settings({
   const [customModel, setCustomModel] = useState("");
   const [customApiKey, setCustomApiKey] = useState("");
   const [customEnabled, setCustomEnabled] = useState(false);
+  const [customProviderNotice, setCustomProviderNotice] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
 
   // Git initialization dialog state
   const [showGitDialog, setShowGitDialog] = useState(false);
@@ -614,7 +618,13 @@ export function Settings({
   };
 
   const handleCustomProviderSave = async () => {
-    if (!providers || !customEndpoint.trim()) return;
+    if (!providers || !customEndpoint.trim()) {
+      setCustomProviderNotice({
+        kind: "error",
+        message: "Custom endpoint is required.",
+      });
+      return;
+    }
     const normalizedModel = customModel.trim();
     const selectedModel =
       customEnabled && normalizedModel.length > 0
@@ -641,16 +651,26 @@ export function Settings({
       selected_model: selectedModel,
     };
 
-    setProviders(updated);
-    await setProvidersConfig(updated);
+    try {
+      setProviders(updated);
+      await setProvidersConfig(updated);
 
-    // Store custom API key if provided
-    if (customApiKey.trim() && customEnabled) {
-      try {
+      // Store custom API key if provided
+      if (customApiKey.trim() && customEnabled) {
         await storeApiKey("custom_provider", customApiKey);
-      } catch (err) {
-        console.error("Failed to store custom API key:", err);
       }
+
+      onProviderChange?.();
+      setCustomProviderNotice({
+        kind: "success",
+        message: "Custom provider saved.",
+      });
+    } catch (err) {
+      console.error("Failed to save custom provider:", err);
+      setCustomProviderNotice({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Failed to save custom provider. Check logs.",
+      });
     }
   };
 
@@ -1696,6 +1716,17 @@ export function Settings({
                         >
                           {t("providersPanel.saveCustomProvider", { ns: "settings" })}
                         </Button>
+                        {customProviderNotice && (
+                          <p
+                            className={
+                              customProviderNotice.kind === "success"
+                                ? "text-xs text-success"
+                                : "text-xs text-error"
+                            }
+                          >
+                            {customProviderNotice.message}
+                          </p>
+                        )}
                       </CardContent>
                     </motion.div>
                   )}

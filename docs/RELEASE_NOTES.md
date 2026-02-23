@@ -9,6 +9,15 @@
   - Migration examples:
     - Old: `{"tool":"webfetch_document","args":{"url":"https://example.com","return":"both","mode":"auto"}}`
     - New: `{"tool":"webfetch","args":{"url":"https://example.com","return":"both","mode":"auto"}}`
+- **Custom provider + llama-swap reliability uplift**:
+  - Fixed custom provider runtime registration so enabled custom endpoint/model selections are persisted into engine provider config (`providers.custom`) and selected consistently.
+  - Hardened OpenAI-compatible endpoint normalization for custom providers (handles trailing `/v1`, duplicated `/v1/v1`, and accidental full-path endpoints like `/v1/chat/completions`).
+  - Added engine support for custom/non-built-in provider IDs from config, preventing `configured providers: local` fallback when custom is selected.
+  - Added short retry behavior on transient connection/timeout failures for OpenAI-compatible provider calls.
+  - Improved provider error diagnostics to include endpoint + failure category (`connection error` / `timeout`) for faster local-gateway troubleshooting.
+- **Provider settings UX improvements**:
+  - Saving **Custom Provider** now surfaces explicit success/error feedback in Settings.
+  - Anthropic/OpenAI settings now use text-input-first model selection with refreshed current model suggestions and clearer provider-specific placeholders.
 
 ---
 

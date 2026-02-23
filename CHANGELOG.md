@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Channel command docs**: Updated channel integration docs/help text to reflect expanded command coverage and model control from chat channels.
+- **Provider settings model UX**: Anthropic/OpenAI settings now use text-input-first model selection with updated current model suggestions and clearer provider-specific placeholders.
+
+### Fixed
+
+- **Custom provider config sync (llama-swap/OpenAI-compatible)**: Desktop now writes enabled custom provider endpoint/model into engine config (`providers.custom`) and updates default-provider routing when custom is selected.
+- **Custom provider registry support**: Engine provider registry now accepts custom/non-built-in provider IDs from config instead of falling back to `local` only.
+- **Custom endpoint normalization hardening**: OpenAI-compatible base URL normalization now handles trailing `/v1`, repeated `/v1/v1`, and full-path inputs (for example `/v1/chat/completions`) to prevent malformed request URLs.
+- **Transient provider reachability resilience**: Added short retry behavior for connection/timeout failures when calling OpenAI-compatible providers, reducing one-off local gateway startup hiccups.
+- **Settings save feedback**: Saving Custom Provider in Settings now shows explicit success/error feedback instead of silently completing with no user confirmation.
+- **Provider error diagnostics**: Provider call failures now include clearer endpoint + failure-category guidance (`connection error` / `timeout`) to speed up local gateway troubleshooting.
 
 ## [0.3.14]
 

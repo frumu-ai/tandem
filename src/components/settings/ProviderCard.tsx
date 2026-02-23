@@ -34,23 +34,6 @@ import { useTranslation } from "react-i18next";
 
 // Popular/suggested models for providers with limited options
 const PROVIDER_MODELS: Record<string, { id: string; name: string; description?: string }[]> = {
-  anthropic: [
-    {
-      id: "claude-sonnet-4-20250514",
-      name: "Sonnet 4",
-      description: "Latest, most intelligent",
-    },
-    { id: "claude-3-5-sonnet-20241022", name: "3.5 Sonnet", description: "Fast & capable" },
-    { id: "claude-3-5-haiku-20241022", name: "3.5 Haiku", description: "Fastest" },
-    { id: "claude-3-opus-20240229", name: "3 Opus", description: "Most capable (legacy)" },
-  ],
-  openai: [
-    { id: "gpt-4o", name: "GPT-4o", description: "Flagship model" },
-    { id: "gpt-4o-mini", name: "GPT-4o Mini", description: "Fast & affordable" },
-    { id: "gpt-4-turbo", name: "GPT-4 Turbo", description: "Previous flagship" },
-    { id: "o1", name: "o1", description: "Reasoning model" },
-    { id: "o1-mini", name: "o1 Mini", description: "Fast reasoning" },
-  ],
   opencode_zen: [
     { id: "minimax-m2.1-free", name: "Minimax M2", description: "Free (Flash)" },
     { id: "gpt-5-nano", name: "GPT 5 Nano", description: "Free" },
@@ -65,6 +48,13 @@ const PROVIDER_MODELS: Record<string, { id: string; name: string; description?: 
 
 // Suggested models for text input (shown as placeholder examples)
 const SUGGESTED_MODELS: Record<string, string[]> = {
+  anthropic: [
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+  ],
+  openai: ["gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4.1"],
   openrouter: [
     "anthropic/claude-sonnet-4",
     "anthropic/claude-3.5-sonnet",
@@ -86,8 +76,9 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
   ],
 };
 
-// Providers that use free-form text input (have too many models for a dropdown)
-const TEXT_INPUT_PROVIDERS = ["openrouter", "ollama", "opencode_zen"];
+// Providers that use free-form text input.
+// This avoids stale static dropdowns when live catalogs are unavailable.
+const TEXT_INPUT_PROVIDERS = ["anthropic", "openai", "openrouter", "ollama", "opencode_zen"];
 
 interface ProviderCardProps {
   id: ApiKeyType;
@@ -145,6 +136,8 @@ export function ProviderCard({
   const isTextInputProvider = TEXT_INPUT_PROVIDERS.includes(id);
   const staticModels: ModelOption[] = PROVIDER_MODELS[id] || [];
   const catalogModels = [...new Set(catalogModelIds.map((m) => m.trim()).filter(Boolean))];
+  const curatedSuggestions = SUGGESTED_MODELS[id] || [];
+  const preferCuratedSuggestions = id === "anthropic" || id === "openai";
   const availableModels: ModelOption[] =
     catalogModels.length > 0
       ? catalogModels.map((modelId) => ({
@@ -157,9 +150,19 @@ export function ProviderCard({
   const suggestions =
     id === "ollama" && discoveredModels.length > 0
       ? discoveredModels.map((m) => m.id)
-      : catalogModels.length > 0
-        ? catalogModels
-        : SUGGESTED_MODELS[id] || [];
+      : preferCuratedSuggestions
+        ? [...new Set([...curatedSuggestions, ...catalogModels])]
+        : catalogModels.length > 0
+          ? catalogModels
+          : curatedSuggestions;
+  const modelInputPlaceholder =
+    id === "openrouter"
+      ? t("providerCard.placeholders.modelOpenRouter", { ns: "settings" })
+      : id === "anthropic"
+        ? "claude-sonnet-4-6"
+        : id === "openai"
+          ? "gpt-5.2"
+          : t("providerCard.placeholders.modelGeneric", { ns: "settings" });
 
   const selectedModel = model || availableModels[0]?.id || "";
   const selectedModelInfo = availableModels.find((m) => m.id === selectedModel);
@@ -345,11 +348,7 @@ export function ProviderCard({
                   <div className="relative">
                     <Input
                       type="text"
-                      placeholder={
-                        id === "openrouter"
-                          ? t("providerCard.placeholders.modelOpenRouter", { ns: "settings" })
-                          : t("providerCard.placeholders.modelGeneric", { ns: "settings" })
-                      }
+                      placeholder={modelInputPlaceholder}
                       value={modelInput}
                       onChange={(e) => {
                         setModelInput(e.target.value);

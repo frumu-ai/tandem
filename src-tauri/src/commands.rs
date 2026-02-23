@@ -1321,6 +1321,7 @@ pub async fn set_active_project(
                 let config = state.providers_config.read().unwrap();
                 config.clone()
             };
+            let _ = sync_custom_provider_config_file(&providers);
             sync_ollama_env(&state, &providers).await;
             sync_provider_keys_env(&app, &state, &providers).await;
             sync_channel_tokens_env(&app, &state).await;
@@ -1981,6 +1982,92 @@ async fn get_channel_connections_inner(
     ))
 }
 
+fn selected_custom_model_signature(config: &ProvidersConfig) -> Option<String> {
+    let selected = config.selected_model.as_ref()?;
+    if selected.provider_id.trim().eq_ignore_ascii_case("custom") {
+        let model = selected.model_id.trim();
+        if !model.is_empty() {
+            return Some(model.to_string());
+        }
+    }
+    None
+}
+
+fn sync_custom_provider_config_file(config: &ProvidersConfig) -> Result<()> {
+    let custom_provider = config
+        .custom
+        .iter()
+        .find(|c| c.enabled && !c.endpoint.trim().is_empty());
+
+    let config_path = crate::tandem_config::global_config_path()?;
+    crate::tandem_config::update_config_at(&config_path, |cfg| {
+        let root = if let Some(root) = cfg.as_object_mut() {
+            root
+        } else {
+            *cfg = serde_json::Value::Object(serde_json::Map::new());
+            cfg.as_object_mut().expect("config must be object")
+        };
+
+        let providers_value = root
+            .entry("providers".to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        let providers = if let Some(obj) = providers_value.as_object_mut() {
+            obj
+        } else {
+            *providers_value = serde_json::Value::Object(serde_json::Map::new());
+            providers_value
+                .as_object_mut()
+                .expect("providers must be object")
+        };
+
+        match custom_provider {
+            Some(custom) => {
+                let endpoint = custom.endpoint.trim();
+                let default_model = custom
+                    .model
+                    .as_ref()
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty());
+
+                let mut custom_cfg = serde_json::Map::new();
+                custom_cfg.insert(
+                    "url".to_string(),
+                    serde_json::Value::String(endpoint.to_string()),
+                );
+                if let Some(model) = default_model {
+                    custom_cfg.insert(
+                        "default_model".to_string(),
+                        serde_json::Value::String(model),
+                    );
+                }
+                providers.insert("custom".to_string(), serde_json::Value::Object(custom_cfg));
+
+                let selected_custom = selected_custom_model_signature(config).is_some();
+                if custom.default || selected_custom {
+                    root.insert(
+                        "default_provider".to_string(),
+                        serde_json::Value::String("custom".to_string()),
+                    );
+                }
+            }
+            None => {
+                providers.remove("custom");
+                let should_clear_default = root
+                    .get("default_provider")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.eq_ignore_ascii_case("custom"))
+                    .unwrap_or(false);
+                if should_clear_default {
+                    root.remove("default_provider");
+                }
+            }
+        }
+
+        Ok(())
+    })?;
+    Ok(())
+}
+
 async fn sync_ollama_env(state: &AppState, config: &ProvidersConfig) {
     if config.ollama.enabled {
         let endpoint = config.ollama.endpoint.trim();
@@ -2141,6 +2228,11 @@ async fn sync_provider_keys_runtime_auth(
             let _ = state.sidecar.set_provider_auth("poe", &key).await;
         }
     }
+    if provider_slot_active(config, "custom") {
+        if let Ok(Some(key)) = get_api_key(app, "custom_provider").await {
+            let _ = state.sidecar.set_provider_auth("custom", &key).await;
+        }
+    }
 }
 
 /// Set the providers configuration
@@ -2171,8 +2263,14 @@ pub async fn set_providers_config(
         let _ = store.save();
     }
 
+    sync_custom_provider_config_file(&config)?;
+
     let ollama_changed = previous_config.ollama.enabled != config.ollama.enabled
         || previous_config.ollama.endpoint != config.ollama.endpoint;
+    let custom_changed = serde_json::to_value(&previous_config.custom).ok()
+        != serde_json::to_value(&config.custom).ok()
+        || selected_custom_model_signature(&previous_config)
+            != selected_custom_model_signature(&config);
 
     let key_providers_changed = previous_config.openrouter.enabled != config.openrouter.enabled
         || previous_config.opencode_zen.enabled != config.opencode_zen.enabled
@@ -2181,7 +2279,7 @@ pub async fn set_providers_config(
         || previous_config.poe.enabled != config.poe.enabled
         || selected_provider_slot(&previous_config) != selected_provider_slot(&config);
 
-    if ollama_changed || key_providers_changed {
+    if ollama_changed || key_providers_changed || custom_changed {
         sync_ollama_env(&state, &config).await;
         sync_provider_keys_env(&app, &state, &config).await;
 
@@ -2381,6 +2479,8 @@ pub async fn start_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result
         let config = state.providers_config.read().unwrap();
         config.clone()
     };
+
+    sync_custom_provider_config_file(&providers)?;
 
     // Configure Ollama endpoint env (local models)
     sync_ollama_env(&state, &providers).await;
@@ -9377,5 +9477,3 @@ mod tests {
         }
     }
 }
-
-

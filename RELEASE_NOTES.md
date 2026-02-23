@@ -8,6 +8,15 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - `webfetch_document` was removed.
   - `webfetch` is now markdown-first and returns structured JSON output by default.
   - Use `webfetch_html` when raw HTML output is explicitly required.
+- Custom provider + llama-swap compatibility and diagnostics:
+  - Fixed custom provider config propagation so enabled custom endpoints/models are registered in engine runtime config (`providers.custom`) and selected correctly.
+  - Fixed OpenAI-compatible endpoint normalization to prevent malformed URLs (for example `/v1/v1/chat/completions`) from trailing/duplicated path input.
+  - Added support for custom/non-built-in provider IDs in engine provider registry (prevents fallback to `local`-only configured providers).
+  - Added short retry handling for transient connection/timeout provider-call failures.
+  - Improved provider error messaging with endpoint + failure category details to make connectivity issues actionable.
+- Settings UX improvements for custom providers:
+  - Added explicit success/error feedback after clicking **Save Custom Provider**.
+  - Updated Anthropic/OpenAI model selection UX to text-input-first with refreshed current model suggestions and clearer placeholders.
 - Channel integrations: expanded slash-command control/visibility directly from Telegram/Discord/Slack:
   - `/run` for active run status
   - `/cancel` (and `/abort`) for run cancellation

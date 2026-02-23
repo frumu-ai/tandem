@@ -437,7 +437,7 @@ fn env_layer() -> Value {
                     "openai": {
                         "api_key": api_key,
                         "url": "https://api.openai.com/v1",
-                        "default_model": "gpt-4o-mini"
+                        "default_model": "gpt-5.2"
                     }
                 }
             }),
@@ -514,7 +514,7 @@ fn env_layer() -> Value {
                     "anthropic": {
                         "api_key": api_key,
                         "url": "https://api.anthropic.com/v1",
-                        "default_model": "claude-3-5-sonnet-latest"
+                        "default_model": "claude-sonnet-4-6"
                     }
                 }
             }),
