@@ -493,7 +493,7 @@ Operational rules:
     }
 
     if (
-      /\b(list\s+files|show\s+files|what\s+files|which\s+files|ls\b|list\s+directory|files\s+in\s+this\s+directory)\b/i.test(
+      /\b(list\s+files|show\s+files|what\s+files|which\s+files|ls\b|list\s+directory|files\s+in\s+this\s+directory|read\s+files|read\s+my\s+files|access\s+files|can\s+you\s+read\s+files|can\s+you\s+access\s+files|browse\s+files)\b/i.test(
         userMsg
       )
     ) {
