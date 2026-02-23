@@ -2,15 +2,19 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.3.12 (Unreleased)
+## v0.3.14 (Unreleased)
+
+- AI hotfix: endless update prompt/version skew
+  - Desktop now prefers bundled engine binaries when AppData sidecar binaries are stale, preventing false "You have v0.3.0" prompts after upgrading.
+  - Engine update overlay version formatting is normalized to avoid duplicated prefixes (for example `vv0.3.12`).
+
+## v0.3.12
 
 - AI hotfix: MCP runtime compatibility
   - Desktop now falls back to `GET /mcp` server `tool_cache` when `GET /mcp/tools` returns `404` on mixed-version engines.
   - Fixes Extensions MCP runtime load failures (`Failed to load MCP runtime`) while older/newer engine components are temporarily out of sync.
 - Registry publish hotfix
   - Fixed crates publish ordering/dependency coverage for `tandem-providers`/`tandem-memory` and `tandem-document`/`tandem-tools` dependency chains.
-
-## v0.3.11
 
 - Issue #14 fix (custom providers + live model lists):
   - Fixed `custom` provider routing so custom endpoint/model selections are honored for chat/automation dispatch.

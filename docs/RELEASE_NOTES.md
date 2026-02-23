@@ -1,4 +1,14 @@
-# Tandem v0.3.12 Release Notes (Unreleased)
+# Tandem v0.3.14 Release Notes (Unreleased)
+
+### Highlights
+
+- **Endless update prompt/version skew hotfix**:
+  - Desktop now prefers bundled engine binaries when AppData sidecar binaries are stale, preventing false old-version update prompts after app upgrade.
+  - Update overlay engine version labels are normalized to avoid duplicated `v` prefixes.
+
+---
+
+# Tandem v0.3.12 Release Notes
 
 ### Highlights
 
@@ -7,10 +17,6 @@
   - Prevents Extensions MCP tab runtime-load failures during app/engine version skew.
 - **Registry publish workflow hotfix**:
   - Corrected crate publish ordering and dependency coverage for tandem workspace crates (`tandem-providers` before `tandem-memory`, plus `tandem-document` before `tandem-tools`).
-
----
-
-# Tandem v0.3.11 Release Notes
 
 ### Highlights
 
