@@ -1,6 +1,6 @@
 [package]
 name = "tandem-channels"
-version = "0.3.15"
+version = "0.3.16"
 description = "External messaging channel integrations for Tandem (Telegram, Discord, Slack)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
