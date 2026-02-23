@@ -576,6 +576,12 @@ cd "$PROJECT_DIR"
 NPM_PATH="$(resolve_cmd_path_for_user npm)"
 if [[ -n "$NPM_PATH" && -x "$NPM_PATH" ]]; then
   log "Installing/building portal with npm"
+  # npm (notably npm 11/arborist) can crash when reifying over pnpm-linked node_modules.
+  # If a previous install used pnpm, purge local install artifacts before npm install.
+  if [[ -d "$PROJECT_DIR/node_modules/.pnpm" || -f "$PROJECT_DIR/node_modules/.modules.yaml" ]]; then
+    log "Detected pnpm-style node_modules; removing local install artifacts before npm install"
+    run_as_service_user rm -rf "$PROJECT_DIR/node_modules" "$PROJECT_DIR/package-lock.json"
+  fi
   run_as_service_user "$NPM_PATH" install
   run_as_service_user "$NPM_PATH" run build
 elif [[ "${SETUP_ALLOW_PNPM_FALLBACK:-0}" == "1" && -n "$PNPM_PATH" ]]; then
