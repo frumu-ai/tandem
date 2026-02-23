@@ -64,6 +64,7 @@ export const TextAdventure: React.FC = () => {
       }
     };
     void restore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const addEvent = (evt: Omit<GameEvent, "id">) => {
@@ -129,8 +130,9 @@ Keep responses under 3 paragraphs plus the 3 choices.`;
       const { runId } = await api.startAsyncRun(sid, prompt);
 
       connectStream(sid, runId);
-    } catch (err: any) {
-      addEvent({ type: "system", content: `CRITICAL ERROR: ${err.message}` });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      addEvent({ type: "system", content: `CRITICAL ERROR: ${errorMessage}` });
       setIsLoading(false);
     }
   };
@@ -142,7 +144,6 @@ Keep responses under 3 paragraphs plus the 3 choices.`;
     }
     const eventSource = new EventSource(api.getEventStreamUrl(sid, rid));
     eventSourceRef.current = eventSource;
-    let activeText = "";
     let finalized = false;
 
     const finalize = async () => {
@@ -174,7 +175,6 @@ Keep responses under 3 paragraphs plus the 3 choices.`;
         data.properties.part.type === "text" &&
         data.properties.delta
       ) {
-        activeText += data.properties.delta;
         // Live typing effect (we could throttle this to React state, but to avoid
         // huge re-renders for every token, we accumulate and flush periodically,
         // or just rely on the end of the text chunk)
@@ -257,8 +257,9 @@ Keep responses under 3 paragraphs plus the 3 choices.`;
       // Also emit as a message to resume the conversation flow
       const { runId } = await api.startAsyncRun(sessionId, choice);
       connectStream(sessionId, runId);
-    } catch (err: any) {
-      addEvent({ type: "system", content: `ERROR: ${err.message}` });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      addEvent({ type: "system", content: `ERROR: ${errorMessage}` });
       setIsLoading(false);
     }
   };

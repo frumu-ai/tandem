@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { api } from "../api";
-import { Loader2, Play, BotMessageSquare } from "lucide-react";
-import { ToolCallResult } from "../components/ToolCallResult";
+import { PenTool, Send, Loader2 } from "lucide-react";
 import { SessionHistory } from "../components/SessionHistory";
+import { ToolCallResult } from "../components/ToolCallResult";
 
 interface LogEvent {
   id: string;
@@ -13,96 +13,77 @@ interface LogEvent {
   toolResult?: string;
 }
 
-const RESEARCH_SESSION_KEY = "tandem_portal_research_session_id";
+const CONTENT_SESSION_KEY = "tandem_portal_content_session_id";
 
-const buildLogsFromMessages = (
-  messages: Awaited<ReturnType<typeof api.getSessionMessages>>
-): LogEvent[] => {
-  return messages.flatMap((m) => {
-    const logs: LogEvent[] = [];
-    const role = m.info?.role;
-
-    // We can also parse out past tool ends from messages if they are of type "tool_result"
-    // For simplicity, we mostly just show the text messages from history.
-    if (role === "user" || role === "assistant") {
-      const text = (m.parts || [])
-        .filter((p) => p.type === "text" && p.text)
-        .map((p) => p.text)
-        .join("\n")
-        .trim();
-
-      if (text) {
-        logs.push({
-          id: Math.random().toString(36).substring(7),
-          timestamp: new Date(),
-          type: "text" as const,
-          content: role === "assistant" ? text : `User: ${text}`,
-        });
-      }
-    }
-
-    return logs;
-  });
-};
-
-export const ResearchDashboard: React.FC = () => {
-  const [query, setQuery] = useState("");
+export const ContentCreatorDashboard: React.FC = () => {
+  const [topic, setTopic] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
-  // Auto-scroll logs
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
-
-  useEffect(() => {
-    const restore = async () => {
-      const sessionId = localStorage.getItem(RESEARCH_SESSION_KEY);
-      if (!sessionId) return;
-      await loadSession(sessionId);
-    };
-    void restore();
-  }, []);
 
   const loadSession = async (sessionId: string) => {
     if (!sessionId) {
       setLogs([]);
       setCurrentSessionId(null);
-      localStorage.removeItem(RESEARCH_SESSION_KEY);
+      localStorage.removeItem(CONTENT_SESSION_KEY);
       return;
     }
 
     try {
       setLogs([]);
       setCurrentSessionId(sessionId);
-      localStorage.setItem(RESEARCH_SESSION_KEY, sessionId);
-
+      localStorage.setItem(CONTENT_SESSION_KEY, sessionId);
       const messages = await api.getSessionMessages(sessionId);
-      const restoredLogs = buildLogsFromMessages(messages);
+
+      const restored: LogEvent[] = messages.flatMap((m) => {
+        if (m.info?.role === "assistant" || m.info?.role === "user") {
+          const text = (m.parts || [])
+            .filter((p) => p.type === "text")
+            .map((p) => p.text)
+            .join("\n");
+          if (text) {
+            return {
+              id: Math.random().toString(),
+              timestamp: new Date(),
+              type: "text",
+              content: m.info?.role === "assistant" ? text : `User: ${text}`,
+            };
+          }
+        }
+        return [];
+      });
 
       setLogs([
         {
           id: "sys-restore",
           timestamp: new Date(),
           type: "system",
-          content: `Restored session: ${sessionId.substring(0, 8)}`,
+          content: `Restored content session: ${sessionId.substring(0, 8)}`,
         },
-        ...restoredLogs,
+        ...restored,
       ]);
-    } catch (err) {
-      console.error("Failed to restore research session", err);
+    } catch {
       setCurrentSessionId(null);
-      localStorage.removeItem(RESEARCH_SESSION_KEY);
     }
   };
 
+  useEffect(() => {
+    const existingSessionId = localStorage.getItem(CONTENT_SESSION_KEY);
+    if (existingSessionId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void loadSession(existingSessionId);
+    }
+  }, []);
+
   const addLog = (event: Omit<LogEvent, "id" | "timestamp">) => {
     setLogs((prev) => {
-      // If this is a tool end, append the result to the matching tool_start
       if (event.type === "tool_end" && event.toolName) {
-        // Fallback for older ES versions without findLastIndex
         let lastStartIdx = -1;
         for (let i = prev.length - 1; i >= 0; i--) {
           if (prev[i].type === "tool_start" && prev[i].toolName === event.toolName) {
@@ -110,7 +91,6 @@ export const ResearchDashboard: React.FC = () => {
             break;
           }
         }
-
         if (lastStartIdx !== -1) {
           const newLogs = [...prev];
           newLogs[lastStartIdx] = {
@@ -122,73 +102,56 @@ export const ResearchDashboard: React.FC = () => {
           return newLogs;
         }
       }
-
       return [
         ...prev,
-        {
-          ...event,
-          id: Math.random().toString(36).substring(7),
-          timestamp: new Date(),
-        },
+        { ...event, id: Math.random().toString(36).substring(7), timestamp: new Date() },
       ];
     });
   };
 
   const handleStart = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim() || isRunning) return;
+    if (!topic.trim() || isRunning) return;
+
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
 
     setLogs([]);
     setIsRunning(true);
     setCurrentSessionId(null);
-    addLog({ type: "system", content: `Initializing research swarm for topic: "${query}"...` });
+    addLog({ type: "system", content: "Initializing Content Creation Pipeline..." });
 
     try {
-      // 1. Create a session
-      const sessionId = await api.createSession(`Research: ${query.substring(0, 20)}...`);
-      localStorage.setItem(RESEARCH_SESSION_KEY, sessionId);
+      const sessionId = await api.createSession(`Content: ${topic.substring(0, 20)}`);
+      localStorage.setItem(CONTENT_SESSION_KEY, sessionId);
       setCurrentSessionId(sessionId);
-      addLog({ type: "system", content: `Session Created: ${sessionId.substring(0, 8)}` });
 
-      // 2. Start the Run
-      const prompt = `Use the webfetch and websearch tools to deeply research the following topic: ${query}. Give me a final unified summary of your findings.`;
+      const prompt = `You are an Expert Technical Writer and Content Marketer.
+The user wants a comprehensive blog post and social media snippets about: "${topic}"
+
+Instructions - Follow this exact pipeline:
+1. Research Strategy (Plan + Todo): Create an outline and research plan. Save to 'out/todos.json' and 'out/outline.md'.
+2. Ingestion: Use the webfetch or websearch tools to gather context. **Pay attention to and explicitly report the Webfetch Markdown compression stats in your final summary.**
+3. Drafting: Write a comprehensive, well-structured markdown post.
+4. Editing: Review against best practices, refine the headers. Save the final blog post to 'out/post.md'.
+5. Distribution: Generate 3 platform-specific variants (e.g. Twitter, LinkedIn hook). Save to 'out/social_snippets.md'.
+Complete all steps autonomously without stopping.`;
+
       const { runId } = await api.startAsyncRun(sessionId, prompt);
-      addLog({ type: "system", content: `Run Started: ${runId.substring(0, 8)}` });
-
-      // 3. Connect to the SSE stream
       const eventSource = new EventSource(api.getEventStreamUrl(sessionId, runId));
+      eventSourceRef.current = eventSource;
       let finalized = false;
 
-      const finalizeRun = async (status: string) => {
+      const finalizeRun = (status: string) => {
         if (finalized) return;
         finalized = true;
-        try {
-          const messages = await api.getSessionMessages(sessionId);
-          const lastAssistant = [...messages]
-            .reverse()
-            .find(
-              (m) =>
-                m.info?.role === "assistant" && m.parts?.some((p) => p.type === "text" && p.text)
-            );
-          const finalText = (lastAssistant?.parts || [])
-            .filter((p) => p.type === "text" && p.text)
-            .map((p) => p.text)
-            .join("\n")
-            .trim();
-          if (finalText) {
-            addLog({ type: "text", content: finalText });
-          }
-        } catch (err) {
-          console.error("Failed to fetch final run output", err);
-        } finally {
-          addLog({
-            type: "system",
-            content: `Run finished with status: ${status}`,
-          });
-          setIsRunning(false);
-          eventSource.close();
-          // Force a small delay to let UI settle then trigger a history refresh via React state if we had a proper global state manager
-        }
+        addLog({
+          type: "system",
+          content: `Pipeline finished with status: ${status}. Artifacts are stored in 'out/'.`,
+        });
+        setIsRunning(false);
+        eventSource.close();
       };
 
       eventSource.onmessage = (evt) => {
@@ -197,16 +160,14 @@ export const ResearchDashboard: React.FC = () => {
 
           if (data.type === "message.part.updated") {
             const part = data.properties.part;
-
             if (part.type === "tool") {
               if (part.state.status === "running") {
                 addLog({
                   type: "tool_start",
-                  content: `Tool started: ${part.tool}`,
+                  content: `Pipeline Step: ${part.tool}`,
                   toolName: part.tool,
                 });
               } else if (part.state.status === "completed") {
-                // Determine if we should parse the result if it was a webfetch
                 let rString = "";
                 if (part.state.result) {
                   rString =
@@ -214,38 +175,28 @@ export const ResearchDashboard: React.FC = () => {
                       ? part.state.result
                       : JSON.stringify(part.state.result);
                 }
-
                 addLog({
                   type: "tool_end",
-                  content: `Tool completed: ${part.tool}`,
+                  content: `Step Completed: ${part.tool}`,
                   toolName: part.tool,
                   toolResult: rString,
                 });
               }
             } else if (part.type === "text" && data.properties.delta) {
-              addLog({
-                type: "text",
-                content: data.properties.delta,
-              });
+              addLog({ type: "text", content: data.properties.delta });
             }
           } else if (
             data.type === "run.status.updated" &&
             (data.properties.status === "completed" || data.properties.status === "failed")
           ) {
-            void finalizeRun(data.properties.status);
-          } else if (
-            data.type === "session.run.finished" &&
-            (data.properties?.status === "completed" || data.properties?.status === "failed")
-          ) {
-            void finalizeRun(data.properties.status);
+            finalizeRun(data.properties.status);
           }
-        } catch (err) {
-          console.error("Failed to parse SSE event", err);
+        } catch (e) {
+          console.error("Stream parse error", e);
         }
       };
 
-      eventSource.onerror = (err) => {
-        console.error("SSE Error", err);
+      eventSource.onerror = () => {
         addLog({ type: "system", content: "Stream disconnected." });
         setIsRunning(false);
         eventSource.close();
@@ -260,47 +211,52 @@ export const ResearchDashboard: React.FC = () => {
   return (
     <div className="flex h-full bg-gray-950">
       <div className="flex-1 flex flex-col p-6 overflow-hidden">
-        <div className="mb-6">
-          <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-            <BotMessageSquare className="text-blue-500" />
-            Deep Research Dashboard
-          </h2>
-          <p className="text-gray-400 mt-1">
-            Watch the engine think in real-time as it uses tools to browse the web.
-          </p>
+        <div className="mb-6 flex justify-between items-start">
+          <div>
+            <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+              <PenTool className="text-purple-500" />
+              Content Creation Pipeline
+            </h2>
+            <p className="text-gray-400 mt-1">
+              Enter a topic. The agent will outline, research, draft, edit, and generate social
+              media copy autonomously.
+            </p>
+          </div>
         </div>
 
         <form onSubmit={handleStart} className="flex gap-4 mb-6 shrink-0">
           <input
             type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="E.g., What are the latest advancements in quantum computing?"
-            className="flex-1 bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            placeholder="E.g., The state of AI Agent tooling in 2026, comparing Tandem vs generic orchestrators..."
+            className="flex-1 bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
             disabled={isRunning}
           />
           <button
             type="submit"
-            disabled={isRunning || !query.trim()}
-            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-6 py-3 rounded-lg font-medium flex items-center gap-2 transition-colors shrink-0"
+            disabled={isRunning || !topic.trim()}
+            className="bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white px-6 py-3 rounded-lg font-medium flex items-center gap-2 transition-colors shrink-0"
           >
-            {isRunning ? <Loader2 className="animate-spin" size={20} /> : <Play size={20} />}
-            {isRunning ? "Researching..." : "Start Research"}
+            {isRunning ? <Loader2 className="animate-spin" size={20} /> : <Send size={20} />}
+            {isRunning ? "Generating Pipeline..." : "Start Draft"}
           </button>
         </form>
 
         <div className="flex-1 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden flex flex-col font-mono text-sm leading-relaxed shadow-inner">
           <div className="bg-gray-800/50 border-b border-gray-800 px-4 py-2 text-gray-400 text-xs uppercase tracking-wider shrink-0 flex justify-between">
-            <span>Execution Log</span>
+            <span>Pipeline Trace</span>
             {currentSessionId && (
-              <span className="text-blue-400 font-mono opacity-60">
+              <span className="text-purple-400 font-mono opacity-60">
                 ID: {currentSessionId.substring(0, 8)}
               </span>
             )}
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {logs.length === 0 && (
-              <div className="text-gray-600 text-center mt-10 italic">Awaiting instructions...</div>
+              <div className="text-gray-600 text-center mt-10 italic">
+                Awaiting a topic to start the pipeline...
+              </div>
             )}
             {logs.map((log) => (
               <div key={log.id} className="flex gap-3">
@@ -319,9 +275,8 @@ export const ResearchDashboard: React.FC = () => {
                     </span>
                   )}
                   {log.type === "tool_start" && (
-                    <span className="text-yellow-500 flex items-center gap-1 mt-1">
-                      <Loader2 size={14} className="animate-spin inline" />
-                      {log.content}
+                    <span className="text-yellow-500 flex items-center gap-1 mt-1 opacity-75">
+                      <Loader2 size={14} className="animate-spin inline" /> {log.content}
                     </span>
                   )}
                   {log.type === "tool_end" && log.toolResult ? (
@@ -332,13 +287,13 @@ export const ResearchDashboard: React.FC = () => {
                     />
                   ) : (
                     log.type === "tool_end" && (
-                      <span className="text-emerald-500 flex items-center gap-1 mt-1">
+                      <span className="text-yellow-500 flex items-center gap-1 mt-1">
                         {log.content}
                       </span>
                     )
                   )}
                   {log.type === "text" && (
-                    <div className="text-blue-300 mt-1 whitespace-pre-wrap">{log.content}</div>
+                    <div className="text-gray-300 mt-1 whitespace-pre-wrap">{log.content}</div>
                   )}
                 </div>
               </div>
@@ -348,7 +303,6 @@ export const ResearchDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Sidebar right for Session History */}
       <div className="w-80 shrink-0 border-l border-gray-800 bg-gray-900">
         <SessionHistory
           currentSessionId={currentSessionId}

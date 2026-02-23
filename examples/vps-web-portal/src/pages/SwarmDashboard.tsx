@@ -55,13 +55,14 @@ export const SwarmDashboard: React.FC = () => {
           return updated;
         });
       }
-    } catch (err: any) {
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
       setAgents((prev) => {
         const updated = [...prev];
         const idx = personas.findIndex((p) => p.name === personaName);
         if (idx >= 0) {
           updated[idx].loading = false;
-          updated[idx].error = err.message || "Failed to load saved session";
+          updated[idx].error = errorMessage || "Failed to load saved session";
         }
         return updated;
       });
@@ -151,11 +152,12 @@ export const SwarmDashboard: React.FC = () => {
             });
             eventSource.close();
           };
-        } catch (err: any) {
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
           setAgents((prev) => {
             const updated = [...prev];
             updated[index].loading = false;
-            updated[index].error = err.message || "Failed to start agent";
+            updated[index].error = errorMessage || "Failed to start agent";
             return updated;
           });
         }

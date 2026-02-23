@@ -114,6 +114,32 @@ export class EngineAPI {
     return data.id;
   }
 
+  async listSessions(query?: {
+    q?: string;
+    page?: number;
+    pageSize?: number;
+    archived?: boolean;
+    scope?: "workspace" | "global";
+    workspace?: string;
+  }): Promise<SessionListResponse> {
+    const params = new URLSearchParams();
+    if (query?.q) params.set("q", query.q);
+    if (query?.page !== undefined) params.set("page", query.page.toString());
+    if (query?.pageSize !== undefined) params.set("page_size", query.pageSize.toString());
+    if (query?.archived !== undefined) params.set("archived", query.archived.toString());
+    if (query?.scope) params.set("scope", query.scope);
+    if (query?.workspace) params.set("workspace", query.workspace);
+
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return this.request<SessionListResponse>(`/session${qs}`);
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.request<void>(`/session/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    });
+  }
+
   async sendMessage(sessionId: string, text: string): Promise<void> {
     await this.request<void>(`/session/${encodeURIComponent(sessionId)}/message`, {
       method: "POST",
@@ -703,4 +729,17 @@ export interface ArtifactPreviewResponse {
   truncated: boolean;
   size: number;
   content?: string;
+}
+
+export interface SessionRecord {
+  id: string;
+  title: string;
+  created_at_ms: number;
+  workspace?: string;
+  [key: string]: unknown;
+}
+
+export interface SessionListResponse {
+  sessions: SessionRecord[];
+  count: number;
 }

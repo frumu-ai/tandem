@@ -9,6 +9,13 @@ import { TextAdventure } from "./pages/TextAdventure";
 import { SecondBrainDashboard } from "./pages/SecondBrainDashboard";
 import { ConnectorsDashboard } from "./pages/ConnectorsDashboard";
 import { OpsWorkspace } from "./pages/OpsWorkspace";
+import { RepoAgentDashboard } from "./pages/RepoAgentDashboard";
+import { IncidentTriageDashboard } from "./pages/IncidentTriageDashboard";
+import { DataExtractionDashboard } from "./pages/DataExtractionDashboard";
+import { TicketTriageDashboard } from "./pages/TicketTriageDashboard";
+import { ScheduledWatchDashboard } from "./pages/ScheduledWatchDashboard";
+import { ContentCreatorDashboard } from "./pages/ContentCreatorDashboard";
+import { HtmlExtractorDashboard } from "./pages/HtmlExtractorDashboard";
 import {
   LayoutDashboard,
   Users,
@@ -17,6 +24,13 @@ import {
   LogOut,
   Cable,
   ShieldCheck,
+  GitPullRequest,
+  FileWarning,
+  DatabaseZap,
+  Ticket,
+  Clock,
+  PenTool,
+  Code,
 } from "lucide-react";
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -43,12 +57,54 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
             Tandem Portal
           </h1>
         </div>
-        <nav className="flex-1 p-4 space-y-2">
+        <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
           <Link
             to="/research"
             className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
           >
             <LayoutDashboard size={20} /> Research
+          </Link>
+          <Link
+            to="/repo"
+            className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
+          >
+            <GitPullRequest size={20} /> Repo Agent
+          </Link>
+          <Link
+            to="/triage"
+            className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
+          >
+            <FileWarning size={20} /> Incident Triage
+          </Link>
+          <Link
+            to="/data"
+            className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
+          >
+            <DatabaseZap size={20} /> Data Extraction
+          </Link>
+          <Link
+            to="/tickets"
+            className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
+          >
+            <Ticket size={20} /> Ticket Triage
+          </Link>
+          <Link
+            to="/watch"
+            className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
+          >
+            <Clock size={20} /> Scheduled Watch
+          </Link>
+          <Link
+            to="/content"
+            className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
+          >
+            <PenTool size={20} /> Content Creator
+          </Link>
+          <Link
+            to="/html"
+            className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
+          >
+            <Code size={20} /> HTML Escape-Hatch
           </Link>
           <Link
             to="/swarm"
@@ -119,6 +175,90 @@ export default function App() {
                 <ProviderReadyRoute>
                   <NavigationLayout>
                     <ResearchDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/repo"
+            element={
+              <ProtectedRoute>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <RepoAgentDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/triage"
+            element={
+              <ProtectedRoute>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <IncidentTriageDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/data"
+            element={
+              <ProtectedRoute>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <DataExtractionDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/tickets"
+            element={
+              <ProtectedRoute>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <TicketTriageDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/watch"
+            element={
+              <ProtectedRoute>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <ScheduledWatchDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/content"
+            element={
+              <ProtectedRoute>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <ContentCreatorDashboard />
+                  </NavigationLayout>
+                </ProviderReadyRoute>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/html"
+            element={
+              <ProtectedRoute>
+                <ProviderReadyRoute>
+                  <NavigationLayout>
+                    <HtmlExtractorDashboard />
                   </NavigationLayout>
                 </ProviderReadyRoute>
               </ProtectedRoute>

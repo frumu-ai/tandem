@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { api } from "./api";
 
@@ -24,10 +25,14 @@ const AuthContext = createContext<AuthContextType>({
 export const useAuth = () => useContext(AuthContext);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [token, setToken] = useState<string | null>(null);
+  const [token, setToken] = useState<string | null>(() => {
+    return localStorage.getItem("tandem_portal_token");
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [providerConfigured, setProviderConfigured] = useState(false);
-  const [providerLoading, setProviderLoading] = useState(false);
+  const [providerLoading, setProviderLoading] = useState(() => {
+    return !!localStorage.getItem("tandem_portal_token");
+  });
 
   const checkProviderConfigured = async (): Promise<boolean> => {
     try {
@@ -61,12 +66,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const storedToken = localStorage.getItem("tandem_portal_token");
     if (storedToken) {
       api.setToken(storedToken);
-      setToken(storedToken);
-      setProviderLoading(true);
       checkProviderConfigured()
         .then(setProviderConfigured)
         .finally(() => setProviderLoading(false));
     }
+    // eslint-disable-next-line
     setIsLoading(false);
   }, []);
 
