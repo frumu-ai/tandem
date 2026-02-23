@@ -113,15 +113,23 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     let stopped = false;
+    const getReqStatus = (req: { status?: unknown }) =>
+      String(req.status || "")
+        .trim()
+        .toLowerCase();
+    const isPendingReq = (req: { status?: unknown }) => {
+      const status = getReqStatus(req);
+      return status === "pending" || status === "asked" || status === "waiting";
+    };
     const refresh = async () => {
       try {
         const snapshot = await api.listPermissions();
         const pending = (snapshot.requests || [])
-          .filter((req) => req.status === "pending")
+          .filter((req) => isPendingReq(req))
           .map((req) => ({
             id: req.id,
             tool: req.tool || req.permission || "tool",
-            sessionID: String(req.sessionID || req.session_id || "unknown"),
+            sessionID: String(req.sessionID || req.sessionId || req.session_id || "unknown"),
           }));
         if (!stopped) {
           setPendingApprovals(pending);
@@ -157,16 +165,21 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
     setApprovalError(null);
     try {
       for (const req of pendingApprovals) {
-        // `allow` is one-shot; keeps demos explicit while unblocking current run.
-        await api.replyPermission(req.id, "allow");
+        // Use persistent approval so repeated tool calls don't re-block later turns.
+        await api.replyPermission(req.id, "always");
       }
       const snapshot = await api.listPermissions();
       const pending = (snapshot.requests || [])
-        .filter((req) => req.status === "pending")
+        .filter((req) => {
+          const status = String(req.status || "")
+            .trim()
+            .toLowerCase();
+          return status === "pending" || status === "asked" || status === "waiting";
+        })
         .map((req) => ({
           id: req.id,
           tool: req.tool || req.permission || "tool",
-          sessionID: String(req.sessionID || req.session_id || "unknown"),
+          sessionID: String(req.sessionID || req.sessionId || req.session_id || "unknown"),
         }));
       setPendingApprovals(pending);
       setPermissionRulesCount((snapshot.rules || []).length);
@@ -478,7 +491,7 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
             disabled={pendingApprovals.length === 0 || approving}
             className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {approving ? "Approving..." : "Approve All"}
+            {approving ? "Approving..." : "Approve All (Always)"}
           </button>
         </div>
       </div>

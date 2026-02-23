@@ -512,12 +512,20 @@ export class EngineAPI {
 
   async replyPermission(
     requestId: string,
-    reply: "allow" | "allow_always" | "deny"
+    reply: "allow" | "always" | "deny" | "reject" | "once"
   ): Promise<{ ok: boolean }> {
-    return this.request<{ ok: boolean }>(`/permission/${encodeURIComponent(requestId)}/reply`, {
-      method: "POST",
-      body: JSON.stringify({ reply }),
-    });
+    const res = await this.request<{ ok?: boolean; error?: string; code?: string }>(
+      `/permission/${encodeURIComponent(requestId)}/reply`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reply }),
+      }
+    );
+    if (!res.ok) {
+      const details = [res.error, res.code].filter(Boolean).join(" / ");
+      throw new Error(`Permission reply rejected for ${requestId}${details ? `: ${details}` : ""}`);
+    }
+    return { ok: true };
   }
 
   async getActiveRun(sessionId: string): Promise<SessionRunStateResponse> {
@@ -1173,6 +1181,8 @@ export interface PermissionRequestRecord {
   tool?: string;
   status?: string;
   sessionID?: string;
+  sessionId?: string;
+  session_id?: string;
   [key: string]: unknown;
 }
 

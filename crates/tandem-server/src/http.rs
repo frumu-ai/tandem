@@ -2376,20 +2376,37 @@ async fn reply_permission(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(input): Json<PermissionReplyInput>,
-) -> Json<Value> {
+) -> Result<Json<Value>, (StatusCode, Json<ErrorEnvelope>)> {
     let accepted = matches!(
         input.reply.as_str(),
         "once" | "always" | "reject" | "allow" | "deny"
     );
     if !accepted {
-        return Json(json!({
-            "ok": false,
-            "error":"reply must be one of once|always|reject|allow|deny",
-            "code":"invalid_permission_reply"
-        }));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorEnvelope {
+                error: "reply must be one of once|always|reject|allow|deny".to_string(),
+                code: Some("invalid_permission_reply".to_string()),
+            }),
+        ));
     }
     let ok = state.permissions.reply(&id, &input.reply).await;
-    Json(json!({"ok": ok}))
+    if !ok {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorEnvelope {
+                error: "Permission request not found".to_string(),
+                code: Some("permission_request_not_found".to_string()),
+            }),
+        ));
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "requestID": id,
+        "reply": input.reply,
+        "status": "applied",
+        "persistedRule": matches!(input.reply.as_str(), "always" | "allow")
+    })))
 }
 
 async fn approve_tool_by_call(
@@ -6899,6 +6916,75 @@ mod tests {
         let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
         let payload: Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(payload.get("ok").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[tokio::test]
+    async fn permission_reply_route_rejects_invalid_reply() {
+        let state = test_state().await;
+        let app = app_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/permission/some-request/reply")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"reply":"invalid"}).to_string()))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("invalid_permission_reply")
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_reply_route_returns_not_found_for_unknown_request() {
+        let state = test_state().await;
+        let app = app_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/permission/missing-request/reply")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"reply":"always"}).to_string()))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("permission_request_not_found")
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_reply_route_applies_and_persists_allow_rule() {
+        let state = test_state().await;
+        let request = state
+            .permissions
+            .ask_for_session(Some("s1"), "glob", json!({"pattern":"*"}))
+            .await;
+        let app = app_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/permission/{}/reply", request.id))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"reply":"always"}).to_string()))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload.get("ok").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            payload.get("reply").and_then(|v| v.as_str()),
+            Some("always")
+        );
+        assert_eq!(
+            payload.get("persistedRule").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     #[tokio::test]

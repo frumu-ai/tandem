@@ -67,6 +67,9 @@ export const SecondBrainDashboard: React.FC = () => {
   const [isThinking, setIsThinking] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const lastUserPromptRef = useRef<string | null>(null);
+  const canAutoRetryAfterApprovalRef = useRef(false);
+  const autoRetriedPromptRef = useRef<string | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -133,7 +136,14 @@ Operational rules:
     try {
       const snapshot = await api.listPermissions();
       const pending = (snapshot.requests || [])
-        .filter((req) => req.sessionID === sid && req.status === "pending")
+        .filter((req) => {
+          const reqSessionId = String(req.sessionID || req.sessionId || req.session_id || "");
+          const status = String(req.status || "")
+            .trim()
+            .toLowerCase();
+          const isPending = status === "pending" || status === "asked" || status === "waiting";
+          return reqSessionId === sid && isPending;
+        })
         .map((req) => ({
           id: req.id,
           tool: req.tool || req.permission || "tool",
@@ -170,16 +180,56 @@ Operational rules:
   const approvePendingForSession = async () => {
     if (!sessionId || pendingApprovals.length === 0) return;
     addTrace(`Approving ${pendingApprovals.length} pending permission request(s).`);
+    let failed = 0;
     for (const req of pendingApprovals) {
       try {
-        await api.replyPermission(req.id, "allow");
-      } catch {
-        addTrace(`Failed to approve permission request ${req.id.substring(0, 8)}.`);
+        await api.replyPermission(req.id, "always");
+        addTrace(
+          `Approved permission request ${req.id.substring(0, 8)} for ${req.tool} (persistent).`
+        );
+      } catch (err) {
+        failed += 1;
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        addTrace(
+          `Failed to approve permission request ${req.id.substring(0, 8)} (${req.tool}): ${errorMessage}`
+        );
       }
     }
     const refreshed = await refreshPendingApprovals(sessionId);
-    if (refreshed.length === 0) {
+    if (refreshed.length === 0 && failed === 0) {
       addTrace("All pending permission requests approved.");
+      const prompt = lastUserPromptRef.current;
+      const shouldRetry =
+        !!prompt &&
+        canAutoRetryAfterApprovalRef.current &&
+        autoRetriedPromptRef.current !== prompt &&
+        !isThinking;
+      if (shouldRetry && sessionId) {
+        autoRetriedPromptRef.current = prompt;
+        canAutoRetryAfterApprovalRef.current = false;
+        addTrace("Approval applied. Auto-retrying the last prompt.");
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Math.random().toString(),
+            role: "system",
+            type: "text",
+            content: "[Approval applied. Auto-retrying your last prompt.]",
+          },
+        ]);
+        setIsThinking(true);
+        try {
+          const { runId } = await api.startAsyncRun(sessionId, prompt);
+          addTrace(`Auto-retry run started ${runId.substring(0, 8)}.`);
+          attachRunStream(sessionId, runId);
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          addTrace(`Auto-retry failed to start: ${errorMessage}`);
+          setIsThinking(false);
+        }
+      }
+    } else if (refreshed.length > 0) {
+      addTrace(`${refreshed.length} permission request(s) still pending after approval attempt.`);
     }
   };
 
@@ -192,6 +242,12 @@ Operational rules:
       {
         addSystemLog: (content) => {
           addTrace(content);
+          if (
+            content.startsWith("Permission requested for ") ||
+            content.startsWith("Permission reply:")
+          ) {
+            void refreshPendingApprovals(sid);
+          }
         },
         addTextDelta: (delta) => {
           setMessages((prev) => {
@@ -265,6 +321,7 @@ Operational rules:
               const pending = await refreshPendingApprovals(sid);
               if (status === "timeout") {
                 if (pending.length > 0) {
+                  canAutoRetryAfterApprovalRef.current = true;
                   const tools = [...new Set(pending.map((p) => p.tool))].join(", ");
                   setMessages((prev) => [
                     ...prev,
@@ -300,6 +357,7 @@ Operational rules:
                 ]);
               } else if (status === "inactive_no_events") {
                 if (pending.length > 0) {
+                  canAutoRetryAfterApprovalRef.current = true;
                   const tools = [...new Set(pending.map((p) => p.tool))].join(", ");
                   setMessages((prev) => [
                     ...prev,
@@ -469,6 +527,9 @@ Operational rules:
     if (!input.trim() || isThinking || !sessionId) return;
 
     const userMsg = input.trim();
+    lastUserPromptRef.current = userMsg;
+    autoRetriedPromptRef.current = null;
+    canAutoRetryAfterApprovalRef.current = false;
     setInput("");
     setMessages((prev) => [
       ...prev,
@@ -510,6 +571,9 @@ Operational rules:
     setIsThinking(false);
     setRuntimeTrace([]);
     setPendingApprovals([]);
+    lastUserPromptRef.current = null;
+    autoRetriedPromptRef.current = null;
+    canAutoRetryAfterApprovalRef.current = false;
     try {
       const sid = await api.createSession("Second Brain MVP");
       localStorage.setItem(SECOND_BRAIN_SESSION_KEY, sid);
