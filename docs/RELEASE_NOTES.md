@@ -1,3 +1,14 @@
+# Tandem v0.3.18 Release Notes (Unreleased)
+
+### Highlights
+
+- **OpenRouter model persistence hotfix**:
+  - Fixed env-layer provider bootstrap so `OPENROUTER_API_KEY` no longer forces `openai/gpt-4o-mini` as the effective default model.
+  - Preserves saved/configured OpenRouter model selections (for example `z-ai/glm-5`) in web/VPS deployments.
+  - Env-driven model override is now explicit-only (requires a model env var), preventing silent model drift.
+
+---
+
 # Tandem v0.3.17 Release Notes (Unreleased)
 
 ### Highlights

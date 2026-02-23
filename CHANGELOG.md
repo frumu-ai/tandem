@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.18]
+
+### Fixed
+
+- **Provider model override from env API-key bootstrap**: Setting `OPENROUTER_API_KEY` no longer forces `providers.openrouter.default_model` to `openai/gpt-4o-mini` in the env layer.
+- **Model-selection persistence in VPS/web deployments**: Engine now preserves configured provider default model (for example `z-ai/glm-5`) unless an explicit model env var is set.
+- **Config env-layer behavior clarity**: OpenAI-compatible env bootstrap now treats API key and model override separately; model override is applied only when explicitly provided via env.
+
 ## [0.3.17]
 
 ### Changed

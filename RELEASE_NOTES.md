@@ -2,6 +2,13 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.3.18 (Unreleased)
+
+- Provider model selection hotfix (OpenRouter/API-key env interactions)
+  - Fixed env-layer provider bootstrap so setting `OPENROUTER_API_KEY` no longer hard-overrides OpenRouter default model to `openai/gpt-4o-mini`.
+  - Preserves configured model choices (for example `z-ai/glm-5`) across engine restarts in VPS/web setups.
+  - Model override from env is now explicit-only: applied only when a model env var is set, not just because an API key exists.
+
 ## v0.3.17 (Unreleased)
 
 - Channel reliability and permission bootstrap
