@@ -238,7 +238,7 @@ engine_cmd() {
   local args=("$sub" "$@")
 
   if [[ -n "${ENGINE_PATH:-}" && -x "${ENGINE_PATH:-}" ]]; then
-    "$ENGINE_PATH" "${args[@]}"
+    run_as_service_user "$ENGINE_PATH" "${args[@]}"
   else
     run_as_service_user npx -y @frumu/tandem "${args[@]}"
   fi
@@ -290,7 +290,7 @@ If you intentionally need pnpm fallback, set SETUP_ALLOW_PNPM_FALLBACK=1."
 
 validate_tandem_engine() {
   if [[ -n "${ENGINE_PATH:-}" && -x "${ENGINE_PATH:-}" ]]; then
-    if "$ENGINE_PATH" --version >/dev/null 2>&1; then
+    if run_as_service_user "$ENGINE_PATH" --version >/dev/null 2>&1; then
       return 0
     fi
     log "Detected unusable tandem-engine binary at '$ENGINE_PATH'; falling back to npx runtime"
