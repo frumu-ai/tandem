@@ -17,7 +17,9 @@
 //! ## Slash commands
 //!
 //! `/new [name]`, `/sessions`, `/resume <query>`, `/rename <name>`,
-//! `/status`, `/help`
+//! `/status`, `/run`, `/cancel`, `/todos`, `/requests`, `/answer <id> <text>`,
+//! `/providers`, `/models [provider]`, `/model <model_id>`, `/approve <tool_call_id>`,
+//! `/deny <tool_call_id>`, `/help`
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -143,6 +145,14 @@ enum SlashCommand {
     Resume { query: String },
     Rename { name: String },
     Status,
+    Run,
+    Cancel,
+    Todos,
+    Requests,
+    Answer { question_id: String, answer: String },
+    Providers,
+    Models { provider: Option<String> },
+    Model { model_id: String },
     Help,
     Approve { tool_call_id: String },
     Deny { tool_call_id: String },
@@ -173,6 +183,50 @@ fn parse_slash_command(content: &str) -> Option<SlashCommand> {
     }
     if trimmed == "/status" {
         return Some(SlashCommand::Status);
+    }
+    if trimmed == "/run" {
+        return Some(SlashCommand::Run);
+    }
+    if trimmed == "/cancel" || trimmed == "/abort" {
+        return Some(SlashCommand::Cancel);
+    }
+    if trimmed == "/todos" || trimmed == "/todo" {
+        return Some(SlashCommand::Todos);
+    }
+    if trimmed == "/requests" {
+        return Some(SlashCommand::Requests);
+    }
+    if trimmed == "/providers" {
+        return Some(SlashCommand::Providers);
+    }
+    if trimmed == "/models" {
+        return Some(SlashCommand::Models { provider: None });
+    }
+    if let Some(provider) = trimmed.strip_prefix("/models ") {
+        return Some(SlashCommand::Models {
+            provider: Some(provider.trim().to_string()),
+        });
+    }
+    if let Some(model_id) = trimmed.strip_prefix("/model ") {
+        let model_id = model_id.trim();
+        if !model_id.is_empty() {
+            return Some(SlashCommand::Model {
+                model_id: model_id.to_string(),
+            });
+        }
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("/answer ") {
+        let mut parts = rest.trim().splitn(2, ' ');
+        let question_id = parts.next().unwrap_or_default().trim();
+        let answer = parts.next().unwrap_or_default().trim();
+        if !question_id.is_empty() && !answer.is_empty() {
+            return Some(SlashCommand::Answer {
+                question_id: question_id.to_string(),
+                answer: answer.to_string(),
+            });
+        }
+        return None;
     }
     if trimmed == "/help" || trimmed == "/?" {
         return Some(SlashCommand::Help);
@@ -598,6 +652,17 @@ async fn handle_slash_command(
             resume_session_text(query, msg, base_url, api_token, session_map).await
         }
         SlashCommand::Status => status_text(msg, base_url, api_token, session_map).await,
+        SlashCommand::Run => run_status_text(msg, base_url, api_token, session_map).await,
+        SlashCommand::Cancel => cancel_run_text(msg, base_url, api_token, session_map).await,
+        SlashCommand::Todos => todos_text(msg, base_url, api_token, session_map).await,
+        SlashCommand::Requests => requests_text(msg, base_url, api_token, session_map).await,
+        SlashCommand::Answer {
+            question_id,
+            answer,
+        } => answer_question_text(question_id, answer, msg, base_url, api_token, session_map).await,
+        SlashCommand::Providers => providers_text(base_url, api_token).await,
+        SlashCommand::Models { provider } => models_text(provider, base_url, api_token).await,
+        SlashCommand::Model { model_id } => set_model_text(model_id, base_url, api_token).await,
         SlashCommand::Rename { name } => {
             rename_session_text(name, msg, base_url, api_token, session_map).await
         }
@@ -649,10 +714,27 @@ fn help_text() -> String {
     /resume <id or name> — switch to a previous session\n\
     /rename <name> — rename the current session\n\
     /status — show current session info\n\
+    /run — show active run state\n\
+    /cancel — cancel the active run\n\
+    /todos — list current session todos\n\
+    /requests — list pending tool/question requests\n\
+    /answer <question_id> <text> — answer a pending question\n\
+    /providers — list available providers\n\
+    /models [provider] — list models by provider\n\
+    /model <model_id> — set model for current default provider\n\
     /approve <tool_call_id> — approve a pending tool call\n\
     /deny <tool_call_id> — deny a pending tool call\n\
     /help — show this message"
         .to_string()
+}
+
+async fn active_session_id(msg: &ChannelMessage, session_map: &SessionMap) -> Option<String> {
+    let map_key = format!("{}:{}", msg.channel, msg.sender);
+    session_map
+        .lock()
+        .await
+        .get(&map_key)
+        .map(|r| r.session_id.clone())
 }
 
 async fn list_sessions_text(
@@ -922,6 +1004,458 @@ async fn rename_session_text(
     }
 }
 
+async fn run_status_text(
+    msg: &ChannelMessage,
+    base_url: &str,
+    api_token: &str,
+    session_map: &SessionMap,
+) -> String {
+    let Some(sid) = active_session_id(msg, session_map).await else {
+        return "ℹ️ No active session. Send a message to start one, or use /new.".to_string();
+    };
+
+    let client = reqwest::Client::new();
+    let Ok(resp) = add_auth(
+        client.get(format!("{base_url}/session/{sid}/run")),
+        api_token,
+    )
+    .send()
+    .await
+    else {
+        return "⚠️ Could not fetch run status.".to_string();
+    };
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return "⚠️ Unexpected run status response.".to_string();
+    };
+    let active = json
+        .get("active")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    if active.is_null() {
+        return "ℹ️ No active run.".to_string();
+    }
+
+    let run_id = active
+        .get("run_id")
+        .or_else(|| active.get("runID"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    format!(
+        "🏃 Active run: `{}` on session `{}`",
+        &run_id[..8.min(run_id.len())],
+        &sid[..8.min(sid.len())]
+    )
+}
+
+async fn cancel_run_text(
+    msg: &ChannelMessage,
+    base_url: &str,
+    api_token: &str,
+    session_map: &SessionMap,
+) -> String {
+    let Some(sid) = active_session_id(msg, session_map).await else {
+        return "⚠️ No active session — nothing to cancel.".to_string();
+    };
+    let client = reqwest::Client::new();
+    let Ok(resp) = add_auth(
+        client.post(format!("{base_url}/session/{sid}/cancel")),
+        api_token,
+    )
+    .send()
+    .await
+    else {
+        return "⚠️ Could not reach server to cancel.".to_string();
+    };
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return "⚠️ Cancel requested, but response could not be parsed.".to_string();
+    };
+    let cancelled = json
+        .get("cancelled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if cancelled {
+        "🛑 Cancelled active run.".to_string()
+    } else {
+        "ℹ️ No active run to cancel.".to_string()
+    }
+}
+
+async fn todos_text(
+    msg: &ChannelMessage,
+    base_url: &str,
+    api_token: &str,
+    session_map: &SessionMap,
+) -> String {
+    let Some(sid) = active_session_id(msg, session_map).await else {
+        return "ℹ️ No active session. Send a message to start one, or use /new.".to_string();
+    };
+    let client = reqwest::Client::new();
+    let Ok(resp) = add_auth(
+        client.get(format!("{base_url}/session/{sid}/todo")),
+        api_token,
+    )
+    .send()
+    .await
+    else {
+        return "⚠️ Could not fetch todos.".to_string();
+    };
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return "⚠️ Unexpected todos response.".to_string();
+    };
+
+    let Some(items) = json.as_array() else {
+        return "⚠️ Todos response was not a list.".to_string();
+    };
+    if items.is_empty() {
+        return "✅ No todos in this session.".to_string();
+    }
+
+    let lines = items
+        .iter()
+        .take(12)
+        .enumerate()
+        .map(|(i, item)| {
+            let content = item
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(untitled)");
+            let status = item
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("pending");
+            let icon = if status.eq_ignore_ascii_case("completed") {
+                "✅"
+            } else if status.eq_ignore_ascii_case("in_progress") {
+                "⏳"
+            } else {
+                "⬜"
+            };
+            format!("{}. {} {} ({})", i + 1, icon, content, status)
+        })
+        .collect::<Vec<_>>();
+    format!("🧾 Session todos:\n{}", lines.join("\n"))
+}
+
+fn value_str<'a>(obj: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| obj.get(*key).and_then(|v| v.as_str()))
+}
+
+fn value_bool(obj: &serde_json::Value, key: &str) -> Option<bool> {
+    obj.get(key).and_then(|v| v.as_bool())
+}
+
+fn session_matches(value: &serde_json::Value, session_id: &str) -> bool {
+    value_str(value, &["session_id", "sessionID", "sessionId"])
+        .map(|v| v == session_id)
+        .unwrap_or(false)
+}
+
+async fn requests_text(
+    msg: &ChannelMessage,
+    base_url: &str,
+    api_token: &str,
+    session_map: &SessionMap,
+) -> String {
+    let sid = active_session_id(msg, session_map).await;
+    let client = reqwest::Client::new();
+
+    let permissions = match add_auth(client.get(format!("{base_url}/permission")), api_token)
+        .send()
+        .await
+    {
+        Ok(resp) => resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("requests").cloned())
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
+    let questions = match add_auth(client.get(format!("{base_url}/question")), api_token)
+        .send()
+        .await
+    {
+        Ok(resp) => resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
+    let filtered_permissions: Vec<_> = if let Some(session_id) = sid.as_ref() {
+        permissions
+            .into_iter()
+            .filter(|v| session_matches(v, session_id))
+            .collect()
+    } else {
+        permissions
+    };
+    let filtered_questions: Vec<_> = if let Some(session_id) = sid.as_ref() {
+        questions
+            .into_iter()
+            .filter(|v| session_matches(v, session_id))
+            .collect()
+    } else {
+        questions
+    };
+
+    if filtered_permissions.is_empty() && filtered_questions.is_empty() {
+        return "✅ No pending requests.".to_string();
+    }
+
+    let mut lines = Vec::new();
+    for req in filtered_permissions.iter().take(8) {
+        let id = value_str(req, &["id", "requestID", "request_id"]).unwrap_or("?");
+        let tool = value_str(req, &["tool", "tool_name", "name"]).unwrap_or("tool");
+        let approved = value_bool(req, "approved");
+        let status = if approved == Some(true) {
+            "approved"
+        } else {
+            "pending"
+        };
+        lines.push(format!(
+            "🔐 `{}` {} ({})",
+            &id[..8.min(id.len())],
+            tool,
+            status
+        ));
+    }
+    for q in filtered_questions.iter().take(8) {
+        let id = value_str(q, &["id", "questionID", "question_id"]).unwrap_or("?");
+        let prompt = value_str(q, &["prompt", "question", "text"]).unwrap_or("question");
+        lines.push(format!(
+            "❓ `{}` {}",
+            &id[..8.min(id.len())],
+            prompt.chars().take(80).collect::<String>()
+        ));
+    }
+
+    format!(
+        "🧷 Pending requests ({} tool, {} question):\n{}",
+        filtered_permissions.len(),
+        filtered_questions.len(),
+        lines.join("\n")
+    )
+}
+
+async fn answer_question_text(
+    question_id: String,
+    answer: String,
+    msg: &ChannelMessage,
+    base_url: &str,
+    api_token: &str,
+    session_map: &SessionMap,
+) -> String {
+    let Some(sid) = active_session_id(msg, session_map).await else {
+        return "⚠️ No active session — cannot answer question.".to_string();
+    };
+    let client = reqwest::Client::new();
+    let url = format!("{base_url}/sessions/{sid}/questions/{question_id}/answer");
+    let resp = add_auth(client.post(url), api_token)
+        .json(&serde_json::json!({ "answer": answer }))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            format!("✅ Answer submitted for question `{question_id}`.")
+        }
+        Ok(r) => format!("⚠️ Could not answer question (HTTP {}).", r.status()),
+        Err(e) => format!("⚠️ Could not answer question: {e}"),
+    }
+}
+
+async fn providers_text(base_url: &str, api_token: &str) -> String {
+    let client = reqwest::Client::new();
+    let Ok(resp) = add_auth(client.get(format!("{base_url}/provider")), api_token)
+        .send()
+        .await
+    else {
+        return "⚠️ Could not fetch providers.".to_string();
+    };
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return "⚠️ Unexpected providers response.".to_string();
+    };
+    let default = json
+        .get("default")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let all = json
+        .get("all")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if all.is_empty() {
+        return "ℹ️ No providers available.".to_string();
+    }
+    let lines = all
+        .iter()
+        .take(20)
+        .map(|entry| {
+            let id = entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let model_count = entry
+                .get("models")
+                .and_then(|v| v.as_object())
+                .map(|m| m.len())
+                .unwrap_or(0);
+            format!("• {} ({} models)", id, model_count)
+        })
+        .collect::<Vec<_>>();
+    format!("🧠 Providers (default: `{default}`):\n{}", lines.join("\n"))
+}
+
+async fn models_text(provider: Option<String>, base_url: &str, api_token: &str) -> String {
+    let client = reqwest::Client::new();
+    let Ok(resp) = add_auth(client.get(format!("{base_url}/provider")), api_token)
+        .send()
+        .await
+    else {
+        return "⚠️ Could not fetch models.".to_string();
+    };
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return "⚠️ Unexpected models response.".to_string();
+    };
+    let all = json
+        .get("all")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if all.is_empty() {
+        return "ℹ️ No providers/models available.".to_string();
+    }
+
+    if let Some(provider_id) = provider {
+        let target = all.iter().find(|entry| {
+            entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|id| id.eq_ignore_ascii_case(&provider_id))
+                .unwrap_or(false)
+        });
+        let Some(entry) = target else {
+            return format!("⚠️ Provider `{provider_id}` not found. Use /providers.");
+        };
+        let models = entry
+            .get("models")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        if models.is_empty() {
+            return format!("ℹ️ Provider `{provider_id}` has no models listed.");
+        }
+        let mut model_ids = models.keys().cloned().collect::<Vec<_>>();
+        model_ids.sort();
+        let lines = model_ids
+            .iter()
+            .take(30)
+            .map(|m| format!("• {m}"))
+            .collect::<Vec<_>>();
+        return format!("🧠 Models for `{provider_id}`:\n{}", lines.join("\n"));
+    }
+
+    let lines = all
+        .iter()
+        .map(|entry| {
+            let id = entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let count = entry
+                .get("models")
+                .and_then(|v| v.as_object())
+                .map(|m| m.len())
+                .unwrap_or(0);
+            format!("• {}: {} models", id, count)
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "🧠 Model catalog by provider:\n{}\nUse `/models <provider>` to list model IDs.",
+        lines.join("\n")
+    )
+}
+
+async fn set_model_text(model_id: String, base_url: &str, api_token: &str) -> String {
+    let client = reqwest::Client::new();
+    let Ok(resp) = add_auth(client.get(format!("{base_url}/provider")), api_token)
+        .send()
+        .await
+    else {
+        return "⚠️ Could not fetch provider catalog.".to_string();
+    };
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return "⚠️ Unexpected provider catalog response.".to_string();
+    };
+
+    let Some(default_provider) = json.get("default").and_then(|v| v.as_str()) else {
+        return "⚠️ No default provider configured. Use desktop/TUI provider setup first."
+            .to_string();
+    };
+
+    let provider_entry = json.get("all").and_then(|v| v.as_array()).and_then(|all| {
+        all.iter().find(|entry| {
+            entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|id| id == default_provider)
+                .unwrap_or(false)
+        })
+    });
+
+    if let Some(entry) = provider_entry {
+        let known = entry
+            .get("models")
+            .and_then(|v| v.as_object())
+            .map(|models| models.contains_key(&model_id))
+            .unwrap_or(true);
+        if !known {
+            return format!(
+                "⚠️ Model `{}` not found for provider `{}`. Use `/models {}` first.",
+                model_id, default_provider, default_provider
+            );
+        }
+    }
+
+    let mut provider_patch = serde_json::Map::new();
+    provider_patch.insert(
+        "default_model".to_string(),
+        serde_json::json!(model_id.clone()),
+    );
+    let mut providers_patch = serde_json::Map::new();
+    providers_patch.insert(
+        default_provider.to_string(),
+        serde_json::Value::Object(provider_patch),
+    );
+    let mut patch_map = serde_json::Map::new();
+    patch_map.insert(
+        "providers".to_string(),
+        serde_json::Value::Object(providers_patch),
+    );
+    let patch = serde_json::Value::Object(patch_map);
+
+    let resp = add_auth(client.patch(format!("{base_url}/config")), api_token)
+        .json(&patch)
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            format!(
+                "✅ Model set to `{}` for default provider `{}`.",
+                model_id, default_provider
+            )
+        }
+        Ok(r) => format!("⚠️ Could not set model (HTTP {}).", r.status()),
+        Err(e) => format!("⚠️ Could not set model: {e}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
@@ -984,6 +1518,86 @@ mod tests {
         assert!(matches!(
             parse_slash_command("/status"),
             Some(SlashCommand::Status)
+        ));
+    }
+
+    #[test]
+    fn parse_run() {
+        assert!(matches!(
+            parse_slash_command("/run"),
+            Some(SlashCommand::Run)
+        ));
+    }
+
+    #[test]
+    fn parse_cancel_aliases() {
+        assert!(matches!(
+            parse_slash_command("/cancel"),
+            Some(SlashCommand::Cancel)
+        ));
+        assert!(matches!(
+            parse_slash_command("/abort"),
+            Some(SlashCommand::Cancel)
+        ));
+    }
+
+    #[test]
+    fn parse_todos_aliases() {
+        assert!(matches!(
+            parse_slash_command("/todos"),
+            Some(SlashCommand::Todos)
+        ));
+        assert!(matches!(
+            parse_slash_command("/todo"),
+            Some(SlashCommand::Todos)
+        ));
+    }
+
+    #[test]
+    fn parse_requests() {
+        assert!(matches!(
+            parse_slash_command("/requests"),
+            Some(SlashCommand::Requests)
+        ));
+    }
+
+    #[test]
+    fn parse_answer() {
+        let cmd = parse_slash_command("/answer q123 continue with option A");
+        assert!(matches!(
+            cmd,
+            Some(SlashCommand::Answer { ref question_id, ref answer })
+            if question_id == "q123" && answer == "continue with option A"
+        ));
+    }
+
+    #[test]
+    fn parse_providers() {
+        assert!(matches!(
+            parse_slash_command("/providers"),
+            Some(SlashCommand::Providers)
+        ));
+    }
+
+    #[test]
+    fn parse_models() {
+        assert!(matches!(
+            parse_slash_command("/models"),
+            Some(SlashCommand::Models { provider: None })
+        ));
+        let cmd = parse_slash_command("/models openrouter");
+        assert!(matches!(
+            cmd,
+            Some(SlashCommand::Models { provider: Some(ref p) }) if p == "openrouter"
+        ));
+    }
+
+    #[test]
+    fn parse_model_set() {
+        let cmd = parse_slash_command("/model gpt-5-mini");
+        assert!(matches!(
+            cmd,
+            Some(SlashCommand::Model { ref model_id }) if model_id == "gpt-5-mini"
         ));
     }
 

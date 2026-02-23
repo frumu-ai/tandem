@@ -8,6 +8,14 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - `webfetch_document` was removed.
   - `webfetch` is now markdown-first and returns structured JSON output by default.
   - Use `webfetch_html` when raw HTML output is explicitly required.
+- Channel integrations: expanded slash-command control/visibility directly from Telegram/Discord/Slack:
+  - `/run` for active run status
+  - `/cancel` (and `/abort`) for run cancellation
+  - `/todos` for session todo visibility
+  - `/requests` to view pending permission/question requests
+  - `/answer <question_id> <text>` to reply to pending question prompts
+  - `/providers` and `/models [provider]` for provider/model catalog visibility
+- Channel integrations: added `/model <model_id>` to switch the active model on the current default provider from chat channels (without adding provider/token switching flows).
 
 ## v0.3.14
 

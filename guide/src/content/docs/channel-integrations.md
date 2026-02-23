@@ -112,14 +112,24 @@ server starts normally.
 
 Available in all channels:
 
-| Command                 | Description                  |
-| ----------------------- | ---------------------------- |
-| `/help`                 | List all commands            |
-| `/new [name]`           | Start a fresh session        |
-| `/sessions`             | List your recent sessions    |
-| `/resume <id or title>` | Switch to a previous session |
-| `/status`               | Show current session info    |
-| `/rename <name>`        | Rename the current session   |
+| Command                   | Description                      |
+| ------------------------- | -------------------------------- |
+| `/help`                   | List all commands                |
+| `/new [name]`             | Start a fresh session            |
+| `/sessions`               | List your recent sessions        |
+| `/resume <id or title>`   | Switch to a previous session     |
+| `/status`                 | Show current session info        |
+| `/rename <name>`          | Rename the current session       |
+| `/run`                    | Show active run status           |
+| `/cancel`                 | Cancel active run                |
+| `/todos`                  | List current session todos       |
+| `/requests`               | List pending approvals/questions |
+| `/answer <id> <text>`     | Answer a pending question        |
+| `/providers`              | List available providers         |
+| `/models [provider]`      | List models by provider          |
+| `/model <model_id>`       | Set model on default provider    |
+| `/approve <tool_call_id>` | Approve pending tool call        |
+| `/deny <tool_call_id>`    | Deny pending tool call           |
 
 ---
 
