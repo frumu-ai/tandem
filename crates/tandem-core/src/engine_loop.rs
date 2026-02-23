@@ -1177,8 +1177,31 @@ impl EngineLoop {
         let workspace_path = PathBuf::from(&workspace);
         let candidate_paths = extract_tool_candidate_paths(tool, args);
         if candidate_paths.is_empty() {
+            if is_shell_tool_name(tool) {
+                if let Some(command) = extract_shell_command(args) {
+                    if shell_command_targets_sensitive_path(&command) {
+                        return Some(format!(
+                            "Sandbox blocked `{tool}` command targeting sensitive paths."
+                        ));
+                    }
+                }
+            }
             return None;
         }
+        if let Some(sensitive) = candidate_paths.iter().find(|path| {
+            let raw = Path::new(path);
+            let resolved = if raw.is_absolute() {
+                raw.to_path_buf()
+            } else {
+                workspace_path.join(raw)
+            };
+            is_sensitive_path_candidate(&resolved)
+        }) {
+            return Some(format!(
+                "Sandbox blocked `{tool}` path `{sensitive}` (sensitive path policy)."
+            ));
+        }
+
         let outside = candidate_paths.iter().find(|path| {
             let raw = Path::new(path);
             let resolved = if raw.is_absolute() {
@@ -1577,6 +1600,58 @@ fn tool_budget_for(tool_name: &str) -> usize {
         "grep" | "search" | "codesearch" => 6,
         _ => 10,
     }
+}
+
+fn is_sensitive_path_candidate(path: &Path) -> bool {
+    let lowered = path.to_string_lossy().to_ascii_lowercase();
+    if lowered.contains("/.ssh/")
+        || lowered.ends_with("/.ssh")
+        || lowered.contains("/.gnupg/")
+        || lowered.ends_with("/.gnupg")
+    {
+        return true;
+    }
+    if lowered.contains("/.aws/credentials")
+        || lowered.ends_with("/.npmrc")
+        || lowered.ends_with("/.netrc")
+        || lowered.ends_with("/.pypirc")
+    {
+        return true;
+    }
+    if lowered.contains("id_rsa")
+        || lowered.contains("id_ed25519")
+        || lowered.contains("id_ecdsa")
+        || lowered.contains(".pem")
+        || lowered.contains(".p12")
+        || lowered.contains(".pfx")
+        || lowered.contains(".key")
+    {
+        return true;
+    }
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let n = name.to_ascii_lowercase();
+        if n == ".env" || n.starts_with(".env.") {
+            return true;
+        }
+    }
+    false
+}
+
+fn shell_command_targets_sensitive_path(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    let patterns = [
+        ".env",
+        ".ssh",
+        ".gnupg",
+        ".aws/credentials",
+        "id_rsa",
+        "id_ed25519",
+        ".pem",
+        ".p12",
+        ".pfx",
+        ".key",
+    ];
+    patterns.iter().any(|p| lower.contains(p))
 }
 
 #[derive(Debug, Clone)]
