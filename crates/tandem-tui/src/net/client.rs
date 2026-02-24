@@ -158,6 +158,14 @@ pub enum StreamRequestEvent {
     QuestionAsked(QuestionRequest),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamToolDelta {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub args_delta: String,
+    pub args_preview: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct PromptRunResult {
     pub messages: Vec<WireSessionMessage>,
@@ -875,7 +883,7 @@ impl EngineClient {
         if let Some(agent_id) = agent_id {
             prompt_req = prompt_req.header("x-tandem-agent-id", agent_id);
         }
-        let mut resp = prompt_req.json(&req).send().await?;
+        let resp = prompt_req.json(&req).send().await?;
         if resp.status() == reqwest::StatusCode::CONFLICT {
             let body = resp.text().await?;
             let run_id = serde_json::from_str::<PromptConflictResponse>(&body)
@@ -888,19 +896,12 @@ impl EngineClient {
                     }
                 });
             if let Some(run_id) = run_id {
-                let _ = self.cancel_run_by_id(session_id, &run_id).await;
-                tokio::time::sleep(Duration::from_millis(150)).await;
-                let mut retry_req = self
-                    .client
-                    .post(&prompt_url)
-                    .header("Accept", "text/event-stream");
-                if let Some(agent_id) = agent_id {
-                    retry_req = retry_req.header("x-tandem-agent-id", agent_id);
-                }
-                resp = retry_req.json(&req).send().await?;
-            } else {
-                bail!("409 Conflict: {}", body);
+                bail!(
+                    "409 Conflict: session has active run `{}`. Queue follow-up or cancel first.",
+                    run_id
+                );
             }
+            bail!("409 Conflict: {}", body);
         }
         let status = resp.status();
         if !status.is_success() {
@@ -1385,6 +1386,45 @@ pub fn extract_stream_activity(payload: &serde_json::Value) -> Option<String> {
     }
 }
 
+pub fn extract_stream_tool_delta(payload: &serde_json::Value) -> Option<StreamToolDelta> {
+    let event_type = payload.get("type").and_then(|v| v.as_str())?;
+    if event_type != "message.part.updated" {
+        return None;
+    }
+    let props = payload.get("properties")?;
+    let tool_delta = props.get("toolCallDelta")?;
+    let tool_call_id = tool_delta.get("id").and_then(|v| v.as_str())?.to_string();
+    let tool_name = tool_delta
+        .get("tool")
+        .or_else(|| tool_delta.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("tool")
+        .to_string();
+    let args_delta = tool_delta
+        .get("argsDelta")
+        .or_else(|| tool_delta.get("delta"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let args_preview = tool_delta
+        .get("parsedArgsPreview")
+        .or_else(|| tool_delta.get("argsPreview"))
+        .map(|v| {
+            if let Some(s) = v.as_str() {
+                s.to_string()
+            } else {
+                v.to_string()
+            }
+        })
+        .unwrap_or_else(|| args_delta.clone());
+    Some(StreamToolDelta {
+        tool_call_id,
+        tool_name,
+        args_delta,
+        args_preview,
+    })
+}
+
 pub fn extract_stream_request(payload: &serde_json::Value) -> Option<StreamRequestEvent> {
     let event_type = payload.get("type").and_then(|v| v.as_str())?;
     let props = payload.get("properties")?.clone();
@@ -1429,13 +1469,53 @@ pub fn extract_stream_request(payload: &serde_json::Value) -> Option<StreamReque
                 .to_string(),
         }),
         "question.asked" => {
+            let mut questions_value = props
+                .get("questions")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            let has_questions = questions_value
+                .as_array()
+                .map(|arr| !arr.is_empty())
+                .unwrap_or(false);
+            if !has_questions {
+                let fallback_question = props
+                    .get("question")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| props.get("prompt").and_then(|v| v.as_str()))
+                    .or_else(|| props.get("query").and_then(|v| v.as_str()))
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                if let Some(question) = fallback_question {
+                    let options = props
+                        .get("choices")
+                        .or_else(|| props.get("options"))
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|entry| {
+                            if let Some(label) = entry.as_str() {
+                                serde_json::json!({ "label": label, "description": "" })
+                            } else if entry.is_object() {
+                                entry
+                            } else {
+                                serde_json::json!({ "label": entry.to_string(), "description": "" })
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    questions_value = serde_json::json!([{
+                        "header": "Question",
+                        "question": question,
+                        "options": options,
+                        "multiple": false,
+                        "custom": true
+                    }]);
+                }
+            }
             let request = serde_json::from_value::<QuestionRequest>(serde_json::json!({
                 "id": props.get("id").cloned().unwrap_or(serde_json::Value::Null),
                 "sessionID": props.get("sessionID").cloned().unwrap_or(serde_json::Value::Null),
-                "questions": props
-                    .get("questions")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!([])),
+                "questions": questions_value,
                 "tool": props.get("tool").cloned().unwrap_or(serde_json::Value::Null),
             }))
             .ok()?;
@@ -1779,5 +1859,36 @@ mod tests {
         let msg = extract_stream_error(&payload).expect("error");
         assert!(msg.contains("PROVIDER_AUTH"));
         assert!(msg.contains("missing API key"));
+    }
+
+    #[test]
+    fn extract_stream_tool_delta_reads_tool_call_delta_payload() {
+        let payload = serde_json::json!({
+            "type": "message.part.updated",
+            "properties": {
+                "toolCallDelta": {
+                    "id": "call_1",
+                    "tool": "write",
+                    "argsDelta": "{\"path\":\"src/main.rs\"",
+                    "parsedArgsPreview": { "path": "src/main.rs" }
+                }
+            }
+        });
+        let delta = extract_stream_tool_delta(&payload).expect("tool delta");
+        assert_eq!(delta.tool_call_id, "call_1");
+        assert_eq!(delta.tool_name, "write");
+        assert!(delta.args_delta.contains("path"));
+        assert!(delta.args_preview.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn extract_stream_tool_delta_ignores_non_tool_payloads() {
+        let payload = serde_json::json!({
+            "type": "message.part.updated",
+            "properties": {
+                "part": { "type": "text", "text": "hello" }
+            }
+        });
+        assert!(extract_stream_tool_delta(&payload).is_none());
     }
 }

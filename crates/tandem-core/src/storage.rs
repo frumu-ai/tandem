@@ -554,6 +554,12 @@ impl Storage {
         message_id: &str,
         questions: Vec<Value>,
     ) -> anyhow::Result<QuestionRequest> {
+        if questions.is_empty() {
+            return Err(anyhow::anyhow!(
+                "cannot add empty question request for session {}",
+                session_id
+            ));
+        }
         let request = QuestionRequest {
             id: format!("q-{}", Uuid::new_v4()),
             session_id: session_id.to_string(),

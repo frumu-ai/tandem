@@ -29,14 +29,14 @@ Last updated: 2026-02-13 (engine-backed workspace-first session scope + explicit
 
 ## 3) Sidecar SSE -> Tauri `StreamEvent`
 
-| Event                                 | Canonical payload                                                      | Status      | Notes                                                                          |
-| ------------------------------------- | ---------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------ |
-| `storage-migration-progress`          | phase, percent, copied/skipped/errors, recovered counters              | implemented | Drives blocking startup migration overlay progress bar and counters.           |
-| `storage-migration-complete`          | status, duration, copied/skipped/errors, repair totals                 | implemented | Drives completion summary + retry/details actions.                             |
-| `message.part.updated` text           | `part.sessionID`, `part.messageID`, `part.type=text`, optional `delta` | implemented | Delta/no-delta assistant handling present.                                     |
-| `message.part.updated` tool start/end | Consistent tool lifecycle with stable `id/state/tool`                  | partial     | Added structured-state tests; additional telemetry for dropped events pending. |
-| `todo.updated`                        | `sessionID`, normalized todo items (`id/content/status`)               | implemented | Parser tolerant to malformed entries; emits normalized set.                    |
-| `question.asked`                      | `id`, `sessionID`, `questions[]`, optional `tool.callID/messageID`     | implemented | Multi-question fixture covered in tests.                                       |
+| Event                                 | Canonical payload                                                                                | Status      | Notes                                                                          |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------- | ------------------------------------------------------------------------------ |
+| `storage-migration-progress`          | phase, percent, copied/skipped/errors, recovered counters                                        | implemented | Drives blocking startup migration overlay progress bar and counters.           |
+| `storage-migration-complete`          | status, duration, copied/skipped/errors, repair totals                                           | implemented | Drives completion summary + retry/details actions.                             |
+| `message.part.updated` text           | `part.sessionID`, `part.messageID`, `part.type=text`, optional `delta`                           | implemented | Delta/no-delta assistant handling present.                                     |
+| `message.part.updated` tool start/end | Consistent tool lifecycle with stable `id/state/tool` + optional `toolCallDelta` preview payload | partial     | Added structured-state tests; additional telemetry for dropped events pending. |
+| `todo.updated`                        | `sessionID`, normalized todo items (`id/content/status`)                                         | implemented | Parser tolerant to malformed entries; emits normalized set.                    |
+| `question.asked`                      | `id`, `sessionID`, `questions[]`, optional `tool.callID/messageID`                               | implemented | Multi-question fixture covered in tests.                                       |
 
 ## 4) Tauri Emitted Events -> Frontend Consumers
 
@@ -120,6 +120,30 @@ GET /session?scope=workspace&workspace=C:\Users\evang\work\frumu
         "status": "running",
         "input": { "todos": [{ "content": "Audit contracts" }] }
       }
+    }
+  }
+}
+```
+
+### `message.part.updated` (tool arg delta preview)
+
+```json
+{
+  "type": "message.part.updated",
+  "properties": {
+    "part": {
+      "id": "call_1",
+      "sessionID": "ses_123",
+      "messageID": "msg_123",
+      "type": "tool",
+      "tool": "write",
+      "state": "running"
+    },
+    "toolCallDelta": {
+      "id": "call_1",
+      "tool": "write",
+      "argsDelta": "{\"path\":\"src/main.rs\"",
+      "parsedArgsPreview": { "path": "src/main.rs" }
     }
   }
 }

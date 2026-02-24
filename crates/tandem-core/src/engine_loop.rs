@@ -472,8 +472,37 @@ impl EngineLoop {
                             }
                         }
                         StreamChunk::ToolCallDelta { id, args_delta } => {
-                            let entry = streamed_tool_calls.entry(id).or_default();
+                            let entry = streamed_tool_calls.entry(id.clone()).or_default();
                             entry.args.push_str(&args_delta);
+                            let tool_name = if entry.name.trim().is_empty() {
+                                "tool".to_string()
+                            } else {
+                                normalize_tool_name(&entry.name)
+                            };
+                            let parsed_preview = if entry.name.trim().is_empty() {
+                                Value::String(truncate_text(&entry.args, 1_000))
+                            } else {
+                                parse_streamed_tool_args(&tool_name, &entry.args)
+                            };
+                            let mut tool_part = WireMessagePart::tool_invocation(
+                                &session_id,
+                                &user_message_id,
+                                tool_name.clone(),
+                                json!({}),
+                            );
+                            tool_part.id = Some(id.clone());
+                            self.event_bus.publish(EngineEvent::new(
+                                "message.part.updated",
+                                json!({
+                                    "part": tool_part,
+                                    "toolCallDelta": {
+                                        "id": id,
+                                        "tool": tool_name,
+                                        "argsDelta": truncate_text(&args_delta, 1_000),
+                                        "parsedArgsPreview": parsed_preview
+                                    }
+                                }),
+                            ));
                         }
                         StreamChunk::ToolCallEnd { id: _ } => {}
                     }
@@ -3333,6 +3362,14 @@ async fn emit_tool_side_events(
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
+        if questions.is_empty() {
+            tracing::warn!(
+                "question tool produced empty questions payload; skipping question.asked event session_id={} message_id={}",
+                session_id,
+                message_id
+            );
+            return;
+        }
         let request = storage
             .add_question_request(session_id, message_id, questions.clone())
             .await

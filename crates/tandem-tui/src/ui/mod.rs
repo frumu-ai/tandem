@@ -5,18 +5,23 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
+use std::time::Instant;
 
 pub mod components;
 pub mod markdown;
 pub mod markdown_stream;
 pub mod matrix;
+pub mod spinner;
 use crate::app::{
     AgentStatus, App, AppState, ChatMessage, ContentBlock, ModalState, PendingRequestKind,
-    PinPromptMode, SetupStep, UiMode,
+    PinPromptMode, SetupStep, TandemMode, UiMode,
 };
 use crate::ui::components::{flow::FlowList, task_list::TaskList};
 
+const IME_CURSOR_MARKER: &str = "\x1b]_TANDEM_CURSOR\x1b\\";
+
 pub fn draw(f: &mut Frame, app: &App) {
+    f.render_widget(Clear, f.area());
     match &app.state {
         AppState::StartupAnimation { .. } => draw_startup(f, app),
 
@@ -120,7 +125,9 @@ fn draw_main_menu(f: &mut Frame, app: &App) {
 
     if app.sessions.is_empty() {
         let content =
-            Paragraph::new("No sessions found. Press 'n' to create one.\n(Polling Engine...)")
+            Paragraph::new(
+                "No sessions found. Press 'n' to create one.\nUse 'd' or Delete to remove a selected session.\n(Polling Engine...)",
+            )
                 .alignment(Alignment::Center)
                 .block(Block::default().borders(Borders::NONE));
         f.render_widget(content, chunks[1]);
@@ -143,7 +150,11 @@ fn draw_main_menu(f: &mut Frame, app: &App) {
             })
             .collect();
 
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Sessions"));
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Sessions (Enter open, n new, d/Delete remove, q quit)"),
+        );
 
         f.render_widget(list, chunks[1]);
     }
@@ -167,17 +178,22 @@ fn draw_chat(f: &mut Frame, app: &App) {
         request_cursor,
         permission_choice,
         plan_wizard,
+        request_panel_expanded,
         ..
     } = &app.state
     {
         let request_panel_active =
             matches!(modal, Some(ModalState::RequestCenter)) && !pending_requests.is_empty();
         let request_height = if request_panel_active {
-            pending_requests
+            let estimated = pending_requests
                 .get(*request_cursor)
                 .map(estimate_request_panel_height)
-                .unwrap_or(8)
-                .clamp(7, 16)
+                .unwrap_or(8);
+            if *request_panel_expanded {
+                estimated.clamp(8, 16)
+            } else {
+                estimated.clamp(6, 9)
+            }
         } else {
             0
         };
@@ -186,7 +202,11 @@ fn draw_chat(f: &mut Frame, app: &App) {
         if request_panel_active {
             constraints.push(Constraint::Length(request_height as u16));
         }
-        let input_height = command_input.desired_height(f.area().width);
+        let input_height = if request_panel_active {
+            0
+        } else {
+            command_input.desired_height(f.area().width)
+        };
         constraints.push(Constraint::Length(input_height));
         constraints.push(Constraint::Length(1));
 
@@ -378,28 +398,54 @@ fn draw_chat(f: &mut Frame, app: &App) {
         }
 
         // Input box with cursor
-        let input_style = if command_input.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else if command_input.text().starts_with('/') {
-            Style::default().fg(Color::Green)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let input_display = if command_input.is_empty() {
-            "Type prompt or /command... (Tab for autocomplete)".to_string()
-        } else {
-            command_input.text().to_string()
-        };
-        let input_widget = Paragraph::new(input_display).style(input_style).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Input ")
-                .border_style(Style::default().fg(Color::Cyan)),
-        );
-        f.render_widget(input_widget, input_chunk);
-        if modal.is_none() {
-            let (cursor_x, cursor_y) = command_input.cursor_screen_pos(input_chunk);
-            f.set_cursor_position((cursor_x, cursor_y));
+        if input_height > 0 {
+            let input_style = if command_input.is_empty() {
+                Style::default().fg(Color::DarkGray)
+            } else if command_input.text().starts_with('/') {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let mut input_display = if command_input.is_empty() {
+                "Type prompt or /command... (Tab for autocomplete)".to_string()
+            } else {
+                command_input.text().to_string()
+            };
+            if modal.is_none() && ime_cursor_marker_enabled() {
+                if command_input.is_empty() {
+                    input_display = IME_CURSOR_MARKER.to_string();
+                } else {
+                    let idx = command_input.cursor_byte_index().min(input_display.len());
+                    if input_display.is_char_boundary(idx) {
+                        input_display.insert_str(idx, IME_CURSOR_MARKER);
+                    }
+                }
+            }
+            let input_title = if app
+                .paste_activity_until
+                .map(|t| Instant::now() <= t)
+                .unwrap_or(false)
+            {
+                format!(" Input {} Pasting ", spinner_frame(app.tick_count))
+            } else {
+                " Input ".to_string()
+            };
+            let input_text = stylize_input_with_paste_tokens(&input_display, input_style);
+            let input_widget = Paragraph::new(input_text)
+                .style(Style::default().bg(Color::Black))
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(input_title)
+                        .border_style(Style::default().fg(Color::Cyan)),
+                );
+            f.render_widget(Clear, input_chunk);
+            f.render_widget(input_widget, input_chunk);
+            if modal.is_none() {
+                let (cursor_x, cursor_y) = command_input.cursor_screen_pos(input_chunk);
+                f.set_cursor_position((cursor_x, cursor_y));
+            }
         }
 
         // Autocomplete popup
@@ -455,7 +501,11 @@ fn draw_chat(f: &mut Frame, app: &App) {
         if let Some(request_area) = request_chunk {
             if let Some(request) = pending_requests.get(*request_cursor) {
                 let request_block = Block::default()
-                    .title(" Requests ")
+                    .title(if *request_panel_expanded {
+                        " Requests (Expanded) "
+                    } else {
+                        " Requests (Compact) "
+                    })
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Yellow));
                 let choice_chip = |idx: usize, label: &str, active: usize| -> Span<'static> {
@@ -505,16 +555,22 @@ fn draw_chat(f: &mut Frame, app: &App) {
                             choice_chip(2, "3 Deny", *permission_choice),
                         ])));
                         lines.push(Line::from(
-                            "Keys: Up/Down request, Left/Right choice, 1..3, Enter confirm, R reject, Esc close",
+                            "Keys: Up/Down request, Left/Right choice, 1..3, Ctrl+E expand/collapse, Enter confirm, R reject, Esc close",
                         ));
                     }
                     PendingRequestKind::Question(question) => {
+                        let total = question.questions.len().max(1);
+                        let current = if question.questions.is_empty() {
+                            1
+                        } else {
+                            (question.question_index + 1).min(total)
+                        };
                         lines.push(Line::from(format!(
                             "Request {}/{}  |  Question {}/{}",
                             request_cursor + 1,
                             pending_requests.len(),
-                            question.question_index + 1,
-                            question.questions.len()
+                            current,
+                            total
                         )));
                         if let Some(q) = question.questions.get(question.question_index) {
                             lines.push(Line::from(format!("AI asks: {}", q.question)));
@@ -527,14 +583,27 @@ fn draw_chat(f: &mut Frame, app: &App) {
                                         " "
                                     };
                                     let cursor = if q.option_cursor == idx { ">" } else { " " };
-                                    lines.push(Line::from(format!(
+                                    let label = format!(
                                         "  {}{} {}. {} {}",
                                         cursor,
                                         selected,
                                         idx + 1,
                                         option.label,
                                         option.description
-                                    )));
+                                    );
+                                    let style = if q.option_cursor == idx {
+                                        Style::default()
+                                            .fg(Color::Black)
+                                            .bg(Color::LightGreen)
+                                            .add_modifier(Modifier::BOLD)
+                                    } else if q.selected_options.contains(&idx) {
+                                        Style::default()
+                                            .fg(Color::Green)
+                                            .add_modifier(Modifier::BOLD)
+                                    } else {
+                                        Style::default().fg(Color::White)
+                                    };
+                                    lines.push(Line::from(vec![Span::styled(label, style)]));
                                 }
                                 if q.options.len() > 5 {
                                     lines.push(Line::from("  ..."));
@@ -552,7 +621,7 @@ fn draw_chat(f: &mut Frame, app: &App) {
                             lines.push(Line::from(box_mid));
                             lines.push(Line::from(box_bottom));
                             lines.push(Line::from(
-                                "Keys: Left/Right option, Space toggle, 1..9, type answer, Backspace, Enter next/submit, R reject",
+                                "Keys: Up/Down option (Ctrl+Up/Down request), Left/Right option, Space toggle, 1..9, type answer, Backspace, Ctrl+E expand/collapse, Enter next/submit (auto-select highlight), R reject",
                             ));
                         } else {
                             lines.push(Line::from("Question request has no prompts."));
@@ -588,6 +657,27 @@ fn draw_chat(f: &mut Frame, app: &App) {
                 AgentStatus::Idle => "Idle".to_string(),
             })
             .unwrap_or_else(|| "Idle".to_string());
+        let active_tool_preview = agents
+            .get(*active_agent_index)
+            .and_then(|a| {
+                if a.live_tool_calls.is_empty() {
+                    return None;
+                }
+                let first = a.live_tool_calls.values().next()?;
+                let preview = first.args_preview.replace('\n', " ");
+                let preview = if preview.chars().count() > 40 {
+                    format!("{}...", preview.chars().take(40).collect::<String>())
+                } else {
+                    preview
+                };
+                Some(format!(
+                    " | Tool:{} [{}] {}",
+                    first.tool_name,
+                    a.live_tool_calls.len(),
+                    preview
+                ))
+            })
+            .unwrap_or_default();
         let context_chars = estimate_context_chars(messages);
         let context_limit = resolve_context_limit(app);
         let context_label = match context_limit {
@@ -614,27 +704,52 @@ fn draw_chat(f: &mut Frame, app: &App) {
             None
         };
         let (active_req_count, background_req_count) = app.pending_request_counts();
-        let status_text = format!(
-            " Tandem TUI | {} | {} | {} | {} | Active: {} ({}) | {}{} | Req:{}/{} ",
-            mode_str,
-            provider_str,
-            model_str,
-            &session_id[..8.min(session_id.len())],
-            active_label,
-            active_activity,
-            context_label,
-            compacting_label
-                .map(|v| format!(" | {}", v))
-                .unwrap_or_default(),
-            active_req_count,
-            background_req_count
-        );
-        let status_widget = Paragraph::new(status_text)
-            .style(
+        let compacting_suffix = compacting_label
+            .map(|v| format!(" | {}", v))
+            .unwrap_or_default();
+        let paste_suffix = if app
+            .paste_activity_until
+            .map(|t| Instant::now() <= t)
+            .unwrap_or(false)
+        {
+            format!(" | {} Pasting", spinner_frame(app.tick_count))
+        } else {
+            String::new()
+        };
+        let status_line = Line::from(vec![
+            Span::styled(
+                " Tandem TUI | ",
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD),
-            )
+            ),
+            Span::styled(
+                mode_str.clone(),
+                Style::default()
+                    .fg(mode_accent_color(app.current_mode))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    " | {} | {} | {} | Active: {} ({}){} | {}{} | Req A:{} B:{}{} ",
+                    provider_str,
+                    model_str,
+                    &session_id[..8.min(session_id.len())],
+                    active_label,
+                    active_activity,
+                    active_tool_preview,
+                    context_label,
+                    compacting_suffix,
+                    active_req_count,
+                    background_req_count,
+                    paste_suffix
+                ),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let status_widget = Paragraph::new(status_line)
             .alignment(Alignment::Left)
             .block(Block::default().borders(Borders::NONE));
         f.render_widget(status_widget, status_chunk);
@@ -646,7 +761,7 @@ fn draw_chat(f: &mut Frame, app: &App) {
             let area = centered_rect(58, 34, f.area());
             f.render_widget(Clear, area);
             let text = match modal_state {
-                ModalState::Help => "Keys:\nF1 Help\nTab/Shift+Tab switch agent\nAlt+1..9 jump agent\nCtrl+N new agent\nCtrl+W close agent\nCtrl+C cancel active run\nLeft/Right/Home/End move cursor\nCtrl+Up/Down move cursor line\nDelete/Backspace edit\nAlt+M cycle mode\nAlt+G toggle grid\nAlt+R open request center\nAlt+S / Alt+B demo streams\nShift+Enter or Alt+Enter newline\nEsc close modal/input\nCtrl+X quit\n\nMarkdown colors:\nHeading=yellow, Quote=green, List=blue, Code=gray",
+                ModalState::Help => "Keys:\nF1 Help\nTab/Shift+Tab switch agent\nAlt+1..9 jump agent\nCtrl+N new agent\nCtrl+W close agent\nCtrl+C cancel run / double-tap quit\nCtrl+Y copy latest assistant message\nCtrl+V paste as token\nEnter send prompt\nShift+Enter or Alt+Enter newline\nLeft/Right/Home/End move cursor\nCtrl+Up/Down move cursor line\nDelete/Backspace edit\nAlt+M cycle mode\nAlt+G toggle grid\nAlt+R open request center\nCtrl+E expand/collapse request panel\nAlt+I queue steering interrupt\nEnter while busy queues follow-up\nAlt+S / Alt+B demo streams\nEsc close modal/input\nCtrl+X quit\n\nMarkdown colors:\nHeading=yellow, Quote=green, List=blue, Code=gray",
                 ModalState::ConfirmCloseAgent { target_agent_id } => {
                     if target_agent_id.is_empty() {
                         "Close active agent and discard draft? (Y/N)"
@@ -656,6 +771,13 @@ fn draw_chat(f: &mut Frame, app: &App) {
                 }
                 ModalState::RequestCenter => "Request center",
                 ModalState::PlanFeedbackWizard => "Plan feedback wizard",
+                ModalState::StartPlanAgents { count } => {
+                    if *count == 4 {
+                        "Start 4 agents to execute the approved plan in tandem? (Y/N)"
+                    } else {
+                        "Start multiple agents to execute the approved plan? (Y/N)"
+                    }
+                }
             };
             let popup_block = Block::default()
                 .title(" Modal ")
@@ -733,7 +855,7 @@ fn draw_chat(f: &mut Frame, app: &App) {
                         lines.push(Line::from("Selected choice:"));
                         lines.push(choice_line);
                         lines.push(Line::from(""));
-                        lines.push(Line::from("Keys: Up/Down request, Left/Right choice, 1..3 quick choice, Enter confirm, R reject, Esc close"));
+                        lines.push(Line::from("Keys: Up/Down request, Left/Right choice, 1..3 quick choice, Ctrl+E expand/collapse, Enter confirm, R reject, Esc close"));
 
                         let text = Text::from(lines);
 
@@ -775,11 +897,11 @@ fn draw_chat(f: &mut Frame, app: &App) {
                                     format!("Choices (toggle with Space):\n{}", options)
                                 };
                                 format!(
-                                    "Request {}/{}  |  Question {}/{}\n\nAI asks:\n{}\n\n{}\nType your answer in the box below:\n{}\n{}\n{}\n\nKeys: Up/Down request, Left/Right option, Space toggle, 1..9 quick toggle, type answer, Backspace edit, Enter next/submit, R reject, Esc close",
+                                    "Request {}/{}  |  Question {}/{}\n\nAI asks:\n{}\n\n{}\nType your answer in the box below:\n{}\n{}\n{}\n\nKeys: Up/Down request, Left/Right option, Space toggle, 1..9 quick toggle, type answer, Backspace edit, Ctrl+E expand/collapse, Enter next/submit, R reject, Esc close",
                                     request_cursor + 1,
                                     pending_requests.len(),
-                                    question.question_index + 1,
-                                    question.questions.len(),
+                                    (question.question_index + 1).min(question.questions.len().max(1)),
+                                    question.questions.len().max(1),
                                     q.question,
                                     options_section,
                                     box_top,
@@ -814,14 +936,18 @@ fn draw_chat(f: &mut Frame, app: &App) {
 
                 let mut lines = vec![
                     Line::from("Guided feedback for newly proposed plan tasks"),
+                    Line::from("Press Enter to continue with defaults, or edit fields below."),
                     Line::from(""),
                     Line::from("Task preview:"),
                 ];
                 if plan_wizard.task_preview.is_empty() {
                     lines.push(Line::from("  (no task preview)"));
                 } else {
-                    for (idx, task) in plan_wizard.task_preview.iter().take(8).enumerate() {
+                    for (idx, task) in plan_wizard.task_preview.iter().take(4).enumerate() {
                         lines.push(Line::from(format!("  {}. {}", idx + 1, task)));
+                    }
+                    if plan_wizard.task_preview.len() > 4 {
+                        lines.push(Line::from("  ..."));
                     }
                 }
                 lines.push(Line::from(""));
@@ -890,22 +1016,46 @@ fn draw_status_bar(f: &mut Frame, app: &App) {
         .map(|s| s.id.as_str())
         .or(app.engine_lease_id.as_deref())
         .unwrap_or("engine");
-    let status_text = format!(
-        " Tandem TUI | {} | {} | {} | {} ",
-        mode_str,
-        provider_str,
-        model_str,
-        &identity[..8.min(identity.len())]
-    );
-    let status_widget = Paragraph::new(status_text)
-        .style(
+    let status_line = Line::from(vec![
+        Span::styled(
+            " Tandem TUI | ",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
-        )
+        ),
+        Span::styled(
+            mode_str.clone(),
+            Style::default()
+                .fg(mode_accent_color(app.current_mode))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                " | {} | {} | {} ",
+                provider_str,
+                model_str,
+                &identity[..8.min(identity.len())]
+            ),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    let status_widget = Paragraph::new(status_line)
         .alignment(Alignment::Left)
         .block(Block::default().borders(Borders::NONE));
     f.render_widget(status_widget, status_chunk);
+}
+
+fn mode_accent_color(mode: TandemMode) -> Color {
+    match mode {
+        TandemMode::Plan => Color::Yellow,
+        TandemMode::Immediate => Color::Cyan,
+        TandemMode::Coder => Color::Green,
+        TandemMode::Explore => Color::LightBlue,
+        TandemMode::Ask => Color::White,
+        TandemMode::Orchestrate => Color::Magenta,
+    }
 }
 
 fn extract_permission_questions(args: Option<&serde_json::Value>) -> Vec<String> {
@@ -1177,8 +1327,11 @@ fn draw_connecting(f: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     let connect_frames = ["Starting", "Starting.", "Starting..", "Starting..."];
     let connect_label = connect_frames[(app.tick_count / 10) % connect_frames.len()];
+    let spinner = spinner::frame_for_tick(app.tick_count / 2);
     lines.push(Line::from(vec![
         Span::styled(connect_label, Style::default().fg(Color::Cyan)),
+        Span::raw(" "),
+        Span::styled(spinner, Style::default().fg(Color::LightYellow)),
         Span::raw(" "),
         Span::styled(
             &app.connection_status,
@@ -1378,6 +1531,21 @@ fn centered_rect(
         .split(popup_layout[1])[1]
 }
 
+fn ime_cursor_marker_enabled() -> bool {
+    match std::env::var("TANDEM_TUI_IME_CURSOR_MARKER")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("on") => true,
+        Some("off") => false,
+        _ => matches!(
+            std::env::var("TERM_PROGRAM").ok().as_deref(),
+            Some("iTerm.app" | "WezTerm")
+        ),
+    }
+}
+
 fn centered_fixed_rect(
     width: u16,
     height: u16,
@@ -1393,6 +1561,43 @@ fn centered_fixed_rect(
 fn spinner_frame(tick: usize) -> &'static str {
     const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
     FRAMES[tick % FRAMES.len()]
+}
+
+fn stylize_input_with_paste_tokens(input: &str, base_style: Style) -> Text<'static> {
+    let marker_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for line in input.split('\n') {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut i = 0usize;
+        while i < line.len() {
+            let rest = &line[i..];
+            if rest.starts_with("[Pasted ") {
+                if let Some(end_rel) = rest.find(']') {
+                    let end = i + end_rel + 1;
+                    let candidate = &line[i..end];
+                    if candidate.contains(" chars") {
+                        spans.push(Span::styled(candidate.to_string(), marker_style));
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+            if let Some(ch) = rest.chars().next() {
+                spans.push(Span::styled(ch.to_string(), base_style));
+                i += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+    if input.ends_with('\n') {
+        lines.push(Line::from(Vec::<Span>::new()));
+    }
+    Text::from(lines)
 }
 
 fn resolve_context_limit(app: &App) -> Option<u32> {

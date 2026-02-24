@@ -13,12 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cross-system benchmark comparison in portal**: Added OpenCode benchmark ingestion (`latest`, `history`, `by-date`, `health`) and in-UI Tandem vs OpenCode delta reporting for matched stress scenarios.
 - **OpenCode benchmark runtime mode**: Added warm attached execution support (`opencode serve` + `run --attach`) to avoid cold-start CLI overhead during repeated benchmark runs.
 - **Portal Caddy/API routing compatibility**: Standardized `/api/v1` compatibility behavior and health endpoint support for external benchmark-service integration.
+- **TUI interaction model and keyboard UX refresh**: Updated request-center/question handling, mode/status highlighting, sessions UX hints, and command ergonomics (including agent fanout and session delete affordances) for clearer in-terminal workflows.
+- **TUI dependency/runtime modernization**: Migrated terminal stack to `ratatui 0.30`/`crossterm 0.29`, replaced third-party throbber dependency with local spinner components, and aligned render paths for better cross-platform behavior.
 
 ### Fixed
 
 - **Engine request observability coverage**: Added explicit timing/slow-request instrumentation for `session.command`, `session.get`, and `session.list` server routes to improve bottleneck diagnosis under load.
 - **Stress chart rendering stability**: Fixed NaN polyline generation in Stress Lab line charts when metric series are all-zero or sparsely initialized.
 - **Server-side model selection for stress runs**: Portal server stress runner now resolves and injects an explicit provider/model for prompt scenarios, preventing misleading providerless-like latency readings in LLM tests.
+- **TUI plan/request deadlock and queue conflicts**: Fixed several plan-mode edge cases that could cause repeated `409 session has active run` loops after question/approval handoffs by routing follow-up prompts through safe queue semantics.
+- **TUI question answer fidelity and visibility**: Fixed option selection/confirm behavior in compact request mode and added explicit confirmation output showing submitted question answers.
+- **TUI paste reliability on Windows**: Added burst-aware paste handling with tokenized placeholders to prevent accidental line-by-line replay, unintended submits, and input corruption during large clipboard pastes.
+- **TUI session/task persistence parity**: Restored task reconstruction when re-opening historical sessions by broadening tool-part parsing (`tool`, `tool_call`, `tool_use` forms), so plan sessions reopen with their task lists instead of plain chat-only views.
 
 ## [0.3.18]
 

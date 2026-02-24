@@ -18,6 +18,10 @@ impl ComposerInputState {
         &self.text
     }
 
+    pub fn cursor_byte_index(&self) -> usize {
+        self.cursor
+    }
+
     pub fn set_text(&mut self, text: String) {
         self.text = text;
         self.cursor = self.clamp_boundary(self.cursor.min(self.text.len()));
@@ -61,6 +65,22 @@ impl ComposerInputState {
         }
         let next = self.next_boundary(self.cursor);
         self.text.drain(self.cursor..next);
+    }
+
+    pub fn remove_range(&mut self, start: usize, end: usize) {
+        if start >= end || end > self.text.len() {
+            return;
+        }
+        if !self.text.is_char_boundary(start) || !self.text.is_char_boundary(end) {
+            return;
+        }
+        self.text.drain(start..end);
+        if self.cursor > end {
+            self.cursor = self.cursor.saturating_sub(end - start);
+        } else if self.cursor > start {
+            self.cursor = start;
+        }
+        self.cursor = self.clamp_boundary(self.cursor);
     }
 
     pub fn move_left(&mut self) {

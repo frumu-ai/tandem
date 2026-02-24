@@ -5,6 +5,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use regex::Regex;
@@ -1947,11 +1948,173 @@ impl Tool for QuestionTool {
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let questions = normalize_question_payload(&args);
+        if questions.is_empty() {
+            return Err(anyhow!(
+                "QUESTION_INVALID_ARGS: expected non-empty `questions` with at least one non-empty `question` string"
+            ));
+        }
         Ok(ToolResult {
             output: "Question requested. Use /question endpoints to respond.".to_string(),
-            metadata: json!({"questions": args["questions"]}),
+            metadata: json!({"questions": questions}),
         })
     }
+}
+
+fn normalize_question_payload(args: &Value) -> Vec<Value> {
+    let parsed_args;
+    let args = if let Some(raw) = args.as_str() {
+        if let Ok(decoded) = serde_json::from_str::<Value>(raw) {
+            parsed_args = decoded;
+            &parsed_args
+        } else {
+            args
+        }
+    } else {
+        args
+    };
+
+    let Some(obj) = args.as_object() else {
+        return Vec::new();
+    };
+
+    if let Some(items) = obj.get("questions").and_then(|v| v.as_array()) {
+        let normalized = items
+            .iter()
+            .filter_map(normalize_question_entry)
+            .collect::<Vec<_>>();
+        if !normalized.is_empty() {
+            return normalized;
+        }
+    }
+
+    let question = obj
+        .get("question")
+        .or_else(|| obj.get("prompt"))
+        .or_else(|| obj.get("query"))
+        .or_else(|| obj.get("text"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let Some(question) = question else {
+        return Vec::new();
+    };
+    let options = obj
+        .get("options")
+        .or_else(|| obj.get("choices"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(normalize_question_choice)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let multiple = obj
+        .get("multiple")
+        .or_else(|| obj.get("multi_select"))
+        .or_else(|| obj.get("multiSelect"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let custom = obj
+        .get("custom")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(options.is_empty());
+    vec![json!({
+        "header": obj.get("header").and_then(|v| v.as_str()).unwrap_or("Question"),
+        "question": question,
+        "options": options,
+        "multiple": multiple,
+        "custom": custom
+    })]
+}
+
+fn normalize_question_entry(entry: &Value) -> Option<Value> {
+    if let Some(raw) = entry.as_str() {
+        let question = raw.trim();
+        if question.is_empty() {
+            return None;
+        }
+        return Some(json!({
+            "header": "Question",
+            "question": question,
+            "options": [],
+            "multiple": false,
+            "custom": true
+        }));
+    }
+    let obj = entry.as_object()?;
+    let question = obj
+        .get("question")
+        .or_else(|| obj.get("prompt"))
+        .or_else(|| obj.get("query"))
+        .or_else(|| obj.get("text"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let options = obj
+        .get("options")
+        .or_else(|| obj.get("choices"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(normalize_question_choice)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let multiple = obj
+        .get("multiple")
+        .or_else(|| obj.get("multi_select"))
+        .or_else(|| obj.get("multiSelect"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let custom = obj
+        .get("custom")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(options.is_empty());
+    Some(json!({
+        "header": obj.get("header").and_then(|v| v.as_str()).unwrap_or("Question"),
+        "question": question,
+        "options": options,
+        "multiple": multiple,
+        "custom": custom
+    }))
+}
+
+fn normalize_question_choice(choice: &Value) -> Option<Value> {
+    if let Some(label) = choice.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(json!({
+            "label": label,
+            "description": ""
+        }));
+    }
+    let obj = choice.as_object()?;
+    let label = obj
+        .get("label")
+        .or_else(|| obj.get("title"))
+        .or_else(|| obj.get("name"))
+        .or_else(|| obj.get("value"))
+        .or_else(|| obj.get("text"))
+        .and_then(|v| {
+            if let Some(s) = v.as_str() {
+                Some(s.trim().to_string())
+            } else {
+                v.as_i64()
+                    .map(|n| n.to_string())
+                    .or_else(|| v.as_u64().map(|n| n.to_string()))
+            }
+        })
+        .filter(|s| !s.is_empty())?;
+    let description = obj
+        .get("description")
+        .or_else(|| obj.get("hint"))
+        .or_else(|| obj.get("subtitle"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some(json!({
+        "label": label,
+        "description": description
+    }))
 }
 
 struct SpawnAgentTool;

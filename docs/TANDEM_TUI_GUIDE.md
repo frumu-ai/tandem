@@ -60,17 +60,23 @@ The chat interface is where you interact with agents.
 
 #### Commands & Input
 
-- **Enter**: Submit your prompt.
+- **Enter**: Submit your prompt (or queue a follow-up when the active agent is busy).
 - **Shift + Enter**: Insert a newline in your draft.
 - **Alt + Enter**: Insert a newline in your draft.
+- **Alt + I**: Queue a steering interrupt message and cancel the active run.
 - **Left / Right**: Move cursor inside draft.
 - **Home / End**: Jump to line start/end in draft.
 - **Ctrl + Up / Ctrl + Down**: Move cursor between draft lines.
 - **Delete / Backspace**: Delete next/previous character.
-- **Paste**: Multi-line paste is inserted at cursor position.
+- **Paste**: Large pastes are collapsed into markers (for example `[paste #3 +120 lines]`) in the composer and expanded back to full content on send.
 - **Ctrl + N**: Add a new agent to the current session.
 - **Ctrl + W**: Close the active agent.
 - **Ctrl + C**: Cancel the currently running agent's operation.
+
+### Terminal Capability Flags
+
+- `TANDEM_TUI_SYNC_RENDER=auto|on|off`: Controls synchronized terminal redraw (CSI 2026). Default is `auto`.
+- `TANDEM_TUI_IME_CURSOR_MARKER=auto|on|off`: Controls zero-width cursor anchoring marker for better IME candidate placement. Default is `auto` (enabled for `iTerm.app` and `WezTerm`).
 
 #### Modals & Tools
 
@@ -109,6 +115,7 @@ Assistant markdown in the transcript uses a visual style map:
 | **Tab / BackTab** | Switch Agents                 |
 | **Alt + G**       | Toggle Grid View              |
 | **Alt + R**       | Open Request Center           |
+| **Alt + I**       | Queue Steering Interrupt      |
 | **Alt + M**       | Cycle Mode                    |
 | **F1**            | Help                          |
 | **F2**            | Open Docs                     |

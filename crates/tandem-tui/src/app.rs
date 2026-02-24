@@ -1,5 +1,6 @@
 use crate::ui::components::composer_input::ComposerInputState;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -12,6 +13,7 @@ pub enum Action {
     LoadSessions,
     SessionsLoaded(Vec<Session>),
     SelectSession,
+    DeleteSelectedSession,
     NewSession,
     NextSession,
     PreviousSession,
@@ -29,6 +31,7 @@ pub enum Action {
     MoveCursorUp,
     MoveCursorDown,
     PasteInput(String),
+    PasteFromClipboard,
     SwitchToChat,
     Autocomplete,
     AutocompleteNext,
@@ -61,6 +64,14 @@ pub enum Action {
         agent_id: String,
         message: String,
     },
+    PromptToolDelta {
+        session_id: String,
+        agent_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        args_delta: String,
+        args_preview: String,
+    },
     PromptTodoUpdated {
         session_id: String,
         todos: Vec<Value>,
@@ -69,6 +80,11 @@ pub enum Action {
         session_id: String,
         agent_id: String,
         request: PendingRequestKind,
+    },
+    PromptMalformedQuestion {
+        session_id: String,
+        agent_id: String,
+        request_id: String,
     },
     PromptRequestResolved {
         session_id: String,
@@ -98,6 +114,7 @@ pub enum Action {
     ShowHelpModal,
     CloseModal,
     OpenRequestCenter,
+    ToggleRequestPanelExpand,
     RequestSelectNext,
     RequestSelectPrev,
     RequestOptionNext,
@@ -114,10 +131,16 @@ pub enum Action {
     PlanWizardBackspace,
     PlanWizardSubmit,
     ConfirmCloseAgent(bool),
+    ConfirmStartPlanAgents {
+        confirmed: bool,
+        count: usize,
+    },
     CancelActiveAgent,
     StartDemoStream,
     SpawnBackgroundDemo,
     OpenDocs,
+    CopyLastAssistant,
+    QueueSteeringFromComposer,
 }
 
 #[cfg(test)]
@@ -147,7 +170,24 @@ mod tests {
             plan_wizard: PlanFeedbackWizardState::default(),
             last_plan_task_fingerprint: Vec::new(),
             plan_awaiting_approval: false,
+            plan_multi_agent_prompt: None,
+            plan_waiting_for_clarification_question: false,
+            request_panel_expanded: false,
         };
+        app
+    }
+
+    fn two_agent_app() -> App {
+        let mut app = chat_app();
+        if let AppState::Chat {
+            agents,
+            active_agent_index,
+            ..
+        } = &mut app.state
+        {
+            agents.push(App::make_agent_pane("A2".to_string(), "s-test".to_string()));
+            *active_agent_index = 0;
+        }
         app
     }
 
@@ -202,6 +242,14 @@ mod tests {
         assert_eq!(
             app.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some(Action::SubmitCommand)
+        );
+        assert_eq!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
+            Some(Action::SubmitCommand)
+        );
+        assert_eq!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::ALT)),
+            Some(Action::QueueSteeringFromComposer)
         );
     }
 
@@ -377,6 +425,114 @@ mod tests {
         let final_text = chat_assistant_text(&app);
         assert_eq!(final_text, source);
     }
+
+    #[test]
+    fn paste_markers_expand_to_original_payload() {
+        let mut app = chat_app();
+        let payload = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10";
+        if let AppState::Chat {
+            agents,
+            active_agent_index,
+            ..
+        } = &mut app.state
+        {
+            let marker = App::register_collapsed_paste(&mut agents[*active_agent_index], payload);
+            let expanded = App::expand_paste_markers(&marker, &agents[*active_agent_index]);
+            assert_eq!(expanded, payload);
+        } else {
+            panic!("expected chat state");
+        }
+    }
+
+    #[test]
+    fn non_active_agent_followup_dispatches_on_completion() {
+        let mut app = two_agent_app();
+        let session = "s-test".to_string();
+        let target = "A2".to_string();
+        if let AppState::Chat { agents, .. } = &mut app.state {
+            let a2 = agents
+                .iter_mut()
+                .find(|a| a.agent_id == target)
+                .expect("A2 exists");
+            a2.follow_up_queue.push_back("queued follow-up".to_string());
+            a2.status = AgentStatus::Done;
+        }
+
+        app.maybe_dispatch_queued_for_agent(&session, &target);
+
+        if let AppState::Chat {
+            agents,
+            active_agent_index,
+            ..
+        } = &app.state
+        {
+            assert_eq!(
+                *active_agent_index, 0,
+                "active agent should remain unchanged"
+            );
+            let a2 = agents
+                .iter()
+                .find(|a| a.agent_id == target)
+                .expect("A2 exists");
+            assert!(
+                a2.follow_up_queue.is_empty(),
+                "follow-up should be consumed"
+            );
+            assert!(
+                a2.messages.iter().any(|m| {
+                    matches!(m.role, MessageRole::User)
+                        && m.content
+                            .iter()
+                            .any(|b| matches!(b, ContentBlock::Text(t) if t == "queued follow-up"))
+                }),
+                "queued message should be appended to non-active agent transcript"
+            );
+        } else {
+            panic!("expected chat state");
+        }
+    }
+
+    #[test]
+    fn steering_dispatch_clears_followups_and_wins_priority() {
+        let mut app = two_agent_app();
+        let session = "s-test".to_string();
+        let target = "A2".to_string();
+        if let AppState::Chat { agents, .. } = &mut app.state {
+            let a2 = agents
+                .iter_mut()
+                .find(|a| a.agent_id == target)
+                .expect("A2 exists");
+            a2.follow_up_queue.push_back("followup-1".to_string());
+            a2.follow_up_queue.push_back("followup-2".to_string());
+            a2.steering_message = Some("steer-now".to_string());
+            a2.status = AgentStatus::Done;
+        }
+
+        app.maybe_dispatch_queued_for_agent(&session, &target);
+
+        if let AppState::Chat { agents, .. } = &app.state {
+            let a2 = agents
+                .iter()
+                .find(|a| a.agent_id == target)
+                .expect("A2 exists");
+            assert!(
+                a2.follow_up_queue.is_empty(),
+                "steering should clear queued follow-ups"
+            );
+            assert!(a2.steering_message.is_none());
+            assert!(
+                a2.messages.iter().any(|m| {
+                    matches!(m.role, MessageRole::User)
+                        && m.content
+                            .iter()
+                            .any(|b| matches!(b, ContentBlock::Text(t) if t == "steer-now"))
+                }),
+                "steering message should be dispatched first"
+            );
+        } else {
+            panic!("expected chat state");
+        }
+    }
 }
 
 use crate::net::client::Session;
@@ -419,6 +575,7 @@ pub enum ModalState {
     ConfirmCloseAgent { target_agent_id: String },
     RequestCenter,
     PlanFeedbackWizard,
+    StartPlanAgents { count: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -489,6 +646,17 @@ pub struct AgentPane {
     pub active_task_id: Option<String>,
     pub status: AgentStatus,
     pub active_run_id: Option<String>,
+    pub follow_up_queue: VecDeque<String>,
+    pub steering_message: Option<String>,
+    pub paste_registry: HashMap<u32, String>,
+    pub next_paste_id: u32,
+    pub live_tool_calls: HashMap<String, LiveToolCall>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveToolCall {
+    pub tool_name: String,
+    pub args_preview: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -521,6 +689,9 @@ pub enum AppState {
         plan_wizard: PlanFeedbackWizardState,
         last_plan_task_fingerprint: Vec<String>,
         plan_awaiting_approval: bool,
+        plan_multi_agent_prompt: Option<usize>,
+        plan_waiting_for_clarification_question: bool,
+        request_panel_expanded: bool,
     },
     Connecting,
     SetupWizard {
@@ -651,6 +822,8 @@ pub struct App {
     pub engine_api_token_backend: Option<String>,
     pub engine_base_url_override: Option<String>,
     pub engine_connection_source: EngineConnectionSource,
+    pub engine_spawned_at: Option<Instant>,
+    pub local_engine_build_attempted: bool,
     pub pending_model_provider: Option<String>,
     pub autocomplete_items: Vec<(String, String)>,
     pub autocomplete_index: usize,
@@ -658,6 +831,8 @@ pub struct App {
     pub show_autocomplete: bool,
     pub action_tx: Option<tokio::sync::mpsc::UnboundedSender<Action>>,
     pub quit_armed_at: Option<Instant>,
+    pub paste_activity_until: Option<Instant>,
+    pub malformed_question_retries: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -709,12 +884,12 @@ impl EngineConnectionSource {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum TandemMode {
     #[default]
-    Ask,
+    Plan,
     Coder,
     Explore,
     Immediate,
     Orchestrate,
-    Plan,
+    Ask,
 }
 
 const SCROLL_LINE_STEP: u16 = 3;
@@ -764,32 +939,32 @@ impl TandemMode {
 
     pub fn all_modes() -> Vec<(&'static str, &'static str)> {
         vec![
-            ("ask", "General Q&A - uses general agent"),
-            ("coder", "Code assistance - uses build agent"),
-            ("explore", "Read-only exploration - uses explore agent"),
+            (
+                "plan",
+                "Planning mode with write restrictions - uses plan agent",
+            ),
             (
                 "immediate",
                 "Execute without confirmation - uses immediate agent",
             ),
+            ("coder", "Code assistance - uses build agent"),
+            ("ask", "General Q&A - uses general agent"),
+            ("explore", "Read-only exploration - uses explore agent"),
             (
                 "orchestrate",
                 "Multi-agent orchestration - uses orchestrate agent",
-            ),
-            (
-                "plan",
-                "Planning mode with write restrictions - uses plan agent",
             ),
         ]
     }
 
     pub fn next(&self) -> Self {
         match self {
-            TandemMode::Ask => TandemMode::Coder,
-            TandemMode::Coder => TandemMode::Explore,
-            TandemMode::Explore => TandemMode::Immediate,
-            TandemMode::Immediate => TandemMode::Orchestrate,
+            TandemMode::Plan => TandemMode::Immediate,
+            TandemMode::Immediate => TandemMode::Coder,
+            TandemMode::Coder => TandemMode::Ask,
+            TandemMode::Ask => TandemMode::Explore,
+            TandemMode::Explore => TandemMode::Orchestrate,
             TandemMode::Orchestrate => TandemMode::Plan,
-            TandemMode::Plan => TandemMode::Ask,
         }
     }
 }
@@ -976,6 +1151,7 @@ impl App {
         ("deny", "Deny a pending request"),
         ("answer", "Answer a question"),
         ("requests", "Open pending request center"),
+        ("copy", "Copy latest assistant text to clipboard"),
         ("routines", "List scheduled routines"),
         ("routine_create", "Create interval routine"),
         ("routine_edit", "Edit routine interval"),
@@ -1045,6 +1221,8 @@ impl App {
             engine_api_token_backend,
             engine_base_url_override: None,
             engine_connection_source: EngineConnectionSource::Unknown,
+            engine_spawned_at: None,
+            local_engine_build_attempted: false,
             pending_model_provider: None,
             autocomplete_items: Vec::new(),
             autocomplete_index: 0,
@@ -1052,6 +1230,8 @@ impl App {
             show_autocomplete: false,
             action_tx: None,
             quit_armed_at: None,
+            paste_activity_until: None,
+            malformed_question_retries: HashSet::new(),
         }
     }
 
@@ -1067,7 +1247,102 @@ impl App {
             active_task_id: None,
             status: AgentStatus::Idle,
             active_run_id: None,
+            follow_up_queue: VecDeque::new(),
+            steering_message: None,
+            paste_registry: HashMap::new(),
+            next_paste_id: 1,
+            live_tool_calls: HashMap::new(),
         }
+    }
+
+    fn queue_plan_agent_prompt(&mut self, count: usize) {
+        if let AppState::Chat {
+            plan_multi_agent_prompt,
+            modal,
+            agents,
+            ..
+        } = &mut self.state
+        {
+            if agents.len() >= count {
+                return;
+            }
+            *plan_multi_agent_prompt = Some(count);
+            if modal.is_none() {
+                *modal = Some(ModalState::StartPlanAgents { count });
+            }
+        }
+    }
+
+    fn open_queued_plan_agent_prompt(&mut self) {
+        if let AppState::Chat {
+            plan_multi_agent_prompt,
+            modal,
+            agents,
+            ..
+        } = &mut self.state
+        {
+            if modal.is_some() {
+                return;
+            }
+            if let Some(count) = plan_multi_agent_prompt.take() {
+                if agents.len() < count {
+                    *modal = Some(ModalState::StartPlanAgents { count });
+                }
+            }
+        }
+    }
+
+    async fn ensure_agent_count(&mut self, count: usize) -> usize {
+        let (current_count, fallback_session, active_idx) = if let AppState::Chat {
+            agents,
+            active_agent_index,
+            ..
+        } = &self.state
+        {
+            let fallback = agents
+                .get(*active_agent_index)
+                .map(|a| a.session_id.clone())
+                .unwrap_or_default();
+            (agents.len(), fallback, *active_agent_index)
+        } else {
+            (0, String::new(), 0)
+        };
+
+        if current_count >= count {
+            return 0;
+        }
+
+        let mut new_panes = Vec::new();
+        for idx in current_count..count {
+            let agent_id = format!("A{}", idx + 1);
+            let mut session_id = fallback_session.clone();
+            if let Some(client) = &self.client {
+                if let Ok(session) = client
+                    .create_session(Some(format!("{} session", agent_id)))
+                    .await
+                {
+                    session_id = session.id;
+                }
+            }
+            new_panes.push(Self::make_agent_pane(agent_id, session_id));
+        }
+
+        let created = new_panes.len();
+        if let AppState::Chat {
+            agents,
+            active_agent_index,
+            grid_page,
+            ..
+        } = &mut self.state
+        {
+            agents.extend(new_panes);
+            let max_page = agents.len().saturating_sub(1) / 4;
+            if *grid_page > max_page {
+                *grid_page = max_page;
+            }
+            *active_agent_index = active_idx.min(agents.len().saturating_sub(1));
+        }
+        created
     }
 
     fn active_agent_clone(&self) -> Option<AgentPane> {
@@ -1126,6 +1401,7 @@ impl App {
                 agent.scroll_from_bottom = *scroll_from_bottom;
                 agent.tasks = tasks.clone();
                 agent.active_task_id = active_task_id.clone();
+                Self::prune_agent_paste_registry(agent);
             }
         }
     }
@@ -1159,6 +1435,7 @@ impl App {
             ..
         } = &mut self.state
         {
+            Self::purge_invalid_question_requests(pending_requests);
             if pending_requests.is_empty() {
                 *modal = None;
                 *request_cursor = 0;
@@ -1170,6 +1447,224 @@ impl App {
             if modal.is_none() {
                 *modal = Some(ModalState::RequestCenter);
             }
+        }
+    }
+
+    fn purge_invalid_question_requests(pending_requests: &mut Vec<PendingRequest>) -> usize {
+        let before = pending_requests.len();
+        pending_requests.retain(|request| match &request.kind {
+            PendingRequestKind::Permission(_) => true,
+            PendingRequestKind::Question(question) => {
+                !question.questions.is_empty()
+                    && question
+                        .questions
+                        .iter()
+                        .any(|q| !q.question.trim().is_empty())
+            }
+        });
+        before.saturating_sub(pending_requests.len())
+    }
+
+    fn maybe_dispatch_queued_for_agent(&mut self, session_id: &str, agent_id: &str) {
+        let next_msg = if let AppState::Chat { agents, .. } = &mut self.state {
+            if let Some(agent) = agents
+                .iter_mut()
+                .find(|a| a.session_id == session_id && a.agent_id == agent_id)
+            {
+                if Self::is_agent_busy(&agent.status) {
+                    return;
+                }
+                if let Some(steering) = agent.steering_message.take() {
+                    agent.follow_up_queue.clear();
+                    Some(steering)
+                } else {
+                    agent.follow_up_queue.pop_front()
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(next_msg) = next_msg {
+            self.dispatch_prompt_for_agent(session_id.to_string(), agent_id.to_string(), next_msg);
+        }
+    }
+
+    fn dispatch_prompt_for_agent(&mut self, session_id: String, agent_id: String, msg: String) {
+        let is_active_target = self.request_matches_active(&session_id, &agent_id);
+        if let AppState::Chat {
+            agents,
+            active_agent_index,
+            messages,
+            scroll_from_bottom,
+            ..
+        } = &mut self.state
+        {
+            if let Some(agent) = agents
+                .iter_mut()
+                .find(|a| a.agent_id == agent_id && a.session_id == session_id)
+            {
+                agent.messages.push(ChatMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text(msg.clone())],
+                });
+                agent.scroll_from_bottom = 0;
+            }
+            if is_active_target && *active_agent_index < agents.len() {
+                *scroll_from_bottom = 0;
+                messages.push(ChatMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text(msg.clone())],
+                });
+            }
+        }
+        self.sync_active_agent_from_chat();
+
+        if let Some(client) = &self.client {
+            if let Some(tx) = &self.action_tx {
+                let client = client.clone();
+                let tx = tx.clone();
+                let prompt_msg = self.prepare_prompt_text(&msg);
+                let agent = Some(self.current_mode.as_agent().to_string());
+                let model = self.current_model_spec();
+                let run_session_id = session_id.clone();
+                let run_agent_id = agent_id.clone();
+                let saw_stream_error =
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+                tokio::spawn(async move {
+                    let saw_stream_error_cb = saw_stream_error.clone();
+                    match client
+                        .send_prompt_with_stream_events(
+                            &run_session_id,
+                            &prompt_msg,
+                            agent.as_deref(),
+                            Some(&run_agent_id),
+                            model,
+                            |event| {
+                                if let Some(err) =
+                                    crate::net::client::extract_stream_error(&event.payload)
+                                {
+                                    if !saw_stream_error_cb
+                                        .swap(true, std::sync::atomic::Ordering::Relaxed)
+                                    {
+                                        let _ = tx.send(Action::PromptFailure {
+                                            session_id: run_session_id.clone(),
+                                            agent_id: run_agent_id.clone(),
+                                            error: err,
+                                        });
+                                    }
+                                }
+                                if event.event_type == "session.run.started" {
+                                    let _ = tx.send(Action::PromptRunStarted {
+                                        session_id: run_session_id.clone(),
+                                        agent_id: run_agent_id.clone(),
+                                        run_id: event.run_id.clone(),
+                                    });
+                                }
+                                if let Some(delta) =
+                                    crate::net::client::extract_delta_text(&event.payload)
+                                {
+                                    let _ = tx.send(Action::PromptDelta {
+                                        session_id: run_session_id.clone(),
+                                        agent_id: run_agent_id.clone(),
+                                        delta,
+                                    });
+                                }
+                                if let Some(tool_delta) =
+                                    crate::net::client::extract_stream_tool_delta(&event.payload)
+                                {
+                                    let _ = tx.send(Action::PromptToolDelta {
+                                        session_id: run_session_id.clone(),
+                                        agent_id: run_agent_id.clone(),
+                                        tool_call_id: tool_delta.tool_call_id,
+                                        tool_name: tool_delta.tool_name,
+                                        args_delta: tool_delta.args_delta,
+                                        args_preview: tool_delta.args_preview,
+                                    });
+                                }
+                                if let Some(message) =
+                                    crate::net::client::extract_stream_activity(&event.payload)
+                                {
+                                    let _ = tx.send(Action::PromptInfo {
+                                        session_id: run_session_id.clone(),
+                                        agent_id: run_agent_id.clone(),
+                                        message,
+                                    });
+                                }
+                                if let Some(request_event) =
+                                    crate::net::client::extract_stream_request(&event.payload)
+                                {
+                                    let action = Self::stream_request_to_action(
+                                        run_session_id.clone(),
+                                        run_agent_id.clone(),
+                                        request_event,
+                                    );
+                                    let _ = tx.send(action);
+                                }
+                                if let Some((event_session_id, todos)) =
+                                    crate::net::client::extract_stream_todo_update(&event.payload)
+                                {
+                                    let _ = tx.send(Action::PromptTodoUpdated {
+                                        session_id: event_session_id,
+                                        todos,
+                                    });
+                                }
+                            },
+                        )
+                        .await
+                    {
+                        Ok(run) => {
+                            if saw_stream_error.load(std::sync::atomic::Ordering::Relaxed) {
+                                return;
+                            }
+                            if let Some(response) = Self::extract_assistant_message(&run.messages) {
+                                let _ = tx.send(Action::PromptSuccess {
+                                    session_id: run_session_id.clone(),
+                                    agent_id: run_agent_id.clone(),
+                                    messages: vec![ChatMessage {
+                                        role: MessageRole::Assistant,
+                                        content: response,
+                                    }],
+                                });
+                            } else if !run.streamed {
+                                let _ = tx.send(Action::PromptFailure {
+                                    session_id: run_session_id.clone(),
+                                    agent_id: run_agent_id.clone(),
+                                    error: "No assistant response received. Check provider key/config with /keys, /provider, /model."
+                                        .to_string(),
+                                });
+                            } else {
+                                let _ = tx.send(Action::PromptSuccess {
+                                    session_id: run_session_id.clone(),
+                                    agent_id: run_agent_id.clone(),
+                                    messages: vec![],
+                                });
+                            }
+                        }
+                        Err(err) => {
+                            if !saw_stream_error.load(std::sync::atomic::Ordering::Relaxed) {
+                                let _ = tx.send(Action::PromptFailure {
+                                    session_id: run_session_id.clone(),
+                                    agent_id: run_agent_id.clone(),
+                                    error: err.to_string(),
+                                });
+                            }
+                        }
+                    }
+                });
+                return;
+            }
+        }
+
+        if let AppState::Chat { messages, .. } = &mut self.state {
+            messages.push(ChatMessage {
+                role: MessageRole::System,
+                content: vec![ContentBlock::Text(
+                    "Error: Async channel not initialized. Cannot send prompt.".to_string(),
+                )],
+            });
         }
     }
 
@@ -1207,7 +1702,7 @@ impl App {
                 self.provider_catalog = Some(providers.clone());
                 providers
             }
-            Err(_) => {
+            Err(_err) => {
                 self.connection_status = "Connected. Loading providers...".to_string();
                 return false;
             }
@@ -1241,7 +1736,7 @@ impl App {
                 self.state = AppState::MainMenu;
                 true
             }
-            Err(_) => {
+            Err(_err) => {
                 self.connection_status = "Connected. Loading sessions...".to_string();
                 false
             }
@@ -1571,6 +2066,37 @@ impl App {
         None
     }
 
+    fn try_build_local_dev_engine_binary(&self) -> Option<PathBuf> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let Ok(current_dir) = env::current_dir() else {
+            return None;
+        };
+        let output = StdCommand::new("cargo")
+            .arg("build")
+            .arg("-p")
+            .arg("tandem-ai")
+            .current_dir(&current_dir)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let summary = stderr
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("cargo build failed");
+            tracing::warn!("TUI local engine rebuild failed: {}", summary);
+            return None;
+        }
+        Self::find_dev_engine_binary().filter(|path| {
+            path.metadata()
+                .map(|m| m.len() >= MIN_ENGINE_BINARY_SIZE)
+                .unwrap_or(false)
+        })
+    }
+
     fn find_extracted_binary(dir: &std::path::Path, binary_name: &str) -> anyhow::Result<PathBuf> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
@@ -1655,12 +2181,33 @@ impl App {
 
         if cfg!(debug_assertions) {
             if let Some(path) = Self::find_dev_engine_binary() {
-                self.engine_binary_path = Some(path.clone());
-                self.engine_download_active = false;
-                self.engine_download_total_bytes = None;
-                self.engine_downloaded_bytes = 0;
-                self.engine_download_phase = Some("Using local dev engine binary".to_string());
-                return Ok(Some(path.clone()));
+                if Self::engine_binary_is_stale(&path) {
+                    if !self.local_engine_build_attempted {
+                        self.local_engine_build_attempted = true;
+                        self.engine_download_phase =
+                            Some("Local dev engine is stale; rebuilding local engine".to_string());
+                        if let Some(rebuilt) = self.try_build_local_dev_engine_binary() {
+                            if !Self::engine_binary_is_stale(&rebuilt) {
+                                self.engine_binary_path = Some(rebuilt.clone());
+                                self.engine_download_active = false;
+                                self.engine_download_total_bytes = None;
+                                self.engine_downloaded_bytes = 0;
+                                self.engine_download_phase =
+                                    Some("Using rebuilt local dev engine binary".to_string());
+                                return Ok(Some(rebuilt));
+                            }
+                        }
+                    }
+                    self.engine_download_phase =
+                        Some("Local dev engine is stale; using newer managed binary".to_string());
+                } else {
+                    self.engine_binary_path = Some(path.clone());
+                    self.engine_download_active = false;
+                    self.engine_download_total_bytes = None;
+                    self.engine_downloaded_bytes = 0;
+                    self.engine_download_phase = Some("Using local dev engine binary".to_string());
+                    return Ok(Some(path.clone()));
+                }
             }
         }
 
@@ -1870,17 +2417,13 @@ impl App {
         // Global control keys
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('c') => {
-                    return match self.state {
-                        AppState::Chat { .. } => Some(Action::CancelActiveAgent),
-                        _ => Some(Action::CtrlCPressed),
-                    };
-                }
+                KeyCode::Char('c') => return Some(Action::CtrlCPressed),
                 KeyCode::Char('x') => return Some(Action::Quit),
                 KeyCode::Char('n') => return Some(Action::NewAgent),
                 KeyCode::Char('w') => return Some(Action::CloseActiveAgent),
                 KeyCode::Char('u') => return Some(Action::PageUp),
                 KeyCode::Char('d') => return Some(Action::PageDown),
+                KeyCode::Char('y') => return Some(Action::CopyLastAssistant),
                 _ => {}
             }
         }
@@ -1911,6 +2454,7 @@ impl App {
             AppState::MainMenu => match key.code {
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Char('n') => Some(Action::NewSession),
+                KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteSelectedSession),
                 KeyCode::Char('j') | KeyCode::Down => Some(Action::NextSession),
                 KeyCode::Char('k') | KeyCode::Up => Some(Action::PreviousSession),
                 KeyCode::Enter => Some(Action::SelectSession),
@@ -1918,103 +2462,202 @@ impl App {
             },
 
             AppState::Chat { .. } => {
-                if let AppState::Chat { modal, .. } = &self.state {
-                    if let Some(active_modal) = modal {
-                        return match key.code {
-                            KeyCode::Esc => Some(Action::CloseModal),
-                            KeyCode::Enter if matches!(active_modal, ModalState::RequestCenter) => {
-                                Some(Action::RequestConfirm)
-                            }
-                            KeyCode::Enter
-                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
-                            {
-                                Some(Action::PlanWizardSubmit)
-                            }
-                            KeyCode::Up if matches!(active_modal, ModalState::RequestCenter) => {
-                                Some(Action::RequestSelectPrev)
-                            }
-                            KeyCode::Up
-                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
-                            {
-                                Some(Action::PlanWizardPrevField)
-                            }
-                            KeyCode::Down if matches!(active_modal, ModalState::RequestCenter) => {
-                                Some(Action::RequestSelectNext)
-                            }
-                            KeyCode::Down
-                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
-                            {
-                                Some(Action::PlanWizardNextField)
-                            }
-                            KeyCode::Tab
-                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
-                            {
-                                Some(Action::PlanWizardNextField)
-                            }
-                            KeyCode::BackTab
-                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
-                            {
-                                Some(Action::PlanWizardPrevField)
-                            }
-                            KeyCode::Left if matches!(active_modal, ModalState::RequestCenter) => {
-                                Some(Action::RequestOptionPrev)
-                            }
-                            KeyCode::Right if matches!(active_modal, ModalState::RequestCenter) => {
-                                Some(Action::RequestOptionNext)
-                            }
-                            KeyCode::Backspace
-                                if matches!(active_modal, ModalState::RequestCenter) =>
-                            {
-                                Some(Action::RequestBackspace)
-                            }
-                            KeyCode::Backspace
-                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
-                            {
-                                Some(Action::PlanWizardBackspace)
-                            }
-                            KeyCode::Char(' ')
-                                if matches!(active_modal, ModalState::RequestCenter) =>
-                            {
-                                Some(Action::RequestToggleCurrent)
-                            }
-                            KeyCode::Char('r') | KeyCode::Char('R')
-                                if matches!(active_modal, ModalState::RequestCenter) =>
-                            {
-                                Some(Action::RequestReject)
-                            }
-                            KeyCode::Char(c)
-                                if matches!(active_modal, ModalState::RequestCenter)
-                                    && c.is_ascii_digit() =>
-                            {
-                                Some(Action::RequestDigit(c as u8 - b'0'))
-                            }
-                            KeyCode::Char(c)
-                                if matches!(active_modal, ModalState::RequestCenter) =>
-                            {
-                                Some(Action::RequestInput(c))
-                            }
-                            KeyCode::Char(c)
-                                if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
-                            {
-                                Some(Action::PlanWizardInput(c))
-                            }
-                            KeyCode::Char('y') | KeyCode::Char('Y')
-                                if matches!(active_modal, ModalState::ConfirmCloseAgent { .. }) =>
-                            {
-                                Some(Action::ConfirmCloseAgent(true))
-                            }
-                            KeyCode::Char('n') | KeyCode::Char('N')
-                                if matches!(active_modal, ModalState::ConfirmCloseAgent { .. }) =>
-                            {
-                                Some(Action::ConfirmCloseAgent(false))
-                            }
-                            _ => None,
-                        };
+                if let AppState::Chat {
+                    modal,
+                    pending_requests,
+                    ..
+                } = &self.state
+                {
+                    let active_modal = modal.clone();
+                    if let Some(active_modal) = active_modal {
+                        if matches!(active_modal, ModalState::RequestCenter)
+                            && pending_requests.is_empty()
+                        {
+                            // Treat stale/empty request center as closed so normal typing works.
+                        } else {
+                            return match key.code {
+                                KeyCode::Esc => Some(Action::CloseModal),
+                                KeyCode::Enter
+                                    if matches!(active_modal, ModalState::RequestCenter) =>
+                                {
+                                    Some(Action::RequestConfirm)
+                                }
+                                KeyCode::Enter
+                                    if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                                {
+                                    Some(Action::PlanWizardSubmit)
+                                }
+                                KeyCode::Up
+                                    if matches!(active_modal, ModalState::RequestCenter)
+                                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
+                                    Some(Action::RequestSelectPrev)
+                                }
+                                KeyCode::Down
+                                    if matches!(active_modal, ModalState::RequestCenter)
+                                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
+                                    Some(Action::RequestSelectNext)
+                                }
+                                KeyCode::Up
+                                    if matches!(active_modal, ModalState::RequestCenter)
+                                        && self.request_center_active_is_question() =>
+                                {
+                                    Some(Action::RequestOptionPrev)
+                                }
+                                KeyCode::Down
+                                    if matches!(active_modal, ModalState::RequestCenter)
+                                        && self.request_center_active_is_question() =>
+                                {
+                                    Some(Action::RequestOptionNext)
+                                }
+                                KeyCode::Up
+                                    if matches!(active_modal, ModalState::RequestCenter) =>
+                                {
+                                    Some(Action::RequestSelectPrev)
+                                }
+                                KeyCode::Up
+                                    if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                                {
+                                    Some(Action::PlanWizardPrevField)
+                                }
+                                KeyCode::Down
+                                    if matches!(active_modal, ModalState::RequestCenter) =>
+                                {
+                                    Some(Action::RequestSelectNext)
+                                }
+                                KeyCode::Down
+                                    if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                                {
+                                    Some(Action::PlanWizardNextField)
+                                }
+                                KeyCode::Tab
+                                    if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                                {
+                                    Some(Action::PlanWizardNextField)
+                                }
+                                KeyCode::BackTab
+                                    if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                                {
+                                    Some(Action::PlanWizardPrevField)
+                                }
+                                KeyCode::Left
+                                    if matches!(active_modal, ModalState::RequestCenter) =>
+                                {
+                                    Some(Action::RequestOptionPrev)
+                                }
+                                KeyCode::Right
+                                    if matches!(active_modal, ModalState::RequestCenter) =>
+                                {
+                                    Some(Action::RequestOptionNext)
+                                }
+                                KeyCode::Backspace
+                                    if matches!(active_modal, ModalState::RequestCenter) =>
+                                {
+                                    Some(Action::RequestBackspace)
+                                }
+                                KeyCode::Char('\u{8}') | KeyCode::Char('\u{7f}')
+                                    if matches!(active_modal, ModalState::RequestCenter) =>
+                                {
+                                    Some(Action::RequestBackspace)
+                                }
+                                KeyCode::Backspace
+                                    if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                                {
+                                    Some(Action::PlanWizardBackspace)
+                                }
+                                KeyCode::Char(' ')
+                                    if matches!(active_modal, ModalState::RequestCenter) =>
+                                {
+                                    Some(Action::RequestToggleCurrent)
+                                }
+                                KeyCode::Char('r') | KeyCode::Char('R')
+                                    if matches!(active_modal, ModalState::RequestCenter) =>
+                                {
+                                    Some(Action::RequestReject)
+                                }
+                                KeyCode::Char('e') | KeyCode::Char('E')
+                                    if matches!(active_modal, ModalState::RequestCenter)
+                                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
+                                    Some(Action::ToggleRequestPanelExpand)
+                                }
+                                KeyCode::Char(c)
+                                    if matches!(active_modal, ModalState::RequestCenter)
+                                        && c.is_ascii_digit()
+                                        && self.request_center_digit_is_shortcut(c) =>
+                                {
+                                    Some(Action::RequestDigit(c as u8 - b'0'))
+                                }
+                                KeyCode::Char(c)
+                                    if matches!(active_modal, ModalState::RequestCenter) =>
+                                {
+                                    Some(Action::RequestInput(c))
+                                }
+                                KeyCode::Char(c)
+                                    if matches!(active_modal, ModalState::PlanFeedbackWizard) =>
+                                {
+                                    Some(Action::PlanWizardInput(c))
+                                }
+                                KeyCode::Char('y') | KeyCode::Char('Y')
+                                    if matches!(
+                                        active_modal,
+                                        ModalState::ConfirmCloseAgent { .. }
+                                    ) =>
+                                {
+                                    Some(Action::ConfirmCloseAgent(true))
+                                }
+                                KeyCode::Char('n') | KeyCode::Char('N')
+                                    if matches!(
+                                        active_modal,
+                                        ModalState::ConfirmCloseAgent { .. }
+                                    ) =>
+                                {
+                                    Some(Action::ConfirmCloseAgent(false))
+                                }
+                                KeyCode::Char('y') | KeyCode::Char('Y')
+                                    if matches!(
+                                        active_modal,
+                                        ModalState::StartPlanAgents { .. }
+                                    ) =>
+                                {
+                                    if let ModalState::StartPlanAgents { count } = active_modal {
+                                        Some(Action::ConfirmStartPlanAgents {
+                                            confirmed: true,
+                                            count,
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                }
+                                KeyCode::Char('n') | KeyCode::Char('N')
+                                    if matches!(
+                                        active_modal,
+                                        ModalState::StartPlanAgents { .. }
+                                    ) =>
+                                {
+                                    if let ModalState::StartPlanAgents { count } = active_modal {
+                                        Some(Action::ConfirmStartPlanAgents {
+                                            confirmed: false,
+                                            count,
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            };
+                        }
                     }
                 }
                 if self.show_autocomplete {
                     match key.code {
                         KeyCode::Esc => Some(Action::AutocompleteDismiss),
+                        KeyCode::Char('v') | KeyCode::Char('V')
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            Some(Action::PasteFromClipboard)
+                        }
                         KeyCode::Enter | KeyCode::Tab => Some(Action::AutocompleteAccept),
                         KeyCode::Down | KeyCode::Char('j')
                             if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -2029,6 +2672,9 @@ impl App {
                         KeyCode::Down => Some(Action::AutocompleteNext),
                         KeyCode::Up => Some(Action::AutocompletePrev),
                         KeyCode::Backspace => Some(Action::BackspaceCommand),
+                        KeyCode::Char('\u{8}') | KeyCode::Char('\u{7f}') => {
+                            Some(Action::BackspaceCommand)
+                        }
                         KeyCode::Delete => Some(Action::DeleteForwardCommand),
                         KeyCode::Left => Some(Action::MoveCursorLeft),
                         KeyCode::Right => Some(Action::MoveCursorRight),
@@ -2040,6 +2686,11 @@ impl App {
                 } else {
                     match key.code {
                         KeyCode::Esc => None,
+                        KeyCode::Char('v') | KeyCode::Char('V')
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            Some(Action::PasteFromClipboard)
+                        }
                         KeyCode::F(1) => Some(Action::ShowHelpModal),
                         KeyCode::F(2) => Some(Action::OpenDocs),
                         KeyCode::Char('g') | KeyCode::Char('G')
@@ -2056,6 +2707,11 @@ impl App {
                             if key.modifiers.contains(KeyModifiers::ALT) =>
                         {
                             Some(Action::OpenRequestCenter)
+                        }
+                        KeyCode::Char('i') | KeyCode::Char('I')
+                            if key.modifiers.contains(KeyModifiers::ALT) =>
+                        {
+                            Some(Action::QueueSteeringFromComposer)
                         }
                         KeyCode::Char('s') | KeyCode::Char('S')
                             if key.modifiers.contains(KeyModifiers::ALT) =>
@@ -2076,8 +2732,14 @@ impl App {
                         {
                             Some(Action::InsertNewline)
                         }
+                        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            Some(Action::SubmitCommand)
+                        }
                         KeyCode::Enter => Some(Action::SubmitCommand),
                         KeyCode::Backspace => Some(Action::BackspaceCommand),
+                        KeyCode::Char('\u{8}') | KeyCode::Char('\u{7f}') => {
+                            Some(Action::BackspaceCommand)
+                        }
                         KeyCode::Delete => Some(Action::DeleteForwardCommand),
                         KeyCode::Tab => Some(Action::SwitchAgentNext),
                         KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2153,12 +2815,29 @@ impl App {
                     self.quit_armed_at = None;
                 } else {
                     self.quit_armed_at = Some(now);
+                    let mut cancelled = false;
+                    if let AppState::Chat {
+                        active_agent_index,
+                        agents,
+                        ..
+                    } = &self.state
+                    {
+                        if *active_agent_index < agents.len()
+                            && agents[*active_agent_index].active_run_id.is_some()
+                        {
+                            self.cancel_agent_if_running(*active_agent_index).await;
+                            cancelled = true;
+                        }
+                    }
                     if let AppState::Chat { messages, .. } = &mut self.state {
+                        let notice = if cancelled {
+                            "Cancelled active run. Press Ctrl+C again within 1.5s to quit."
+                        } else {
+                            "Press Ctrl+C again within 1.5s to quit."
+                        };
                         messages.push(ChatMessage {
                             role: MessageRole::System,
-                            content: vec![ContentBlock::Text(
-                                "Press Ctrl+C again within 1.5s to quit.".to_string(),
-                            )],
+                            content: vec![ContentBlock::Text(notice.to_string())],
                         });
                     }
                 }
@@ -2461,6 +3140,9 @@ impl App {
                                     plan_wizard: PlanFeedbackWizardState::default(),
                                     last_plan_task_fingerprint: Vec::new(),
                                     plan_awaiting_approval: false,
+                                    plan_multi_agent_prompt: None,
+                                    plan_waiting_for_clarification_question: false,
+                                    request_panel_expanded: false,
                                 };
                             }
                         }
@@ -2497,7 +3179,38 @@ impl App {
                         plan_wizard: PlanFeedbackWizardState::default(),
                         last_plan_task_fingerprint: Vec::new(),
                         plan_awaiting_approval: false,
+                        plan_multi_agent_prompt: None,
+                        plan_waiting_for_clarification_question: false,
+                        request_panel_expanded: false,
                     };
+                }
+            }
+            Action::DeleteSelectedSession => {
+                if self.sessions.is_empty() {
+                    self.connection_status = "No session selected to delete.".to_string();
+                    return Ok(());
+                }
+                let selected_index = self.selected_session_index.min(self.sessions.len() - 1);
+                let selected = self.sessions[selected_index].clone();
+                if let Some(client) = &self.client {
+                    match client.delete_session(&selected.id).await {
+                        Ok(_) => {
+                            self.sessions.remove(selected_index);
+                            if self.sessions.is_empty() {
+                                self.selected_session_index = 0;
+                            } else if self.selected_session_index >= self.sessions.len() {
+                                self.selected_session_index = self.sessions.len() - 1;
+                            }
+                            self.connection_status =
+                                format!("Deleted session: {} ({})", selected.title, selected.id);
+                        }
+                        Err(err) => {
+                            self.connection_status =
+                                format!("Failed to delete session {}: {}", selected.id, err);
+                        }
+                    }
+                } else {
+                    self.connection_status = "Not connected to engine".to_string();
                 }
             }
 
@@ -2512,7 +3225,12 @@ impl App {
 
             Action::BackspaceCommand => {
                 if let AppState::Chat { command_input, .. } = &mut self.state {
-                    command_input.backspace();
+                    if let Some((start, end)) = Self::paste_token_range_for_backspace(command_input)
+                    {
+                        command_input.remove_range(start, end);
+                    } else {
+                        command_input.backspace();
+                    }
                     let input = command_input.text().to_string();
                     if input == "/" {
                         self.autocomplete_items = Self::COMMAND_HELP
@@ -2530,7 +3248,11 @@ impl App {
             }
             Action::DeleteForwardCommand => {
                 if let AppState::Chat { command_input, .. } = &mut self.state {
-                    command_input.delete_forward();
+                    if let Some((start, end)) = Self::paste_token_range_for_delete(command_input) {
+                        command_input.remove_range(start, end);
+                    } else {
+                        command_input.delete_forward();
+                    }
                     let input = command_input.text().to_string();
                     self.update_autocomplete_for_input(&input);
                 }
@@ -2580,10 +3302,66 @@ impl App {
                 }
                 self.sync_active_agent_from_chat();
             }
+            Action::PasteFromClipboard => {
+                match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+                    Ok(text) => {
+                        if !text.is_empty() {
+                            if let AppState::Chat {
+                                command_input,
+                                agents,
+                                active_agent_index,
+                                ..
+                            } = &mut self.state
+                            {
+                                let inserted =
+                                    if let Some(agent) = agents.get_mut(*active_agent_index) {
+                                        Self::register_collapsed_paste(agent, &text)
+                                    } else {
+                                        format!("[Pasted {} chars]", text.chars().count())
+                                    };
+                                command_input.insert_str(&inserted);
+                                let input = command_input.text().to_string();
+                                if let Some(agent) = agents.get_mut(*active_agent_index) {
+                                    agent.draft = command_input.clone();
+                                    Self::prune_agent_paste_registry(agent);
+                                }
+                                self.update_autocomplete_for_input(&input);
+                            }
+                            self.sync_active_agent_from_chat();
+                        }
+                    }
+                    Err(err) => {
+                        if let AppState::Chat { messages, .. } = &mut self.state {
+                            messages.push(ChatMessage {
+                                role: MessageRole::System,
+                                content: vec![ContentBlock::Text(format!(
+                                    "Clipboard paste failed: {}",
+                                    err
+                                ))],
+                            });
+                        }
+                    }
+                }
+            }
             Action::PasteInput(text) => {
-                if let AppState::Chat { command_input, .. } = &mut self.state {
-                    command_input.insert_str(&text);
+                if let AppState::Chat {
+                    command_input,
+                    agents,
+                    active_agent_index,
+                    ..
+                } = &mut self.state
+                {
+                    let inserted = if let Some(agent) = agents.get_mut(*active_agent_index) {
+                        Self::register_collapsed_paste(agent, &text)
+                    } else {
+                        format!("[Pasted {} chars]", text.chars().count())
+                    };
+                    command_input.insert_str(&inserted);
                     let input = command_input.text().to_string();
+                    if let Some(agent) = agents.get_mut(*active_agent_index) {
+                        agent.draft = command_input.clone();
+                        Self::prune_agent_paste_registry(agent);
+                    }
                     self.update_autocomplete_for_input(&input);
                 }
                 self.sync_active_agent_from_chat();
@@ -2633,6 +3411,7 @@ impl App {
                                 command_input.set_text(format!("/model {}", cmd));
                             }
                         }
+                        command_input.move_end();
                     }
                     self.show_autocomplete = false;
                     self.autocomplete_items.clear();
@@ -2745,13 +3524,40 @@ impl App {
                     .arg("https://tandem.ai/docs")
                     .spawn();
             }
+            Action::CopyLastAssistant => {
+                let copied = if let AppState::Chat { messages, .. } = &self.state {
+                    self.copy_latest_assistant_to_clipboard(messages)
+                } else {
+                    Err("Clipboard copy works in chat screens only.".to_string())
+                };
+                if let AppState::Chat { messages, .. } = &mut self.state {
+                    let note = match copied {
+                        Ok(len) => format!("Copied {} characters to clipboard.", len),
+                        Err(err) => format!("Clipboard copy failed: {}", err),
+                    };
+                    messages.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: vec![ContentBlock::Text(note)],
+                    });
+                }
+            }
             Action::CloseModal => {
                 if let AppState::Chat { modal, .. } = &mut self.state {
                     *modal = None;
                 }
+                self.open_queued_plan_agent_prompt();
             }
             Action::OpenRequestCenter => {
                 self.open_request_center_if_needed();
+            }
+            Action::ToggleRequestPanelExpand => {
+                if let AppState::Chat {
+                    request_panel_expanded,
+                    ..
+                } = &mut self.state
+                {
+                    *request_panel_expanded = !*request_panel_expanded;
+                }
             }
             Action::RequestSelectNext => {
                 if let AppState::Chat {
@@ -2992,26 +3798,35 @@ impl App {
                 }
             }
             Action::PlanWizardSubmit => {
-                let follow_up = if let AppState::Chat { plan_wizard, .. } = &self.state {
-                    Self::build_plan_feedback_markdown(plan_wizard)
-                } else {
-                    String::new()
-                };
+                let (follow_up, needs_clarification_question) =
+                    if let AppState::Chat { plan_wizard, .. } = &self.state {
+                        (
+                            Self::build_plan_feedback_markdown(plan_wizard),
+                            Self::plan_feedback_needs_clarification(plan_wizard),
+                        )
+                    } else {
+                        (String::new(), false)
+                    };
                 if !follow_up.trim().is_empty() {
                     if let AppState::Chat {
                         command_input,
                         modal,
+                        plan_waiting_for_clarification_question,
                         ..
                     } = &mut self.state
                     {
                         *modal = None;
                         command_input.set_text(follow_up);
+                        *plan_waiting_for_clarification_question =
+                            matches!(self.current_mode, TandemMode::Plan)
+                                && needs_clarification_question;
                     }
                     self.sync_active_agent_from_chat();
                     if let Some(tx) = &self.action_tx {
                         let _ = tx.send(Action::SubmitCommand);
                     }
                 }
+                self.open_queued_plan_agent_prompt();
             }
             Action::RequestReject => {
                 let (request_id, reject_kind, question_permission_id) = if let AppState::Chat {
@@ -3078,9 +3893,11 @@ impl App {
                 let mut remove_request_id: Option<String> = None;
                 let mut permission_reply: Option<String> = None;
                 let mut question_reply: Option<(String, Vec<Vec<String>>)> = None;
+                let mut question_reply_preview: Option<String> = None;
                 let mut question_permission_once: Option<String> = None;
                 let mut approved_task_payload: Option<(String, Option<Value>)> = None;
                 let mut approved_request_id: Option<String> = None;
+                let mut question_request_target: Option<(String, String)> = None;
 
                 if let AppState::Chat {
                     pending_requests,
@@ -3090,6 +3907,8 @@ impl App {
                 } = &mut self.state
                 {
                     if let Some(request) = pending_requests.get_mut(*request_cursor) {
+                        let req_session_id = request.session_id.clone();
+                        let req_agent_id = request.agent_id.clone();
                         match &mut request.kind {
                             PendingRequestKind::Permission(permission) => {
                                 let reply = match *permission_choice {
@@ -3106,19 +3925,32 @@ impl App {
                                 }
                             }
                             PendingRequestKind::Question(question) => {
-                                let can_advance = question
-                                    .questions
-                                    .get(question.question_index)
-                                    .map(|q| {
-                                        !q.selected_options.is_empty()
-                                            || !q.custom_input.trim().is_empty()
-                                    })
-                                    .unwrap_or(false);
+                                let can_advance = if let Some(q) =
+                                    question.questions.get_mut(question.question_index)
+                                {
+                                    // If the user highlighted an option but did not explicitly toggle
+                                    // it, Enter should accept the highlighted choice.
+                                    if q.selected_options.is_empty()
+                                        && !q.options.is_empty()
+                                        && q.option_cursor < q.options.len()
+                                    {
+                                        if q.multiple {
+                                            q.selected_options.push(q.option_cursor);
+                                        } else {
+                                            q.selected_options = vec![q.option_cursor];
+                                        }
+                                    }
+                                    !q.selected_options.is_empty()
+                                        || !q.custom_input.trim().is_empty()
+                                } else {
+                                    false
+                                };
                                 if can_advance {
                                     if question.question_index + 1 < question.questions.len() {
                                         question.question_index += 1;
                                     } else {
                                         let mut answers: Vec<Vec<String>> = Vec::new();
+                                        let mut answer_preview_lines: Vec<String> = Vec::new();
                                         for q in &question.questions {
                                             let mut question_answers = Vec::new();
                                             for idx in &q.selected_options {
@@ -3133,7 +3965,24 @@ impl App {
                                             if question_answers.is_empty() {
                                                 question_answers.push(String::new());
                                             }
+                                            let preview_text = question_answers
+                                                .iter()
+                                                .filter(|s| !s.trim().is_empty())
+                                                .cloned()
+                                                .collect::<Vec<_>>()
+                                                .join(" | ");
+                                            answer_preview_lines.push(if preview_text.is_empty() {
+                                                "- (empty)".to_string()
+                                            } else {
+                                                format!("- {}", preview_text)
+                                            });
                                             answers.push(question_answers);
+                                        }
+                                        if !answer_preview_lines.is_empty() {
+                                            question_reply_preview = Some(format!(
+                                                "Submitted question answers:\n{}",
+                                                answer_preview_lines.join("\n")
+                                            ));
                                         }
                                         remove_request_id = Some(question.id.clone());
                                         if let Some(permission_id) =
@@ -3142,6 +3991,8 @@ impl App {
                                             question_permission_once = Some(permission_id);
                                         }
                                         question_reply = Some((question.id.clone(), answers));
+                                        question_request_target =
+                                            Some((req_session_id, req_agent_id));
                                     }
                                 }
                             }
@@ -3187,6 +4038,15 @@ impl App {
                         }
                     }
                 }
+                if let Some(preview) = question_reply_preview {
+                    if let AppState::Chat { messages, .. } = &mut self.state {
+                        messages.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: vec![ContentBlock::Text(preview)],
+                        });
+                    }
+                    self.sync_active_agent_from_chat();
+                }
 
                 if let Some((tool, args)) = approved_task_payload {
                     let fingerprint = Self::plan_fingerprint_from_args(args.as_ref());
@@ -3230,7 +4090,57 @@ impl App {
                             };
                         }
                     }
+                    if Self::is_todo_write_tool_name(&tool)
+                        && matches!(self.current_mode, TandemMode::Plan)
+                    {
+                        self.queue_plan_agent_prompt(4);
+                    }
                     self.sync_active_agent_from_chat();
+                }
+
+                if question_reply.is_some() && matches!(self.current_mode, TandemMode::Plan) {
+                    if let Some((session_id, agent_id)) = question_request_target {
+                        let follow_up = "Continue plan mode with the answered questions. Update `todowrite` tasks and statuses now, then ask for approval before execution.".to_string();
+                        let mut queued = false;
+                        if let AppState::Chat {
+                            agents, messages, ..
+                        } = &mut self.state
+                        {
+                            if let Some(agent) = agents
+                                .iter_mut()
+                                .find(|a| a.session_id == session_id && a.agent_id == agent_id)
+                            {
+                                if Self::is_agent_busy(&agent.status) {
+                                    let merged_into_existing = !agent.follow_up_queue.is_empty();
+                                    if merged_into_existing {
+                                        if let Some(last) = agent.follow_up_queue.back_mut() {
+                                            if !last.is_empty() {
+                                                last.push('\n');
+                                            }
+                                            last.push_str(&follow_up);
+                                        }
+                                    } else {
+                                        agent.follow_up_queue.push_back(follow_up.clone());
+                                    }
+                                    queued = true;
+                                    if !merged_into_existing {
+                                        messages.push(ChatMessage {
+                                            role: MessageRole::System,
+                                            content: vec![ContentBlock::Text(format!(
+                                                "Queued follow-up message (#{}).",
+                                                agent.follow_up_queue.len()
+                                            ))],
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        if queued {
+                            self.sync_active_agent_from_chat();
+                        } else {
+                            self.dispatch_prompt_for_agent(session_id, agent_id, follow_up);
+                        }
+                    }
                 }
             }
             Action::NewAgent => {
@@ -3379,6 +4289,33 @@ impl App {
                     }
                     self.sync_chat_from_active_agent();
                 }
+            }
+            Action::ConfirmStartPlanAgents { confirmed, count } => {
+                if let AppState::Chat {
+                    modal,
+                    plan_multi_agent_prompt,
+                    ..
+                } = &mut self.state
+                {
+                    *modal = None;
+                    *plan_multi_agent_prompt = None;
+                }
+                if confirmed {
+                    let created = self.ensure_agent_count(count).await;
+                    if created > 0 {
+                        if let AppState::Chat { messages, .. } = &mut self.state {
+                            messages.push(ChatMessage {
+                                role: MessageRole::System,
+                                content: vec![ContentBlock::Text(format!(
+                                    "Opened {} agent{} for plan execution.",
+                                    created,
+                                    if created == 1 { "" } else { "s" }
+                                ))],
+                            });
+                        }
+                    }
+                }
+                self.sync_chat_from_active_agent();
             }
             Action::CancelActiveAgent => {
                 let mut cancel_idx: Option<usize> = None;
@@ -3795,13 +4732,16 @@ impl App {
                 self.sync_active_agent_from_chat();
             }
 
-            Action::SubmitCommand => {
-                let (session_id, active_agent_id, msg_to_send) = if let AppState::Chat {
-                    session_id,
+            Action::QueueSteeringFromComposer => {
+                let mut queue_note: Option<String> = None;
+                let mut queue_error: Option<String> = None;
+                let mut should_cancel_active = false;
+                let mut should_dispatch_now = false;
+                if let AppState::Chat {
                     command_input,
                     agents,
                     active_agent_index,
-                    plan_awaiting_approval,
+                    messages,
                     ..
                 } = &mut self.state
                 {
@@ -3810,170 +4750,143 @@ impl App {
                         return Ok(());
                     }
                     let msg = raw.trim().to_string();
-                    command_input.clear();
-                    let agent_id = agents
-                        .get(*active_agent_index)
-                        .map(|a| a.agent_id.clone())
-                        .unwrap_or_else(|| "A1".to_string());
-                    *plan_awaiting_approval = false;
-                    (session_id.clone(), agent_id, Some(msg))
-                } else {
-                    (String::new(), "A1".to_string(), None)
-                };
+                    if let Some(agent) = agents.get_mut(*active_agent_index) {
+                        match Self::expand_paste_markers_checked(&msg, agent) {
+                            Ok(expanded) => {
+                                command_input.clear();
+                                if Self::is_agent_busy(&agent.status) {
+                                    agent.steering_message = Some(expanded);
+                                    agent.follow_up_queue.clear();
+                                    should_cancel_active = agent.active_run_id.is_some();
+                                    queue_note = Some(
+                                        "Steering message queued. Current run will be interrupted."
+                                            .to_string(),
+                                    );
+                                } else {
+                                    command_input.set_text(expanded);
+                                    should_dispatch_now = true;
+                                }
+                            }
+                            Err(err) => queue_error = Some(err),
+                        }
+                    }
+                    if let Some(err) = queue_error.clone() {
+                        messages.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: vec![ContentBlock::Text(err)],
+                        });
+                    }
+                    if let Some(note) = queue_note.clone() {
+                        messages.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: vec![ContentBlock::Text(note)],
+                        });
+                    }
+                }
+                self.sync_active_agent_from_chat();
+                if should_cancel_active {
+                    let active_idx = if let AppState::Chat {
+                        active_agent_index, ..
+                    } = &self.state
+                    {
+                        *active_agent_index
+                    } else {
+                        0
+                    };
+                    self.cancel_agent_if_running(active_idx).await;
+                }
+                if should_dispatch_now {
+                    if let Some(tx) = &self.action_tx {
+                        let _ = tx.send(Action::SubmitCommand);
+                    }
+                }
+            }
+
+            Action::SubmitCommand => {
+                let (session_id, active_agent_id, msg_to_send, queued_followup) =
+                    if let AppState::Chat {
+                        session_id,
+                        command_input,
+                        agents,
+                        active_agent_index,
+                        plan_awaiting_approval,
+                        messages,
+                        ..
+                    } = &mut self.state
+                    {
+                        let raw = command_input.text().to_string();
+                        if raw.trim().is_empty() {
+                            return Ok(());
+                        }
+                        let msg = raw.trim().to_string();
+                        let mut agent_id = "A1".to_string();
+                        let mut queued = false;
+                        let mut msg_to_send: Option<String> = None;
+                        let mut blocked_error: Option<String> = None;
+                        if let Some(agent) = agents.get_mut(*active_agent_index) {
+                            agent_id = agent.agent_id.clone();
+                            match Self::expand_paste_markers_checked(&msg, agent) {
+                                Ok(expanded) => {
+                                    command_input.clear();
+                                    if Self::is_agent_busy(&agent.status) {
+                                        let merged_into_existing =
+                                            !agent.follow_up_queue.is_empty();
+                                        if merged_into_existing {
+                                            if let Some(last) = agent.follow_up_queue.back_mut() {
+                                                if !last.is_empty() {
+                                                    last.push('\n');
+                                                }
+                                                last.push_str(&expanded);
+                                            }
+                                        } else {
+                                            agent.follow_up_queue.push_back(expanded);
+                                        }
+                                        queued = true;
+                                        if !merged_into_existing {
+                                            messages.push(ChatMessage {
+                                                role: MessageRole::System,
+                                                content: vec![ContentBlock::Text(format!(
+                                                    "Queued follow-up message (#{}).",
+                                                    agent.follow_up_queue.len()
+                                                ))],
+                                            });
+                                        }
+                                    } else {
+                                        msg_to_send = Some(expanded);
+                                    }
+                                }
+                                Err(err) => {
+                                    blocked_error = Some(err);
+                                    command_input.set_text(msg.clone());
+                                }
+                            }
+                        }
+                        if let Some(err) = blocked_error {
+                            messages.push(ChatMessage {
+                                role: MessageRole::System,
+                                content: vec![ContentBlock::Text(err)],
+                            });
+                        }
+                        *plan_awaiting_approval = false;
+                        (session_id.clone(), agent_id, msg_to_send, queued)
+                    } else {
+                        (String::new(), "A1".to_string(), None, false)
+                    };
+                if queued_followup {
+                    self.sync_active_agent_from_chat();
+                    return Ok(());
+                }
 
                 if let Some(msg) = msg_to_send {
                     let is_single_line = !msg.contains('\n');
                     if is_single_line && msg.starts_with("/tool ") {
                         // Pass through engine-native tool invocation syntax.
                         // The engine loop handles permission and execution for /tool.
-                        if let AppState::Chat { messages, .. } = &mut self.state {
-                            messages.push(ChatMessage {
-                                role: MessageRole::User,
-                                content: vec![ContentBlock::Text(msg.clone())],
-                            });
-                        }
-                        self.sync_active_agent_from_chat();
-
-                        if let Some(client) = &self.client {
-                            if let Some(tx) = &self.action_tx {
-                                let client = client.clone();
-                                let tx = tx.clone();
-                                let session_id = session_id.clone();
-                                let prompt_msg = self.prepare_prompt_text(&msg);
-                                let agent = Some(self.current_mode.as_agent().to_string());
-                                let model = self.current_model_spec();
-                                let agent_id = active_agent_id.clone();
-                                let saw_stream_error =
-                                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-                                tokio::spawn(async move {
-                                    let saw_stream_error_cb = saw_stream_error.clone();
-                                    match client
-                                        .send_prompt_with_stream_events(
-                                            &session_id,
-                                            &prompt_msg,
-                                            agent.as_deref(),
-                                            Some(&agent_id),
-                                            model,
-                                            |event| {
-                                                if let Some(err) =
-                                                    crate::net::client::extract_stream_error(
-                                                        &event.payload,
-                                                    )
-                                                {
-                                                    if !saw_stream_error_cb.swap(
-                                                        true,
-                                                        std::sync::atomic::Ordering::Relaxed,
-                                                    ) {
-                                                        let _ = tx.send(Action::PromptFailure {
-                                                            session_id: session_id.clone(),
-                                                            agent_id: agent_id.clone(),
-                                                            error: err,
-                                                        });
-                                                    }
-                                                }
-                                                if event.event_type == "session.run.started" {
-                                                    let _ = tx.send(Action::PromptRunStarted {
-                                                        session_id: session_id.clone(),
-                                                        agent_id: agent_id.clone(),
-                                                        run_id: event.run_id.clone(),
-                                                    });
-                                                }
-                                                if let Some(delta) =
-                                                    crate::net::client::extract_delta_text(
-                                                        &event.payload,
-                                                    )
-                                                {
-                                                    let _ = tx.send(Action::PromptDelta {
-                                                        session_id: session_id.clone(),
-                                                        agent_id: agent_id.clone(),
-                                                        delta,
-                                                    });
-                                                }
-                                                if let Some(message) =
-                                                    crate::net::client::extract_stream_activity(
-                                                        &event.payload,
-                                                    )
-                                                {
-                                                    let _ = tx.send(Action::PromptInfo {
-                                                        session_id: session_id.clone(),
-                                                        agent_id: agent_id.clone(),
-                                                        message,
-                                                    });
-                                                }
-                                                if let Some(request_event) =
-                                                    crate::net::client::extract_stream_request(
-                                                        &event.payload,
-                                                    )
-                                                {
-                                                    let action = Self::stream_request_to_action(
-                                                        session_id.clone(),
-                                                        agent_id.clone(),
-                                                        request_event,
-                                                    );
-                                                    let _ = tx.send(action);
-                                                }
-                                                if let Some((event_session_id, todos)) =
-                                                    crate::net::client::extract_stream_todo_update(
-                                                        &event.payload,
-                                                    )
-                                                {
-                                                    let _ = tx.send(Action::PromptTodoUpdated {
-                                                        session_id: event_session_id,
-                                                        todos,
-                                                    });
-                                                }
-                                            },
-                                        )
-                                        .await
-                                    {
-                                        Ok(run) => {
-                                            if saw_stream_error
-                                                .load(std::sync::atomic::Ordering::Relaxed)
-                                            {
-                                                return;
-                                            }
-                                            if let Some(response) =
-                                                Self::extract_assistant_message(&run.messages)
-                                            {
-                                                let _ = tx.send(Action::PromptSuccess {
-                                                    session_id: session_id.clone(),
-                                                    agent_id: agent_id.clone(),
-                                                    messages: vec![ChatMessage {
-                                                        role: MessageRole::Assistant,
-                                                        content: response,
-                                                    }],
-                                                });
-                                            } else if !run.streamed {
-                                                let _ = tx.send(Action::PromptFailure {
-                                                    session_id: session_id.clone(),
-                                                    agent_id: agent_id.clone(),
-                                                    error: "No assistant response received. Check provider key/config with /keys, /provider, /model."
-                                                        .to_string(),
-                                                });
-                                            } else {
-                                                let _ = tx.send(Action::PromptSuccess {
-                                                    session_id: session_id.clone(),
-                                                    agent_id: agent_id.clone(),
-                                                    messages: vec![],
-                                                });
-                                            }
-                                        }
-                                        Err(err) => {
-                                            if !saw_stream_error
-                                                .load(std::sync::atomic::Ordering::Relaxed)
-                                            {
-                                                let _ = tx.send(Action::PromptFailure {
-                                                    session_id: session_id.clone(),
-                                                    agent_id: agent_id.clone(),
-                                                    error: err.to_string(),
-                                                });
-                                            }
-                                        }
-                                    }
-                                });
-                            }
-                        }
+                        self.dispatch_prompt_for_agent(
+                            session_id.clone(),
+                            active_agent_id.clone(),
+                            msg.clone(),
+                        );
                     } else if is_single_line && msg.starts_with('/') {
                         let response = self.execute_command(&msg).await;
                         if let AppState::Chat { messages, .. } = &mut self.state {
@@ -4029,168 +4942,11 @@ impl App {
                                 return Ok(());
                             }
                         }
-                        // User message
-                        if let AppState::Chat { messages, .. } = &mut self.state {
-                            messages.push(ChatMessage {
-                                role: MessageRole::User,
-                                content: vec![ContentBlock::Text(msg.clone())],
-                            });
-                        }
-                        self.sync_active_agent_from_chat();
-
-                        if let Some(client) = &self.client {
-                            if let Some(tx) = &self.action_tx {
-                                let client = client.clone();
-                                let tx = tx.clone();
-                                let session_id = session_id.clone();
-                                let prompt_msg = self.prepare_prompt_text(&msg);
-                                let agent = Some(self.current_mode.as_agent().to_string());
-                                let model = self.current_model_spec();
-                                let agent_id = active_agent_id.clone();
-                                let saw_stream_error =
-                                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-                                tokio::spawn(async move {
-                                    let saw_stream_error_cb = saw_stream_error.clone();
-                                    match client
-                                        .send_prompt_with_stream_events(
-                                            &session_id,
-                                            &prompt_msg,
-                                            agent.as_deref(),
-                                            Some(&agent_id),
-                                            model,
-                                            |event| {
-                                                if let Some(err) =
-                                                    crate::net::client::extract_stream_error(
-                                                        &event.payload,
-                                                    )
-                                                {
-                                                    if !saw_stream_error_cb.swap(
-                                                        true,
-                                                        std::sync::atomic::Ordering::Relaxed,
-                                                    ) {
-                                                        let _ = tx.send(Action::PromptFailure {
-                                                            session_id: session_id.clone(),
-                                                            agent_id: agent_id.clone(),
-                                                            error: err,
-                                                        });
-                                                    }
-                                                }
-                                                if event.event_type == "session.run.started" {
-                                                    let _ = tx.send(Action::PromptRunStarted {
-                                                        session_id: session_id.clone(),
-                                                        agent_id: agent_id.clone(),
-                                                        run_id: event.run_id.clone(),
-                                                    });
-                                                }
-                                                if let Some(delta) =
-                                                    crate::net::client::extract_delta_text(
-                                                        &event.payload,
-                                                    )
-                                                {
-                                                    let _ = tx.send(Action::PromptDelta {
-                                                        session_id: session_id.clone(),
-                                                        agent_id: agent_id.clone(),
-                                                        delta,
-                                                    });
-                                                }
-                                                if let Some(message) =
-                                                    crate::net::client::extract_stream_activity(
-                                                        &event.payload,
-                                                    )
-                                                {
-                                                    let _ = tx.send(Action::PromptInfo {
-                                                        session_id: session_id.clone(),
-                                                        agent_id: agent_id.clone(),
-                                                        message,
-                                                    });
-                                                }
-                                                if let Some(request_event) =
-                                                    crate::net::client::extract_stream_request(
-                                                        &event.payload,
-                                                    )
-                                                {
-                                                    let action = Self::stream_request_to_action(
-                                                        session_id.clone(),
-                                                        agent_id.clone(),
-                                                        request_event,
-                                                    );
-                                                    let _ = tx.send(action);
-                                                }
-                                                if let Some((event_session_id, todos)) =
-                                                    crate::net::client::extract_stream_todo_update(
-                                                        &event.payload,
-                                                    )
-                                                {
-                                                    let _ = tx.send(Action::PromptTodoUpdated {
-                                                        session_id: event_session_id,
-                                                        todos,
-                                                    });
-                                                }
-                                            },
-                                        )
-                                        .await
-                                    {
-                                        Ok(run) => {
-                                            if saw_stream_error
-                                                .load(std::sync::atomic::Ordering::Relaxed)
-                                            {
-                                                return;
-                                            }
-                                            if let Some(response) =
-                                                Self::extract_assistant_message(&run.messages)
-                                            {
-                                                let _ = tx.send(Action::PromptSuccess {
-                                                    session_id: session_id.clone(),
-                                                    agent_id: agent_id.clone(),
-                                                    messages: vec![ChatMessage {
-                                                        role: MessageRole::Assistant,
-                                                        content: response,
-                                                    }],
-                                                });
-                                            } else if !run.streamed {
-                                                let _ = tx.send(Action::PromptFailure {
-                                                    session_id: session_id.clone(),
-                                                    agent_id: agent_id.clone(),
-                                                    error: "No assistant response received. Check provider key/config with /keys, /provider, /model."
-                                                        .to_string(),
-                                                });
-                                            } else {
-                                                let _ = tx.send(Action::PromptSuccess {
-                                                    session_id: session_id.clone(),
-                                                    agent_id: agent_id.clone(),
-                                                    messages: vec![],
-                                                });
-                                            }
-                                        }
-                                        Err(err) => {
-                                            if !saw_stream_error
-                                                .load(std::sync::atomic::Ordering::Relaxed)
-                                            {
-                                                let _ = tx.send(Action::PromptFailure {
-                                                    session_id: session_id.clone(),
-                                                    agent_id: agent_id.clone(),
-                                                    error: err.to_string(),
-                                                });
-                                            }
-                                        }
-                                    }
-                                });
-                            } else {
-                                // Fallback for synchronous (should not happen if main.rs is updated)
-                                // or if channel is missing.
-                                // We can't await here without blocking, so we just log error to chat
-                                if let AppState::Chat { messages, .. } = &mut self.state {
-                                    messages.push(ChatMessage {
-                                        role: MessageRole::System,
-                                        content: vec![ContentBlock::Text(
-                                            "Error: Async channel not initialized. Cannot send prompt."
-                                                .to_string(),
-                                        )],
-                                    });
-                                }
-                            }
-                        }
+                        self.dispatch_prompt_for_agent(
+                            session_id.clone(),
+                            active_agent_id.clone(),
+                            msg.clone(),
+                        );
                     }
                 }
             }
@@ -4216,6 +4972,7 @@ impl App {
                         agent.active_run_id = run_id;
                         agent.stream_collector =
                             Some(crate::ui::markdown_stream::MarkdownStreamCollector::new());
+                        agent.live_tool_calls.clear();
                         if *active_agent_index == agent_idx {
                             *session_id = agent.session_id.clone();
                         }
@@ -4227,12 +4984,17 @@ impl App {
                 agent_id,
                 messages: new_messages,
             } => {
+                let dispatch_session_id = event_session_id.clone();
+                let dispatch_agent_id = agent_id.clone();
+                let mut clarification_follow_up: Option<(String, String)> = None;
                 let mut finalized_tail: Option<String> = None;
                 if let AppState::Chat {
                     agents,
                     active_agent_index,
                     messages,
                     scroll_from_bottom,
+                    pending_requests,
+                    plan_waiting_for_clarification_question,
                     ..
                 } = &mut self.state
                 {
@@ -4249,6 +5011,7 @@ impl App {
                         Self::merge_prompt_success_messages(&mut agent.messages, &new_messages);
                         agent.status = AgentStatus::Done;
                         agent.active_run_id = None;
+                        agent.live_tool_calls.clear();
                         agent.scroll_from_bottom = 0;
                     }
                     if *active_agent_index < agents.len()
@@ -4267,8 +5030,30 @@ impl App {
                         Self::merge_prompt_success_messages(messages, &new_messages);
                         *scroll_from_bottom = 0;
                     }
+                    if matches!(self.current_mode, TandemMode::Plan)
+                        && *plan_waiting_for_clarification_question
+                    {
+                        let has_question_pending = pending_requests.iter().any(|request| {
+                            request.session_id == event_session_id
+                                && request.agent_id == agent_id
+                                && matches!(request.kind, PendingRequestKind::Question(_))
+                        });
+                        if !has_question_pending {
+                            clarification_follow_up =
+                                Some((event_session_id.clone(), agent_id.clone()));
+                        }
+                        *plan_waiting_for_clarification_question = false;
+                    }
                 }
                 self.sync_active_agent_from_chat();
+                self.maybe_dispatch_queued_for_agent(&dispatch_session_id, &dispatch_agent_id);
+                if let Some((session_id, agent_id)) = clarification_follow_up {
+                    self.dispatch_prompt_for_agent(
+                        session_id,
+                        agent_id,
+                        "Before finalizing this plan, use the `question` tool to ask exactly one concise clarification or approval question with 2-3 choices, then wait for the user's answer.".to_string(),
+                    );
+                }
             }
             Action::PromptTodoUpdated {
                 session_id: event_session_id,
@@ -4402,20 +5187,180 @@ impl App {
                 }
                 self.sync_active_agent_from_chat();
             }
+            Action::PromptToolDelta {
+                session_id: event_session_id,
+                agent_id,
+                tool_call_id,
+                tool_name,
+                args_delta: _,
+                args_preview,
+            } => {
+                if let AppState::Chat { agents, .. } = &mut self.state {
+                    if let Some(agent) = agents
+                        .iter_mut()
+                        .find(|a| a.agent_id == agent_id && a.session_id == event_session_id)
+                    {
+                        if matches!(agent.status, AgentStatus::Idle | AgentStatus::Done) {
+                            agent.status = AgentStatus::Streaming;
+                        }
+                        agent.live_tool_calls.insert(
+                            tool_call_id,
+                            LiveToolCall {
+                                tool_name,
+                                args_preview,
+                            },
+                        );
+                    }
+                }
+                self.sync_active_agent_from_chat();
+            }
+            Action::PromptMalformedQuestion {
+                session_id: event_session_id,
+                agent_id,
+                request_id,
+            } => {
+                let retry_key = format!("{}:{}", event_session_id, request_id);
+                let should_retry = self.malformed_question_retries.insert(retry_key);
+                if let Some(client) = &self.client {
+                    let _ = client.reject_question(&request_id).await;
+                }
+                if let AppState::Chat {
+                    pending_requests,
+                    request_cursor,
+                    modal,
+                    messages,
+                    ..
+                } = &mut self.state
+                {
+                    pending_requests.retain(|entry| match &entry.kind {
+                        PendingRequestKind::Permission(permission) => permission.id != request_id,
+                        PendingRequestKind::Question(question) => question.id != request_id,
+                    });
+                    if pending_requests.is_empty() {
+                        *request_cursor = 0;
+                        if matches!(modal, Some(ModalState::RequestCenter)) {
+                            *modal = None;
+                        }
+                    } else if *request_cursor >= pending_requests.len() {
+                        *request_cursor = pending_requests.len().saturating_sub(1);
+                    }
+                    messages.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: vec![ContentBlock::Text(
+                            "Dismissed malformed question request and asked the agent to retry with a structured question payload.".to_string(),
+                        )],
+                    });
+                }
+                if should_retry {
+                    self.dispatch_prompt_for_agent(
+                        event_session_id,
+                        agent_id,
+                        "Your last `question` tool call had invalid or empty arguments. Retry once using this exact shape: {\"questions\":[{\"header\":\"Question\",\"question\":\"...\",\"options\":[{\"label\":\"...\",\"description\":\"...\"},{\"label\":\"...\",\"description\":\"...\"}],\"multiple\":false,\"custom\":true}]}. After calling the tool, stop and wait for the user's answer.".to_string(),
+                    );
+                }
+                self.sync_active_agent_from_chat();
+            }
             Action::PromptRequest {
                 session_id: event_session_id,
                 agent_id,
                 request,
             } => {
+                if let PendingRequestKind::Question(question) = &request {
+                    if question.questions.is_empty() {
+                        let retry_key = format!("{}:{}", event_session_id, question.id);
+                        let should_retry = self.malformed_question_retries.insert(retry_key);
+                        if let Some(client) = &self.client {
+                            let _ = client.reject_question(&question.id).await;
+                        }
+                        if let AppState::Chat { messages, .. } = &mut self.state {
+                            messages.push(ChatMessage {
+                                role: MessageRole::System,
+                                content: vec![ContentBlock::Text(
+                                    "Ignored malformed question request with no prompts."
+                                        .to_string(),
+                                )],
+                            });
+                        }
+                        if should_retry {
+                            self.dispatch_prompt_for_agent(
+                                event_session_id,
+                                agent_id,
+                                "Retry the `question` tool with a valid non-empty `questions` array and wait for user input.".to_string(),
+                            );
+                        }
+                        self.sync_active_agent_from_chat();
+                        return Ok(());
+                    }
+                }
+                if matches!(self.current_mode, TandemMode::Plan) {
+                    if let PendingRequestKind::Permission(permission) = &request {
+                        if Self::is_todo_write_tool_name(&permission.tool) {
+                            if let Some(client) = &self.client {
+                                let _ = client.reply_permission(&permission.id, "once").await;
+                            }
+                            let fingerprint =
+                                Self::plan_fingerprint_from_args(permission.args.as_ref());
+                            let preview = Self::plan_preview_from_args(permission.args.as_ref());
+                            let should_open_wizard = if let AppState::Chat {
+                                last_plan_task_fingerprint,
+                                ..
+                            } = &self.state
+                            {
+                                !fingerprint.is_empty()
+                                    && *last_plan_task_fingerprint != fingerprint
+                            } else {
+                                false
+                            };
+                            if let AppState::Chat {
+                                tasks,
+                                active_task_id,
+                                plan_wizard,
+                                modal,
+                                last_plan_task_fingerprint,
+                                ..
+                            } = &mut self.state
+                            {
+                                Self::apply_task_payload(
+                                    tasks,
+                                    active_task_id,
+                                    &permission.tool,
+                                    permission.args.as_ref(),
+                                );
+                                if !fingerprint.is_empty() {
+                                    *last_plan_task_fingerprint = fingerprint;
+                                }
+                                if should_open_wizard {
+                                    *modal = Some(ModalState::PlanFeedbackWizard);
+                                    *plan_wizard = PlanFeedbackWizardState {
+                                        plan_name: String::new(),
+                                        scope: String::new(),
+                                        constraints: String::new(),
+                                        priorities: String::new(),
+                                        notes: String::new(),
+                                        cursor_step: 0,
+                                        source_request_id: Some(permission.id.clone()),
+                                        task_preview: preview,
+                                    };
+                                }
+                            }
+                            self.queue_plan_agent_prompt(4);
+                            self.sync_active_agent_from_chat();
+                            return Ok(());
+                        }
+                    }
+                }
                 if let AppState::Chat {
                     pending_requests,
                     request_cursor,
                     modal,
                     agents,
                     active_agent_index,
+                    plan_waiting_for_clarification_question,
                     ..
                 } = &mut self.state
                 {
+                    Self::purge_invalid_question_requests(pending_requests);
+                    let is_question_request = matches!(&request, PendingRequestKind::Question(_));
                     let request_id = match &request {
                         PendingRequestKind::Permission(permission) => permission.id.clone(),
                         PendingRequestKind::Question(question) => question.id.clone(),
@@ -4450,6 +5395,9 @@ impl App {
                         }
                         *modal = Some(ModalState::RequestCenter);
                     }
+                    if is_question_request {
+                        *plan_waiting_for_clarification_question = false;
+                    }
                 }
             }
             Action::PromptRequestResolved { request_id, .. } => {
@@ -4479,6 +5427,8 @@ impl App {
                 agent_id,
                 error,
             } => {
+                let dispatch_session_id = event_session_id.clone();
+                let dispatch_agent_id = agent_id.clone();
                 let mut finalized_tail: Option<String> = None;
                 if let AppState::Chat {
                     agents,
@@ -4500,6 +5450,7 @@ impl App {
                         agent.stream_collector = None;
                         agent.status = AgentStatus::Error;
                         agent.active_run_id = None;
+                        agent.live_tool_calls.clear();
                         agent.scroll_from_bottom = 0;
                         agent.messages.push(ChatMessage {
                             role: MessageRole::System,
@@ -4527,6 +5478,7 @@ impl App {
                     }
                 }
                 self.sync_active_agent_from_chat();
+                self.maybe_dispatch_queued_for_agent(&dispatch_session_id, &dispatch_agent_id);
             }
 
             _ => {}
@@ -4607,6 +5559,27 @@ impl App {
 
                 // Try to connect or spawn
                 if self.client.is_none() {
+                    if let Some(child) = self.engine_process.as_mut() {
+                        match child.try_wait() {
+                            Ok(Some(status)) => {
+                                self.engine_process = None;
+                                self.engine_spawned_at = None;
+                                self.engine_base_url_override = None;
+                                self.engine_connection_source = EngineConnectionSource::Unknown;
+                                self.connection_status =
+                                    format!("Managed engine exited ({}). Restarting...", status);
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                self.engine_process = None;
+                                self.engine_spawned_at = None;
+                                self.engine_base_url_override = None;
+                                self.engine_connection_source = EngineConnectionSource::Unknown;
+                                self.connection_status =
+                                    format!("Engine process check failed ({}). Restarting...", err);
+                            }
+                        }
+                    }
                     self.connection_status = "Searching for engine...".to_string();
                     // Check if running
                     let client = EngineClient::new_with_token(
@@ -4651,6 +5624,7 @@ impl App {
                                         );
                                         self.engine_connection_source =
                                             EngineConnectionSource::SharedAttached;
+                                        self.engine_spawned_at = None;
                                         self.client = Some(client.clone());
                                         let _ = self.finalize_connecting(&client).await;
                                         return;
@@ -4661,6 +5635,7 @@ impl App {
                                     "Connected. Verifying readiness...".to_string();
                                 self.engine_connection_source =
                                     EngineConnectionSource::SharedAttached;
+                                self.engine_spawned_at = None;
                                 self.client = Some(client.clone());
                                 let _ = self.finalize_connecting(&client).await;
                                 return;
@@ -4714,6 +5689,7 @@ impl App {
                                     Some(Self::engine_base_url_for_port(spawn_port));
                                 self.engine_connection_source =
                                     EngineConnectionSource::ManagedLocal;
+                                self.engine_spawned_at = Some(Instant::now());
                                 spawned = true;
                             }
                         }
@@ -4732,6 +5708,7 @@ impl App {
                                     Some(Self::engine_base_url_for_port(spawn_port));
                                 self.engine_connection_source =
                                     EngineConnectionSource::ManagedLocal;
+                                self.engine_spawned_at = Some(Instant::now());
                                 spawned = true;
                             }
                         }
@@ -4757,6 +5734,7 @@ impl App {
                                     Some(Self::engine_base_url_for_port(spawn_port));
                                 self.engine_connection_source =
                                     EngineConnectionSource::ManagedLocal;
+                                self.engine_spawned_at = Some(Instant::now());
                                 spawned = true;
                             }
                         }
@@ -4768,7 +5746,21 @@ impl App {
                             self.connection_status = "Failed to start engine.".to_string();
                         }
                     } else {
-                        self.connection_status = "Waiting for engine...".to_string();
+                        let timed_out = self
+                            .engine_spawned_at
+                            .map(|t| t.elapsed() >= std::time::Duration::from_secs(20))
+                            .unwrap_or(false);
+                        if timed_out {
+                            self.connection_status =
+                                "Engine startup timeout. Restarting managed engine...".to_string();
+                            self.stop_engine_process().await;
+                            self.engine_base_url_override = None;
+                            self.engine_connection_source = EngineConnectionSource::Unknown;
+                            self.engine_spawned_at = None;
+                            return;
+                        }
+                        self.connection_status =
+                            format!("Waiting for engine... ({})", self.engine_target_base_url());
                     }
                 } else {
                     if let Some(client) = self.client.clone() {
@@ -4837,10 +5829,15 @@ SESSIONS:
   /agent list        List chat agents
   /agent use <A#>    Switch active agent
   /agent close       Close active agent
+  /agent fanout [n]  Ensure n agents and switch to grid (default 4)
   /title <new title> Rename current session
   /prompt <text>    Send prompt to current session
   /tool <name> <json_args> Pass-through engine tool call
   /cancel           Cancel current operation
+  /steer <message>  Queue steering interrupt message
+  /followup <msg>   Queue follow-up message
+  /queue            Show queue status
+  /queue clear      Clear steering/follow-up queue
   /last_error       Show last prompt/system error
   /messages [limit] Show session messages
   /task add <desc>   Add a new task
@@ -4873,6 +5870,7 @@ APPROVALS:
   /deny <id>              Deny request
   /answer <id> <reply>    Send raw permission reply (allow/deny/once/always/reject)
   /requests               Open pending request center
+  /copy                   Copy latest assistant response to clipboard
 
 ROUTINES:
   /routines                               List routines
@@ -4915,13 +5913,16 @@ MULTI-AGENT KEYS:
   Alt+1..Alt+9       Jump to agent slot
   Ctrl+N             New agent
   Ctrl+W             Close active agent
-  Ctrl+C             Cancel active run
+  Ctrl+C             Cancel active run / double-tap quit
   Alt+M              Cycle mode
   Alt+G              Toggle Focus/Grid
   Alt+R              Open request center
+  Alt+I              Queue steering interrupt (and cancel active run)
   [ / ]              Prev/next grid page
   Alt+S / Alt+B      Demo stream controls (dev)
+  Enter              Send prompt (queues follow-up if busy)
   Shift+Enter        Insert newline
+  Alt+Enter          Insert newline
   Esc                Close modal / return to input
   Ctrl+X             Quit"#;
                 help_text.to_string()
@@ -4960,6 +5961,7 @@ MULTI-AGENT KEYS:
                     self.client = None;
                     self.engine_base_url_override = None;
                     self.engine_connection_source = EngineConnectionSource::Unknown;
+                    self.engine_spawned_at = None;
                     self.provider_catalog = None;
                     sleep(std::time::Duration::from_millis(300)).await;
                     self.state = AppState::Connecting;
@@ -5157,7 +6159,34 @@ MULTI-AGENT KEYS:
                     self.sync_chat_from_active_agent();
                     "Closed active agent.".to_string()
                 }
-                _ => "Usage: /agent new|list|use <A#>|close".to_string(),
+                Some("fanout") => {
+                    let target = args
+                        .get(1)
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .map(|n| n.clamp(2, 9))
+                        .unwrap_or(4);
+                    let created = self.ensure_agent_count(target).await;
+                    if let AppState::Chat {
+                        ui_mode, grid_page, ..
+                    } = &mut self.state
+                    {
+                        *ui_mode = UiMode::Grid;
+                        *grid_page = 0;
+                    }
+                    self.sync_chat_from_active_agent();
+                    if created > 0 {
+                        format!(
+                            "Started fanout: {} total agents (created {}). Grid view enabled.",
+                            target, created
+                        )
+                    } else {
+                        format!(
+                            "Fanout ready: already at {}+ agents. Grid view enabled.",
+                            target
+                        )
+                    }
+                }
+                _ => "Usage: /agent new|list|use <A#>|close|fanout [n]".to_string(),
             },
 
             "use" => {
@@ -5449,6 +6478,100 @@ MULTI-AGENT KEYS:
                 "Cancel requested for active agent.".to_string()
             }
 
+            "steer" => {
+                if args.is_empty() {
+                    return "Usage: /steer <message>".to_string();
+                }
+                let msg = args.join(" ");
+                if let AppState::Chat { command_input, .. } = &mut self.state {
+                    command_input.set_text(msg);
+                }
+                if let Some(tx) = &self.action_tx {
+                    let _ = tx.send(Action::QueueSteeringFromComposer);
+                }
+                "Steering message queued.".to_string()
+            }
+
+            "followup" => {
+                if args.is_empty() {
+                    return "Usage: /followup <message>".to_string();
+                }
+                let msg = args.join(" ");
+                let mut queued_len = 0usize;
+                if let AppState::Chat {
+                    agents,
+                    active_agent_index,
+                    ..
+                } = &mut self.state
+                {
+                    if let Some(agent) = agents.get_mut(*active_agent_index) {
+                        let merged_into_existing = !agent.follow_up_queue.is_empty();
+                        if merged_into_existing {
+                            if let Some(last) = agent.follow_up_queue.back_mut() {
+                                if !last.is_empty() {
+                                    last.push('\n');
+                                }
+                                last.push_str(&msg);
+                            }
+                        } else {
+                            agent.follow_up_queue.push_back(msg);
+                        }
+                        queued_len = agent.follow_up_queue.len();
+                    }
+                }
+                format!("Queued follow-up message (#{}).", queued_len)
+            }
+
+            "queue" => {
+                if matches!(args.first().map(|s| s.to_ascii_lowercase()), Some(cmd) if cmd == "clear")
+                {
+                    if let AppState::Chat {
+                        agents,
+                        active_agent_index,
+                        ..
+                    } = &mut self.state
+                    {
+                        if let Some(agent) = agents.get_mut(*active_agent_index) {
+                            agent.follow_up_queue.clear();
+                            agent.steering_message = None;
+                        }
+                    }
+                    return "Cleared queued steering and follow-up messages.".to_string();
+                }
+                if let AppState::Chat {
+                    agents,
+                    active_agent_index,
+                    ..
+                } = &self.state
+                {
+                    if let Some(agent) = agents.get(*active_agent_index) {
+                        let steering = if agent.steering_message.is_some() {
+                            "yes"
+                        } else {
+                            "no"
+                        };
+                        let next_followup = agent
+                            .follow_up_queue
+                            .front()
+                            .map(|m| {
+                                if m.chars().count() > 80 {
+                                    format!("{}...", m.chars().take(80).collect::<String>())
+                                } else {
+                                    m.clone()
+                                }
+                            })
+                            .unwrap_or_else(|| "(none)".to_string());
+                        return format!(
+                            "Queue status:\n  steering: {}\n  follow-ups: {}\n  next: {}",
+                            steering,
+                            agent.follow_up_queue.len(),
+                            next_followup
+                        );
+                    }
+                }
+                "Queue unavailable in current state.".to_string()
+            }
+
             "task" => {
                 if let AppState::Chat { tasks, .. } = &mut self.state {
                     match args.get(0).map(|s| *s) {
@@ -5558,169 +6681,26 @@ MULTI-AGENT KEYS:
                 if text.is_empty() {
                     return "Usage: /prompt <text...>".to_string();
                 }
-                let (session_id, active_agent_id, should_send) = if let AppState::Chat {
+                let (session_id, active_agent_id) = if let AppState::Chat {
                     session_id,
-                    messages,
                     agents,
                     active_agent_index,
                     ..
                 } = &mut self.state
                 {
-                    messages.push(ChatMessage {
-                        role: MessageRole::User,
-                        content: vec![ContentBlock::Text(text.clone())],
-                    });
                     let agent_id = agents
                         .get(*active_agent_index)
                         .map(|a| a.agent_id.clone())
                         .unwrap_or_else(|| "A1".to_string());
-                    (session_id.clone(), agent_id, true)
+                    (session_id.clone(), agent_id)
                 } else {
-                    (String::new(), "A1".to_string(), false)
+                    (String::new(), "A1".to_string())
                 };
 
-                if !should_send {
+                if session_id.is_empty() {
                     return "Not in a chat session. Use /use <session_id> first.".to_string();
                 }
-
-                let agent = Some(self.current_mode.as_agent().to_string());
-                if let Some(client) = &self.client {
-                    let prompt_text = self.prepare_prompt_text(&text);
-                    let model = self.current_model_spec();
-                    if let Some(tx) = &self.action_tx {
-                        let client = client.clone();
-                        let tx = tx.clone();
-                        let agent_id = active_agent_id.clone();
-                        let saw_stream_error =
-                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        tokio::spawn(async move {
-                            let saw_stream_error_cb = saw_stream_error.clone();
-                            match client
-                                .send_prompt_with_stream_events(
-                                    &session_id,
-                                    &prompt_text,
-                                    agent.as_deref(),
-                                    Some(&agent_id),
-                                    model,
-                                    |event| {
-                                        if let Some(err) =
-                                            crate::net::client::extract_stream_error(&event.payload)
-                                        {
-                                            if !saw_stream_error_cb
-                                                .swap(true, std::sync::atomic::Ordering::Relaxed)
-                                            {
-                                                let _ = tx.send(Action::PromptFailure {
-                                                    session_id: session_id.clone(),
-                                                    agent_id: agent_id.clone(),
-                                                    error: err,
-                                                });
-                                            }
-                                        }
-                                        if event.event_type == "session.run.started" {
-                                            let _ = tx.send(Action::PromptRunStarted {
-                                                session_id: session_id.clone(),
-                                                agent_id: agent_id.clone(),
-                                                run_id: event.run_id.clone(),
-                                            });
-                                        }
-                                        if let Some(delta) =
-                                            crate::net::client::extract_delta_text(&event.payload)
-                                        {
-                                            let _ = tx.send(Action::PromptDelta {
-                                                session_id: session_id.clone(),
-                                                agent_id: agent_id.clone(),
-                                                delta,
-                                            });
-                                        }
-                                        if let Some(message) =
-                                            crate::net::client::extract_stream_activity(
-                                                &event.payload,
-                                            )
-                                        {
-                                            let _ = tx.send(Action::PromptInfo {
-                                                session_id: session_id.clone(),
-                                                agent_id: agent_id.clone(),
-                                                message,
-                                            });
-                                        }
-                                        if let Some(request_event) =
-                                            crate::net::client::extract_stream_request(
-                                                &event.payload,
-                                            )
-                                        {
-                                            let action = Self::stream_request_to_action(
-                                                session_id.clone(),
-                                                agent_id.clone(),
-                                                request_event,
-                                            );
-                                            let _ = tx.send(action);
-                                        }
-                                        if let Some((event_session_id, todos)) =
-                                            crate::net::client::extract_stream_todo_update(
-                                                &event.payload,
-                                            )
-                                        {
-                                            let _ = tx.send(Action::PromptTodoUpdated {
-                                                session_id: event_session_id,
-                                                todos,
-                                            });
-                                        }
-                                    },
-                                )
-                                .await
-                            {
-                                Ok(run) => {
-                                    if saw_stream_error.load(std::sync::atomic::Ordering::Relaxed) {
-                                        return;
-                                    }
-                                    if let Some(response) =
-                                        Self::extract_assistant_message(&run.messages)
-                                    {
-                                        let _ = tx.send(Action::PromptSuccess {
-                                            session_id: session_id.clone(),
-                                            agent_id: agent_id.clone(),
-                                            messages: vec![ChatMessage {
-                                                role: MessageRole::Assistant,
-                                                content: response,
-                                            }],
-                                        });
-                                    } else if !run.streamed {
-                                        let _ = tx.send(Action::PromptFailure {
-                                            session_id: session_id.clone(),
-                                            agent_id: agent_id.clone(),
-                                            error: "No assistant response received. Check provider key/config with /keys, /provider, /model."
-                                                .to_string(),
-                                        });
-                                    } else {
-                                        let _ = tx.send(Action::PromptSuccess {
-                                            session_id: session_id.clone(),
-                                            agent_id: agent_id.clone(),
-                                            messages: vec![],
-                                        });
-                                    }
-                                }
-                                Err(err) => {
-                                    if !saw_stream_error.load(std::sync::atomic::Ordering::Relaxed)
-                                    {
-                                        let _ = tx.send(Action::PromptFailure {
-                                            session_id: session_id.clone(),
-                                            agent_id: agent_id.clone(),
-                                            error: err.to_string(),
-                                        });
-                                    }
-                                }
-                            }
-                        });
-                    } else if let AppState::Chat { messages, .. } = &mut self.state {
-                        messages.push(ChatMessage {
-                            role: MessageRole::System,
-                            content: vec![ContentBlock::Text(
-                                "Error: Async channel not initialized. Cannot send prompt."
-                                    .to_string(),
-                            )],
-                        });
-                    }
-                }
+                self.dispatch_prompt_for_agent(session_id, active_agent_id, text);
                 "Prompt sent.".to_string()
             }
 
@@ -6406,6 +7386,16 @@ MULTI-AGENT KEYS:
                     "Requests are only available in chat mode.".to_string()
                 }
             }
+            "copy" => {
+                if let AppState::Chat { messages, .. } = &self.state {
+                    match self.copy_latest_assistant_to_clipboard(messages) {
+                        Ok(len) => format!("Copied {} characters to clipboard.", len),
+                        Err(err) => format!("Clipboard copy failed: {}", err),
+                    }
+                } else {
+                    "Clipboard copy works in chat screens only.".to_string()
+                }
+            }
 
             "approve" | "deny" | "answer" => {
                 let Some(client) = &self.client else {
@@ -6521,11 +7511,13 @@ MULTI-AGENT KEYS:
                 if request
                     .tool
                     .as_deref()
-                    .map(|t| t.eq_ignore_ascii_case("question"))
+                    .map(Self::is_question_tool_name)
                     .unwrap_or(false)
                 {
-                    let questions =
-                        Self::question_drafts_from_permission_args(request.args.as_ref());
+                    let questions = Self::question_drafts_from_permission_args(
+                        request.args.as_ref(),
+                        request.query.as_deref(),
+                    );
                     if !questions.is_empty() {
                         return Action::PromptRequest {
                             session_id,
@@ -6572,13 +7564,20 @@ MULTI-AGENT KEYS:
                             question: q.question,
                             options: q.options,
                             multiple: q.multiple.unwrap_or(false),
-                            custom: q.custom.unwrap_or(true) || has_options,
+                            custom: q.custom.unwrap_or(!has_options),
                             selected_options: Vec::new(),
                             custom_input: String::new(),
                             option_cursor: 0,
                         }
                     })
                     .collect::<Vec<_>>();
+                if questions.is_empty() {
+                    return Action::PromptMalformedQuestion {
+                        session_id,
+                        agent_id,
+                        request_id: request.id,
+                    };
+                }
                 Action::PromptRequest {
                     session_id,
                     agent_id,
@@ -6595,63 +7594,176 @@ MULTI-AGENT KEYS:
 
     fn question_drafts_from_permission_args(
         args: Option<&serde_json::Value>,
+        fallback_query: Option<&str>,
     ) -> Vec<QuestionDraft> {
-        let Some(args) = args else {
-            return Vec::new();
-        };
-        let Some(items) = args.get("questions").and_then(|v| v.as_array()) else {
-            return Vec::new();
-        };
-
-        items
-            .iter()
-            .filter_map(|item| {
-                let question = item.get("question").and_then(|v| v.as_str())?;
-                let header = item
-                    .get("header")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Question")
-                    .to_string();
-                let options = item
-                    .get("options")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|opt| {
-                                let label = opt.get("label").and_then(|v| v.as_str())?;
-                                let description = opt
-                                    .get("description")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                Some(crate::net::client::QuestionChoice {
-                                    label: label.to_string(),
-                                    description,
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let has_options = !options.is_empty();
-                let multiple = item
-                    .get("multiple")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let custom =
-                    item.get("custom").and_then(|v| v.as_bool()).unwrap_or(true) || has_options;
-
-                Some(QuestionDraft {
-                    header,
-                    question: question.to_string(),
-                    options,
-                    multiple,
-                    custom,
+        let Some(raw_args) = args else {
+            if let Some(query) = fallback_query.map(str::trim).filter(|q| !q.is_empty()) {
+                return vec![QuestionDraft {
+                    header: "Question".to_string(),
+                    question: query.to_string(),
+                    options: Vec::new(),
+                    multiple: false,
+                    custom: true,
                     selected_options: Vec::new(),
                     custom_input: String::new(),
                     option_cursor: 0,
+                }];
+            }
+            return Vec::new();
+        };
+
+        // Some providers emit `args` as a JSON string; decode if possible.
+        let parsed_args;
+        let args = if let Some(raw) = raw_args.as_str() {
+            if let Ok(decoded) = serde_json::from_str::<serde_json::Value>(raw) {
+                parsed_args = decoded;
+                &parsed_args
+            } else {
+                raw_args
+            }
+        } else {
+            raw_args
+        };
+
+        let parse_choice = |opt: &serde_json::Value| -> Option<crate::net::client::QuestionChoice> {
+            if let Some(label) = opt.as_str() {
+                return Some(crate::net::client::QuestionChoice {
+                    label: label.to_string(),
+                    description: String::new(),
+                });
+            }
+            let label = opt
+                .get("label")
+                .or_else(|| opt.get("title"))
+                .or_else(|| opt.get("name"))
+                .or_else(|| opt.get("value"))
+                .or_else(|| opt.get("text"))
+                .and_then(|v| {
+                    if let Some(s) = v.as_str() {
+                        Some(s.to_string())
+                    } else {
+                        v.as_i64()
+                            .map(|n| n.to_string())
+                            .or_else(|| v.as_u64().map(|n| n.to_string()))
+                    }
+                })?;
+            let description = opt
+                .get("description")
+                .or_else(|| opt.get("hint"))
+                .or_else(|| opt.get("subtitle"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(crate::net::client::QuestionChoice { label, description })
+        };
+
+        if let Some(items) = args.get("questions").and_then(|v| v.as_array()) {
+            let parsed = items
+                .iter()
+                .filter_map(|item| {
+                    if let Some(question) = item.as_str() {
+                        let text = question.trim();
+                        if text.is_empty() {
+                            return None;
+                        }
+                        return Some(QuestionDraft {
+                            header: "Question".to_string(),
+                            question: text.to_string(),
+                            options: Vec::new(),
+                            multiple: false,
+                            custom: true,
+                            selected_options: Vec::new(),
+                            custom_input: String::new(),
+                            option_cursor: 0,
+                        });
+                    }
+                    let question = item
+                        .get("question")
+                        .or_else(|| item.get("prompt"))
+                        .or_else(|| item.get("query"))
+                        .or_else(|| item.get("text"))
+                        .and_then(|v| v.as_str())?;
+                    let header = item
+                        .get("header")
+                        .or_else(|| item.get("title"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Question")
+                        .to_string();
+                    let options = item
+                        .get("options")
+                        .or_else(|| item.get("choices"))
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().filter_map(parse_choice).collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    let has_options = !options.is_empty();
+                    let multiple = item
+                        .get("multiple")
+                        .or_else(|| item.get("multi_select"))
+                        .or_else(|| item.get("multiSelect"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let custom = item
+                        .get("custom")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(!has_options);
+
+                    Some(QuestionDraft {
+                        header,
+                        question: question.to_string(),
+                        options,
+                        multiple,
+                        custom,
+                        selected_options: Vec::new(),
+                        custom_input: String::new(),
+                        option_cursor: 0,
+                    })
                 })
-            })
-            .collect()
+                .collect::<Vec<_>>();
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+
+        let options = args
+            .get("options")
+            .or_else(|| args.get("choices"))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(parse_choice).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let has_options = !options.is_empty();
+        let question = args
+            .get("question")
+            .or_else(|| args.get("prompt"))
+            .or_else(|| args.get("text"))
+            .or_else(|| args.get("title"))
+            .or_else(|| args.get("query"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| fallback_query.map(str::trim).filter(|s| !s.is_empty()));
+        if let Some(question) = question {
+            return vec![QuestionDraft {
+                header: args
+                    .get("header")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Question")
+                    .to_string(),
+                question: question.to_string(),
+                options,
+                multiple: args
+                    .get("multiple")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                custom: args
+                    .get("custom")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(!has_options),
+                selected_options: Vec::new(),
+                custom_input: String::new(),
+                option_cursor: 0,
+            }];
+        }
+        Vec::new()
     }
 
     fn is_task_tool_name(tool: &str) -> bool {
@@ -6676,6 +7788,14 @@ MULTI-AGENT KEYS:
             .trim()
             .to_lowercase();
         last.replace('-', "_")
+    }
+
+    fn is_question_tool_name(tool: &str) -> bool {
+        let canonical = Self::canonical_tool_name(tool);
+        canonical == "question"
+            || canonical.starts_with("question_")
+            || canonical.starts_with("question")
+            || canonical.contains("question")
     }
 
     fn task_status_from_text(status: &str) -> TaskStatus {
@@ -6905,6 +8025,66 @@ MULTI-AGENT KEYS:
         )
     }
 
+    fn latest_assistant_text(messages: &[ChatMessage]) -> Option<String> {
+        for message in messages.iter().rev() {
+            if !matches!(message.role, MessageRole::Assistant) {
+                continue;
+            }
+            let mut chunks = Vec::new();
+            for block in &message.content {
+                match block {
+                    ContentBlock::Text(text) => {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            chunks.push(trimmed.to_string());
+                        }
+                    }
+                    ContentBlock::Code { language, code } => {
+                        let lang = language.trim();
+                        if lang.is_empty() {
+                            chunks.push(format!("```\n{}\n```", code));
+                        } else {
+                            chunks.push(format!("```{}\n{}\n```", lang, code));
+                        }
+                    }
+                    ContentBlock::ToolCall(tool) => {
+                        chunks.push(format!("Tool call: {} {}", tool.name, tool.args));
+                    }
+                    ContentBlock::ToolResult(result) => {
+                        chunks.push(format!("Tool result: {}", result));
+                    }
+                }
+            }
+            if !chunks.is_empty() {
+                return Some(chunks.join("\n\n"));
+            }
+        }
+        None
+    }
+
+    fn copy_latest_assistant_to_clipboard(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<usize, String> {
+        let Some(text) = Self::latest_assistant_text(messages) else {
+            return Err("No assistant content available to copy.".to_string());
+        };
+        let mut clipboard =
+            arboard::Clipboard::new().map_err(|err| format!("cannot access clipboard: {}", err))?;
+        clipboard
+            .set_text(text.clone())
+            .map_err(|err| format!("cannot set clipboard text: {}", err))?;
+        Ok(text.chars().count())
+    }
+
+    fn plan_feedback_needs_clarification(wizard: &PlanFeedbackWizardState) -> bool {
+        wizard.plan_name.trim().is_empty()
+            && wizard.scope.trim().is_empty()
+            && wizard.constraints.trim().is_empty()
+            && wizard.priorities.trim().is_empty()
+            && wizard.notes.trim().is_empty()
+    }
+
     fn rebuild_tasks_from_messages(messages: &[ChatMessage]) -> (Vec<Task>, Option<String>) {
         let mut tasks = Vec::new();
         let mut active_task_id = None;
@@ -7010,6 +8190,220 @@ MULTI-AGENT KEYS:
             TaskStatus::Working => "working",
             TaskStatus::Done => "done",
             TaskStatus::Failed => "failed",
+        }
+    }
+
+    fn is_agent_busy(status: &AgentStatus) -> bool {
+        matches!(
+            status,
+            AgentStatus::Running | AgentStatus::Streaming | AgentStatus::Cancelling
+        )
+    }
+
+    fn request_center_digit_is_shortcut(&self, c: char) -> bool {
+        if !c.is_ascii_digit() {
+            return false;
+        }
+        let AppState::Chat {
+            pending_requests,
+            request_cursor,
+            ..
+        } = &self.state
+        else {
+            return false;
+        };
+        let Some(request) = pending_requests.get(*request_cursor) else {
+            return false;
+        };
+        match &request.kind {
+            PendingRequestKind::Permission(_) => true,
+            PendingRequestKind::Question(question) => question
+                .questions
+                .get(question.question_index)
+                .map(|q| !q.custom && !q.options.is_empty())
+                .unwrap_or(false),
+        }
+    }
+
+    fn request_center_active_is_question(&self) -> bool {
+        let AppState::Chat {
+            pending_requests,
+            request_cursor,
+            ..
+        } = &self.state
+        else {
+            return false;
+        };
+        matches!(
+            pending_requests.get(*request_cursor).map(|r| &r.kind),
+            Some(PendingRequestKind::Question(_))
+        )
+    }
+
+    fn make_paste_marker(id: u32, payload: &str) -> String {
+        format!("[Pasted {} chars #{}]", payload.chars().count(), id)
+    }
+
+    fn register_collapsed_paste(agent: &mut AgentPane, payload: &str) -> String {
+        let id = agent.next_paste_id;
+        agent.next_paste_id = agent.next_paste_id.saturating_add(1);
+        agent.paste_registry.insert(id, payload.to_string());
+        Self::make_paste_marker(id, payload)
+    }
+
+    fn parse_marker_id(marker: &str) -> Option<u32> {
+        let trimmed = marker.trim();
+        if !trimmed.starts_with("[Pasted ") || !trimmed.ends_with(']') {
+            return None;
+        }
+        let hash = trimmed.rfind('#')?;
+        let id_str = &trimmed[hash + 1..trimmed.len() - 1];
+        id_str.parse::<u32>().ok()
+    }
+
+    fn find_paste_token_ranges(text: &str) -> Vec<(usize, usize)> {
+        let mut ranges = Vec::new();
+        let mut i = 0usize;
+        while i < text.len() {
+            let rest = &text[i..];
+            if rest.starts_with("[Pasted ") {
+                if let Some(end_rel) = rest.find(']') {
+                    let end = i + end_rel + 1;
+                    let token = &text[i..end];
+                    if token.contains(" chars") {
+                        ranges.push((i, end));
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+            if let Some(ch) = rest.chars().next() {
+                i += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        ranges
+    }
+
+    fn prev_char_boundary(text: &str, pos: usize) -> usize {
+        if pos == 0 {
+            return 0;
+        }
+        let mut i = pos.saturating_sub(1);
+        while i > 0 && !text.is_char_boundary(i) {
+            i = i.saturating_sub(1);
+        }
+        i
+    }
+
+    fn paste_token_range_for_backspace(
+        input: &crate::ui::components::composer_input::ComposerInputState,
+    ) -> Option<(usize, usize)> {
+        let text = input.text();
+        let cursor = input.cursor_byte_index().min(text.len());
+        if cursor == 0 {
+            return None;
+        }
+        let target = Self::prev_char_boundary(text, cursor);
+        Self::find_paste_token_ranges(text)
+            .into_iter()
+            .find(|(start, end)| target >= *start && target < *end)
+    }
+
+    fn paste_token_range_for_delete(
+        input: &crate::ui::components::composer_input::ComposerInputState,
+    ) -> Option<(usize, usize)> {
+        let text = input.text();
+        let cursor = input.cursor_byte_index().min(text.len());
+        if cursor >= text.len() {
+            return None;
+        }
+        Self::find_paste_token_ranges(text)
+            .into_iter()
+            .find(|(start, end)| cursor >= *start && cursor < *end)
+    }
+
+    fn collect_referenced_paste_ids(text: &str) -> HashSet<u32> {
+        let mut ids = HashSet::new();
+        let mut i = 0usize;
+        while i < text.len() {
+            let rest = &text[i..];
+            if rest.starts_with("[Pasted ") {
+                if let Some(end_rel) = rest.find(']') {
+                    let end = i + end_rel + 1;
+                    if let Some(id) = Self::parse_marker_id(&text[i..end]) {
+                        ids.insert(id);
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+            if let Some(ch) = rest.chars().next() {
+                i += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        ids
+    }
+
+    fn prune_agent_paste_registry(agent: &mut AgentPane) {
+        let referenced = Self::collect_referenced_paste_ids(agent.draft.text());
+        agent.paste_registry.retain(|id, _| referenced.contains(id));
+    }
+
+    fn expand_paste_markers(text: &str, agent: &AgentPane) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0usize;
+        while i < text.len() {
+            if text[i..].starts_with("[Pasted ") {
+                if let Some(end_rel) = text[i..].find(']') {
+                    let end = i + end_rel + 1;
+                    let marker = &text[i..end];
+                    if let Some(id) = Self::parse_marker_id(marker) {
+                        if let Some(payload) = agent.paste_registry.get(&id) {
+                            out.push_str(payload);
+                            i = end;
+                            continue;
+                        }
+                    }
+                }
+            }
+            if let Some(ch) = text[i..].chars().next() {
+                out.push(ch);
+                i += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        out
+    }
+
+    fn unresolved_paste_ids(text: &str, agent: &AgentPane) -> Vec<u32> {
+        let mut unresolved = Vec::new();
+        for id in Self::collect_referenced_paste_ids(text) {
+            if !agent.paste_registry.contains_key(&id) {
+                unresolved.push(id);
+            }
+        }
+        unresolved.sort_unstable();
+        unresolved
+    }
+
+    fn expand_paste_markers_checked(text: &str, agent: &AgentPane) -> Result<String, String> {
+        let unresolved = Self::unresolved_paste_ids(text, agent);
+        if unresolved.is_empty() {
+            Ok(Self::expand_paste_markers(text, agent))
+        } else {
+            Err(format!(
+                "Cannot send: pasted token payload missing for id(s): {}. Re-paste and try again.",
+                unresolved
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
         }
     }
 
@@ -7176,14 +8570,14 @@ MULTI-AGENT KEYS:
         for part in &msg.parts {
             let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("text");
             match part_type {
-                "text" => {
+                "text" | "reasoning" => {
                     if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                         if !text.is_empty() {
                             content.push(ContentBlock::Text(text.to_string()));
                         }
                     }
                 }
-                "tool_use" => {
+                "tool_use" | "tool_call" | "tool" => {
                     let id = part
                         .get("id")
                         .and_then(|v| v.as_str())
@@ -7191,14 +8585,30 @@ MULTI-AGENT KEYS:
                         .to_string();
                     let name = part
                         .get("name")
+                        .or_else(|| part.get("tool"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("tool")
                         .to_string();
                     let args = part
                         .get("input")
+                        .or_else(|| part.get("args"))
                         .map(|v| v.to_string())
                         .unwrap_or_else(|| "{}".to_string());
                     content.push(ContentBlock::ToolCall(ToolCallInfo { id, name, args }));
+                    if let Some(result) = part.get("result") {
+                        let text = if let Some(s) = result.as_str() {
+                            s.to_string()
+                        } else {
+                            result.to_string()
+                        };
+                        if !text.is_empty() && text != "null" {
+                            content.push(ContentBlock::ToolResult(text));
+                        }
+                    } else if let Some(error) = part.get("error").and_then(|v| v.as_str()) {
+                        if !error.is_empty() {
+                            content.push(ContentBlock::ToolResult(error.to_string()));
+                        }
+                    }
                 }
                 "tool_result" => {
                     let text = part
@@ -7340,6 +8750,7 @@ MULTI-AGENT KEYS:
 
     async fn stop_engine_process(&mut self) {
         let Some(mut child) = self.engine_process.take() else {
+            self.engine_spawned_at = None;
             return;
         };
 
@@ -7360,13 +8771,17 @@ MULTI-AGENT KEYS:
                 .args(["-9", &pid.to_string()])
                 .output();
         }
+        self.engine_spawned_at = None;
     }
 
     pub async fn shutdown(&mut self) {
         self.release_engine_lease().await;
-        if Self::shared_engine_mode_enabled() {
-            // Shared mode: detach and let the engine continue serving other clients.
+        if Self::shared_engine_mode_enabled()
+            && self.engine_connection_source == EngineConnectionSource::SharedAttached
+        {
+            // Shared mode + attached engine: detach and leave ownership to the other client.
             let _ = self.engine_process.take();
+            self.engine_spawned_at = None;
             return;
         }
         self.stop_engine_process().await;

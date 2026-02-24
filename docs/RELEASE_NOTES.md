@@ -19,6 +19,13 @@
     - `session.get`
     - `session.list`
   - Improves bottleneck visibility for providerless and mixed endpoint soak analysis.
+- **Tandem TUI reliability + UX upgrade**:
+  - Upgraded TUI terminal stack to `ratatui 0.30` and `crossterm 0.29`, with local spinner rendering replacing third-party throbber dependency.
+  - Added safer Windows paste semantics using paste-token placeholders to avoid line-by-line replay/auto-submit failures on large clipboard input.
+  - Fixed plan-mode request/question handoff loops that could repeatedly trigger `409 session has active run` conflicts by queueing busy-run follow-ups safely.
+  - Improved question request handling (selection/confirm behavior) and added explicit confirmation output that shows submitted answers.
+  - Restored plan task-pane persistence when reopening historical sessions by broadening tool-call history parsing (`tool`, `tool_call`, `tool_use`).
+  - Added sessions-list delete shortcut (`d`/`Delete`) and `/agent fanout [n]` command for explicit multi-agent grid fanout (default 4).
 
 ---
 

@@ -14,6 +14,13 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Engine + diagnostics improvements
   - Added request latency instrumentation for key engine routes: `session.command`, `session.get`, and `session.list`.
   - Improved external benchmark-service compatibility by aligning `/api/v1` health/read routing expectations.
+- Tandem TUI reliability and workflow upgrade
+  - Upgraded TUI terminal stack to `ratatui 0.30` + `crossterm 0.29` and replaced third-party throbber usage with local spinner rendering.
+  - Added safer Windows paste handling with token placeholders to prevent line-by-line replay floods and accidental sends during large pastes.
+  - Fixed plan-mode request/question handoff loops that could repeatedly hit `409 session has active run` by queueing follow-up prompts safely when runs are busy.
+  - Improved request-center answer handling and visibility with clearer selection behavior and explicit "submitted answers" confirmation.
+  - Restored task-list persistence when reopening historical plan sessions by parsing all persisted tool-call variants (`tool`, `tool_call`, `tool_use`).
+  - Added sessions list deletion controls (`d`/`Delete`) and explicit `/agent fanout [n]` command to force multi-agent grid fanout (default 4).
 
 ## v0.3.18 (Unreleased)
 
