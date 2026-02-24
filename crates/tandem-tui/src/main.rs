@@ -25,7 +25,7 @@ mod paste_burst;
 mod ui;
 
 use app::{App, AppState};
-use paste_burst::{CharDecision, FlushResult, PasteBurst};
+use paste_burst::{FlushResult, PasteBurst};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SyncRenderMode {
@@ -356,17 +356,13 @@ async fn handle_paste_burst_key(
 
     if let KeyCode::Char(ch) = key.code {
         if !has_ctrl_or_alt(key.modifiers) && !ch.is_control() {
-            match paste_burst.on_plain_char(ch, now) {
-                CharDecision::BufferAppend
-                | CharDecision::BeginBuffer
-                | CharDecision::BeginBufferFromPending => {
-                    paste_burst.append_char_to_buffer(ch, now);
-                    return Ok(true);
-                }
-                CharDecision::RetainFirstChar => {
-                    return Ok(true);
-                }
+            // Keep normal typing lossless and immediate. We only tokenize explicit
+            // paste paths (Ctrl+V / Event::Paste) and avoid heuristic capture.
+            if let Some(pasted) = paste_burst.flush_before_modified_input() {
+                app.update(app::Action::PasteInput(pasted)).await?;
             }
+            paste_burst.clear_window_after_non_char();
+            return Ok(false);
         }
     }
 
