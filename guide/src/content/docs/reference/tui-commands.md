@@ -2,139 +2,670 @@
 title: TUI Commands
 ---
 
+This page explains what each Tandem TUI command does, when to use it, and the most common examples.
+
+Tip: type `/` in chat to open command autocomplete.
+
+## Command Syntax
+
+- `<required>` means you must provide a value.
+- `[optional]` means the value is optional.
+- For JSON arguments, use valid JSON (double quotes around keys/strings).
+
 ## Global Keybindings
 
-| Key      | Action                                              |
-| -------- | --------------------------------------------------- |
-| `Ctrl+C` | Cancel active agent (in chat) or Quit (press twice) |
-| `Ctrl+X` | Quit Tandem TUI                                     |
-| `Ctrl+N` | Start a **New Agent** session                       |
-| `Ctrl+W` | Close the **Active Agent**                          |
-| `Ctrl+U` | Page Up                                             |
-| `Ctrl+D` | Page Down                                           |
+These work from most TUI screens.
 
-## Main Menu
+| Key      | What it does                                                 |
+| -------- | ------------------------------------------------------------ |
+| `Ctrl+C` | In chat: cancel active run. Press again within 1.5s to quit. |
+| `Ctrl+X` | Quit Tandem TUI immediately.                                 |
+| `Ctrl+N` | Create a new agent pane in chat.                             |
+| `Ctrl+W` | Close active agent pane.                                     |
+| `Ctrl+U` | Page up in transcript/content.                               |
+| `Ctrl+D` | Page down in transcript/content.                             |
+| `Ctrl+Y` | Copy latest assistant response to clipboard.                 |
 
-| Key          | Action                 |
-| ------------ | ---------------------- |
-| `q`          | Quit                   |
-| `n`          | Create **New Session** |
-| `j` / `Down` | Next Session           |
-| `k` / `Up`   | Previous Session       |
-| `Enter`      | Select Session         |
+## Main Menu Keys (Sessions Screen)
 
-## Chat Mode
+| Key            | What it does             |
+| -------------- | ------------------------ |
+| `n`            | Create a new session.    |
+| `j` / `Down`   | Select next session.     |
+| `k` / `Up`     | Select previous session. |
+| `d` / `Delete` | Delete selected session. |
+| `Enter`        | Open selected session.   |
+| `q`            | Quit TUI.                |
 
-| Key                         | Action                        |
-| --------------------------- | ----------------------------- |
-| `Esc`                       | Initial "back" or dismiss     |
-| `Enter`                     | Submit command / Send message |
-| `Shift+Enter` / `Alt+Enter` | Insert Newline                |
-| `Tab`                       | Switch to Next Agent          |
-| `BackTab`                   | Switch to Previous Agent      |
-| `Alt+1..9`                  | Select Agent by Number        |
-| `Alt+M`                     | Cycle mode                    |
-| `Alt+G`                     | Toggle UI Mode                |
-| `Alt+R`                     | Open Request Center           |
-| `Alt+S`                     | Start Demo Stream (dev)       |
-| `Alt+B`                     | Spawn Background Demo (dev)   |
-| `[` / `]`                   | Navigate Grid Pages           |
-| `Up` / `Down`               | Scroll History                |
-| `F1`                        | Open help modal               |
-| `F2`                        | Open docs                     |
+## Chat Keys
+
+| Key                         | What it does                              |
+| --------------------------- | ----------------------------------------- |
+| `Enter`                     | Send current prompt.                      |
+| `Shift+Enter` / `Alt+Enter` | Insert newline in composer.               |
+| `Tab` / `Shift+Tab`         | Next/previous agent pane.                 |
+| `Alt+1..9`                  | Jump directly to agent `A1..A9`.          |
+| `Alt+M`                     | Cycle mode (`ask`, `plan`, `coder`, etc). |
+| `Alt+G`                     | Toggle Focus/Grid view.                   |
+| `[` / `]`                   | Previous/next grid page.                  |
+| `Alt+R`                     | Open Request Center.                      |
+| `Alt+I`                     | Queue steering interrupt message.         |
+| `F1`                        | Help modal.                               |
+| `F2`                        | Open docs.                                |
+
+## Request Center Keys
+
+When requests are pending:
+
+| Key                     | What it does                                                                             |
+| ----------------------- | ---------------------------------------------------------------------------------------- |
+| `Enter`                 | Confirm current request choice/answer.                                                   |
+| `r`                     | Reject current request.                                                                  |
+| `Esc`                   | Close request center.                                                                    |
+| `Space`                 | Toggle selected option (questions) or cycle permission choice.                           |
+| `Left` / `Right`        | Move choice cursor (question options or permission choice).                              |
+| `1..9`                  | Select option by number (when available).                                                |
+| `Up` / `Down`           | For question requests: move option cursor. For permission requests: move request cursor. |
+| `Ctrl+Up` / `Ctrl+Down` | Move previous/next request explicitly.                                                   |
+| `Ctrl+E`                | Expand/collapse compact request panel.                                                   |
 
 ## Slash Commands
 
-Type `/` in the chat input to see autocomplete.
+## Basics
 
-- **/help**: Show available commands
-- **/engine**: Check engine status / restart
-- **/sessions**: List all sessions
-- **/new**: Create new session
-- **/agent**: Manage in-chat agents
-- **/use**: Switch to session by ID
-- **/title**: Rename current session
-- **/prompt**: Send prompt to session
-- **/cancel**: Cancel current operation
-- **/last_error**: Show last prompt/system error
-- **/messages**: Show message history
-- **/modes**: List available modes
-- **/mode**: Set or show current mode
-- **/providers**: List available providers
-- **/provider**: Set current provider
-- **/models**: List models for provider
-- **/model**: Set current model
-- **/keys**: Show configured API keys
-- **/key**: Manage provider API keys
-- **/approve**: Approve a pending request
-- **/deny**: Deny a pending request
-- **/answer**: Answer a question (from a tool)
-- **/requests**: Open pending request center
-- **/routines**: List scheduled routines
-- **/routine_create**: Create interval routine
-- **/routine_edit**: Edit routine interval
-- **/routine_pause**: Pause a routine
-- **/routine_resume**: Resume a routine
-- **/routine_run_now**: Trigger a routine now
-- **/routine_delete**: Delete a routine
-- **/routine_history**: Show routine execution history
-- **/missions**: List engine missions
-- **/mission_create**: Create an engine mission
-- **/mission_get**: Get mission details
-- **/mission_event**: Apply mission event JSON
-- **/mission_start**: Apply mission started event
-- **/mission_review_ok**: Approve review gate
-- **/mission_test_ok**: Approve test gate
-- **/mission_review_no**: Deny review gate
-- **/config**: Show configuration
+### `/help`
 
-## Practical TUI Flows
-
-### Set Provider and Model
+Show built-in command help.
 
 ```text
-/providers
-/provider openrouter
-/models
-/model openai/gpt-4o-mini
+/help
 ```
 
-### Fast Session Management
+### `/engine status`
+
+Show engine health, version, mode, endpoint, and connection source.
+
+```text
+/engine status
+```
+
+### `/engine restart`
+
+Restart the engine process and reconnect.
+
+```text
+/engine restart
+```
+
+### `/engine token` and `/engine token show`
+
+Show masked engine token or full token.
+
+```text
+/engine token
+/engine token show
+```
+
+## Sessions and Chat
+
+### `/sessions`
+
+List available sessions with IDs.
+
+```text
+/sessions
+```
+
+### `/new [title...]`
+
+Create a new session. If title is omitted, default title is used.
 
 ```text
 /new
-/title Engine API smoke test
-/sessions
-/use <session-id>
+/new Release prep
 ```
 
-### Handle Pending Requests
+### `/use <session_id>`
+
+Switch current chat to an existing session.
+
+```text
+/use 1aa70178-...
+```
+
+### `/title <new title...>`
+
+Rename current session.
+
+```text
+/title Plan for March launch
+```
+
+### `/prompt <text...>`
+
+Send text to current session (same as typing normally, but explicit).
+
+```text
+/prompt Summarize this repository architecture.
+```
+
+### `/messages [limit]`
+
+Show historical messages from current session.
+
+```text
+/messages
+/messages 30
+```
+
+### `/cancel`
+
+Cancel active run in current session.
+
+```text
+/cancel
+```
+
+### `/last_error`
+
+Show most recent prompt/system error for current session.
+
+```text
+/last_error
+```
+
+### `/copy`
+
+Copy latest assistant response to clipboard.
+
+```text
+/copy
+```
+
+## Agent Commands
+
+### `/agent new`
+
+Create additional agent pane (multi-agent chat view).
+
+```text
+/agent new
+```
+
+### `/agent list`
+
+List agent panes, status, and bound session IDs.
+
+```text
+/agent list
+```
+
+### `/agent use <A#>`
+
+Switch active agent pane.
+
+```text
+/agent use A2
+```
+
+### `/agent close`
+
+Close active agent pane.
+
+```text
+/agent close
+```
+
+### `/agent fanout [n]`
+
+Ensure `n` agents exist and switch to Grid view. Default is `4`.
+
+```text
+/agent fanout
+/agent fanout 4
+/agent fanout 6
+```
+
+## Modes
+
+### `/modes`
+
+List available modes.
+
+```text
+/modes
+```
+
+### `/mode`
+
+Show current mode.
+
+```text
+/mode
+```
+
+### `/mode <name>`
+
+Set mode (`ask`, `plan`, `coder`, `explore`, `immediate`, `orchestrate`).
+
+```text
+/mode plan
+/mode coder
+```
+
+## Providers and Models
+
+### `/providers`
+
+List providers known by engine and whether configured.
+
+```text
+/providers
+```
+
+### `/provider <id>`
+
+Set active provider for new requests.
+
+```text
+/provider openrouter
+```
+
+### `/models [provider]`
+
+List models for active or specified provider.
+
+```text
+/models
+/models openrouter
+```
+
+### `/model <model_id>`
+
+Set active model.
+
+```text
+/model z-ai/glm-5
+```
+
+## Keys and Credentials
+
+### `/keys`
+
+Show configured provider auth/key status.
+
+```text
+/keys
+```
+
+### `/key set <provider> <api_key>`
+
+Set provider key.
+
+```text
+/key set openrouter sk-or-...
+```
+
+### `/key remove <provider>`
+
+Remove stored provider key.
+
+```text
+/key remove openrouter
+```
+
+### `/key test <provider>`
+
+Test connectivity for a provider.
+
+```text
+/key test openrouter
+```
+
+## Request Approval and Questions
+
+### `/requests`
+
+Open request center for pending permission/question requests.
 
 ```text
 /requests
-/approve <request-id>
-/deny <request-id>
-/answer <question-id> "continue"
 ```
 
-### Mission Workflow
+### `/approve <request_id> [always]`
+
+Approve tool permission request once or persistently.
 
 ```text
-/missions
-/mission_create {"title":"Release prep","goal":"Ship v0.3.0","work_items":[{"title":"Finalize docs"}]}
-/mission_get <mission-id>
-/mission_start <mission-id> <work-item-id> run-demo-1
-/mission_review_ok <mission-id> <work-item-id>
-/mission_test_ok <mission-id> <work-item-id>
+/approve req_123
+/approve req_123 always
 ```
 
-### Routine Workflow
+### `/approve all`
+
+Approve all pending requests in current session.
+
+```text
+/approve all
+```
+
+### `/deny <request_id>`
+
+Deny a permission request.
+
+```text
+/deny req_123
+```
+
+### `/answer <question_id> <reply>`
+
+Send freeform answer text to a question request.
+
+```text
+/answer q_456 Proceed with option 2.
+```
+
+## Tools and Queue Control
+
+### `/tool <name> <json_args>`
+
+Pass-through tool call directly to engine.
+
+```text
+/tool webfetch {"url":"https://tandem.ai","return":"text"}
+```
+
+### `/steer <message>`
+
+Queue steering message to redirect active run.
+
+```text
+/steer Focus only on tests that currently fail.
+```
+
+### `/followup <message>`
+
+Queue follow-up message after active run completes.
+
+```text
+/followup Next, generate a rollout checklist.
+```
+
+### `/queue`
+
+Show steering/follow-up queue state.
+
+```text
+/queue
+```
+
+### `/queue clear`
+
+Clear queued steering and follow-up messages.
+
+```text
+/queue clear
+```
+
+## Task Commands (Local Task List Panel)
+
+### `/task add <description...>`
+
+Add local task item.
+
+```text
+/task add write smoke tests for auth flow
+```
+
+### `/task done <id>` `/task fail <id>` `/task work <id>` `/task pending <id>`
+
+Update task status.
+
+```text
+/task work task-3
+/task done task-3
+```
+
+### `/task pin <id>`
+
+Pin/unpin task in list.
+
+```text
+/task pin task-2
+```
+
+### `/task list`
+
+List current tasks and statuses.
+
+```text
+/task list
+```
+
+## Routines
+
+### `/routines`
+
+List routines.
 
 ```text
 /routines
-/routine_create {"routine_id":"nightly-summary","name":"Nightly Summary","schedule":{"interval_seconds":{"seconds":86400}},"entrypoint":"mission.default"}
-/routine_run_now nightly-summary
-/routine_history nightly-summary
+```
+
+### `/routine_create <id> <interval_seconds> <entrypoint>`
+
+Create interval routine.
+
+```text
+/routine_create nightly-summary 86400 mission.default
+```
+
+### `/routine_edit <id> <interval_seconds>`
+
+Update routine schedule.
+
+```text
+/routine_edit nightly-summary 43200
+```
+
+### `/routine_pause <id>` `/routine_resume <id>`
+
+Pause/resume routine execution.
+
+```text
 /routine_pause nightly-summary
 /routine_resume nightly-summary
+```
+
+### `/routine_run_now <id> [count]`
+
+Trigger routine immediately.
+
+```text
+/routine_run_now nightly-summary
+/routine_run_now nightly-summary 3
+```
+
+### `/routine_delete <id>`
+
+Delete routine.
+
+```text
+/routine_delete nightly-summary
+```
+
+### `/routine_history <id> [limit]`
+
+Show routine run history.
+
+```text
+/routine_history nightly-summary
+/routine_history nightly-summary 20
+```
+
+## Missions
+
+### `/missions`
+
+List missions.
+
+```text
+/missions
+```
+
+### `/mission_create <title> :: <goal> [:: work_item_title]`
+
+Create mission quickly from inline text.
+
+```text
+/mission_create Release prep :: Ship v0.3.20 safely :: Final QA pass
+```
+
+### `/mission_get <mission_id>`
+
+Show mission details.
+
+```text
+/mission_get mission_abc
+```
+
+### `/mission_event <mission_id> <event_json>`
+
+Apply raw mission event JSON.
+
+```text
+/mission_event mission_abc {"type":"mission_started"}
+```
+
+### `/mission_start <mission_id>`
+
+Shortcut mission started event.
+
+```text
+/mission_start mission_abc
+```
+
+### `/mission_review_ok <mission_id> <work_item_id> [approval_id]`
+
+Approve review gate.
+
+```text
+/mission_review_ok mission_abc work_1
+```
+
+### `/mission_test_ok <mission_id> <work_item_id> [approval_id]`
+
+Approve test gate.
+
+```text
+/mission_test_ok mission_abc work_1
+```
+
+### `/mission_review_no <mission_id> <work_item_id> [reason]`
+
+Deny review gate with optional reason.
+
+```text
+/mission_review_no mission_abc work_1 "needs docs updates"
+```
+
+## Agent-Team (Orchestration)
+
+### `/agent-team`
+
+Show agent-team dashboard summary.
+
+```text
+/agent-team
+```
+
+### `/agent-team missions`
+
+List mission rollups for agent-team subsystem.
+
+```text
+/agent-team missions
+```
+
+### `/agent-team instances [mission_id]`
+
+List running instances, optionally scoped to one mission.
+
+```text
+/agent-team instances
+/agent-team instances mission_abc
+```
+
+### `/agent-team approvals`
+
+List pending agent-team approvals.
+
+```text
+/agent-team approvals
+```
+
+### `/agent-team approve spawn <approval_id> [reason]`
+
+Approve spawn approval request.
+
+```text
+/agent-team approve spawn appr_123
+```
+
+### `/agent-team deny spawn <approval_id> [reason]`
+
+Deny spawn approval request.
+
+```text
+/agent-team deny spawn appr_123 "resource limit"
+```
+
+### `/agent-team approve tool <request_id>`
+
+Approve tool permission request from agent-team run.
+
+```text
+/agent-team approve tool req_987
+```
+
+### `/agent-team deny tool <request_id>`
+
+Deny tool permission request from agent-team run.
+
+```text
+/agent-team deny tool req_987
+```
+
+## Config
+
+### `/config`
+
+Print current engine/TUI config snapshot.
+
+```text
+/config
+```
+
+## Practical Workflows
+
+### Start a clean Plan-mode session
+
+```text
+/new plan website migration
+/mode plan
+/provider openrouter
+/model z-ai/glm-5
+```
+
+### Force 4-agent execution layout
+
+```text
+/agent fanout 4
+```
+
+### Resolve pending requests quickly
+
+```text
+/requests
+/approve all
 ```

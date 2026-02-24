@@ -6,8 +6,14 @@ const [owner, repo] = (process.env.GITHUB_REPOSITORY ?? "frumu-ai/tandem").split
 const isCi = process.env.GITHUB_ACTIONS === "true"
 const explicitSite = process.env.DOCS_SITE_URL
 const explicitBase = process.env.DOCS_BASE_PATH
-const site = explicitSite ?? (isCi ? `https://${owner}.github.io/${repo}/` : "http://localhost:4321")
-const base = explicitBase ?? (isCi && !explicitSite ? `/${repo}/` : "/")
+const normalizeSite = (value) => (value ? (value.endsWith("/") ? value : `${value}/`) : value)
+const normalizeBase = (value) => {
+  if (!value || value === "/") return "/"
+  const withLeading = value.startsWith("/") ? value : `/${value}`
+  return withLeading.endsWith("/") ? withLeading : `${withLeading}/`
+}
+const site = normalizeSite(explicitSite ?? (isCi ? `https://${owner}.github.io/${repo}/` : "http://localhost:4321"))
+const base = normalizeBase(explicitBase ?? (isCi && !explicitSite ? `/${repo}/` : "/"))
 
 export default defineConfig({
   site,
