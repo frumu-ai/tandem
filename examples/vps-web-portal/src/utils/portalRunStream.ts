@@ -46,6 +46,7 @@ export const attachPortalRunStream = (
   const reconnectBaseDelayMs = Math.max(500, options?.reconnectBaseDelayMs ?? 1200);
   let reconnectAttempts = 0;
   let reconnectTimer: number | null = null;
+  let runTimeout: number | null = null;
 
   const hydrateFinalAssistantText = async () => {
     try {
@@ -104,6 +105,7 @@ export const attachPortalRunStream = (
     window.clearTimeout(watchdog);
     if (runTimeout) {
       window.clearTimeout(runTimeout);
+      runTimeout = null;
     }
     window.clearInterval(runStatePoll);
     void (async () => {
@@ -164,6 +166,30 @@ export const attachPortalRunStream = (
     }, delay);
   };
 
+  const resetRunTimeout = () => {
+    if (typeof runTimeoutMs !== "number" || runTimeoutMs <= 0 || finalized) return;
+    if (runTimeout) {
+      window.clearTimeout(runTimeout);
+    }
+    runTimeout = window.setTimeout(async () => {
+      if (finalized) return;
+      try {
+        const runState = await api.getActiveRun(sessionId);
+        if (runState?.active) {
+          handlers.addSystemLog(
+            `Run exceeded ${runTimeoutMs}ms but is still active. Extending timeout window.`
+          );
+          resetRunTimeout();
+          return;
+        }
+      } catch {
+        // If active run check fails, fall through to timeout finalize.
+      }
+      handlers.addSystemLog(`Run timeout reached (${runTimeoutMs}ms).`);
+      finalize("timeout");
+    }, runTimeoutMs);
+  };
+
   const watchdog = window.setTimeout(async () => {
     if (finalized || sawRunEvent) return;
     try {
@@ -183,13 +209,7 @@ export const attachPortalRunStream = (
     }
   }, 4000);
 
-  const runTimeout =
-    typeof runTimeoutMs === "number" && runTimeoutMs > 0
-      ? window.setTimeout(() => {
-          handlers.addSystemLog(`Run timeout reached (${runTimeoutMs}ms).`);
-          finalize("timeout");
-        }, runTimeoutMs)
-      : null;
+  resetRunTimeout();
 
   const runStatePoll = window.setInterval(async () => {
     if (finalized) return;
@@ -208,6 +228,7 @@ export const attachPortalRunStream = (
 
   const handleMessage = (evt: MessageEvent<string>) => {
     try {
+      resetRunTimeout();
       const data = JSON.parse(evt.data);
       if (data.type !== "server.connected" && data.type !== "engine.lifecycle.ready") {
         sawRunEvent = true;
@@ -339,6 +360,7 @@ export const attachPortalRunStream = (
 
     currentSource.onopen = () => {
       reconnectAttempts = 0;
+      resetRunTimeout();
     };
     currentSource.onmessage = handleMessage;
     currentSource.onerror = () => {

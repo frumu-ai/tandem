@@ -7272,6 +7272,7 @@ version = "0.3.20"
 dependencies = [
  "anyhow",
  "async-trait",
+ "dirs 5.0.1",
  "futures-util",
  "glob",
  "html2md",

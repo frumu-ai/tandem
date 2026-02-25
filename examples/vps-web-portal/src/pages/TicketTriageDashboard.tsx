@@ -21,7 +21,7 @@ export const TicketTriageDashboard: React.FC = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const logsEndRef = useRef<HTMLDivElement>(null);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const syncSessionHistoryIntoLogs = async (sessionId: string) => {
@@ -68,7 +68,8 @@ export const TicketTriageDashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!logsContainerRef.current) return;
+    logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
   }, [logs]);
 
   const attachRunStream = (sessionId: string, runId: string) => {
@@ -296,7 +297,7 @@ Use your tools to achieve this.`;
               </span>
             )}
           </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div ref={logsContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
             {logs.length === 0 && (
               <div className="text-gray-600 text-center mt-10 italic">
                 Awaiting incoming tickets...
@@ -342,7 +343,6 @@ Use your tools to achieve this.`;
                 </div>
               </div>
             ))}
-            <div ref={logsEndRef} />
           </div>
         </div>
       </div>

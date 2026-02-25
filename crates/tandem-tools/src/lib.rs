@@ -3580,6 +3580,15 @@ fn resolve_memory_db_path(args: &Value) -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
+    if let Ok(state_dir) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = state_dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("memory.sqlite");
+        }
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        return data_dir.join("tandem").join("memory.sqlite");
+    }
     PathBuf::from("memory.sqlite")
 }
 

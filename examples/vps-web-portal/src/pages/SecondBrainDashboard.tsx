@@ -38,8 +38,16 @@ interface PendingApproval {
 }
 
 const SECOND_BRAIN_SESSION_KEY = "tandem_portal_second_brain_session_id";
-const SECOND_BRAIN_PRIME_MARKER = "[SECOND_BRAIN_PRIMED_V1]";
-const RUN_TIMEOUT_MS = 45000;
+const SECOND_BRAIN_PRIME_MARKER = "[SECOND_BRAIN_PRIMED_V2]";
+const RUN_TIMEOUT_MS = 180000;
+
+const deriveProjectId = (workspacePath: string): string => {
+  const clean = String(workspacePath || "")
+    .trim()
+    .replace(/[/\\]+$/, "");
+  const base = clean.split(/[/\\]/).filter(Boolean).pop() || "workspace";
+  return base.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+};
 
 const buildChatEvents = (
   messages: Awaited<ReturnType<typeof api.getSessionMessages>>
@@ -80,14 +88,29 @@ export const SecondBrainDashboard: React.FC = () => {
   const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
   const [mobileTraceOpen, setMobileTraceOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const desktopTraceRef = useRef<HTMLDivElement>(null);
+  const mobileTraceRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const lastUserPromptRef = useRef<string | null>(null);
   const canAutoRetryAfterApprovalRef = useRef(false);
   const autoRetriedPromptRef = useRef<string | null>(null);
+  const hasBashTool = availableTools.includes("bash");
+  const hasSqliteTool = availableTools.some((tool) =>
+    /(^|[._-])sqlite([._-]|$)|(^|[._-])sql([._-]|$)/i.test(tool)
+  );
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isThinking]);
+
+  useEffect(() => {
+    if (desktopTraceRef.current) {
+      desktopTraceRef.current.scrollTop = desktopTraceRef.current.scrollHeight;
+    }
+    if (mobileTraceRef.current) {
+      mobileTraceRef.current.scrollTop = mobileTraceRef.current.scrollHeight;
+    }
+  }, [runtimeTrace, mobileTraceOpen]);
 
   const addTrace = (content: string) => {
     setRuntimeTrace((prev) => {
@@ -99,8 +122,8 @@ export const SecondBrainDashboard: React.FC = () => {
     });
   };
 
-  const renderTraceEntries = () => (
-    <div className="px-3 py-2 max-h-24 overflow-y-auto space-y-1">
+  const renderTraceEntries = (containerRef?: React.RefObject<HTMLDivElement | null>) => (
+    <div ref={containerRef} className="px-3 py-2 max-h-24 overflow-y-auto space-y-1">
       {runtimeTrace.length === 0 ? (
         <p className="text-[11px] text-gray-600">No runtime events yet.</p>
       ) : (
@@ -114,17 +137,20 @@ export const SecondBrainDashboard: React.FC = () => {
     </div>
   );
 
-  const buildSecondBrainPrimePrompt = (workspacePath: string): string =>
+  const buildSecondBrainPrimePrompt = (workspacePath: string, sid: string): string =>
     `${SECOND_BRAIN_PRIME_MARKER}
 You are a Second Brain AI assistant with live tool access.
 Current workspace root: ${workspacePath}
+Current session id: ${sid}
+Project id for memory tools: ${deriveProjectId(workspacePath)}
 
 Operational rules:
 1. Never claim sandbox/permission restrictions unless a tool returns an explicit denial/error.
 2. For questions about files, folders, or current directory, run a tool first (for example bash with "pwd", or list/glob/read) and report the actual result.
 3. If a tool fails, include the exact failure message and suggest the next concrete step.
-4. When users ask you to learn a folder, use memory_store to index local files and output summary stats to 'out/index_stats.json'.
-5. When answering questions, write detailed output to 'out/answers.md' and cite file paths in your chat reply.`;
+4. For memory tools (memory_store, memory_search, memory_list), always include session_id="${sid}" and project_id="${deriveProjectId(workspacePath)}" unless the user explicitly asks for another scope.
+5. When users ask you to learn a folder, use memory_store to index local files and output summary stats to 'out/index_stats.json'.
+6. When answering questions, write detailed output to 'out/answers.md' and cite file paths in your chat reply.`;
 
   const ensureSecondBrainPrimed = async (sid: string, workspacePath: string) => {
     try {
@@ -138,7 +164,7 @@ Operational rules:
         )
       );
       if (alreadyPrimed) return;
-      await api.sendMessage(sid, buildSecondBrainPrimePrompt(workspacePath));
+      await api.sendMessage(sid, buildSecondBrainPrimePrompt(workspacePath, sid));
       addTrace(`Applied Second Brain priming for ${sid.substring(0, 8)}.`);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -525,8 +551,9 @@ Operational rules:
             id: "welcome",
             role: "agent",
             type: "text",
-            content:
-              "Hello! I am connected to the local headless engine. I can use MCP tools to browse files, run commands, or interact with databases. What would you like to explore?",
+            content: hasSqliteTool
+              ? "Hello! I am connected to the local headless engine. I can use tools to browse files, run commands, query sqlite, and use memory. What would you like to explore?"
+              : "Hello! I am connected to the local headless engine. I can use tools to browse files, run commands, and use memory. Connect an MCP sqlite tool if you want database queries.",
           },
         ]);
       } catch (err) {
@@ -618,7 +645,9 @@ Operational rules:
           id: "welcome",
           role: "agent",
           type: "text",
-          content: "Session reset. Ask me to inspect files, git, or sqlite on this server.",
+          content: hasSqliteTool
+            ? "Session reset. Ask me to inspect files, git, sqlite, or memory on this server."
+            : "Session reset. Ask me to inspect files, git, or memory on this server.",
         },
       ]);
     } catch (err) {
@@ -676,10 +705,12 @@ Operational rules:
               <FileCode2 className="inline mr-1" size={14} /> Local Files Access
             </span>
             <span>
-              <Database className="inline mr-1" size={14} /> SQLite Queries
+              <Database className="inline mr-1" size={14} />{" "}
+              {hasSqliteTool ? "SQLite Queries" : "SQLite (connect MCP tool)"}
             </span>
             <span>
-              <FolderGit2 className="inline mr-1" size={14} /> Git Sync
+              <FolderGit2 className="inline mr-1" size={14} />{" "}
+              {hasBashTool ? "Git via Bash" : "Git tool unavailable"}
             </span>
           </p>
           <p className="text-gray-500 mt-2 text-xs">
@@ -716,7 +747,7 @@ Operational rules:
                 </button>
               </div>
             </div>
-            {renderTraceEntries()}
+            {renderTraceEntries(desktopTraceRef)}
           </div>
         </div>
 
@@ -896,7 +927,7 @@ Operational rules:
                     </button>
                   </div>
                 </div>
-                {renderTraceEntries()}
+                {renderTraceEntries(mobileTraceRef)}
               </div>
             </div>
           </div>

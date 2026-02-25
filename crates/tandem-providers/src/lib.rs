@@ -14,6 +14,14 @@ use tokio_util::sync::CancellationToken;
 
 use tandem_types::{ModelInfo, ProviderInfo, ToolSchema};
 
+fn provider_max_tokens() -> u32 {
+    std::env::var("TANDEM_PROVIDER_MAX_TOKENS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .filter(|value| *value >= 64)
+        .unwrap_or(2048)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfig {
     pub api_key: Option<String>,
@@ -626,11 +634,13 @@ impl Provider for OpenAICompatibleProvider {
         let url = format!("{}/chat/completions", self.base_url);
         let mut response_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
+        let max_tokens = provider_max_tokens();
         for attempt in 0..3 {
             let mut req = self.client.post(url.clone()).json(&json!({
                 "model": model,
                 "messages": [{"role":"user","content": prompt}],
                 "stream": false,
+                "max_tokens": max_tokens,
             }));
             if self.id == "openrouter" {
                 req = req
@@ -739,6 +749,7 @@ impl Provider for OpenAICompatibleProvider {
             "model": model,
             "messages": wire_messages,
             "stream": true,
+            "max_tokens": provider_max_tokens(),
         });
         if !wire_tools.is_empty() {
             body["tools"] = serde_json::Value::Array(wire_tools);
@@ -860,16 +871,41 @@ impl Provider for OpenAICompatibleProvider {
                             .unwrap_or_default();
                         for choice in choices {
                             let delta = choice.get("delta").cloned().unwrap_or_default();
+                            let message = choice.get("message").cloned().unwrap_or_default();
 
+                            let mut emitted_text = false;
                             if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
                                 if !text.is_empty() {
+                                    emitted_text = true;
                                     yield StreamChunk::TextDelta(text.to_string());
                                 }
                             }
+                            if !emitted_text {
+                                if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
+                                    if !text.is_empty() {
+                                        yield StreamChunk::TextDelta(text.to_string());
+                                    }
+                                } else if let Some(parts) =
+                                    message.get("content").and_then(|v| v.as_array())
+                                {
+                                    for part in parts {
+                                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                                            if !text.is_empty() {
+                                                yield StreamChunk::TextDelta(text.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
 
-                            if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
-                                for call in tool_calls {
-                                    let id = call
+                            let tool_calls = delta
+                                .get("tool_calls")
+                                .and_then(|v| v.as_array())
+                                .or_else(|| message.get("tool_calls").and_then(|v| v.as_array()));
+
+                            if let Some(tool_calls) = tool_calls {
+                                for (idx, call) in tool_calls.iter().enumerate() {
+                                    let mut id = call
                                         .get("id")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or_default()
@@ -883,8 +919,17 @@ impl Provider for OpenAICompatibleProvider {
                                     let args_delta = function
                                         .get("arguments")
                                         .and_then(|v| v.as_str())
-                                        .unwrap_or_default()
-                                        .to_string();
+                                        .map(ToString::to_string)
+                                        .or_else(|| {
+                                            function
+                                                .get("arguments")
+                                                .and_then(|v| (!v.is_null()).then(|| v.to_string()))
+                                        })
+                                        .unwrap_or_default();
+
+                                    if id.is_empty() && !name.is_empty() {
+                                        id = format!("tool_call_{}_{}", idx, name);
+                                    }
 
                                     if !id.is_empty() && !name.is_empty() {
                                         yield StreamChunk::ToolCallStart {

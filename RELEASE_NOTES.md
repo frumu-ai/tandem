@@ -9,6 +9,9 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Fixed multiline composer height calculation so explicit newlines grow input height correctly (prevents second-line overlap/cropping).
   - Agent fanout now auto-switches mode from `plan` to `orchestrate` before team delegation to avoid plan-mode approval/clarification blockers.
   - Expanded agent-team fanout integration: coordinated `TeamCreate` + delegated `task` routing, local mailbox/session binding, and teammate alias normalization (`A2`/`a2`/`agent-2`).
+- Provider/tool runtime hotfixes for OpenRouter/OpenAI-compatible flows
+  - Fixed streaming parser compatibility for providers that emit content/tool calls in `choices[].message` (instead of only `choices[].delta`), eliminating empty assistant replies and missed tool execution in affected sessions.
+  - Added explicit default `max_tokens` cap (`2048`, env-overridable via `TANDEM_PROVIDER_MAX_TOKENS`) on OpenAI-compatible requests to prevent accidental high-budget sends (for example `65536`) that can cause 402 Payment Required failures during simple tool prompts.
 
 ## v0.3.19
 

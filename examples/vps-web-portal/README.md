@@ -122,6 +122,7 @@ Create `/etc/tandem/engine.env`:
 sudo mkdir -p /etc/tandem
 TANDEM_API_TOKEN=your-generated-tandem-token-here
 TANDEM_STATE_DIR=/srv/tandem
+TANDEM_MEMORY_DB_PATH=/srv/tandem/memory.sqlite
 ```
 
 For persistent provider keys (recommended on VPS), use the template in this folder:

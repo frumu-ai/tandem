@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **TUI small-paste readability and composer rendering**: Small pastes (1-2 lines) now insert directly without `[Pasted ...]` tokens, CRLF is normalized, and composer height now expands correctly for explicit newlines (fixes overlapped/cropped second-line input rendering).
+- **OpenAI-compatible stream parsing robustness (OpenRouter, tool flows)**: Provider streaming now accepts both `choices[].delta` and `choices[].message` payload shapes for text and tool-call fields, preventing empty assistant replies and missed tool execution when providers return non-delta message chunks.
+- **Provider token-budget safety default**: OpenAI-compatible provider requests now set an explicit bounded `max_tokens` default (`2048`, overridable via `TANDEM_PROVIDER_MAX_TOKENS`) to prevent accidental large-budget requests (for example `65536`) that trigger 402 credit failures on simple prompts/tool invocations.
 
 ## [0.3.19]
 

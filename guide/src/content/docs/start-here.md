@@ -8,6 +8,9 @@ Choose the path that matches how you want to use Tandem in terminal and engine w
 
 Use this if you want `tandem-engine` and `tandem-tui` from the terminal.
 
+- npm packages:
+  - `@frumu/tandem` (engine)
+  - `@frumu/tandem-tui` (TUI)
 - Install: [Install CLI Binaries](./install-cli-binaries/)
 - Then: [First Run Checklist](./first-run/)
 
