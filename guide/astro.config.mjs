@@ -12,8 +12,22 @@ const normalizeBase = (value) => {
   const withLeading = value.startsWith("/") ? value : `/${value}`
   return withLeading.endsWith("/") ? withLeading : `${withLeading}/`
 }
-const site = normalizeSite(explicitSite ?? (isCi ? `https://${owner}.github.io/${repo}/` : "http://localhost:4321"))
-const base = normalizeBase(explicitBase ?? (isCi && !explicitSite ? `/${repo}/` : "/"))
+const splitSiteAndBase = (value) => {
+  if (!value) return { site: undefined, base: undefined }
+  try {
+    const parsed = new URL(value)
+    const pathname = normalizeBase(parsed.pathname)
+    return {
+      site: `${parsed.origin}/`,
+      base: pathname === "/" ? undefined : pathname,
+    }
+  } catch {
+    return { site: normalizeSite(value), base: undefined }
+  }
+}
+const explicit = splitSiteAndBase(explicitSite)
+const site = normalizeSite(explicit.site ?? (isCi ? `https://${owner}.github.io/${repo}/` : "http://localhost:4321"))
+const base = normalizeBase(explicitBase ?? explicit.base ?? (isCi && !explicitSite ? `/${repo}/` : "/"))
 
 export default defineConfig({
   site,
