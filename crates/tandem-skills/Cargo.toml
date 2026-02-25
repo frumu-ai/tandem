@@ -1,6 +1,6 @@
 [package]
 name = "tandem-skills"
-version = "0.3.19"
+version = "0.3.20"
 description = "Skill packaging and discovery for Tandem"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"

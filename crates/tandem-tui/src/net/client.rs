@@ -166,6 +166,16 @@ pub struct StreamToolDelta {
     pub args_preview: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamAgentTeamEvent {
+    pub event_type: String,
+    pub team_name: Option<String>,
+    pub recipient: Option<String>,
+    pub message_type: Option<String>,
+    pub request_id: Option<String>,
+    pub message_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct PromptRunResult {
     pub messages: Vec<WireSessionMessage>,
@@ -1528,6 +1538,43 @@ pub fn extract_stream_request(payload: &serde_json::Value) -> Option<StreamReque
     }
 }
 
+pub fn extract_stream_agent_team_event(
+    payload: &serde_json::Value,
+) -> Option<StreamAgentTeamEvent> {
+    let event_type = payload.get("type").and_then(|v| v.as_str())?;
+    if !event_type.starts_with("agent_team.") {
+        return None;
+    }
+    let properties = payload.get("properties")?;
+    Some(StreamAgentTeamEvent {
+        event_type: event_type.to_string(),
+        team_name: properties
+            .get("teamName")
+            .or_else(|| properties.get("team_name"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        recipient: properties
+            .get("recipient")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        message_type: properties
+            .get("messageType")
+            .or_else(|| properties.get("message_type"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        request_id: properties
+            .get("requestId")
+            .or_else(|| properties.get("request_id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        message_id: properties
+            .get("messageID")
+            .or_else(|| properties.get("message_id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    })
+}
+
 pub fn extract_stream_todo_update(
     payload: &serde_json::Value,
 ) -> Option<(String, Vec<serde_json::Value>)> {
@@ -1890,5 +1937,24 @@ mod tests {
             }
         });
         assert!(extract_stream_tool_delta(&payload).is_none());
+    }
+
+    #[test]
+    fn extract_stream_agent_team_event_reads_mailbox_properties() {
+        let payload = serde_json::json!({
+            "type": "agent_team.mailbox.enqueued",
+            "properties": {
+                "teamName": "alpha",
+                "recipient": "A2",
+                "messageType": "task_prompt",
+                "messageID": "m-1"
+            }
+        });
+        let event = extract_stream_agent_team_event(&payload).expect("agent-team event");
+        assert_eq!(event.event_type, "agent_team.mailbox.enqueued");
+        assert_eq!(event.team_name.as_deref(), Some("alpha"));
+        assert_eq!(event.recipient.as_deref(), Some("A2"));
+        assert_eq!(event.message_type.as_deref(), Some("task_prompt"));
+        assert_eq!(event.message_id.as_deref(), Some("m-1"));
     }
 }

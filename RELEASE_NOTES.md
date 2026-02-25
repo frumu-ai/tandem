@@ -2,7 +2,15 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.3.19 (Unreleased)
+## v0.3.20 (Unreleased)
+
+- Tandem TUI reliability and workflow upgrade
+  - Small pastes (1-2 lines) now insert directly without `[Pasted ...]` markers; CRLF paste payloads are normalized to prevent line-overlap rendering issues.
+  - Fixed multiline composer height calculation so explicit newlines grow input height correctly (prevents second-line overlap/cropping).
+  - Agent fanout now auto-switches mode from `plan` to `orchestrate` before team delegation to avoid plan-mode approval/clarification blockers.
+  - Expanded agent-team fanout integration: coordinated `TeamCreate` + delegated `task` routing, local mailbox/session binding, and teammate alias normalization (`A2`/`a2`/`agent-2`).
+
+## v0.3.19
 
 - Stress benchmark parity + reliability upgrade
   - Server-side VPS Stress Lab scenarios (`remote`, `file`, `inline`) now measure true end-to-end async run completion (provider/tool included), not fast submit-path timing.
@@ -22,14 +30,14 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Restored task-list persistence when reopening historical plan sessions by parsing all persisted tool-call variants (`tool`, `tool_call`, `tool_use`).
   - Added sessions list deletion controls (`d`/`Delete`) and explicit `/agent fanout [n]` command to force multi-agent grid fanout (default 4).
 
-## v0.3.18 (Unreleased)
+## v0.3.18
 
 - Provider model selection hotfix (OpenRouter/API-key env interactions)
   - Fixed env-layer provider bootstrap so setting `OPENROUTER_API_KEY` no longer hard-overrides OpenRouter default model to `openai/gpt-4o-mini`.
   - Preserves configured model choices (for example `z-ai/glm-5`) across engine restarts in VPS/web setups.
   - Model override from env is now explicit-only: applied only when a model env var is set, not just because an API key exists.
 
-## v0.3.17 (Unreleased)
+## v0.3.17
 
 - Channel reliability and permission bootstrap
   - Channel-created sessions now include practical default permission rules to avoid hidden permission deadlocks.
@@ -40,7 +48,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Added global pending-approval visibility/action and clearer “no pending” messaging.
   - Web examples now prefer session-level SSE attach plus clearer watchdog trace events to reduce “connected/ready with no deltas” confusion.
 
-## v0.3.16 (Unreleased)
+## v0.3.16
 
 - AI hotfix: What's New release-note alignment
   - The What's New overlay now fetches release notes by installed app tag from GitHub at runtime.

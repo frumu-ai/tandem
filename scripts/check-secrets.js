@@ -11,8 +11,8 @@ import { readFileSync } from "fs";
 // Patterns that indicate potential secrets
 const SECRET_PATTERNS = [
   // OpenAI API keys
-  { pattern: /sk-[a-zA-Z0-9]{20,}/, name: "OpenAI API key" },
-  // Anthropic API keys
+
+  
   { pattern: /sk-ant-[a-zA-Z0-9-]{20,}/, name: "Anthropic API key" },
   // OpenRouter API keys
   { pattern: /sk-or-[a-zA-Z0-9-]{20,}/, name: "OpenRouter API key" },

@@ -50,3 +50,19 @@ cargo run -p tandem-tui
 - [Engine Testing](./engine-testing/)
 - `docs/ENGINE_TESTING.md`
 - `docs/ENGINE_CLI.md`
+
+## 6. Build docs (Starlight)
+
+From `guide/`:
+
+```bash
+pnpm install
+DOCS_SITE_URL=https://tandem.frumu.ai/ DOCS_BASE_PATH=/docs/ pnpm build
+```
+
+Notes for reverse-proxy hosting at `https://tandem.frumu.ai/docs/`:
+
+- `DOCS_BASE_PATH` must be `/docs/` so search asset paths are generated correctly.
+- Proxy/static hosting must serve both:
+  - `/docs/_astro/*`
+  - `/docs/pagefind/*`

@@ -38,6 +38,18 @@ Tandem prioritizes security and user control. When an agent wants to perform a s
 - Access the Request Center via the specific keybinding (default `Alt+R`) or slash command `/requests`.
 - Use `Up` / `Down` to navigate, `Space` to toggle selections, `Enter` to confirm, and `r` / `R` to deny.
 
+### Agent Teams (Fanout)
+
+Use fanout to run coordinated multi-agent execution directly in TUI:
+
+```text
+/agent fanout 4 Build and ship the VPS web portal stress-lab improvements
+```
+
+- Creates/ensures 4 panes, switches to Grid, and dispatches worker tasks.
+- If mode is `plan`, TUI auto-switches to `orchestrate` for fanout runs.
+- Use `/agent-team` commands for mission/instance/approval visibility.
+
 ### Pin Prompt
 
 If you have encrypted your local storage, you will be prompted to enter your **PIN** at startup to unlock your semantic memory and session history.

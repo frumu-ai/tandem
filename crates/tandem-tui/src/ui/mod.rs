@@ -761,7 +761,7 @@ fn draw_chat(f: &mut Frame, app: &App) {
             let area = centered_rect(58, 34, f.area());
             f.render_widget(Clear, area);
             let text = match modal_state {
-                ModalState::Help => "Keys:\nF1 Help\nTab/Shift+Tab switch agent\nAlt+1..9 jump agent\nCtrl+N new agent\nCtrl+W close agent\nCtrl+C cancel run / double-tap quit\nCtrl+Y copy latest assistant message\nCtrl+V paste as token\nEnter send prompt\nShift+Enter or Alt+Enter newline\nLeft/Right/Home/End move cursor\nCtrl+Up/Down move cursor line\nDelete/Backspace edit\nAlt+M cycle mode\nAlt+G toggle grid\nAlt+R open request center\nCtrl+E expand/collapse request panel\nAlt+I queue steering interrupt\nEnter while busy queues follow-up\nAlt+S / Alt+B demo streams\nEsc close modal/input\nCtrl+X quit\n\nMarkdown colors:\nHeading=yellow, Quote=green, List=blue, Code=gray",
+                ModalState::Help => "Keys:\nF1 Help\nTab/Shift+Tab switch agent\nAlt+1..9 jump agent\nCtrl+N new agent\nCtrl+W close agent\nCtrl+C cancel run / double-tap quit\nCtrl+Y copy latest assistant message\nCtrl+V (or Shift+Insert) paste as token\nEnter send prompt\nShift+Enter or Alt+Enter newline\nLeft/Right/Home/End move cursor\nCtrl+Up/Down move cursor line\nDelete/Backspace edit\nAlt+M cycle mode\nAlt+G toggle grid\nAlt+R open request center\nCtrl+E expand/collapse request panel\nAlt+I queue steering interrupt\nEnter while busy queues follow-up\nAlt+S / Alt+B demo streams\nEsc close modal/input\nCtrl+X quit\n\nMarkdown colors:\nHeading=yellow, Quote=green, List=blue, Code=gray",
                 ModalState::ConfirmCloseAgent { target_agent_id } => {
                     if target_agent_id.is_empty() {
                         "Close active agent and discard draft? (Y/N)"
@@ -1539,10 +1539,7 @@ fn ime_cursor_marker_enabled() -> bool {
     {
         Some("on") => true,
         Some("off") => false,
-        _ => matches!(
-            std::env::var("TERM_PROGRAM").ok().as_deref(),
-            Some("iTerm.app" | "WezTerm")
-        ),
+        _ => false,
     }
 }
 

@@ -1010,6 +1010,10 @@ impl EngineLoop {
                     "__effective_cwd".to_string(),
                     Value::String(effective_cwd.clone()),
                 );
+                obj.insert(
+                    "__session_id".to_string(),
+                    Value::String(session_id.to_string()),
+                );
             }
             tracing::info!(
                 "tool execution context session_id={} tool={} workspace_root={} effective_cwd={}",
@@ -3368,34 +3372,62 @@ async fn emit_tool_side_events(
                 session_id,
                 message_id
             );
-            return;
-        }
-        let request = storage
-            .add_question_request(session_id, message_id, questions.clone())
-            .await
-            .ok();
-        bus.publish(EngineEvent::new(
-            "question.asked",
-            json!({
-                "id": request
-                    .as_ref()
-                    .map(|req| req.id.clone())
-                    .unwrap_or_else(|| format!("q-{}", uuid::Uuid::new_v4())),
-                "sessionID": session_id,
-                "messageID": message_id,
-                "questions": questions,
-                "tool": request.and_then(|req| {
-                    req.tool.map(|tool| {
-                        json!({
-                            "callID": tool.call_id,
-                            "messageID": tool.message_id
+        } else {
+            let request = storage
+                .add_question_request(session_id, message_id, questions.clone())
+                .await
+                .ok();
+            bus.publish(EngineEvent::new(
+                "question.asked",
+                json!({
+                    "id": request
+                        .as_ref()
+                        .map(|req| req.id.clone())
+                        .unwrap_or_else(|| format!("q-{}", uuid::Uuid::new_v4())),
+                    "sessionID": session_id,
+                    "messageID": message_id,
+                    "questions": questions,
+                    "tool": request.and_then(|req| {
+                        req.tool.map(|tool| {
+                            json!({
+                                "callID": tool.call_id,
+                                "messageID": tool.message_id
+                            })
                         })
-                    })
+                    }),
+                    "workspaceRoot": workspace_root,
+                    "effectiveCwd": effective_cwd
                 }),
-                "workspaceRoot": workspace_root,
-                "effectiveCwd": effective_cwd
-            }),
-        ));
+            ));
+        }
+    }
+    if let Some(events) = metadata.get("events").and_then(|v| v.as_array()) {
+        for event in events {
+            let Some(event_type) = event.get("type").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !event_type.starts_with("agent_team.") {
+                continue;
+            }
+            let mut properties = event
+                .get("properties")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            properties
+                .entry("sessionID".to_string())
+                .or_insert(json!(session_id));
+            properties
+                .entry("messageID".to_string())
+                .or_insert(json!(message_id));
+            properties
+                .entry("workspaceRoot".to_string())
+                .or_insert(json!(workspace_root));
+            properties
+                .entry("effectiveCwd".to_string())
+                .or_insert(json!(effective_cwd));
+            bus.publish(EngineEvent::new(event_type, Value::Object(properties)));
+        }
     }
 }
 

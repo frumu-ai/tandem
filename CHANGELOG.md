@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.20]
+
+### Changed
+
+- **TUI agent fanout mode handoff**: `/agent fanout` now auto-switches `plan -> orchestrate` before teammate delegation to reduce plan-mode gating/approval churn during coordinated multi-agent runs.
+- **TUI agent-team workflow integration**: Added coordinated fanout team bootstrapping (`TeamCreate` + delegated `task` routing), mailbox/member session binding, and teammate-target normalization (`A2`/`a2`/`agent-2`) to improve local team execution consistency.
+
+### Fixed
+
+- **TUI small-paste readability and composer rendering**: Small pastes (1-2 lines) now insert directly without `[Pasted ...]` tokens, CRLF is normalized, and composer height now expands correctly for explicit newlines (fixes overlapped/cropped second-line input rendering).
+
 ## [0.3.19]
 
 ### Changed

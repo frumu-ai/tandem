@@ -76,6 +76,11 @@ pub enum Action {
         session_id: String,
         todos: Vec<Value>,
     },
+    PromptAgentTeamEvent {
+        session_id: String,
+        agent_id: String,
+        event: crate::net::client::StreamAgentTeamEvent,
+    },
     PromptRequest {
         session_id: String,
         agent_id: String,
@@ -271,6 +276,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn setup_wizard_accepts_paste_shortcuts() {
+        let mut app = App::new();
+        app.state = AppState::SetupWizard {
+            step: SetupStep::EnterApiKey,
+            provider_catalog: None,
+            selected_provider_index: 0,
+            selected_model_index: 0,
+            api_key_input: String::new(),
+            model_input: String::new(),
+        };
+        assert_eq!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+            Some(Action::PasteFromClipboard)
+        );
+        assert_eq!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT)),
+            Some(Action::PasteFromClipboard)
+        );
+    }
+
+    #[tokio::test]
+    async fn setup_wizard_paste_input_appends_api_key() {
+        let mut app = App::new();
+        app.state = AppState::SetupWizard {
+            step: SetupStep::EnterApiKey,
+            provider_catalog: None,
+            selected_provider_index: 0,
+            selected_model_index: 0,
+            api_key_input: String::new(),
+            model_input: String::new(),
+        };
+        app.update(Action::PasteInput("sk-test-key\n".to_string()))
+            .await
+            .expect("paste update");
+        if let AppState::SetupWizard { api_key_input, .. } = &app.state {
+            assert_eq!(api_key_input, "sk-test-key");
+        } else {
+            panic!("expected setup wizard state");
+        }
+    }
+
     fn chat_assistant_text(app: &App) -> String {
         let AppState::Chat { messages, .. } = &app.state else {
             return String::new();
@@ -445,6 +492,55 @@ mod tests {
     }
 
     #[test]
+    fn collapse_paste_only_for_more_than_two_lines() {
+        assert!(!App::should_collapse_paste("single line"));
+        assert!(!App::should_collapse_paste("line1\nline2"));
+        assert!(!App::should_collapse_paste("line1\nline2\n"));
+        assert!(App::should_collapse_paste("line1\nline2\nline3"));
+    }
+
+    #[tokio::test]
+    async fn chat_paste_input_inserts_small_payload_directly() {
+        let mut app = chat_app();
+        app.update(Action::PasteInput("alpha\nbeta".to_string()))
+            .await
+            .expect("paste update");
+        if let AppState::Chat { command_input, .. } = &app.state {
+            assert_eq!(command_input.text(), "alpha\nbeta");
+            assert!(!command_input.text().contains("[Pasted "));
+        } else {
+            panic!("expected chat state");
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_paste_input_collapses_large_payload() {
+        let mut app = chat_app();
+        app.update(Action::PasteInput("a\nb\nc".to_string()))
+            .await
+            .expect("paste update");
+        if let AppState::Chat { command_input, .. } = &app.state {
+            assert!(command_input.text().contains("[Pasted "));
+        } else {
+            panic!("expected chat state");
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_paste_input_normalizes_crlf_for_small_payload() {
+        let mut app = chat_app();
+        app.update(Action::PasteInput("alpha\r\nbeta".to_string()))
+            .await
+            .expect("paste update");
+        if let AppState::Chat { command_input, .. } = &app.state {
+            assert_eq!(command_input.text(), "alpha\nbeta");
+            assert!(!command_input.text().contains('\r'));
+        } else {
+            panic!("expected chat state");
+        }
+    }
+
+    #[test]
     fn non_active_agent_followup_dispatches_on_completion() {
         let mut app = two_agent_app();
         let session = "s-test".to_string();
@@ -532,6 +628,46 @@ mod tests {
         } else {
             panic!("expected chat state");
         }
+    }
+
+    #[test]
+    fn recipient_normalization_supports_agent_aliases() {
+        assert_eq!(
+            App::normalize_recipient_agent_id("A2").as_deref(),
+            Some("A2")
+        );
+        assert_eq!(
+            App::normalize_recipient_agent_id("a9").as_deref(),
+            Some("A9")
+        );
+        assert_eq!(
+            App::normalize_recipient_agent_id("agent-3").as_deref(),
+            Some("A3")
+        );
+        assert_eq!(App::normalize_recipient_agent_id("agent-x"), None);
+    }
+
+    #[test]
+    fn resolve_recipient_prefers_exact_match_then_normalized_alias() {
+        let agents = vec![
+            App::make_agent_pane("A1".to_string(), "s1".to_string()),
+            App::make_agent_pane("A2".to_string(), "s2".to_string()),
+            App::make_agent_pane("A3".to_string(), "s3".to_string()),
+        ];
+
+        let direct = App::resolve_agent_target_for_recipient(&agents, "A2");
+        assert_eq!(direct, Some(("s2".to_string(), "A2".to_string())));
+
+        let alias = App::resolve_agent_target_for_recipient(&agents, "agent-3");
+        assert_eq!(alias, Some(("s3".to_string(), "A3".to_string())));
+    }
+
+    #[test]
+    fn member_name_match_accepts_normalized_aliases() {
+        assert!(App::member_name_matches_recipient("A2", "a2"));
+        assert!(App::member_name_matches_recipient("A2", "agent-2"));
+        assert!(App::member_name_matches_recipient("agent-3", "A3"));
+        assert!(!App::member_name_matches_recipient("A2", "A4"));
     }
 }
 
@@ -651,6 +787,8 @@ pub struct AgentPane {
     pub paste_registry: HashMap<u32, String>,
     pub next_paste_id: u32,
     pub live_tool_calls: HashMap<String, LiveToolCall>,
+    pub delegated_worker: bool,
+    pub delegated_team_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -970,6 +1108,14 @@ impl TandemMode {
 }
 
 impl App {
+    fn is_paste_shortcut(key: &KeyEvent) -> bool {
+        let is_ctrl_v = matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
+            && key.modifiers.contains(KeyModifiers::CONTROL);
+        let is_shift_insert =
+            matches!(key.code, KeyCode::Insert) && key.modifiers.contains(KeyModifiers::SHIFT);
+        is_ctrl_v || is_shift_insert
+    }
+
     fn sanitize_provider_catalog(
         mut catalog: crate::net::client::ProviderCatalog,
     ) -> crate::net::client::ProviderCatalog {
@@ -1129,6 +1275,7 @@ impl App {
 
     pub const COMMAND_HELP: &'static [(&'static str, &'static str)] = &[
         ("help", "Show available commands"),
+        ("workspace", "Show/switch workspace directory"),
         ("engine", "Engine status / restart"),
         ("sessions", "List all sessions"),
         ("new", "Create new session"),
@@ -1252,6 +1399,8 @@ impl App {
             paste_registry: HashMap::new(),
             next_paste_id: 1,
             live_tool_calls: HashMap::new(),
+            delegated_worker: false,
+            delegated_team_name: None,
         }
     }
 
@@ -1525,7 +1674,13 @@ impl App {
             if let Some(tx) = &self.action_tx {
                 let client = client.clone();
                 let tx = tx.clone();
-                let prompt_msg = self.prepare_prompt_text(&msg);
+                let bypass_plan_wrapping = self.is_delegated_worker_agent(&session_id, &agent_id)
+                    || Self::is_agent_team_assignment_prompt(&msg);
+                let prompt_msg = if bypass_plan_wrapping {
+                    msg.clone()
+                } else {
+                    self.prepare_prompt_text(&msg)
+                };
                 let agent = Some(self.current_mode.as_agent().to_string());
                 let model = self.current_model_spec();
                 let run_session_id = session_id.clone();
@@ -1609,6 +1764,17 @@ impl App {
                                     let _ = tx.send(Action::PromptTodoUpdated {
                                         session_id: event_session_id,
                                         todos,
+                                    });
+                                }
+                                if let Some(agent_team_event) =
+                                    crate::net::client::extract_stream_agent_team_event(
+                                        &event.payload,
+                                    )
+                                {
+                                    let _ = tx.send(Action::PromptAgentTeamEvent {
+                                        session_id: run_session_id.clone(),
+                                        agent_id: run_agent_id.clone(),
+                                        event: agent_team_event,
                                     });
                                 }
                             },
@@ -2653,11 +2819,7 @@ impl App {
                 if self.show_autocomplete {
                     match key.code {
                         KeyCode::Esc => Some(Action::AutocompleteDismiss),
-                        KeyCode::Char('v') | KeyCode::Char('V')
-                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                        {
-                            Some(Action::PasteFromClipboard)
-                        }
+                        _ if Self::is_paste_shortcut(&key) => Some(Action::PasteFromClipboard),
                         KeyCode::Enter | KeyCode::Tab => Some(Action::AutocompleteAccept),
                         KeyCode::Down | KeyCode::Char('j')
                             if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -2686,11 +2848,7 @@ impl App {
                 } else {
                     match key.code {
                         KeyCode::Esc => None,
-                        KeyCode::Char('v') | KeyCode::Char('V')
-                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                        {
-                            Some(Action::PasteFromClipboard)
-                        }
+                        _ if Self::is_paste_shortcut(&key) => Some(Action::PasteFromClipboard),
                         KeyCode::F(1) => Some(Action::ShowHelpModal),
                         KeyCode::F(2) => Some(Action::OpenDocs),
                         KeyCode::Char('g') | KeyCode::Char('G')
@@ -2772,15 +2930,20 @@ impl App {
                 }
             }
 
-            AppState::SetupWizard { .. } => match key.code {
-                KeyCode::Esc => Some(Action::Quit),
-                KeyCode::Enter => Some(Action::SetupNextStep),
-                KeyCode::Down => Some(Action::SetupNextItem),
-                KeyCode::Up => Some(Action::SetupPrevItem),
-                KeyCode::Char(c) => Some(Action::SetupInput(c)),
-                KeyCode::Backspace => Some(Action::SetupBackspace),
-                _ => None,
-            },
+            AppState::SetupWizard { .. } => {
+                if Self::is_paste_shortcut(&key) {
+                    return Some(Action::PasteFromClipboard);
+                }
+                match key.code {
+                    KeyCode::Esc => Some(Action::Quit),
+                    KeyCode::Enter => Some(Action::SetupNextStep),
+                    KeyCode::Down => Some(Action::SetupNextItem),
+                    KeyCode::Up => Some(Action::SetupPrevItem),
+                    KeyCode::Char(c) => Some(Action::SetupInput(c)),
+                    KeyCode::Backspace => Some(Action::SetupBackspace),
+                    _ => None,
+                }
+            }
         }
     }
     pub fn handle_mouse_event(&self, mouse: MouseEvent) -> Option<Action> {
@@ -3305,27 +3468,44 @@ impl App {
             Action::PasteFromClipboard => {
                 match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
                     Ok(text) => {
-                        if !text.is_empty() {
-                            if let AppState::Chat {
-                                command_input,
-                                agents,
-                                active_agent_index,
-                                ..
-                            } = &mut self.state
-                            {
-                                let inserted =
+                        let normalized = Self::normalize_paste_payload(&text);
+                        if !normalized.is_empty() {
+                            match &mut self.state {
+                                AppState::Chat {
+                                    command_input,
+                                    agents,
+                                    active_agent_index,
+                                    ..
+                                } => {
+                                    let inserted = Self::insert_chat_paste(
+                                        agents.get_mut(*active_agent_index),
+                                        &normalized,
+                                    );
+                                    command_input.insert_str(&inserted);
+                                    let input = command_input.text().to_string();
                                     if let Some(agent) = agents.get_mut(*active_agent_index) {
-                                        Self::register_collapsed_paste(agent, &text)
-                                    } else {
-                                        format!("[Pasted {} chars]", text.chars().count())
-                                    };
-                                command_input.insert_str(&inserted);
-                                let input = command_input.text().to_string();
-                                if let Some(agent) = agents.get_mut(*active_agent_index) {
-                                    agent.draft = command_input.clone();
-                                    Self::prune_agent_paste_registry(agent);
+                                        agent.draft = command_input.clone();
+                                        Self::prune_agent_paste_registry(agent);
+                                    }
+                                    self.update_autocomplete_for_input(&input);
                                 }
-                                self.update_autocomplete_for_input(&input);
+                                AppState::SetupWizard {
+                                    step,
+                                    api_key_input,
+                                    model_input,
+                                    ..
+                                } => match step {
+                                    SetupStep::EnterApiKey => {
+                                        api_key_input
+                                            .push_str(normalized.trim_end_matches(['\n', '\r']));
+                                    }
+                                    SetupStep::SelectModel => {
+                                        model_input
+                                            .push_str(normalized.trim_end_matches(['\n', '\r']));
+                                    }
+                                    _ => {}
+                                },
+                                _ => {}
                             }
                             self.sync_active_agent_from_chat();
                         }
@@ -3344,25 +3524,41 @@ impl App {
                 }
             }
             Action::PasteInput(text) => {
-                if let AppState::Chat {
-                    command_input,
-                    agents,
-                    active_agent_index,
-                    ..
-                } = &mut self.state
-                {
-                    let inserted = if let Some(agent) = agents.get_mut(*active_agent_index) {
-                        Self::register_collapsed_paste(agent, &text)
-                    } else {
-                        format!("[Pasted {} chars]", text.chars().count())
-                    };
-                    command_input.insert_str(&inserted);
-                    let input = command_input.text().to_string();
-                    if let Some(agent) = agents.get_mut(*active_agent_index) {
-                        agent.draft = command_input.clone();
-                        Self::prune_agent_paste_registry(agent);
+                let normalized = Self::normalize_paste_payload(&text);
+                match &mut self.state {
+                    AppState::Chat {
+                        command_input,
+                        agents,
+                        active_agent_index,
+                        ..
+                    } => {
+                        let inserted = Self::insert_chat_paste(
+                            agents.get_mut(*active_agent_index),
+                            &normalized,
+                        );
+                        command_input.insert_str(&inserted);
+                        let input = command_input.text().to_string();
+                        if let Some(agent) = agents.get_mut(*active_agent_index) {
+                            agent.draft = command_input.clone();
+                            Self::prune_agent_paste_registry(agent);
+                        }
+                        self.update_autocomplete_for_input(&input);
                     }
-                    self.update_autocomplete_for_input(&input);
+                    AppState::SetupWizard {
+                        step,
+                        api_key_input,
+                        model_input,
+                        ..
+                    } => match step {
+                        SetupStep::EnterApiKey => {
+                            api_key_input.push_str(normalized.trim_end_matches(['\n', '\r']));
+                        }
+                        SetupStep::SelectModel => {
+                            model_input.push_str(normalized.trim_end_matches(['\n', '\r']));
+                        }
+                        _ => {}
+                    },
+                    _ => {}
                 }
                 self.sync_active_agent_from_chat();
             }
@@ -5132,6 +5328,120 @@ impl App {
                 }
                 self.sync_chat_from_active_agent();
             }
+            Action::PromptAgentTeamEvent {
+                session_id: event_session_id,
+                agent_id,
+                event,
+            } => {
+                let mut route_target: Option<(String, String, String)> = None;
+                let mut info_line: Option<String> = None;
+
+                if event.event_type == "agent_team.mailbox.enqueued" {
+                    if let (Some(team_name), Some(recipient)) =
+                        (event.team_name.as_deref(), event.recipient.as_deref())
+                    {
+                        if recipient != "*" {
+                            let mut target = if let Some(bound_session_id) =
+                                Self::load_agent_team_member_session_binding(team_name, recipient)
+                                    .await
+                            {
+                                if let AppState::Chat { agents, .. } = &self.state {
+                                    Self::resolve_agent_target_for_bound_session(
+                                        agents,
+                                        recipient,
+                                        &bound_session_id,
+                                    )
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            if target.is_none() {
+                                target = if let AppState::Chat { agents, .. } = &self.state {
+                                    Self::resolve_agent_target_for_recipient(agents, recipient)
+                                } else {
+                                    None
+                                };
+                            }
+                            if target.is_none() {
+                                if let Some(required_agents) =
+                                    Self::recipient_agent_number(recipient)
+                                {
+                                    let _ = self.ensure_agent_count(required_agents).await;
+                                    target = if let AppState::Chat { agents, .. } = &self.state {
+                                        Self::resolve_agent_target_for_recipient(agents, recipient)
+                                    } else {
+                                        None
+                                    };
+                                }
+                            }
+                            if let Some((target_session, target_agent)) = target {
+                                if event.message_type.as_deref() == Some("task_prompt") {
+                                    if let AppState::Chat { agents, .. } = &mut self.state {
+                                        if let Some(agent) = agents.iter_mut().find(|a| {
+                                            a.session_id == target_session
+                                                && a.agent_id == target_agent
+                                        }) {
+                                            agent.delegated_worker = true;
+                                            agent.delegated_team_name = Some(team_name.to_string());
+                                        }
+                                    }
+                                }
+                                if let Some(prompt) =
+                                    Self::load_agent_team_mailbox_prompt(team_name, recipient).await
+                                {
+                                    let _ = Self::persist_agent_team_member_session_binding(
+                                        team_name,
+                                        recipient,
+                                        &target_session,
+                                    )
+                                    .await;
+                                    let _ = Self::persist_agent_team_session_context(
+                                        team_name,
+                                        &target_session,
+                                    )
+                                    .await;
+                                    info_line = Some(format!(
+                                        "Agent-team routed {} to {} ({})",
+                                        event.message_type.as_deref().unwrap_or("message"),
+                                        recipient,
+                                        team_name
+                                    ));
+                                    route_target = Some((target_session, target_agent, prompt));
+                                } else {
+                                    info_line = Some(format!(
+                                        "Agent-team queued for {} in {}, but mailbox payload could not be loaded.",
+                                        recipient, team_name
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if info_line.is_none() {
+                    info_line = Some(format!(
+                        "Agent-team event: {}",
+                        event.event_type.replace("agent_team.", "")
+                    ));
+                }
+
+                if let AppState::Chat { messages, .. } = &mut self.state {
+                    messages.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: vec![ContentBlock::Text(
+                            info_line.unwrap_or_else(|| "Agent-team event received.".to_string()),
+                        )],
+                    });
+                }
+                self.sync_active_agent_from_chat();
+                if let Some((target_session, target_agent, prompt)) = route_target {
+                    self.dispatch_prompt_for_agent(target_session, target_agent, prompt);
+                } else {
+                    self.maybe_dispatch_queued_for_agent(&event_session_id, &agent_id);
+                }
+            }
             Action::PromptDelta {
                 session_id: event_session_id,
                 agent_id,
@@ -5290,6 +5600,47 @@ impl App {
                         }
                         self.sync_active_agent_from_chat();
                         return Ok(());
+                    }
+                }
+                if self.is_delegated_worker_agent(&event_session_id, &agent_id) {
+                    match &request {
+                        PendingRequestKind::Permission(permission) => {
+                            if let Some(client) = &self.client {
+                                let _ = client.reply_permission(&permission.id, "once").await;
+                            }
+                            if let AppState::Chat { messages, .. } = &mut self.state {
+                                messages.push(ChatMessage {
+                                    role: MessageRole::System,
+                                    content: vec![ContentBlock::Text(format!(
+                                        "Auto-approved delegated permission request {} for {}.",
+                                        permission.id, agent_id
+                                    ))],
+                                });
+                            }
+                            self.sync_active_agent_from_chat();
+                            return Ok(());
+                        }
+                        PendingRequestKind::Question(question) => {
+                            if let Some(client) = &self.client {
+                                let _ = client.reject_question(&question.id).await;
+                            }
+                            if let AppState::Chat { messages, .. } = &mut self.state {
+                                messages.push(ChatMessage {
+                                    role: MessageRole::System,
+                                    content: vec![ContentBlock::Text(format!(
+                                        "Auto-rejected delegated question request {} for {} to keep execution flowing.",
+                                        question.id, agent_id
+                                    ))],
+                                });
+                            }
+                            self.dispatch_prompt_for_agent(
+                                event_session_id,
+                                agent_id,
+                                "Continue execution without asking clarification questions unless absolutely blocked. Make a reasonable assumption and proceed.".to_string(),
+                            );
+                            self.sync_active_agent_from_chat();
+                            return Ok(());
+                        }
                     }
                 }
                 if matches!(self.current_mode, TandemMode::Plan) {
@@ -5816,6 +6167,9 @@ impl App {
 
 BASICS:
   /help              Show this help message
+  /workspace show    Show current workspace directory
+  /workspace use <path>
+                     Switch workspace directory for this TUI process
   /engine status     Check engine connection status
   /engine restart    Restart the Tandem engine
   /engine token      Show masked engine API token
@@ -5829,7 +6183,9 @@ SESSIONS:
   /agent list        List chat agents
   /agent use <A#>    Switch active agent
   /agent close       Close active agent
-  /agent fanout [n]  Ensure n agents and switch to grid (default 4)
+  /agent fanout [n] [goal...]
+                     Ensure n agents and switch to grid (default 4).
+                     If goal is provided, dispatch coordinated kickoff prompts.
   /title <new title> Rename current session
   /prompt <text>    Send prompt to current session
   /tool <name> <json_args> Pass-through engine tool call
@@ -5898,6 +6254,7 @@ MISSIONS:
   /agent-team missions                     List agent-team mission rollups
   /agent-team instances [mission_id]       List agent-team instances
   /agent-team approvals                    List pending agent-team approvals
+  /agent-team bindings [team_name]         Show local teammate -> session bindings
   /agent-team approve spawn <approval_id> [reason]
                                            Approve pending spawn approval
   /agent-team deny spawn <approval_id> [reason]
@@ -5927,6 +6284,46 @@ MULTI-AGENT KEYS:
   Ctrl+X             Quit"#;
                 help_text.to_string()
             }
+
+            "workspace" => match args.first().copied() {
+                Some("show") | None => {
+                    let cwd = std::env::current_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| "<unknown>".to_string());
+                    format!("Current workspace directory:\n  {}", cwd)
+                }
+                Some("use") => {
+                    let raw_path = args
+                        .get(1..)
+                        .map(|items| items.join(" "))
+                        .unwrap_or_default();
+                    if raw_path.trim().is_empty() {
+                        return "Usage: /workspace use <path>".to_string();
+                    }
+                    let target = match Self::resolve_workspace_path(raw_path.trim()) {
+                        Ok(path) => path,
+                        Err(err) => return err,
+                    };
+                    let previous = std::env::current_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| "<unknown>".to_string());
+                    if let Err(err) = std::env::set_current_dir(&target) {
+                        return format!(
+                            "Failed to switch workspace to {}: {}",
+                            target.display(),
+                            err
+                        );
+                    }
+                    let current = std::env::current_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| target.display().to_string());
+                    format!(
+                        "Workspace switched.\n  From: {}\n  To:   {}",
+                        previous, current
+                    )
+                }
+                _ => "Usage: /workspace [show|use <path>]".to_string(),
+            },
 
             "engine" => match args.get(0).map(|s| *s) {
                 Some("status") => {
@@ -6160,11 +6557,32 @@ MULTI-AGENT KEYS:
                     "Closed active agent.".to_string()
                 }
                 Some("fanout") => {
-                    let target = args
-                        .get(1)
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .map(|n| n.clamp(2, 9))
-                        .unwrap_or(4);
+                    let mode_switched = if matches!(self.current_mode, TandemMode::Plan) {
+                        self.current_mode = TandemMode::Orchestrate;
+                        true
+                    } else {
+                        false
+                    };
+                    let mode_note = if mode_switched {
+                        " Mode auto-switched from plan -> orchestrate."
+                    } else {
+                        ""
+                    };
+                    let (target, goal_start_idx) = match args.get(1) {
+                        Some(raw) => match raw.parse::<usize>() {
+                            Ok(n) => (n.clamp(2, 9), 2),
+                            Err(_) => (4, 1),
+                        },
+                        None => (4, 1),
+                    };
+                    let goal = args
+                        .iter()
+                        .skip(goal_start_idx)
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .trim()
+                        .to_string();
                     let created = self.ensure_agent_count(target).await;
                     if let AppState::Chat {
                         ui_mode, grid_page, ..
@@ -6174,19 +6592,84 @@ MULTI-AGENT KEYS:
                         *grid_page = 0;
                     }
                     self.sync_chat_from_active_agent();
+                    if !goal.is_empty() {
+                        let agents = if let AppState::Chat { agents, .. } = &self.state {
+                            agents.iter().take(target).cloned().collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        };
+                        if let Some(lead) = agents.first() {
+                            let team_name = format!(
+                                "fanout-{}",
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0)
+                            );
+                            let create_team_args = serde_json::json!({
+                                "team_name": team_name,
+                                "description": format!("Fanout run for goal: {}", goal),
+                                "agent_type": "lead"
+                            });
+                            let mut lead_commands =
+                                vec![format!("/tool TeamCreate {}", create_team_args)];
+                            for agent in agents.iter().skip(1) {
+                                let task_prompt = format!(
+                                    "You are {} in a coordinated fanout run for team `{}`.\n\
+                                     Goal: {}.\n\
+                                     Own one concrete workstream end-to-end, execute it, and report concise outcomes and blockers.\n\
+                                     Do not ask clarification questions unless absolutely blocked.\n\
+                                     Do not wait for plan approvals; make reasonable assumptions and proceed.",
+                                    agent.agent_id, team_name, goal
+                                );
+                                let task_args = serde_json::json!({
+                                    "description": format!("{} workstream for {}", agent.agent_id, goal),
+                                    "prompt": task_prompt,
+                                    "subagent_type": "generalist",
+                                    "team_name": team_name,
+                                    "name": agent.agent_id
+                                });
+                                lead_commands.push(format!("/tool task {}", task_args));
+                            }
+                            let lead_kickoff = format!(
+                                "You are the lead coordinator for team `{}`. Goal: {}.\n\
+                                 Use TaskList/TaskUpdate to track delegated progress and keep execution moving until completion.",
+                                team_name, goal
+                            );
+                            lead_commands.push(lead_kickoff);
+                            if let AppState::Chat { agents, .. } = &mut self.state {
+                                if let Some(lead_agent) = agents.iter_mut().find(|a| {
+                                    a.agent_id == lead.agent_id && a.session_id == lead.session_id
+                                }) {
+                                    for cmd in lead_commands {
+                                        lead_agent.follow_up_queue.push_back(cmd);
+                                    }
+                                }
+                            }
+                            self.maybe_dispatch_queued_for_agent(&lead.session_id, &lead.agent_id);
+                            return format!(
+                                "Started coordinated fanout: {} total agents (created {}). Team `{}` bootstrapped and assignments dispatched.{}",
+                                target, created, team_name, mode_note
+                            );
+                        }
+                        return format!(
+                            "Started coordinated fanout: {} total agents (created {}). Goal dispatched.{}",
+                            target, created, mode_note
+                        );
+                    }
                     if created > 0 {
                         format!(
-                            "Started fanout: {} total agents (created {}). Grid view enabled.",
-                            target, created
+                            "Started fanout: {} total agents (created {}). Grid view enabled.{}",
+                            target, created, mode_note
                         )
                     } else {
                         format!(
-                            "Fanout ready: already at {}+ agents. Grid view enabled.",
-                            target
+                            "Fanout ready: already at {}+ agents. Grid view enabled.{}",
+                            target, mode_note
                         )
                     }
                 }
-                _ => "Usage: /agent new|list|use <A#>|close|fanout [n]".to_string(),
+                _ => "Usage: /agent new|list|use <A#>|close|fanout [n] [goal]".to_string(),
             },
 
             "use" => {
@@ -7279,6 +7762,10 @@ MULTI-AGENT KEYS:
                         }
                         Err(err) => format!("Failed to list agent-team approvals: {}", err),
                     },
+                    "bindings" => {
+                        let team_filter = args.get(1).copied();
+                        Self::format_local_agent_team_bindings(team_filter)
+                    }
                     "approve" => {
                         if args.len() < 3 {
                             return "Usage: /agent-team approve <spawn|tool> <id> [reason]"
@@ -7334,7 +7821,7 @@ MULTI-AGENT KEYS:
                         }
                     }
                     _ => {
-                        "Usage: /agent-team [summary|missions|instances [mission_id]|approvals|approve <spawn|tool> <id> [reason]|deny <spawn|tool> <id> [reason]]".to_string()
+                        "Usage: /agent-team [summary|missions|instances [mission_id]|approvals|bindings [team]|approve <spawn|tool> <id> [reason]|deny <spawn|tool> <id> [reason]]".to_string()
                     }
                 }
             }
@@ -8116,6 +8603,9 @@ MULTI-AGENT KEYS:
         if trimmed.starts_with("/tool ") {
             return text.to_string();
         }
+        if Self::is_agent_team_assignment_prompt(trimmed) {
+            return text.to_string();
+        }
         if !matches!(self.current_mode, TandemMode::Plan) {
             return text.to_string();
         }
@@ -8193,11 +8683,391 @@ MULTI-AGENT KEYS:
         }
     }
 
+    fn format_local_agent_team_bindings(team_filter: Option<&str>) -> String {
+        let root = Self::agent_team_workspace_root();
+        if !root.exists() {
+            return "No local agent-team state found.".to_string();
+        }
+        let filter = team_filter.map(str::trim).filter(|s| !s.is_empty());
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return "Failed to read local agent-team state.".to_string();
+        };
+        let mut output = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(team_name) = path.file_name().and_then(|v| v.to_str()) else {
+                continue;
+            };
+            if let Some(filter_name) = filter {
+                if team_name != filter_name {
+                    continue;
+                }
+            }
+            let members_path = path.join("members.json");
+            if !members_path.exists() {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&members_path) else {
+                continue;
+            };
+            let Ok(parsed) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
+            let Some(items) = parsed.as_array() else {
+                continue;
+            };
+            let mut lines = Vec::new();
+            for item in items {
+                let Some(name) = item.get("name").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let session = item
+                    .get("sessionID")
+                    .or_else(|| item.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
+                lines.push(format!("  - {} -> {}", name, session));
+            }
+            if !lines.is_empty() {
+                output.push(format!("{}:\n{}", team_name, lines.join("\n")));
+            }
+        }
+        if output.is_empty() {
+            return "No local agent-team bindings found.".to_string();
+        }
+        format!("Agent-Team Bindings:\n{}", output.join("\n"))
+    }
+
+    async fn load_agent_team_mailbox_prompt(team_name: &str, recipient: &str) -> Option<String> {
+        let mailbox_path = Self::agent_team_workspace_root()
+            .join(team_name)
+            .join("mailboxes")
+            .join(format!("{}.jsonl", recipient));
+        let raw = tokio::fs::read_to_string(mailbox_path).await.ok()?;
+        let line = raw
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())?;
+        let payload = serde_json::from_str::<Value>(line).ok()?;
+        let msg_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if !matches!(msg_type, "task_prompt" | "message" | "broadcast") {
+            return None;
+        }
+        let content = payload
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)?;
+        let summary = payload
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let from = payload
+            .get("from")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("team-lead");
+        let prompt = if let Some(summary) = summary {
+            format!(
+                "Agent-team assignment from {}.\nSummary: {}\n\n{}",
+                from, summary, content
+            )
+        } else {
+            format!("Agent-team assignment from {}.\n\n{}", from, content)
+        };
+        Some(prompt)
+    }
+
+    fn agent_team_workspace_root() -> PathBuf {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".tandem")
+            .join("agent-teams")
+    }
+
+    fn member_name_matches_recipient(member_name: &str, recipient: &str) -> bool {
+        if member_name.eq_ignore_ascii_case(recipient.trim()) {
+            return true;
+        }
+        match (
+            Self::normalize_recipient_agent_id(member_name),
+            Self::normalize_recipient_agent_id(recipient),
+        ) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        }
+    }
+
+    async fn load_agent_team_member_session_binding(
+        team_name: &str,
+        recipient: &str,
+    ) -> Option<String> {
+        let members_path = Self::agent_team_workspace_root()
+            .join(team_name)
+            .join("members.json");
+        let raw = tokio::fs::read_to_string(members_path).await.ok()?;
+        let parsed = serde_json::from_str::<Value>(&raw).ok()?;
+        let entries = parsed.as_array()?;
+        for entry in entries {
+            let Some(name) = entry.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !Self::member_name_matches_recipient(name, recipient) {
+                continue;
+            }
+            if let Some(session_id) = entry
+                .get("sessionID")
+                .or_else(|| entry.get("session_id"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(session_id.to_string());
+            }
+        }
+        None
+    }
+
+    async fn persist_agent_team_member_session_binding(
+        team_name: &str,
+        recipient: &str,
+        session_id: &str,
+    ) -> bool {
+        let members_path = Self::agent_team_workspace_root()
+            .join(team_name)
+            .join("members.json");
+        let mut entries = if members_path.exists() {
+            let Ok(raw) = tokio::fs::read_to_string(&members_path).await else {
+                return false;
+            };
+            serde_json::from_str::<Value>(&raw)
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let mut updated = false;
+        for entry in &mut entries {
+            let Some(name) = entry.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !Self::member_name_matches_recipient(name, recipient) {
+                continue;
+            }
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert(
+                    "sessionID".to_string(),
+                    Value::String(session_id.to_string()),
+                );
+                obj.insert("updatedAtMs".to_string(), Value::Number(now_ms.into()));
+                updated = true;
+                break;
+            }
+        }
+        if !updated {
+            let member_name = Self::normalize_recipient_agent_id(recipient)
+                .unwrap_or_else(|| recipient.to_string());
+            entries.push(serde_json::json!({
+                "name": member_name,
+                "sessionID": session_id,
+                "updatedAtMs": now_ms
+            }));
+        }
+
+        if let Some(parent) = members_path.parent() {
+            if tokio::fs::create_dir_all(parent).await.is_err() {
+                return false;
+            }
+        }
+        tokio::fs::write(
+            members_path,
+            serde_json::to_vec_pretty(&Value::Array(entries)).unwrap_or_default(),
+        )
+        .await
+        .is_ok()
+    }
+
+    async fn persist_agent_team_session_context(team_name: &str, session_id: &str) -> bool {
+        let context_path = Self::agent_team_workspace_root()
+            .join("session-context")
+            .join(format!("{}.json", session_id));
+        if let Some(parent) = context_path.parent() {
+            if tokio::fs::create_dir_all(parent).await.is_err() {
+                return false;
+            }
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let payload = serde_json::json!({
+            "team_name": team_name,
+            "updatedAtMs": now_ms
+        });
+        tokio::fs::write(
+            context_path,
+            serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+        )
+        .await
+        .is_ok()
+    }
+
+    fn resolve_workspace_path(raw: &str) -> Result<PathBuf, String> {
+        let expanded = Self::expand_home_prefix(raw);
+        let candidate = PathBuf::from(expanded);
+        let absolute = if candidate.is_absolute() {
+            candidate
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(candidate)
+        };
+        if !absolute.exists() {
+            return Err(format!(
+                "Workspace path does not exist: {}",
+                absolute.display()
+            ));
+        }
+        if !absolute.is_dir() {
+            return Err(format!(
+                "Workspace path is not a directory: {}",
+                absolute.display()
+            ));
+        }
+        absolute.canonicalize().map_err(|err| {
+            format!(
+                "Failed to resolve workspace path {}: {}",
+                absolute.display(),
+                err
+            )
+        })
+    }
+
+    fn expand_home_prefix(input: &str) -> String {
+        if input == "~" {
+            return Self::user_home_dir()
+                .unwrap_or_else(|| PathBuf::from("~"))
+                .display()
+                .to_string();
+        }
+        if let Some(rest) = input.strip_prefix("~/") {
+            if let Some(home) = Self::user_home_dir() {
+                return home.join(rest).display().to_string();
+            }
+        }
+        input.to_string()
+    }
+
+    fn user_home_dir() -> Option<PathBuf> {
+        #[cfg(windows)]
+        {
+            std::env::var_os("USERPROFILE").map(PathBuf::from)
+        }
+        #[cfg(not(windows))]
+        {
+            std::env::var_os("HOME").map(PathBuf::from)
+        }
+    }
+
+    fn normalize_recipient_agent_id(recipient: &str) -> Option<String> {
+        let trimmed = recipient.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if let Some(rest) = trimmed
+            .strip_prefix('A')
+            .or_else(|| trimmed.strip_prefix('a'))
+        {
+            if let Ok(index) = rest.parse::<u32>() {
+                if index > 0 {
+                    return Some(format!("A{}", index));
+                }
+            }
+        }
+        let lowered = trimmed.to_ascii_lowercase();
+        if let Some(rest) = lowered.strip_prefix("agent-") {
+            if let Ok(index) = rest.parse::<u32>() {
+                if index > 0 {
+                    return Some(format!("A{}", index));
+                }
+            }
+        }
+        None
+    }
+
+    fn recipient_agent_number(recipient: &str) -> Option<usize> {
+        let normalized = Self::normalize_recipient_agent_id(recipient)?;
+        normalized
+            .strip_prefix('A')
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+    }
+
+    fn resolve_agent_target_for_recipient(
+        agents: &[AgentPane],
+        recipient: &str,
+    ) -> Option<(String, String)> {
+        if let Some(agent) = agents
+            .iter()
+            .find(|agent| agent.agent_id.eq_ignore_ascii_case(recipient.trim()))
+        {
+            return Some((agent.session_id.clone(), agent.agent_id.clone()));
+        }
+        let normalized = Self::normalize_recipient_agent_id(recipient)?;
+        let agent = agents.iter().find(|agent| agent.agent_id == normalized)?;
+        Some((agent.session_id.clone(), agent.agent_id.clone()))
+    }
+
+    fn resolve_agent_target_for_bound_session(
+        agents: &[AgentPane],
+        recipient: &str,
+        session_id: &str,
+    ) -> Option<(String, String)> {
+        if let Some(normalized) = Self::normalize_recipient_agent_id(recipient) {
+            if let Some(agent) = agents
+                .iter()
+                .find(|agent| agent.session_id == session_id && agent.agent_id == normalized)
+            {
+                return Some((agent.session_id.clone(), agent.agent_id.clone()));
+            }
+        }
+        let agent = agents.iter().find(|agent| agent.session_id == session_id)?;
+        Some((agent.session_id.clone(), agent.agent_id.clone()))
+    }
+
+    fn is_agent_team_assignment_prompt(text: &str) -> bool {
+        text.trim_start().starts_with("Agent-team assignment from ")
+    }
+
     fn is_agent_busy(status: &AgentStatus) -> bool {
         matches!(
             status,
             AgentStatus::Running | AgentStatus::Streaming | AgentStatus::Cancelling
         )
+    }
+
+    fn is_delegated_worker_agent(&self, session_id: &str, agent_id: &str) -> bool {
+        let AppState::Chat { agents, .. } = &self.state else {
+            return false;
+        };
+        agents
+            .iter()
+            .find(|agent| agent.session_id == session_id && agent.agent_id == agent_id)
+            .map(|agent| agent.delegated_worker)
+            .unwrap_or(false)
     }
 
     fn request_center_digit_is_shortcut(&self, c: char) -> bool {
@@ -8249,6 +9119,24 @@ MULTI-AGENT KEYS:
         agent.next_paste_id = agent.next_paste_id.saturating_add(1);
         agent.paste_registry.insert(id, payload.to_string());
         Self::make_paste_marker(id, payload)
+    }
+
+    fn should_collapse_paste(payload: &str) -> bool {
+        payload.lines().count() > 2
+    }
+
+    fn insert_chat_paste(agent: Option<&mut AgentPane>, payload: &str) -> String {
+        if !Self::should_collapse_paste(payload) {
+            return payload.to_string();
+        }
+        if let Some(agent) = agent {
+            return Self::register_collapsed_paste(agent, payload);
+        }
+        format!("[Pasted {} chars]", payload.chars().count())
+    }
+
+    fn normalize_paste_payload(payload: &str) -> String {
+        payload.replace("\r\n", "\n").replace('\r', "\n")
     }
 
     fn parse_marker_id(marker: &str) -> Option<u32> {

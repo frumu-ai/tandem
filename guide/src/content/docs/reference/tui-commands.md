@@ -220,10 +220,14 @@ Close active agent pane.
 
 Ensure `n` agents exist and switch to Grid view. Default is `4`.
 
+- If a goal is provided (`/agent fanout [n] <goal...>`), TUI dispatches a coordinated team kickoff to workers.
+- If current mode is `plan`, fanout auto-switches mode to `orchestrate`.
+
 ```text
 /agent fanout
 /agent fanout 4
 /agent fanout 6
+/agent fanout 4 ship vps stress-lab improvements
 ```
 
 ## Modes

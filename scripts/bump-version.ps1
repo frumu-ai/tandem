@@ -46,6 +46,7 @@ const cargoFiles = [
   "crates/tandem-tui/Cargo.toml",
   "crates/tandem-types/Cargo.toml",
   "crates/tandem-wire/Cargo.toml",
+  "crates/tandem-agent-teams/Cargo.toml",
 ];
 
 const updatedFiles = [];

@@ -16,6 +16,7 @@ members = [
     "crates/tandem-memory",
     "crates/tandem-orchestrator",
     "crates/tandem-channels",
+    "crates/tandem-agent-teams",
 ]
 resolver = "2"
 

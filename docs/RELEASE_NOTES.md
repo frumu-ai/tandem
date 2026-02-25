@@ -1,4 +1,16 @@
-# Tandem v0.3.19 Release Notes (Unreleased)
+# Tandem v0.3.20 Release Notes (Unreleased)
+
+### Highlights
+
+- **Tandem TUI reliability + UX upgrade**:
+  - Small pastes (1-2 lines) now insert directly without `[Pasted ...]` markers; CRLF payloads are normalized to avoid line-overlap rendering artifacts.
+  - Fixed multiline composer height growth for explicit newlines, preventing second-line overlap/cropping in the input box.
+  - `/agent fanout` now auto-switches mode from `plan` to `orchestrate` before delegation to reduce plan-mode approval/clarification blockers during team runs.
+  - Expanded agent-team fanout integration: coordinated `TeamCreate` + delegated `task` routing, local mailbox/session binding, and teammate alias normalization (`A2`/`a2`/`agent-2`).
+
+---
+
+# Tandem v0.3.19 Release Notes (Released)
 
 ### Highlights
 
