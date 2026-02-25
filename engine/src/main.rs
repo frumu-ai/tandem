@@ -609,7 +609,14 @@ fn resolve_state_dir(flag: Option<String>) -> PathBuf {
     }
     resolve_shared_paths()
         .map(|p| p.engine_state_dir)
-        .unwrap_or_else(|_| PathBuf::from(".tandem"))
+        .unwrap_or_else(|_| {
+            if let Some(data_dir) = dirs::data_dir() {
+                return data_dir.join("tandem").join("data");
+            }
+            dirs::home_dir()
+                .map(|home| home.join(".tandem").join("data"))
+                .unwrap_or_else(|| PathBuf::from(".tandem"))
+        })
 }
 
 fn read_json_input(input: &str) -> anyhow::Result<serde_json::Value> {

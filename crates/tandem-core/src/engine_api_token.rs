@@ -20,7 +20,19 @@ pub fn engine_api_token_file_path() -> PathBuf {
             .join("security")
             .join("engine_api_token");
     }
-    PathBuf::from(".tandem").join("engine_api_token")
+    if let Some(data_dir) = dirs::data_dir() {
+        return data_dir
+            .join("tandem")
+            .join("security")
+            .join("engine_api_token");
+    }
+    dirs::home_dir()
+        .map(|home| {
+            home.join(".tandem")
+                .join("security")
+                .join("engine_api_token")
+        })
+        .unwrap_or_else(|| PathBuf::from("engine_api_token"))
 }
 
 fn new_token() -> String {

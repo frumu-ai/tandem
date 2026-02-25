@@ -101,9 +101,10 @@ struct StorageVersionMarker {
 }
 
 pub fn resolve_shared_paths() -> anyhow::Result<SharedPaths> {
-    let base = dirs::data_dir().ok_or_else(|| anyhow::anyhow!("Failed to resolve data dir"))?;
-    let canonical_root = base.join("tandem");
-    let legacy_root = base.join("ai.frumu.tandem");
+    let canonical_root = resolve_tandem_home_dir()?;
+    let legacy_root = dirs::data_dir()
+        .map(|base| base.join("ai.frumu.tandem"))
+        .unwrap_or_else(|| canonical_root.join("legacy").join("ai.frumu.tandem"));
 
     Ok(SharedPaths {
         canonical_root: canonical_root.clone(),
@@ -118,6 +119,17 @@ pub fn resolve_shared_paths() -> anyhow::Result<SharedPaths> {
         storage_version_path: canonical_root.join("storage_version.json"),
         migration_report_path: canonical_root.join("migration_report.json"),
     })
+}
+
+pub fn resolve_tandem_home_dir() -> anyhow::Result<PathBuf> {
+    if let Ok(override_dir) = std::env::var("TANDEM_HOME") {
+        let trimmed = override_dir.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+    let base = dirs::data_dir().ok_or_else(|| anyhow::anyhow!("Failed to resolve data dir"))?;
+    Ok(base.join("tandem"))
 }
 
 pub fn migrate_legacy_storage_if_needed(paths: &SharedPaths) -> anyhow::Result<MigrationResult> {

@@ -19,8 +19,8 @@ use tokio::sync::RwLock;
 
 use tandem_channels::config::{ChannelsConfig, DiscordConfig, SlackConfig, TelegramConfig};
 use tandem_core::{
-    AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus, PermissionManager,
-    PluginRegistry, Storage,
+    resolve_shared_paths, AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus,
+    PermissionManager, PluginRegistry, Storage,
 };
 use tandem_providers::ProviderRegistry;
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
@@ -1439,7 +1439,7 @@ fn resolve_shared_resources_path() -> PathBuf {
             return PathBuf::from(trimmed).join("shared_resources.json");
         }
     }
-    PathBuf::from(".tandem").join("shared_resources.json")
+    default_state_dir().join("shared_resources.json")
 }
 
 fn resolve_routines_path() -> PathBuf {
@@ -1449,7 +1449,7 @@ fn resolve_routines_path() -> PathBuf {
             return PathBuf::from(trimmed).join("routines.json");
         }
     }
-    PathBuf::from(".tandem").join("routines.json")
+    default_state_dir().join("routines.json")
 }
 
 fn resolve_routine_history_path() -> PathBuf {
@@ -1459,7 +1459,7 @@ fn resolve_routine_history_path() -> PathBuf {
             return PathBuf::from(trimmed).join("routine_history.json");
         }
     }
-    PathBuf::from(".tandem").join("routine_history.json")
+    default_state_dir().join("routine_history.json")
 }
 
 fn resolve_routine_runs_path() -> PathBuf {
@@ -1469,7 +1469,7 @@ fn resolve_routine_runs_path() -> PathBuf {
             return PathBuf::from(trimmed).join("routine_runs.json");
         }
     }
-    PathBuf::from(".tandem").join("routine_runs.json")
+    default_state_dir().join("routine_runs.json")
 }
 
 fn resolve_agent_team_audit_path() -> PathBuf {
@@ -1481,9 +1481,21 @@ fn resolve_agent_team_audit_path() -> PathBuf {
                 .join("audit.log.jsonl");
         }
     }
-    PathBuf::from(".tandem")
+    default_state_dir()
         .join("agent-team")
         .join("audit.log.jsonl")
+}
+
+fn default_state_dir() -> PathBuf {
+    if let Ok(paths) = resolve_shared_paths() {
+        return paths.engine_state_dir;
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        return data_dir.join("tandem").join("data");
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".tandem").join("data"))
+        .unwrap_or_else(|| PathBuf::from(".tandem"))
 }
 
 fn routine_interval_ms(schedule: &RoutineSchedule) -> Option<u64> {

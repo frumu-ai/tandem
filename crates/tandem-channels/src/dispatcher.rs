@@ -1,7 +1,8 @@
 //! Session dispatcher — routes incoming channel messages to Tandem sessions.
 //!
 //! Each unique `{channel_name}:{sender_id}` pair maps to one persistent Tandem
-//! session. The mapping is durably persisted to `~/.local/share/tandem/channel_sessions.json`
+//! session. The mapping is durably persisted under Tandem's app-data state dir
+//! (for example `~/.local/share/tandem/data/channel_sessions.json` on Linux)
 //! and reloaded on startup.
 //!
 //! ## API paths (tandem-server)
@@ -64,23 +65,17 @@ pub struct SessionRecord {
 pub type SessionMap = Arc<Mutex<HashMap<String, SessionRecord>>>;
 
 fn persistence_path() -> PathBuf {
-    // Prefer XDG_DATA_HOME, fall back to ~/.local/share
     let base = std::env::var("TANDEM_STATE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            dirs_path()
+            if let Some(data_dir) = dirs::data_dir() {
+                return data_dir.join("tandem").join("data");
+            }
+            dirs::home_dir()
+                .map(|home| home.join(".tandem").join("data"))
                 .unwrap_or_else(|| PathBuf::from(".tandem"))
-                .join("tandem")
         });
     base.join("channel_sessions.json")
-}
-
-fn dirs_path() -> Option<PathBuf> {
-    // Unix: ~/.local/share / Windows: %APPDATA%
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
-        .map(|home| PathBuf::from(home).join(".local").join("share"))
 }
 
 /// Load the session map from disk. Returns an empty map if the file doesn't

@@ -355,7 +355,14 @@ async fn resolve_global_config_path() -> anyhow::Result<PathBuf> {
         }
         return Ok(path);
     }
-    Ok(PathBuf::from(".tandem/global_config.json"))
+    if let Some(home) = dirs::home_dir() {
+        let path = home.join(".config").join("tandem").join("config.json");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        return Ok(path);
+    }
+    Ok(PathBuf::from("config.json"))
 }
 
 fn env_layer() -> Value {

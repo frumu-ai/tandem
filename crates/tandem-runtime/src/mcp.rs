@@ -477,7 +477,21 @@ fn resolve_state_file() -> PathBuf {
     if let Ok(path) = std::env::var("TANDEM_MCP_REGISTRY") {
         return PathBuf::from(path);
     }
-    PathBuf::from(".tandem").join("mcp_servers.json")
+    if let Ok(state_dir) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = state_dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("mcp_servers.json");
+        }
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        return data_dir
+            .join("tandem")
+            .join("data")
+            .join("mcp_servers.json");
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".tandem").join("data").join("mcp_servers.json"))
+        .unwrap_or_else(|| PathBuf::from("mcp_servers.json"))
 }
 
 fn load_state(path: &Path) -> HashMap<String, McpServer> {

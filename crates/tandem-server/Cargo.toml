@@ -11,6 +11,7 @@ anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
+dirs = "6"
 ignore = "0.4"
 regex = "1"
 reqwest = { version = "0.12", default-features = true, features = ["json"] }
@@ -37,5 +38,4 @@ tandem-channels = { path = "../tandem-channels", version = "0.3.20" }
 
 [dev-dependencies]
 tower = "0.5"
-
 

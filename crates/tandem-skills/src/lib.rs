@@ -606,18 +606,18 @@ impl SkillService {
 fn canonical_global_skills_root() -> PathBuf {
     dirs::data_dir()
         .map(|d| d.join("tandem").join("skills"))
-        .unwrap_or_else(|| PathBuf::from(".tandem-global-skills"))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".tandem").join("skills")))
+        .unwrap_or_else(|| PathBuf::from("skills"))
 }
 
 fn default_global_write_root() -> PathBuf {
-    dirs::home_dir()
-        .map(|h| h.join(".tandem").join("skills"))
-        .unwrap_or_else(canonical_global_skills_root)
+    canonical_global_skills_root()
 }
 
 fn default_global_discovery_roots(global_write_root: &Path) -> Vec<PathBuf> {
     let mut roots = vec![global_write_root.to_path_buf()];
     if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".tandem").join("skills"));
         roots.push(home.join(".agents").join("skills"));
         roots.push(home.join(".claude").join("skills"));
     }
