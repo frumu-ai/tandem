@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Orchestrator/Command Center parity**: Unified both surfaces on shared blackboard UI/state/policy helpers to keep behavior consistent across run-control entrypoints.
 - **Two-pass orchestrator planning**: Planning now performs an analysis pass before DAG generation to improve task quality and reduce low-context first plans.
 - **Context-aware execution prompts**: Builder prompts now include continuation context from context-pack summaries so retries/resumes stay on-track instead of restarting from scratch.
+- **Planner tool contract alignment**: Planner prompt tool inventory now matches actual runtime tools (`glob/read/write/edit/apply_patch/websearch/webfetch/webfetch_html/codesearch`) and explicitly plans web research when local source material is sparse.
+- **Tool path normalization hardening**: File-path normalization now rejects synthetic placeholders like `files/directories` and `tool/policy`, recognizes document extensions (`.pdf/.docx/.pptx/.xlsx/.rtf`), and avoids deriving file paths from assistant narrative context.
 - **Release metadata bump**: Updated app/runtime package versions to `0.3.22` for desktop/TUI release alignment.
 
 ### Fixed
@@ -28,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Task/session continuity on restart and retry**: Orchestrator now restores task session bindings from checkpoints and preserves failed-task session context by default during retry.
 - **Planning/execution token accounting visibility**: Budget token usage now records prompt+response estimates for planner analysis/planner/builder/validator calls, preventing misleading near-zero token displays.
 - **Blackboard event coverage for engine runs**: Blackboard projection and refresh logic now recognize orchestrator event families (for example `context_pack_built`, planning/task/run events), improving live context visibility in both Orchestrator and Command Center.
+- **Write-required task fail-fast behavior**: Orchestrator now fails fast with explicit errors when builder recovery performs no tool calls or only read-only tool calls on tasks that require file modifications.
+- **Read/write sandbox diagnostics and Windows path handling**: Tool path policy now accepts Windows verbatim paths (`\\?\...`) when in-workspace, performs lexical in-workspace checks for non-existent targets, and returns actionable denied-path diagnostics (workspace root/effective cwd/suggested path).
+- **Read tool error transparency**: `read` now returns explicit failure reasons (`path_not_found`, `path_is_directory`, `read_text_failed`) instead of silent empty output, reducing retry loops and validator misclassification.
+- **Blackboard task-trace visibility**: Blackboard projection/filtering/refresh now includes `task_trace` events (for example `FIRST_TOOL_CALL: glob`) and Orchestrator surfaces paused-run error context directly in the panel.
 
 ## [0.3.21]
 

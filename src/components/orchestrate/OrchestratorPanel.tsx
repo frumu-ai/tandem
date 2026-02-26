@@ -1270,6 +1270,16 @@ export function OrchestratorPanel({
                   </div>
                 )}
 
+                {isPaused && snapshot.error_message && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+                    <div className="flex items-center gap-2 text-amber-200">
+                      <AlertCircle className="h-4 w-4" />
+                      <span className="text-sm font-medium">Execution Paused</span>
+                    </div>
+                    <p className="mt-1 text-xs text-amber-100/90">{snapshot.error_message}</p>
+                  </div>
+                )}
+
                 {/* Task Board or Loading State */}
                 {snapshot.status === "planning" && tasks.length === 0 ? (
                   <div className="space-y-4">

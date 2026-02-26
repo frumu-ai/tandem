@@ -84,6 +84,13 @@ struct WorkspaceChangeSummary {
     diff_text: String,
 }
 
+#[derive(Clone, Debug, Default)]
+struct AgentCallOutcome {
+    content: String,
+    used_tools: bool,
+    used_write_tools: bool,
+}
+
 // ============================================================================
 // Orchestrator Engine
 // ============================================================================
@@ -1069,8 +1076,6 @@ impl OrchestratorEngine {
                         run.why_next_step = Some(why_next_step.clone());
                         run.tasks[idx].state = TaskState::Runnable;
                         run.tasks[idx].state = TaskState::InProgress;
-                        // Clear stale per-task error once a fresh execution attempt starts.
-                        run.tasks[idx].error_message = None;
                         (run.tasks[idx].clone(), why_next_step)
                     } else {
                         continue;
@@ -1290,11 +1295,22 @@ impl OrchestratorEngine {
                         pack.rolling_summary
                     )
                 });
+            let previous_attempt_context = task
+                .validation_result
+                .as_ref()
+                .map(|v| v.feedback.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .or_else(|| {
+                    task.error_message
+                        .as_ref()
+                        .map(|msg| msg.trim().to_string())
+                        .filter(|msg| !msg.is_empty())
+                });
             let prompt = AgentPrompts::build_builder_prompt(
                 &task,
                 &file_context,
                 context_pack_summary.as_deref(),
-                None,
+                previous_attempt_context.as_deref(),
             );
 
             // Record budget
@@ -1303,9 +1319,12 @@ impl OrchestratorEngine {
                 tracker.record_iteration();
             }
 
-            let mut builder_response = self
+            let mut builder_call = self
                 .call_agent_for_task_with_recovery(&task, &mut session_id, &prompt, execution_role)
                 .await?;
+            let mut builder_response = builder_call.content.clone();
+            let mut builder_used_tools = builder_call.used_tools;
+            let mut builder_used_write_tools = builder_call.used_write_tools;
 
             // Record tokens
             {
@@ -1363,7 +1382,7 @@ You MUST perform concrete file edits now.\n\
                     ),
                     target_hint
                 );
-                builder_response = self
+                builder_call = self
                     .call_agent_for_task_with_recovery(
                         &task,
                         &mut session_id,
@@ -1371,6 +1390,10 @@ You MUST perform concrete file edits now.\n\
                         execution_role,
                     )
                     .await?;
+                builder_response = builder_call.content.clone();
+                builder_used_tools = builder_used_tools || builder_call.used_tools;
+                builder_used_write_tools =
+                    builder_used_write_tools || builder_call.used_write_tools;
                 {
                     let mut tracker = self.budget_tracker.write().await;
                     tracker.record_tokens(
@@ -1398,6 +1421,28 @@ You MUST perform concrete file edits now.\n\
                 }
 
                 if !workspace_changes.has_changes {
+                    if !builder_used_tools {
+                        self.emit_task_trace(
+                            &task.id,
+                            Some(session_id.as_str()),
+                            "NO_TOOL_CALLS_DETECTED",
+                            Some("builder did not invoke tools after recovery prompt".to_string()),
+                        );
+                        return Err(TandemError::Orchestrator(
+                            "Task requires file changes, but builder invoked no tools. Use read/glob to inspect inputs and write/edit/apply_patch to create or modify files before finishing.".to_string(),
+                        ));
+                    }
+                    if !builder_used_write_tools {
+                        self.emit_task_trace(
+                            &task.id,
+                            Some(session_id.as_str()),
+                            "NO_WRITE_TOOL_CALLS_DETECTED",
+                            Some("builder invoked only read-only tools after recovery prompt".to_string()),
+                        );
+                        return Err(TandemError::Orchestrator(
+                            "Task requires file changes, but builder only invoked read-only tools. Use write/edit/apply_patch with a concrete path to produce the required artifact.".to_string(),
+                        ));
+                    }
                     return Err(TandemError::Orchestrator(format!(
                         "Task requires file changes but none were captured. Use write/edit/apply_patch to update {} before completing.",
                         target_hint
@@ -1421,7 +1466,8 @@ You MUST perform concrete file edits now.\n\
                     &validator_prompt,
                     self.resolve_task_validation_role(&task, execution_role),
                 )
-                .await?;
+                .await?
+                .content;
 
             // Record tokens
             {
@@ -1776,7 +1822,7 @@ You MUST perform concrete file edits now.\n\
         session_id: &mut String,
         prompt: &str,
         role: AgentRole,
-    ) -> Result<String> {
+    ) -> Result<AgentCallOutcome> {
         let max_timeout_retries = {
             let run = self.run.read().await;
             run.config.max_timeout_retries_per_task_attempt
@@ -1789,7 +1835,12 @@ You MUST perform concrete file edits now.\n\
 
         loop {
             match self
-                .call_agent(Some(&task.id), session_id.as_str(), &effective_prompt, role)
+                .call_agent_with_outcome(
+                    Some(&task.id),
+                    session_id.as_str(),
+                    &effective_prompt,
+                    role,
+                )
                 .await
             {
                 Ok(response) => return Ok(response),
@@ -1975,6 +2026,18 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
         prompt: &str,
         role: AgentRole,
     ) -> Result<String> {
+        self.call_agent_with_outcome(task_id, session_id, prompt, role)
+            .await
+            .map(|o| o.content)
+    }
+
+    async fn call_agent_with_outcome(
+        &self,
+        task_id: Option<&str>,
+        session_id: &str,
+        prompt: &str,
+        role: AgentRole,
+    ) -> Result<AgentCallOutcome> {
         use crate::sidecar::{ModelSpec, SendMessageRequest, StreamEvent};
         self.validate_workspace_lease("pre_tool_call", task_id)
             .await?;
@@ -2084,6 +2147,7 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
         let mut content = String::new();
         let mut errors: Vec<String> = Vec::new();
         let mut first_tool_part_id: Option<String> = None;
+        let mut used_write_tools = false;
         let mut first_tool_finished = false;
         let mut stalled_windows: usize = 0;
         const MAX_STALLED_WINDOWS_BEFORE_FAIL: usize = 4;
@@ -2146,6 +2210,20 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
                             tool,
                             ..
                         } => {
+                            let normalized_tool = tool
+                                .split(':')
+                                .next_back()
+                                .unwrap_or(tool.as_str())
+                                .trim()
+                                .to_ascii_lowercase();
+                            if sid == &active_session_id
+                                && matches!(
+                                    normalized_tool.as_str(),
+                                    "write" | "edit" | "apply_patch"
+                                )
+                            {
+                                used_write_tools = true;
+                            }
                             if sid == &active_session_id && first_tool_part_id.is_none() {
                                 first_tool_part_id = Some(part_id.clone());
                                 if let Some(task_id) = task_id {
@@ -2347,7 +2425,11 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
         }
 
         tracing::info!("Agent response received, length: {}", content.len());
-        Ok(content)
+        Ok(AgentCallOutcome {
+            content,
+            used_tools: first_tool_part_id.is_some(),
+            used_write_tools,
+        })
     }
 
     async fn recover_agent_response_from_history(&self, session_id: &str) -> Option<String> {
@@ -2458,7 +2540,7 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
         }
 
         Ok(format!(
-            "Top-level files/directories: {}",
+            "Top-level workspace entries: {}",
             non_meta.into_iter().take(25).collect::<Vec<_>>().join(", ")
         ))
     }
@@ -2950,16 +3032,8 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
             {
                 run.error_message = None;
             }
-            for task in run.tasks.iter_mut() {
-                if task.state == TaskState::Pending
-                    && task
-                        .error_message
-                        .as_deref()
-                        .is_some_and(Self::should_clear_error_on_resume)
-                {
-                    task.error_message = None;
-                }
-            }
+            // Preserve per-task error context on resume so the next attempt prompt can carry
+            // forward concrete failure rationale instead of restarting from zero context.
         }
 
         {

@@ -23,9 +23,17 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Builder prompts now include continuation context from the orchestrator context-pack so retries/resumes keep decision rationale.
   - Failed-task retry now preserves task session context by default; load/restart restores task session bindings from checkpoint snapshots.
   - Budget token usage now accounts for prompt + response across planner analysis, planner, builder, and validator calls.
+  - Added explicit fail-fast checks for file-modifying tasks when recovery attempts invoke no tools, or only read-only tools.
+  - Resume now preserves per-task failure rationale in prompt context to prevent "start from scratch" retries.
 - Blackboard parity improvements (Orchestrator + Command Center)
   - Blackboard decision/reliability/task-sync projections now recognize orchestrator runtime events (for example `context_pack_built`, planning, task lifecycle, and run failure events), not only context-run `meta_next_step_selected`.
   - Refresh triggers were expanded to these orchestrator event families so blackboard state updates consistently during active runs.
+  - Added `task_trace` coverage in projection/refresh/filtering so first-tool/stage details are visible in blackboard rails.
+- Filesystem and tool-path reliability hardening
+  - Path normalization now rejects synthetic placeholders (for example `files/directories`, `tool/policy`) and recognizes document extensions (`.pdf/.docx/.pptx/.xlsx/.rtf`) when recovering file targets.
+  - `read` now returns explicit structured failures (`path_not_found`, `path_is_directory`, `read_text_failed`) instead of silent empty output.
+  - Sandbox-denied responses now include actionable diagnostics (`workspace_root`, `effective_cwd`, and suggested in-workspace target path).
+  - Windows verbatim paths (`\\?\...`) are accepted when they are still inside workspace root, reducing false sandbox denials.
 
 ## v0.3.21 (Unreleased)
 

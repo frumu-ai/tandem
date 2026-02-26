@@ -99,6 +99,17 @@ test("extractWhyNextFromEvents supports orchestrator context-pack events", () =>
   assert.equal(why, "deps satisfied");
 });
 
+test("projectNodes includes task_trace details in task-sync rail", () => {
+  const nodes = projectNodes(
+    [event(3, "task_trace", { stage: "FIRST_TOOL_CALL", detail: "glob" }, "task_1")],
+    null,
+    null
+  );
+  const trace = nodes.find((node) => node.kind === "task_sync");
+  assert.ok(trace);
+  assert.equal(trace.label, "FIRST_TOOL_CALL: glob");
+});
+
 test("deriveIndicators exposes drift/checkpoint/alert flags", () => {
   const tasks: Task[] = [
     {

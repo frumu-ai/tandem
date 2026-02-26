@@ -77,6 +77,7 @@ function isRecentRelevantEvent(event: RunEventRecord): boolean {
     normalized === "workspace_mismatch" ||
     normalized === "task_started" ||
     normalized === "task_completed" ||
+    normalized === "task_trace" ||
     normalized === "run_failed" ||
     normalized.includes("loop") ||
     normalized.includes("escalated")

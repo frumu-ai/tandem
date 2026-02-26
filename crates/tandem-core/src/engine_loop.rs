@@ -1755,10 +1755,6 @@ fn normalize_tool_args(
     } else if matches!(normalized_tool.as_str(), "read" | "write" | "edit") {
         if let Some(path) = extract_file_path_arg(&args) {
             args = set_file_path_arg(args, path);
-        } else if let Some(inferred) = infer_file_path_from_text(latest_assistant_context) {
-            args_source = "inferred_from_context".to_string();
-            args_integrity = "recovered".to_string();
-            args = set_file_path_arg(args, inferred);
         } else if let Some(inferred) = infer_file_path_from_text(latest_user_text) {
             args_source = "inferred_from_user".to_string();
             args_integrity = "recovered".to_string();
@@ -2285,11 +2281,14 @@ fn sanitize_path_candidate(raw: &str) -> Option<String> {
     if is_root_only_path_token(token) {
         return None;
     }
+    if is_placeholder_path_token(token) {
+        return None;
+    }
 
     let looks_like_path = token.contains('/') || token.contains('\\');
     let has_file_ext = [
         ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".rs", ".ts", ".tsx", ".js", ".jsx",
-        ".py", ".go", ".java", ".cpp", ".c", ".h",
+        ".py", ".go", ".java", ".cpp", ".c", ".h", ".pdf", ".docx", ".pptx", ".xlsx", ".rtf",
     ]
     .iter()
     .any(|ext| lower.ends_with(ext));
@@ -2299,6 +2298,25 @@ fn sanitize_path_candidate(raw: &str) -> Option<String> {
     }
 
     Some(token.to_string())
+}
+
+fn is_placeholder_path_token(token: &str) -> bool {
+    let lowered = token.trim().to_ascii_lowercase();
+    if lowered.is_empty() {
+        return true;
+    }
+    matches!(
+        lowered.as_str(),
+        "files/directories"
+            | "file/directory"
+            | "relative/or/absolute/path"
+            | "path/to/file"
+            | "path/to/your/file"
+            | "tool/policy"
+            | "tools/policy"
+            | "the expected artifact file"
+            | "workspace/file"
+    )
 }
 
 fn is_malformed_tool_path_token(token: &str) -> bool {
@@ -3955,20 +3973,18 @@ Call: todowrite(task_id=3, status="in_progress")
     }
 
     #[test]
-    fn normalize_tool_args_read_infers_path_from_assistant_context() {
+    fn normalize_tool_args_read_does_not_infer_path_from_assistant_context() {
         let normalized = normalize_tool_args(
             "read",
             json!({}),
             "generic instruction",
             "I will read src-tauri/src/orchestrator/engine.rs first.",
         );
-        assert!(!normalized.missing_terminal);
+        assert!(normalized.missing_terminal);
         assert_eq!(
-            normalized.args.get("path").and_then(|v| v.as_str()),
-            Some("src-tauri/src/orchestrator/engine.rs")
+            normalized.missing_terminal_reason.as_deref(),
+            Some("FILE_PATH_MISSING")
         );
-        assert_eq!(normalized.args_source, "inferred_from_context");
-        assert_eq!(normalized.args_integrity, "recovered");
     }
 
     #[test]
@@ -4115,6 +4131,43 @@ Call: todowrite(task_id=3, status="in_progress")
             normalized.missing_terminal_reason.as_deref(),
             Some("FILE_PATH_MISSING")
         );
+    }
+
+    #[test]
+    fn normalize_tool_args_read_rejects_placeholder_path() {
+        let normalized = normalize_tool_args("read", json!({"path":"files/directories"}), "", "");
+        assert!(normalized.missing_terminal);
+        assert_eq!(
+            normalized.missing_terminal_reason.as_deref(),
+            Some("FILE_PATH_MISSING")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_read_rejects_tool_policy_placeholder_path() {
+        let normalized = normalize_tool_args("read", json!({"path":"tool/policy"}), "", "");
+        assert!(normalized.missing_terminal);
+        assert_eq!(
+            normalized.missing_terminal_reason.as_deref(),
+            Some("FILE_PATH_MISSING")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_read_recovers_pdf_path_from_user_text() {
+        let normalized = normalize_tool_args(
+            "read",
+            json!({"path":"tool/policy"}),
+            "Read `T1011U kitöltési útmutató.pdf` and summarize.",
+            "",
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("path").and_then(|v| v.as_str()),
+            Some("T1011U kitöltési útmutató.pdf")
+        );
+        assert_eq!(normalized.args_source, "inferred_from_user");
+        assert_eq!(normalized.args_integrity, "recovered");
     }
 
     #[test]

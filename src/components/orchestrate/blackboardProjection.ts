@@ -47,6 +47,7 @@ const TASK_SYNC_EVENT_TYPES = new Set([
   "task_started",
   "task_completed",
   "plan_generated",
+  "task_trace",
 ]);
 
 const RELIABILITY_EVENT_TYPES = new Set([
@@ -73,6 +74,20 @@ function eventWhyNextStep(event: RunEventRecord): string | null {
     return "Planning has started.";
   }
   return null;
+}
+
+function taskTraceLabel(event: RunEventRecord): string | null {
+  const stage = event.payload?.stage;
+  const detail = event.payload?.detail;
+  const stageText = typeof stage === "string" && stage.trim().length > 0 ? stage : null;
+  const detailText = typeof detail === "string" && detail.trim().length > 0 ? detail : null;
+  if (!stageText && !detailText) {
+    return null;
+  }
+  if (stageText && detailText) {
+    return `${stageText}: ${detailText}`;
+  }
+  return stageText ?? detailText;
 }
 
 export function extractWhyNextFromEvents(events: RunEventRecord[]): string | null {
@@ -139,7 +154,7 @@ export function projectNodes(
             ? "plan generated"
             : normalizedType === "planning_started"
               ? "planning started"
-              : normalizedType.replaceAll("_", " ");
+              : normalizedType.replace(/_/g, " ");
       const id = `decision:${event.event_id}`;
       nodes.push({
         id,
@@ -155,10 +170,14 @@ export function projectNodes(
       });
       decisionBySeq.push({ seq: event.seq, nodeId: id });
     } else if (TASK_SYNC_EVENT_TYPES.has(normalizedType)) {
+      const label =
+        normalizedType === "task_trace"
+          ? (taskTraceLabel(event) ?? "task trace")
+          : normalizedType.replace(/_/g, " ");
       nodes.push({
         id: `task_sync:${event.event_id}`,
         kind: "task_sync",
-        label: normalizedType.replaceAll("_", " "),
+        label,
         seq: event.seq,
         tsMs: event.ts_ms,
         eventType: normalizedType,
@@ -173,7 +192,7 @@ export function projectNodes(
       nodes.push({
         id: `reliability:${event.event_id}`,
         kind: "reliability",
-        label: normalizedType.replaceAll("_", " "),
+        label: normalizedType.replace(/_/g, " "),
         seq: event.seq,
         tsMs: event.ts_ms,
         eventType: normalizedType,

@@ -11,6 +11,7 @@ const EXPLICIT_REFRESH_TYPES = new Set([
   "revision_requested",
   "task_started",
   "task_completed",
+  "task_trace",
   "run_failed",
   "contract_warning",
   "contract_error",

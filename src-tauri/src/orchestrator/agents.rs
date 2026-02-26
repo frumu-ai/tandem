@@ -39,7 +39,7 @@ Create a task plan to accomplish the following objective:
 
 ## Constraints
 - Maximum tasks: {max_tasks}
-- Available tools: read_file, write_file, search, apply_patch
+- Available tools: glob, read, write, edit, apply_patch, websearch, webfetch, webfetch_html, codesearch
 - Research enabled: {research_enabled}
 
 ## Output Format
@@ -89,6 +89,10 @@ Example:
    (avoid repeated local shell discovery loops; use web research and produce concrete starter artifacts)
 8. The first wave of work should include multiple runnable tasks whenever objective scope allows it.
    Only final synthesis/integration tasks should depend on many prior tasks.
+9. If local sources are sparse (for example one PDF and little else) but objective needs broader requirements/context:
+   - include explicit web research tasks using `websearch` + `webfetch`
+   - still include explicit local extraction tasks for the primary source file(s)
+   - include concrete artifact-writing tasks (`write`/`edit`/`apply_patch`) for final deliverables.
 
 Output ONLY the JSON array, no other text."#,
             objective = objective,

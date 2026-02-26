@@ -407,6 +407,16 @@ fn normalize_existing_or_lexical(path: &Path) -> PathBuf {
 }
 
 fn is_within_workspace_root(path: &Path, workspace_root: &Path) -> bool {
+    // First compare lexical-normalized paths so non-existent target files under symlinked
+    // workspace roots still pass containment checks.
+    let candidate_lexical = normalize_path_for_compare(path);
+    let root_lexical = normalize_path_for_compare(workspace_root);
+    if candidate_lexical.starts_with(&root_lexical) {
+        return true;
+    }
+
+    // Fallback to canonical comparison when available (best for existing paths and symlink
+    // resolution consistency).
     let candidate = normalize_existing_or_lexical(path);
     let root = normalize_existing_or_lexical(workspace_root);
     candidate.starts_with(root)
@@ -466,6 +476,51 @@ fn resolve_walk_root(path: &str, args: &Value) -> Option<PathBuf> {
     resolve_tool_path(path, args)
 }
 
+fn sandbox_path_denied_result(path: &str, args: &Value) -> ToolResult {
+    let requested = path.trim();
+    let workspace_root = workspace_root_from_args(args);
+    let effective_cwd = effective_cwd_from_args(args);
+    let suggested_path = Path::new(requested)
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .map(PathBuf::from)
+        .and_then(|name| {
+            if let Some(root) = workspace_root.as_ref() {
+                if is_within_workspace_root(&effective_cwd, root) {
+                    Some(effective_cwd.join(name))
+                } else {
+                    Some(root.join(name))
+                }
+            } else {
+                Some(effective_cwd.join(name))
+            }
+        });
+
+    let mut output =
+        "path denied by sandbox policy (outside workspace root, malformed path, or missing workspace context)"
+            .to_string();
+    if let Some(suggested) = suggested_path.as_ref() {
+        output.push_str(&format!(
+            "\nrequested: {}\ntry: {}",
+            requested,
+            suggested.to_string_lossy()
+        ));
+    }
+    if let Some(root) = workspace_root.as_ref() {
+        output.push_str(&format!("\nworkspace_root: {}", root.to_string_lossy()));
+    }
+
+    ToolResult {
+        output,
+        metadata: json!({
+            "path": path,
+            "workspace_root": workspace_root.map(|p| p.to_string_lossy().to_string()),
+            "effective_cwd": effective_cwd.to_string_lossy().to_string(),
+            "suggested_path": suggested_path.map(|p| p.to_string_lossy().to_string())
+        }),
+    }
+}
+
 fn is_root_only_path_token(path: &str) -> bool {
     if matches!(path, "/" | "\\" | "." | ".." | "~") {
         return true;
@@ -498,8 +553,17 @@ fn is_malformed_tool_path_token(path: &str) -> bool {
     if path.contains('\n') || path.contains('\r') {
         return true;
     }
-    if path.contains('*') || path.contains('?') {
+    if path.contains('*') {
         return true;
+    }
+    // Allow Windows verbatim prefixes (\\?\C:\... / //?/C:/... / \\?\UNC\...).
+    // These can appear in tool outputs and should not be treated as malformed.
+    if path.contains('?') {
+        let trimmed = path.trim();
+        let is_windows_verbatim = trimmed.starts_with("\\\\?\\") || trimmed.starts_with("//?/");
+        if !is_windows_verbatim {
+            return true;
+        }
     }
     false
 }
@@ -953,13 +1017,38 @@ impl Tool for ReadTool {
         }
     }
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
-        let path = args["path"].as_str().unwrap_or("");
+        let path = args["path"].as_str().unwrap_or("").trim();
         let Some(path_buf) = resolve_tool_path(path, &args) else {
-            return Ok(ToolResult {
-                output: "path denied by sandbox policy".to_string(),
-                metadata: json!({"path": path}),
-            });
+            return Ok(sandbox_path_denied_result(path, &args));
         };
+
+        let metadata = match fs::metadata(&path_buf).await {
+            Ok(meta) => meta,
+            Err(e) => {
+                return Ok(ToolResult {
+                    output: format!("read failed: {}", e),
+                    metadata: json!({
+                        "ok": false,
+                        "reason": "path_not_found",
+                        "path": path,
+                        "error": e.to_string()
+                    }),
+                });
+            }
+        };
+        if metadata.is_dir() {
+            return Ok(ToolResult {
+                output: format!(
+                    "read failed: `{}` is a directory. Use `glob` to enumerate files, then `read` a concrete file path.",
+                    path
+                ),
+                metadata: json!({
+                    "ok": false,
+                    "reason": "path_is_directory",
+                    "path": path
+                }),
+            });
+        }
 
         // Check if it's a document format
         if is_document_file(&path_buf) {
@@ -999,7 +1088,20 @@ impl Tool for ReadTool {
         }
 
         // Fallback to text reading
-        let data = fs::read_to_string(&path_buf).await.unwrap_or_default();
+        let data = match fs::read_to_string(&path_buf).await {
+            Ok(data) => data,
+            Err(e) => {
+                return Ok(ToolResult {
+                    output: format!("read failed: {}", e),
+                    metadata: json!({
+                        "ok": false,
+                        "reason": "read_text_failed",
+                        "path": path_buf.to_string_lossy(),
+                        "error": e.to_string()
+                    }),
+                });
+            }
+        };
         Ok(ToolResult {
             output: data,
             metadata: json!({"path": path_buf.to_string_lossy(), "type": "text"}),
@@ -1033,10 +1135,7 @@ impl Tool for WriteTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let Some(path_buf) = resolve_tool_path(path, &args) else {
-            return Ok(ToolResult {
-                output: "path denied by sandbox policy".to_string(),
-                metadata: json!({"path": path}),
-            });
+            return Ok(sandbox_path_denied_result(path, &args));
         };
         let Some(content) = content else {
             return Ok(ToolResult {
@@ -1086,10 +1185,7 @@ impl Tool for EditTool {
         let old = args["old"].as_str().unwrap_or("");
         let new = args["new"].as_str().unwrap_or("");
         let Some(path_buf) = resolve_tool_path(path, &args) else {
-            return Ok(ToolResult {
-                output: "path denied by sandbox policy".to_string(),
-                metadata: json!({"path": path}),
-            });
+            return Ok(sandbox_path_denied_result(path, &args));
         };
         let content = fs::read_to_string(&path_buf).await.unwrap_or_default();
         let updated = content.replace(old, new);
@@ -1173,10 +1269,7 @@ impl Tool for GrepTool {
         let pattern = args["pattern"].as_str().unwrap_or("");
         let root = args["path"].as_str().unwrap_or(".");
         let Some(root_path) = resolve_walk_root(root, &args) else {
-            return Ok(ToolResult {
-                output: "path denied by sandbox policy".to_string(),
-                metadata: json!({"path": root}),
-            });
+            return Ok(sandbox_path_denied_result(root, &args));
         };
         let regex = Regex::new(pattern)?;
         let mut out = Vec::new();
@@ -1868,10 +1961,7 @@ impl Tool for CodeSearchTool {
         }
         let root = args["path"].as_str().unwrap_or(".");
         let Some(root_path) = resolve_walk_root(root, &args) else {
-            return Ok(ToolResult {
-                output: "path denied by sandbox policy".to_string(),
-                metadata: json!({"path": root}),
-            });
+            return Ok(sandbox_path_denied_result(root, &args));
         };
         let limit = args["limit"]
             .as_u64()
@@ -4221,6 +4311,27 @@ mod tests {
         assert!(resolve_tool_path("**/*", &json!({})).is_none());
         assert!(resolve_tool_path("/", &json!({})).is_none());
         assert!(resolve_tool_path("C:\\", &json!({})).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_policy_allows_windows_verbatim_paths_within_workspace() {
+        let args = json!({
+            "__workspace_root": r"C:\tandem-examples",
+            "__effective_cwd": r"C:\tandem-examples\docs"
+        });
+        assert!(resolve_tool_path(r"\\?\C:\tandem-examples\docs\index.html", &args).is_some());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn path_policy_allows_absolute_linux_paths_within_workspace() {
+        let args = json!({
+            "__workspace_root": "/tmp/tandem-examples",
+            "__effective_cwd": "/tmp/tandem-examples/docs"
+        });
+        assert!(resolve_tool_path("/tmp/tandem-examples/docs/index.html", &args).is_some());
+        assert!(resolve_tool_path("/etc/passwd", &args).is_none());
     }
 
     #[tokio::test]
