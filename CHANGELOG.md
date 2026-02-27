@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **First official SDK release announcement (TS + Python)**: `0.3.23` is the first Tandem release that formally ships and announces both client SDK packages:
+  - TypeScript: `@frumu/tandem-client`
+  - Python: `tandem-client`
 - **TypeScript SDK token lifecycle mutator**: Added `TandemClient.setToken(token)` in `@frumu/tandem-client` for explicit auth-token updates across future HTTP/SSE calls.
 
 ### Changed

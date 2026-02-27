@@ -4,6 +4,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## v0.3.23 (Unreleased)
 
+- First SDK release announcement (TypeScript + Python)
+  - `v0.3.23` is the first release where Tandem officially announces both client SDKs as release deliverables:
+    - TypeScript: `@frumu/tandem-client`
+    - Python: `tandem-client`
 - SDK and example alignment (TypeScript + Python)
   - Added explicit TS SDK token lifecycle support via `TandemClient.setToken(token)` to support auth updates without rebuilding calling code.
   - Migrated `examples/agent-quickstart` to the current `@frumu/tandem-client` API surface:
