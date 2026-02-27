@@ -18,6 +18,8 @@ const PORTAL_KEY = process.env.PORTAL_KEY;
 /* ── Bearer auth middleware ── */
 if (PORTAL_KEY) {
     app.use((req, res, next) => {
+        // Protect engine proxy only; keep UI pages/assets publicly reachable.
+        if (!req.path.startsWith("/engine")) { next(); return; }
         // Allow preflight and health passthrough
         if (req.method === "OPTIONS" || req.path === "/health") { next(); return; }
         const auth = req.headers.authorization || "";
