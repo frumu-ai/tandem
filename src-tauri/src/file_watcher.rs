@@ -4,11 +4,17 @@ use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, WebviewWindow};
 
+type NotifyEvent = Result<Event, notify::Error>;
+type NotifySender = std::sync::mpsc::Sender<NotifyEvent>;
+type NotifyReceiver = Receiver<NotifyEvent>;
+
 /// Watches plan directories for file changes and emits events to the frontend.
+#[allow(dead_code)]
 pub struct PlanWatcher {
     _watcher: RecommendedWatcher,
 }
 
+#[allow(dead_code)]
 impl PlanWatcher {
     /// Create a new plan watcher for the given workspace
     pub fn new(workspace_path: &Path, app: AppHandle) -> Result<Self, notify::Error> {
@@ -20,10 +26,7 @@ impl PlanWatcher {
             std::fs::create_dir_all(&canonical_plans_dir).ok();
         }
 
-        let (tx, rx): (
-            std::sync::mpsc::Sender<Result<Event, notify::Error>>,
-            Receiver<Result<Event, notify::Error>>,
-        ) = channel();
+        let (tx, rx): (NotifySender, NotifyReceiver) = channel();
 
         let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())?;
 
@@ -74,10 +77,7 @@ pub struct FileTreeWatcher {
 
 impl FileTreeWatcher {
     pub fn new(root: &Path, app: AppHandle, window: WebviewWindow) -> Result<Self, notify::Error> {
-        let (tx, rx): (
-            std::sync::mpsc::Sender<Result<Event, notify::Error>>,
-            Receiver<Result<Event, notify::Error>>,
-        ) = channel();
+        let (tx, rx): (NotifySender, NotifyReceiver) = channel();
 
         let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())?;
         watcher.watch(root, RecursiveMode::Recursive)?;

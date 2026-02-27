@@ -42,7 +42,7 @@ impl RalphLoopManager {
     ) -> Result<String> {
         let run_id = format!(
             "ralph_{}",
-            uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
+            &uuid::Uuid::new_v4().to_string().replace("-", "")[..16]
         );
 
         let state = RalphState::new(
@@ -80,7 +80,7 @@ impl RalphLoopManager {
                 state.error_message = Some(e.to_string());
                 state.active = false;
                 state.ended_at = Some(chrono::Utc::now());
-                let _ = handle.storage.save_state(&*state);
+                let _ = handle.storage.save_state(&state);
             }
         });
 
@@ -175,6 +175,7 @@ impl RalphLoopManager {
     }
 
     /// Clean up completed runs
+    #[allow(dead_code)]
     pub async fn cleanup_completed(&self) {
         let mut runs = self.runs.write().await;
         runs.retain(|_, handle| {
@@ -206,6 +207,7 @@ pub struct RalphRunHandle {
 }
 
 impl RalphRunHandle {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         run_id: String,
         session_id: String,
@@ -274,7 +276,7 @@ impl RalphRunHandle {
                 state.status = RalphRunStatus::Completed;
                 state.active = false;
                 state.ended_at = Some(chrono::Utc::now());
-                self.storage.save_state(&*state)?;
+                self.storage.save_state(&state)?;
                 break;
             }
 
@@ -289,7 +291,7 @@ impl RalphRunHandle {
                         state.status = RalphRunStatus::Completed;
                         state.active = false;
                         state.ended_at = Some(chrono::Utc::now());
-                        self.storage.save_state(&*state)?;
+                        self.storage.save_state(&state)?;
                         break;
                     }
                 }
@@ -300,7 +302,7 @@ impl RalphRunHandle {
                     state.error_message = Some(e.to_string());
                     state.active = false;
                     state.ended_at = Some(chrono::Utc::now());
-                    self.storage.save_state(&*state)?;
+                    self.storage.save_state(&state)?;
                     return Err(e);
                 }
             }
@@ -309,7 +311,7 @@ impl RalphRunHandle {
             {
                 let mut state = self.state.write().await;
                 state.iteration += 1;
-                self.storage.save_state(&*state)?;
+                self.storage.save_state(&state)?;
             }
 
             // Small delay between iterations to prevent overwhelming
@@ -415,7 +417,7 @@ impl RalphRunHandle {
             prompt.push_str("- Trying a different approach\n");
             prompt.push_str("- Breaking the task into smaller steps\n");
             prompt.push_str("- Checking for errors or issues\n");
-            prompt.push_str("\n");
+            prompt.push('\n');
         }
 
         // Previous errors
@@ -424,7 +426,7 @@ impl RalphRunHandle {
             for err in &last_errors {
                 prompt.push_str(&format!("- {}\n", err));
             }
-            prompt.push_str("\n");
+            prompt.push('\n');
         }
 
         // Plan mode instruction
@@ -576,7 +578,7 @@ impl RalphRunHandle {
             state.status = RalphRunStatus::Cancelled;
             state.active = false;
             state.ended_at = Some(chrono::Utc::now());
-            let _ = self.storage.save_state(&*state);
+            let _ = self.storage.save_state(&state);
         }
     }
 
@@ -585,7 +587,7 @@ impl RalphRunHandle {
         *is_paused = true;
         let mut state = self.state.write().await;
         state.status = RalphRunStatus::Paused;
-        let _ = self.storage.save_state(&*state);
+        let _ = self.storage.save_state(&state);
     }
 
     pub async fn resume(&self) {
@@ -594,7 +596,7 @@ impl RalphRunHandle {
         self.pause_notify.notify_one();
         let mut state = self.state.write().await;
         state.status = RalphRunStatus::Running;
-        let _ = self.storage.save_state(&*state);
+        let _ = self.storage.save_state(&state);
     }
 
     pub async fn add_context(&self, text: String) -> Result<()> {

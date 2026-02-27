@@ -1,5 +1,6 @@
 // Skills Management Module
 // Handles discovery, parsing, and management of OpenCode-compatible skills
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

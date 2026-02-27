@@ -545,16 +545,6 @@ pub fn mode_allows_tool_execution(
     Ok(())
 }
 
-fn mode_has_any_tool(mode: &ResolvedMode, tools: &[&str]) -> bool {
-    let Some(allowed) = &mode.allowed_tools else {
-        return true;
-    };
-    tools
-        .iter()
-        .map(|t| canonical_tool_name(t))
-        .any(|t| allowed.contains(&t))
-}
-
 pub fn build_permission_rules(mode: &ResolvedMode) -> Vec<PermissionRule> {
     tandem_core::build_mode_permission_rules(mode.allowed_tools.as_deref())
         .into_iter()

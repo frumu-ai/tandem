@@ -420,6 +420,7 @@ where
 }
 
 /// Message in a session
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
@@ -432,6 +433,7 @@ pub struct Message {
 }
 
 /// Tool call made by the assistant
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -691,6 +693,7 @@ pub struct PermissionAskedProps {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[allow(dead_code)]
 pub struct PermissionRequest {
     pub id: String,
     #[serde(rename = "sessionID", default)]
@@ -710,6 +713,7 @@ pub struct PermissionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[allow(dead_code)]
 pub struct PermissionSnapshot {
     #[serde(default)]
     pub requests: Vec<PermissionRequest>,
@@ -1313,6 +1317,7 @@ struct RoutineRecordResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct RoutineDeleteResponse {
     deleted: bool,
 }
@@ -2718,7 +2723,7 @@ impl SidecarManager {
                 let log_buf = log_buf.clone();
                 std::thread::spawn(move || {
                     let reader = BufReader::new(stdout);
-                    for line in reader.lines().flatten() {
+                    for line in reader.lines().map_while(|line| line.ok()) {
                         log_buf.push(format!("STDOUT {line}"));
                     }
                 });
@@ -2727,7 +2732,7 @@ impl SidecarManager {
             if let Some(stderr) = child.stderr.take() {
                 std::thread::spawn(move || {
                     let reader = BufReader::new(stderr);
-                    for line in reader.lines().flatten() {
+                    for line in reader.lines().map_while(|line| line.ok()) {
                         log_buf.push(format!("STDERR {line}"));
                     }
                 });
@@ -5995,7 +6000,7 @@ fn convert_opencode_event(event: OpenCodeEvent) -> Option<StreamEvent> {
                         || part.get("output").is_some();
                     let has_error = state_value.and_then(|s| s.get("error")).is_some()
                         || part.get("error").is_some();
-                    let state = explicit_state.unwrap_or_else(|| {
+                    let state = explicit_state.unwrap_or({
                         if has_error {
                             "failed"
                         } else if has_output {
@@ -6766,6 +6771,7 @@ fn derive_tool_error_code(
     error.and_then(classify_error_code)
 }
 
+#[allow(dead_code)]
 fn tagged_error(error_code: &str, message: &str) -> String {
     format!("[{}] {}", error_code, message)
 }

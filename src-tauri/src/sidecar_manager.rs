@@ -736,7 +736,7 @@ fn compare_numeric_fallback(left: &str, right: &str) -> Ordering {
 }
 
 fn normalize_version_label(version: &str) -> &str {
-    version.trim_start_matches(|c| c == 'v' || c == 'V')
+    version.trim_start_matches(['v', 'V'])
 }
 
 fn asset_name_matches_current_target(asset_name: &str) -> bool {
@@ -761,7 +761,7 @@ fn asset_name_matches_current_target(asset_name: &str) -> bool {
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        return asset_name.contains("linux") && asset_name.contains("x64");
+        asset_name.contains("linux") && asset_name.contains("x64")
     }
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -834,15 +834,13 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     emit_state("downloading", None);
 
     let client = reqwest::Client::new();
-    let releases = fetch_releases(&app, &client, true).await.map_err(|e| {
+    let releases = fetch_releases(&app, &client, true).await.inspect_err(|e| {
         let error_msg = e.to_string();
         emit_state("error", Some(&error_msg));
-        e
     })?;
-    let selected = select_release_for_download(&releases).map_err(|e| {
+    let selected = select_release_for_download(&releases).inspect_err(|e| {
         let error_msg = e.to_string();
         emit_state("error", Some(&error_msg));
-        e
     })?;
     log_release_selection("sidecar_download", &selected);
 

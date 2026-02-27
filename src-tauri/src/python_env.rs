@@ -146,6 +146,7 @@ pub fn discover_python_candidates() -> Vec<PythonCandidate> {
     out
 }
 
+#[allow(dead_code)]
 pub fn read_python_config(workspace: &Path) -> Option<PythonConfig> {
     let canonical = python_config_path(workspace);
     if let Ok(bytes) = fs::read(&canonical) {

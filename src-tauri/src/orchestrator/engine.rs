@@ -80,7 +80,7 @@ struct WorkspaceChangeSummary {
     has_changes: bool,
     created: Vec<String>,
     updated: Vec<String>,
-    deleted: Vec<String>,
+    _deleted: Vec<String>,
     diff_text: String,
 }
 
@@ -111,7 +111,7 @@ pub struct OrchestratorEngine {
     /// Budget tracker
     budget_tracker: Arc<RwLock<BudgetTracker>>,
     /// Policy engine
-    policy: Arc<PolicyEngine>,
+    _policy: Arc<PolicyEngine>,
     /// Persistence store
     store: Arc<OrchestratorStore>,
     /// Sidecar manager for sub-agent calls
@@ -704,7 +704,7 @@ impl OrchestratorEngine {
             run_id,
             run: Arc::new(RwLock::new(run)),
             budget_tracker: Arc::new(RwLock::new(budget_tracker)),
-            policy: Arc::new(policy),
+            _policy: Arc::new(policy),
             store: Arc::new(store),
             sidecar,
             stream_hub,
@@ -2988,7 +2988,7 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
             has_changes: !(created.is_empty() && updated.is_empty() && deleted.is_empty()),
             created,
             updated,
-            deleted,
+            _deleted: deleted,
             diff_text: lines.join("\n"),
         }
     }
@@ -3354,17 +3354,11 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
                 run.ended_at = None;
             }
 
-            if run
-                .error_message
-                .as_deref()
-                .is_some_and(|msg| msg.contains(task_id) || msg.contains("Deadlock detected"))
-            {
-                run.error_message = None;
-            } else if run
-                .error_message
-                .as_deref()
-                .is_some_and(Self::should_clear_error_on_resume)
-            {
+            if run.error_message.as_deref().is_some_and(|msg| {
+                msg.contains(task_id)
+                    || msg.contains("Deadlock detected")
+                    || Self::should_clear_error_on_resume(msg)
+            }) {
                 run.error_message = None;
             }
         }
@@ -4129,8 +4123,7 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
             .chars()
             .take(400)
             .collect::<String>()
-            .replace('\n', " ")
-            .replace('\r', " ");
+            .replace(['\n', '\r'], " ");
         if trimmed.len() > 400 {
             snippet.push_str(" ...");
         }

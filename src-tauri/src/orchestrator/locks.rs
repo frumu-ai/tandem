@@ -7,6 +7,12 @@ pub struct PathLockManager {
     locks: Mutex<HashMap<String, Arc<RwLock<()>>>>,
 }
 
+impl Default for PathLockManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PathLockManager {
     pub fn new() -> Self {
         Self {

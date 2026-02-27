@@ -98,7 +98,7 @@ pub fn packs_install_default(
     if let Some(workspace_path) = state.get_workspace_path() {
         // Prefer agent-templates (renamed from workspace-packs); fall back for
         // existing workspaces that still have the old directory name.
-        let base = PathBuf::from(workspace_path);
+        let base = workspace_path;
         let preferred = base.join("agent-templates");
         let legacy = base.join("workspace-packs");
         let install_root = if preferred.exists() || !legacy.exists() {
@@ -3609,6 +3609,7 @@ pub async fn send_message(
 /// Send a message and subscribe to events for the response
 /// This emits events to the frontend as chunks arrive
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn send_message_and_start_run(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -3635,6 +3636,7 @@ pub async fn send_message_and_start_run(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_message_and_start_run_internal(
     app: &AppHandle,
     state: &AppState,
@@ -7491,7 +7493,7 @@ pub fn opencode_list_plugins(
     scope: crate::tandem_config::TandemConfigScope,
 ) -> Result<Vec<String>> {
     let workspace = state.get_workspace_path();
-    let ws = workspace.as_ref().map(|p| p.as_path());
+    let ws = workspace.as_deref();
     let path = crate::tandem_config::get_config_path(scope, ws)?;
 
     let cfg = crate::tandem_config::read_config(&path)?;
@@ -7516,7 +7518,7 @@ pub fn opencode_add_plugin(
     name: String,
 ) -> Result<Vec<String>> {
     let workspace = state.get_workspace_path();
-    let ws = workspace.as_ref().map(|p| p.as_path());
+    let ws = workspace.as_deref();
 
     let updated = crate::tandem_config::update_config(scope, ws, |cfg| {
         crate::tandem_config::ensure_schema(cfg);
@@ -7561,7 +7563,7 @@ pub fn opencode_remove_plugin(
     name: String,
 ) -> Result<Vec<String>> {
     let workspace = state.get_workspace_path();
-    let ws = workspace.as_ref().map(|p| p.as_path());
+    let ws = workspace.as_deref();
 
     let updated = crate::tandem_config::update_config(scope, ws, |cfg| {
         let root = cfg.as_object_mut().ok_or_else(|| {
@@ -7599,7 +7601,7 @@ pub fn opencode_list_mcp_servers(
     scope: crate::tandem_config::TandemConfigScope,
 ) -> Result<Vec<OpencodeMcpServerEntry>> {
     let workspace = state.get_workspace_path();
-    let ws = workspace.as_ref().map(|p| p.as_path());
+    let ws = workspace.as_deref();
     let path = crate::tandem_config::get_config_path(scope, ws)?;
 
     let cfg = crate::tandem_config::read_config(&path)?;
@@ -7627,7 +7629,7 @@ pub fn opencode_add_mcp_server(
     config: serde_json::Value,
 ) -> Result<Vec<OpencodeMcpServerEntry>> {
     let workspace = state.get_workspace_path();
-    let ws = workspace.as_ref().map(|p| p.as_path());
+    let ws = workspace.as_deref();
 
     crate::tandem_config::update_config(scope, ws, |cfg| {
         crate::tandem_config::ensure_schema(cfg);
@@ -7657,7 +7659,7 @@ pub fn opencode_remove_mcp_server(
     name: String,
 ) -> Result<Vec<OpencodeMcpServerEntry>> {
     let workspace = state.get_workspace_path();
-    let ws = workspace.as_ref().map(|p| p.as_path());
+    let ws = workspace.as_deref();
 
     crate::tandem_config::update_config(scope, ws, |cfg| {
         let root = cfg.as_object_mut().ok_or_else(|| {
@@ -7696,7 +7698,7 @@ pub async fn opencode_test_mcp_connection(
     use std::time::Duration;
 
     let workspace = state.get_workspace_path();
-    let ws = workspace.as_ref().map(|p| p.as_path());
+    let ws = workspace.as_deref();
     let path = crate::tandem_config::get_config_path(scope, ws)?;
     let cfg = crate::tandem_config::read_config(&path)?;
 
@@ -8176,7 +8178,7 @@ pub fn read_plan_content(plan_path: String) -> Result<String> {
         ));
     }
 
-    fs::read_to_string(&path).map_err(|e| TandemError::Io(e))
+    fs::read_to_string(&path).map_err(TandemError::Io)
 }
 
 /// Result of starting a plan session
@@ -8226,7 +8228,7 @@ pub async fn start_plan_session(
     let plan_file_path = plans_dir.join(format!("{}.md", plan_name));
 
     // 3. Pre-create the file
-    fs::create_dir_all(&plans_dir).map_err(|e| TandemError::Io(e))?;
+    fs::create_dir_all(&plans_dir).map_err(TandemError::Io)?;
 
     let template = format!(
         "# Plan: {}\n\n## Goal\n{}\n\n## Proposed Changes\n- [ ] Analyze requirements\n- [ ] Design solution\n\n## Verification\n- [ ] Test case 1",
@@ -8234,7 +8236,7 @@ pub async fn start_plan_session(
         goal.as_deref().unwrap_or("Describe the goal here")
     );
 
-    fs::write(&plan_file_path, template).map_err(|e| TandemError::Io(e))?;
+    fs::write(&plan_file_path, template).map_err(TandemError::Io)?;
 
     let absolute_path = plan_file_path.to_string_lossy().to_string();
     tracing::info!("Pre-created plan file at: {}", absolute_path);
@@ -9072,6 +9074,7 @@ pub async fn orchestrator_engine_retry_task(
 
 /// Create a new orchestration run
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn orchestrator_create_run(
     app: AppHandle,
     state: State<'_, AppState>,

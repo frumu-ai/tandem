@@ -10,6 +10,7 @@ pub struct RalphStorage {
     base_path: PathBuf,
 }
 
+#[allow(dead_code)]
 impl RalphStorage {
     pub fn new(workspace_path: &Path) -> Self {
         let base_path = workspace_path.join(".opencode/tandem/ralph");
@@ -23,9 +24,8 @@ impl RalphStorage {
 
     pub fn save_state(&self, state: &RalphState) -> Result<()> {
         let path = self.base_path.join("state.json");
-        let json =
-            serde_json::to_string_pretty(state).map_err(|e| TandemError::Serialization(e))?;
-        fs::write(&path, json).map_err(|e| TandemError::Io(e))?;
+        let json = serde_json::to_string_pretty(state).map_err(TandemError::Serialization)?;
+        fs::write(&path, json).map_err(TandemError::Io)?;
         Ok(())
     }
 
@@ -34,15 +34,15 @@ impl RalphStorage {
         if !path.exists() {
             return Ok(None);
         }
-        let content = fs::read_to_string(&path).map_err(|e| TandemError::Io(e))?;
-        let state = serde_json::from_str(&content).map_err(|e| TandemError::Serialization(e))?;
+        let content = fs::read_to_string(&path).map_err(TandemError::Io)?;
+        let state = serde_json::from_str(&content).map_err(TandemError::Serialization)?;
         Ok(Some(state))
     }
 
     pub fn clear_state(&self) -> Result<()> {
         let path = self.base_path.join("state.json");
         if path.exists() {
-            fs::remove_file(&path).map_err(|e| TandemError::Io(e))?;
+            fs::remove_file(&path).map_err(TandemError::Io)?;
         }
         Ok(())
     }
@@ -56,8 +56,8 @@ impl RalphStorage {
 
         // Load existing history
         let mut history = if path.exists() {
-            let content = fs::read_to_string(&path).map_err(|e| TandemError::Io(e))?;
-            serde_json::from_str(&content).map_err(|e| TandemError::Serialization(e))?
+            let content = fs::read_to_string(&path).map_err(TandemError::Io)?;
+            serde_json::from_str(&content).map_err(TandemError::Serialization)?
         } else {
             Vec::new()
         };
@@ -73,9 +73,8 @@ impl RalphStorage {
         }
 
         // Save back
-        let json =
-            serde_json::to_string_pretty(&history).map_err(|e| TandemError::Serialization(e))?;
-        fs::write(&path, json).map_err(|e| TandemError::Io(e))?;
+        let json = serde_json::to_string_pretty(&history).map_err(TandemError::Serialization)?;
+        fs::write(&path, json).map_err(TandemError::Io)?;
 
         Ok(())
     }
@@ -85,9 +84,9 @@ impl RalphStorage {
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let content = fs::read_to_string(&path).map_err(|e| TandemError::Io(e))?;
+        let content = fs::read_to_string(&path).map_err(TandemError::Io)?;
         let history: Vec<IterationRecord> =
-            serde_json::from_str(&content).map_err(|e| TandemError::Serialization(e))?;
+            serde_json::from_str(&content).map_err(TandemError::Serialization)?;
 
         // Return last N records
         let start = history.len().saturating_sub(limit);
@@ -97,7 +96,7 @@ impl RalphStorage {
     pub fn clear_history(&self) -> Result<()> {
         let path = self.base_path.join("history.json");
         if path.exists() {
-            fs::remove_file(&path).map_err(|e| TandemError::Io(e))?;
+            fs::remove_file(&path).map_err(TandemError::Io)?;
         }
         Ok(())
     }
@@ -108,7 +107,7 @@ impl RalphStorage {
 
     pub fn save_context(&self, context: &str) -> Result<()> {
         let path = self.base_path.join("context.md");
-        fs::write(&path, context).map_err(|e| TandemError::Io(e))?;
+        fs::write(&path, context).map_err(TandemError::Io)?;
         Ok(())
     }
 
@@ -117,14 +116,14 @@ impl RalphStorage {
         if !path.exists() {
             return Ok(None);
         }
-        let content = fs::read_to_string(&path).map_err(|e| TandemError::Io(e))?;
+        let content = fs::read_to_string(&path).map_err(TandemError::Io)?;
         Ok(Some(content))
     }
 
     pub fn clear_context(&self) -> Result<()> {
         let path = self.base_path.join("context.md");
         if path.exists() {
-            fs::remove_file(&path).map_err(|e| TandemError::Io(e))?;
+            fs::remove_file(&path).map_err(TandemError::Io)?;
         }
         Ok(())
     }
@@ -139,7 +138,7 @@ impl RalphStorage {
 
     pub fn save_summary(&self, summary: &str) -> Result<()> {
         let path = self.base_path.join("summary.md");
-        fs::write(&path, summary).map_err(|e| TandemError::Io(e))?;
+        fs::write(&path, summary).map_err(TandemError::Io)?;
         Ok(())
     }
 
@@ -148,7 +147,7 @@ impl RalphStorage {
         if !path.exists() {
             return Ok(None);
         }
-        let content = fs::read_to_string(&path).map_err(|e| TandemError::Io(e))?;
+        let content = fs::read_to_string(&path).map_err(TandemError::Io)?;
         Ok(Some(content))
     }
 
@@ -166,7 +165,7 @@ impl RalphStorage {
         self.clear_context()?;
         let summary_path = self.base_path.join("summary.md");
         if summary_path.exists() {
-            fs::remove_file(&summary_path).map_err(|e| TandemError::Io(e))?;
+            fs::remove_file(&summary_path).map_err(TandemError::Io)?;
         }
         Ok(())
     }
