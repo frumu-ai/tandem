@@ -17,6 +17,11 @@ on:
         required: true
         default: true
         type: boolean
+      publish_pypi:
+        description: "Publish python wrappers"
+        required: true
+        default: true
+        type: boolean
       dry_run:
         description: "Run preflight and publish dry-runs only"
         required: true
@@ -42,6 +47,7 @@ jobs:
       resolved_version: ${{ steps.resolve.outputs.resolved_version }}
       crates_enabled: ${{ steps.resolve.outputs.crates_enabled }}
       npm_enabled: ${{ steps.resolve.outputs.npm_enabled }}
+      pypi_enabled: ${{ steps.resolve.outputs.pypi_enabled }}
       dry_run: ${{ steps.resolve.outputs.dry_run }}
     steps:
       - name: Checkout
@@ -79,6 +85,7 @@ jobs:
             version="${{ inputs.version }}"
             crates_enabled="${{ inputs.publish_crates }}"
             npm_enabled="${{ inputs.publish_npm }}"
+            pypi_enabled="${{ inputs.publish_pypi }}"
             dry_run="${{ inputs.dry_run }}"
           else
             ref="${GITHUB_REF_NAME}"
@@ -90,6 +97,7 @@ jobs:
             fi
             crates_enabled="true"
             npm_enabled="true"
+            pypi_enabled="true"
             dry_run="false"
           fi
 
@@ -101,11 +109,13 @@ jobs:
           echo "resolved_version=$version" >> "$GITHUB_OUTPUT"
           echo "crates_enabled=$crates_enabled" >> "$GITHUB_OUTPUT"
           echo "npm_enabled=$npm_enabled" >> "$GITHUB_OUTPUT"
+          echo "pypi_enabled=$pypi_enabled" >> "$GITHUB_OUTPUT"
           echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
 
           echo "Resolved version: $version"
           echo "Publish crates: $crates_enabled"
           echo "Publish npm: $npm_enabled"
+          echo "Publish pypi: $pypi_enabled"
           echo "Dry run: $dry_run"
 
       - name: Validate manifest versions
@@ -352,7 +362,7 @@ jobs:
     needs: [preflight, publish_crates]
     if: |
       always() &&
-      needs.preflight.outputs.npm_enabled == 'true' &&
+      needs.preflight.outputs.pypi_enabled == 'true' &&
       (needs.preflight.outputs.crates_enabled != 'true' || needs.publish_crates.result == 'success')
     runs-on: ubuntu-latest
     environment: registry-publish
@@ -402,6 +412,7 @@ jobs:
             echo "- Dry run: \`${{ needs.preflight.outputs.dry_run }}\`"
             echo "- Crates enabled: \`${{ needs.preflight.outputs.crates_enabled }}\`"
             echo "- npm enabled: \`${{ needs.preflight.outputs.npm_enabled }}\`"
+            echo "- pypi enabled: \`${{ needs.preflight.outputs.pypi_enabled }}\`"
             echo ""
             echo "### Job Results"
             echo "- preflight: \`${{ needs.preflight.result }}\`"
