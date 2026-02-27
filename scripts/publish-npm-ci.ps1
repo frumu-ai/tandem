@@ -90,7 +90,7 @@ Then retry:
     # This avoids npm workspace dependency resolution failures in CI.
     if ($dir -eq "packages/tandem-client-ts") {
         "Building JS bundles for $name@$version with npx tsup" | Tee-Object -FilePath $logFile -Append
-        $buildJs = Invoke-NpmText -WorkingDirectory $dir -Command "npx --yes -p tsup -p zod tsup src/index.ts --format esm,cjs --clean"
+        $buildJs = Invoke-NpmText -WorkingDirectory $dir -Command "npx --yes -p tsup -p typescript -p zod tsup src/index.ts --format esm,cjs --clean"
         $buildJs.Output | Tee-Object -FilePath $logFile -Append | Out-Null
         if ($buildJs.ExitCode -ne 0) {
             throw "Failed JS bundle build for $name@$version"

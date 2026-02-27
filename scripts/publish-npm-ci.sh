@@ -69,7 +69,7 @@ for dir in "${PACKAGES[@]}"; do
     echo "Building JS bundles for $name@$version with npx tsup" | tee -a "$LOG_FILE"
     (
       cd "$dir" &&
-        npx --yes -p tsup -p zod tsup src/index.ts --format esm,cjs --clean
+        npx --yes -p tsup -p typescript -p zod tsup src/index.ts --format esm,cjs --clean
     ) 2>&1 | tee -a "$LOG_FILE"
     echo "Building type declarations for $name@$version with npx tsc" | tee -a "$LOG_FILE"
     (
