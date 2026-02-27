@@ -369,9 +369,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/tandem-client-py/dist/
-          # Remove this line if you decide to not use an environment in PyPI settings
-          # But your screenshot shows "Environment name: pypi", so Actions requires it matching
-          
+
       - name: Dry Run Info
         if: needs.preflight.outputs.dry_run == 'true'
         run: echo "Dry Run: Skipping PyPI upload for tandem-client-py"
