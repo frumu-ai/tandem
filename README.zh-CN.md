@@ -132,6 +132,16 @@ Tandem 不让单一 AI 独自处理全部事务，而是构建任务依赖图并
 - **自动化策略门控**：通过 `requires_approval` 与 `external_integrations_allowed` 控制外部副作用
 - **可无头运行**：完整支持 HTTP + SSE 运行时，示例见 `examples/headless/`
 
+#### MCP OAuth 使用说明（Arcade 等）
+
+- 某些 MCP 工具在首次调用前会返回授权挑战。Tandem 会显式提示“需要授权”并提供授权 URL。
+- 在浏览器完成 OAuth 后，请在新一轮对话中重试该工具请求。
+- Arcade 的 headers 模式建议同时配置：
+  - `Authorization: Bearer <arcade-api-key>`
+  - `Arcade-User-ID: <稳定且固定的用户 ID>`（必须稳定，才能复用授权）
+- 如果 `Arcade-User-ID` 在不同请求间变化，通常会反复触发授权。
+- 若反复提示授权失败，请先检查 MCP URL、API key 与 `Arcade-User-ID` 是否正确。
+
 ### 项目管理
 
 - **📁 多项目支持**：管理多个工作区，并保持各自上下文隔离

@@ -34,11 +34,20 @@ interface ChatMsg {
 interface PendingApproval {
   id: string;
   tool: string;
+  permission?: string;
+  pattern?: string;
 }
 interface StoredSession {
   id: string;
   title: string;
   created: number;
+}
+interface McpAuthChallenge {
+  challengeId: string;
+  tool: string;
+  server?: string;
+  authorizationUrl: string;
+  message: string;
 }
 interface ModelSpec {
   provider: string;
@@ -239,9 +248,11 @@ export default function ChatBrain() {
   const [sessionTitle, setSessionTitle] = useState("Chat");
   const [storedSessions, setStoredSessions] = useState<StoredSession[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
+  const [mcpAuthChallenges, setMcpAuthChallenges] = useState<McpAuthChallenge[]>([]);
   const [availableTools, setAvailableTools] = useState<string[]>([]);
   const [isThinking, setIsThinking] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [autoApproveAll, setAutoApproveAll] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [logOpen, setLogOpen] = useState(false);
@@ -269,23 +280,76 @@ export default function ChatBrain() {
     setLog((p) => [...p.slice(-60), msg]);
   }, []);
 
-  const refreshApprovals = useCallback(async (sid: string) => {
+  const refreshToolIds = useCallback(async () => {
     try {
-      const snapshot = await client.permissions.list();
-      const reqs = (snapshot.requests || []) as PermissionRequestRecord[];
-      const pending = reqs
-        .filter(
-          (r) =>
-            (!r.sessionId || r.sessionId === sid) &&
-            (r.status === "pending" || r.status === "asked" || r.status === "waiting")
-        )
-        .map((r) => ({ id: r.id, tool: r.tool || r.permission || "tool" }));
-      setPendingApprovals(pending);
-      return pending;
+      const ids = await client.listToolIds();
+      setAvailableTools(ids);
     } catch {
-      return [];
+      /* ignore */
     }
   }, []);
+
+  const refreshApprovals = useCallback(
+    async (sid: string) => {
+      try {
+        const snapshot = await client.permissions.list();
+        const reqs = (snapshot.requests || []) as PermissionRequestRecord[];
+        let pending = reqs
+          .filter(
+            (r) =>
+              (!r.sessionId || r.sessionId === sid) &&
+              (r.status === "pending" || r.status === "asked" || r.status === "waiting")
+          )
+          .map((r) => ({
+            id: r.id,
+            tool: r.tool || r.permission || "tool",
+            permission: typeof r.permission === "string" ? r.permission : undefined,
+            pattern: typeof r.pattern === "string" ? r.pattern : undefined,
+          }));
+
+        if (autoApproveAll && pending.length > 0) {
+          for (const req of pending) {
+            try {
+              await client.permissions.reply(req.id, "always");
+              addLog(`Auto-approved ${req.tool}`);
+            } catch {
+              /* ignore */
+            }
+          }
+          const fresh = await client.permissions.list();
+          const freshReqs = (fresh.requests || []) as PermissionRequestRecord[];
+          pending = freshReqs
+            .filter(
+              (r) =>
+                (!r.sessionId || r.sessionId === sid) &&
+                (r.status === "pending" || r.status === "asked" || r.status === "waiting")
+            )
+            .map((r) => ({
+              id: r.id,
+              tool: r.tool || r.permission || "tool",
+              permission: typeof r.permission === "string" ? r.permission : undefined,
+              pattern: typeof r.pattern === "string" ? r.pattern : undefined,
+            }));
+        }
+
+        setPendingApprovals(pending);
+        return pending;
+      } catch {
+        return [];
+      }
+    },
+    [addLog, autoApproveAll]
+  );
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const tick = () => {
+      void refreshApprovals(sessionId);
+    };
+    tick();
+    const id = window.setInterval(tick, 1500);
+    return () => window.clearInterval(id);
+  }, [refreshApprovals, sessionId, isThinking]);
 
   const buildChatFromHistory = (msgs: EngineMessage[]): ChatMsg[] =>
     msgs
@@ -368,7 +432,9 @@ export default function ChatBrain() {
     let watchdog: number | undefined;
     try {
       let receivedAnyEvent = false;
+      let receivedAssistantDelta = false;
       let settled = false;
+      let sawTerminalEvent = false;
       const ctrl = new AbortController();
       watchdog = window.setTimeout(async () => {
         if (receivedAnyEvent || settled) return;
@@ -402,6 +468,7 @@ export default function ChatBrain() {
         if (type === "session.response") {
           const delta = sanitizeModelText((data.properties?.delta as string) || "");
           if (delta) {
+            receivedAssistantDelta = true;
             setMessages((prev) => {
               const upd = [...prev];
               const last = upd[upd.length - 1];
@@ -427,8 +494,9 @@ export default function ChatBrain() {
         } else if (type === "run.completed") {
           if (rid && (!runId || runId !== rid)) continue;
           settled = true;
+          sawTerminalEvent = true;
           addLog("Run completed");
-          if (sessionId) {
+          if (!receivedAssistantDelta && sessionId) {
             try {
               const history = await client.sessions.messages(sessionId);
               const rebuilt = buildChatFromHistory(history);
@@ -441,6 +509,7 @@ export default function ChatBrain() {
         } else if (type === "run.failed") {
           if (rid && (!runId || runId !== rid)) continue;
           settled = true;
+          sawTerminalEvent = true;
           const detail =
             String(
               data.properties?.error || data.properties?.message || data.properties?.reason || ""
@@ -461,6 +530,7 @@ export default function ChatBrain() {
           const status = String(data.properties?.status || "").toLowerCase();
           const failed = status === "failed" || status === "error";
           settled = true;
+          sawTerminalEvent = true;
           if (failed) {
             const detail =
               String(
@@ -479,7 +549,7 @@ export default function ChatBrain() {
             setIsThinking(false);
           } else {
             addLog("Run completed");
-            if (sessionId) {
+            if (!receivedAssistantDelta && sessionId) {
               try {
                 const history = await client.sessions.messages(sessionId);
                 const rebuilt = buildChatFromHistory(history);
@@ -523,15 +593,109 @@ export default function ChatBrain() {
           });
         } else if (type === "approval.requested") {
           void refreshApprovals(sid);
+        } else if (type === "mcp.auth.required") {
+          const challengeId = String(data.properties?.challengeId || "").trim();
+          const authorizationUrl = String(data.properties?.authorizationUrl || "").trim();
+          if (!challengeId || !authorizationUrl) continue;
+          const challenge: McpAuthChallenge = {
+            challengeId,
+            tool: String(data.properties?.tool || "mcp tool"),
+            server:
+              typeof data.properties?.server === "string"
+                ? String(data.properties.server)
+                : undefined,
+            authorizationUrl,
+            message:
+              String(data.properties?.message || "").trim() ||
+              "This MCP tool requires authorization before it can run.",
+          };
+          setMcpAuthChallenges((prev) => {
+            if (prev.some((item) => item.challengeId === challenge.challengeId)) return prev;
+            return [challenge, ...prev].slice(0, 6);
+          });
+          setMessages((prev) => {
+            if (
+              prev.some(
+                (m) => m.role === "system" && m.content.includes(challenge.challengeId.slice(0, 8))
+              )
+            ) {
+              return prev;
+            }
+            return [
+              ...prev,
+              {
+                id: Math.random().toString(36),
+                role: "system",
+                type: "text",
+                content: `Authorization required for ${challenge.tool}. Complete authorization, then retry your last message. (${challenge.challengeId.slice(0, 8)})`,
+              },
+            ];
+          });
+        }
+      }
+      if (!sawTerminalEvent) {
+        addLog("Stream ended before terminal run event");
+        try {
+          const run = await client.sessions.activeRun(sid);
+          if (!run.active?.runId) {
+            setIsThinking(false);
+            if (!receivedAssistantDelta) {
+              setMessages((p) => [
+                ...p,
+                {
+                  id: Math.random().toString(36),
+                  role: "system",
+                  type: "text",
+                  content:
+                    "Run stream ended unexpectedly. The engine may have dropped the run. Please retry your message.",
+                },
+              ]);
+            }
+          }
+        } catch {
+          setIsThinking(false);
+          if (!receivedAssistantDelta) {
+            setMessages((p) => [
+              ...p,
+              {
+                id: Math.random().toString(36),
+                role: "system",
+                type: "text",
+                content:
+                  "Connection to the engine stream was interrupted. Please retry your message.",
+              },
+            ]);
+          }
         }
       }
     } catch (e) {
       addLog(`Stream terminated`);
       try {
         const run = await client.sessions.activeRun(sid);
-        if (!run.active?.runId) setIsThinking(false);
+        if (!run.active?.runId) {
+          setIsThinking(false);
+          setMessages((p) => [
+            ...p,
+            {
+              id: Math.random().toString(36),
+              role: "system",
+              type: "text",
+              content: "The run stream disconnected before completion. Please retry your message.",
+            },
+          ]);
+        }
       } catch {
         setIsThinking(false);
+        setMessages((p) => [
+          ...p,
+          {
+            id: Math.random().toString(36),
+            role: "system",
+            type: "text",
+            content:
+              "Could not reach the engine stream. Verify engine health and retry your message.",
+          },
+        ]);
       }
     } finally {
       if (watchdog !== undefined) window.clearTimeout(watchdog);
@@ -542,6 +706,8 @@ export default function ChatBrain() {
     setSessionId(sid);
     localStorage.setItem(ACTIVE_KEY, sid);
     addLog(`Loading session ${sid.slice(0, 8)}`);
+    setMcpAuthChallenges([]);
+    void refreshToolIds();
     void refreshApprovals(sid);
     await ensurePrimed(sid);
     try {
@@ -581,12 +747,7 @@ export default function ChatBrain() {
 
   const init = async () => {
     try {
-      client
-        .listToolIds()
-        .then((ids) => setAvailableTools(ids))
-        .catch(() => {
-          /* ignore */
-        });
+      await refreshToolIds();
       const saved = localStorage.getItem(ACTIVE_KEY);
       if (saved) {
         const sessions = loadStoredSessions();
@@ -633,20 +794,42 @@ export default function ChatBrain() {
     ]);
     setLog([]);
     setPendingApprovals([]);
+    setMcpAuthChallenges([]);
     setIsThinking(false);
     await ensurePrimed(sid);
+    void refreshToolIds();
     addLog(`New session ${sid.slice(0, 8)}`);
   };
 
-  const handleSend = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!input.trim() || isThinking || !sessionId) return;
-    const text = input.trim();
-    lastPromptRef.current = text;
+  const sendPromptText = async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (!sessionId) {
+      const msg = "No active session. Please create or select a chat first.";
+      setError(msg);
+      addLog(msg);
+      setMessages((p) => [
+        ...p,
+        { id: Math.random().toString(36), role: "system", type: "text", content: msg },
+      ]);
+      return;
+    }
+    if (isThinking) {
+      const msg =
+        "The agent is still processing the previous run. Wait for it to finish, then send again.";
+      setError(msg);
+      addLog("Send blocked: run in progress");
+      setMessages((p) => [
+        ...p,
+        { id: Math.random().toString(36), role: "system", type: "text", content: msg },
+      ]);
+      return;
+    }
+    lastPromptRef.current = trimmed;
     setInput("");
     setMessages((p) => [
       ...p,
-      { id: Math.random().toString(36), role: "user", type: "text", content: text },
+      { id: Math.random().toString(36), role: "user", type: "text", content: trimmed },
     ]);
     setIsThinking(true);
     setError(null);
@@ -658,7 +841,7 @@ export default function ChatBrain() {
           "No runnable provider/model is configured. Open Provider Setup and select one."
         );
       }
-      const { runId } = await client.sessions.promptAsync(sessionId, text);
+      const { runId } = await client.sessions.promptAsync(sessionId, trimmed);
       addLog(`Run ${runId.slice(0, 8)}`);
       void attachStream(sessionId, runId);
     } catch (e) {
@@ -670,6 +853,11 @@ export default function ChatBrain() {
       setIsThinking(false);
       setError(msg);
     }
+  };
+
+  const handleSend = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    await sendPromptText(input);
   };
 
   const approveAll = async () => {
@@ -685,6 +873,11 @@ export default function ChatBrain() {
     }
     await refreshApprovals(sessionId);
     setApproving(false);
+  };
+
+  const retryLastPrompt = () => {
+    if (!lastPromptRef.current || isThinking) return;
+    void sendPromptText(lastPromptRef.current);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -810,6 +1003,17 @@ export default function ChatBrain() {
                   {approving ? "Approving…" : `Approve ${pendingApprovals.length}`}
                 </button>
               )}
+              <button
+                onClick={() => setAutoApproveAll((v) => !v)}
+                className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                  autoApproveAll
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                    : "border-gray-700 text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                }`}
+                title="Automatically approve all permission requests in this session"
+              >
+                {autoApproveAll ? "Auto-allow on" : "Auto-allow all"}
+              </button>
               {SHOW_DEBUG_UI && (
                 <button
                   onClick={() => setLogOpen((o) => !o)}
@@ -837,6 +1041,27 @@ export default function ChatBrain() {
               ))}
             </div>
           )}
+          {pendingApprovals.length > 0 && (
+            <div className="mt-2 rounded-lg bg-amber-900/10 border border-amber-700/30 px-3 py-2 space-y-2">
+              <p className="text-xs text-amber-300">
+                Pending approvals ({pendingApprovals.length})
+              </p>
+              <div className="space-y-1.5 max-h-28 overflow-y-auto">
+                {pendingApprovals.map((req) => (
+                  <div
+                    key={req.id}
+                    className="text-[11px] text-amber-100/90 bg-amber-950/20 border border-amber-800/30 rounded px-2 py-1.5"
+                  >
+                    <span className="font-mono">{req.tool}</span>
+                    {req.pattern ? ` · ${req.pattern}` : ""}
+                    {req.permission && req.permission !== req.tool
+                      ? ` · permission=${req.permission}`
+                      : ""}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Messages */}
@@ -846,6 +1071,49 @@ export default function ChatBrain() {
               <div className="bg-rose-900/20 border border-rose-800/40 rounded-xl p-3 flex items-start gap-2">
                 <AlertCircle size={14} className="text-rose-400 mt-0.5 shrink-0" />
                 <p className="text-sm text-rose-300">{error}</p>
+              </div>
+            )}
+            {mcpAuthChallenges.length > 0 && (
+              <div className="space-y-2">
+                {mcpAuthChallenges.map((challenge) => (
+                  <div
+                    key={challenge.challengeId}
+                    className="rounded-xl border border-cyan-700/40 bg-cyan-900/10 px-3 py-3"
+                  >
+                    <p className="text-sm text-cyan-100 font-medium">
+                      MCP authorization needed for{" "}
+                      <span className="font-mono">{challenge.tool}</span>
+                    </p>
+                    <p className="text-xs text-cyan-200/90 mt-1">{challenge.message}</p>
+                    <a
+                      href={challenge.authorizationUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-2 inline-block text-xs text-cyan-300 underline break-all"
+                    >
+                      {challenge.authorizationUrl}
+                    </a>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        onClick={retryLastPrompt}
+                        disabled={isThinking}
+                        className="text-xs px-2.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white"
+                      >
+                        Retry last message
+                      </button>
+                      <button
+                        onClick={() =>
+                          setMcpAuthChallenges((prev) =>
+                            prev.filter((item) => item.challengeId !== challenge.challengeId)
+                          )
+                        }
+                        className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
             {messages.map((m, i) => (

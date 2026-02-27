@@ -2,6 +2,31 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.3.24 (Unreleased)
+
+- MCP reliability and auth hardening
+  - Clarified and hardened MCP auth signaling via `mcp.auth.required` across engine/runtime and web chat handling.
+  - MCP server runtime state now tracks auth/session continuity fields for operators and UIs:
+    - `last_auth_challenge`
+    - `mcp_session_id`
+  - MCP connect/refresh failure handling now clears stale tool cache/session state and returns deterministic reconnect/error outcomes.
+  - MCP connection bootstrap and reconnect behavior now better aligns tool availability with actual upstream server state.
+- MCP tool-call resilience
+  - Added engine-level MCP argument normalization before `tools/call` to recover common schema/key mismatches (for example camelCase/snake_case drift and common alias recovery such as `name -> task_title` where applicable).
+  - This normalization runs in engine runtime and benefits all clients (web, TUI, channels), not only manual CLI calls.
+- Agent quickstart runtime stability fixes
+  - Provider setup gating and startup flow now prevent entering broken chat state when provider/model config is missing.
+  - Chat now surfaces clearer run failure details and MCP auth-required diagnostics in-stream.
+  - Stabilized chat/runtime behavior for non-response and blank-run regressions.
+  - Aligned quickstart memory defaults with expected global-memory usage behavior in deployed engine setups.
+  - Corrected quickstart proxy/auth behavior for `/engine` and portal key handling.
+- SDK/npm publish reliability
+  - Fixed `@frumu/tandem-client` npm provenance requirements with repository metadata alignment.
+  - Hardened TS client npm publish flow in CI by ensuring install/build prerequisites (`typescript`, DOM libs, `tsup` + `tsc` declaration build path).
+- Registry workflow controls and docs sync
+  - Added independent PyPI publish toggle in release workflow so Python publishing can be controlled separately from npm.
+  - Synced docs and top-level readme artifacts (including zh-CN parity and docs URL/badge updates) to match current release/runtime behavior.
+
 ## v0.3.23 (Unreleased)
 
 - First SDK release announcement (TypeScript + Python)

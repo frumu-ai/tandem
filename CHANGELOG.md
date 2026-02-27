@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.24] - 2026-02-27
+
+### Added
+
+- **MCP auth diagnostics contract surfaced to clients**: Clarified and propagated runtime auth-required signaling via `mcp.auth.required`, including richer auth challenge metadata handling in engine/web chat paths.
+- **MCP server auth/session state fields**: MCP server state now tracks auth/session continuity fields used by diagnostics and reconnect flows:
+  - `last_auth_challenge`
+  - `mcp_session_id`
+- **Release workflow control for Python packages**: Added an independent PyPI publish toggle in registry publish workflow so Python package release can be enabled/disabled separately from npm publish.
+
+### Changed
+
+- **MCP reconnect/refresh lifecycle behavior**: MCP connect/refresh failure handling now clears stale cached tools/session state and returns deterministic reconnect outcomes for downstream clients.
+- **MCP call argument handling (engine-wide)**: Runtime now normalizes MCP `tools/call` argument keys against tool schema to tolerate common alias/key-shape drift (for example camelCase/snake_case and `name -> task_title` style recovery for required fields).
+- **Agent quickstart startup/runtime flow**: Quickstart provider/chat bootstrap behavior now enforces healthier startup gating and surfaces richer run/auth diagnostics for chat sessions.
+- **Docs and README alignment**: Updated top-level/docs artifacts for current SDK/runtime behavior, including docs URL and README/README.zh-CN parity refresh.
+- **Publish pipeline hardening for TS client**: Updated publish CI flow for `@frumu/tandem-client` to ensure required build/declaration prerequisites are present in publish jobs (`typescript`, DOM lib compatibility, `tsup` + `tsc` path).
+
+### Fixed
+
+- **MCP auth/retry robustness regressions**: Fixed MCP auth challenge handling and reconnect/refresh edge cases that could leave stale cache/tools or unclear auth state after failures.
+- **Agent quickstart blank/non-response chat regressions**: Fixed chat flows where runs could appear blank/non-responsive; run failures now surface with clearer diagnostics in UI.
+- **Agent quickstart provider setup gating/model handling**: Fixed startup/provider gating and model-selection handling to avoid broken entry states when config is incomplete.
+- **Quickstart proxy auth/key routing**: Fixed portal auth handling scope for `/engine` proxy and key/env consistency behavior in quickstart deployment scripts/config.
+- **TS client npm publish failures**: Resolved publish failures caused by provenance metadata mismatch and missing CI build/declaration dependencies.
+
 ## [0.3.23] - 2026-02-27
 
 ### Added

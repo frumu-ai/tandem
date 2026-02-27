@@ -350,12 +350,18 @@ async fn process_channel_message(
     if msg.content.starts_with('/') {
         if let Some(cmd) = parse_slash_command(&msg.content) {
             let response = handle_slash_command(cmd, &msg, base_url, api_token, session_map).await;
-            let _ = channel
+            if let Err(e) = channel
                 .send(&SendMessage {
                     content: response,
                     recipient: msg.reply_target.clone(),
                 })
-                .await;
+                .await
+            {
+                error!(
+                    "failed to send slash-command response via channel '{}': {e}",
+                    channel.name()
+                );
+            }
             return;
         }
     }
@@ -372,17 +378,30 @@ async fn process_channel_message(
         }
     };
 
-    let _ = channel.start_typing(&msg.reply_target).await;
+    if let Err(e) = channel.start_typing(&msg.reply_target).await {
+        warn!(
+            "failed to start typing indicator for channel '{}': {e}",
+            channel.name()
+        );
+    }
     let response = run_in_session(&session_id, &msg.content, base_url, api_token).await;
-    let _ = channel.stop_typing(&msg.reply_target).await;
+    if let Err(e) = channel.stop_typing(&msg.reply_target).await {
+        warn!(
+            "failed to stop typing indicator for channel '{}': {e}",
+            channel.name()
+        );
+    }
 
     let reply = response.unwrap_or_else(|e| format!("⚠️ Error: {e}"));
-    let _ = channel
+    if let Err(e) = channel
         .send(&SendMessage {
             content: reply,
             recipient: msg.reply_target,
         })
-        .await;
+        .await
+    {
+        error!("failed to send channel reply via '{}': {e}", channel.name());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -501,9 +520,12 @@ async fn run_in_session(
         .timeout(Duration::from_secs(timeout_secs + 30))
         .build()?;
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "parts": [{ "type": "text", "text": content }]
     });
+    if let Ok(Some(model)) = fetch_default_model_spec(&client, base_url, api_token).await {
+        body["model"] = model;
+    }
 
     // Request run metadata so we can bind SSE to this specific run.
     let resp = add_auth(
@@ -551,6 +573,7 @@ async fn run_in_session(
 
     use futures_util::StreamExt;
     let mut content_buf = String::new();
+    let mut last_error: Option<String> = None;
     let mut body_stream = sse_resp.bytes_stream();
     let mut line_buf = String::new();
 
@@ -609,6 +632,13 @@ async fn run_in_session(
                 continue;
             }
 
+            if event_type == "session.error" {
+                if let Some(message) = extract_event_error_message(&evt) {
+                    last_error = Some(message);
+                }
+                continue;
+            }
+
             match event_type {
                 "session.message.delta" | "content" => {
                     if let Some(delta) = evt
@@ -624,22 +654,117 @@ async fn run_in_session(
                 | "session.run.failed"
                 | "session.run.cancelled"
                 | "session.run.canceled"
-                | "done" => break 'outer,
+                | "done" => {
+                    if let Some(err) = extract_event_error_message(&evt) {
+                        last_error = Some(err);
+                    }
+                    break 'outer;
+                }
                 _ => {}
             }
         }
     }
 
     if content_buf.is_empty() {
-        if let Ok(Some(fallback)) =
-            fetch_latest_assistant_message(&client, base_url, api_token, session_id).await
-        {
-            return Ok(fallback);
+        // Fast runs may complete before we attach SSE, and persisted assistant
+        // messages can lag slightly behind run completion. Retry briefly.
+        for _ in 0..20 {
+            if let Ok(Some(fallback)) =
+                fetch_latest_assistant_message(&client, base_url, api_token, session_id).await
+            {
+                return Ok(fallback);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        if let Some(error_message) = last_error {
+            return Ok(format!(
+                "⚠️ Error: {}",
+                truncate_for_channel(&error_message, 320)
+            ));
         }
         return Ok("(no response)".to_string());
     }
 
     Ok(content_buf)
+}
+
+fn truncate_for_channel(input: &str, max_chars: usize) -> String {
+    let mut out = input.trim().chars().take(max_chars).collect::<String>();
+    if input.chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
+}
+
+fn extract_event_error_message(evt: &serde_json::Value) -> Option<String> {
+    let paths = [
+        evt.get("error").and_then(|e| e.get("message")),
+        evt.get("error"),
+        evt.get("message"),
+        evt.get("properties")
+            .and_then(|p| p.get("error"))
+            .and_then(|e| e.get("message")),
+        evt.get("properties").and_then(|p| p.get("error")),
+        evt.get("properties").and_then(|p| p.get("message")),
+    ];
+
+    for value in paths.into_iter().flatten() {
+        if let Some(text) = value.as_str() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+            continue;
+        }
+        if let Some(obj) = value.as_object() {
+            if let Some(text) = obj.get("message").and_then(|v| v.as_str()) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+async fn fetch_default_model_spec(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_token: &str,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let url = format!("{base_url}/config/providers");
+    let resp = add_auth(client.get(&url), api_token).send().await?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let cfg: serde_json::Value = resp.json().await?;
+    let default_provider = cfg
+        .get("default")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if default_provider.is_empty() {
+        return Ok(None);
+    }
+
+    let default_model = cfg
+        .get("providers")
+        .and_then(|v| v.get(default_provider))
+        .and_then(|v| v.get("default_model").or_else(|| v.get("defaultModel")))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if default_model.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(serde_json::json!({
+        "provider_id": default_provider,
+        "model_id": default_model
+    })))
 }
 
 /// Fallback for channel delivery: if the SSE stream did not emit text deltas,

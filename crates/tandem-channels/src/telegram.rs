@@ -68,6 +68,10 @@ impl TelegramChannel {
     fn api_url(&self, method: &str) -> String {
         format!("{}{}/{}", TELEGRAM_API, self.bot_token, method)
     }
+
+    fn redact_token(&self, text: &str) -> String {
+        text.replace(&format!("bot{}", self.bot_token), "bot<redacted>")
+    }
 }
 
 #[async_trait]
@@ -78,20 +82,43 @@ impl Channel for TelegramChannel {
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
         for chunk in split_message(&message.content) {
-            let body = serde_json::json!({
+            let markdown_body = serde_json::json!({
                 "chat_id": message.recipient,
                 "text": chunk,
                 "parse_mode": "Markdown",
             });
-            let resp = self
+            let markdown_resp = self
                 .client
                 .post(self.api_url("sendMessage"))
-                .json(&body)
+                .json(&markdown_body)
                 .send()
                 .await?;
-            if !resp.status().is_success() {
-                let text = resp.text().await.unwrap_or_default();
-                error!("telegram sendMessage failed: {text}");
+
+            if markdown_resp.status().is_success() {
+                continue;
+            }
+
+            let markdown_status = markdown_resp.status();
+            let markdown_error = markdown_resp.text().await.unwrap_or_default();
+            warn!(
+                "telegram sendMessage with Markdown failed ({markdown_status}); retrying plain text: {markdown_error}"
+            );
+
+            let plain_body = serde_json::json!({
+                "chat_id": message.recipient,
+                "text": chunk,
+            });
+            let plain_resp = self
+                .client
+                .post(self.api_url("sendMessage"))
+                .json(&plain_body)
+                .send()
+                .await?;
+            if !plain_resp.status().is_success() {
+                let plain_status = plain_resp.status();
+                let plain_error = plain_resp.text().await.unwrap_or_default();
+                error!("telegram sendMessage plain text failed ({plain_status}): {plain_error}");
+                anyhow::bail!("telegram sendMessage failed ({plain_status})");
             }
         }
         Ok(())
@@ -114,7 +141,8 @@ impl Channel for TelegramChannel {
             let resp = match resp {
                 Ok(r) => r,
                 Err(e) => {
-                    warn!("telegram poll error: {e:?}");
+                    let redacted = self.redact_token(&format!("{e:?}"));
+                    warn!("telegram poll error: {redacted}");
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }

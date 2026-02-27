@@ -642,8 +642,9 @@ impl EngineLoop {
                             )
                             .await?
                         {
-                            let productive =
-                                !(tool_key == "batch" && is_non_productive_batch_output(&output));
+                            let productive = !(tool_key == "batch"
+                                && is_non_productive_batch_output(&output))
+                                && !is_auth_required_tool_output(&output);
                             if output.contains("WEBSEARCH_QUERY_MISSING") {
                                 websearch_query_blocked = true;
                             }
@@ -1101,11 +1102,45 @@ impl EngineLoop {
         {
             Ok(result) => result,
             Err(err) => {
+                let err_text = err.to_string();
+                if let Some(auth) = extract_mcp_auth_required_from_error_text(&tool, &err_text) {
+                    self.event_bus.publish(EngineEvent::new(
+                        "mcp.auth.required",
+                        json!({
+                            "sessionID": session_id,
+                            "messageID": message_id,
+                            "tool": tool.clone(),
+                            "server": auth.server,
+                            "authorizationUrl": auth.authorization_url,
+                            "message": auth.message,
+                            "challengeId": auth.challenge_id
+                        }),
+                    ));
+                    let auth_output = format!(
+                        "Authorization required for `{}`.\n{}\n\nAuthorize here: {}",
+                        tool, auth.message, auth.authorization_url
+                    );
+                    let mut result_part = WireMessagePart::tool_result(
+                        session_id,
+                        message_id,
+                        tool.clone(),
+                        json!(auth_output.clone()),
+                    );
+                    result_part.id = invoke_part_id.clone();
+                    self.event_bus.publish(EngineEvent::new(
+                        "message.part.updated",
+                        json!({"part": result_part}),
+                    ));
+                    return Ok(Some(truncate_text(
+                        &format!("Tool `{tool}` result:\n{auth_output}"),
+                        16_000,
+                    )));
+                }
                 let mut failed_part =
                     WireMessagePart::tool_result(session_id, message_id, tool.clone(), json!(null));
                 failed_part.id = invoke_part_id.clone();
                 failed_part.state = Some("failed".to_string());
-                failed_part.error = Some(err.to_string());
+                failed_part.error = Some(err_text.clone());
                 self.event_bus.publish(EngineEvent::new(
                     "message.part.updated",
                     json!({"part": failed_part}),
@@ -1113,6 +1148,20 @@ impl EngineLoop {
                 return Err(err);
             }
         };
+        if let Some(auth) = extract_mcp_auth_required_metadata(&result.metadata) {
+            self.event_bus.publish(EngineEvent::new(
+                "mcp.auth.required",
+                json!({
+                    "sessionID": session_id,
+                    "messageID": message_id,
+                    "tool": tool.clone(),
+                    "server": auth.server,
+                    "authorizationUrl": auth.authorization_url,
+                    "message": auth.message,
+                    "challengeId": auth.challenge_id
+                }),
+            ));
+        }
         emit_tool_side_events(
             self.storage.clone(),
             &self.event_bus,
@@ -1127,7 +1176,14 @@ impl EngineLoop {
             },
         )
         .await;
-        let output = self.plugins.transform_tool_output(result.output).await;
+        let output = if let Some(auth) = extract_mcp_auth_required_metadata(&result.metadata) {
+            format!(
+                "Authorization required for `{}`.\n{}\n\nAuthorize here: {}",
+                tool, auth.message, auth.authorization_url
+            )
+        } else {
+            self.plugins.transform_tool_output(result.output).await
+        };
         let output = truncate_text(&output, 16_000);
         let mut result_part = WireMessagePart::tool_result(
             session_id,
@@ -1645,6 +1701,102 @@ fn is_non_productive_batch_output(output: &str) -> bool {
             || text.starts_with("unknown tool:")
             || text.contains("call skipped")
             || text.contains("guard budget exceeded")
+    })
+}
+
+fn is_auth_required_tool_output(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    (lower.contains("authorization required") || lower.contains("requires authorization"))
+        && (lower.contains("authorize here") || lower.contains("http"))
+}
+
+#[derive(Debug, Clone)]
+struct McpAuthRequiredMetadata {
+    challenge_id: String,
+    authorization_url: String,
+    message: String,
+    server: Option<String>,
+}
+
+fn extract_mcp_auth_required_metadata(metadata: &Value) -> Option<McpAuthRequiredMetadata> {
+    let auth = metadata.get("mcpAuth")?;
+    if !auth
+        .get("required")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let authorization_url = auth
+        .get("authorizationUrl")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())?
+        .to_string();
+    let message = auth
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("This tool requires authorization before it can run.")
+        .to_string();
+    let challenge_id = auth
+        .get("challengeId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("unknown")
+        .to_string();
+    let server = metadata
+        .get("server")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string);
+    Some(McpAuthRequiredMetadata {
+        challenge_id,
+        authorization_url,
+        message,
+        server,
+    })
+}
+
+fn extract_mcp_auth_required_from_error_text(
+    tool_name: &str,
+    error_text: &str,
+) -> Option<McpAuthRequiredMetadata> {
+    let lower = error_text.to_ascii_lowercase();
+    let auth_hint = lower.contains("authorization")
+        || lower.contains("oauth")
+        || lower.contains("invalid oauth token")
+        || lower.contains("requires authorization");
+    if !auth_hint {
+        return None;
+    }
+    let authorization_url = find_first_url(error_text)?;
+    let challenge_id = stable_hash(&format!("{tool_name}:{authorization_url}"));
+    let server = tool_name
+        .strip_prefix("mcp.")
+        .and_then(|rest| rest.split('.').next())
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    Some(McpAuthRequiredMetadata {
+        challenge_id,
+        authorization_url,
+        message: "This integration requires authorization before this action can run.".to_string(),
+        server,
+    })
+}
+
+fn find_first_url(text: &str) -> Option<String> {
+    text.split_whitespace().find_map(|token| {
+        if token.starts_with("https://") || token.starts_with("http://") {
+            let cleaned = token.trim_end_matches(&[')', ']', '}', '"', '\'', ',', '.'][..]);
+            if cleaned.len() > "https://".len() {
+                return Some(cleaned.to_string());
+            }
+        }
+        None
     })
 }
 
@@ -4332,5 +4484,31 @@ Call: todowrite(task_id=3, status="in_progress")
         assert!(prompt.contains("Host OS: windows"));
         assert!(prompt.contains("Shell: powershell"));
         assert!(prompt.contains("Path style: windows"));
+    }
+
+    #[test]
+    fn extract_mcp_auth_required_metadata_parses_expected_shape() {
+        let metadata = json!({
+            "server": "arcade",
+            "mcpAuth": {
+                "required": true,
+                "challengeId": "abc123",
+                "authorizationUrl": "https://example.com/oauth",
+                "message": "Authorize first"
+            }
+        });
+        let parsed = extract_mcp_auth_required_metadata(&metadata).expect("expected metadata");
+        assert_eq!(parsed.challenge_id, "abc123");
+        assert_eq!(parsed.authorization_url, "https://example.com/oauth");
+        assert_eq!(parsed.message, "Authorize first");
+        assert_eq!(parsed.server.as_deref(), Some("arcade"));
+    }
+
+    #[test]
+    fn auth_required_output_detector_matches_auth_text() {
+        assert!(is_auth_required_tool_output(
+            "Authorization required for `mcp.arcade.gmail_whoami`.\nAuthorize here: https://example.com"
+        ));
+        assert!(!is_auth_required_tool_output("Tool `read` result: ok"));
     }
 }

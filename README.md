@@ -128,6 +128,16 @@ This supervised loop ensures complex features are implemented correctly with hum
 - **Automation Policy Gates** - Control external side effects with `requires_approval` and `external_integrations_allowed`
 - **Headless Ready** - Full HTTP + SSE runtime with examples under `examples/headless/`
 
+#### MCP OAuth Notes (Arcade and similar providers)
+
+- Some MCP tools return an auth challenge before first use. Tandem now surfaces this as an explicit auth-required event with an authorization URL.
+- After completing OAuth in your browser, retry the tool request in a new turn.
+- For Arcade headers mode, use both headers:
+  - `Authorization: Bearer <arcade-api-key>`
+  - `Arcade-User-ID: <stable-user-id>` (must be stable to reuse authorization across sessions)
+- If `Arcade-User-ID` changes between calls, you'll be asked to authorize again.
+- If a tool repeatedly asks for authorization, verify the server URL, API key, and `Arcade-User-ID` first.
+
 ### Project Management
 
 - **📁 Multi-project support** - Manage multiple workspaces with separate contexts

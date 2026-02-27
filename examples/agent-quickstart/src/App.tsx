@@ -7,6 +7,7 @@ import Agents from "./pages/Agents";
 import Channels from "./pages/Channels";
 import LiveFeed from "./pages/LiveFeed";
 import ProviderSetup from "./pages/ProviderSetup";
+import McpSetup from "./pages/McpSetup";
 import {
   BrainCircuit,
   Clock,
@@ -15,6 +16,7 @@ import {
   Settings2,
   LogOut,
   AlertTriangle,
+  PlugZap,
 } from "lucide-react";
 
 /* ─── Protected Route ─── */
@@ -102,6 +104,7 @@ function Sidebar() {
           label="Channels"
           color="text-purple-400"
         />
+        <NavLink to="/mcp" icon={<PlugZap size={16} />} label="MCP" color="text-cyan-400" />
         <NavLink to="/feed" icon={<Radio size={16} />} label="Live Feed" color="text-sky-400" />
       </nav>
 
@@ -178,6 +181,16 @@ function AppRoutes() {
           <Protected>
             <Shell>
               <LiveFeed />
+            </Shell>
+          </Protected>
+        }
+      />
+      <Route
+        path="/mcp"
+        element={
+          <Protected>
+            <Shell>
+              <McpSetup />
             </Shell>
           </Protected>
         }

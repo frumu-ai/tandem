@@ -780,6 +780,10 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let routine_scheduler_state = state.clone();
     let routine_executor_state = state.clone();
     let agent_team_supervisor_state = state.clone();
+    let mcp_bootstrap_state = state.clone();
+    tokio::spawn(async move {
+        bootstrap_mcp_servers_when_ready(mcp_bootstrap_state).await;
+    });
     let app = app_router(state);
     let reaper = tokio::spawn(async move {
         loop {
@@ -873,6 +877,63 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     }
     result?;
     Ok(())
+}
+
+async fn bootstrap_mcp_servers_when_ready(state: AppState) {
+    for _ in 0..120 {
+        if state.is_ready() {
+            bootstrap_mcp_servers(&state).await;
+            return;
+        }
+        let startup = state.startup_snapshot().await;
+        if matches!(startup.status, crate::StartupStatus::Failed) {
+            tracing::warn!("mcp bootstrap: skipped because runtime startup failed");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    tracing::warn!("mcp bootstrap: timed out waiting for runtime readiness");
+}
+
+async fn bootstrap_mcp_servers(state: &AppState) {
+    let mut enabled_servers = state
+        .mcp
+        .list()
+        .await
+        .into_iter()
+        .filter_map(|(name, server)| if server.enabled { Some(name) } else { None })
+        .collect::<Vec<_>>();
+    enabled_servers.sort();
+
+    for name in enabled_servers {
+        let connected = state.mcp.connect(&name).await;
+        if !connected {
+            tracing::warn!("mcp bootstrap: failed to connect server '{}'", name);
+            continue;
+        }
+        let count = sync_mcp_tools_for_server(state, &name).await;
+        state.event_bus.publish(EngineEvent::new(
+            "mcp.server.connected",
+            json!({
+                "name": name,
+                "status": "connected",
+                "source": "startup_bootstrap"
+            }),
+        ));
+        state.event_bus.publish(EngineEvent::new(
+            "mcp.tools.updated",
+            json!({
+                "name": name,
+                "count": count,
+                "source": "startup_bootstrap"
+            }),
+        ));
+        tracing::info!(
+            "mcp bootstrap: connected '{}' with {} tools registered",
+            name,
+            count
+        );
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1092,7 +1153,10 @@ fn app_router(state: AppState) -> Router {
         .route("/mcp", get(list_mcp).post(add_mcp))
         .route("/mcp/{name}/connect", post(connect_mcp))
         .route("/mcp/{name}/disconnect", post(disconnect_mcp))
-        .route("/mcp/{name}", axum::routing::patch(patch_mcp))
+        .route(
+            "/mcp/{name}",
+            axum::routing::patch(patch_mcp).delete(delete_mcp),
+        )
         .route("/mcp/{name}/refresh", post(refresh_mcp))
         .route("/mcp/{name}/auth", post(auth_mcp).delete(delete_auth_mcp))
         .route("/mcp/{name}/auth/callback", post(callback_mcp))
@@ -3300,6 +3364,17 @@ async fn connect_mcp(State(state): State<AppState>, Path(name): Path<String>) ->
                 "count": count,
             }),
         ));
+    } else {
+        let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
+        let removed = state.tools.unregister_by_prefix(&prefix).await;
+        state.event_bus.publish(EngineEvent::new(
+            "mcp.server.disconnected",
+            json!({
+                "name": name,
+                "removedToolCount": removed,
+                "reason": "connect_failed"
+            }),
+        ));
     }
     Json(json!({"ok": ok}))
 }
@@ -3317,6 +3392,22 @@ async fn disconnect_mcp(State(state): State<AppState>, Path(name): Path<String>)
         ));
     }
     Json(json!({"ok": ok}))
+}
+
+async fn delete_mcp(State(state): State<AppState>, Path(name): Path<String>) -> Json<Value> {
+    let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
+    let removed_tool_count = state.tools.unregister_by_prefix(&prefix).await;
+    let ok = state.mcp.remove(&name).await;
+    if ok {
+        state.event_bus.publish(EngineEvent::new(
+            "mcp.server.deleted",
+            json!({
+                "name": name,
+                "removedToolCount": removed_tool_count,
+            }),
+        ));
+    }
+    Json(json!({ "ok": ok, "removedToolCount": removed_tool_count }))
 }
 
 async fn patch_mcp(
@@ -3371,10 +3462,23 @@ async fn refresh_mcp(State(state): State<AppState>, Path(name): Path<String>) ->
                 "count": tools.len(),
             }))
         }
-        Err(error) => Json(json!({
-            "ok": false,
-            "error": error
-        })),
+        Err(error) => {
+            let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
+            let removed = state.tools.unregister_by_prefix(&prefix).await;
+            state.event_bus.publish(EngineEvent::new(
+                "mcp.server.disconnected",
+                json!({
+                    "name": name,
+                    "removedToolCount": removed,
+                    "reason": "refresh_failed"
+                }),
+            ));
+            Json(json!({
+                "ok": false,
+                "error": error,
+                "removedToolCount": removed
+            }))
+        }
     }
 }
 async fn auth_mcp(Path(name): Path<String>) -> Json<Value> {
