@@ -1050,13 +1050,15 @@ impl EngineLoop {
                 emit_tool_side_events(
                     self.storage.clone(),
                     &self.event_bus,
-                    session_id,
-                    message_id,
-                    &tool,
-                    &args_for_side_events,
-                    &spawned.metadata,
-                    tool_context.as_ref().map(|ctx| ctx.0.as_str()),
-                    tool_context.as_ref().map(|ctx| ctx.1.as_str()),
+                    ToolSideEventContext {
+                        session_id,
+                        message_id,
+                        tool: &tool,
+                        args: &args_for_side_events,
+                        metadata: &spawned.metadata,
+                        workspace_root: tool_context.as_ref().map(|ctx| ctx.0.as_str()),
+                        effective_cwd: tool_context.as_ref().map(|ctx| ctx.1.as_str()),
+                    },
                 )
                 .await;
                 let mut result_part = WireMessagePart::tool_result(
@@ -1109,13 +1111,15 @@ impl EngineLoop {
         emit_tool_side_events(
             self.storage.clone(),
             &self.event_bus,
-            session_id,
-            message_id,
-            &tool,
-            &args_for_side_events,
-            &result.metadata,
-            tool_context.as_ref().map(|ctx| ctx.0.as_str()),
-            tool_context.as_ref().map(|ctx| ctx.1.as_str()),
+            ToolSideEventContext {
+                session_id,
+                message_id,
+                tool: &tool,
+                args: &args_for_side_events,
+                metadata: &result.metadata,
+                workspace_root: tool_context.as_ref().map(|ctx| ctx.0.as_str()),
+                effective_cwd: tool_context.as_ref().map(|ctx| ctx.1.as_str()),
+            },
         )
         .await;
         let output = self.plugins.transform_tool_output(result.output).await;
@@ -3389,17 +3393,30 @@ async fn load_chat_history(storage: std::sync::Arc<Storage>, session_id: &str) -
     compact_chat_history(messages)
 }
 
+struct ToolSideEventContext<'a> {
+    session_id: &'a str,
+    message_id: &'a str,
+    tool: &'a str,
+    args: &'a serde_json::Value,
+    metadata: &'a serde_json::Value,
+    workspace_root: Option<&'a str>,
+    effective_cwd: Option<&'a str>,
+}
+
 async fn emit_tool_side_events(
     storage: std::sync::Arc<Storage>,
     bus: &EventBus,
-    session_id: &str,
-    message_id: &str,
-    tool: &str,
-    args: &serde_json::Value,
-    metadata: &serde_json::Value,
-    workspace_root: Option<&str>,
-    effective_cwd: Option<&str>,
+    ctx: ToolSideEventContext<'_>,
 ) {
+    let ToolSideEventContext {
+        session_id,
+        message_id,
+        tool,
+        args,
+        metadata,
+        workspace_root,
+        effective_cwd,
+    } = ctx;
     if tool == "todo_write" {
         let todos_from_metadata = metadata
             .get("todos")
@@ -3658,13 +3675,15 @@ mod tests {
         emit_tool_side_events(
             storage.clone(),
             &bus,
-            &session_id,
-            "m1",
-            "todo_write",
-            &json!({"todos":[{"content":"ship parity"}]}),
-            &json!({"todos":[{"content":"ship parity"}]}),
-            Some("."),
-            Some("."),
+            ToolSideEventContext {
+                session_id: &session_id,
+                message_id: "m1",
+                tool: "todo_write",
+                args: &json!({"todos":[{"content":"ship parity"}]}),
+                metadata: &json!({"todos":[{"content":"ship parity"}]}),
+                workspace_root: Some("."),
+                effective_cwd: Some("."),
+            },
         )
         .await;
 
@@ -3698,13 +3717,15 @@ mod tests {
         emit_tool_side_events(
             storage,
             &bus,
-            &session_id,
-            "msg-1",
-            "question",
-            &json!({"questions":[{"header":"Topic","question":"Pick one","options":[{"label":"A","description":"d"}]}]}),
-            &json!({"questions":[{"header":"Topic","question":"Pick one","options":[{"label":"A","description":"d"}]}]}),
-            Some("."),
-            Some("."),
+            ToolSideEventContext {
+                session_id: &session_id,
+                message_id: "msg-1",
+                tool: "question",
+                args: &json!({"questions":[{"header":"Topic","question":"Pick one","options":[{"label":"A","description":"d"}]}]}),
+                metadata: &json!({"questions":[{"header":"Topic","question":"Pick one","options":[{"label":"A","description":"d"}]}]}),
+                workspace_root: Some("."),
+                effective_cwd: Some("."),
+            },
         )
         .await;
 

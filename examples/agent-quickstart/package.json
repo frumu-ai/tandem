@@ -12,7 +12,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@frumu/tandem-client": "^0.3.22",
+    "@frumu/tandem-client": "latest",
     "@tailwindcss/vite": "^4.2.0",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
