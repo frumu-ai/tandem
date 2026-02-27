@@ -40,11 +40,36 @@ interface StoredSession {
   title: string;
   created: number;
 }
+interface ModelSpec {
+  provider: string;
+  model: string;
+}
+type ProviderCfg = {
+  defaultModel?: string;
+  default_model?: string;
+};
+
+const sanitizeModelText = (value: string): string => {
+  let out = value;
+  for (const marker of ["<|eom|>", "<|eot_id|>", "<|im_end|>", "<|end|>"]) {
+    if (out.includes(marker))
+      out = out.replace(new RegExp(marker.replace(/[|]/g, "\\$&"), "g"), "");
+  }
+  return out;
+};
+
+const eventRunId = (props: Record<string, unknown> | undefined): string | undefined => {
+  const id = props?.runId ?? props?.runID ?? props?.run_id;
+  return typeof id === "string" && id.trim() ? id : undefined;
+};
 
 const SESSIONS_KEY = "tandem_aq_sessions";
 const ACTIVE_KEY = "tandem_aq_active_session";
 const PRIMED_PREFIX = "tandem_aq_primed_";
 const PRIME_MARKER = "[AQ_PRIMED_V1]";
+const SHOW_DEBUG_UI =
+  typeof window !== "undefined" &&
+  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 
 /* ─── Session store helpers ─── */
 const loadStoredSessions = (): StoredSession[] => {
@@ -71,7 +96,7 @@ function ToolResult({ name, result }: { name: string; result: string }) {
   const large = display.length > 2000;
 
   return (
-    <div className="border border-gray-800 rounded-xl overflow-hidden bg-gray-900/60 text-sm max-w-[85%]">
+    <div className="border border-gray-800 rounded-xl overflow-hidden bg-gray-900/60 text-sm max-w-[85%] min-w-0">
       <button
         onClick={() => setOpen((o) => !o)}
         className="w-full flex items-center justify-between px-3 py-2 bg-gray-800/80 hover:bg-gray-700/60 transition-colors text-left gap-2"
@@ -103,7 +128,7 @@ function ToolResult({ name, result }: { name: string; result: string }) {
       </button>
       {open && (
         <div className="p-3 border-t border-gray-800 bg-gray-950 max-h-72 overflow-y-auto">
-          <div className="prose prose-invert prose-sm max-w-none prose-pre:bg-gray-800 prose-pre:border prose-pre:border-gray-700 prose-a:text-blue-400">
+          <div className="prose prose-invert prose-sm max-w-none break-words prose-pre:bg-gray-800 prose-pre:border prose-pre:border-gray-700 prose-pre:whitespace-pre-wrap prose-pre:break-words prose-a:text-blue-400">
             <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
               {display}
             </ReactMarkdown>
@@ -149,8 +174,8 @@ function ChatMessage({ msg, isLast }: { msg: ChatMsg; isLast: boolean }) {
   if (msg.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[75%] rounded-2xl rounded-br-sm px-4 py-3 bg-violet-600 text-white shadow-lg shadow-violet-900/30">
-          <p className="whitespace-pre-wrap leading-relaxed text-sm">{msg.content}</p>
+        <div className="max-w-[75%] min-w-0 rounded-2xl rounded-br-sm px-4 py-3 bg-violet-600 text-white shadow-lg shadow-violet-900/30">
+          <p className="whitespace-pre-wrap break-words leading-relaxed text-sm">{msg.content}</p>
         </div>
       </div>
     );
@@ -159,8 +184,8 @@ function ChatMessage({ msg, isLast }: { msg: ChatMsg; isLast: boolean }) {
   // Agent text
   return (
     <div className={`flex justify-start ${isLast ? "" : ""}`}>
-      <div className="max-w-[78%] rounded-2xl rounded-bl-sm px-4 py-3 bg-gray-800/80 border border-gray-700/60 shadow-sm">
-        <div className="prose prose-invert prose-sm max-w-none prose-pre:bg-gray-900/70 prose-pre:border prose-pre:border-gray-700 prose-a:text-violet-400 hover:prose-a:text-violet-300 prose-code:text-violet-300">
+      <div className="max-w-[78%] min-w-0 rounded-2xl rounded-bl-sm px-4 py-3 bg-gray-800/80 border border-gray-700/60 shadow-sm">
+        <div className="prose prose-invert prose-sm max-w-none break-words prose-pre:bg-gray-900/70 prose-pre:border prose-pre:border-gray-700 prose-pre:whitespace-pre-wrap prose-pre:break-words prose-a:text-violet-400 hover:prose-a:text-violet-300 prose-code:text-violet-300">
           <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
             {msg.content}
           </ReactMarkdown>
@@ -199,7 +224,12 @@ Ground rules:
 3. If a tool call fails, share the exact error and suggest the next step.
 4. For web questions, use websearch or webfetch before answering.
 5. Format long answers with markdown headers and code blocks.
-6. Prefer concise replies; use memory_store when the user asks you to remember something.`;
+6. Prefer concise replies; use memory_store when the user asks you to remember something.
+7. Do not expose raw tool-call payload JSON, hidden reasoning, or internal traces.
+8. Summarize tool actions/results in plain language unless the user explicitly asks for diagnostics.
+9. Default memory scope is global. For memory recall questions, call memory_search first with tier=global and allow_global=true before answering.
+10. When user asks to remember something, store with memory_store tier=global and allow_global=true unless they explicitly request session/project scope.
+11. Never say "no memory found" unless memory_search was executed in this turn and returned no matches.`;
 
 /* ─── Main component ─── */
 export default function ChatBrain() {
@@ -260,6 +290,12 @@ export default function ChatBrain() {
   const buildChatFromHistory = (msgs: EngineMessage[]): ChatMsg[] =>
     msgs
       .filter((m) => m.info?.role === "user" || m.info?.role === "assistant")
+      .filter(
+        (m) =>
+          !(m.parts || []).some(
+            (p) => p.type === "text" && typeof p.text === "string" && p.text.includes(PRIME_MARKER)
+          )
+      )
       .flatMap((m) => {
         const role = m.info?.role === "assistant" ? "agent" : "user";
         const text = (m.parts || [])
@@ -267,9 +303,47 @@ export default function ChatBrain() {
           .map((p) => p.text)
           .join("\n")
           .trim();
-        if (!text) return [];
-        return [{ id: Math.random().toString(36), role, type: "text" as const, content: text }];
+        const cleaned = sanitizeModelText(text).trim();
+        if (!cleaned) return [];
+        return [{ id: Math.random().toString(36), role, type: "text" as const, content: cleaned }];
       });
+
+  const resolveModelSpec = useCallback(async (): Promise<ModelSpec | null> => {
+    try {
+      const [cfg, catalog] = await Promise.all([
+        client.providers.config(),
+        client.providers.catalog(),
+      ]);
+      const all = catalog.all || [];
+      const connected = new Set((catalog.connected || []).filter(Boolean));
+
+      const firstModelFor = (providerId: string): string | null => {
+        const entry = all.find((p) => p.id === providerId);
+        const ids = Object.keys(entry?.models || {});
+        return ids.length > 0 ? ids[0] : null;
+      };
+
+      const defaultProvider = (cfg.default || catalog.default || "").trim();
+      if (defaultProvider && connected.has(defaultProvider)) {
+        const fromCfgEntry = (cfg.providers?.[defaultProvider] || {}) as ProviderCfg;
+        const fromCfg = fromCfgEntry.defaultModel || fromCfgEntry.default_model || null;
+        const fromCatalog = firstModelFor(defaultProvider);
+        const model = (fromCfg || fromCatalog || "").trim();
+        if (model) return { provider: defaultProvider, model };
+      }
+
+      for (const providerId of connected) {
+        const fromCfgEntry = (cfg.providers?.[providerId] || {}) as ProviderCfg;
+        const fromCfg = fromCfgEntry.defaultModel || fromCfgEntry.default_model || null;
+        const fromCatalog = firstModelFor(providerId);
+        const model = (fromCfg || fromCatalog || "").trim();
+        if (model) return { provider: providerId, model };
+      }
+    } catch {
+      // Ignore; caller will present user-facing guidance.
+    }
+    return null;
+  }, []);
 
   const ensurePrimed = async (sid: string) => {
     const key = `${PRIMED_PREFIX}${sid}`;
@@ -289,15 +363,44 @@ export default function ChatBrain() {
     }
   };
 
-  const attachStream = async (sid: string, rid: string) => {
+  const attachStream = async (sid: string, rid?: string) => {
+    esRef.current?.close();
+    let watchdog: number | undefined;
     try {
+      let receivedAnyEvent = false;
+      let settled = false;
       const ctrl = new AbortController();
-      esRef.current = { close: () => ctrl.abort() } as any;
+      watchdog = window.setTimeout(async () => {
+        if (receivedAnyEvent || settled) return;
+        addLog("No run events received; checking backend state…");
+        try {
+          const run = await client.sessions.activeRun(sid);
+          if (!run.active?.runId) {
+            setIsThinking(false);
+            setMessages((p) => [
+              ...p,
+              {
+                id: Math.random().toString(36),
+                role: "system",
+                type: "text",
+                content:
+                  "No run activity was produced. Check Provider Setup and pick a connected provider/model.",
+              },
+            ]);
+          }
+        } catch {
+          setIsThinking(false);
+        }
+      }, 12000);
 
-      for await (const data of client.stream(sid, rid, { signal: ctrl.signal })) {
+      esRef.current = { close: () => ctrl.abort() } as EventSource;
+
+      for await (const data of client.stream(sid, undefined, { signal: ctrl.signal })) {
+        receivedAnyEvent = true;
         const type = data.type;
+        const runId = eventRunId((data.properties || {}) as Record<string, unknown>);
         if (type === "session.response") {
-          const delta = data.properties?.delta as string;
+          const delta = sanitizeModelText((data.properties?.delta as string) || "");
           if (delta) {
             setMessages((prev) => {
               const upd = [...prev];
@@ -322,6 +425,8 @@ export default function ChatBrain() {
             });
           }
         } else if (type === "run.completed") {
+          if (rid && (!runId || runId !== rid)) continue;
+          settled = true;
           addLog("Run completed");
           if (sessionId) {
             try {
@@ -334,6 +439,8 @@ export default function ChatBrain() {
           }
           setIsThinking(false);
         } else if (type === "run.failed") {
+          if (rid && (!runId || runId !== rid)) continue;
+          settled = true;
           const detail =
             String(
               data.properties?.error || data.properties?.message || data.properties?.reason || ""
@@ -349,6 +456,40 @@ export default function ChatBrain() {
             },
           ]);
           setIsThinking(false);
+        } else if (type === "session.run.finished") {
+          if (rid && (!runId || runId !== rid)) continue;
+          const status = String(data.properties?.status || "").toLowerCase();
+          const failed = status === "failed" || status === "error";
+          settled = true;
+          if (failed) {
+            const detail =
+              String(
+                data.properties?.error || data.properties?.message || data.properties?.reason || ""
+              ).trim() || "Run failed.";
+            addLog(`Run failed: ${detail}`);
+            setMessages((p) => [
+              ...p,
+              {
+                id: Math.random().toString(36),
+                role: "system",
+                type: "text",
+                content: `Run failed: ${detail}`,
+              },
+            ]);
+            setIsThinking(false);
+          } else {
+            addLog("Run completed");
+            if (sessionId) {
+              try {
+                const history = await client.sessions.messages(sessionId);
+                const rebuilt = buildChatFromHistory(history);
+                if (rebuilt.length > 0) setMessages(rebuilt);
+              } catch {
+                /* ignore */
+              }
+            }
+            setIsThinking(false);
+          }
         } else if (type === "tool.called" || type === "tool_call.started") {
           const tool = (data.properties?.tool as string) || "tool";
           addLog(`▶ ${tool}`);
@@ -386,7 +527,14 @@ export default function ChatBrain() {
       }
     } catch (e) {
       addLog(`Stream terminated`);
-      setIsThinking(false);
+      try {
+        const run = await client.sessions.activeRun(sid);
+        if (!run.active?.runId) setIsThinking(false);
+      } catch {
+        setIsThinking(false);
+      }
+    } finally {
+      if (watchdog !== undefined) window.clearTimeout(watchdog);
     }
   };
 
@@ -456,7 +604,17 @@ export default function ChatBrain() {
   const createNewSession = async (title?: string) => {
     const t =
       title || `Chat ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-    const sid = await client.sessions.create({ title: t });
+    const spec = await resolveModelSpec();
+    if (!spec) {
+      throw new Error(
+        "No default provider/model is configured. Open Provider Setup, connect a provider, choose a model, then retry."
+      );
+    }
+    const sid = await client.sessions.create({
+      title: t,
+      provider: spec.provider,
+      model: spec.model,
+    });
     localStorage.setItem(ACTIVE_KEY, sid);
     const sessions = loadStoredSessions();
     const next = [{ id: sid, title: t, created: Date.now() }, ...sessions].slice(0, 20);
@@ -494,6 +652,12 @@ export default function ChatBrain() {
     setError(null);
     addLog("Starting run…");
     try {
+      const spec = await resolveModelSpec();
+      if (!spec) {
+        throw new Error(
+          "No runnable provider/model is configured. Open Provider Setup and select one."
+        );
+      }
       const { runId } = await client.sessions.promptAsync(sessionId, text);
       addLog(`Run ${runId.slice(0, 8)}`);
       void attachStream(sessionId, runId);
@@ -646,13 +810,15 @@ export default function ChatBrain() {
                   {approving ? "Approving…" : `Approve ${pendingApprovals.length}`}
                 </button>
               )}
-              <button
-                onClick={() => setLogOpen((o) => !o)}
-                className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-500 hover:text-gray-300 transition-colors"
-                title="Toggle debug log"
-              >
-                <Settings2 size={16} />
-              </button>
+              {SHOW_DEBUG_UI && (
+                <button
+                  onClick={() => setLogOpen((o) => !o)}
+                  className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-500 hover:text-gray-300 transition-colors"
+                  title="Toggle debug log"
+                >
+                  <Settings2 size={16} />
+                </button>
+              )}
               <button
                 onClick={() => void createNewSession()}
                 className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-500 hover:text-gray-300 transition-colors"
@@ -662,7 +828,7 @@ export default function ChatBrain() {
               </button>
             </div>
           </div>
-          {logOpen && log.length > 0 && (
+          {SHOW_DEBUG_UI && logOpen && log.length > 0 && (
             <div className="mt-2 rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 max-h-20 overflow-y-auto">
               {log.slice(-8).map((entry, i) => (
                 <p key={i} className="text-[10px] text-gray-500 font-mono leading-5">
@@ -674,61 +840,65 @@ export default function ChatBrain() {
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
-          {error && (
-            <div className="bg-rose-900/20 border border-rose-800/40 rounded-xl p-3 flex items-start gap-2">
-              <AlertCircle size={14} className="text-rose-400 mt-0.5 shrink-0" />
-              <p className="text-sm text-rose-300">{error}</p>
-            </div>
-          )}
-          {messages.map((m, i) => (
-            <ChatMessage key={m.id} msg={m} isLast={i === messages.length - 1} />
-          ))}
-          {isThinking && <Thinking />}
-          <div ref={bottomRef} />
+        <div className="flex-1 overflow-y-auto px-4 py-6">
+          <div className="w-full max-w-5xl mx-auto space-y-4 overflow-x-hidden">
+            {error && (
+              <div className="bg-rose-900/20 border border-rose-800/40 rounded-xl p-3 flex items-start gap-2">
+                <AlertCircle size={14} className="text-rose-400 mt-0.5 shrink-0" />
+                <p className="text-sm text-rose-300">{error}</p>
+              </div>
+            )}
+            {messages.map((m, i) => (
+              <ChatMessage key={m.id} msg={m} isLast={i === messages.length - 1} />
+            ))}
+            {isThinking && <Thinking />}
+            <div ref={bottomRef} />
+          </div>
         </div>
 
         {/* Input */}
         <div className="shrink-0 px-4 pb-4 pt-2 bg-gray-950 border-t border-gray-800/60">
-          <form onSubmit={(e) => void handleSend(e)} className="relative">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={isThinking || !sessionId}
-              rows={1}
-              placeholder={
-                isThinking
-                  ? "Agent is thinking…"
-                  : "Ask anything — files, web, memory… (⏎ send, ⇧⏎ newline)"
-              }
-              className="w-full bg-gray-800/80 border border-gray-700/60 rounded-2xl pl-4 pr-12 py-3 text-sm text-gray-100 placeholder:text-gray-500 resize-none overflow-hidden focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-600/50 disabled:opacity-50 transition-all leading-relaxed"
-              style={{ minHeight: 48, maxHeight: 180 }}
-              onInput={(e) => {
-                const t = e.currentTarget;
-                t.style.height = "auto";
-                t.style.height = Math.min(t.scrollHeight, 180) + "px";
-              }}
-            />
-            <button
-              type="submit"
-              disabled={!input.trim() || isThinking || !sessionId}
-              className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:bg-gray-700 disabled:text-gray-500 text-white transition-colors"
-            >
-              <Send size={16} />
-            </button>
-          </form>
-          <div className="mt-1.5 flex items-center justify-between px-1">
-            <p className="text-[11px] text-gray-600">
-              Session <span className="font-mono">{sessionId?.slice(0, 8) ?? "—"}</span>
-              {availableTools.length > 0 && ` · ${availableTools.length} tools`}
-            </p>
-            {pendingApprovals.length > 0 && (
-              <p className="text-[11px] text-amber-400">
-                {pendingApprovals.length} approval{pendingApprovals.length > 1 ? "s" : ""} needed
+          <div className="w-full max-w-5xl mx-auto">
+            <form onSubmit={(e) => void handleSend(e)} className="relative">
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={isThinking || !sessionId}
+                rows={1}
+                placeholder={
+                  isThinking
+                    ? "Agent is thinking…"
+                    : "Ask anything — files, web, memory… (⏎ send, ⇧⏎ newline)"
+                }
+                className="w-full bg-gray-800/80 border border-gray-700/60 rounded-2xl pl-4 pr-12 py-3 text-sm text-gray-100 placeholder:text-gray-500 resize-none overflow-hidden focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-600/50 disabled:opacity-50 transition-all leading-relaxed"
+                style={{ minHeight: 48, maxHeight: 180 }}
+                onInput={(e) => {
+                  const t = e.currentTarget;
+                  t.style.height = "auto";
+                  t.style.height = Math.min(t.scrollHeight, 180) + "px";
+                }}
+              />
+              <button
+                type="submit"
+                disabled={!input.trim() || isThinking || !sessionId}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:bg-gray-700 disabled:text-gray-500 text-white transition-colors"
+              >
+                <Send size={16} />
+              </button>
+            </form>
+            <div className="mt-1.5 flex items-center justify-between px-1">
+              <p className="text-[11px] text-gray-600">
+                Session <span className="font-mono">{sessionId?.slice(0, 8) ?? "—"}</span>
+                {availableTools.length > 0 && ` · ${availableTools.length} tools`}
               </p>
-            )}
+              {pendingApprovals.length > 0 && (
+                <p className="text-[11px] text-amber-400">
+                  {pendingApprovals.length} approval{pendingApprovals.length > 1 ? "s" : ""} needed
+                </p>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -769,16 +939,18 @@ export default function ChatBrain() {
             ))}
           </div>
         </div>
-        <div className="mt-auto">
-          <p className="text-[10px] text-gray-600 mb-1 uppercase tracking-widest">Debug Log</p>
-          <div className="max-h-32 overflow-y-auto space-y-0.5">
-            {log.slice(-10).map((e, i) => (
-              <p key={i} className="text-[10px] text-gray-600 font-mono leading-4 break-all">
-                {e}
-              </p>
-            ))}
+        {SHOW_DEBUG_UI && (
+          <div className="mt-auto">
+            <p className="text-[10px] text-gray-600 mb-1 uppercase tracking-widest">Debug Log</p>
+            <div className="max-h-32 overflow-y-auto space-y-0.5">
+              {log.slice(-10).map((e, i) => (
+                <p key={i} className="text-[10px] text-gray-600 font-mono leading-4 break-all">
+                  {e}
+                </p>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

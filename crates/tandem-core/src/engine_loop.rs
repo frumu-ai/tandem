@@ -427,6 +427,10 @@ impl EngineLoop {
                     };
                     match chunk {
                         StreamChunk::TextDelta(delta) => {
+                            let delta = strip_model_control_markers(&delta);
+                            if delta.trim().is_empty() {
+                                continue;
+                            }
                             if completion.is_empty() {
                                 emit_event(
                                     Level::INFO,
@@ -715,6 +719,7 @@ impl EngineLoop {
                     preview
                 );
             }
+            completion = strip_model_control_markers(&completion);
             truncate_text(&completion, 16_000)
         };
         emit_event(
@@ -1321,13 +1326,18 @@ impl EngineLoop {
                 return None;
             }
             match chunk {
-                Ok(StreamChunk::TextDelta(delta)) => completion.push_str(&delta),
+                Ok(StreamChunk::TextDelta(delta)) => {
+                    let delta = strip_model_control_markers(&delta);
+                    if !delta.trim().is_empty() {
+                        completion.push_str(&delta);
+                    }
+                }
                 Ok(StreamChunk::Done { .. }) => break,
                 Ok(_) => {}
                 Err(_) => return None,
             }
         }
-        let completion = truncate_text(&completion, 16_000);
+        let completion = truncate_text(&strip_model_control_markers(&completion), 16_000);
         if completion.trim().is_empty() {
             None
         } else {
@@ -1352,6 +1362,16 @@ fn resolve_model_route(
     request_model
         .and_then(normalize)
         .or_else(|| session_model.and_then(normalize))
+}
+
+fn strip_model_control_markers(input: &str) -> String {
+    let mut cleaned = input.to_string();
+    for marker in ["<|eom|>", "<|eot_id|>", "<|im_end|>", "<|end|>"] {
+        if cleaned.contains(marker) {
+            cleaned = cleaned.replace(marker, "");
+        }
+    }
+    cleaned
 }
 
 fn truncate_text(input: &str, max_len: usize) -> String {
