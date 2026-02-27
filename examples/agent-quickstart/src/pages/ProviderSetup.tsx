@@ -44,6 +44,7 @@ export default function ProviderSetup({ onDone }: Props) {
   const [settings, setSettings] = useState<ProvidersConfigResponse | null>(null);
   const [selectedProvider, setSelectedProvider] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
+  const [modelQuery, setModelQuery] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -82,7 +83,9 @@ export default function ProviderSetup({ onDone }: Props) {
   const handleProviderChange = (pid: string) => {
     setSelectedProvider(pid);
     const entry = catalog.find((e) => e.id === pid);
-    setSelectedModel(Object.keys(entry?.models || {})[0] || "");
+    const firstModel = Object.keys(entry?.models || {})[0] || "";
+    setSelectedModel(firstModel);
+    setModelQuery("");
     setApiKey("");
   };
 
@@ -118,6 +121,9 @@ export default function ProviderSetup({ onDone }: Props) {
   const hint = PROVIDER_HINTS[selectedProvider];
   const entry = catalog.find((e) => e.id === selectedProvider);
   const models = Object.keys(entry?.models || {});
+  const filteredModels = modelQuery.trim()
+    ? models.filter((m) => m.toLowerCase().includes(modelQuery.trim().toLowerCase()))
+    : models;
 
   return (
     <div className="h-full overflow-y-auto bg-gray-950">
@@ -169,17 +175,27 @@ export default function ProviderSetup({ onDone }: Props) {
             {models.length > 0 && (
               <div>
                 <label className="block text-sm text-gray-400 mb-2">Model</label>
+                <input
+                  type="text"
+                  value={modelQuery}
+                  onChange={(e) => setModelQuery(e.target.value)}
+                  placeholder="Filter models (e.g. flash, sonnet, gpt-4o)…"
+                  className="mb-2 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-gray-200 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                />
                 <select
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
                 >
-                  {models.map((m) => (
+                  {filteredModels.map((m) => (
                     <option key={m} value={m}>
                       {m}
                     </option>
                   ))}
                 </select>
+                {modelQuery.trim() && filteredModels.length === 0 && (
+                  <p className="mt-2 text-xs text-amber-400">No model matches that filter.</p>
+                )}
               </div>
             )}
 
