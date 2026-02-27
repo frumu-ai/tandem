@@ -321,8 +321,8 @@ export default function ChatBrain() {
               return upd;
             });
           }
-        } else if (type === "run.completed" || type === "run.failed") {
-          addLog(`Run finished`);
+        } else if (type === "run.completed") {
+          addLog("Run completed");
           if (sessionId) {
             try {
               const history = await client.sessions.messages(sessionId);
@@ -332,6 +332,22 @@ export default function ChatBrain() {
               /* ignore */
             }
           }
+          setIsThinking(false);
+        } else if (type === "run.failed") {
+          const detail =
+            String(
+              data.properties?.error || data.properties?.message || data.properties?.reason || ""
+            ).trim() || "Run failed. Check provider/model configuration and credits.";
+          addLog(`Run failed: ${detail}`);
+          setMessages((p) => [
+            ...p,
+            {
+              id: Math.random().toString(36),
+              role: "system",
+              type: "text",
+              content: `Run failed: ${detail}`,
+            },
+          ]);
           setIsThinking(false);
         } else if (type === "tool.called" || type === "tool_call.started") {
           const tool = (data.properties?.tool as string) || "tool";

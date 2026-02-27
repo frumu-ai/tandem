@@ -16,6 +16,19 @@ interface Props {
   onDone?: () => void;
 }
 
+type ProviderConfigShape = {
+  defaultModel?: string;
+  default_model?: string;
+};
+
+const getDefaultModelForProvider = (
+  config: ProvidersConfigResponse | null,
+  providerId: string
+): string | undefined => {
+  const entry = (config?.providers?.[providerId] || {}) as ProviderConfigShape;
+  return entry.defaultModel || entry.default_model;
+};
+
 const PROVIDER_HINTS: Record<string, { label: string; keyUrl: string; placeholder: string }> = {
   openai: {
     label: "OpenAI",
@@ -69,7 +82,10 @@ export default function ProviderSetup({ onDone }: Props) {
         if (first) {
           const entry = c.all.find((e) => e.id === first);
           const models = Object.keys(entry?.models || {});
-          setSelectedModel(s.providers?.[first]?.defaultModel || models[0] || "");
+          const configured = getDefaultModelForProvider(s, first);
+          setSelectedModel(
+            configured && models.includes(configured) ? configured : models[0] || ""
+          );
         }
       } catch {
         setError("Failed to load provider settings.");
@@ -83,8 +99,9 @@ export default function ProviderSetup({ onDone }: Props) {
   const handleProviderChange = (pid: string) => {
     setSelectedProvider(pid);
     const entry = catalog.find((e) => e.id === pid);
-    const firstModel = Object.keys(entry?.models || {})[0] || "";
-    setSelectedModel(firstModel);
+    const models = Object.keys(entry?.models || {});
+    const configured = getDefaultModelForProvider(settings, pid);
+    setSelectedModel(configured && models.includes(configured) ? configured : models[0] || "");
     setModelQuery("");
     setApiKey("");
   };
