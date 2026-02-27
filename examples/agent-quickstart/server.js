@@ -36,7 +36,7 @@ app.use(
         on: {
             error: (_err, _req, res) => {
                 if (res && "status" in res) {
-                    (res as express.Response).status(502).json({ error: "Engine unreachable." });
+                    res.status(502).json({ error: "Engine unreachable." });
                 }
             },
         },
@@ -46,7 +46,7 @@ app.use(
 /* ── Static (production build) ── */
 const distDir = path.join(__dirname, "dist");
 app.use(express.static(distDir));
-app.get("*", (_req, res) => {
+app.get(/.*/, (_req, res) => {
     res.sendFile(path.join(distDir, "index.html"));
 });
 
