@@ -1,77 +1,66 @@
 [
-    {
-        "type": "run.started",
-        "required": [
-            "sessionId",
-            "runId"
-        ]
-    },
-    {
-        "type": "run.progress",
-        "required": [
-            "sessionId",
-            "runId"
-        ]
-    },
-    {
-        "type": "run.completed",
-        "required": [
-            "sessionId",
-            "runId"
-        ]
-    },
-    {
-        "type": "run.failed",
-        "required": [
-            "sessionId",
-            "runId"
-        ]
-    },
-    {
-        "type": "tool.called",
-        "required": [
-            "sessionId",
-            "runId"
-        ]
-    },
-    {
-        "type": "tool.result",
-        "required": [
-            "sessionId",
-            "runId"
-        ]
-    },
-    {
-        "type": "approval.requested",
-        "required": [
-            "sessionId",
-            "runId"
-        ]
-    },
-    {
-        "type": "approval.resolved",
-        "required": [
-            "sessionId",
-            "runId"
-        ]
-    },
-    {
-        "type": "routine.triggered",
-        "required": [
-            "runId"
-        ]
-    },
-    {
-        "type": "routine.completed",
-        "required": [
-            "runId"
-        ]
-    },
-    {
-        "type": "session.response",
-        "required": [
-            "sessionId",
-            "runId"
-        ]
-    }
+  {
+    "type": "run.started",
+    "required": ["sessionId", "runId"]
+  },
+  {
+    "type": "run.progress",
+    "required": ["sessionId", "runId"]
+  },
+  {
+    "type": "run.completed",
+    "required": ["sessionId", "runId"]
+  },
+  {
+    "type": "run.failed",
+    "required": ["sessionId", "runId"]
+  },
+  {
+    "type": "tool.called",
+    "required": ["sessionId", "runId"]
+  },
+  {
+    "type": "tool.result",
+    "required": ["sessionId", "runId"]
+  },
+  {
+    "type": "approval.requested",
+    "required": ["sessionId", "runId"]
+  },
+  {
+    "type": "approval.resolved",
+    "required": ["sessionId", "runId"]
+  },
+  {
+    "type": "routine.triggered",
+    "required": ["runId"]
+  },
+  {
+    "type": "routine.completed",
+    "required": ["runId"]
+  },
+  {
+    "type": "session.response",
+    "required": ["sessionId", "runId"]
+  },
+  {
+    "type": "memory.write.attempted",
+    "required": ["runId"]
+  },
+  {
+    "type": "memory.write.succeeded",
+    "required": ["runId"]
+  },
+  {
+    "type": "memory.write.skipped",
+    "required": ["runId"]
+  },
+  {
+    "type": "memory.search.performed",
+    "required": ["runId"]
+  },
+  {
+    "type": "memory.context.injected",
+    "required": ["runId"]
+  }
 ]

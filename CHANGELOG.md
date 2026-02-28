@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `memory.context.injected` (count, token-size estimate)
 - **Memory demotion API surface**: Added `POST /memory/demote` to move memories back to private/demoted state without hard delete.
 - **SDK memory API parity updates (TS + Python)**: Updated both client SDKs for new memory payload shapes (`content`/`source_type`/`run_id`, promote/put response variants) and added explicit memory demote client methods.
+- **Protocol contract alignment for global memory**: Updated HTTP/event contracts and OpenAPI summaries to include `/memory/demote`, global-memory route semantics, and memory lifecycle/search/injection SSE events.
 
 ### Changed
 
