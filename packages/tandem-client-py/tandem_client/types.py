@@ -59,6 +59,23 @@ class PromptAsyncResult:
         return f"PromptAsyncResult(run_id={self.run_id!r})"
 
 
+class PromptTextPartInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    type: Literal["text"] = "text"
+    text: str
+
+
+class PromptFilePartInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    type: Literal["file"] = "file"
+    mime: str
+    filename: Optional[str] = None
+    url: str
+
+
+PromptPartInput = Union[PromptTextPartInput, PromptFilePartInput]
+
+
 class SessionDiff(BaseModel):
     model_config = ConfigDict(extra="ignore")
     diff: Optional[str] = None

@@ -10,6 +10,7 @@ import type {
   UpdateSessionOptions,
   SessionRunStateResponse,
   PromptAsyncResult,
+  PromptPartInput,
   PromptModelOptions,
   SessionDiff,
   SessionTodo,
@@ -137,7 +138,12 @@ const parseRunId = (payload: JsonObject): string => {
  *   if (event.type === "session.response") {
  *     process.stdout.write(String(event.properties.delta ?? ""));
  *   }
- *   if (event.type === "run.complete" || event.type === "run.failed") break;
+ *   if (
+ *     event.type === "run.complete" ||
+ *     event.type === "run.completed" ||
+ *     event.type === "run.failed" ||
+ *     event.type === "session.run.finished"
+ *   ) break;
  * }
  * ```
  */
@@ -250,7 +256,12 @@ export class TandemClient {
    *   if (event.type === "session.response") {
    *     process.stdout.write(String(event.properties.delta ?? ""));
    *   }
-   *   if (event.type === "run.complete" || event.type === "run.failed") break;
+   *   if (
+   *     event.type === "run.complete" ||
+   *     event.type === "run.completed" ||
+   *     event.type === "run.failed" ||
+   *     event.type === "session.run.finished"
+   *   ) break;
    * }
    * ```
    */
@@ -424,7 +435,20 @@ class Sessions {
     prompt: string,
     model?: PromptModelOptions
   ): Promise<PromptAsyncResult> {
-    const payload: JsonObject = { parts: [{ type: "text", text: prompt }] };
+    return this.promptAsyncParts(sessionId, [{ type: "text", text: prompt }], model);
+  }
+
+  /**
+   * Start an async run with explicit prompt parts (text and/or file parts).
+   *
+   * Handles 409 SESSION_RUN_CONFLICT by returning the existing run ID.
+   */
+  async promptAsyncParts(
+    sessionId: string,
+    parts: PromptPartInput[],
+    model?: PromptModelOptions
+  ): Promise<PromptAsyncResult> {
+    const payload: JsonObject = { parts: parts as unknown as JsonObject[] };
     if (model?.provider && model?.model) {
       payload.model = {
         providerID: model.provider,
@@ -459,7 +483,7 @@ class Sessions {
     }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`promptAsync failed (${res.status}): ${body}`);
+      throw new Error(`promptAsyncParts failed (${res.status}): ${body}`);
     }
     const data = (await res.json()) as JsonObject;
     return { runId: parseRunId(data) };

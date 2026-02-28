@@ -11,6 +11,24 @@ from pydantic import TypeAdapter
 from .types import EngineEvent
 
 _engine_event_adapter = TypeAdapter(EngineEvent)
+_RUN_TERMINAL_EVENT_TYPES = {
+    "run.complete",
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+    "run.canceled",
+    "session.run.finished",
+    "session.run.completed",
+    "session.run.failed",
+    "session.run.cancelled",
+    "session.run.canceled",
+}
+
+
+def is_run_terminal_event(event: EngineEvent | str) -> bool:
+    """Return ``True`` when an event is a terminal run state."""
+    event_type = event if isinstance(event, str) else event.type
+    return event_type in _RUN_TERMINAL_EVENT_TYPES
 
 
 async def stream_sse(
@@ -28,7 +46,7 @@ async def stream_sse(
         async for event in stream_sse(url, token, client=http_client):
             if event.type == "session.response":
                 print(event.properties.get("delta", ""), end="", flush=True)
-            if event.type in ("run.complete", "run.failed"):
+            if is_run_terminal_event(event):
                 break
     """
     headers = {

@@ -20,12 +20,17 @@
  *   if (event.type === "session.response") {
  *     process.stdout.write(String(event.properties.delta ?? ""));
  *   }
- *   if (event.type === "run.complete" || event.type === "run.failed") break;
+ *   if (
+ *     event.type === "run.complete" ||
+ *     event.type === "run.completed" ||
+ *     event.type === "run.failed" ||
+ *     event.type === "session.run.finished"
+ *   ) break;
  * }
  * ```
  */
 
 export { TandemClient } from "./client.js";
-export { streamSse, filterByType, on } from "./stream.js";
+export { streamSse, filterByType, on, isRunTerminalEvent } from "./stream.js";
 export { TandemValidationError } from "./normalize/index.js";
 export type * from "./public/index.js";

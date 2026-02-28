@@ -36,7 +36,7 @@ async def main():
         async for event in client.stream(session_id, run.run_id):
             if event.type == "session.response":
                 print(event.properties.get("delta", ""), end="", flush=True)
-            if event.type in ("run.complete", "run.failed"):
+            if event.type in ("run.complete", "run.completed", "run.failed", "session.run.finished"):
                 break
 
 asyncio.run(main())
@@ -81,6 +81,24 @@ Use as an async context manager or call `await client.aclose()` manually.
 | `messages(session_id)`                                       | Get message history                                  |
 | `active_run(session_id)`                                     | Get active run state                                 |
 | `prompt_async(session_id, prompt)`                           | Start async run, returns `PromptAsyncResult(run_id)` |
+| `prompt_async_parts(session_id, parts)`                      | Start async run with text/file parts                 |
+
+**Prompt with file attachments:**
+
+```python
+run = await client.sessions.prompt_async_parts(
+    session_id,
+    [
+        {
+            "type": "file",
+            "mime": "image/png",
+            "filename": "diagram.png",
+            "url": "/srv/tandem/channel_uploads/telegram/667596788/diagram.png",
+        },
+        {"type": "text", "text": "Explain this diagram."},
+    ],
+)
+```
 
 ### `client.routines`
 
@@ -171,17 +189,19 @@ await client.providers.set_api_key("openrouter", "sk-or-...")
 
 ## Common event types
 
-| `event.type`              | Description                               |
-| ------------------------- | ----------------------------------------- |
-| `session.response`        | Text delta in `event.properties["delta"]` |
-| `session.tool_call`       | Tool invocation                           |
-| `session.tool_result`     | Tool result                               |
-| `run.complete`            | Run finished successfully                 |
-| `run.failed`              | Run failed                                |
-| `permission.request`      | Approval needed                           |
-| `memory.write.succeeded`  | Memory write persisted                    |
-| `memory.search.performed` | Memory retrieval telemetry                |
-| `memory.context.injected` | Prompt context injection telemetry        |
+| `event.type`              | Description                                   |
+| ------------------------- | --------------------------------------------- |
+| `session.response`        | Text delta in `event.properties["delta"]`     |
+| `session.tool_call`       | Tool invocation                               |
+| `session.tool_result`     | Tool result                                   |
+| `run.complete`            | Run finished successfully (legacy event name) |
+| `run.completed`           | Run finished successfully                     |
+| `run.failed`              | Run failed                                    |
+| `session.run.finished`    | Session-scoped terminal run event             |
+| `permission.request`      | Approval needed                               |
+| `memory.write.succeeded`  | Memory write persisted                        |
+| `memory.search.performed` | Memory retrieval telemetry                    |
+| `memory.context.injected` | Prompt context injection telemetry            |
 
 ## License
 

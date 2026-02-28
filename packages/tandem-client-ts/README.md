@@ -37,7 +37,13 @@ for await (const event of client.stream(sessionId, runId)) {
   if (event.type === "session.response") {
     process.stdout.write(String(event.properties.delta ?? ""));
   }
-  if (event.type === "run.complete" || event.type === "run.failed") break;
+  if (
+    event.type === "run.complete" ||
+    event.type === "run.completed" ||
+    event.type === "run.failed" ||
+    event.type === "session.run.finished"
+  )
+    break;
 }
 ```
 
@@ -71,15 +77,30 @@ Stream all engine events across all sessions.
 
 ### `client.sessions`
 
-| Method                           | Description                             |
-| -------------------------------- | --------------------------------------- |
-| `create(options?)`               | Create a session, returns `sessionId`   |
-| `list(options?)`                 | List sessions                           |
-| `get(sessionId)`                 | Get session details                     |
-| `delete(sessionId)`              | Delete a session                        |
-| `messages(sessionId)`            | Get message history                     |
-| `activeRun(sessionId)`           | Get the currently active run            |
-| `promptAsync(sessionId, prompt)` | Start an async run, returns `{ runId }` |
+| Method                               | Description                             |
+| ------------------------------------ | --------------------------------------- |
+| `create(options?)`                   | Create a session, returns `sessionId`   |
+| `list(options?)`                     | List sessions                           |
+| `get(sessionId)`                     | Get session details                     |
+| `delete(sessionId)`                  | Delete a session                        |
+| `messages(sessionId)`                | Get message history                     |
+| `activeRun(sessionId)`               | Get the currently active run            |
+| `promptAsync(sessionId, prompt)`     | Start an async run, returns `{ runId }` |
+| `promptAsyncParts(sessionId, parts)` | Start async run with text/file parts    |
+
+**Prompt with file attachments:**
+
+```typescript
+const { runId } = await client.sessions.promptAsyncParts(sessionId, [
+  {
+    type: "file",
+    mime: "image/jpeg",
+    filename: "photo.jpg",
+    url: "/srv/tandem/channel_uploads/telegram/123/photo.jpg",
+  },
+  { type: "text", text: "Describe this image." },
+]);
+```
 
 ### `client.routines`
 
@@ -178,8 +199,10 @@ Common `event.type` values:
 | `session.response`        | Streaming text delta in `event.properties.delta`   |
 | `session.tool_call`       | Tool invocation in `event.properties`              |
 | `session.tool_result`     | Tool result                                        |
-| `run.complete`            | Run finished successfully                          |
+| `run.complete`            | Run finished successfully (legacy event name)      |
+| `run.completed`           | Run finished successfully                          |
 | `run.failed`              | Run failed                                         |
+| `session.run.finished`    | Session-scoped terminal run event                  |
 | `permission.request`      | Approval needed — use `client.permissions.reply()` |
 | `memory.write.succeeded`  | Memory write persisted                             |
 | `memory.search.performed` | Memory retrieval telemetry                         |

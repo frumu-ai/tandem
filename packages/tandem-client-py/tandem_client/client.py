@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 
 from .stream import stream_sse
 from .types import (
@@ -36,7 +36,9 @@ from .types import (
     MissionListResponse,
     MissionRecord,
     PermissionSnapshotResponse,
+    PromptPartInput,
     PromptAsyncResult,
+    PromptTextPartInput,
     ProviderCatalog,
     ProvidersConfigResponse,
     QuestionsListResponse,
@@ -78,7 +80,7 @@ class TandemClient:
             async for event in client.stream(session_id, run.run_id):
                 if event.type == "session.response":
                     print(event.properties.get("delta", ""), end="", flush=True)
-                if event.type in ("run.complete", "run.failed"):
+                if event.type in ("run.complete", "run.completed", "run.failed", "session.run.finished"):
                     break
 
     Or construct manually and call ``await client.aclose()`` when done.
@@ -169,7 +171,7 @@ class TandemClient:
             async for event in client.stream(session_id, run_id):
                 if event.type == "session.response":
                     print(event.properties.get("delta", ""), end="", flush=True)
-                if event.type in ("run.complete", "run.failed"):
+                if event.type in ("run.complete", "run.completed", "run.failed", "session.run.finished"):
                     break
         """
         params = f"sessionID={quote(session_id)}"
@@ -306,7 +308,25 @@ class _Sessions:
 
         Handles ``409 SESSION_RUN_CONFLICT`` by returning the existing run ID.
         """
-        payload = {"parts": [{"type": "text", "text": prompt}]}
+        return await self.prompt_async_parts(
+            session_id,
+            [PromptTextPartInput(type="text", text=prompt)],
+        )
+
+    async def prompt_async_parts(
+        self, session_id: str, parts: list[PromptPartInput | dict[str, Any]]
+    ) -> PromptAsyncResult:
+        """
+        Start an async run with explicit prompt parts (text and/or file parts).
+
+        Handles ``409 SESSION_RUN_CONFLICT`` by returning the existing run ID.
+        """
+        payload = {
+            "parts": [
+                p.model_dump(exclude_none=True) if isinstance(p, BaseModel) else p
+                for p in parts
+            ]
+        }
         res = await self._http.post(
             f"/session/{quote(session_id)}/prompt_async",
             params={"return": "run"},

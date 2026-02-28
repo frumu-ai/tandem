@@ -13,7 +13,7 @@ Async (recommended)::
         async for event in client.stream(session_id, run.run_id):
             if event.type == "session.response":
                 print(event.properties.get("delta", ""), end="", flush=True)
-            if event.type in ("run.complete", "run.failed"):
+            if event.type in ("run.complete", "run.completed", "run.failed", "session.run.finished"):
                 break
 
 Sync (scripts)::
@@ -25,6 +25,7 @@ Sync (scripts)::
 """
 
 from .client import PromptAsyncResult, SyncTandemClient, TandemClient
+from .stream import is_run_terminal_event
 from .types import (
     AgentTeamApprovalsResponse,
     AgentTeamInstance,
@@ -65,6 +66,9 @@ from .types import (
     ProviderEntry,
     ProviderModelEntry,
     ProvidersConfigResponse,
+    PromptFilePartInput,
+    PromptPartInput,
+    PromptTextPartInput,
     QuestionRecord,
     QuestionsListResponse,
     ResourceListResponse,
@@ -97,6 +101,9 @@ __all__ = [
     "TandemClient",
     "SyncTandemClient",
     "PromptAsyncResult",
+    "PromptPartInput",
+    "PromptTextPartInput",
+    "PromptFilePartInput",
     # Health
     "SystemHealth",
     # Sessions
@@ -175,5 +182,6 @@ __all__ = [
     "ToolExecuteResult",
     # Events
     "EngineEvent",
+    "is_run_terminal_event",
     "ArtifactRecord",
 ]

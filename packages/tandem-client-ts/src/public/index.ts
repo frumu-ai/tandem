@@ -84,6 +84,20 @@ export interface PromptModelOptions {
   model: string;
 }
 
+export interface PromptTextPartInput {
+  type: "text";
+  text: string;
+}
+
+export interface PromptFilePartInput {
+  type: "file";
+  mime: string;
+  filename?: string;
+  url: string;
+}
+
+export type PromptPartInput = PromptTextPartInput | PromptFilePartInput;
+
 export interface SessionDiff {
   diff?: string;
   files?: string[];
@@ -690,8 +704,32 @@ export interface RunCompletedEvent extends EngineEventBase {
   type: "run.completed";
 }
 
+export interface RunCompleteEvent extends EngineEventBase {
+  type: "run.complete";
+}
+
 export interface RunFailedEvent extends EngineEventBase {
   type: "run.failed";
+}
+
+export interface SessionRunFinishedEvent extends EngineEventBase {
+  type: "session.run.finished";
+}
+
+export interface SessionRunCompletedEvent extends EngineEventBase {
+  type: "session.run.completed";
+}
+
+export interface SessionRunFailedEvent extends EngineEventBase {
+  type: "session.run.failed";
+}
+
+export interface RunCancelledEvent extends EngineEventBase {
+  type: "run.cancelled" | "run.canceled";
+}
+
+export interface SessionRunCancelledEvent extends EngineEventBase {
+  type: "session.run.cancelled" | "session.run.canceled";
 }
 
 export interface ToolCalledEvent extends EngineEventBase {
@@ -729,8 +767,16 @@ export interface UnknownEvent extends EngineEventBase {
 export type KnownEventType =
   | "run.started"
   | "run.progress"
+  | "run.complete"
   | "run.completed"
   | "run.failed"
+  | "run.cancelled"
+  | "run.canceled"
+  | "session.run.finished"
+  | "session.run.completed"
+  | "session.run.failed"
+  | "session.run.cancelled"
+  | "session.run.canceled"
   | "tool.called"
   | "tool.result"
   | "approval.requested"
@@ -743,8 +789,14 @@ export type KnownEventType =
 export type EngineEvent =
   | RunStartedEvent
   | RunProgressEvent
+  | RunCompleteEvent
   | RunCompletedEvent
   | RunFailedEvent
+  | RunCancelledEvent
+  | SessionRunFinishedEvent
+  | SessionRunCompletedEvent
+  | SessionRunFailedEvent
+  | SessionRunCancelledEvent
   | ToolCalledEvent
   | ToolResultEvent
   | ApprovalRequestedEvent
