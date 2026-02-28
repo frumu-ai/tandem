@@ -23,10 +23,12 @@ use ignore::WalkBuilder;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use tandem_memory::types::GlobalMemoryRecord;
 use tandem_memory::{
-    MemoryCapabilities, MemoryCapabilityToken, MemoryPromoteRequest, MemoryPromoteResponse,
-    MemoryPutRequest, MemoryPutResponse, MemorySearchRequest, MemorySearchResponse, ScrubReport,
-    ScrubStatus,
+    db::MemoryDatabase, MemoryCapabilities, MemoryCapabilityToken, MemoryPromoteRequest,
+    MemoryPromoteResponse, MemoryPutRequest, MemoryPutResponse, MemorySearchRequest,
+    MemorySearchResponse, ScrubReport, ScrubStatus,
 };
 use tandem_orchestrator::{
     AgentInstanceStatus, DefaultMissionReducer, MissionEvent, MissionReducer, MissionSpec,
@@ -497,6 +499,12 @@ struct MemoryPromoteInput {
 }
 
 #[derive(Debug, Deserialize)]
+struct MemoryDemoteInput {
+    id: String,
+    run_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct MemorySearchInput {
     #[serde(flatten)]
     request: MemorySearchRequest,
@@ -743,6 +751,7 @@ struct MemoryListQuery {
     q: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
+    user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -780,6 +789,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let routine_scheduler_state = state.clone();
     let routine_executor_state = state.clone();
     let agent_team_supervisor_state = state.clone();
+    let global_memory_ingestor_state = state.clone();
     let mcp_bootstrap_state = state.clone();
     tokio::spawn(async move {
         bootstrap_mcp_servers_when_ready(mcp_bootstrap_state).await;
@@ -812,6 +822,8 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let agent_team_supervisor = tokio::spawn(crate::run_agent_team_supervisor(
         agent_team_supervisor_state,
     ));
+    let global_memory_ingestor =
+        tokio::spawn(run_global_memory_ingestor(global_memory_ingestor_state));
 
     // --- Memory hygiene background task (runs every 12 hours) ---
     // Opens a fresh connection to memory.sqlite each cycle â€” safe because WAL
@@ -871,6 +883,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     routine_scheduler.abort();
     routine_executor.abort();
     agent_team_supervisor.abort();
+    global_memory_ingestor.abort();
     hygiene_task.abort();
     if let Some(mut set) = channel_listener_set {
         set.abort_all();
@@ -1204,6 +1217,7 @@ fn app_router(state: AppState) -> Router {
         .route("/skills/{name}", get(skills_get).delete(skills_delete))
         .route("/memory/put", post(memory_put))
         .route("/memory/promote", post(memory_promote))
+        .route("/memory/demote", post(memory_demote))
         .route("/memory/search", post(memory_search))
         .route("/memory/audit", get(memory_audit))
         .route("/memory", get(memory_list))
@@ -1992,6 +2006,7 @@ async fn prompt_async(
         run_id.clone(),
         req,
         correlation_id,
+        client_id,
     );
 
     if query.r#return.as_deref() == Some("run") {
@@ -2091,6 +2106,7 @@ async fn prompt_sync(
             run_id.clone(),
             req,
             correlation_id,
+            client_id,
         );
         let stream = sse_run_stream(
             state.clone(),
@@ -2110,6 +2126,7 @@ async fn prompt_sync(
         run_id.clone(),
         req,
         correlation_id,
+        client_id,
     )
     .await;
     let session = state
@@ -2131,19 +2148,115 @@ fn spawn_run_task(
     run_id: String,
     req: SendMessageRequest,
     correlation_id: Option<String>,
+    client_id: Option<String>,
 ) {
     tokio::spawn(async move {
-        let _ = execute_run(state, session_id, run_id, req, correlation_id).await;
+        let _ = execute_run(state, session_id, run_id, req, correlation_id, client_id).await;
     });
+}
+
+fn request_text(req: &SendMessageRequest) -> String {
+    req.parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePartInput::Text { text } => Some(text.clone()),
+            MessagePartInput::File { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn inject_memory_context_for_run(
+    state: &AppState,
+    session_id: &str,
+    run_id: &str,
+    user_hint: Option<&str>,
+    mut req: SendMessageRequest,
+) -> SendMessageRequest {
+    let Some(db) = open_global_memory_db().await else {
+        return req;
+    };
+    let query = request_text(&req);
+    if query.trim().is_empty() {
+        return req;
+    }
+
+    let user_id = user_hint
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or("default");
+    let search_started = Instant::now();
+    let hits = match db
+        .search_global_memory(user_id, &query, 8, None, None, None)
+        .await
+    {
+        Ok(hits) => hits,
+        Err(_) => return req,
+    };
+    let scores = hits.iter().map(|h| h.score).collect::<Vec<_>>();
+    state.event_bus.publish(EngineEvent::new(
+        "memory.search.performed",
+        json!({
+            "runID": run_id,
+            "sessionID": session_id,
+            "userID": user_id,
+            "queryHash": hash_text(&query),
+            "latencyMs": search_started.elapsed().as_millis() as u64,
+            "resultCount": hits.len(),
+            "scoreMin": scores.iter().copied().reduce(f64::min),
+            "scoreMax": scores.iter().copied().reduce(f64::max),
+            "scores": scores,
+            "sources": hits.iter().map(|h| h.record.source_type.clone()).collect::<Vec<_>>(),
+        }),
+    ));
+
+    if hits.is_empty() {
+        return req;
+    }
+
+    let mut lines = vec!["<memory_context>".to_string()];
+    let mut used = 0usize;
+    for hit in hits {
+        let snippet = truncate_text(&hit.record.content, 240);
+        let line = format!(
+            "- [{:.3}] {} (source={}, run={})",
+            hit.score, snippet, hit.record.source_type, hit.record.run_id
+        );
+        used += line.len();
+        if used > 1800 {
+            break;
+        }
+        lines.push(line);
+    }
+    lines.push("</memory_context>".to_string());
+    let memory_block = lines.join("\n");
+    req.parts.insert(
+        0,
+        MessagePartInput::Text {
+            text: memory_block.clone(),
+        },
+    );
+    state.event_bus.publish(EngineEvent::new(
+        "memory.context.injected",
+        json!({
+            "runID": run_id,
+            "sessionID": session_id,
+            "count": lines.len().saturating_sub(2),
+            "tokenSizeApprox": memory_block.split_whitespace().count(),
+        }),
+    ));
+    req
 }
 
 async fn execute_run(
     state: AppState,
     session_id: String,
     run_id: String,
-    req: SendMessageRequest,
+    mut req: SendMessageRequest,
     correlation_id: Option<String>,
+    client_id: Option<String>,
 ) -> anyhow::Result<()> {
+    req = inject_memory_context_for_run(&state, &session_id, &run_id, client_id.as_deref(), req)
+        .await;
     let mut run_fut = Box::pin(state.engine_loop.run_prompt_async_with_context(
         session_id.clone(),
         req,
@@ -4273,6 +4386,77 @@ fn scrub_content(input: &str) -> ScrubReport {
     }
 }
 
+fn scrub_content_for_memory(input: &str) -> (String, ScrubReport) {
+    let mut scrubbed = input.to_string();
+    let mut redactions = 0u32;
+    let mut blocked = false;
+
+    let redact_patterns = [
+        r"(?i)authorization:\s*bearer\s+[a-z0-9\.\-_]+",
+        r"(?i)(api[_-]?key|token|secret)\s*[:=]\s*[a-z0-9\-_]{8,}",
+        r"(?i)x-api-key\s*:\s*[a-z0-9\-_]{8,}",
+        r"(?i)sk-[a-z0-9]{12,}",
+        r"(?i)ghp_[a-z0-9]{12,}",
+    ];
+    for pattern in redact_patterns {
+        if let Ok(re) = Regex::new(pattern) {
+            let matches = re.find_iter(&scrubbed).count() as u32;
+            if matches > 0 {
+                redactions = redactions.saturating_add(matches);
+                scrubbed = re.replace_all(&scrubbed, "[REDACTED]").to_string();
+            }
+        }
+    }
+
+    let block_markers = [
+        "-----begin private key-----",
+        "aws_secret_access_key",
+        "-----begin rsa private key-----",
+    ];
+    let lowered = input.to_lowercase();
+    for marker in block_markers {
+        if lowered.contains(marker) {
+            blocked = true;
+            break;
+        }
+    }
+
+    if blocked {
+        (
+            String::new(),
+            ScrubReport {
+                status: ScrubStatus::Blocked,
+                redactions,
+                block_reason: Some("sensitive secret marker detected".to_string()),
+            },
+        )
+    } else if redactions > 0 {
+        (
+            scrubbed,
+            ScrubReport {
+                status: ScrubStatus::Redacted,
+                redactions,
+                block_reason: None,
+            },
+        )
+    } else {
+        (
+            scrubbed,
+            ScrubReport {
+                status: ScrubStatus::Passed,
+                redactions: 0,
+                block_reason: None,
+            },
+        )
+    }
+}
+
+fn hash_text(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 async fn append_memory_audit(
     state: &AppState,
     event: crate::MemoryAuditEvent,
@@ -4280,6 +4464,507 @@ async fn append_memory_audit(
     let mut audit = state.memory_audit_log.write().await;
     audit.push(event);
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct RunMemoryContext {
+    run_id: String,
+    user_id: String,
+    started_at_ms: u64,
+    host_tag: Option<String>,
+}
+
+async fn open_global_memory_db() -> Option<MemoryDatabase> {
+    let paths = tandem_core::resolve_shared_paths().ok()?;
+    MemoryDatabase::new(&paths.memory_db_path).await.ok()
+}
+
+fn event_run_id(event: &EngineEvent) -> Option<String> {
+    event
+        .properties
+        .get("runID")
+        .or_else(|| event.properties.get("run_id"))
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+}
+
+fn event_session_id(event: &EngineEvent) -> Option<String> {
+    event
+        .properties
+        .get("sessionID")
+        .or_else(|| event.properties.get("sessionId"))
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+}
+
+fn summarize_value(value: &Value, limit: usize) -> String {
+    let text = if value.is_string() {
+        value.as_str().unwrap_or_default().to_string()
+    } else {
+        value.to_string()
+    };
+    truncate_text(&text, limit)
+}
+
+async fn persist_global_memory_record(
+    state: &AppState,
+    db: &MemoryDatabase,
+    mut record: GlobalMemoryRecord,
+) {
+    state.event_bus.publish(EngineEvent::new(
+        "memory.write.attempted",
+        json!({
+            "runID": record.run_id,
+            "sourceType": record.source_type,
+            "sessionID": record.session_id,
+            "messageID": record.message_id,
+        }),
+    ));
+
+    let (scrubbed, scrub) = scrub_content_for_memory(&record.content);
+    if scrub.status == ScrubStatus::Blocked || scrubbed.trim().is_empty() {
+        state.event_bus.publish(EngineEvent::new(
+            "memory.write.skipped",
+            json!({
+                "runID": record.run_id,
+                "sourceType": record.source_type,
+                "reason": scrub.block_reason.unwrap_or_else(|| "scrub_blocked".to_string()),
+                "sessionID": record.session_id,
+                "messageID": record.message_id,
+            }),
+        ));
+        return;
+    }
+
+    record.content = scrubbed;
+    record.redaction_count = scrub.redactions;
+    record.redaction_status = match scrub.status {
+        ScrubStatus::Passed => "passed".to_string(),
+        ScrubStatus::Redacted => "redacted".to_string(),
+        ScrubStatus::Blocked => "blocked".to_string(),
+    };
+    record.content_hash = hash_text(&record.content);
+
+    match db.put_global_memory_record(&record).await {
+        Ok(write) => {
+            let event_name = if write.deduped {
+                "memory.write.skipped"
+            } else {
+                "memory.write.succeeded"
+            };
+            state.event_bus.publish(EngineEvent::new(
+                event_name,
+                json!({
+                    "runID": record.run_id,
+                    "memoryID": write.id,
+                    "sourceType": record.source_type,
+                    "deduped": write.deduped,
+                    "redactionStatus": record.redaction_status,
+                    "redactionCount": record.redaction_count,
+                    "sessionID": record.session_id,
+                    "messageID": record.message_id,
+                }),
+            ));
+        }
+        Err(err) => {
+            state.event_bus.publish(EngineEvent::new(
+                "memory.write.skipped",
+                json!({
+                    "runID": record.run_id,
+                    "sourceType": record.source_type,
+                    "reason": format!("db_error:{err}"),
+                    "sessionID": record.session_id,
+                    "messageID": record.message_id,
+                }),
+            ));
+        }
+    }
+}
+
+async fn ingest_run_messages(
+    state: &AppState,
+    db: &MemoryDatabase,
+    session_id: &str,
+    ctx: &RunMemoryContext,
+) {
+    let Some(session) = state.storage.get_session(session_id).await else {
+        return;
+    };
+
+    for message in session.messages {
+        let created_ms = message.created_at.timestamp_millis() as u64;
+        if created_ms + 1_000 < ctx.started_at_ms {
+            continue;
+        }
+        for part in message.parts {
+            match (message.role.clone(), part) {
+                (MessageRole::User, MessagePart::Text { text }) => {
+                    let now = crate::now_ms();
+                    persist_global_memory_record(
+                        state,
+                        db,
+                        GlobalMemoryRecord {
+                            id: Uuid::new_v4().to_string(),
+                            user_id: ctx.user_id.clone(),
+                            source_type: "user_message".to_string(),
+                            content: text,
+                            content_hash: String::new(),
+                            run_id: ctx.run_id.clone(),
+                            session_id: Some(session_id.to_string()),
+                            message_id: Some(message.id.clone()),
+                            tool_name: None,
+                            project_tag: session.project_id.clone(),
+                            channel_tag: None,
+                            host_tag: ctx.host_tag.clone(),
+                            metadata: Some(json!({"role": "user"})),
+                            provenance: Some(json!({
+                                "origin_event_type": "session.run.finished",
+                                "origin_message_id": message.id,
+                                "origin_session_id": session_id
+                            })),
+                            redaction_status: "passed".to_string(),
+                            redaction_count: 0,
+                            visibility: "private".to_string(),
+                            demoted: false,
+                            score_boost: 0.0,
+                            created_at_ms: now,
+                            updated_at_ms: now,
+                            expires_at_ms: None,
+                        },
+                    )
+                    .await;
+                }
+                (MessageRole::Assistant, MessagePart::Text { text }) => {
+                    let now = crate::now_ms();
+                    persist_global_memory_record(
+                        state,
+                        db,
+                        GlobalMemoryRecord {
+                            id: Uuid::new_v4().to_string(),
+                            user_id: ctx.user_id.clone(),
+                            source_type: "assistant_final".to_string(),
+                            content: text,
+                            content_hash: String::new(),
+                            run_id: ctx.run_id.clone(),
+                            session_id: Some(session_id.to_string()),
+                            message_id: Some(message.id.clone()),
+                            tool_name: None,
+                            project_tag: session.project_id.clone(),
+                            channel_tag: None,
+                            host_tag: ctx.host_tag.clone(),
+                            metadata: Some(json!({"role": "assistant"})),
+                            provenance: Some(json!({
+                                "origin_event_type": "session.run.finished",
+                                "origin_message_id": message.id,
+                                "origin_session_id": session_id
+                            })),
+                            redaction_status: "passed".to_string(),
+                            redaction_count: 0,
+                            visibility: "private".to_string(),
+                            demoted: false,
+                            score_boost: 0.0,
+                            created_at_ms: now,
+                            updated_at_ms: now,
+                            expires_at_ms: None,
+                        },
+                    )
+                    .await;
+                }
+                (
+                    MessageRole::Assistant | MessageRole::Tool,
+                    MessagePart::ToolInvocation {
+                        tool,
+                        args,
+                        result,
+                        error,
+                    },
+                ) => {
+                    let now = crate::now_ms();
+                    let tool_input = summarize_value(&args, 1200);
+                    persist_global_memory_record(
+                        state,
+                        db,
+                        GlobalMemoryRecord {
+                            id: Uuid::new_v4().to_string(),
+                            user_id: ctx.user_id.clone(),
+                            source_type: "tool_input".to_string(),
+                            content: format!("tool={} args={}", tool, tool_input),
+                            content_hash: String::new(),
+                            run_id: ctx.run_id.clone(),
+                            session_id: Some(session_id.to_string()),
+                            message_id: Some(message.id.clone()),
+                            tool_name: Some(tool.clone()),
+                            project_tag: session.project_id.clone(),
+                            channel_tag: None,
+                            host_tag: ctx.host_tag.clone(),
+                            metadata: None,
+                            provenance: Some(json!({"origin_event_type": "session.run.finished"})),
+                            redaction_status: "passed".to_string(),
+                            redaction_count: 0,
+                            visibility: "private".to_string(),
+                            demoted: false,
+                            score_boost: 0.0,
+                            created_at_ms: now,
+                            updated_at_ms: now,
+                            expires_at_ms: Some(now + 30 * 24 * 60 * 60 * 1000),
+                        },
+                    )
+                    .await;
+
+                    let tool_output = result
+                        .as_ref()
+                        .map(|v| summarize_value(v, 1500))
+                        .or(error)
+                        .unwrap_or_default();
+                    if !tool_output.trim().is_empty() {
+                        let now = crate::now_ms();
+                        persist_global_memory_record(
+                            state,
+                            db,
+                            GlobalMemoryRecord {
+                                id: Uuid::new_v4().to_string(),
+                                user_id: ctx.user_id.clone(),
+                                source_type: "tool_output".to_string(),
+                                content: format!("tool={} output={}", tool, tool_output),
+                                content_hash: String::new(),
+                                run_id: ctx.run_id.clone(),
+                                session_id: Some(session_id.to_string()),
+                                message_id: Some(message.id.clone()),
+                                tool_name: Some(tool),
+                                project_tag: session.project_id.clone(),
+                                channel_tag: None,
+                                host_tag: ctx.host_tag.clone(),
+                                metadata: None,
+                                provenance: Some(
+                                    json!({"origin_event_type": "session.run.finished"}),
+                                ),
+                                redaction_status: "passed".to_string(),
+                                redaction_count: 0,
+                                visibility: "private".to_string(),
+                                demoted: false,
+                                score_boost: 0.0,
+                                created_at_ms: now,
+                                updated_at_ms: now,
+                                expires_at_ms: Some(now + 30 * 24 * 60 * 60 * 1000),
+                            },
+                        )
+                        .await;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+async fn ingest_event_memory_records(
+    state: &AppState,
+    db: &MemoryDatabase,
+    event: &EngineEvent,
+    ctx_by_session: &HashMap<String, RunMemoryContext>,
+) {
+    let session_id = event_session_id(event);
+    let session_ctx = session_id
+        .as_ref()
+        .and_then(|sid| ctx_by_session.get(sid))
+        .cloned();
+    let run_id = event_run_id(event)
+        .or_else(|| session_ctx.as_ref().map(|c| c.run_id.clone()))
+        .unwrap_or_else(|| "unknown".to_string());
+    let user_id = session_ctx
+        .as_ref()
+        .map(|c| c.user_id.clone())
+        .unwrap_or_else(|| "default".to_string());
+    let host_tag = session_ctx.as_ref().and_then(|c| c.host_tag.clone());
+
+    let (source_type, content, ttl_ms): (&str, String, Option<u64>) =
+        match event.event_type.as_str() {
+            "permission.asked" => (
+                "approval_request",
+                format!(
+                    "permission requested tool={} query={}",
+                    event
+                        .properties
+                        .get("tool")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown"),
+                    event
+                        .properties
+                        .get("query")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                ),
+                Some(14 * 24 * 60 * 60 * 1000),
+            ),
+            "permission.replied" => (
+                "approval_decision",
+                format!(
+                    "permission reply requestID={} reply={}",
+                    event
+                        .properties
+                        .get("requestID")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                    event
+                        .properties
+                        .get("reply")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                ),
+                Some(14 * 24 * 60 * 60 * 1000),
+            ),
+            "mcp.auth.required" | "mcp.auth.pending" => (
+                "auth_challenge",
+                format!(
+                    "mcp auth tool={} server={} status={} message={}",
+                    event
+                        .properties
+                        .get("tool")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                    event
+                        .properties
+                        .get("server")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                    event.event_type,
+                    event
+                        .properties
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                ),
+                Some(7 * 24 * 60 * 60 * 1000),
+            ),
+            "todo.updated" => (
+                "plan_todos",
+                format!(
+                    "todo updated: {}",
+                    summarize_value(event.properties.get("todos").unwrap_or(&Value::Null), 1200)
+                ),
+                Some(60 * 24 * 60 * 60 * 1000),
+            ),
+            "question.asked" => (
+                "question_prompt",
+                format!(
+                    "question asked: {}",
+                    summarize_value(
+                        event.properties.get("questions").unwrap_or(&Value::Null),
+                        1200
+                    )
+                ),
+                Some(60 * 24 * 60 * 60 * 1000),
+            ),
+            _ => return,
+        };
+
+    let now = crate::now_ms();
+    persist_global_memory_record(
+        state,
+        db,
+        GlobalMemoryRecord {
+            id: Uuid::new_v4().to_string(),
+            user_id,
+            source_type: source_type.to_string(),
+            content,
+            content_hash: String::new(),
+            run_id,
+            session_id,
+            message_id: event
+                .properties
+                .get("messageID")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string),
+            tool_name: event
+                .properties
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string),
+            project_tag: None,
+            channel_tag: event
+                .properties
+                .get("channel")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string),
+            host_tag,
+            metadata: None,
+            provenance: Some(json!({
+                "origin_event_type": event.event_type,
+            })),
+            redaction_status: "passed".to_string(),
+            redaction_count: 0,
+            visibility: "private".to_string(),
+            demoted: false,
+            score_boost: 0.0,
+            created_at_ms: now,
+            updated_at_ms: now,
+            expires_at_ms: ttl_ms.map(|ttl| now + ttl),
+        },
+    )
+    .await;
+}
+
+async fn run_global_memory_ingestor(state: AppState) {
+    let mut rx = state.event_bus.subscribe();
+    let Some(db) = open_global_memory_db().await else {
+        tracing::warn!("global memory ingestor disabled: could not open memory database");
+        return;
+    };
+
+    let mut by_session: HashMap<String, RunMemoryContext> = HashMap::new();
+    loop {
+        match rx.recv().await {
+            Ok(event) => match event.event_type.as_str() {
+                "session.run.started" => {
+                    let session_id = event_session_id(&event);
+                    let run_id = event_run_id(&event);
+                    if let (Some(session_id), Some(run_id)) = (session_id, run_id) {
+                        let started_at_ms = event
+                            .properties
+                            .get("startedAtMs")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_else(crate::now_ms);
+                        let user_id = event
+                            .properties
+                            .get("clientID")
+                            .and_then(|v| v.as_str())
+                            .filter(|v| !v.trim().is_empty())
+                            .unwrap_or("default")
+                            .to_string();
+                        let host_tag = event
+                            .properties
+                            .get("environment")
+                            .and_then(|v| v.get("os"))
+                            .and_then(|v| v.as_str())
+                            .map(ToString::to_string);
+                        by_session.insert(
+                            session_id,
+                            RunMemoryContext {
+                                run_id,
+                                user_id,
+                                started_at_ms,
+                                host_tag,
+                            },
+                        );
+                    }
+                }
+                "session.run.finished" => {
+                    if let Some(session_id) = event_session_id(&event) {
+                        if let Some(ctx) = by_session.remove(&session_id) {
+                            ingest_run_messages(&state, &db, &session_id, &ctx).await;
+                        }
+                    }
+                }
+                "permission.asked" | "permission.replied" | "mcp.auth.required"
+                | "mcp.auth.pending" | "todo.updated" | "question.asked" => {
+                    ingest_event_memory_records(&state, &db, &event, &by_session).await;
+                }
+                _ => {}
+            },
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+        }
+    }
 }
 
 async fn memory_put(
@@ -4302,24 +4987,44 @@ async fn memory_put(
     let partition_key = request.partition.key();
     let now = crate::now_ms();
     let audit_id = Uuid::new_v4().to_string();
-
-    let record = crate::GovernedMemoryRecord {
-        id: id.clone(),
-        run_id: request.run_id.clone(),
-        partition: request.partition.clone(),
-        kind: request.kind,
-        content: request.content,
-        artifact_refs: request.artifact_refs,
-        classification: request.classification,
-        metadata: request.metadata,
-        source_memory_id: None,
-        created_at_ms: now,
-    };
-
-    {
-        let mut records = state.memory_records.write().await;
-        records.insert(id.clone(), record);
+    let db = open_global_memory_db()
+        .await
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let source_type = match request.kind {
+        tandem_memory::MemoryContentKind::SolutionCapsule => "solution_capsule",
+        tandem_memory::MemoryContentKind::Note => "note",
+        tandem_memory::MemoryContentKind::Fact => "fact",
     }
+    .to_string();
+    let user_id = capability.subject.clone();
+    let record = GlobalMemoryRecord {
+        id: id.clone(),
+        user_id,
+        source_type,
+        content: request.content,
+        content_hash: String::new(),
+        run_id: request.run_id.clone(),
+        session_id: None,
+        message_id: None,
+        tool_name: None,
+        project_tag: Some(request.partition.project_id.clone()),
+        channel_tag: None,
+        host_tag: None,
+        metadata: request.metadata.clone(),
+        provenance: Some(json!({
+            "origin_event_type": "memory.put",
+            "partition_key": partition_key,
+        })),
+        redaction_status: "passed".to_string(),
+        redaction_count: 0,
+        visibility: "private".to_string(),
+        demoted: false,
+        score_boost: 0.0,
+        created_at_ms: now,
+        updated_at_ms: now,
+        expires_at_ms: None,
+    };
+    persist_global_memory_record(&state, &db, record).await;
 
     append_memory_audit(
         &state,
@@ -4384,20 +5089,51 @@ async fn memory_promote(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let source = {
-        let records = state.memory_records.read().await;
-        records.get(&request.source_memory_id).cloned()
-    }
-    .ok_or(StatusCode::NOT_FOUND)?;
-
-    if source.partition.org_id != request.partition.org_id
-        || source.partition.workspace_id != request.partition.workspace_id
-        || source.partition.project_id != request.partition.project_id
-        || source.partition.tier != request.from_tier
-    {
-        return Err(StatusCode::FORBIDDEN);
-    }
-
+    let db = open_global_memory_db()
+        .await
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let source = db
+        .get_global_memory(&request.source_memory_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(source) = source else {
+        let scrub_report = ScrubReport {
+            status: ScrubStatus::Blocked,
+            redactions: 0,
+            block_reason: Some("source memory missing or previously blocked".to_string()),
+        };
+        let audit_id = Uuid::new_v4().to_string();
+        append_memory_audit(
+            &state,
+            crate::MemoryAuditEvent {
+                audit_id: audit_id.clone(),
+                action: "memory_promote".to_string(),
+                run_id: request.run_id.clone(),
+                memory_id: None,
+                source_memory_id: Some(source_memory_id.clone()),
+                to_tier: Some(request.to_tier),
+                partition_key: format!(
+                    "{}/{}/{}/{}",
+                    request.partition.org_id,
+                    request.partition.workspace_id,
+                    request.partition.project_id,
+                    request.to_tier
+                ),
+                actor: capability.subject,
+                status: "blocked".to_string(),
+                detail: scrub_report.block_reason.clone(),
+                created_at_ms: crate::now_ms(),
+            },
+        )
+        .await?;
+        return Ok(Json(MemoryPromoteResponse {
+            promoted: false,
+            new_memory_id: None,
+            to_tier: request.to_tier,
+            scrub_report,
+            audit_id,
+        }));
+    };
     let scrub_report = scrub_content(&source.content);
     let audit_id = Uuid::new_v4().to_string();
     let now = crate::now_ms();
@@ -4437,29 +5173,10 @@ async fn memory_promote(
         }));
     }
 
-    let new_id = Uuid::new_v4().to_string();
-    let promoted_record = crate::GovernedMemoryRecord {
-        id: new_id.clone(),
-        run_id: request.run_id.clone(),
-        partition: tandem_memory::MemoryPartition {
-            org_id: request.partition.org_id.clone(),
-            workspace_id: request.partition.workspace_id.clone(),
-            project_id: request.partition.project_id.clone(),
-            tier: request.to_tier,
-        },
-        kind: source.kind,
-        content: source.content,
-        artifact_refs: source.artifact_refs,
-        classification: source.classification,
-        metadata: source.metadata,
-        source_memory_id: Some(source.id),
-        created_at_ms: now,
-    };
-
-    {
-        let mut records = state.memory_records.write().await;
-        records.insert(new_id.clone(), promoted_record);
-    }
+    let new_id = source.id.clone();
+    db.set_global_memory_visibility(&new_id, "shared", false)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     append_memory_audit(
         &state,
@@ -4537,40 +5254,37 @@ async fn memory_search(
         }
     }
 
-    let limit = request.limit.unwrap_or(8).clamp(1, 100) as usize;
-    let query_lower = request.query.to_lowercase();
-
-    let mut results = Vec::new();
-    {
-        let records = state.memory_records.read().await;
-        for record in records.values() {
-            if record.partition.org_id != request.partition.org_id
-                || record.partition.workspace_id != request.partition.workspace_id
-                || record.partition.project_id != request.partition.project_id
-            {
-                continue;
-            }
-            if !scopes_used.contains(&record.partition.tier) {
-                continue;
-            }
-            if !query_lower.is_empty() && !record.content.to_lowercase().contains(&query_lower) {
-                continue;
-            }
-            results.push(json!({
-                "id": record.id,
-                "tier": record.partition.tier,
-                "classification": record.classification,
-                "kind": record.kind,
-                "source_memory_id": record.source_memory_id,
-                "created_at_ms": record.created_at_ms,
-                "content": record.content,
-                "artifact_refs": record.artifact_refs,
-            }));
-            if results.len() >= limit {
-                break;
-            }
-        }
-    }
+    let limit = request.limit.unwrap_or(8).clamp(1, 100);
+    let db = open_global_memory_db()
+        .await
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let hits = db
+        .search_global_memory(
+            &capability.subject,
+            &request.query,
+            limit,
+            Some(&request.partition.project_id),
+            None,
+            None,
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let results = hits
+        .into_iter()
+        .map(|hit| {
+            json!({
+                "id": hit.record.id,
+                "tier": request.partition.tier,
+                "classification": "internal",
+                "kind": "fact",
+                "source_type": hit.record.source_type,
+                "created_at_ms": hit.record.created_at_ms,
+                "content": hit.record.content,
+                "score": hit.score,
+                "run_id": hit.record.run_id,
+            })
+        })
+        .collect::<Vec<_>>();
 
     let audit_id = Uuid::new_v4().to_string();
     let now = crate::now_ms();
@@ -4611,6 +5325,31 @@ async fn memory_search(
     }))
 }
 
+async fn memory_demote(
+    State(state): State<AppState>,
+    Json(input): Json<MemoryDemoteInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let db = open_global_memory_db()
+        .await
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let changed = db
+        .set_global_memory_visibility(&input.id, "private", true)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !changed {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    state.event_bus.publish(EngineEvent::new(
+        "memory.updated",
+        json!({
+            "memoryID": input.id,
+            "runID": input.run_id,
+            "action": "demote",
+        }),
+    ));
+    Ok(Json(json!({"ok": true})))
+}
+
 async fn memory_audit(
     State(state): State<AppState>,
     Query(query): Query<MemoryAuditQuery>,
@@ -4629,48 +5368,36 @@ async fn memory_audit(
 }
 
 async fn memory_list(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Query(query): Query<MemoryListQuery>,
 ) -> Json<Value> {
-    let q = query.q.unwrap_or_default().to_lowercase();
+    let q = query.q.unwrap_or_default();
     let limit = query.limit.unwrap_or(100).clamp(1, 1000);
     let offset = query.offset.unwrap_or(0);
-    let mut items = state
-        .memory_records
-        .read()
-        .await
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
-    items.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
-    if !q.is_empty() {
-        items.retain(|row| {
-            row.id.to_lowercase().contains(&q)
-                || row.run_id.to_lowercase().contains(&q)
-                || row.content.to_lowercase().contains(&q)
-                || row.partition.key().to_lowercase().contains(&q)
-        });
-    }
-    let total = items.len();
-    let page = items
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|row| {
-            json!({
-                "id": row.id,
-                "run_id": row.run_id,
-                "partition": row.partition,
-                "kind": row.kind,
-                "content": row.content,
-                "artifact_refs": row.artifact_refs,
-                "classification": row.classification,
-                "metadata": row.metadata,
-                "source_memory_id": row.source_memory_id,
-                "created_at_ms": row.created_at_ms,
+    let user_id = query.user_id.unwrap_or_else(|| "default".to_string());
+    let page = if let Some(db) = open_global_memory_db().await {
+        db.list_global_memory(&user_id, Some(&q), limit as i64, offset as i64)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| {
+                json!({
+                    "id": row.id,
+                    "user_id": row.user_id,
+                    "run_id": row.run_id,
+                    "source_type": row.source_type,
+                    "content": row.content,
+                    "metadata": row.metadata,
+                    "created_at_ms": row.created_at_ms,
+                    "updated_at_ms": row.updated_at_ms,
+                    "visibility": row.visibility,
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let total = page.len();
     Json(json!({
         "items": page,
         "count": total,
@@ -4683,10 +5410,23 @@ async fn memory_delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let deleted = state.memory_records.write().await.remove(&id);
-    let Some(record) = deleted else {
+    let db = open_global_memory_db()
+        .await
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let record = db
+        .get_global_memory(&id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(record) = record else {
         return Err(StatusCode::NOT_FOUND);
     };
+    let deleted = db
+        .delete_global_memory(&id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !deleted {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let now = crate::now_ms();
     append_memory_audit(
         &state,
@@ -4695,9 +5435,9 @@ async fn memory_delete(
             action: "memory_delete".to_string(),
             run_id: record.run_id,
             memory_id: Some(id.clone()),
-            source_memory_id: record.source_memory_id,
-            to_tier: Some(record.partition.tier),
-            partition_key: record.partition.key(),
+            source_memory_id: None,
+            to_tier: None,
+            partition_key: record.project_tag.unwrap_or_else(|| "global".to_string()),
             actor: "admin".to_string(),
             status: "ok".to_string(),
             detail: None,

@@ -1,6 +1,6 @@
 [package]
 name = "tandem-types"
-version = "0.3.24"
+version = "0.3.25"
 description = "Shared Tandem data types"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -11,6 +11,7 @@ chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
+
 
 
 

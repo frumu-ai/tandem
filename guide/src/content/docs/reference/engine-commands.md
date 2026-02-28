@@ -119,11 +119,12 @@ tandem-engine tool --json '<JSON_PAYLOAD>'
 For MCP-backed tools, Tandem can emit an explicit authorization event when upstream requires OAuth/account consent:
 
 - Event: `mcp.auth.required`
+- Event: `mcp.auth.pending` (challenge still pending, call short-circuited)
 - MCP runtime state fields:
   - `last_auth_challenge`
   - `mcp_session_id`
 
-If auth is required, complete authorization and retry the tool call. A full engine restart is not required.
+If auth is required, complete authorization and retry the tool call. Tandem applies an engine-level re-probe cooldown (~15s) per challenged tool to prevent auth loops. A full engine restart is not required.
 
 ### MCP argument normalization (engine-wide)
 

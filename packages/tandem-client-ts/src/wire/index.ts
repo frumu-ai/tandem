@@ -3,131 +3,136 @@
 export type JsonObject = Record<string, unknown>;
 
 export interface TandemClientOptions {
-    /** Base URL of the Tandem engine, e.g. http://localhost:39731 */
-    baseUrl: string;
-    /** Engine API token (from `tandem-engine token generate`) */
-    token: string;
-    /** Request timeout in ms (default 20000) */
-    timeoutMs?: number;
+  /** Base URL of the Tandem engine, e.g. http://localhost:39731 */
+  baseUrl: string;
+  /** Engine API token (from `tandem-engine token generate`) */
+  token: string;
+  /** Request timeout in ms (default 20000) */
+  timeoutMs?: number;
 }
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 
 export interface SystemHealth {
-    ready?: boolean;
-    phase?: string;
-    [key: string]: unknown;
+  ready?: boolean;
+  phase?: string;
+  [key: string]: unknown;
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────────────
 
 export interface CreateSessionOptions {
-    title?: string;
-    directory?: string;
-    permissions?: PermissionRule[];
-    provider?: string;
-    model?: string;
+  title?: string;
+  directory?: string;
+  permissions?: PermissionRule[];
+  provider?: string;
+  model?: string;
 }
 
 export interface UpdateSessionOptions {
-    title?: string;
-    archived?: boolean;
+  title?: string;
+  archived?: boolean;
 }
 
 export interface SessionRecord {
-    id: string;
-    title: string;
-    created_at_ms: number;
-    directory?: string;
-    workspace_root?: string;
-    archived?: boolean;
-    [key: string]: unknown;
+  id: string;
+  title: string;
+  created_at_ms: number;
+  directory?: string;
+  workspace_root?: string;
+  archived?: boolean;
+  [key: string]: unknown;
 }
 
 export interface SessionListResponse {
-    sessions: SessionRecord[];
-    count: number;
+  sessions: SessionRecord[];
+  count: number;
 }
 
 export interface ListSessionsOptions {
-    q?: string;
-    page?: number;
-    pageSize?: number;
-    archived?: boolean;
-    scope?: "workspace" | "global";
-    workspace?: string;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+  archived?: boolean;
+  scope?: "workspace" | "global";
+  workspace?: string;
 }
 
 export interface SessionRunStateResponse {
-    active?: {
-        runID?: string;
-        runId?: string;
-        run_id?: string;
-        attachEventStream?: string;
-        [key: string]: unknown;
-    } | null;
+  active?: {
+    runID?: string;
+    runId?: string;
+    run_id?: string;
+    attachEventStream?: string;
+    [key: string]: unknown;
+  } | null;
 }
 
 export interface PromptAsyncResult {
-    runId: string;
+  runId: string;
+}
+
+export interface PromptModelOptions {
+  provider: string;
+  model: string;
 }
 
 export interface SessionDiff {
-    diff?: string;
-    files?: string[];
-    [key: string]: unknown;
+  diff?: string;
+  files?: string[];
+  [key: string]: unknown;
 }
 
 export interface SessionTodo {
-    id?: string;
-    content: string;
-    status?: string;
-    [key: string]: unknown;
+  id?: string;
+  content: string;
+  status?: string;
+  [key: string]: unknown;
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────
 
 export interface MessagePart {
-    type?: string;
-    text?: string;
+  type?: string;
+  text?: string;
 }
 
 export interface EngineMessage {
-    info?: { role?: string };
-    parts?: MessagePart[];
+  info?: { role?: string };
+  parts?: MessagePart[];
 }
 
 // ─── Permissions ─────────────────────────────────────────────────────────────
 
 export interface PermissionRule {
-    permission: string;
-    pattern: string;
-    action: "allow" | "deny" | "ask";
+  permission: string;
+  pattern: string;
+  action: "allow" | "deny" | "ask";
 }
 
 export interface PermissionRequestRecord {
-    id: string;
-    permission?: string;
-    pattern?: string;
-    tool?: string;
-    status?: string;
-    sessionID?: string;
-    sessionId?: string;
-    session_id?: string;
-    [key: string]: unknown;
+  id: string;
+  permission?: string;
+  pattern?: string;
+  tool?: string;
+  status?: string;
+  sessionID?: string;
+  sessionId?: string;
+  session_id?: string;
+  [key: string]: unknown;
 }
 
 export interface PermissionRuleRecord {
-    id: string;
-    permission: string;
-    pattern: string;
-    action: string;
-    [key: string]: unknown;
+  id: string;
+  permission: string;
+  pattern: string;
+  action: string;
+  [key: string]: unknown;
 }
 
 export interface PermissionSnapshotResponse {
-    requests?: PermissionRequestRecord[];
-    rules?: PermissionRuleRecord[];
+  requests?: PermissionRequestRecord[];
+  rules?: PermissionRuleRecord[];
 }
 
 export type PermissionReply = "allow" | "always" | "deny" | "reject" | "once";
@@ -135,44 +140,44 @@ export type PermissionReply = "allow" | "always" | "deny" | "reject" | "once";
 // ─── Questions (AI approval gate) ────────────────────────────────────────────
 
 export interface QuestionRecord {
-    id: string;
-    text?: string;
-    choices?: string[];
-    status?: string;
-    sessionID?: string;
-    [key: string]: unknown;
+  id: string;
+  text?: string;
+  choices?: string[];
+  status?: string;
+  sessionID?: string;
+  [key: string]: unknown;
 }
 
 export interface QuestionsListResponse {
-    questions: QuestionRecord[];
-    [key: string]: unknown;
+  questions: QuestionRecord[];
+  [key: string]: unknown;
 }
 
 // ─── Providers ───────────────────────────────────────────────────────────────
 
 export interface ProviderModelEntry {
-    name?: string;
+  name?: string;
 }
 
 export interface ProviderEntry {
-    id: string;
-    name?: string;
-    models?: Record<string, ProviderModelEntry>;
+  id: string;
+  name?: string;
+  models?: Record<string, ProviderModelEntry>;
 }
 
 export interface ProviderCatalog {
-    all: ProviderEntry[];
-    connected?: string[];
-    default?: string | null;
+  all: ProviderEntry[];
+  connected?: string[];
+  default?: string | null;
 }
 
 export interface ProviderConfigEntry {
-    default_model?: string;
+  default_model?: string;
 }
 
 export interface ProvidersConfigResponse {
-    default?: string | null;
-    providers: Record<string, ProviderConfigEntry>;
+  default?: string | null;
+  providers: Record<string, ProviderConfigEntry>;
 }
 
 // ─── Channels ────────────────────────────────────────────────────────────────
@@ -180,117 +185,117 @@ export interface ProvidersConfigResponse {
 export type ChannelName = "telegram" | "discord" | "slack";
 
 export interface ChannelConfigEntry {
-    has_token?: boolean;
-    allowed_users?: string[];
-    mention_only?: boolean;
-    guild_id?: string;
-    channel_id?: string;
+  has_token?: boolean;
+  allowed_users?: string[];
+  mention_only?: boolean;
+  guild_id?: string;
+  channel_id?: string;
 }
 
 export interface ChannelsConfigResponse {
-    telegram: ChannelConfigEntry;
-    discord: ChannelConfigEntry;
-    slack: ChannelConfigEntry;
+  telegram: ChannelConfigEntry;
+  discord: ChannelConfigEntry;
+  slack: ChannelConfigEntry;
 }
 
 export interface ChannelStatusEntry {
-    enabled: boolean;
-    connected: boolean;
-    last_error?: string | null;
-    active_sessions: number;
-    meta?: JsonObject;
+  enabled: boolean;
+  connected: boolean;
+  last_error?: string | null;
+  active_sessions: number;
+  meta?: JsonObject;
 }
 
 export interface ChannelsStatusResponse {
-    telegram: ChannelStatusEntry;
-    discord: ChannelStatusEntry;
-    slack: ChannelStatusEntry;
+  telegram: ChannelStatusEntry;
+  discord: ChannelStatusEntry;
+  slack: ChannelStatusEntry;
 }
 
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 
 export interface AddMcpServerOptions {
-    name: string;
-    transport: string;
-    headers?: Record<string, string>;
-    enabled?: boolean;
+  name: string;
+  transport: string;
+  headers?: Record<string, string>;
+  enabled?: boolean;
 }
 
 // ─── Memory ──────────────────────────────────────────────────────────────────
 
 export interface MemoryItem {
-    id?: string;
-    text: string;
-    tags?: string[];
-    source?: string;
-    session_id?: string;
-    run_id?: string;
-    [key: string]: unknown;
+  id?: string;
+  text: string;
+  tags?: string[];
+  source?: string;
+  session_id?: string;
+  run_id?: string;
+  [key: string]: unknown;
 }
 
 export interface MemoryPutOptions {
-    text: string;
-    tags?: string[];
-    source?: string;
-    session_id?: string;
-    run_id?: string;
-    capability?: string;
+  text: string;
+  tags?: string[];
+  source?: string;
+  session_id?: string;
+  run_id?: string;
+  capability?: string;
 }
 
 export interface MemoryPutResponse {
-    id: string;
-    ok: boolean;
-    [key: string]: unknown;
+  id: string;
+  ok: boolean;
+  [key: string]: unknown;
 }
 
 export interface MemorySearchOptions {
-    query: string;
-    limit?: number;
-    tags?: string[];
-    session_id?: string;
-    capability?: string;
+  query: string;
+  limit?: number;
+  tags?: string[];
+  session_id?: string;
+  capability?: string;
 }
 
 export interface MemorySearchResult {
-    id: string;
-    text: string;
-    score?: number;
-    tags?: string[];
-    [key: string]: unknown;
+  id: string;
+  text: string;
+  score?: number;
+  tags?: string[];
+  [key: string]: unknown;
 }
 
 export interface MemorySearchResponse {
-    results: MemorySearchResult[];
-    count: number;
+  results: MemorySearchResult[];
+  count: number;
 }
 
 export interface MemoryListResponse {
-    items: MemoryItem[];
-    count: number;
+  items: MemoryItem[];
+  count: number;
 }
 
 export interface MemoryPromoteOptions {
-    id: string;
-    capability?: string;
+  id: string;
+  capability?: string;
 }
 
 export interface MemoryPromoteResponse {
-    ok: boolean;
-    id: string;
-    [key: string]: unknown;
+  ok: boolean;
+  id: string;
+  [key: string]: unknown;
 }
 
 export interface MemoryAuditEntry {
-    id?: string;
-    ts_ms?: number;
-    action?: string;
-    run_id?: string;
-    [key: string]: unknown;
+  id?: string;
+  ts_ms?: number;
+  action?: string;
+  run_id?: string;
+  [key: string]: unknown;
 }
 
 export interface MemoryAuditResponse {
-    entries: MemoryAuditEntry[];
-    count: number;
+  entries: MemoryAuditEntry[];
+  count: number;
 }
 
 // ─── Skills ──────────────────────────────────────────────────────────────────
@@ -298,71 +303,71 @@ export interface MemoryAuditResponse {
 export type SkillLocation = "user" | "workspace" | "builtin";
 
 export interface SkillRecord {
-    name: string;
-    location?: SkillLocation;
-    description?: string;
-    version?: string;
-    [key: string]: unknown;
+  name: string;
+  location?: SkillLocation;
+  description?: string;
+  version?: string;
+  [key: string]: unknown;
 }
 
 export interface SkillsListResponse {
-    skills: SkillRecord[];
-    count: number;
+  skills: SkillRecord[];
+  count: number;
 }
 
 export interface SkillImportOptions {
-    content?: string;
-    file_or_path?: string;
-    location: SkillLocation;
-    namespace?: string;
-    conflict_policy?: "skip" | "overwrite" | "error";
+  content?: string;
+  file_or_path?: string;
+  location: SkillLocation;
+  namespace?: string;
+  conflict_policy?: "skip" | "overwrite" | "error";
 }
 
 export interface SkillImportResponse {
-    ok: boolean;
-    imported?: number;
-    [key: string]: unknown;
+  ok: boolean;
+  imported?: number;
+  [key: string]: unknown;
 }
 
 export interface SkillTemplate {
-    name: string;
-    description?: string;
-    [key: string]: unknown;
+  name: string;
+  description?: string;
+  [key: string]: unknown;
 }
 
 export interface SkillTemplatesResponse {
-    templates: SkillTemplate[];
-    count: number;
+  templates: SkillTemplate[];
+  count: number;
 }
 
 // ─── Resources (key-value store) ─────────────────────────────────────────────
 
 export interface ResourceRecord {
-    key: string;
-    value: unknown;
-    rev?: number;
-    updated_at_ms?: number;
-    updated_by?: string;
-    [key: string]: unknown;
+  key: string;
+  value: unknown;
+  rev?: number;
+  updated_at_ms?: number;
+  updated_by?: string;
+  [key: string]: unknown;
 }
 
 export interface ResourceListResponse {
-    items: ResourceRecord[];
-    count: number;
+  items: ResourceRecord[];
+  count: number;
 }
 
 export interface ResourceWriteOptions {
-    key: string;
-    value: unknown;
-    if_match_rev?: number;
-    updated_by?: string;
-    ttl_ms?: number;
+  key: string;
+  value: unknown;
+  if_match_rev?: number;
+  updated_by?: string;
+  ttl_ms?: number;
 }
 
 export interface ResourceWriteResponse {
-    ok: boolean;
-    rev?: number;
-    [key: string]: unknown;
+  ok: boolean;
+  rev?: number;
+  [key: string]: unknown;
 }
 
 // ─── Routines & Automations ──────────────────────────────────────────────────
@@ -370,280 +375,280 @@ export interface ResourceWriteResponse {
 export type RoutineFamily = "routines" | "automations";
 
 export type RoutineSchedule =
-    | { type: "cron"; cron: string }
-    | { type: "interval"; interval_ms: number }
-    | { type: "manual" }
-    | string;  // cron shorthand
+  | { type: "cron"; cron: string }
+  | { type: "interval"; interval_ms: number }
+  | { type: "manual" }
+  | string; // cron shorthand
 
 export interface RoutineRecord {
-    id: string;
-    name?: string;
-    schedule?: RoutineSchedule;
-    entrypoint?: string;
-    prompt?: string;
-    status?: string;
-    last_run?: string;
-    last_run_at?: string;
-    requires_approval?: boolean;
-    external_integrations_allowed?: boolean;
-    [key: string]: unknown;
+  id: string;
+  name?: string;
+  schedule?: RoutineSchedule;
+  entrypoint?: string;
+  prompt?: string;
+  status?: string;
+  last_run?: string;
+  last_run_at?: string;
+  requires_approval?: boolean;
+  external_integrations_allowed?: boolean;
+  [key: string]: unknown;
 }
 
 export interface DefinitionListResponse {
-    routines?: RoutineRecord[];
-    automations?: RoutineRecord[];
-    count: number;
+  routines?: RoutineRecord[];
+  automations?: RoutineRecord[];
+  count: number;
 }
 
 export interface DefinitionCreateResponse {
-    routine?: RoutineRecord;
-    automation?: RoutineRecord;
+  routine?: RoutineRecord;
+  automation?: RoutineRecord;
 }
 
 export interface CreateRoutineOptions {
-    name: string;
-    schedule?: RoutineSchedule;
-    timezone?: string;
-    misfire_policy?: "skip" | "run_late" | "run_now";
-    entrypoint?: string;
-    args?: JsonObject;
-    allowed_tools?: string[];
-    output_targets?: string[];
-    requires_approval?: boolean;
-    external_integrations_allowed?: boolean;
-    next_fire_at_ms?: number;
-    [key: string]: unknown;
+  name: string;
+  schedule?: RoutineSchedule;
+  timezone?: string;
+  misfire_policy?: "skip" | "run_late" | "run_now";
+  entrypoint?: string;
+  args?: JsonObject;
+  allowed_tools?: string[];
+  output_targets?: string[];
+  requires_approval?: boolean;
+  external_integrations_allowed?: boolean;
+  next_fire_at_ms?: number;
+  [key: string]: unknown;
 }
 
 export interface PatchRoutineOptions {
-    name?: string;
-    status?: string;
-    schedule?: RoutineSchedule;
-    timezone?: string;
-    misfire_policy?: string;
-    entrypoint?: string;
-    args?: JsonObject;
-    allowed_tools?: string[];
-    output_targets?: string[];
-    requires_approval?: boolean;
-    external_integrations_allowed?: boolean;
-    next_fire_at_ms?: number;
+  name?: string;
+  status?: string;
+  schedule?: RoutineSchedule;
+  timezone?: string;
+  misfire_policy?: string;
+  entrypoint?: string;
+  args?: JsonObject;
+  allowed_tools?: string[];
+  output_targets?: string[];
+  requires_approval?: boolean;
+  external_integrations_allowed?: boolean;
+  next_fire_at_ms?: number;
 }
 
 export interface AutomationMissionOptions {
-    objective: string;
-    success_criteria?: string[];
-    briefing?: string;
+  objective: string;
+  success_criteria?: string[];
+  briefing?: string;
 }
 
 export interface CreateAutomationOptions {
-    name: string;
-    schedule: RoutineSchedule;
-    timezone?: string;
-    misfire_policy?: string;
-    mission: AutomationMissionOptions;
-    mode?: string;
-    policy?: {
-        tool?: { run_allowlist?: string[]; external_integrations_allowed?: boolean };
-        approval?: { requires_approval?: boolean };
-    };
-    output_targets?: string[];
-    model_policy?: JsonObject;
-    next_fire_at_ms?: number;
+  name: string;
+  schedule: RoutineSchedule;
+  timezone?: string;
+  misfire_policy?: string;
+  mission: AutomationMissionOptions;
+  mode?: string;
+  policy?: {
+    tool?: { run_allowlist?: string[]; external_integrations_allowed?: boolean };
+    approval?: { requires_approval?: boolean };
+  };
+  output_targets?: string[];
+  model_policy?: JsonObject;
+  next_fire_at_ms?: number;
 }
 
 export interface PatchAutomationOptions {
-    name?: string;
-    status?: string;
-    schedule?: RoutineSchedule;
-    mission?: Partial<AutomationMissionOptions>;
-    mode?: string;
-    policy?: JsonObject;
-    output_targets?: string[];
-    model_policy?: JsonObject;
-    next_fire_at_ms?: number;
+  name?: string;
+  status?: string;
+  schedule?: RoutineSchedule;
+  mission?: Partial<AutomationMissionOptions>;
+  mode?: string;
+  policy?: JsonObject;
+  output_targets?: string[];
+  model_policy?: JsonObject;
+  next_fire_at_ms?: number;
 }
 
 export interface RunNowResponse {
-    ok?: boolean;
-    runID?: string;
-    runId?: string;
-    run_id?: string;
-    status?: string;
+  ok?: boolean;
+  runID?: string;
+  runId?: string;
+  run_id?: string;
+  status?: string;
 }
 
 export interface RunsListResponse {
-    runs: JsonObject[];
-    count: number;
+  runs: JsonObject[];
+  count: number;
 }
 
 export interface RunRecord {
-    id?: string;
-    runID?: string;
-    routine_id?: string;
-    automation_id?: string;
-    status?: string;
-    started_at_ms?: number;
-    finished_at_ms?: number;
-    [key: string]: unknown;
+  id?: string;
+  runID?: string;
+  routine_id?: string;
+  automation_id?: string;
+  status?: string;
+  started_at_ms?: number;
+  finished_at_ms?: number;
+  [key: string]: unknown;
 }
 
 export interface ArtifactRecord {
-    artifact_id?: string;
-    uri: string;
-    kind: string;
-    label?: string;
-    metadata?: JsonObject;
-    created_at_ms?: number;
+  artifact_id?: string;
+  uri: string;
+  kind: string;
+  label?: string;
+  metadata?: JsonObject;
+  created_at_ms?: number;
 }
 
 export interface RunArtifactsResponse {
-    runID?: string;
-    artifacts: ArtifactRecord[];
-    count: number;
+  runID?: string;
+  artifacts: ArtifactRecord[];
+  count: number;
 }
 
 export interface RoutineHistoryEntry {
-    event?: string;
-    ts_ms?: number;
-    status?: string;
-    [key: string]: unknown;
+  event?: string;
+  ts_ms?: number;
+  status?: string;
+  [key: string]: unknown;
 }
 
 export interface RoutineHistoryResponse {
-    history: RoutineHistoryEntry[];
-    count: number;
+  history: RoutineHistoryEntry[];
+  count: number;
 }
 
 // ─── Agent Teams ─────────────────────────────────────────────────────────────
 
 export interface AgentTeamSpawnInput {
-    missionID?: string;
-    parentInstanceID?: string;
-    templateID?: string;
-    role: string;
-    source?: string;
-    justification: string;
-    budget_override?: JsonObject;
+  missionID?: string;
+  parentInstanceID?: string;
+  templateID?: string;
+  role: string;
+  source?: string;
+  justification: string;
+  budget_override?: JsonObject;
 }
 
 export interface AgentTeamSpawnResponse {
-    ok?: boolean;
-    missionID?: string;
-    instanceID?: string;
-    sessionID?: string;
-    runID?: string | null;
-    status?: string;
-    code?: string;
-    error?: string;
+  ok?: boolean;
+  missionID?: string;
+  instanceID?: string;
+  sessionID?: string;
+  runID?: string | null;
+  status?: string;
+  code?: string;
+  error?: string;
 }
 
 export interface AgentTeamTemplate {
-    id: string;
-    name?: string;
-    role?: string;
-    [key: string]: unknown;
+  id: string;
+  name?: string;
+  role?: string;
+  [key: string]: unknown;
 }
 
 export interface AgentTeamTemplatesResponse {
-    templates: AgentTeamTemplate[];
-    count: number;
+  templates: AgentTeamTemplate[];
+  count: number;
 }
 
 export interface AgentTeamInstance {
-    instanceID?: string;
-    missionID?: string;
-    role?: string;
-    status?: string;
-    sessionID?: string;
-    [key: string]: unknown;
+  instanceID?: string;
+  missionID?: string;
+  role?: string;
+  status?: string;
+  sessionID?: string;
+  [key: string]: unknown;
 }
 
 export interface AgentTeamInstancesResponse {
-    instances: AgentTeamInstance[];
-    count: number;
+  instances: AgentTeamInstance[];
+  count: number;
 }
 
 export interface AgentTeamMissionsResponse {
-    missions: JsonObject[];
-    count: number;
+  missions: JsonObject[];
+  count: number;
 }
 
 export interface AgentTeamSpawnApproval {
-    approvalID?: string;
-    status?: string;
-    [key: string]: unknown;
+  approvalID?: string;
+  status?: string;
+  [key: string]: unknown;
 }
 
 export interface AgentTeamApprovalsResponse {
-    spawnApprovals: AgentTeamSpawnApproval[];
-    toolApprovals: JsonObject[];
-    count: number;
+  spawnApprovals: AgentTeamSpawnApproval[];
+  toolApprovals: JsonObject[];
+  count: number;
 }
 
 // ─── Missions ────────────────────────────────────────────────────────────────
 
 export interface MissionWorkItem {
-    title: string;
-    detail?: string;
-    assigned_agent?: string;
+  title: string;
+  detail?: string;
+  assigned_agent?: string;
 }
 
 export interface MissionCreateInput {
-    title: string;
-    goal: string;
-    work_items: MissionWorkItem[];
+  title: string;
+  goal: string;
+  work_items: MissionWorkItem[];
 }
 
 export interface MissionRecord {
-    id?: string;
-    title?: string;
-    goal?: string;
-    status?: string;
-    [key: string]: unknown;
+  id?: string;
+  title?: string;
+  goal?: string;
+  status?: string;
+  [key: string]: unknown;
 }
 
 export interface MissionCreateResponse {
-    mission?: MissionRecord;
+  mission?: MissionRecord;
 }
 
 export interface MissionListResponse {
-    missions: MissionRecord[];
-    count: number;
+  missions: MissionRecord[];
+  count: number;
 }
 
 export interface MissionGetResponse {
-    mission: MissionRecord;
+  mission: MissionRecord;
 }
 
 export interface MissionEventResponse {
-    mission?: MissionRecord;
-    commands?: unknown[];
-    [key: string]: unknown;
+  mission?: MissionRecord;
+  commands?: unknown[];
+  [key: string]: unknown;
 }
 
 // ─── Tools ───────────────────────────────────────────────────────────────────
 
 export interface ToolSchema {
-    name: string;
-    description?: string;
-    input_schema?: JsonObject;
-    [key: string]: unknown;
+  name: string;
+  description?: string;
+  input_schema?: JsonObject;
+  [key: string]: unknown;
 }
 
 export interface ToolExecuteResult {
-    output?: string;
-    metadata?: JsonObject;
-    [key: string]: unknown;
+  output?: string;
+  metadata?: JsonObject;
+  [key: string]: unknown;
 }
 
 // ─── SSE events ──────────────────────────────────────────────────────────────
 
 export interface EngineEvent {
-    type: string;
-    properties: Record<string, unknown>;
-    sessionID?: string;
-    runID?: string;
-    timestamp?: string;
-    [key: string]: unknown;
+  type: string;
+  properties: Record<string, unknown>;
+  sessionID?: string;
+  runID?: string;
+  timestamp?: string;
+  [key: string]: unknown;
 }

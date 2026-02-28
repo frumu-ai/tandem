@@ -22,6 +22,69 @@ fn provider_max_tokens() -> u32 {
         .unwrap_or(2048)
 }
 
+fn sanitize_openai_function_name(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let cleaned = out.trim_matches('_');
+    if cleaned.is_empty() {
+        "tool".to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+fn build_openai_tool_aliases(
+    tools: &[ToolSchema],
+) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut original_to_alias = HashMap::new();
+    let mut alias_to_original = HashMap::new();
+
+    for tool in tools {
+        let original = tool.name.trim();
+        if original.is_empty() {
+            continue;
+        }
+        let base = sanitize_openai_function_name(original);
+        let mut alias = base.clone();
+        let mut suffix = 2usize;
+        while alias_to_original.contains_key(&alias) {
+            alias = format!("{base}_{suffix}");
+            suffix = suffix.saturating_add(1);
+        }
+        original_to_alias.insert(original.to_string(), alias.clone());
+        alias_to_original.insert(alias, original.to_string());
+    }
+
+    (original_to_alias, alias_to_original)
+}
+
+fn normalize_openai_function_parameters(schema: serde_json::Value) -> serde_json::Value {
+    let mut schema = match schema {
+        serde_json::Value::Object(obj) => serde_json::Value::Object(obj),
+        _ => json!({"type":"object","properties":{}}),
+    };
+
+    if let Some(obj) = schema.as_object_mut() {
+        if obj.get("type").and_then(|v| v.as_str()) != Some("object") {
+            obj.insert(
+                "type".to_string(),
+                serde_json::Value::String("object".to_string()),
+            );
+        }
+        if !obj.contains_key("properties") || !obj["properties"].is_object() {
+            obj.insert("properties".to_string(), json!({}));
+        }
+    }
+
+    schema
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfig {
     pub api_key: Option<String>,
@@ -730,16 +793,21 @@ impl Provider for OpenAICompatibleProvider {
             .map(|m| json!({"role": m.role, "content": m.content}))
             .collect::<Vec<_>>();
 
+        let tools = tools.unwrap_or_default();
+        let (original_to_alias, alias_to_original) = build_openai_tool_aliases(&tools);
         let wire_tools = tools
-            .unwrap_or_default()
             .into_iter()
             .map(|tool| {
+                let safe_name = original_to_alias
+                    .get(tool.name.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| sanitize_openai_function_name(&tool.name));
                 json!({
                     "type": "function",
                     "function": {
-                        "name": tool.name,
+                        "name": safe_name,
                         "description": tool.description,
-                        "parameters": tool.input_schema,
+                        "parameters": normalize_openai_function_parameters(tool.input_schema),
                     }
                 })
             })
@@ -826,6 +894,7 @@ impl Provider for OpenAICompatibleProvider {
         }
 
         let mut bytes = resp.bytes_stream();
+        let alias_to_original = alias_to_original.clone();
         let stream = try_stream! {
             let mut buffer = String::new();
             while let Some(chunk) = bytes.next().await {
@@ -916,6 +985,10 @@ impl Provider for OpenAICompatibleProvider {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or_default()
                                         .to_string();
+                                    let canonical_name = alias_to_original
+                                        .get(&name)
+                                        .cloned()
+                                        .unwrap_or(name.clone());
                                     let args_delta = function
                                         .get("arguments")
                                         .and_then(|v| v.as_str())
@@ -927,14 +1000,14 @@ impl Provider for OpenAICompatibleProvider {
                                         })
                                         .unwrap_or_default();
 
-                                    if id.is_empty() && !name.is_empty() {
-                                        id = format!("tool_call_{}_{}", idx, name);
+                                    if id.is_empty() && !canonical_name.is_empty() {
+                                        id = format!("tool_call_{}_{}", idx, canonical_name);
                                     }
 
-                                    if !id.is_empty() && !name.is_empty() {
+                                    if !id.is_empty() && !canonical_name.is_empty() {
                                         yield StreamChunk::ToolCallStart {
                                             id: id.clone(),
-                                            name,
+                                            name: canonical_name,
                                         };
                                     }
                                     if !id.is_empty() && !args_delta.is_empty() {
@@ -1411,5 +1484,88 @@ mod tests {
         let registry = ProviderRegistry::new(cfg(&["unknown_provider"], None, true));
         let cheapest = registry.select_cheapest_provider_id().await;
         assert_eq!(cheapest, None);
+    }
+
+    #[test]
+    fn sanitize_openai_function_name_rewrites_invalid_chars() {
+        assert_eq!(
+            sanitize_openai_function_name("mcp.arcade.gmail_sendemail"),
+            "mcp_arcade_gmail_sendemail"
+        );
+        assert_eq!(sanitize_openai_function_name("  "), "tool");
+        assert_eq!(
+            sanitize_openai_function_name("clickup-getSpaces"),
+            "clickup-getSpaces"
+        );
+    }
+
+    #[test]
+    fn build_openai_tool_aliases_preserves_roundtrip_and_uniqueness() {
+        let tools = vec![
+            ToolSchema {
+                name: "mcp.arcade.gmail.send".to_string(),
+                description: "a".to_string(),
+                input_schema: json!({"type":"object"}),
+            },
+            ToolSchema {
+                name: "mcp_arcade_gmail_send".to_string(),
+                description: "b".to_string(),
+                input_schema: json!({"type":"object"}),
+            },
+        ];
+        let (forward, reverse) = build_openai_tool_aliases(&tools);
+        let alias_a = forward
+            .get("mcp.arcade.gmail.send")
+            .expect("alias for dotted name");
+        let alias_b = forward
+            .get("mcp_arcade_gmail_send")
+            .expect("alias for underscore name");
+        assert_ne!(alias_a, alias_b, "aliases must be unique");
+        assert_eq!(
+            reverse.get(alias_a).map(String::as_str),
+            Some("mcp.arcade.gmail.send")
+        );
+        assert_eq!(
+            reverse.get(alias_b).map(String::as_str),
+            Some("mcp_arcade_gmail_send")
+        );
+    }
+
+    #[test]
+    fn normalize_openai_function_parameters_adds_missing_properties() {
+        let normalized = normalize_openai_function_parameters(json!({"type":"object"}));
+        assert_eq!(
+            normalized
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+            "object"
+        );
+        assert!(
+            normalized
+                .get("properties")
+                .and_then(|v| v.as_object())
+                .is_some(),
+            "properties object should exist"
+        );
+    }
+
+    #[test]
+    fn normalize_openai_function_parameters_recovers_non_object_schema() {
+        let normalized = normalize_openai_function_parameters(json!("bad"));
+        assert_eq!(
+            normalized
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+            "object"
+        );
+        assert!(
+            normalized
+                .get("properties")
+                .and_then(|v| v.as_object())
+                .is_some(),
+            "properties object should exist"
+        );
     }
 }

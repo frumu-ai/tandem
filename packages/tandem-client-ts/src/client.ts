@@ -10,6 +10,7 @@ import type {
   UpdateSessionOptions,
   SessionRunStateResponse,
   PromptAsyncResult,
+  PromptModelOptions,
   SessionDiff,
   SessionTodo,
   EngineMessage,
@@ -416,8 +417,18 @@ class Sessions {
    *
    * Handles 409 SESSION_RUN_CONFLICT by returning the existing run ID.
    */
-  async promptAsync(sessionId: string, prompt: string): Promise<PromptAsyncResult> {
+  async promptAsync(
+    sessionId: string,
+    prompt: string,
+    model?: PromptModelOptions
+  ): Promise<PromptAsyncResult> {
     const payload: JsonObject = { parts: [{ type: "text", text: prompt }] };
+    if (model?.provider && model?.model) {
+      payload.model = {
+        providerID: model.provider,
+        modelID: model.model,
+      };
+    }
     const path = `/session/${encodeURIComponent(sessionId)}/prompt_async?return=run`;
 
     const controller = new AbortController();

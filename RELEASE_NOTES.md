@@ -2,6 +2,24 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.3.25 (Unreleased)
+
+- MCP auth/retry behavior and loop hardening
+  - Improved MCP auth challenge extraction to prefer structured payload fields (`structuredContent.message`, `structuredContent.authorization_url`) over noisy nested text blobs.
+  - Sanitized/truncated auth-required messaging so web/TUI/channel users see clean authorization prompts instead of escaped JSON/instruction payload dumps.
+  - Added stronger run-time auth/guard short-circuit behavior to reduce repeated MCP/tool-call churn in a single run.
+- Engine run guard and failure ergonomics
+  - Tightened guard-budget handling to fail fast in non-productive tool loops and return deterministic run-scoped messaging.
+  - Reduced model-generated fallback ambiguity around “session limits” by keeping budget diagnostics explicit and per-run.
+- Agent quickstart runtime stability updates
+  - Chat send path now best-effort cancels stale active runs before starting a new run, reducing cross-send run carryover issues.
+  - `Auto-allow all` preference now persists across portal restarts/reloads.
+  - Quickstart run submission remains model-explicit and aligned with selected provider/model routing behavior.
+- Provider compatibility hardening
+  - Strengthened OpenAI-compatible function/tool serialization (name normalization + schema normalization + alias round-trip) to reduce strict-validator 400 failures with MCP-heavy tool sets.
+- Quality and regression coverage
+  - Added targeted tests for MCP auth parsing/message sanitization and per-run guard-budget summarization behavior.
+
 ## v0.3.24 (Unreleased)
 
 - MCP reliability and auth hardening

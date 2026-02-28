@@ -84,7 +84,10 @@ curl -sS -X POST http://127.0.0.1:39731/mcp/arcade/connect
 ### MCP auth + refresh behavior
 
 - Auth-gated MCP tools emit `mcp.auth.required` with an authorization URL.
+- If the same challenged tool is retried immediately, Tandem emits `mcp.auth.pending` and short-circuits repeated calls for about 15 seconds.
+- During this window, only the challenged tool is blocked; other MCP tools remain available.
 - Complete authorization, then retry the tool call (engine restart not required).
+- After successful authorization, one cooldown cycle may still apply before the next probe call succeeds.
 - On connect/refresh failures, Tandem now clears stale MCP cache/session state before reporting errors to avoid phantom tool availability.
 
 ### Provider Notes: Composio

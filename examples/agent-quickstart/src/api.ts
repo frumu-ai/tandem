@@ -131,6 +131,29 @@ export const listMcpTools = async (): Promise<unknown[]> => engineRequest<unknow
 export const deleteMcpServer = async (name: string) =>
   engineRequest<{ ok: boolean }>(`/mcp/${encodeURIComponent(name)}`, { method: "DELETE" });
 
+export const promptAsyncWithModel = async (
+  sessionId: string,
+  prompt: string,
+  model: { provider: string; model: string }
+): Promise<{ runId: string }> => {
+  const payload = {
+    parts: [{ type: "text", text: prompt }],
+    model: {
+      providerID: model.provider,
+      modelID: model.model,
+    },
+  };
+  const res = await engineRequest<Record<string, unknown>>(
+    `/session/${encodeURIComponent(sessionId)}/prompt_async?return=run`,
+    { method: "POST", body: JSON.stringify(payload) }
+  );
+  const id = [res.runID, res.runId, res.run_id].find(
+    (v): v is string => typeof v === "string" && v.trim().length > 0
+  );
+  if (!id) throw new Error("Run ID missing from prompt_async response");
+  return { runId: id };
+};
+
 export const asEpochMs = (v: unknown): number => {
   if (typeof v !== "number" || !Number.isFinite(v)) return Date.now();
   return v < 1_000_000_000_000 ? Math.trunc(v * 1000) : Math.trunc(v);

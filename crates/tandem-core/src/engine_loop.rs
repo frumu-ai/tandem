@@ -297,6 +297,7 @@ impl EngineLoop {
             let mut readonly_tool_cache: HashMap<String, String> = HashMap::new();
             let mut readonly_signature_counts: HashMap<String, usize> = HashMap::new();
             let mut shell_mismatch_signatures: HashSet<String> = HashSet::new();
+            let mut blocked_mcp_servers: HashSet<String> = HashSet::new();
             let mut websearch_query_blocked = false;
             let mut auto_workspace_probe_attempted = false;
 
@@ -325,6 +326,14 @@ impl EngineLoop {
                 if active_agent.tools.is_some() {
                     tool_schemas.retain(|schema| agent_can_use_tool(&active_agent, &schema.name));
                 }
+                tool_schemas.retain(|schema| {
+                    let normalized = normalize_tool_name(&schema.name);
+                    if let Some(server) = mcp_server_from_tool_name(&normalized) {
+                        !blocked_mcp_servers.contains(server)
+                    } else {
+                        true
+                    }
+                });
                 if let Some(allowed_tools) = self
                     .session_allowed_tools
                     .read()
@@ -539,11 +548,22 @@ impl EngineLoop {
                 if !tool_calls.is_empty() {
                     let mut outputs = Vec::new();
                     let mut executed_productive_tool = false;
+                    let mut auth_required_hit_in_cycle = false;
+                    let mut guard_budget_hit_in_cycle = false;
                     for (tool, args) in tool_calls {
                         if !agent_can_use_tool(&active_agent, &tool) {
                             continue;
                         }
                         let tool_key = normalize_tool_name(&tool);
+                        if let Some(server) = mcp_server_from_tool_name(&tool_key) {
+                            if blocked_mcp_servers.contains(server) {
+                                outputs.push(format!(
+                                    "Tool `{}` call skipped: authorization is still pending for MCP server `{}`.",
+                                    tool_key, server
+                                ));
+                                continue;
+                            }
+                        }
                         if tool_key == "question" {
                             question_tool_used = true;
                         }
@@ -562,6 +582,7 @@ impl EngineLoop {
                                 "Tool `{}` call skipped: per-run guard budget exceeded ({}).",
                                 tool_key, budget
                             ));
+                            guard_budget_hit_in_cycle = true;
                             continue;
                         }
                         let mut effective_args = args.clone();
@@ -661,11 +682,25 @@ impl EngineLoop {
                             if productive {
                                 executed_productive_tool = true;
                             }
+                            if is_auth_required_tool_output(&output) {
+                                if let Some(server) = mcp_server_from_tool_name(&tool_key) {
+                                    blocked_mcp_servers.insert(server.to_string());
+                                }
+                                auth_required_hit_in_cycle = true;
+                            }
                             outputs.push(output);
+                            if auth_required_hit_in_cycle {
+                                break;
+                            }
+                            if guard_budget_hit_in_cycle {
+                                break;
+                            }
                         }
                     }
                     if !outputs.is_empty() {
                         last_tool_outputs = outputs.clone();
+                        let guard_budget_hit =
+                            outputs.iter().any(|o| is_guard_budget_tool_output(o));
                         if executed_productive_tool {
                             followup_context = Some(format!(
                                 "{}\nContinue with a concise final response and avoid repeating identical tool calls.",
@@ -673,7 +708,16 @@ impl EngineLoop {
                             ));
                             continue;
                         }
-                        completion.clear();
+                        if guard_budget_hit {
+                            completion = summarize_guard_budget_outputs(&outputs)
+                                .unwrap_or_else(|| {
+                                    "This run hit the per-run tool guard budget, so tool execution was paused to avoid retries. Send a new message to start a fresh run.".to_string()
+                                });
+                        } else if let Some(summary) = summarize_auth_pending_outputs(&outputs) {
+                            completion = summary;
+                        } else {
+                            completion.clear();
+                        }
                         break;
                     }
                 }
@@ -1149,8 +1193,13 @@ impl EngineLoop {
             }
         };
         if let Some(auth) = extract_mcp_auth_required_metadata(&result.metadata) {
+            let event_name = if auth.pending && auth.blocked {
+                "mcp.auth.pending"
+            } else {
+                "mcp.auth.required"
+            };
             self.event_bus.publish(EngineEvent::new(
-                "mcp.auth.required",
+                event_name,
                 json!({
                     "sessionID": session_id,
                     "messageID": message_id,
@@ -1158,7 +1207,10 @@ impl EngineLoop {
                     "server": auth.server,
                     "authorizationUrl": auth.authorization_url,
                     "message": auth.message,
-                    "challengeId": auth.challenge_id
+                    "challengeId": auth.challenge_id,
+                    "pending": auth.pending,
+                    "blocked": auth.blocked,
+                    "retryAfterMs": auth.retry_after_ms
                 }),
             ));
         }
@@ -1177,10 +1229,18 @@ impl EngineLoop {
         )
         .await;
         let output = if let Some(auth) = extract_mcp_auth_required_metadata(&result.metadata) {
-            format!(
-                "Authorization required for `{}`.\n{}\n\nAuthorize here: {}",
-                tool, auth.message, auth.authorization_url
-            )
+            if auth.pending && auth.blocked {
+                let retry_after_secs = auth.retry_after_ms.unwrap_or(0).div_ceil(1000);
+                format!(
+                    "Authorization pending for `{}`.\n{}\n\nAuthorize here: {}\nRetry after {}s.",
+                    tool, auth.message, auth.authorization_url, retry_after_secs
+                )
+            } else {
+                format!(
+                    "Authorization required for `{}`.\n{}\n\nAuthorize here: {}",
+                    tool, auth.message, auth.authorization_url
+                )
+            }
         } else {
             self.plugins.transform_tool_output(result.output).await
         };
@@ -1505,6 +1565,15 @@ fn normalize_tool_name(name: &str) -> String {
     }
 }
 
+fn mcp_server_from_tool_name(tool_name: &str) -> Option<&str> {
+    let mut parts = tool_name.split('.');
+    let prefix = parts.next()?;
+    if prefix != "mcp" {
+        return None;
+    }
+    parts.next().filter(|server| !server.is_empty())
+}
+
 fn extract_tool_candidate_paths(tool: &str, args: &Value) -> Vec<String> {
     let Some(obj) = args.as_object() else {
         return Vec::new();
@@ -1706,7 +1775,9 @@ fn is_non_productive_batch_output(output: &str) -> bool {
 
 fn is_auth_required_tool_output(output: &str) -> bool {
     let lower = output.to_ascii_lowercase();
-    (lower.contains("authorization required") || lower.contains("requires authorization"))
+    (lower.contains("authorization required")
+        || lower.contains("requires authorization")
+        || lower.contains("authorization pending"))
         && (lower.contains("authorize here") || lower.contains("http"))
 }
 
@@ -1716,6 +1787,9 @@ struct McpAuthRequiredMetadata {
     authorization_url: String,
     message: String,
     server: Option<String>,
+    pending: bool,
+    blocked: bool,
+    retry_after_ms: Option<u64>,
 }
 
 fn extract_mcp_auth_required_metadata(metadata: &Value) -> Option<McpAuthRequiredMetadata> {
@@ -1753,11 +1827,23 @@ fn extract_mcp_auth_required_metadata(metadata: &Value) -> Option<McpAuthRequire
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(ToString::to_string);
+    let pending = auth
+        .get("pending")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let blocked = auth
+        .get("blocked")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let retry_after_ms = auth.get("retryAfterMs").and_then(|v| v.as_u64());
     Some(McpAuthRequiredMetadata {
         challenge_id,
         authorization_url,
         message,
         server,
+        pending,
+        blocked,
+        retry_after_ms,
     })
 }
 
@@ -1785,7 +1871,70 @@ fn extract_mcp_auth_required_from_error_text(
         authorization_url,
         message: "This integration requires authorization before this action can run.".to_string(),
         server,
+        pending: false,
+        blocked: false,
+        retry_after_ms: None,
     })
+}
+
+fn summarize_auth_pending_outputs(outputs: &[String]) -> Option<String> {
+    if outputs.is_empty()
+        || !outputs
+            .iter()
+            .all(|output| is_auth_required_tool_output(output))
+    {
+        return None;
+    }
+    let mut auth_lines = outputs
+        .iter()
+        .filter_map(|output| {
+            let trimmed = output.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect::<Vec<_>>();
+    auth_lines.sort();
+    auth_lines.dedup();
+    if auth_lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Authorization is required before I can continue with this action.\n\n{}",
+        auth_lines.join("\n\n")
+    ))
+}
+
+fn summarize_guard_budget_outputs(outputs: &[String]) -> Option<String> {
+    if outputs.is_empty()
+        || !outputs
+            .iter()
+            .all(|output| is_guard_budget_tool_output(output))
+    {
+        return None;
+    }
+    let mut lines = outputs
+        .iter()
+        .filter_map(|output| {
+            let trimmed = output.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect::<Vec<_>>();
+    lines.sort();
+    lines.dedup();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "This run hit the per-run tool guard budget, so I paused tool execution to avoid runaway retries.\n\n{}\n\nSend a new message to start a fresh run.",
+        lines.join("\n")
+    ))
 }
 
 fn find_first_url(text: &str) -> Option<String> {
@@ -1809,6 +1958,12 @@ fn tool_budget_for(tool_name: &str) -> usize {
         "grep" | "search" | "codesearch" => 6,
         _ => 10,
     }
+}
+
+fn is_guard_budget_tool_output(output: &str) -> bool {
+    output
+        .to_ascii_lowercase()
+        .contains("per-run guard budget exceeded")
 }
 
 fn is_sensitive_path_candidate(path: &Path) -> bool {
@@ -4431,6 +4586,16 @@ Call: todowrite(task_id=3, status="in_progress")
     }
 
     #[test]
+    fn mcp_server_from_tool_name_parses_server_segment() {
+        assert_eq!(
+            mcp_server_from_tool_name("mcp.arcade.jira_getboards"),
+            Some("arcade")
+        );
+        assert_eq!(mcp_server_from_tool_name("read"), None);
+        assert_eq!(mcp_server_from_tool_name("mcp"), None);
+    }
+
+    #[test]
     fn batch_helpers_use_name_when_tool_is_wrapper() {
         let args = json!({
             "tool_calls":[
@@ -4494,7 +4659,10 @@ Call: todowrite(task_id=3, status="in_progress")
                 "required": true,
                 "challengeId": "abc123",
                 "authorizationUrl": "https://example.com/oauth",
-                "message": "Authorize first"
+                "message": "Authorize first",
+                "pending": true,
+                "blocked": true,
+                "retryAfterMs": 8000
             }
         });
         let parsed = extract_mcp_auth_required_metadata(&metadata).expect("expected metadata");
@@ -4502,6 +4670,9 @@ Call: todowrite(task_id=3, status="in_progress")
         assert_eq!(parsed.authorization_url, "https://example.com/oauth");
         assert_eq!(parsed.message, "Authorize first");
         assert_eq!(parsed.server.as_deref(), Some("arcade"));
+        assert!(parsed.pending);
+        assert!(parsed.blocked);
+        assert_eq!(parsed.retry_after_ms, Some(8000));
     }
 
     #[test]
@@ -4509,6 +4680,51 @@ Call: todowrite(task_id=3, status="in_progress")
         assert!(is_auth_required_tool_output(
             "Authorization required for `mcp.arcade.gmail_whoami`.\nAuthorize here: https://example.com"
         ));
+        assert!(is_auth_required_tool_output(
+            "Authorization pending for `mcp.arcade.gmail_whoami`.\nAuthorize here: https://example.com\nRetry after 8s."
+        ));
         assert!(!is_auth_required_tool_output("Tool `read` result: ok"));
+    }
+
+    #[test]
+    fn guard_budget_output_detector_matches_expected_text() {
+        assert!(is_guard_budget_tool_output(
+            "Tool `mcp.arcade.gmail_sendemail` call skipped: per-run guard budget exceeded (10)."
+        ));
+        assert!(!is_guard_budget_tool_output("Tool `read` result: ok"));
+    }
+
+    #[test]
+    fn summarize_guard_budget_outputs_returns_run_scoped_message() {
+        let outputs = vec![
+            "Tool `mcp.arcade.gmail_sendemail` call skipped: per-run guard budget exceeded (10)."
+                .to_string(),
+            "Tool `mcp.arcade.jira_getboards` call skipped: per-run guard budget exceeded (10)."
+                .to_string(),
+        ];
+        let summary = summarize_guard_budget_outputs(&outputs).expect("expected summary");
+        assert!(summary.contains("per-run tool guard budget"));
+        assert!(summary.contains("fresh run"));
+    }
+
+    #[test]
+    fn summarize_auth_pending_outputs_returns_summary_when_all_are_auth_related() {
+        let outputs = vec![
+            "Authorization pending for `mcp.arcade.gmail_sendemail`.\nAuthorize here: https://example.com/a".to_string(),
+            "Authorization required for `mcp.arcade.gmail_whoami`.\nAuthorize here: https://example.com/b".to_string(),
+        ];
+        let summary = summarize_auth_pending_outputs(&outputs).expect("summary expected");
+        assert!(summary.contains("Authorization is required before I can continue"));
+        assert!(summary.contains("gmail_sendemail"));
+        assert!(summary.contains("gmail_whoami"));
+    }
+
+    #[test]
+    fn summarize_auth_pending_outputs_returns_none_for_mixed_outputs() {
+        let outputs = vec![
+            "Authorization required for `mcp.arcade.gmail_whoami`.\nAuthorize here: https://example.com".to_string(),
+            "Tool `read` result:\nok".to_string(),
+        ];
+        assert!(summarize_auth_pending_outputs(&outputs).is_none());
     }
 }

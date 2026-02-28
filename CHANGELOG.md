@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.25] - 2026-02-28
+
+### Added
+
+- **MCP auth challenge extraction hardening**: Runtime now prefers structured auth fields from MCP payloads (for example `structuredContent.message` / `structuredContent.authorization_url`) before generic text blobs, improving challenge fidelity across providers like Arcade.
+- **Quickstart UI preference persistence**: Added persistent storage for chat `Auto-allow all` approval mode so the toggle survives portal reloads/restarts.
+- **Guard-budget diagnostics tests**: Added engine/runtime test coverage for per-run guard-budget classification and MCP auth message normalization/priority parsing.
+
+### Changed
+
+- **MCP auth messaging output quality**: Sanitized/truncated auth-required messages emitted from runtime so user-facing chat responses avoid large escaped JSON or provider-internal instruction blobs.
+- **Quickstart run lifecycle handling**: Before sending a new prompt, quickstart now best-effort cancels an existing active run (`cancelRun` / `cancel`) to avoid stale-run carryover behavior in active sessions.
+- **Provider/tool compatibility normalization**: Hardened OpenAI-compatible tool publishing path with function-name sanitization, alias round-tripping, and function-parameter schema normalization for stricter provider validators.
+
+### Fixed
+
+- **Runaway MCP/tool-call churn in a single run**: Engine loop now short-circuits additional MCP tool execution in auth-pending conditions and applies stricter fail-fast behavior when guard budget is exceeded to prevent high-cost retry spirals.
+- **Misleading session-scoped budget fallback wording**: Guard-budget terminal behavior is now deterministic and explicitly run-scoped, reducing model-generated “session limit” confusion.
+- **Model routing in quickstart sends**: Quickstart run submission path now consistently sends explicit provider/model overrides via `prompt_async`, aligning selected UI model with actual provider traffic.
+- **OpenAI-compatible strict schema/tool-name 400s**: Fixed invalid tool-name and function-parameter schema edge cases that caused upstream `invalid_request_error` failures during MCP-heavy runs.
+- **MCP auth loop UX degradation**: Reduced repeated noisy auth output and improved event/message behavior for `mcp.auth.required` / `mcp.auth.pending` flows across engine and web chat.
+
 ## [0.3.24] - 2026-02-27
 
 ### Added

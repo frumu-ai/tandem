@@ -327,3 +327,43 @@ pub const MAX_CHUNK_LENGTH: usize = 4000;
 
 /// Minimum content length for a chunk (in characters)
 pub const MIN_CHUNK_LENGTH: usize = 50;
+
+/// Persistent global memory record keyed by user identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalMemoryRecord {
+    pub id: String,
+    pub user_id: String,
+    pub source_type: String,
+    pub content: String,
+    pub content_hash: String,
+    pub run_id: String,
+    pub session_id: Option<String>,
+    pub message_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub project_tag: Option<String>,
+    pub channel_tag: Option<String>,
+    pub host_tag: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub provenance: Option<serde_json::Value>,
+    pub redaction_status: String,
+    pub redaction_count: u32,
+    pub visibility: String,
+    pub demoted: bool,
+    pub score_boost: f64,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalMemoryWriteResult {
+    pub id: String,
+    pub stored: bool,
+    pub deduped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalMemorySearchHit {
+    pub record: GlobalMemoryRecord,
+    pub score: f64,
+}

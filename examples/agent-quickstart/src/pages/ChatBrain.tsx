@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { client } from "../api";
+import { client, promptAsyncWithModel } from "../api";
 import type { EngineMessage, PermissionRequestRecord } from "@frumu/tandem-client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -48,6 +48,9 @@ interface McpAuthChallenge {
   server?: string;
   authorizationUrl: string;
   message: string;
+  pending?: boolean;
+  blocked?: boolean;
+  retryAfterMs?: number;
 }
 interface ModelSpec {
   provider: string;
@@ -74,6 +77,7 @@ const eventRunId = (props: Record<string, unknown> | undefined): string | undefi
 
 const SESSIONS_KEY = "tandem_aq_sessions";
 const ACTIVE_KEY = "tandem_aq_active_session";
+const AUTO_ALLOW_KEY = "tandem_aq_auto_allow_all";
 const PRIMED_PREFIX = "tandem_aq_primed_";
 const PRIME_MARKER = "[AQ_PRIMED_V1]";
 const SHOW_DEBUG_UI =
@@ -252,7 +256,10 @@ export default function ChatBrain() {
   const [availableTools, setAvailableTools] = useState<string[]>([]);
   const [isThinking, setIsThinking] = useState(false);
   const [approving, setApproving] = useState(false);
-  const [autoApproveAll, setAutoApproveAll] = useState(false);
+  const [autoApproveAll, setAutoApproveAll] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(AUTO_ALLOW_KEY) === "1";
+  });
   const [showSidebar, setShowSidebar] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [logOpen, setLogOpen] = useState(false);
@@ -275,6 +282,11 @@ export default function ChatBrain() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(AUTO_ALLOW_KEY, autoApproveAll ? "1" : "0");
+  }, [autoApproveAll]);
 
   const addLog = useCallback((msg: string) => {
     setLog((p) => [...p.slice(-60), msg]);
@@ -593,10 +605,13 @@ export default function ChatBrain() {
           });
         } else if (type === "approval.requested") {
           void refreshApprovals(sid);
-        } else if (type === "mcp.auth.required") {
+        } else if (type === "mcp.auth.required" || type === "mcp.auth.pending") {
           const challengeId = String(data.properties?.challengeId || "").trim();
           const authorizationUrl = String(data.properties?.authorizationUrl || "").trim();
           if (!challengeId || !authorizationUrl) continue;
+          const retryAfterMsRaw = Number(data.properties?.retryAfterMs ?? 0);
+          const retryAfterMs =
+            Number.isFinite(retryAfterMsRaw) && retryAfterMsRaw > 0 ? retryAfterMsRaw : undefined;
           const challenge: McpAuthChallenge = {
             challengeId,
             tool: String(data.properties?.tool || "mcp tool"),
@@ -608,9 +623,19 @@ export default function ChatBrain() {
             message:
               String(data.properties?.message || "").trim() ||
               "This MCP tool requires authorization before it can run.",
+            pending: Boolean(data.properties?.pending),
+            blocked: Boolean(data.properties?.blocked),
+            retryAfterMs,
           };
           setMcpAuthChallenges((prev) => {
-            if (prev.some((item) => item.challengeId === challenge.challengeId)) return prev;
+            const existingIndex = prev.findIndex(
+              (item) => item.challengeId === challenge.challengeId
+            );
+            if (existingIndex >= 0) {
+              const updated = [...prev];
+              updated[existingIndex] = { ...updated[existingIndex], ...challenge };
+              return updated;
+            }
             return [challenge, ...prev].slice(0, 6);
           });
           setMessages((prev) => {
@@ -621,13 +646,24 @@ export default function ChatBrain() {
             ) {
               return prev;
             }
+            const retryAfterSeconds = challenge.retryAfterMs
+              ? Math.max(1, Math.ceil(challenge.retryAfterMs / 1000))
+              : undefined;
+            const prefix =
+              challenge.pending && challenge.blocked
+                ? "Authorization pending"
+                : "Authorization required";
+            const suffix =
+              retryAfterSeconds && challenge.pending
+                ? ` Retry after ~${retryAfterSeconds}s after completing authorization.`
+                : "";
             return [
               ...prev,
               {
                 id: Math.random().toString(36),
                 role: "system",
                 type: "text",
-                content: `Authorization required for ${challenge.tool}. Complete authorization, then retry your last message. (${challenge.challengeId.slice(0, 8)})`,
+                content: `${prefix} for ${challenge.tool}. Complete authorization, then retry your last message.${suffix} (${challenge.challengeId.slice(0, 8)})`,
               },
             ];
           });
@@ -814,6 +850,20 @@ export default function ChatBrain() {
       ]);
       return;
     }
+    try {
+      const current = await client.sessions.activeRun(sessionId);
+      const activeRunId = current.active?.runId?.trim();
+      if (activeRunId) {
+        addLog(`Cancelling previous active run ${activeRunId.slice(0, 8)} before send`);
+        try {
+          await client.sessions.cancelRun(sessionId, activeRunId);
+        } catch {
+          await client.sessions.cancel(sessionId);
+        }
+      }
+    } catch {
+      // Non-fatal: continue with a best-effort fresh run.
+    }
     if (isThinking) {
       const msg =
         "The agent is still processing the previous run. Wait for it to finish, then send again.";
@@ -841,7 +891,10 @@ export default function ChatBrain() {
           "No runnable provider/model is configured. Open Provider Setup and select one."
         );
       }
-      const { runId } = await client.sessions.promptAsync(sessionId, trimmed);
+      const { runId } = await promptAsyncWithModel(sessionId, trimmed, {
+        provider: spec.provider,
+        model: spec.model,
+      });
       addLog(`Run ${runId.slice(0, 8)}`);
       void attachStream(sessionId, runId);
     } catch (e) {
@@ -1085,6 +1138,12 @@ export default function ChatBrain() {
                       <span className="font-mono">{challenge.tool}</span>
                     </p>
                     <p className="text-xs text-cyan-200/90 mt-1">{challenge.message}</p>
+                    {challenge.pending && challenge.retryAfterMs ? (
+                      <p className="text-xs text-cyan-200/70 mt-1">
+                        Authorization is pending. Retry after about{" "}
+                        {Math.max(1, Math.ceil(challenge.retryAfterMs / 1000))}s.
+                      </p>
+                    ) : null}
                     <a
                       href={challenge.authorizationUrl}
                       target="_blank"

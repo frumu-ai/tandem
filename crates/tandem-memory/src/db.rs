@@ -2,8 +2,9 @@
 // SQLite + sqlite-vec for vector storage
 
 use crate::types::{
-    ClearFileIndexResult, MemoryChunk, MemoryConfig, MemoryResult, MemoryStats, MemoryTier,
-    ProjectMemoryStats, DEFAULT_EMBEDDING_DIMENSION,
+    ClearFileIndexResult, GlobalMemoryRecord, GlobalMemorySearchHit, GlobalMemoryWriteResult,
+    MemoryChunk, MemoryConfig, MemoryResult, MemoryStats, MemoryTier, ProjectMemoryStats,
+    DEFAULT_EMBEDDING_DIMENSION,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{ffi::sqlite3_auto_extension, params, Connection, OptionalExtension, Row};
@@ -316,6 +317,77 @@ impl MemoryDatabase {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_cleanup_log_created ON memory_cleanup_log(created_at)",
+            [],
+        )?;
+
+        // Global user memory records (FTS-backed baseline retrieval path)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS memory_records (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                session_id TEXT,
+                message_id TEXT,
+                tool_name TEXT,
+                project_tag TEXT,
+                channel_tag TEXT,
+                host_tag TEXT,
+                metadata TEXT,
+                provenance TEXT,
+                redaction_status TEXT NOT NULL,
+                redaction_count INTEGER NOT NULL DEFAULT 0,
+                visibility TEXT NOT NULL DEFAULT 'private',
+                demoted INTEGER NOT NULL DEFAULT 0,
+                score_boost REAL NOT NULL DEFAULT 0.0,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                expires_at_ms INTEGER
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_records_dedup
+                ON memory_records(user_id, source_type, content_hash, run_id, IFNULL(session_id, ''), IFNULL(message_id, ''), IFNULL(tool_name, ''))",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_records_user_created
+                ON memory_records(user_id, created_at_ms DESC)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_records_run
+                ON memory_records(run_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memory_records_fts USING fts5(
+                id UNINDEXED,
+                user_id UNINDEXED,
+                content
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memory_records_ai AFTER INSERT ON memory_records BEGIN
+                INSERT INTO memory_records_fts(id, user_id, content) VALUES (new.id, new.user_id, new.content);
+            END",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memory_records_ad AFTER DELETE ON memory_records BEGIN
+                DELETE FROM memory_records_fts WHERE id = old.id;
+            END",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memory_records_au AFTER UPDATE OF content, user_id ON memory_records BEGIN
+                DELETE FROM memory_records_fts WHERE id = old.id;
+                INSERT INTO memory_records_fts(id, user_id, content) VALUES (new.id, new.user_id, new.content);
+            END",
             [],
         )?;
 
@@ -1488,6 +1560,278 @@ impl MemoryDatabase {
 
         self.prune_old_session_chunks(retention_days).await
     }
+
+    pub async fn put_global_memory_record(
+        &self,
+        record: &GlobalMemoryRecord,
+    ) -> MemoryResult<GlobalMemoryWriteResult> {
+        let conn = self.conn.lock().await;
+
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM memory_records
+                 WHERE user_id = ?1
+                   AND source_type = ?2
+                   AND content_hash = ?3
+                   AND run_id = ?4
+                   AND IFNULL(session_id, '') = IFNULL(?5, '')
+                   AND IFNULL(message_id, '') = IFNULL(?6, '')
+                   AND IFNULL(tool_name, '') = IFNULL(?7, '')
+                 LIMIT 1",
+                params![
+                    record.user_id,
+                    record.source_type,
+                    record.content_hash,
+                    record.run_id,
+                    record.session_id,
+                    record.message_id,
+                    record.tool_name
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(id) = existing {
+            return Ok(GlobalMemoryWriteResult {
+                id,
+                stored: false,
+                deduped: true,
+            });
+        }
+
+        let metadata = record
+            .metadata
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let provenance = record
+            .provenance
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        conn.execute(
+            "INSERT INTO memory_records(
+                id, user_id, source_type, content, content_hash, run_id, session_id, message_id, tool_name,
+                project_tag, channel_tag, host_tag, metadata, provenance, redaction_status, redaction_count,
+                visibility, demoted, score_boost, created_at_ms, updated_at_ms, expires_at_ms
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                ?17, ?18, ?19, ?20, ?21, ?22
+            )",
+            params![
+                record.id,
+                record.user_id,
+                record.source_type,
+                record.content,
+                record.content_hash,
+                record.run_id,
+                record.session_id,
+                record.message_id,
+                record.tool_name,
+                record.project_tag,
+                record.channel_tag,
+                record.host_tag,
+                metadata,
+                provenance,
+                record.redaction_status,
+                i64::from(record.redaction_count),
+                record.visibility,
+                if record.demoted { 1i64 } else { 0i64 },
+                record.score_boost,
+                record.created_at_ms as i64,
+                record.updated_at_ms as i64,
+                record.expires_at_ms.map(|v| v as i64),
+            ],
+        )?;
+
+        Ok(GlobalMemoryWriteResult {
+            id: record.id.clone(),
+            stored: true,
+            deduped: false,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search_global_memory(
+        &self,
+        user_id: &str,
+        query: &str,
+        limit: i64,
+        project_tag: Option<&str>,
+        channel_tag: Option<&str>,
+        host_tag: Option<&str>,
+    ) -> MemoryResult<Vec<GlobalMemorySearchHit>> {
+        let conn = self.conn.lock().await;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut hits = Vec::new();
+
+        let fts_query = build_fts_query(query);
+        let search_limit = limit.clamp(1, 100);
+        let maybe_rows = conn.prepare(
+            "SELECT
+                m.id, m.user_id, m.source_type, m.content, m.content_hash, m.run_id, m.session_id, m.message_id,
+                m.tool_name, m.project_tag, m.channel_tag, m.host_tag, m.metadata, m.provenance,
+                m.redaction_status, m.redaction_count, m.visibility, m.demoted, m.score_boost,
+                m.created_at_ms, m.updated_at_ms, m.expires_at_ms,
+                bm25(memory_records_fts) AS rank
+             FROM memory_records_fts
+             JOIN memory_records m ON m.id = memory_records_fts.id
+             WHERE memory_records_fts MATCH ?1
+               AND m.user_id = ?2
+               AND m.demoted = 0
+               AND (m.expires_at_ms IS NULL OR m.expires_at_ms > ?3)
+               AND (?4 IS NULL OR m.project_tag = ?4)
+               AND (?5 IS NULL OR m.channel_tag = ?5)
+               AND (?6 IS NULL OR m.host_tag = ?6)
+             ORDER BY rank ASC
+             LIMIT ?7"
+        );
+
+        if let Ok(mut stmt) = maybe_rows {
+            let rows = stmt.query_map(
+                params![
+                    fts_query,
+                    user_id,
+                    now_ms,
+                    project_tag,
+                    channel_tag,
+                    host_tag,
+                    search_limit
+                ],
+                |row| {
+                    let record = row_to_global_record(row)?;
+                    let rank = row.get::<_, f64>(22)?;
+                    let score = 1.0 / (1.0 + rank.max(0.0));
+                    Ok(GlobalMemorySearchHit { record, score })
+                },
+            )?;
+            for row in rows {
+                hits.push(row?);
+            }
+        }
+
+        if !hits.is_empty() {
+            return Ok(hits);
+        }
+
+        let like = format!("%{}%", query.trim());
+        let mut stmt = conn.prepare(
+            "SELECT
+                id, user_id, source_type, content, content_hash, run_id, session_id, message_id,
+                tool_name, project_tag, channel_tag, host_tag, metadata, provenance,
+                redaction_status, redaction_count, visibility, demoted, score_boost,
+                created_at_ms, updated_at_ms, expires_at_ms
+             FROM memory_records
+             WHERE user_id = ?1
+               AND demoted = 0
+               AND (expires_at_ms IS NULL OR expires_at_ms > ?2)
+               AND (?3 IS NULL OR project_tag = ?3)
+               AND (?4 IS NULL OR channel_tag = ?4)
+               AND (?5 IS NULL OR host_tag = ?5)
+               AND (?6 = '' OR content LIKE ?7)
+             ORDER BY created_at_ms DESC
+             LIMIT ?8",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                user_id,
+                now_ms,
+                project_tag,
+                channel_tag,
+                host_tag,
+                query.trim(),
+                like,
+                search_limit
+            ],
+            |row| {
+                let record = row_to_global_record(row)?;
+                Ok(GlobalMemorySearchHit {
+                    record,
+                    score: 0.25,
+                })
+            },
+        )?;
+        for row in rows {
+            hits.push(row?);
+        }
+
+        Ok(hits)
+    }
+
+    pub async fn list_global_memory(
+        &self,
+        user_id: &str,
+        q: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> MemoryResult<Vec<GlobalMemoryRecord>> {
+        let conn = self.conn.lock().await;
+        let query = q.unwrap_or("").trim();
+        let like = format!("%{}%", query);
+        let mut stmt = conn.prepare(
+            "SELECT
+                id, user_id, source_type, content, content_hash, run_id, session_id, message_id,
+                tool_name, project_tag, channel_tag, host_tag, metadata, provenance,
+                redaction_status, redaction_count, visibility, demoted, score_boost,
+                created_at_ms, updated_at_ms, expires_at_ms
+             FROM memory_records
+             WHERE user_id = ?1
+               AND (?2 = '' OR content LIKE ?3 OR source_type LIKE ?3 OR run_id LIKE ?3)
+             ORDER BY created_at_ms DESC
+             LIMIT ?4 OFFSET ?5",
+        )?;
+        let rows = stmt.query_map(
+            params![user_id, query, like, limit.clamp(1, 1000), offset.max(0)],
+            row_to_global_record,
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub async fn set_global_memory_visibility(
+        &self,
+        id: &str,
+        visibility: &str,
+        demoted: bool,
+    ) -> MemoryResult<bool> {
+        let conn = self.conn.lock().await;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let changed = conn.execute(
+            "UPDATE memory_records
+             SET visibility = ?2, demoted = ?3, updated_at_ms = ?4
+             WHERE id = ?1",
+            params![id, visibility, if demoted { 1i64 } else { 0i64 }, now_ms],
+        )?;
+        Ok(changed > 0)
+    }
+
+    pub async fn get_global_memory(&self, id: &str) -> MemoryResult<Option<GlobalMemoryRecord>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT
+                id, user_id, source_type, content, content_hash, run_id, session_id, message_id,
+                tool_name, project_tag, channel_tag, host_tag, metadata, provenance,
+                redaction_status, redaction_count, visibility, demoted, score_boost,
+                created_at_ms, updated_at_ms, expires_at_ms
+             FROM memory_records
+             WHERE id = ?1
+             LIMIT 1",
+        )?;
+        let record = stmt
+            .query_row(params![id], row_to_global_record)
+            .optional()?;
+        Ok(record)
+    }
+
+    pub async fn delete_global_memory(&self, id: &str) -> MemoryResult<bool> {
+        let conn = self.conn.lock().await;
+        let changed = conn.execute("DELETE FROM memory_records WHERE id = ?1", params![id])?;
+        Ok(changed > 0)
+    }
 }
 
 /// Convert a database row to a MemoryChunk
@@ -1542,6 +1886,59 @@ fn row_to_chunk(row: &Row, tier: MemoryTier) -> Result<MemoryChunk, rusqlite::Er
         token_count,
         metadata,
     })
+}
+
+fn row_to_global_record(row: &Row) -> Result<GlobalMemoryRecord, rusqlite::Error> {
+    let metadata_str: Option<String> = row.get(12)?;
+    let provenance_str: Option<String> = row.get(13)?;
+    Ok(GlobalMemoryRecord {
+        id: row.get(0)?,
+        user_id: row.get(1)?,
+        source_type: row.get(2)?,
+        content: row.get(3)?,
+        content_hash: row.get(4)?,
+        run_id: row.get(5)?,
+        session_id: row.get(6)?,
+        message_id: row.get(7)?,
+        tool_name: row.get(8)?,
+        project_tag: row.get(9)?,
+        channel_tag: row.get(10)?,
+        host_tag: row.get(11)?,
+        metadata: metadata_str
+            .filter(|s| !s.is_empty())
+            .and_then(|s| serde_json::from_str(&s).ok()),
+        provenance: provenance_str
+            .filter(|s| !s.is_empty())
+            .and_then(|s| serde_json::from_str(&s).ok()),
+        redaction_status: row.get(14)?,
+        redaction_count: row.get::<_, i64>(15)? as u32,
+        visibility: row.get(16)?,
+        demoted: row.get::<_, i64>(17)? != 0,
+        score_boost: row.get(18)?,
+        created_at_ms: row.get::<_, i64>(19)? as u64,
+        updated_at_ms: row.get::<_, i64>(20)? as u64,
+        expires_at_ms: row.get::<_, Option<i64>>(21)?.map(|v| v as u64),
+    })
+}
+
+fn build_fts_query(query: &str) -> String {
+    let tokens = query
+        .split_whitespace()
+        .filter_map(|tok| {
+            let cleaned =
+                tok.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
+            if cleaned.is_empty() {
+                None
+            } else {
+                Some(format!("\"{}\"", cleaned))
+            }
+        })
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        "\"\"".to_string()
+    } else {
+        tokens.join(" OR ")
+    }
 }
 
 #[cfg(test)]
@@ -1607,5 +2004,46 @@ mod tests {
 
         let updated = db.get_or_create_config("project-1").await.unwrap();
         assert_eq!(updated.max_chunks, 5000);
+    }
+
+    #[tokio::test]
+    async fn test_global_memory_put_search_and_dedup() {
+        let (db, _temp) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let record = GlobalMemoryRecord {
+            id: "gm-1".to_string(),
+            user_id: "user-a".to_string(),
+            source_type: "user_message".to_string(),
+            content: "remember rust workspace layout".to_string(),
+            content_hash: "h1".to_string(),
+            run_id: "run-1".to_string(),
+            session_id: Some("s1".to_string()),
+            message_id: Some("m1".to_string()),
+            tool_name: None,
+            project_tag: Some("proj-x".to_string()),
+            channel_tag: None,
+            host_tag: None,
+            metadata: None,
+            provenance: None,
+            redaction_status: "passed".to_string(),
+            redaction_count: 0,
+            visibility: "private".to_string(),
+            demoted: false,
+            score_boost: 0.0,
+            created_at_ms: now,
+            updated_at_ms: now,
+            expires_at_ms: None,
+        };
+        let first = db.put_global_memory_record(&record).await.unwrap();
+        assert!(first.stored);
+        let second = db.put_global_memory_record(&record).await.unwrap();
+        assert!(second.deduped);
+
+        let hits = db
+            .search_global_memory("user-a", "rust workspace", 5, Some("proj-x"), None, None)
+            .await
+            .unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].record.id, "gm-1");
     }
 }

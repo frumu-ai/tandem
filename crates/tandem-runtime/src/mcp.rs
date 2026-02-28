@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, RwLock};
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_CLIENT_NAME: &str = "tandem";
 const MCP_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const MCP_AUTH_REPROBE_COOLDOWN_MS: u64 = 15_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolCacheEntry {
@@ -46,6 +47,8 @@ pub struct McpServer {
     pub tool_cache: Vec<McpToolCacheEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools_fetched_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pending_auth_by_tool: HashMap<String, PendingMcpAuth>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +59,16 @@ pub struct McpAuthChallenge {
     pub message: String,
     pub requested_at_ms: u64,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingMcpAuth {
+    pub challenge_id: String,
+    pub authorization_url: String,
+    pub message: String,
+    pub status: String,
+    pub first_seen_ms: u64,
+    pub last_probe_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +163,7 @@ impl McpRegistry {
             headers,
             tool_cache: existing_tool_cache,
             tools_fetched_at_ms: existing_fetched_at,
+            pending_auth_by_tool: HashMap::new(),
         };
         servers.insert(name, server);
         drop(servers);
@@ -167,6 +181,7 @@ impl McpRegistry {
             server.pid = None;
             server.last_auth_challenge = None;
             server.mcp_session_id = None;
+            server.pending_auth_by_tool.clear();
         }
         drop(servers);
         if !enabled {
@@ -213,6 +228,7 @@ impl McpRegistry {
                 entry.last_error = Some("MCP server is disabled".to_string());
                 entry.last_auth_challenge = None;
                 entry.mcp_session_id = None;
+                entry.pending_auth_by_tool.clear();
             }
             drop(servers);
             self.persist_state().await;
@@ -234,6 +250,7 @@ impl McpRegistry {
             entry.last_error = None;
             entry.last_auth_challenge = None;
             entry.mcp_session_id = None;
+            entry.pending_auth_by_tool.clear();
         }
         drop(servers);
         self.persist_state().await;
@@ -267,6 +284,7 @@ impl McpRegistry {
                     entry.last_error = Some(err.clone());
                     entry.last_auth_challenge = None;
                     entry.mcp_session_id = None;
+                    entry.pending_auth_by_tool.clear();
                     entry.tool_cache.clear();
                     entry.tools_fetched_at_ms = None;
                 }
@@ -297,6 +315,7 @@ impl McpRegistry {
             entry.mcp_session_id = session_id;
             entry.tool_cache = cache;
             entry.tools_fetched_at_ms = Some(now);
+            entry.pending_auth_by_tool.clear();
         }
         drop(servers);
         self.persist_state().await;
@@ -314,6 +333,7 @@ impl McpRegistry {
             server.pid = None;
             server.last_auth_challenge = None;
             server.mcp_session_id = None;
+            server.pending_auth_by_tool.clear();
             drop(servers);
             self.persist_state().await;
             return true;
@@ -367,7 +387,35 @@ impl McpRegistry {
         let endpoint = parse_remote_endpoint(&server.transport).ok_or_else(|| {
             "MCP tools/call currently supports HTTP/S transports only".to_string()
         })?;
+        let canonical_tool = canonical_tool_key(tool_name);
+        let now = now_ms();
+        if let Some(blocked) = pending_auth_short_circuit(
+            &server,
+            &canonical_tool,
+            tool_name,
+            now,
+            MCP_AUTH_REPROBE_COOLDOWN_MS,
+        ) {
+            return Ok(ToolResult {
+                output: blocked.output,
+                metadata: json!({
+                    "server": server_name,
+                    "tool": tool_name,
+                    "result": Value::Null,
+                    "mcpAuth": blocked.mcp_auth
+                }),
+            });
+        }
         let normalized_args = normalize_mcp_tool_args(&server, tool_name, args);
+
+        {
+            let mut servers = self.servers.write().await;
+            if let Some(row) = servers.get_mut(server_name) {
+                if let Some(pending) = row.pending_auth_by_tool.get_mut(&canonical_tool) {
+                    pending.last_probe_ms = now;
+                }
+            }
+        }
 
         let request = json!({
             "jsonrpc": "2.0",
@@ -405,6 +453,10 @@ impl McpRegistry {
                     if let Some(row) = servers.get_mut(server_name) {
                         row.last_auth_challenge = Some(challenge.clone());
                         row.last_error = None;
+                        row.pending_auth_by_tool.insert(
+                            canonical_tool.clone(),
+                            pending_auth_from_challenge(&challenge),
+                        );
                     }
                 }
                 self.persist_state().await;
@@ -451,6 +503,14 @@ impl McpRegistry {
             let mut servers = self.servers.write().await;
             if let Some(row) = servers.get_mut(server_name) {
                 row.last_auth_challenge = auth_challenge.clone();
+                if let Some(challenge) = auth_challenge.as_ref() {
+                    row.pending_auth_by_tool.insert(
+                        canonical_tool.clone(),
+                        pending_auth_from_challenge(challenge),
+                    );
+                } else {
+                    row.pending_auth_by_tool.remove(&canonical_tool);
+                }
             }
         }
         self.persist_state().await;
@@ -487,6 +547,8 @@ impl McpRegistry {
                     server.connected = true;
                     server.pid = pid;
                     server.last_error = None;
+                    server.last_auth_challenge = None;
+                    server.pending_auth_by_tool.clear();
                 }
                 drop(servers);
                 self.persist_state().await;
@@ -498,6 +560,8 @@ impl McpRegistry {
                     server.connected = false;
                     server.pid = None;
                     server.last_error = Some(err);
+                    server.last_auth_challenge = None;
+                    server.pending_auth_by_tool.clear();
                 }
                 drop(servers);
                 self.persist_state().await;
@@ -708,12 +772,30 @@ fn schema_hash(schema: &Value) -> String {
 }
 
 fn extract_auth_challenge(result: &Value, tool_name: &str) -> Option<McpAuthChallenge> {
-    let authorization_url = find_string_by_any_key(
+    let authorization_url = find_string_with_priority(
         result,
+        &[
+            &["structuredContent", "authorization_url"],
+            &["structuredContent", "authorizationUrl"],
+            &["authorization_url"],
+            &["authorizationUrl"],
+            &["auth_url"],
+        ],
         &["authorization_url", "authorizationUrl", "auth_url"],
     )?;
-    let message = find_string_by_any_key(result, &["llm_instructions", "message", "text"])
-        .unwrap_or_else(|| "This tool requires authorization before it can run.".to_string());
+    let raw_message = find_string_with_priority(
+        result,
+        &[
+            &["structuredContent", "message"],
+            &["message"],
+            &["structuredContent", "text"],
+            &["text"],
+            &["llm_instructions"],
+        ],
+        &["message", "text", "llm_instructions"],
+    )
+    .unwrap_or_else(|| "This tool requires authorization before it can run.".to_string());
+    let message = sanitize_auth_message(&raw_message);
     let challenge_id = stable_id_seed(&format!("{tool_name}:{authorization_url}"));
     Some(McpAuthChallenge {
         challenge_id,
@@ -750,11 +832,116 @@ fn find_string_by_any_key(value: &Value, keys: &[&str]) -> Option<String> {
     }
 }
 
+fn find_string_with_priority(
+    value: &Value,
+    paths: &[&[&str]],
+    fallback_keys: &[&str],
+) -> Option<String> {
+    for path in paths {
+        if let Some(found) = find_string_at_path(value, path) {
+            return Some(found);
+        }
+    }
+    find_string_by_any_key(value, fallback_keys)
+}
+
+fn find_string_at_path(value: &Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    let s = current.as_str()?.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+fn sanitize_auth_message(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "This tool requires authorization before it can run.".to_string();
+    }
+    if let Some((head, _)) = trimmed.split_once("Authorize here:") {
+        let head = head.trim();
+        if !head.is_empty() {
+            return truncate_text(head, 280);
+        }
+    }
+    let no_newlines = trimmed.replace(['\r', '\n'], " ");
+    truncate_text(no_newlines.trim(), 280)
+}
+
+fn truncate_text(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return input.to_string();
+    }
+    let truncated = input.chars().take(max_chars).collect::<String>();
+    format!("{truncated}...")
+}
+
 fn stable_id_seed(seed: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(seed.as_bytes());
     let encoded = format!("{:x}", hasher.finalize());
     encoded.chars().take(16).collect()
+}
+
+fn canonical_tool_key(tool_name: &str) -> String {
+    tool_name.trim().to_ascii_lowercase()
+}
+
+fn pending_auth_from_challenge(challenge: &McpAuthChallenge) -> PendingMcpAuth {
+    PendingMcpAuth {
+        challenge_id: challenge.challenge_id.clone(),
+        authorization_url: challenge.authorization_url.clone(),
+        message: challenge.message.clone(),
+        status: challenge.status.clone(),
+        first_seen_ms: challenge.requested_at_ms,
+        last_probe_ms: challenge.requested_at_ms,
+    }
+}
+
+struct PendingAuthShortCircuit {
+    output: String,
+    mcp_auth: Value,
+}
+
+fn pending_auth_short_circuit(
+    server: &McpServer,
+    tool_key: &str,
+    tool_name: &str,
+    now_ms_value: u64,
+    cooldown_ms: u64,
+) -> Option<PendingAuthShortCircuit> {
+    let pending = server.pending_auth_by_tool.get(tool_key)?;
+    let elapsed = now_ms_value.saturating_sub(pending.last_probe_ms);
+    if elapsed >= cooldown_ms {
+        return None;
+    }
+    let retry_after_ms = cooldown_ms.saturating_sub(elapsed);
+    let output = format!(
+        "Authorization pending for `{}`.\n{}\n\nAuthorize here: {}\nRetry after {}s.",
+        tool_name,
+        pending.message,
+        pending.authorization_url,
+        retry_after_ms.div_ceil(1000)
+    );
+    Some(PendingAuthShortCircuit {
+        output,
+        mcp_auth: json!({
+            "required": true,
+            "pending": true,
+            "blocked": true,
+            "retryAfterMs": retry_after_ms,
+            "challengeId": pending.challenge_id,
+            "tool": tool_name,
+            "authorizationUrl": pending.authorization_url,
+            "message": pending.message,
+            "status": pending.status
+        }),
+    })
 }
 
 fn normalize_tool_input_schema(schema: &mut Value) {
@@ -1164,6 +1351,33 @@ mod tests {
     }
 
     #[test]
+    fn extract_auth_challenge_prefers_structured_content_message() {
+        let payload = json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "{\"authorization_url\":\"https://example.com/oauth\",\"message\":\"json blob\"}"
+                }
+            ],
+            "structuredContent": {
+                "authorization_url": "https://example.com/oauth",
+                "message": "Authorize Reddit access first."
+            }
+        });
+        let challenge = extract_auth_challenge(&payload, "reddit_getmyusername")
+            .expect("auth challenge should be detected");
+        assert_eq!(challenge.message, "Authorize Reddit access first.");
+    }
+
+    #[test]
+    fn sanitize_auth_message_compacts_llm_instructions() {
+        let raw = "Please show the following link to the end user formatted as markdown: https://example.com/auth\nInform the end user that this tool requires authorization.";
+        let message = sanitize_auth_message(raw);
+        assert!(!message.contains('\n'));
+        assert!(message.len() <= 283);
+    }
+
+    #[test]
     fn normalize_mcp_tool_args_maps_clickup_aliases() {
         let server = McpServer {
             name: "arcade".to_string(),
@@ -1190,6 +1404,7 @@ mod tests {
                 schema_hash: "x".to_string(),
             }],
             tools_fetched_at_ms: None,
+            pending_auth_by_tool: HashMap::new(),
         };
 
         let normalized = normalize_mcp_tool_args(
@@ -1215,5 +1430,122 @@ mod tests {
         assert_eq!(normalize_arg_key("task_title"), "tasktitle");
         assert_eq!(normalize_arg_key("taskTitle"), "tasktitle");
         assert_eq!(normalize_arg_key("task-title"), "tasktitle");
+    }
+
+    #[test]
+    fn pending_auth_blocks_retries_within_cooldown() {
+        let mut server = McpServer {
+            name: "arcade".to_string(),
+            transport: "https://example.com/mcp".to_string(),
+            enabled: true,
+            connected: true,
+            pid: None,
+            last_error: None,
+            last_auth_challenge: None,
+            mcp_session_id: None,
+            headers: HashMap::new(),
+            tool_cache: Vec::new(),
+            tools_fetched_at_ms: None,
+            pending_auth_by_tool: HashMap::new(),
+        };
+        server.pending_auth_by_tool.insert(
+            "clickup_whoami".to_string(),
+            PendingMcpAuth {
+                challenge_id: "abc".to_string(),
+                authorization_url: "https://example.com/auth".to_string(),
+                message: "Authorize ClickUp access.".to_string(),
+                status: "pending".to_string(),
+                first_seen_ms: 1_000,
+                last_probe_ms: 2_000,
+            },
+        );
+        let blocked =
+            pending_auth_short_circuit(&server, "clickup_whoami", "Clickup_WhoAmI", 10_000, 15_000)
+                .expect("should block");
+        assert!(blocked.output.contains("Authorization pending"));
+        assert!(blocked
+            .mcp_auth
+            .get("pending")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn pending_auth_allows_probe_after_cooldown() {
+        let mut server = McpServer {
+            name: "arcade".to_string(),
+            transport: "https://example.com/mcp".to_string(),
+            enabled: true,
+            connected: true,
+            pid: None,
+            last_error: None,
+            last_auth_challenge: None,
+            mcp_session_id: None,
+            headers: HashMap::new(),
+            tool_cache: Vec::new(),
+            tools_fetched_at_ms: None,
+            pending_auth_by_tool: HashMap::new(),
+        };
+        server.pending_auth_by_tool.insert(
+            "clickup_whoami".to_string(),
+            PendingMcpAuth {
+                challenge_id: "abc".to_string(),
+                authorization_url: "https://example.com/auth".to_string(),
+                message: "Authorize ClickUp access.".to_string(),
+                status: "pending".to_string(),
+                first_seen_ms: 1_000,
+                last_probe_ms: 2_000,
+            },
+        );
+        assert!(
+            pending_auth_short_circuit(&server, "clickup_whoami", "Clickup_WhoAmI", 17_001, 15_000)
+                .is_none(),
+            "cooldown elapsed should allow re-probe"
+        );
+    }
+
+    #[test]
+    fn pending_auth_is_tool_scoped() {
+        let mut server = McpServer {
+            name: "arcade".to_string(),
+            transport: "https://example.com/mcp".to_string(),
+            enabled: true,
+            connected: true,
+            pid: None,
+            last_error: None,
+            last_auth_challenge: None,
+            mcp_session_id: None,
+            headers: HashMap::new(),
+            tool_cache: Vec::new(),
+            tools_fetched_at_ms: None,
+            pending_auth_by_tool: HashMap::new(),
+        };
+        server.pending_auth_by_tool.insert(
+            "gmail_sendemail".to_string(),
+            PendingMcpAuth {
+                challenge_id: "abc".to_string(),
+                authorization_url: "https://example.com/auth".to_string(),
+                message: "Authorize Gmail access.".to_string(),
+                status: "pending".to_string(),
+                first_seen_ms: 1_000,
+                last_probe_ms: 2_000,
+            },
+        );
+        assert!(pending_auth_short_circuit(
+            &server,
+            "gmail_sendemail",
+            "Gmail_SendEmail",
+            2_100,
+            15_000
+        )
+        .is_some());
+        assert!(pending_auth_short_circuit(
+            &server,
+            "clickup_whoami",
+            "Clickup_WhoAmI",
+            2_100,
+            15_000
+        )
+        .is_none());
     }
 }
