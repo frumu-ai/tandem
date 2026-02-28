@@ -1,5 +1,5 @@
 export async function renderAgents(ctx) {
-  const { state, byId, toast, escapeHtml, api } = ctx;
+  const { state, byId, toast, escapeHtml, api, renderIcons } = ctx;
   const [routinesRaw, automationsRaw] = await Promise.all([
     state.client.routines.list().catch(() => ({ routines: [] })),
     state.client.automations.list().catch(() => ({ automations: [] })),
@@ -65,6 +65,9 @@ export async function renderAgents(ctx) {
     const match = entrypoint.match(/(control-panel\/routines\/[A-Za-z0-9._\-\/]+\.md)/);
     return match?.[1] || "";
   };
+
+  const routineKey = (routine) =>
+    String(routine?.id || routine?.routine_id || routine?.routineID || routine?.routineId || "").trim();
 
   byId("view").innerHTML = `
     <div class="tcp-card">
@@ -140,11 +143,12 @@ export async function renderAgents(ctx) {
   const routineList = byId("routine-list");
   routineList.innerHTML =
     routines
-      .map(
-        (r) => `
+      .map((r) => {
+        const rid = routineKey(r);
+        return `
       <div class="tcp-list-item flex items-center justify-between gap-3">
         <div>
-          <div class="font-medium">${escapeHtml(r.name || r.id)}</div>
+          <div class="font-medium">${escapeHtml(r.name || rid || "Unnamed routine")}</div>
           <div class="tcp-subtle font-mono">${escapeHtml(formatSchedule(r.schedule))}</div>
           ${
             detectPromptFile(r)
@@ -153,33 +157,57 @@ export async function renderAgents(ctx) {
           }
         </div>
         <div class="flex gap-2">
-          <button data-run="${r.id}" class="tcp-btn"><i data-lucide="play"></i> Run</button>
+          <button data-run="${escapeHtml(rid)}" class="tcp-btn"><i data-lucide="play"></i> Run</button>
           ${
             detectPromptFile(r)
               ? `<button data-edit-file="${escapeHtml(detectPromptFile(r))}" class="tcp-btn"><i data-lucide="folder-open"></i> Prompt File</button>`
               : ""
           }
-          <button data-del="${r.id}" class="tcp-btn-danger"><i data-lucide="trash-2"></i></button>
+          <button data-del="${escapeHtml(rid)}" class="tcp-btn-danger"><i data-lucide="trash-2"></i></button>
         </div>
-      </div>`
-      )
+      </div>`;
+      })
       .join("") || '<p class="tcp-subtle">No routines.</p>';
+  renderIcons(routineList);
 
   routineList.querySelectorAll("[data-run]").forEach((b) =>
     b.addEventListener("click", async () => {
+      const routineId = String(b.dataset.run || "").trim();
+      if (!routineId) {
+        toast("err", "Routine ID is missing. Refresh and try again.");
+        return;
+      }
+      const prev = b.innerHTML;
+      b.disabled = true;
+      b.innerHTML = '<i data-lucide="refresh-cw" class="animate-spin"></i> Running...';
+      renderIcons(b);
       try {
-        await state.client.routines.runNow(b.dataset.run);
-        toast("ok", "Routine triggered.");
+        const response = await state.client.routines.runNow(routineId);
+        const runId = String(response?.runId || "").trim();
+        const status = String(response?.status || "").trim();
+        const bits = [];
+        if (runId) bits.push(`run ${runId}`);
+        if (status) bits.push(`status ${status}`);
+        toast("ok", bits.length ? `Routine triggered (${bits.join(", ")}).` : "Routine triggered.");
       } catch (e) {
         toast("err", e instanceof Error ? e.message : String(e));
+      } finally {
+        b.disabled = false;
+        b.innerHTML = prev;
+        renderIcons(b);
       }
     })
   );
 
   routineList.querySelectorAll("[data-del]").forEach((b) =>
     b.addEventListener("click", async () => {
+      const routineId = String(b.dataset.del || "").trim();
+      if (!routineId) {
+        toast("err", "Routine ID is missing. Refresh and try again.");
+        return;
+      }
       try {
-        await state.client.routines.delete(b.dataset.del);
+        await state.client.routines.delete(routineId);
         toast("ok", "Routine deleted.");
         renderAgents(ctx);
       } catch (e) {
@@ -375,13 +403,7 @@ export async function renderAgents(ctx) {
         args: promptFilePath ? { promptFilePath } : {},
       });
       if (manualOnly) {
-        const routineId = String(
-          created?.routine?.id ||
-            created?.routine?.routine_id ||
-            created?.routineID ||
-            created?.routineId ||
-            ""
-        ).trim();
+        const routineId = routineKey(created?.routine || created || {});
         if (routineId) {
           await state.client.routines.update(routineId, { status: "paused" });
         }
