@@ -12,6 +12,12 @@ Set up scheduled agents that can use MCP connector tools with explicit per-agent
 - Routine-level `allowed_tools` policy for scheduled bots
 - Agent Automation visibility for connector status and scheduled runs
 
+## The Context Bloat Solution: Strict Tool Isolation
+
+Most AI agent frameworks attempt to solve the token limit problem of massive MCP servers (e.g., Arcade offering hundreds of tools) by using "Tool RAG" (dynamically retrieving tool schemas) or trying to truncate contexts on the fly. This is notoriously error-prone and wastes expensive tokens.
+
+Tandem approaches this **architecturally, not algorithmically**. By enforcing strict `allowed_tools` policies at the Rust Engine parsing layer, Tandem categorically strips unrequested tools from the registry before serialization. A specialized worker agent only ever wastes tokens reading the schemas of the exact tools it has been explicitly authorized to use.
+
 ## 1) Configure MCP Connector
 
 Add an MCP server:

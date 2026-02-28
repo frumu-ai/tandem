@@ -128,6 +128,12 @@ This supervised loop ensures complex features are implemented correctly with hum
 - **Automation Policy Gates** - Control external side effects with `requires_approval` and `external_integrations_allowed`
 - **Headless Ready** - Full HTTP + SSE runtime with examples under `examples/headless/`
 
+#### The Context Bloat Solution: Strict Tool Isolation
+
+Most agent frameworks struggle with token limits when connecting to massive MCP servers (like Arcade with 200+ tools), relying on error-prone "Tool RAG" or dynamic truncation.
+
+Tandem solves this architecturally instead of algorithmically. By enforcing an explicit `session_allowed_tools` allowlist strictly on the Rust Engine side, Tandem strips unrequested tools from the registry _before_ serialization. A specialized worker agent only ever wastes tokens reading the schemas of the exact tools it has been authorized to use.
+
 #### MCP OAuth Notes (Arcade and similar providers)
 
 - Some MCP tools return an auth challenge before first use. Tandem now surfaces this as an explicit auth-required event with an authorization URL.
