@@ -45,6 +45,23 @@ A **Session** is a conversation thread with an agent.
 - Each session maintains its own message history and context.
 - You can switch agents mid-session, though it is usually better to start a new session for a different mode of work.
 
+### Infinite Context Protection
+
+Tandem sessions are designed to run indefinitely without suffering from "context snowballing"—a common issue where agent rules and tool metadata accumulate until the LLM's token limit is completely exhausted.
+
+```mermaid
+flowchart TD
+  A[Conversation History] -->|Grows over time| B{Token Limit Reached?}
+  B -- Yes --> C[Truncate Oldest Messages]
+  B -- No --> D[Maintain Active Window]
+  C --> E[Insert Static Omission Marker]
+  E --> F[Inject RAG Memory Context]
+  D --> F
+  F --> G[Transmit Safe Payload to LLM]
+```
+
+As your conversation grows, Tandem employs a strict sliding window: it gracefully truncates older turns, replacing them with a static placeholder marking the omission. Instead of forcing the LLM to re-read summarized rules repetitively, the engine actively relies on the background `Memory` service to fetch critical long-term facts on the fly using Semantic RAG. This guarantees a safe, stable context boundary for days-long sessions.
+
 ## The Loop
 
 When you send a message, the **Engine Loop**:

@@ -28,11 +28,11 @@ The `engine` directory contains the `tandem-ai` crate, which is the central exec
 
 The desktop application wraps the core Rust engine to provide a rich GUI.
 
-- **Frontend (`src/`)**: 
+- **Frontend (`src/`)**:
   - Standard React + Vite setup.
   - Manages chat views, file browsers, the tool staging area, and orchestration visualization.
   - Uses `src/lib/tauri.ts` to interface with the backend via IPC.
-- **Backend (`src-tauri/src/`)**: 
+- **Backend (`src-tauri/src/`)**:
   - A Tauri v2 application that leverages the `tandem-*` crates.
   - Manages encrypted API keys (`keystore.rs`, `vault.rs`).
   - Handles local filesystem operations and GUI-specific state (like tool visual approvals).
@@ -51,7 +51,7 @@ The TUI provides a native terminal experience for developers who want to stay cl
    - **Desktop**: User interacts with the React UI, which calls Tauri IPC commands. Tauri delegates to the core logic in the underlying crates and streams events back.
    - **TUI**: User interacts with the terminal interface, which directly uses the `tandem-core` engine.
    - **Channels**: A Discord/Telegram user sends a message. The `tandem-channels` crate processes it, queries the Orchestrator for agent logic, and returns the response asynchronously.
-2. **Tool Execution**: 
+2. **Tool Execution**:
    - LLMs propose tool calls (like reading a file or querying an MCP resource).
    - In the Desktop app, risky tools require visual approval ("Zero Trust").
    - In TUI or Headless contexts, operations run according to the configured `Autonomy` policies.
@@ -61,3 +61,33 @@ The TUI provides a native terminal experience for developers who want to stay cl
 - Local-first design: API keys, SQLite databases, and project settings are stored securely on the user's filesystem.
 - Operations that mutate the host machine (writing files, running terminal commands) are gated by policies and visual approvals in the Desktop app.
 - Multi-agent orchestrators respect token budgets to prevent runaway LLM costs.
+
+## 7) Context & Memory Management
+
+Tandem is intentionally designed to avoid "context snowballing" or endless token accumulation bugs—an issue commonly seen when relying on recursive inline summarization loops.
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant Engine
+  participant Memory as Memory (RAG)
+  participant LLM
+
+  User->>Engine: Send message
+  Engine->>Memory: Query relevant factual history
+  Memory-->>Engine: Return <relevant_history> snippets
+  Engine->>Engine: Append User Message
+  Engine->>Engine: Check window token limits
+  alt Context Exceeded
+    Engine->>Engine: Evict oldest transcript turns
+    Engine->>Engine: Insert [history compacted...] marker
+  end
+  Engine->>LLM: Forward bounded prompt + RAG snippets
+```
+
+Tandem uses a **strict sliding window** mechanism within its interaction loops (`compact_chat_history`). When a session approaches the context limitations of its designated model:
+
+1. It truncates older conversational turns.
+2. It substitutes them cleanly with static markers indicating omitted history rather than endlessly attempting to re-inject rules or summarize prior context strings.
+
+To ensure agents do not lose critical facts during long-running sessions, historical insights and project context are offloaded to Semantic Metadata retrieval (RAG) rather than statically prepending huge workspace definitions. Relevant facts are fetched just-in-time from the `Memory` subsystem and injected cleanly into prompts (via `<relevant_history>` tags).
