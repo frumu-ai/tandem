@@ -1,52 +1,48 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+# create_worktree.sh
+# Safely creates a new git worktree inside the .tandem/worktrees/ directory
+# Usage: ./create_worktree.sh <task_id>
 
-repo_root="${1:-}"
-task_id="${2:-}"
-base_ref="${3:-HEAD}"
+set -e
 
-if [[ -z "$repo_root" || -z "$task_id" ]]; then
-  echo "usage: $0 <repo_root> <task_id> [base_ref]" >&2
-  exit 2
+if [ -z "$1" ]; then
+    echo "Error: task_id is required."
+    echo "Usage: $0 <task_id>"
+    exit 1
 fi
 
-repo_root="$(cd "$repo_root" && pwd)"
-worktrees_root="$repo_root/.swarm/worktrees"
-mkdir -p "$worktrees_root"
+TASK_ID=$1
+WORKTREE_DIR=".swarm/worktrees/$TASK_ID"
 
-safe_task_id="$(echo "$task_id" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-' | sed -E 's/^-+//; s/-+$//')"
-if [[ -z "$safe_task_id" ]]; then
-  safe_task_id="task"
-fi
-branch="swarm/${safe_task_id}"
-worktree_path="$worktrees_root/$safe_task_id"
-
-canon_repo="$repo_root"
-canon_target_parent="$(cd "$worktrees_root" && pwd)"
-canon_target="$canon_target_parent/$safe_task_id"
-case "$canon_target" in
-  "$canon_repo"/*) ;;
-  *)
-    echo "refusing path outside repository root: $canon_target" >&2
-    exit 3
-    ;;
-esac
-
-if [[ -d "$worktree_path/.git" || -f "$worktree_path/.git" ]]; then
-  echo "ok=true"
-  echo "created=false"
-  echo "worktreePath=$worktree_path"
-  echo "branch=$branch"
-  exit 0
+# Validate task ID format to prevent path traversal
+if ! [[ "$TASK_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "Error: Invalid task_id format. Only alphanumeric, dashes, and underscores are allowed."
+    exit 1
 fi
 
-if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch"; then
-  git -C "$repo_root" worktree add "$worktree_path" "$branch" >/dev/null
-else
-  git -C "$repo_root" worktree add -b "$branch" "$worktree_path" "$base_ref" >/dev/null
+if [ -d "$WORKTREE_DIR" ]; then
+    echo "Error: Worktree directory $WORKTREE_DIR already exists."
+    exit 1
 fi
 
-echo "ok=true"
-echo "created=true"
-echo "worktreePath=$worktree_path"
-echo "branch=$branch"
+# Ensure parent directory exists
+mkdir -p .swarm/worktrees
+
+# Extract the repository root relative to this script
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+# Create a new branch originating from the current HEAD
+BRANCH_NAME="swarm/$TASK_ID"
+
+echo "Creating new git worktree for $BRANCH_NAME at $WORKTREE_DIR"
+
+# Create the worktree
+cd "$REPO_ROOT/examples/agent-swarm"
+git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR"
+
+# Return the absolute path so the Manager Agent knows where to send the Worker
+ABSOLUTE_PATH=$(cd "$WORKTREE_DIR" && pwd)
+
+echo "Success!"
+echo "WORKTREE_PATH=$ABSOLUTE_PATH"
+echo "BRANCH=$BRANCH_NAME"

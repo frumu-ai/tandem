@@ -1,13 +1,19 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "Fira Code", "JetBrains Mono", monospace;
+}
+
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
   line-height: 1.5;
   font-weight: 400;
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+  color-scheme: dark;
+  color: rgba(255, 255, 255, 0.9);
+  background-color: #030712;
+  /* tailwind gray-950 */
 
   font-synthetic: none;
   text-rendering: optimizeLegibility;
@@ -20,8 +26,36 @@ body {
   display: flex;
   min-width: 320px;
   min-height: 100vh;
+  background-image: radial-gradient(circle at top right, rgba(16, 185, 129, 0.05), transparent 40%),
+    radial-gradient(circle at bottom left, rgba(139, 92, 246, 0.05), transparent 40%);
+  background-attachment: fixed;
 }
 
 #root {
   width: 100%;
+}
+
+/* Custom Webkit Scrollbars for a premium feel */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Base link transitions */
+a,
+button {
+  transition: all 0.2s ease-in-out;
 }

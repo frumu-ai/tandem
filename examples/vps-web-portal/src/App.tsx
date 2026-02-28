@@ -63,6 +63,42 @@ const ProviderReadyRoute = ({ children }: { children: React.ReactNode }) => {
   return providerConfigured ? <>{children}</> : <Navigate to="/setup" replace />;
 };
 
+const NavLink = ({
+  to,
+  icon,
+  label,
+  color = "text-gray-400",
+}: {
+  to: string;
+  icon: React.ReactNode;
+  label: string;
+  color?: string;
+}) => {
+  const { pathname } = useLocation();
+  const active = pathname === to || pathname.startsWith(to + "/");
+  return (
+    <Link
+      to={to}
+      className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 relative overflow-hidden ${
+        active ? "text-white shadow-lg" : `${color} hover:text-white hover:bg-white/5`
+      }`}
+    >
+      {active && (
+        <div className="absolute inset-0 bg-gradient-to-r from-emerald-500/20 to-teal-500/0 opacity-100" />
+      )}
+      {active && (
+        <div className="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 rounded-r-full shadow-[0_0_10px_rgba(16,185,129,0.8)]" />
+      )}
+      <div
+        className={`relative z-10 flex items-center gap-3 transition-transform duration-300 ${active ? "translate-x-1" : "group-hover:translate-x-1"}`}
+      >
+        {icon}
+        <span>{label}</span>
+      </div>
+    </Link>
+  );
+};
+
 const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
   const { logout } = useAuth();
   const navigate = useNavigate();
@@ -251,16 +287,20 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
   const sidebarContent = (showBrand = true) => (
     <>
       {showBrand && (
-        <div className="p-4 border-b border-gray-800">
-          <h1 className="text-xl font-bold text-white flex items-center gap-2">
-            <BrainCircuit className="text-emerald-500" />
+        <div className="p-5 border-b border-white/5 bg-black/40 backdrop-blur-md relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 blur-[50px] rounded-full -translate-y-1/2 translate-x-1/2"></div>
+          <h1 className="text-xl font-bold text-white flex items-center gap-2 relative z-10 tracking-tight">
+            <div className="p-1.5 bg-emerald-500/20 rounded-lg border border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.3)]">
+              <BrainCircuit className="text-emerald-400" size={20} />
+            </div>
             Tandem Portal
           </h1>
         </div>
       )}
-      <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
-        <div className="mb-3 rounded-md border border-gray-800 bg-gray-950/60 p-3">
-          <p className="text-[11px] tracking-wide text-gray-400 flex items-center gap-1">
+      <nav className="flex-1 p-4 space-y-1 overflow-y-auto custom-scrollbar">
+        <div className="mb-4 rounded-xl border border-white/5 bg-white/[0.02] p-4 shadow-inner relative overflow-hidden group">
+          <div className="absolute inset-0 bg-gradient-to-br from-gray-800/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+          <p className="text-[11px] font-medium tracking-wider text-gray-400 flex items-center gap-1.5 uppercase mb-2 relative z-10">
             <FolderOpen size={12} />
             Workspace Root
           </p>
@@ -380,111 +420,102 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
           </p>
           {workspaceSaved && <p className="mt-1 text-[10px] text-emerald-300">{workspaceSaved}</p>}
         </div>
-        <Link
+        <NavLink
           to="/setup"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <Settings size={20} /> Provider Setup
-        </Link>
-        <Link
+          icon={<Settings size={18} />}
+          label="Provider Setup"
+          color="text-gray-400"
+        />
+        <NavLink
           to="/research"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <LayoutDashboard size={20} /> Research
-        </Link>
-        <Link
+          icon={<LayoutDashboard size={18} />}
+          label="Research"
+          color="text-blue-400"
+        />
+        <NavLink
           to="/repo"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <GitPullRequest size={20} /> Repo Agent
-        </Link>
-        <Link
+          icon={<GitPullRequest size={18} />}
+          label="Repo Agent"
+          color="text-indigo-400"
+        />
+        <NavLink
           to="/triage"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <FileWarning size={20} /> Incident Triage
-        </Link>
-        <Link
+          icon={<FileWarning size={18} />}
+          label="Incident Triage"
+          color="text-orange-400"
+        />
+        <NavLink
           to="/data"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <DatabaseZap size={20} /> Data Extraction
-        </Link>
-        <Link
+          icon={<DatabaseZap size={18} />}
+          label="Data Extraction"
+          color="text-emerald-400"
+        />
+        <NavLink
           to="/tickets"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <Ticket size={20} /> Ticket Triage
-        </Link>
-        <Link
+          icon={<Ticket size={18} />}
+          label="Ticket Triage"
+          color="text-cyan-400"
+        />
+        <NavLink
           to="/watch"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <Clock size={20} /> Scheduled Watch
-        </Link>
-        <Link
+          icon={<Clock size={18} />}
+          label="Scheduled Watch"
+          color="text-violet-400"
+        />
+        <NavLink
           to="/content"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <PenTool size={20} /> Content Creator
-        </Link>
-        <Link
+          icon={<PenTool size={18} />}
+          label="Content Creator"
+          color="text-fuchsia-400"
+        />
+        <NavLink
           to="/html"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <Code size={20} /> HTML Escape-Hatch
-        </Link>
-        <Link
+          icon={<Code size={18} />}
+          label="HTML Escape-Hatch"
+          color="text-rose-400"
+        />
+        <NavLink
           to="/swarm"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <Users size={20} /> Agent Swarm
-        </Link>
-        <Link
+          icon={<Users size={18} />}
+          label="Agent Swarm"
+          color="text-purple-400"
+        />
+        <NavLink
           to="/adventure"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <MessageSquareQuote size={20} /> Adventure
-        </Link>
-        <Link
+          icon={<MessageSquareQuote size={18} />}
+          label="Adventure"
+          color="text-yellow-400"
+        />
+        <NavLink
           to="/second-brain"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <BrainCircuit size={20} /> Second Brain
-        </Link>
-        <Link
+          icon={<BrainCircuit size={18} />}
+          label="Second Brain"
+          color="text-teal-400"
+        />
+        <NavLink
           to="/channels"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <Cable size={20} /> Connectors
-        </Link>
-        <Link
-          to="/stress"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <Bolt size={20} /> Stress Lab
-        </Link>
-        <Link
-          to="/ops"
-          className="flex items-center gap-3 text-gray-300 hover:text-white hover:bg-gray-800 p-2 rounded-md"
-        >
-          <ShieldCheck size={20} /> Ops
-        </Link>
+          icon={<Cable size={18} />}
+          label="Connectors"
+          color="text-pink-400"
+        />
+        <NavLink to="/stress" icon={<Bolt size={18} />} label="Stress Lab" color="text-red-400" />
+        <NavLink to="/ops" icon={<ShieldCheck size={18} />} label="Ops" color="text-emerald-400" />
       </nav>
-      <div className="p-4 border-t border-gray-800">
+      <div className="p-4 border-t border-white/5 bg-black/20">
         <button
           onClick={logout}
-          className="flex items-center gap-3 text-gray-400 hover:text-white w-full p-2 rounded-md"
+          className="flex items-center justify-center gap-2 text-gray-400 hover:text-white hover:bg-white/5 w-full p-2.5 rounded-xl transition-all duration-300 font-medium text-sm group"
         >
-          <LogOut size={20} /> Disconnect
+          <LogOut size={18} className="group-hover:-translate-x-1 transition-transform" />{" "}
+          Disconnect
         </button>
       </div>
     </>
   );
 
   return (
-    <div className="flex h-[100dvh] bg-gray-950 overflow-hidden">
-      <div className="hidden lg:flex w-72 bg-gray-900 border-r border-gray-800 flex-col">
+    <div className="flex h-[100dvh] bg-transparent overflow-hidden selection:bg-emerald-500/30">
+      <div className="hidden lg:flex w-72 bg-gray-950/80 backdrop-blur-xl border-r border-white/5 flex-col shadow-2xl z-20">
         {sidebarContent(true)}
       </div>
       {mobileNavOpen && (
@@ -513,22 +544,28 @@ const NavigationLayout = ({ children }: { children: React.ReactNode }) => {
         </div>
       )}
 
-      <div className="flex-1 min-w-0 flex flex-col">
-        <div className="lg:hidden border-b border-gray-800 bg-gray-900 px-3 py-2 flex items-center justify-between">
+      <div className="flex-1 min-w-0 flex flex-col relative z-10 backdrop-blur-3xl bg-black/20">
+        <div className="lg:hidden border-b border-white/5 bg-gray-950/80 backdrop-blur-xl px-3 py-3 flex items-center justify-between shadow-sm">
           <button
             type="button"
             onClick={() => setMobileNavOpen(true)}
-            className="rounded border border-gray-700 p-1.5 text-gray-300"
+            className="rounded-lg border border-white/10 p-1.5 text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
           >
-            <Menu size={18} />
+            <Menu size={20} />
           </button>
-          <span className="text-sm font-medium text-white">Tandem Portal</span>
-          <span className="text-[11px] text-gray-400">Pending: {pendingApprovals.length}</span>
+          <span className="text-sm font-bold text-white tracking-tight flex items-center gap-2">
+            <BrainCircuit size={16} className="text-emerald-400" /> Tandem
+          </span>
+          <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-white/5 text-gray-400 border border-white/5">
+            Pending: {pendingApprovals.length}
+          </span>
         </div>
-        <div className="flex-1 min-h-0 overflow-auto pb-16 lg:pb-0">{children}</div>
+        <div className="flex-1 min-h-0 overflow-auto pb-20 lg:pb-0 custom-scrollbar">
+          {children}
+        </div>
       </div>
 
-      <div className="fixed right-2 top-2 z-50 flex max-w-[calc(100vw-1rem)] items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/95 px-2 py-2 shadow-xl sm:right-4 sm:top-4 sm:px-3">
+      <div className="fixed right-3 bottom-20 lg:right-6 lg:top-6 lg:bottom-auto z-50 flex items-center gap-3 rounded-2xl border border-white/10 bg-gray-950/80 backdrop-blur-xl px-3 py-2.5 shadow-[0_8px_30px_rgb(0,0,0,0.5)] transition-all">
         <span className="text-xs text-gray-400 hidden sm:inline">Approvals</span>
         <span
           className={`text-xs font-medium ${

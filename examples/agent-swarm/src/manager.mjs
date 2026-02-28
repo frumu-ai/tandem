@@ -15,7 +15,10 @@ loadDotEnv(path.join(root, ".env"));
 const BASE_URL = process.env.TANDEM_BASE_URL || "http://127.0.0.1:39731";
 const API_TOKEN = process.env.TANDEM_API_TOKEN || "";
 const MAX_TASKS = Number(process.env.SWARM_MAX_TASKS || "3");
-const OBJECTIVE = process.argv.slice(2).join(" ") || process.env.SWARM_OBJECTIVE || "Ship a small feature end-to-end";
+const OBJECTIVE =
+  process.argv.slice(2).join(" ") ||
+  process.env.SWARM_OBJECTIVE ||
+  "Ship a small feature end-to-end";
 
 const api = createApi(BASE_URL, API_TOKEN);
 
@@ -46,7 +49,10 @@ function extractAssistantTextFromSession(sessionWire) {
     const role = msg?.info?.role;
     if (role !== "assistant") continue;
     const parts = msg.parts || [];
-    const text = parts.map((p) => p.text).filter(Boolean).join("\n");
+    const text = parts
+      .map((p) => p.text)
+      .filter(Boolean)
+      .join("\n");
     if (text) return text;
   }
   return "";
@@ -60,7 +66,7 @@ function runCreateWorktree(repoRoot, taskId) {
       .trim()
       .split(/\r?\n/)
       .map((line) => line.split("="))
-      .filter((pair) => pair.length === 2),
+      .filter((pair) => pair.length === 2)
   );
   return { worktreePath: rows.worktreePath, branch: rows.branch };
 }
@@ -94,7 +100,15 @@ async function sendManagerDecompose(objective) {
   const text = extractAssistantTextFromSession(response);
   const tasks = parseTasksFromText(text).slice(0, MAX_TASKS);
   if (tasks.length > 0) return tasks;
-  return [{ taskId: "task-1", title: objective, ownerRole: "worker", description: objective, acceptanceCriteria: [] }];
+  return [
+    {
+      taskId: "task-1",
+      title: objective,
+      ownerRole: "worker",
+      description: objective,
+      acceptanceCriteria: [],
+    },
+  ];
 }
 
 function buildWorkerPrompt(task, worktreePath, branch) {
@@ -149,38 +163,68 @@ async function main() {
   const abortController = new AbortController();
   const done = new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
 
-  const eventLoop = api.streamEvents(async (event) => {
-    const out = applyEvent(registry, event, ctx);
-    if (!out.changed) return;
+  const eventLoop = api
+    .streamEvents(
+      async (event) => {
+        const out = applyEvent(registry, event, ctx);
+        if (!out.changed) return;
 
-    for (const action of out.actions) {
-      if (action.type === "notify_auth_once") {
-        console.log(`[auth-required] ${action.taskId}: ${action.reason}`);
+        for (const action of out.actions) {
+          if (action.type === "notify_auth_once") {
+            console.log(`[auth-required] ${action.taskId}: ${action.reason}`);
+          }
+        }
+
+        for (const task of Object.values(registry.tasks)) {
+          if (
+            task.status === TASK_STATUS.READY_FOR_REVIEW &&
+            task.ownerRole === "worker" &&
+            !task._testerStarted
+          ) {
+            await updatePrFromSession(task);
+            const s = await createTaskSession(`Swarm Tester ${task.taskId}`, task.worktreePath);
+            const r = await startRun(s.id, buildTesterPrompt(task, task.worktreePath));
+            Object.assign(task, {
+              ownerRole: "tester",
+              status: TASK_STATUS.RUNNING,
+              sessionId: s.id,
+              runId: r,
+              _testerStarted: true,
+            });
+          } else if (
+            task.status === TASK_STATUS.READY_FOR_REVIEW &&
+            task.ownerRole === "tester" &&
+            !task._reviewerStarted
+          ) {
+            const s = await createTaskSession(`Swarm Reviewer ${task.taskId}`, task.worktreePath);
+            const r = await startRun(
+              s.id,
+              buildReviewerPrompt(task, task.worktreePath, task.prUrl)
+            );
+            Object.assign(task, {
+              ownerRole: "reviewer",
+              status: TASK_STATUS.RUNNING,
+              sessionId: s.id,
+              runId: r,
+              _reviewerStarted: true,
+            });
+          }
+        }
+
+        await saveRegistry(api, registry);
+
+        const allTerminal = Object.values(registry.tasks).every((t) =>
+          [TASK_STATUS.COMPLETE, TASK_STATUS.FAILED].includes(t.status)
+        );
+        if (allTerminal) abortController.abort();
+      },
+      { signal: abortController.signal }
+    )
+    .catch((err) => {
+      if (!String(err).includes("AbortError")) {
+        console.error(err);
       }
-    }
-
-    for (const task of Object.values(registry.tasks)) {
-      if (task.status === TASK_STATUS.READY_FOR_REVIEW && task.ownerRole === "worker" && !task._testerStarted) {
-        await updatePrFromSession(task);
-        const s = await createTaskSession(`Swarm Tester ${task.taskId}`, task.worktreePath);
-        const r = await startRun(s.id, buildTesterPrompt(task, task.worktreePath));
-        Object.assign(task, { ownerRole: "tester", status: TASK_STATUS.RUNNING, sessionId: s.id, runId: r, _testerStarted: true });
-      } else if (task.status === TASK_STATUS.READY_FOR_REVIEW && task.ownerRole === "tester" && !task._reviewerStarted) {
-        const s = await createTaskSession(`Swarm Reviewer ${task.taskId}`, task.worktreePath);
-        const r = await startRun(s.id, buildReviewerPrompt(task, task.worktreePath, task.prUrl));
-        Object.assign(task, { ownerRole: "reviewer", status: TASK_STATUS.RUNNING, sessionId: s.id, runId: r, _reviewerStarted: true });
-      }
-    }
-
-    await saveRegistry(api, registry);
-
-    const allTerminal = Object.values(registry.tasks).every((t) => [TASK_STATUS.COMPLETE, TASK_STATUS.FAILED].includes(t.status));
-    if (allTerminal) abortController.abort();
-  }, { signal: abortController.signal }).catch((err) => {
-    if (!String(err).includes("AbortError")) {
-      console.error(err);
-    }
-  });
+    });
 
   await Promise.race([done, eventLoop]);
   abortController.abort();

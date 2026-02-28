@@ -1,116 +1,58 @@
-# Agent Swarm (Manager + Workers)
+# Tandem Agent Swarm Architecture
 
-This example runs a Tandem-native swarm with a manager, workers, tester, and reviewer.
+This example demonstrates how to build a robust, multi-agent AI Swarm using **only** Tandem's core primitives. No external orchestration frameworks (like LangChain or AutoGen) are required.
 
-It uses:
+By utilizing Tandem's native `Shared Resources` for state, `Routines` for continuous monitoring, and the `Server-Sent Events (SSE)` bus for deterministic triggers, we can build highly observable, strictly sandboxed multi-agent systems.
 
-- Tandem sessions/runs + event bus + shared resources + routines
-- One remote MCP server (`arcade`) for GitHub operations
-- Telegram for health notifications
+## The Swarm Topology
 
-## 5-minute quickstart
+This example provisions four distinct specialized agents:
 
-1. Start Tandem engine.
+1. **Manager Agent**: Parses user instructions, breaks them into features, and uses local shell tools to spawn isolated Git Worktrees (`.swarm/worktrees/<task_id>`).
+2. **Worker Agent**: Placed strictly inside a generated worktree via Tandem's `fs_allowlist`. Modifies code, and uses the GitHub MCP to open Pull Requests.
+3. **Tester Agent**: Activated inside the worktree to run linters and test suites. Updates shared state on failure to trigger re-work.
+4. **Reviewer Agent**: Fetches PR diffs via GitHub MCP, analyzes for architectural/security flaws, and submits an official GitHub Review.
 
-```bash
-cd /home/evan/tandem
-npm run engine:start
-```
+## How It Works
 
-2. Configure env.
+We use an external Node.js orchestrator (`orchestrator.ts`) to wire these primitives together:
 
-```bash
-cd examples/agent-swarm
-cp .env.example .env
-# Fill: TANDEM_SWARM_TELEGRAM_CHAT_ID, TANDEM_TELEGRAM_BOT_TOKEN,
-# SWARM_GITHUB_OWNER, SWARM_GITHUB_REPO
-# Optional: SWARM_RESOURCE_KEY (default tries swarm.active_tasks then project/swarm.active_tasks)
-```
+1. **Shared State:** The orchestrator creates a Tandem Shared Resource called `swarm.active_tasks`. This acts as the single source of truth for the distributed system.
+2. **Event Subscription:** The orchestrator subscribes to Tandem's global event stream (`/api/events`).
+3. **Triggering:** When the Manager Agent successfully executes the `create_worktree.sh` tool, the orchestrator detects the `tool.call.completed` event.
+4. **Spawning Defaults:** The orchestrator immediately spawns a new transient Session for the **Worker Agent**, dynamically injecting the absolute path of the new worktree into the Worker's prompt and filesystem boundaries.
 
-3. Ensure Arcade MCP is connected and GitHub tools are visible.
+### MCP Token Context Limit Solution in Action
 
-```bash
-curl -sS "$TANDEM_BASE_URL/mcp" | jq
-curl -sS "$TANDEM_BASE_URL/tool/ids" | jq '.[] | select(test("^mcp\\.arcade\\..*github"; "i"))'
-```
+Unlike "Tool RAG" frameworks, this swarm scales infinitely without risking MCP token context bloat.
 
-4. Run the manager.
+Tandem ensures:
 
-```bash
-node ./src/manager.mjs "Implement feature X, add tests, and open PR"
-```
+- The Worker receives _only_ the GitHub PR creation tools.
+- The Tester receives _only_ the shell execution tools.
+- The Reviewer receives _only_ the GitHub diffing and commenting tools.
 
-5. Create and enable health routine.
+Because Tandem implements strict `allowed_tools` policies per session instead of guessing auto-truncation, the agents remain hyper-focused and token-efficient.
 
-```bash
-curl -sS -X POST "$TANDEM_BASE_URL/routines" \
-  -H "content-type: application/json" \
-  -d @./routines/check_swarm_health.json | jq
+## Quickstart
 
-curl -sS -X POST "$TANDEM_BASE_URL/routines/swarm-health-check/run_now" \
-  -H "content-type: application/json" \
-  -d '{}' | jq
-```
+### 1. Prerequisites
 
-## Demo flow
+Ensure the Tandem Engine is running locally and you have the GitHub MCP server connected via the Tandem UI.
 
-1. Manager decomposes objective into 1-5 tasks.
-2. For each task, manager creates a worktree and worker run, then writes task records to swarm registry (`swarm.active_tasks` or fallback `project/swarm.active_tasks`).
-3. Event stream updates task state on run/tool/approval/auth events.
-4. Worker completes and task moves to `ready_for_review`.
-5. Tester runs lint/tests in same worktree and posts summary.
-6. Reviewer checks PR diff/check context and posts approve/reject recommendation.
-7. Merge remains manual. Manager never auto-merges.
-8. Routine runs every 10 minutes and posts stuck/check summaries to Telegram.
-
-## Registry contract (`swarm.active_tasks`)
-
-If your engine build still enforces prefixed resource namespaces, the example automatically falls back to `project/swarm.active_tasks`.
-
-Each task record includes:
-
-```json
-{
-  "taskId": "task-1",
-  "title": "Implement ...",
-  "ownerRole": "worker",
-  "status": "running",
-  "statusReason": "run started",
-  "sessionId": "...",
-  "runId": "...",
-  "worktreePath": "/repo/.swarm/worktrees/task-1",
-  "branch": "swarm/task-1",
-  "prUrl": null,
-  "prNumber": null,
-  "checksStatus": null,
-  "lastUpdateMs": 0,
-  "blockedBy": null,
-  "notifyOnComplete": true
-}
-```
-
-## Scripts
-
-- `scripts/create_worktree.sh`: creates or reuses a managed worktree and branch.
-- `scripts/cleanup_worktrees.sh`: removes only managed worktrees under `.swarm/worktrees`.
-- `scripts/check_swarm_health.sh`: finds stuck tasks, queries GitHub checks via MCP, posts to Telegram.
-
-## Routine enablement notes
-
-- Routine file: `routines/check_swarm_health.json`
-- Cron: every 10 minutes (`*/10 * * * *`)
-- Requires approval: `true`
-- External integrations allowed: `true`
-
-## Tests
+### 2. Start the Orchestrator
 
 ```bash
-npm test
+npm install -g ts-node
+ts-node orchestrator.ts
 ```
 
-Covers:
+### 3. Deploy the Swarm
 
-- deterministic state transitions
-- manager task creation + registry update
-- idempotent worktree behavior for repeated task IDs
-- auth-required blocking without notification loops
+Navigate to the Tandem UI, open a standard chat session, paste in the `agents/manager.md` prompt, and assign it a task (e.g., "Build a new landing page route").
+
+Watch the Orchestrator detect the worktree creation and seamlessly fan-out the workload to the Worker, Tester, and Reviewer!
+
+### 4. Setup Health Monitors
+
+To ensure tasks don't get stuck indefinitely, open the Tandem UI -> Routines, and import `routines/check_swarm_health.json`. This cron job will run every 10 minutes, query the `swarm.active_tasks` shared resource, and send an alert via the native Telegram integration if a pull request stalls.

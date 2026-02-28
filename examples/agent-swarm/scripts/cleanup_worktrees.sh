@@ -1,30 +1,38 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+# cleanup_worktrees.sh
+# Removes a specific git worktree and its branch
+# Usage: ./cleanup_worktrees.sh <task_id>
 
-repo_root="${1:-}"
-if [[ -z "$repo_root" ]]; then
-  echo "usage: $0 <repo_root>" >&2
-  exit 2
+set -e
+
+if [ -z "$1" ]; then
+    echo "Error: task_id is required."
+    echo "Usage: $0 <task_id>"
+    exit 1
 fi
 
-repo_root="$(cd "$repo_root" && pwd)"
-worktrees_root="$repo_root/.swarm/worktrees"
+TASK_ID=$1
+WORKTREE_DIR=".swarm/worktrees/$TASK_ID"
+BRANCH_NAME="swarm/$TASK_ID"
 
-if [[ ! -d "$worktrees_root" ]]; then
-  echo "no managed worktrees found"
-  exit 0
+# Validate task ID format to prevent path traversal
+if ! [[ "$TASK_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "Error: Invalid task_id format. Only alphanumeric, dashes, and underscores are allowed."
+    exit 1
 fi
 
-find "$worktrees_root" -mindepth 1 -maxdepth 1 -type d | while read -r wt; do
-  canon="$(cd "$wt" && pwd)"
-  case "$canon" in
-    "$repo_root"/*) ;;
-    *)
-      echo "skip outside root: $canon" >&2
-      continue
-      ;;
-  esac
-  git -C "$repo_root" worktree remove --force "$canon" || true
-done
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT/examples/agent-swarm"
 
-echo "cleanup complete"
+if [ ! -d "$WORKTREE_DIR" ]; then
+    echo "Error: Worktree directory $WORKTREE_DIR does not exist."
+    exit 1
+fi
+
+echo "Removing worktree $WORKTREE_DIR"
+git worktree remove --force "$WORKTREE_DIR"
+
+echo "Deleting branch $BRANCH_NAME"
+git branch -D "$BRANCH_NAME" || true
+
+echo "Cleanup complete."

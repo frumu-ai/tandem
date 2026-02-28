@@ -15,7 +15,10 @@ test("manager seeds N tasks and updates registry", async () => {
   await seedTasks({
     registry,
     taskDefs: tasks,
-    createWorktree: async (taskId) => ({ worktreePath: `/repo/.swarm/worktrees/${taskId}`, branch: `swarm/${taskId}` }),
+    createWorktree: async (taskId) => ({
+      worktreePath: `/repo/.swarm/worktrees/${taskId}`,
+      branch: `swarm/${taskId}`,
+    }),
     createSession: async (taskId, worktreePath) => ({ id: `s-${taskId}`, directory: worktreePath }),
     startRun: async (_task, sessionId) => {
       runCount += 1;

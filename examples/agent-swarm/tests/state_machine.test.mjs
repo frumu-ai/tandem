@@ -31,8 +31,14 @@ test("state transitions are deterministic", () => {
       properties: { sessionID: "s1", runID: "r1", part: { type: "tool", state: "running" } },
     },
     { type: "permission.asked", properties: { sessionID: "s1", runID: "r1", requestID: "p1" } },
-    { type: "permission.replied", properties: { sessionID: "s1", runID: "r1", requestID: "p1", reply: "allow" } },
-    { type: "session.run.finished", properties: { sessionID: "s1", runID: "r1", status: "completed" } },
+    {
+      type: "permission.replied",
+      properties: { sessionID: "s1", runID: "r1", requestID: "p1", reply: "allow" },
+    },
+    {
+      type: "session.run.finished",
+      properties: { sessionID: "s1", runID: "r1", status: "completed" },
+    },
   ];
 
   const run = () => {

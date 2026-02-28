@@ -1,13 +1,7 @@
 import { TASK_STATUS } from "./swarm_types.mjs";
 import { upsertTask } from "./swarm_registry.mjs";
 
-export async function seedTasks({
-  registry,
-  taskDefs,
-  createWorktree,
-  createSession,
-  startRun,
-}) {
+export async function seedTasks({ registry, taskDefs, createWorktree, createSession, startRun }) {
   for (let idx = 0; idx < taskDefs.length; idx++) {
     const raw = taskDefs[idx];
     const taskId = raw.taskId || `task-${idx + 1}`;

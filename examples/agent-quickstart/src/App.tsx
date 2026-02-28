@@ -51,12 +51,22 @@ function NavLink({ to, icon, label, color = "text-gray-400" }: NavItem) {
   return (
     <Link
       to={to}
-      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-        active ? "bg-gray-800 text-white" : `${color} hover:text-white hover:bg-gray-800/60`
+      className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 relative overflow-hidden ${
+        active ? "text-white shadow-lg" : `${color} hover:text-white hover:bg-white/5`
       }`}
     >
-      {icon}
-      <span>{label}</span>
+      {active && (
+        <div className="absolute inset-0 bg-gradient-to-r from-violet-500/20 to-fuchsia-500/0 opacity-100" />
+      )}
+      {active && (
+        <div className="absolute left-0 top-0 bottom-0 w-1 bg-violet-500 rounded-r-full shadow-[0_0_10px_rgba(139,92,246,0.8)]" />
+      )}
+      <div
+        className={`relative z-10 flex items-center gap-3 transition-transform duration-300 ${active ? "translate-x-1" : "group-hover:translate-x-1"}`}
+      >
+        {icon}
+        <span>{label}</span>
+      </div>
     </Link>
   );
 }
@@ -66,16 +76,19 @@ function Sidebar() {
   const { logout, providerConfigured, providerLoading } = useAuth();
 
   return (
-    <aside className="w-56 bg-gray-900/80 border-r border-gray-800 flex flex-col shrink-0">
+    <aside className="w-64 bg-gray-950/80 backdrop-blur-xl border-r border-white/5 shadow-2xl z-20 flex flex-col shrink-0">
       {/* Brand */}
-      <div className="px-4 py-5 border-b border-gray-800">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-violet-600/20 border border-violet-600/30 flex items-center justify-center shrink-0">
-            <BrainCircuit size={16} className="text-violet-400" />
+      <div className="px-5 py-6 border-b border-white/5 bg-black/40 relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-violet-500/10 blur-[50px] rounded-full -translate-y-1/2 translate-x-1/2"></div>
+        <div className="flex items-center gap-3 relative z-10">
+          <div className="w-10 h-10 rounded-xl bg-violet-500/20 border border-violet-500/30 shadow-[0_0_15px_rgba(139,92,246,0.3)] flex items-center justify-center shrink-0">
+            <BrainCircuit size={20} className="text-violet-400" />
           </div>
           <div>
-            <p className="text-sm font-bold text-white leading-none">Tandem</p>
-            <p className="text-[10px] text-gray-500 mt-0.5">Agent Quickstart</p>
+            <p className="text-base font-bold text-white tracking-tight">Tandem</p>
+            <p className="text-[11px] font-medium tracking-wide text-violet-400/80 uppercase mt-0.5">
+              Agent Quickstart
+            </p>
           </div>
         </div>
       </div>
@@ -84,46 +97,51 @@ function Sidebar() {
       {!providerLoading && !providerConfigured && (
         <Link
           to="/setup"
-          className="mx-3 mt-3 flex items-center gap-2 bg-amber-900/20 border border-amber-800/40 rounded-lg px-3 py-2 text-xs text-amber-300 hover:bg-amber-900/30 transition-colors"
+          className="mx-4 mt-4 flex items-center gap-2 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-2 text-xs font-medium text-amber-400 hover:bg-amber-500/20 transition-colors shadow-inner"
         >
-          <AlertTriangle size={12} className="shrink-0" />
+          <AlertTriangle size={14} className="shrink-0" />
           Configure provider
         </Link>
       )}
 
       {/* Nav */}
-      <nav className="flex-1 px-3 py-3 space-y-1">
+      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto custom-scrollbar">
         <NavLink
           to="/chat"
-          icon={<BrainCircuit size={16} />}
+          icon={<BrainCircuit size={18} />}
           label="Chat"
           color="text-violet-400"
         />
-        <NavLink to="/agents" icon={<Clock size={16} />} label="Agents" color="text-emerald-400" />
+        <NavLink to="/agents" icon={<Clock size={18} />} label="Agents" color="text-emerald-400" />
         <NavLink
           to="/channels"
-          icon={<MessageCircle size={16} />}
+          icon={<MessageCircle size={18} />}
           label="Channels"
           color="text-purple-400"
         />
-        <NavLink to="/mcp" icon={<PlugZap size={16} />} label="MCP" color="text-cyan-400" />
-        <NavLink to="/swarm" icon={<Network size={16} />} label="Swarm" color="text-teal-300" />
-        <NavLink to="/feed" icon={<Radio size={16} />} label="Live Feed" color="text-sky-400" />
+        <NavLink to="/mcp" icon={<PlugZap size={18} />} label="MCP Plugins" color="text-cyan-400" />
+        <NavLink
+          to="/swarm"
+          icon={<Network size={18} />}
+          label="Agent Swarm"
+          color="text-teal-300"
+        />
+        <NavLink to="/feed" icon={<Radio size={18} />} label="Live Feed" color="text-sky-400" />
       </nav>
 
       {/* Bottom */}
-      <div className="px-3 py-3 border-t border-gray-800 space-y-1">
+      <div className="px-4 py-4 border-t border-white/5 bg-black/20 space-y-1">
         <NavLink
           to="/setup"
-          icon={<Settings2 size={16} />}
-          label="Provider"
+          icon={<Settings2 size={18} />}
+          label="Provider Setup"
           color="text-blue-400"
         />
         <button
           onClick={logout}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-gray-500 hover:text-white hover:bg-gray-800/60 transition-colors"
+          className="w-full group flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5 transition-all duration-300"
         >
-          <LogOut size={16} />
+          <LogOut size={18} className="group-hover:-translate-x-1 transition-transform" />
           <span>Sign out</span>
         </button>
       </div>
@@ -134,9 +152,11 @@ function Sidebar() {
 /* ─── App shell ─── */
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-[100dvh] bg-transparent overflow-hidden selection:bg-violet-500/30">
       <Sidebar />
-      <main className="flex-1 min-w-0 overflow-hidden">{children}</main>
+      <main className="flex-1 min-w-0 flex flex-col relative z-10 backdrop-blur-3xl bg-black/20 custom-scrollbar">
+        {children}
+      </main>
     </div>
   );
 }
