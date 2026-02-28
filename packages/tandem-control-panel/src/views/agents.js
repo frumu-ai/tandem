@@ -7,6 +7,7 @@ export async function renderAgents(ctx) {
     automationRunsRaw,
     providersCatalogRaw,
     providersConfigRaw,
+    toolIdsRaw,
   ] = await Promise.all([
     state.client.routines.list().catch(() => ({ routines: [] })),
     state.client.automations.list().catch(() => ({ automations: [] })),
@@ -14,6 +15,7 @@ export async function renderAgents(ctx) {
     state.client.automations.listRuns({ limit: 100 }).catch(() => ({ runs: [] })),
     state.client.providers.catalog().catch(() => ({ all: [], connected: [], default: null })),
     state.client.providers.config().catch(() => ({ default: null, providers: {} })),
+    state.client.listToolIds().catch(() => []),
   ]);
   const routines = routinesRaw.routines || [];
   const automations = automationsRaw.automations || [];
@@ -21,6 +23,9 @@ export async function renderAgents(ctx) {
   const automationRuns = Array.isArray(automationRunsRaw?.runs) ? automationRunsRaw.runs : [];
   const providerCatalog = Array.isArray(providersCatalogRaw?.all) ? providersCatalogRaw.all : [];
   const providerConfigMap = providersConfigRaw?.providers || {};
+  const toolIds = Array.isArray(toolIdsRaw)
+    ? toolIdsRaw.map((x) => String(x || "").trim()).filter(Boolean).sort()
+    : [];
 
   const slugify = (value = "") =>
     String(value)
@@ -86,6 +91,41 @@ export async function renderAgents(ctx) {
     const modelId = String(spec?.model_id || "").trim();
     if (!providerId || !modelId) return "";
     return `${providerId}/${modelId}`;
+  };
+  const listFromRoutine = (routine, snake, camel) => {
+    const raw = routine?.[snake] ?? routine?.[camel] ?? [];
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const item of raw) {
+      const name = String(item || "").trim();
+      if (!name) continue;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      out.push(name);
+    }
+    return out;
+  };
+  const boolFromRoutine = (routine, snake, camel, fallback) => {
+    const raw = routine?.[snake];
+    if (typeof raw === "boolean") return raw;
+    const alt = routine?.[camel];
+    if (typeof alt === "boolean") return alt;
+    return fallback;
+  };
+  const normalizeToolList = (raw) => {
+    const seen = new Set();
+    const out = [];
+    String(raw || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .forEach((name) => {
+        if (seen.has(name)) return;
+        seen.add(name);
+        out.push(name);
+      });
+    return out;
   };
 
   const routineKey = (routine) =>
@@ -224,6 +264,7 @@ export async function renderAgents(ctx) {
     initialModelCandidates
       .map((modelId) => `<option value="${escapeHtml(modelId)}" ${modelId === initialModelId ? "selected" : ""}>${escapeHtml(modelId)}</option>`)
       .join("") || '<option value="">No models found</option>';
+  const toolOptionMarkup = toolIds.map((id) => `<option value="${escapeHtml(id)}"></option>`).join("");
   const automationsMarkup =
     automations
       .map((a) => {
@@ -350,6 +391,27 @@ export async function renderAgents(ctx) {
       <div class="mt-1 text-xs text-slate-400">
         Model route for this routine: <span id="routine-model-preview" class="font-mono">${escapeHtml(initialProviderId && initialModelId ? `${initialProviderId}/${initialModelId}` : "default engine route")}</span>
       </div>
+      <div class="mt-3 rounded-xl border border-slate-700/70 bg-slate-900/35 p-3">
+        <label class="mb-1 block text-sm text-slate-300">Tool Allowlist (optional)</label>
+        <input
+          id="routine-allowed-tools"
+          list="routine-tool-options"
+          class="tcp-input font-mono text-xs"
+          placeholder="Comma-separated tool IDs (leave empty to allow all tools by policy)"
+        />
+        <datalist id="routine-tool-options">${toolOptionMarkup}</datalist>
+        <div id="routine-tool-scope-preview" class="mt-1 text-xs text-slate-400">Tool scope: all tools allowed by policy</div>
+        <div class="mt-2 grid gap-2 md:grid-cols-2">
+          <label class="inline-flex items-center gap-2 text-xs text-slate-300">
+            <input id="routine-requires-approval" type="checkbox" class="h-4 w-4 accent-slate-400" checked />
+            Require approval for external side effects
+          </label>
+          <label class="inline-flex items-center gap-2 text-xs text-slate-300">
+            <input id="routine-external-integrations" type="checkbox" class="h-4 w-4 accent-slate-400" />
+            Allow external integrations (MCP/connectors)
+          </label>
+        </div>
+      </div>
       <div class="mt-4 rounded-xl border border-slate-700/70 bg-slate-900/35 p-3">
         <div class="mb-2 flex items-center justify-between gap-2">
           <label class="inline-flex items-center gap-2 text-sm text-slate-200">
@@ -411,6 +473,14 @@ export async function renderAgents(ctx) {
         const latestDetail = truncate(runDetailOf(latest));
         const routineModel = detectRoutineModel(r);
         const routineStatus = String(r.status || "active").toLowerCase();
+        const allowedTools = listFromRoutine(r, "allowed_tools", "allowedTools");
+        const requiresApproval = boolFromRoutine(r, "requires_approval", "requiresApproval", true);
+        const externalAllowed = boolFromRoutine(
+          r,
+          "external_integrations_allowed",
+          "externalIntegrationsAllowed",
+          false
+        );
         const isPaused = routineStatus === "paused";
         return `
       <div class="tcp-list-item flex items-center justify-between gap-3">
@@ -421,6 +491,13 @@ export async function renderAgents(ctx) {
             <span class="tcp-subtle font-mono">${escapeHtml(formatSchedule(r.schedule))}</span>
           </div>
           <div class="mt-1 text-xs text-slate-400 font-mono">${escapeHtml(routineModel || "default engine route")}</div>
+          <div class="mt-1 text-xs text-slate-400">
+            tools: ${escapeHtml(allowedTools.length ? allowedTools.join(", ") : "all (no explicit allowlist)")}
+          </div>
+          <div class="mt-1 flex flex-wrap items-center gap-2 text-xs">
+            <span class="${requiresApproval ? "tcp-badge-warn" : "tcp-badge-info"}">${requiresApproval ? "approval required" : "no approval gate"}</span>
+            <span class="${externalAllowed ? "tcp-badge-info" : "tcp-badge-warn"}">${externalAllowed ? "external integrations allowed" : "external integrations blocked"}</span>
+          </div>
           ${
             latest
               ? `<div class="mt-1 flex flex-wrap items-center gap-2 text-xs">
@@ -479,12 +556,36 @@ export async function renderAgents(ctx) {
         }
         if (!run) throw new Error("Run details not found.");
         const artifacts = Array.isArray(artifactsPayload?.artifacts) ? artifactsPayload.artifacts : [];
+        const runAllowedTools = listFromRoutine(run, "allowed_tools", "allowedTools");
+        const runRequiresApproval = boolFromRoutine(
+          run,
+          "requires_approval",
+          "requiresApproval",
+          true
+        );
+        const runExternalAllowed = boolFromRoutine(
+          run,
+          "external_integrations_allowed",
+          "externalIntegrationsAllowed",
+          false
+        );
         runInspectorEl.innerHTML = `
           <div class="tcp-list-item">
             <div class="mb-2 flex flex-wrap items-center gap-2">
               <span class="${runStatusClass(runStatusOf(run))}">${escapeHtml(runStatusOf(run))}</span>
               <span class="tcp-subtle font-mono">${escapeHtml(runId)}</span>
               <span class="tcp-subtle">${escapeHtml(formatTimestamp(firstTimestamp(run)))}</span>
+            </div>
+            <div class="mb-2 text-xs text-slate-300">
+              ${escapeHtml(
+                runAllowedTools.length
+                  ? `Allowlist (${runAllowedTools.length}): ${runAllowedTools.join(", ")}`
+                  : "No explicit allowlist: all tools are available subject to policy."
+              )}
+            </div>
+            <div class="mb-2 flex flex-wrap items-center gap-2 text-xs">
+              <span class="${runRequiresApproval ? "tcp-badge-warn" : "tcp-badge-info"}">${runRequiresApproval ? "approval required" : "no approval gate"}</span>
+              <span class="${runExternalAllowed ? "tcp-badge-info" : "tcp-badge-warn"}">${runExternalAllowed ? "external integrations allowed" : "external integrations blocked"}</span>
             </div>
             <div class="mb-2 text-xs text-slate-300">${escapeHtml(runDetailOf(run) || "No detail text available.")}</div>
             <div class="mb-2 text-xs text-slate-400">Artifacts: ${artifacts.length}</div>
@@ -684,6 +785,20 @@ export async function renderAgents(ctx) {
         promptEl.value = String(routine.entrypoint || routine.prompt || "");
         normalizeFilePath();
       }
+      allowedToolsEl.value = listFromRoutine(routine, "allowed_tools", "allowedTools").join(", ");
+      requiresApprovalEl.checked = boolFromRoutine(
+        routine,
+        "requires_approval",
+        "requiresApproval",
+        true
+      );
+      externalIntegrationsEl.checked = boolFromRoutine(
+        routine,
+        "external_integrations_allowed",
+        "externalIntegrationsAllowed",
+        false
+      );
+      renderToolScopePreview();
       setRoutineModelFromSpec(routine);
       setEditMode(routineId, String(routine.name || ""));
       nameEl.focus();
@@ -710,6 +825,10 @@ export async function renderAgents(ctx) {
   const modelProviderEl = byId("routine-model-provider");
   const modelIdEl = byId("routine-model-id");
   const modelPreviewEl = byId("routine-model-preview");
+  const allowedToolsEl = byId("routine-allowed-tools");
+  const toolScopePreviewEl = byId("routine-tool-scope-preview");
+  const requiresApprovalEl = byId("routine-requires-approval");
+  const externalIntegrationsEl = byId("routine-external-integrations");
   const routineFormModeEl = byId("routine-form-mode");
   const cancelEditEl = byId("cancel-edit-routine");
   const createRoutineEl = byId("create-routine");
@@ -749,6 +868,14 @@ export async function renderAgents(ctx) {
     if (preferred) modelIdEl.value = preferred;
     const modelId = String(modelIdEl.value || "").trim();
     if (modelPreviewEl) modelPreviewEl.textContent = providerId && modelId ? `${providerId}/${modelId}` : "default engine route";
+  };
+
+  const renderToolScopePreview = () => {
+    const allowlist = normalizeToolList(allowedToolsEl?.value || "");
+    if (!toolScopePreviewEl) return;
+    toolScopePreviewEl.textContent = allowlist.length
+      ? `Tool scope: allowlist (${allowlist.length})`
+      : "Tool scope: all tools allowed by policy";
   };
 
   const applyScheduleToForm = (schedule) => {
@@ -972,12 +1099,14 @@ export async function renderAgents(ctx) {
     const modelId = String(modelIdEl?.value || "").trim();
     if (modelPreviewEl) modelPreviewEl.textContent = providerId && modelId ? `${providerId}/${modelId}` : "default engine route";
   });
+  allowedToolsEl?.addEventListener("input", renderToolScopePreview);
   cancelEditEl?.addEventListener("click", () => {
     renderAgents(ctx);
   });
   renderScheduleInputs();
   normalizeFilePath();
   renderModelPicker();
+  renderToolScopePreview();
   clearEditMode();
 
   byId("create-routine").addEventListener("click", async () => {
@@ -1008,6 +1137,9 @@ export async function renderAgents(ctx) {
           },
         };
       }
+      const allowedTools = normalizeToolList(allowedToolsEl?.value || "");
+      const requiresApproval = !!requiresApprovalEl?.checked;
+      const externalIntegrationsAllowed = !!externalIntegrationsEl?.checked;
       if (editingRoutineId) {
         const current = routineById.get(editingRoutineId);
         const patch = {
@@ -1015,6 +1147,9 @@ export async function renderAgents(ctx) {
           entrypoint,
           schedule,
           args,
+          allowed_tools: allowedTools,
+          requires_approval: requiresApproval,
+          external_integrations_allowed: externalIntegrationsAllowed,
         };
         if (manualOnly) {
           patch.status = "paused";
@@ -1029,6 +1164,9 @@ export async function renderAgents(ctx) {
           entrypoint,
           schedule,
           args,
+          allowed_tools: allowedTools,
+          requires_approval: requiresApproval,
+          external_integrations_allowed: externalIntegrationsAllowed,
         });
         if (manualOnly) {
           const routineId = routineKey(created?.routine || created || {});
