@@ -161,7 +161,14 @@ export async function renderAgents(ctx) {
         return `<div class="tcp-list-item">
           <div class="flex items-center justify-between gap-2">
             <span>${escapeHtml(String(a.name || aid || "Automation"))}</span>
-            <span class="tcp-subtle">${escapeHtml(String(a.status || ""))}</span>
+            <div class="flex items-center gap-2">
+              <span class="tcp-subtle">${escapeHtml(String(a.status || ""))}</span>
+              ${
+                aid
+                  ? `<button data-run-automation="${escapeHtml(aid)}" class="tcp-btn h-7 px-2 text-xs"><i data-lucide="play"></i> Run</button>`
+                  : ""
+              }
+            </div>
           </div>
           ${
             latest
@@ -325,6 +332,44 @@ export async function renderAgents(ctx) {
   byId("refresh-runs").addEventListener("click", () => {
     renderAgents(ctx);
   });
+  byId("view").querySelectorAll("[data-run-automation]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const automationId = String(b.dataset.runAutomation || "").trim();
+      if (!automationId) {
+        toast("err", "Automation ID is missing. Refresh and try again.");
+        return;
+      }
+      const prev = b.innerHTML;
+      b.disabled = true;
+      b.innerHTML = '<i data-lucide="refresh-cw" class="animate-spin"></i> Running...';
+      renderIcons(b);
+      try {
+        const response = await state.client.automations.runNow(automationId);
+        const runId = String(response?.runId || "").trim();
+        const status = String(response?.status || "").trim();
+        const bits = [];
+        if (runId) bits.push(`run ${runId}`);
+        if (status) bits.push(`status ${status}`);
+        toast(
+          "ok",
+          bits.length
+            ? `Automation triggered (${bits.join(", ")}). It should move from queued to running within ~1 second.`
+            : "Automation triggered."
+        );
+        setTimeout(() => {
+          renderAgents(ctx);
+        }, 500);
+      } catch (e) {
+        toast("err", e instanceof Error ? e.message : String(e));
+      } finally {
+        if (b.isConnected) {
+          b.disabled = false;
+          b.innerHTML = prev;
+          renderIcons(b);
+        }
+      }
+    })
+  );
 
   routineList.querySelectorAll("[data-run]").forEach((b) =>
     b.addEventListener("click", async () => {
