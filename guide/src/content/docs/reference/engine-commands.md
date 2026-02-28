@@ -233,6 +233,28 @@ curl -s -X POST http://127.0.0.1:39731/session/<session_id>/prompt_async \
   -d '{"parts":[{"type":"text","text":"/tool spawn_agent {\"missionID\":\"m1\",\"role\":\"worker\",\"templateID\":\"worker-default\",\"source\":\"tool_call\",\"justification\":\"parallelize implementation\"}"}]}'
 ```
 
+### Start `prompt_async` with file attachments
+
+Send rich prompt parts (text + files) in one call:
+
+```bash
+curl -s -X POST "http://127.0.0.1:39731/session/<session_id>/prompt_async?return=run" \
+  -H "content-type: application/json" \
+  -H "X-Tandem-Token: tk_your_token" \
+  -d '{
+    "parts": [
+      { "type": "file", "mime": "image/jpeg", "filename": "photo.jpg", "url": "/srv/tandem/channel_uploads/telegram/123/photo.jpg" },
+      { "type": "text", "text": "Describe this image and summarize key details." }
+    ]
+  }'
+```
+
+Notes:
+
+- `url` may be an HTTP URL, a local path, or `file://...` path.
+- `mime` should match the file type (`image/jpeg`, `text/markdown`, `application/pdf`, etc).
+- Stream completion can surface as `run.complete`, `run.completed`, or `session.run.finished` depending on client/version.
+
 ### Browser Playground (Interactive)
 
 Use the included browser playground in `docs/example.html` to test:

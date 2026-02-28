@@ -5,6 +5,7 @@ export const ROUTES = [
   ["channels", "Channels", "message-circle"],
   ["mcp", "MCP", "link"],
   ["swarm", "Swarm", "share-2"],
+  ["files", "Files", "folder-open"],
   ["memory", "Memory", "database"],
   ["teams", "Teams", "users"],
   ["feed", "Live Feed", "radio"],
@@ -33,6 +34,8 @@ export function createState() {
     providerConnected: [],
     providerError: "",
     currentSessionId: "",
+    chatUploadedFiles: [],
+    filesDir: "uploads",
     cleanup: [],
     toasts: [],
   };

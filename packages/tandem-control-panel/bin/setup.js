@@ -2,11 +2,15 @@
 
 import { spawn } from "child_process";
 import { createServer } from "http";
-import { readFileSync, existsSync, createReadStream } from "fs";
+import { readFileSync, existsSync, createReadStream, createWriteStream } from "fs";
+import { mkdir, readdir, stat, rm } from "fs/promises";
 import { randomBytes } from "crypto";
-import { join, dirname, extname, normalize, resolve } from "path";
+import { join, dirname, extname, normalize, resolve, basename } from "path";
+import { Transform } from "stream";
+import { pipeline } from "stream/promises";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
+import { homedir } from "os";
 import { ensureEnv } from "./init-env.js";
 
 function parseDotEnv(content) {
@@ -56,6 +60,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = join(__dirname, "..", "dist");
 const REPO_ROOT = resolve(__dirname, "..", "..", "..");
 
+function resolveDefaultChannelUploadsRoot() {
+  const explicitStateDir = String(process.env.TANDEM_STATE_DIR || "").trim();
+  if (explicitStateDir) return resolve(explicitStateDir, "channel_uploads");
+
+  const xdgDataHome = String(process.env.XDG_DATA_HOME || "").trim();
+  if (xdgDataHome) return resolve(xdgDataHome, "tandem", "data", "channel_uploads");
+
+  const appData = String(process.env.APPDATA || "").trim();
+  if (appData) return resolve(appData, "tandem", "data", "channel_uploads");
+
+  return resolve(homedir(), ".tandem", "data", "channel_uploads");
+}
+
 const PORTAL_PORT = Number.parseInt(process.env.TANDEM_CONTROL_PANEL_PORT || "39732", 10);
 const ENGINE_HOST = (process.env.TANDEM_ENGINE_HOST || "127.0.0.1").trim();
 const ENGINE_PORT = Number.parseInt(process.env.TANDEM_ENGINE_PORT || "39731", 10);
@@ -68,6 +85,17 @@ const CONFIGURED_ENGINE_TOKEN = (
 ).trim();
 const SESSION_TTL_MS =
   Number.parseInt(process.env.TANDEM_CONTROL_PANEL_SESSION_TTL_MINUTES || "1440", 10) * 60 * 1000;
+const FILES_ROOT = resolve(process.env.TANDEM_CONTROL_PANEL_FILES_ROOT || resolveDefaultChannelUploadsRoot());
+const FILES_SCOPE = String(process.env.TANDEM_CONTROL_PANEL_FILES_SCOPE || "control-panel")
+  .trim()
+  .replace(/\\/g, "/")
+  .replace(/^\/+/, "")
+  .replace(/\/+$/, "");
+const MAX_UPLOAD_BYTES = Math.max(
+  1,
+  Number.parseInt(process.env.TANDEM_CONTROL_PANEL_MAX_UPLOAD_BYTES || `${250 * 1024 * 1024}`, 10) ||
+    250 * 1024 * 1024
+);
 const require = createRequire(import.meta.url);
 
 const log = (msg) => console.log(`[Tandem Control Panel] ${msg}`);
@@ -384,6 +412,180 @@ function sanitizeStaticPath(rawUrl) {
   const full = normalize(join(DIST_DIR, relative));
   if (!full.startsWith(DIST_DIR + "/") && full !== DIST_DIR) return null;
   return full;
+}
+
+function toSafeRelPath(raw) {
+  const normalized = String(raw || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  if (!normalized) return "";
+  if (normalized.includes("\0")) return null;
+  const full = resolve(FILES_ROOT, normalized);
+  if (full !== FILES_ROOT && !full.startsWith(`${FILES_ROOT}/`)) return null;
+  if (FILES_SCOPE && normalized !== FILES_SCOPE && !normalized.startsWith(`${FILES_SCOPE}/`)) return null;
+  return normalized;
+}
+
+function toSafeRelFileName(rawName) {
+  const cleaned = basename(String(rawName || "").trim()).replace(/[\0]/g, "");
+  if (!cleaned || cleaned === "." || cleaned === "..") return null;
+  return cleaned;
+}
+
+async function ensureUniqueRelPath(relativePath) {
+  const ext = extname(relativePath);
+  const stem = ext ? relativePath.slice(0, -ext.length) : relativePath;
+  let candidate = relativePath;
+  let counter = 1;
+  while (true) {
+    const full = resolve(FILES_ROOT, candidate);
+    try {
+      await stat(full);
+      counter += 1;
+      candidate = `${stem}-${counter}${ext}`;
+    } catch {
+      return candidate;
+    }
+  }
+}
+
+async function handleFilesApi(req, res, _session) {
+  const url = new URL(req.url, `http://127.0.0.1:${PORTAL_PORT}`);
+  const pathname = url.pathname;
+
+  if (pathname === "/api/files/list" && req.method === "GET") {
+    const incomingDir = url.searchParams.get("dir") || "";
+    const defaultDir = FILES_SCOPE || "";
+    const dirRelRaw = toSafeRelPath(incomingDir || defaultDir);
+    if (dirRelRaw === null) {
+      sendJson(res, 400, { ok: false, error: "Invalid directory path." });
+      return true;
+    }
+    const dirRel = dirRelRaw || "";
+    const dirFull = resolve(FILES_ROOT, dirRel);
+    try {
+      await mkdir(dirFull, { recursive: true });
+      const entries = await readdir(dirFull, { withFileTypes: true });
+      const files = [];
+      for (const entry of entries) {
+        const childRel = dirRel ? `${dirRel}/${entry.name}` : entry.name;
+        if (!entry.isFile()) continue;
+        const info = await stat(resolve(FILES_ROOT, childRel)).catch(() => null);
+        files.push({
+          name: entry.name,
+          path: childRel,
+          size: info?.size || 0,
+          updatedAt: info?.mtimeMs || 0,
+        });
+      }
+      files.sort((a, b) => b.updatedAt - a.updatedAt);
+      sendJson(res, 200, { ok: true, root: FILES_ROOT, files });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/files/upload" && req.method === "POST") {
+    const nameHeader = req.headers["x-file-name"];
+    const rawName = decodeURIComponent(
+      Array.isArray(nameHeader) ? String(nameHeader[0] || "") : String(nameHeader || "")
+    );
+    const safeName = toSafeRelFileName(rawName);
+    if (!safeName) {
+      sendJson(res, 400, { ok: false, error: "Missing or invalid x-file-name header." });
+      return true;
+    }
+
+    const incomingDir = url.searchParams.get("dir") || "";
+    const defaultDir = FILES_SCOPE || "";
+    const dirRelRaw = toSafeRelPath(incomingDir || defaultDir);
+    if (dirRelRaw === null) {
+      sendJson(res, 400, { ok: false, error: "Invalid upload directory." });
+      return true;
+    }
+    const dirRel = dirRelRaw || "";
+    let relPath = dirRel ? `${dirRel}/${safeName}` : safeName;
+    relPath = await ensureUniqueRelPath(relPath);
+    const fullPath = resolve(FILES_ROOT, relPath);
+    const folder = dirname(fullPath);
+
+    try {
+      await mkdir(folder, { recursive: true });
+      let bytes = 0;
+      const guard = new Transform({
+        transform(chunk, _enc, cb) {
+          bytes += chunk.length;
+          if (bytes > MAX_UPLOAD_BYTES) {
+            cb(new Error(`Upload exceeds limit of ${MAX_UPLOAD_BYTES} bytes.`));
+            return;
+          }
+          cb(null, chunk);
+        },
+      });
+      await pipeline(req, guard, createWriteStream(fullPath, { flags: "wx" }));
+      const meta = await stat(fullPath);
+      sendJson(res, 200, {
+        ok: true,
+        root: FILES_ROOT,
+        name: safeName,
+        path: relPath,
+        absPath: fullPath,
+        size: meta.size,
+        downloadUrl: `/api/files/download?path=${encodeURIComponent(relPath)}`,
+      });
+    } catch (e) {
+      if (e && typeof e === "object" && "code" in e && e.code === "EEXIST") {
+        sendJson(res, 409, { ok: false, error: "File already exists." });
+      } else {
+        sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return true;
+  }
+
+  if (pathname === "/api/files/download" && req.method === "GET") {
+    const rel = toSafeRelPath(url.searchParams.get("path") || "");
+    if (!rel) {
+      sendJson(res, 400, { ok: false, error: "Missing or invalid file path." });
+      return true;
+    }
+    const full = resolve(FILES_ROOT, rel);
+    try {
+      const info = await stat(full);
+      if (!info.isFile()) throw new Error("Not a file");
+      const ext = extname(full);
+      const mime = MIME_TYPES[ext] || "application/octet-stream";
+      res.writeHead(200, {
+        "content-type": mime,
+        "content-length": String(info.size),
+        "content-disposition": `attachment; filename="${basename(full).replace(/"/g, "")}"`,
+      });
+      createReadStream(full).pipe(res);
+    } catch {
+      sendJson(res, 404, { ok: false, error: "File not found." });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/files/delete" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const rel = toSafeRelPath(body?.path || "");
+      if (!rel) {
+        sendJson(res, 400, { ok: false, error: "Missing or invalid file path." });
+        return true;
+      }
+      await rm(resolve(FILES_ROOT, rel), { force: true });
+      sendJson(res, 200, { ok: true, path: rel });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  return false;
 }
 
 async function handleAuthLogin(req, res) {
@@ -709,6 +911,12 @@ async function handleApi(req, res) {
     return handleSwarmApi(req, res, session);
   }
 
+  if (pathname.startsWith("/api/files")) {
+    const session = requireSession(req, res);
+    if (!session) return true;
+    return handleFilesApi(req, res, session);
+  }
+
   if (pathname.startsWith("/api/engine")) {
     const session = requireSession(req, res);
     if (!session) return true;
@@ -796,6 +1004,8 @@ async function main() {
     log(`Control Panel: http://localhost:${PORTAL_PORT}`);
     log(`Engine URL:    ${ENGINE_URL}`);
     log(`Engine mode:   ${isLocalEngineUrl(ENGINE_URL) ? "local" : "remote"}`);
+    log(`Files root:    ${FILES_ROOT}`);
+    log(`Files scope:   ${FILES_SCOPE || "(full root)"}`);
     log("=========================================");
   });
 }

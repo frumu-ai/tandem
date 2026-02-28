@@ -6,38 +6,27 @@ export async function renderMcp(ctx) {
   ]);
 
   byId("view").innerHTML = `
-    <div class="grid cols-chat gap">
-      <div class="card" style="align-self: start;">
-        <h3 style="display:flex;align-items:center;gap:0.5rem;"><i data-feather="box" style="color:var(--accent-light);"></i> Add MCP Server</h3>
-        <p class="muted mb">Connect to external Model Context Protocol resources.</p>
-        <div class="form-stack">
-          <label>Server Name</label>
-          <input id="mcp-name" placeholder="e.g. file-system" value="arcade" />
-          <label>Transport Coordinates</label>
-          <input id="mcp-transport" placeholder="stdio: npx -y ... or https://..." />
-          <button id="mcp-add" class="primary mt-sm"><i data-feather="link"></i> Add & Connect</button>
+    <div class="grid gap-4 xl:grid-cols-[420px_1fr]">
+      <div class="tcp-card">
+        <h3 class="tcp-title mb-3">Add MCP Server</h3>
+        <div class="grid gap-3">
+          <input id="mcp-name" class="tcp-input" placeholder="name" value="arcade" />
+          <input id="mcp-transport" class="tcp-input" placeholder="https://.../mcp or stdio:..." />
+          <button id="mcp-add" class="tcp-btn-primary"><i data-lucide="link"></i> Add + Connect</button>
         </div>
       </div>
-      <div class="grid gap" style="align-content: start;">
-        <div class="card">
-          <div class="row-between mb">
-            <h3>Connected Servers</h3>
-            <span class="status-pill ok">${Object.keys(servers || {}).length}</span>
-          </div>
-          <div id="mcp-servers" class="list"></div>
+      <div class="grid gap-4">
+        <div class="tcp-card">
+          <h3 class="tcp-title mb-3">Servers</h3>
+          <div id="mcp-servers" class="tcp-list"></div>
         </div>
-        <div class="card">
-          <div class="row-between">
-            <h3>Available Tools</h3>
-            <span class="status-pill info">${tools.length}</span>
-          </div>
-          <pre class="code mt" style="max-height: 250px; overflow: auto; background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 8px;">${escapeHtml(tools.slice(0, 200).map((t) => t.id || JSON.stringify(t)).join("\n") || "No tools exported by connected servers yet.")}</pre>
+        <div class="tcp-card">
+          <h3 class="tcp-title mb-3">MCP Tools (${tools.length})</h3>
+          <pre class="tcp-code max-h-[280px] overflow-auto">${escapeHtml(tools.slice(0, 200).map((t) => t.id || JSON.stringify(t)).join("\n"))}</pre>
         </div>
       </div>
     </div>
   `;
-
-  if (window.feather) window.feather.replace();
 
   byId("mcp-add").addEventListener("click", async () => {
     const name = byId("mcp-name").value.trim();
@@ -59,17 +48,17 @@ export async function renderMcp(ctx) {
     rows
       .map(
         ([name, cfg]) => `
-      <div class="list-item static row-between">
-        <div><strong>${escapeHtml(name)}</strong><div class="muted">${escapeHtml(cfg.transport || "")}</div></div>
-        <div class="row">
-          <button data-c="${name}" class="primary small">Connect</button>
-          <button data-r="${name}" class="ghost small">Refresh</button>
-          <button data-d="${name}" class="danger small">Delete</button>
+      <div class="tcp-list-item flex items-center justify-between gap-3">
+        <div><strong>${escapeHtml(name)}</strong><div class="tcp-subtle">${escapeHtml(cfg.transport || "")}</div></div>
+        <div class="flex gap-2">
+          <button data-c="${name}" class="tcp-btn">Connect</button>
+          <button data-r="${name}" class="tcp-btn">Refresh</button>
+          <button data-d="${name}" class="tcp-btn-danger">Delete</button>
         </div>
       </div>
     `
       )
-      .join("") || '<p class="muted">No MCP servers configured.</p>';
+      .join("") || '<p class="tcp-subtle">No MCP servers configured.</p>';
 
   list.querySelectorAll("[data-c]").forEach((b) =>
     b.addEventListener("click", async () => {

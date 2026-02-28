@@ -17,22 +17,22 @@ function matchFilter(record, term) {
 }
 
 function renderRecordCards(rows, emptyText, escapeHtml, titleKey = "id") {
-  if (!rows.length) return `<p class="muted">${emptyText}</p>`;
+  if (!rows.length) return `<p class="tcp-subtle">${emptyText}</p>`;
   return rows
     .map((row) => {
       const mainId = escapeHtml(row?.[titleKey] || idOf(row));
       const status = escapeHtml(statusOf(row));
       return `
-        <article class="entity-card">
-          <div class="row-between">
+        <article class="tcp-list-item">
+          <div class="flex items-center justify-between gap-2">
             <strong>${mainId}</strong>
-            <span class="status-dot">${status}</span>
+            <span class="tcp-badge-info">${status}</span>
           </div>
-          <div class="muted">role: ${escapeHtml(row?.role || row?.ownerRole || "n/a")}</div>
-          <div class="muted">mission: ${escapeHtml(row?.missionID || row?.missionId || row?.mission || "n/a")}</div>
-          <details class="mt-sm">
-            <summary>Details</summary>
-            <pre class="code">${escapeHtml(JSON.stringify(row, null, 2))}</pre>
+          <div class="tcp-subtle mt-1">role: ${escapeHtml(row?.role || row?.ownerRole || "n/a")}</div>
+          <div class="tcp-subtle">mission: ${escapeHtml(row?.missionID || row?.missionId || row?.mission || "n/a")}</div>
+          <details class="mt-2">
+            <summary class="cursor-pointer text-xs text-slate-400">Details</summary>
+            <pre class="tcp-code mt-2">${escapeHtml(JSON.stringify(row, null, 2))}</pre>
           </details>
         </article>
       `;
@@ -55,41 +55,41 @@ export async function renderTeams(ctx) {
   const approvals = toList(approvalsRaw.spawnApprovals);
 
   byId("view").innerHTML = `
-    <div class="card">
-      <h3>Spawn Agent Team Instance</h3>
-      <div class="grid cols-4 gap-sm">
-        <input id="team-mission" placeholder="missionID" />
-        <input id="team-role" placeholder="role" value="worker" />
-        <input id="team-template" placeholder="templateID" value="worker-default" />
-        <button id="team-spawn" class="primary">Spawn</button>
+    <div class="tcp-card">
+      <h3 class="tcp-title mb-3">Spawn Agent Team Instance</h3>
+      <div class="grid gap-3 md:grid-cols-4">
+        <input id="team-mission" class="tcp-input" placeholder="missionID" />
+        <input id="team-role" class="tcp-input" placeholder="role" value="worker" />
+        <input id="team-template" class="tcp-input" placeholder="templateID" value="worker-default" />
+        <button id="team-spawn" class="tcp-btn-primary">Spawn</button>
       </div>
     </div>
 
-    <div class="card mt">
-      <div class="row-between">
-        <h3>Teams & Missions</h3>
-        <input id="teams-filter" placeholder="Filter instances/missions/templates" />
+    <div class="tcp-card">
+      <div class="mb-3 flex items-center justify-between gap-3">
+        <h3 class="tcp-title">Teams & Missions</h3>
+        <input id="teams-filter" class="tcp-input max-w-sm" placeholder="Filter instances/missions/templates" />
       </div>
 
-      <div class="grid cols-2 gap mt-sm">
+      <div class="grid gap-4 lg:grid-cols-2">
         <section>
-          <div class="row-between"><h4>Approvals (${approvals.length})</h4></div>
-          <div id="team-approvals" class="list"></div>
+          <h4 class="mb-2 font-medium">Approvals (${approvals.length})</h4>
+          <div id="team-approvals" class="tcp-list"></div>
         </section>
         <section>
-          <div class="row-between"><h4>Instances (${instances.length})</h4></div>
-          <div id="team-instances" class="entity-grid"></div>
+          <h4 class="mb-2 font-medium">Instances (${instances.length})</h4>
+          <div id="team-instances" class="tcp-list"></div>
         </section>
       </div>
 
-      <div class="grid cols-2 gap mt">
+      <div class="mt-4 grid gap-4 lg:grid-cols-2">
         <section>
-          <div class="row-between"><h4>Missions (${missions.length})</h4></div>
-          <div id="team-missions" class="entity-grid"></div>
+          <h4 class="mb-2 font-medium">Missions (${missions.length})</h4>
+          <div id="team-missions" class="tcp-list"></div>
         </section>
         <section>
-          <div class="row-between"><h4>Templates (${templates.length})</h4></div>
-          <div id="team-templates" class="entity-grid"></div>
+          <h4 class="mb-2 font-medium">Templates (${templates.length})</h4>
+          <div id="team-templates" class="tcp-list"></div>
         </section>
       </div>
     </div>
@@ -129,18 +129,18 @@ export async function renderTeams(ctx) {
       .map((a) => {
         const approvalID = escapeHtml(a.approvalID || a.id || "");
         return `
-          <div class="list-item static row-between">
+          <div class="tcp-list-item flex items-center justify-between gap-3">
             <div>
               <div><strong>${approvalID || "approval"}</strong></div>
-              <div class="muted">mission: ${escapeHtml(a.missionID || a.missionId || "n/a")}</div>
+              <div class="tcp-subtle">mission: ${escapeHtml(a.missionID || a.missionId || "n/a")}</div>
             </div>
-            <div class="row">
-              <button data-ap="${approvalID}" class="primary small">Approve</button>
-              <button data-den="${approvalID}" class="danger small">Deny</button>
+            <div class="flex gap-2">
+              <button data-ap="${approvalID}" class="tcp-btn-primary">Approve</button>
+              <button data-den="${approvalID}" class="tcp-btn-danger">Deny</button>
             </div>
           </div>`;
       })
-      .join("") || '<p class="muted">No pending spawn approvals.</p>';
+      .join("") || '<p class="tcp-subtle">No pending spawn approvals.</p>';
 
   approvalList.querySelectorAll("[data-ap]").forEach((b) =>
     b.addEventListener("click", async () => {

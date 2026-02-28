@@ -29,15 +29,17 @@ tandem-engine serve --api-token $(tandem-engine token generate)
 
 Both SDKs expose the same SSE event stream. These are the most common types you will handle:
 
-| `event.type`          | Description                    | Key property                         |
-| --------------------- | ------------------------------ | ------------------------------------ |
-| `session.response`    | Text delta from the model      | `properties.delta`                   |
-| `session.tool_call`   | Tool invocation                | `properties.tool`, `properties.args` |
-| `session.tool_result` | Tool result                    | `properties.output`                  |
-| `run.complete`        | Run finished successfully      | `properties.runID`                   |
-| `run.failed`          | Run failed                     | `properties.error`                   |
-| `permission.request`  | Approval required              | `properties.permission`              |
-| `question.pending`    | Structured question from agent | `properties.text`                    |
+| `event.type`           | Description                    | Key property                         |
+| ---------------------- | ------------------------------ | ------------------------------------ |
+| `session.response`     | Text delta from the model      | `properties.delta`                   |
+| `session.tool_call`    | Tool invocation                | `properties.tool`, `properties.args` |
+| `session.tool_result`  | Tool result                    | `properties.output`                  |
+| `run.complete`         | Run finished successfully      | `properties.runID`                   |
+| `run.completed`        | Alternate success event name   | `properties.runID`                   |
+| `session.run.finished` | Session-scoped terminal event  | `properties.status`                  |
+| `run.failed`           | Run failed                     | `properties.error`                   |
+| `permission.request`   | Approval required              | `properties.permission`              |
+| `question.pending`     | Structured question from agent | `properties.text`                    |
 
 ## Namespace overview
 

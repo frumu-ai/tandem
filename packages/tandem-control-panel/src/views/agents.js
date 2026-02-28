@@ -8,61 +8,42 @@ export async function renderAgents(ctx) {
   const automations = automationsRaw.automations || [];
 
   byId("view").innerHTML = `
-    <div class="grid cols-chat gap">
-      <div class="card">
-        <div class="row-between">
-          <h3>Create Routine</h3>
-          <i data-feather="plus-circle" class="nav-icon" style="color: var(--accent-light);"></i>
-        </div>
-        <p class="muted">Schedule automatic task executions using standard cron expressions.</p>
-        <div class="form-stack mt">
-          <label>Routine Name</label>
-          <input id="routine-name" placeholder="e.g. Daily Data Backup" />
-          <label>Cron Schedule</label>
-          <input id="routine-cron" placeholder="0 0 * * * (Leave empty for manual trigger)" />
-          <label>Entrypoint Prompt</label>
-          <textarea id="routine-prompt" rows="3" placeholder="Describe the task for the agent to complete..."></textarea>
-          <button id="create-routine" class="primary mt-sm"><i data-feather="save"></i> Create</button>
-        </div>
+    <div class="tcp-card">
+      <h3 class="tcp-title mb-3">Create Routine</h3>
+      <div class="grid gap-3 md:grid-cols-3">
+        <input id="routine-name" class="tcp-input" placeholder="Routine name" />
+        <input id="routine-cron" class="tcp-input" placeholder="Cron e.g. 0 * * * *" />
+        <button id="create-routine" class="tcp-btn-primary"><i data-lucide="plus"></i> Create</button>
       </div>
-      <div class="grid gap">
-        <div class="card">
-          <div class="row-between">
-            <h3>Active Routines</h3>
-            <span class="status-pill ok">${routines.length}</span>
-          </div>
-          <div id="routine-list" class="list mt"></div>
-        </div>
-        <div class="card">
-          <div class="row-between">
-            <h3>Automations</h3>
-            <span class="status-pill warn">${automations.length}</span>
-          </div>
-          <div class="list mt">${automations.map((r) => `<div class="list-item static"><div class="row-between"><strong>${escapeHtml(r.name || r.id)}</strong><span class="muted">${escapeHtml(String(r.status || ""))}</span></div></div>`).join("") || '<p class="muted">No running automations.</p>'}</div>
-        </div>
-      </div>
+      <textarea id="routine-prompt" class="tcp-input mt-3" rows="3" placeholder="Entrypoint prompt"></textarea>
+    </div>
+    <div class="tcp-card">
+      <h3 class="tcp-title mb-3">Routines (${routines.length})</h3>
+      <div id="routine-list" class="tcp-list"></div>
+    </div>
+    <div class="tcp-card">
+      <h3 class="tcp-title mb-3">Automations (${automations.length})</h3>
+      <div class="tcp-list">${automations.map((r) => `<div class="tcp-list-item flex items-center justify-between gap-2"><span>${escapeHtml(r.name || r.id)}</span><span class="tcp-subtle">${escapeHtml(String(r.status || ""))}</span></div>`).join("") || '<p class="tcp-subtle">No automations.</p>'}</div>
     </div>
   `;
-
-  if (window.feather) window.feather.replace();
 
   const routineList = byId("routine-list");
   routineList.innerHTML =
     routines
       .map(
         (r) => `
-      <div class="list-item static row-between">
+      <div class="tcp-list-item flex items-center justify-between gap-3">
         <div>
-          <div style="font-weight: 500; font-size: 0.95rem; color: white;">${escapeHtml(r.name || r.id)}</div>
-          <div class="muted mt-sm" style="font-family: var(--font-mono); font-size: 0.75rem;">${escapeHtml(typeof r.schedule === "string" ? r.schedule : JSON.stringify(r.schedule || {}))}</div>
+          <div class="font-medium">${escapeHtml(r.name || r.id)}</div>
+          <div class="tcp-subtle font-mono">${escapeHtml(typeof r.schedule === "string" ? r.schedule : JSON.stringify(r.schedule || {}))}</div>
         </div>
-        <div class="row">
-          <button data-run="${r.id}" class="primary small"><i data-feather="play"></i> Run</button>
-          <button data-del="${r.id}" class="danger small"><i data-feather="trash-2"></i></button>
+        <div class="flex gap-2">
+          <button data-run="${r.id}" class="tcp-btn"><i data-lucide="play"></i> Run</button>
+          <button data-del="${r.id}" class="tcp-btn-danger"><i data-lucide="trash-2"></i></button>
         </div>
       </div>`
       )
-      .join("") || '<p class="muted">No routines configured.</p>';
+      .join("") || '<p class="tcp-subtle">No routines.</p>';
 
   routineList.querySelectorAll("[data-run]").forEach((b) =>
     b.addEventListener("click", async () => {

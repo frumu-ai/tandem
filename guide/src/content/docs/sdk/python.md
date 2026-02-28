@@ -48,7 +48,7 @@ async def main():
         async for event in client.stream(session_id, run.run_id):
             if event.type == "session.response":
                 print(event.properties.get("delta", ""), end="", flush=True)
-            if event.type in ("run.complete", "run.failed"):
+            if event.type in ("run.complete", "run.completed", "run.failed", "session.run.finished"):
                 break
 
 asyncio.run(main())
@@ -115,6 +115,41 @@ TandemClient(base_url, token, *, timeout=20.0)
 | `children(session_id)`                                          | List forked child sessions                    |
 | `summarize(session_id)`                                         | Trigger conversation summarization            |
 | `attach(session_id, target_workspace)`                          | Re-attach to a different workspace            |
+
+#### Prompt with file parts
+
+Use a direct engine call when you need mixed `parts` payloads:
+
+```python
+import httpx
+
+payload = {
+    "parts": [
+        {
+            "type": "file",
+            "mime": "image/png",
+            "filename": "diagram.png",
+            "url": "/srv/tandem/channel_uploads/telegram/667596788/diagram.png",
+        },
+        {"type": "text", "text": "Explain this diagram in plain English."},
+    ]
+}
+
+async with httpx.AsyncClient(base_url="http://localhost:39731") as http:
+    resp = await http.post(
+        f"/session/{session_id}/prompt_async?return=run",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
+    )
+    run = resp.json()
+```
+
+`file` part shape:
+
+- `type`: `"file"`
+- `mime`: MIME type string
+- `filename`: optional display filename
+- `url`: HTTP URL, local path, or `file://...`
 
 ### `client.permissions`
 

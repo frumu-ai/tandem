@@ -6,10 +6,12 @@ import { routeFromHash, ensureRoute, setHashRoute } from "./app/router.js";
 import { createToasts } from "./app/toasts.js";
 import { createState, ROUTES, providerHints } from "./app/store.js";
 import { VIEW_RENDERERS } from "./views/index.js";
+import { renderIcons } from "./app/icons.js";
 
 const app = document.getElementById("app");
 const state = createState();
 const { toast, renderToasts } = createToasts(state);
+const TOKEN_STORAGE_KEY = "tandem_control_panel_token";
 
 const ctx = {
   app,
@@ -25,6 +27,7 @@ const ctx = {
   setRoute,
   renderShell,
   refreshProviderStatus,
+  renderIcons,
 };
 
 function addCleanup(fn) {
@@ -40,6 +43,30 @@ function clearCleanup() {
     }
   }
   state.cleanup = [];
+}
+
+function getSavedToken() {
+  try {
+    return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function saveToken(token) {
+  try {
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function clearSavedToken() {
+  try {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore storage failures
+  }
 }
 
 async function checkAuth() {
@@ -96,58 +123,91 @@ function setRoute(route) {
 }
 
 function renderLogin() {
+  const savedToken = getSavedToken();
   app.innerHTML = `
-    <div class="login-bg"></div>
-    <main class="login-wrap">
-      <section class="panel">
-        <div class="login-hero" aria-hidden="true">
-          <svg viewBox="0 0 520 160" class="hero-svg">
+    <main class="mx-auto grid min-h-screen w-full max-w-3xl place-items-center p-5">
+      <section class="tcp-panel w-full max-w-xl">
+        <div class="mb-6 rounded-2xl border border-slate-700 bg-black/20 p-3">
+          <svg viewBox="0 0 520 160" class="hero-svg" aria-hidden="true">
             <defs>
-              <linearGradient id="hero-grad" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stop-color="#8b5cf6"></stop>
-                <stop offset="100%" stop-color="#38bdf8"></stop>
+              <linearGradient id="hero-path-grad" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stop-color="#64748b" stop-opacity="0.35"></stop>
+                <stop offset="50%" stop-color="#cbd5e1" stop-opacity="0.95"></stop>
+                <stop offset="100%" stop-color="#64748b" stop-opacity="0.35"></stop>
               </linearGradient>
+              <radialGradient id="hero-core-grad" cx="50%" cy="50%" r="60%">
+                <stop offset="0%" stop-color="#f1f5f9" stop-opacity="0.9"></stop>
+                <stop offset="100%" stop-color="#64748b" stop-opacity="0.15"></stop>
+              </radialGradient>
             </defs>
-            <g class="bot bot-left">
-              <rect x="70" y="40" width="90" height="72" rx="16" class="bot-body" style="fill:rgba(15,23,42,0.92);stroke:url(#hero-grad);stroke-width:2;"></rect>
-              <circle cx="102" cy="76" r="6" class="bot-eye" style="fill:#e2e8f0;"></circle>
-              <circle cx="128" cy="76" r="6" class="bot-eye" style="fill:#e2e8f0;"></circle>
-              <line x1="88" y1="96" x2="142" y2="96" class="bot-mouth" style="stroke:#a78bfa;stroke-width:2;stroke-linecap:round;"></line>
-              <path d="M160 82 C188 86, 208 94, 222 96" class="bot-arm" style="fill:none;stroke:url(#hero-grad);stroke-width:3.5;stroke-linecap:round;"></path>
+
+            <g class="hero-grid">
+              <line x1="24" y1="34" x2="496" y2="34"></line>
+              <line x1="24" y1="80" x2="496" y2="80"></line>
+              <line x1="24" y1="126" x2="496" y2="126"></line>
+              <line x1="120" y1="24" x2="120" y2="136"></line>
+              <line x1="260" y1="24" x2="260" y2="136"></line>
+              <line x1="400" y1="24" x2="400" y2="136"></line>
             </g>
-            <g class="bot bot-right">
-              <rect x="360" y="40" width="90" height="72" rx="16" class="bot-body" style="fill:rgba(15,23,42,0.92);stroke:url(#hero-grad);stroke-width:2;"></rect>
-              <circle cx="392" cy="76" r="6" class="bot-eye" style="fill:#e2e8f0;"></circle>
-              <circle cx="418" cy="76" r="6" class="bot-eye" style="fill:#e2e8f0;"></circle>
-              <line x1="378" y1="96" x2="432" y2="96" class="bot-mouth" style="stroke:#a78bfa;stroke-width:2;stroke-linecap:round;"></line>
-              <path d="M360 82 C332 86, 312 94, 298 96" class="bot-arm" style="fill:none;stroke:url(#hero-grad);stroke-width:3.5;stroke-linecap:round;"></path>
+
+            <path class="hero-path hero-path-left" d="M60 92 C110 92, 150 78, 194 80 S238 80, 260 80"></path>
+            <path class="hero-path hero-path-right" d="M460 68 C410 68, 370 82, 326 80 S282 80, 260 80"></path>
+            <path class="hero-path hero-path-upper" d="M88 52 C150 52, 200 58, 260 58 S370 58, 432 52"></path>
+
+            <g class="hero-node hero-node-left">
+              <circle cx="60" cy="92" r="8"></circle>
             </g>
-            <g class="handshake">
-              <rect x="223" y="88" width="75" height="18" rx="9" class="shake" style="fill:rgba(139,92,246,0.2);stroke:rgba(139,92,246,0.8);stroke-width:1.2;"></rect>
+            <g class="hero-node hero-node-right">
+              <circle cx="460" cy="68" r="8"></circle>
+            </g>
+            <g class="hero-node hero-node-top-left">
+              <circle cx="88" cy="52" r="6"></circle>
+            </g>
+            <g class="hero-node hero-node-top-right">
+              <circle cx="432" cy="52" r="6"></circle>
+            </g>
+
+            <circle class="hero-core-glow" cx="260" cy="80" r="28"></circle>
+            <circle class="hero-core-ring" cx="260" cy="80" r="24"></circle>
+            <circle class="hero-core" cx="260" cy="80" r="12"></circle>
+            <circle class="hero-scan" cx="260" cy="80" r="34"></circle>
+
+            <g class="hero-packet hero-packet-left">
+              <circle cx="0" cy="0" r="3"></circle>
+            </g>
+            <g class="hero-packet hero-packet-right">
+              <circle cx="0" cy="0" r="3"></circle>
+            </g>
+            <g class="hero-packet hero-packet-upper">
+              <circle cx="0" cy="0" r="2.5"></circle>
             </g>
           </svg>
         </div>
-        <h1>Tandem Engine</h1>
-        <p>Enter your configuration token to unlock the control center.</p>
-        <form id="login-form" class="form-stack mt">
-          <label>Engine Authorization Token</label>
-          <input id="token" type="password" placeholder="tk_..." autocomplete="off" />
-          <button id="login-btn" type="submit" class="primary"><i data-feather="key"></i> Authenticate</button>
-          <button id="check-engine-btn" type="button" class="ghost mt-sm"><i data-feather="activity"></i> Verify Backend Connectivity</button>
-          <div id="login-err" class="error mt-sm"></div>
+        <h1 class="mb-1 text-4xl font-semibold tracking-tight">Tandem Control Panel</h1>
+        <p class="tcp-subtle mb-6">Use your engine API token to unlock the full web control center.</p>
+        <form id="login-form" class="grid gap-3">
+          <label class="text-sm text-slate-300">Engine Token</label>
+          <input id="token" class="tcp-input" type="password" placeholder="tk_..." autocomplete="off" value="${escapeHtml(savedToken)}" />
+          <label class="inline-flex items-center gap-2 text-xs text-slate-400">
+            <input id="remember-token" type="checkbox" class="h-4 w-4 accent-slate-400" checked />
+            Remember token on this browser
+          </label>
+          <button id="login-btn" type="submit" class="tcp-btn-primary w-full"><i data-lucide="key-round"></i> Sign In</button>
+          <button id="check-engine-btn" type="button" class="tcp-btn w-full"><i data-lucide="activity"></i> Check Engine Connectivity</button>
+          <div id="login-err" class="min-h-[1.2rem] text-sm text-rose-300"></div>
         </form>
       </section>
     </main>
   `;
 
-  if (window.feather) setTimeout(() => window.feather.replace(), 0);
+  renderIcons();
 
   byId("login-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const token = byId("token").value.trim();
+    const remember = !!byId("remember-token")?.checked;
     const errEl = byId("login-err");
     errEl.textContent = "";
-    errEl.classList.remove("ok");
 
     if (!token) {
       errEl.textContent = "Token is required.";
@@ -160,13 +220,14 @@ function renderLogin() {
         method: "POST",
         body: JSON.stringify({ token }),
       });
+      if (remember) saveToken(token);
+      else clearSavedToken();
       await checkAuth();
       toast("ok", "Signed in.");
       setRoute("dashboard");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       errEl.textContent = message;
-      errEl.classList.remove("ok");
       toast("err", message);
     }
   });
@@ -178,12 +239,12 @@ function renderLogin() {
       const health = await api("/api/system/health");
       const stateText = health.engine?.ready || health.engine?.healthy ? "healthy" : "unhealthy";
       errEl.textContent = `Engine check: ${stateText} at ${health.engineUrl}`;
-      errEl.classList.add("ok");
+      errEl.className = "min-h-[1.2rem] text-sm text-lime-300";
       toast(health.engine?.ready || health.engine?.healthy ? "ok" : "warn", `Engine ${stateText}: ${health.engineUrl}`);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       errEl.textContent = message;
-      errEl.classList.remove("ok");
+      errEl.className = "min-h-[1.2rem] text-sm text-rose-300";
       toast("err", message);
     }
   });
@@ -192,20 +253,20 @@ function renderLogin() {
 async function renderRoute() {
   const view = byId("view");
   if (!view) return;
-  view.innerHTML = '<div class="loading">Loading...</div>';
+  view.innerHTML = '<div class="tcp-subtle">Loading...</div>';
 
   const providerRequiredRoutes = new Set(["chat", "agents", "swarm", "teams"]);
   if (providerRequiredRoutes.has(state.route) && !state.providerReady) {
     view.innerHTML = `
-      <div class="card">
-        <h3>Provider Setup Required</h3>
-        <p class="muted">This page requires a connected default provider/model before runs can execute.</p>
-        <div class="mt-sm row-wrap">
-          <div class="status-dot warn">default: ${escapeHtml(state.providerDefault || "none")}</div>
-          <div class="status-dot warn">connected: ${escapeHtml(String(state.providerConnected.length))}</div>
+      <div class="tcp-card">
+        <h3 class="tcp-title mb-2">Provider Setup Required</h3>
+        <p class="tcp-subtle">This page requires a connected default provider/model before runs can execute.</p>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <span class="tcp-badge-warn">default: ${escapeHtml(state.providerDefault || "none")}</span>
+          <span class="tcp-badge-warn">connected: ${escapeHtml(String(state.providerConnected.length))}</span>
         </div>
-        <div class="row-end mt-sm">
-          <button id="goto-settings" class="primary">Open Provider Setup</button>
+        <div class="mt-4 flex justify-end">
+          <button id="goto-settings" class="tcp-btn-primary">Open Provider Setup</button>
         </div>
       </div>
     `;
@@ -216,6 +277,7 @@ async function renderRoute() {
 
   const renderer = VIEW_RENDERERS[state.route] || VIEW_RENDERERS.dashboard;
   await renderer(ctx);
+  renderIcons(byId("view"));
 }
 
 function renderShell() {
@@ -227,56 +289,55 @@ function renderShell() {
   clearCleanup();
 
   app.innerHTML = `
-    <div class="shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-inner">
-            <div class="brand-icon"><i data-feather="cpu"></i></div>
-            <div>
-              <div class="brand-title">Tandem</div>
-              <div class="brand-sub">Control Center</div>
-            </div>
+    <div class="grid min-h-screen grid-cols-1 lg:grid-cols-[260px_1fr]">
+      <aside class="border-r border-slate-700 bg-panel/90 p-4">
+        <div class="mb-4 flex items-center gap-3 rounded-xl border border-slate-700 bg-black/20 p-3">
+          <div class="grid h-10 w-10 place-items-center rounded-xl border border-slate-600 bg-muted text-slate-200"><i data-lucide="cpu"></i></div>
+          <div>
+            <div class="text-base font-semibold">Tandem</div>
+            <div class="text-xs uppercase tracking-wider text-slate-400">Control Center</div>
           </div>
         </div>
-        <nav id="nav" class="nav"></nav>
-        <div class="side-footer">
-          <button id="logout-btn" class="ghost-btn"><i data-feather="log-out"></i> Logout</button>
+        <nav id="nav" class="grid gap-1"></nav>
+        <div class="mt-4 border-t border-slate-700 pt-4">
+          <button id="logout-btn" class="tcp-btn w-full"><i data-lucide="log-out"></i> Logout</button>
         </div>
       </aside>
-      <main class="content">
-        <header class="topbar">
+      <main class="min-w-0 p-4 md:p-6">
+        <header class="tcp-panel mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2>${escapeHtml((ROUTES.find((r) => r[0] === state.route) || ["", "Dashboard"])[1])}</h2>
-            <p>${escapeHtml(state.me?.engineUrl || "")}</p>
+            <h2 class="text-xl font-semibold tracking-tight">${escapeHtml((ROUTES.find((r) => r[0] === state.route) || ["", "Dashboard"])[1])}</h2>
+            <p class="mt-1 font-mono text-xs text-slate-400">${escapeHtml(state.me?.engineUrl || "")}</p>
           </div>
-          <div class="status-pill ${state.me?.localEngine ? "ok" : "warn"}">${state.me?.localEngine ? "Local Engine" : "Remote Engine"}</div>
+          <span class="${state.me?.localEngine ? "tcp-badge-ok" : "tcp-badge-warn"}">${state.me?.localEngine ? "Local Engine" : "Remote Engine"}</span>
         </header>
-        <section id="view" class="view"></section>
+        <section id="view" class="grid gap-4"></section>
       </main>
     </div>
   `;
 
   const nav = byId("nav");
-  nav.innerHTML = ROUTES.map(([id, label, icon]) => `
+  nav.innerHTML = ROUTES.map(
+    ([id, label, icon]) => `
       <button data-route="${id}" class="nav-item ${id === state.route ? "active" : ""}">
-        <i data-feather="${icon}" class="nav-icon hidden-transition" style="width: 18px; height: 18px;"></i>
-        <span>${label}</span>
+        <i data-lucide="${icon}"></i><span>${label}</span>
       </button>
-    `).join("");
+    `
+  ).join("");
 
   nav.querySelectorAll(".nav-item").forEach((btn) => {
     btn.addEventListener("click", () => setRoute(btn.dataset.route));
   });
 
   byId("logout-btn").addEventListener("click", async () => {
-    await api("/api/auth/logout", { method: "POST" }).catch(() => { });
+    await api("/api/auth/logout", { method: "POST" }).catch(() => {});
     state.authed = false;
     state.me = null;
     state.client = null;
     renderLogin();
   });
 
-  if (window.feather) window.feather.replace();
+  renderIcons(app);
   renderToasts();
   void renderRoute();
 }
@@ -298,6 +359,20 @@ window.addEventListener("hashchange", () => {
 async function boot() {
   state.route = ensureRoute(routeFromHash(), ROUTES);
   await checkAuth();
+  if (!state.authed) {
+    const savedToken = getSavedToken().trim();
+    if (savedToken) {
+      try {
+        await api("/api/auth/login", {
+          method: "POST",
+          body: JSON.stringify({ token: savedToken }),
+        });
+        await checkAuth();
+      } catch {
+        clearSavedToken();
+      }
+    }
+  }
   if (!state.authed) return renderLogin();
 
   renderShell();

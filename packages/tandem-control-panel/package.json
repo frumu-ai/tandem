@@ -25,9 +25,14 @@
   ],
   "dependencies": {
     "@frumu/tandem": "^0.3.25",
-    "@frumu/tandem-client": "^0.3.25"
+    "@frumu/tandem-client": "^0.3.25",
+    "lucide": "^0.575.0"
   },
   "devDependencies": {
+    "@tailwindcss/forms": "^0.5.11",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
     "vite": "^7.0.4"
   },
   "engines": {

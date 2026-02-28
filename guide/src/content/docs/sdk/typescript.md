@@ -49,7 +49,14 @@ for await (const event of client.stream(sessionId, runId)) {
   if (event.type === "session.response") {
     process.stdout.write(String(event.properties.delta ?? ""));
   }
-  if (event.type === "run.complete" || event.type === "run.failed") break;
+  if (
+    event.type === "run.complete" ||
+    event.type === "run.completed" ||
+    event.type === "run.failed" ||
+    event.type === "session.run.finished"
+  ) {
+    break;
+  }
 }
 ```
 
@@ -98,6 +105,39 @@ new TandemClient({ baseUrl, token, timeoutMs? })
 | `children(sessionId)`                                           | List forked child sessions            |
 | `summarize(sessionId)`                                          | Trigger conversation summarization    |
 | `attach(sessionId, targetWorkspace)`                            | Re-attach to a different workspace    |
+
+#### Prompt with file parts
+
+Use raw engine route when you need mixed `parts` payloads:
+
+```typescript
+const res = await fetch(`/session/${encodeURIComponent(sessionId)}/prompt_async?return=run`, {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    Authorization: `Bearer ${token}`,
+  },
+  body: JSON.stringify({
+    parts: [
+      {
+        type: "file",
+        mime: "text/markdown",
+        filename: "audit.md",
+        url: "/srv/tandem/channel_uploads/control-panel/audit.md",
+      },
+      { type: "text", text: "Summarize this file." },
+    ],
+  }),
+});
+const run = await res.json();
+```
+
+`file` part shape:
+
+- `type`: `"file"`
+- `mime`: MIME type string
+- `filename`: optional display filename
+- `url`: HTTP URL, local path, or `file://...`
 
 ### `client.permissions`
 

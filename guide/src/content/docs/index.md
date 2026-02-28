@@ -26,6 +26,7 @@ _You want to run the native Tandem desktop app or terminal UI to assist you with
 _You want to deploy Tandem to a VPS or headless server so that you, or your external applications, can access autonomous agents remotely._
 
 - **[Headless Service](./headless-service/)** — Run the Tandem Engine in headless API mode.
+- **[Channel Integrations](./channel-integrations/)** — Connect Telegram, Discord, and Slack with media-aware prompt flow.
 - **[Deployment Guide](./desktop/headless-deployment/)** — Learn best practices for securely exposing Tandem.
 - **[Protocol Matrix](./protocol-matrix/)** — Understand the ports and network boundaries.
 

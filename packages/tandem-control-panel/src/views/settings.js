@@ -1,83 +1,162 @@
+const CUSTOM_PROVIDER_VALUE = "__custom_provider__";
+
 export async function renderSettings(ctx) {
   const { byId, state, escapeHtml } = ctx;
   byId("view").innerHTML = `
-    <div class="card">
-      <div class="row-between">
-        <h3 style="display:flex;align-items:center;gap:0.5rem;"><i data-feather="settings" style="color:var(--accent-light);"></i> Provider Setup Wizard</h3>
-        <span class="status-pill ${state.providerReady ? "ok" : "warn"}">${state.providerReady ? "Ready" : "Not Configured"}</span>
+    <div class="tcp-card">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 class="tcp-title flex items-center gap-2"><i data-lucide="settings-2"></i> Provider Setup Wizard</h3>
+        <span class="${state.providerReady ? "tcp-badge-ok" : "tcp-badge-warn"}">${state.providerReady ? "Ready" : "Not Configured"}</span>
       </div>
-      <p class="muted mb">Step 1: Pick a provider and model. Step 2: Add key (if required). Step 3: Run model test.</p>
-      <div class="row-wrap mt-sm mb">
-        <span class="status-dot ${state.providerDefault ? "ok" : "warn"}">Default: <strong style="color:white;margin-left:4px;">${escapeHtml(state.providerDefault || "none")}</strong></span>
-        <span class="status-dot ${state.providerConnected.length > 0 ? "info" : "warn"}">Connected: <strong style="color:white;margin-left:4px;">${state.providerConnected.length}</strong></span>
+      <p class="tcp-subtle">Step 1: Select provider. Step 2: Configure model. Step 3: Add key (if required). Step 4: Run test.</p>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <span class="${state.providerDefault ? "tcp-badge-ok" : "tcp-badge-warn"}">Default: ${escapeHtml(state.providerDefault || "none")}</span>
+        <span class="${state.providerConnected.length > 0 ? "tcp-badge-info" : "tcp-badge-warn"}">Connected: ${state.providerConnected.length}</span>
       </div>
-      ${state.providerError ? `<p class="warn" style="padding:0.75rem;background:rgba(245,158,11,0.1);border-radius:8px;border:1px solid rgba(245,158,11,0.3);"><i data-feather="alert-triangle"></i> Provider check error: ${escapeHtml(state.providerError)}</p>` : ""}
-      <div id="provider-settings" class="mt"></div>
+      ${state.providerError ? `<p class="mt-3 rounded-xl border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-300"><i data-lucide="triangle-alert"></i> ${escapeHtml(state.providerError)}</p>` : ""}
+      <div id="provider-settings" class="mt-4"></div>
     </div>
-    <div class="card mt">
-      <h3 style="display:flex;align-items:center;gap:0.5rem;"><i data-feather="shield" style="color:var(--warn-color);"></i> Session Authorization</h3>
-      <p class="muted">Your session token binding is active. Use Logout in the sidebar to clear your current portal session.</p>
+    <div class="tcp-card">
+      <h3 class="tcp-title mb-2 flex items-center gap-2"><i data-lucide="shield"></i> Session Authorization</h3>
+      <p class="tcp-subtle">Use Logout in the sidebar to clear your current portal session token binding.</p>
     </div>
   `;
-  if (window.feather) window.feather.replace();
   await renderProvidersBlock(ctx, byId("provider-settings"));
 }
 
 async function renderProvidersBlock(ctx, container) {
-  const { state, toast, escapeHtml, providerHints, refreshProviderStatus } = ctx;
+  const { state, api, toast, escapeHtml, providerHints, refreshProviderStatus } = ctx;
   const catalog = await state.client.providers.catalog();
   const config = await state.client.providers.config();
-  let selectedProvider = catalog.default || config.default || catalog.all?.[0]?.id || "";
-  let selectedModel = "";
 
-  const getModels = () => {
-    const entry = (catalog.all || []).find((p) => p.id === selectedProvider);
-    return Object.keys(entry?.models || {});
-  };
+  const catalogProviders = catalog.all || [];
+  const providerIds = new Set(catalogProviders.map((p) => p.id));
+  const defaultProvider = String(catalog.default || config.default || catalogProviders[0]?.id || "").trim();
+
+  let selectedProvider = providerIds.has(defaultProvider) ? defaultProvider : CUSTOM_PROVIDER_VALUE;
+  let selectedModel = "";
+  let customProviderId = selectedProvider === CUSTOM_PROVIDER_VALUE ? defaultProvider : "";
+  let customProviderUrl = customProviderId ? String(config.providers?.[customProviderId]?.url || "") : "";
+  let customProviderModel = customProviderId
+    ? String(config.providers?.[customProviderId]?.defaultModel || config.providers?.[customProviderId]?.default_model || "")
+    : "";
 
   const syncModel = () => {
-    const models = getModels();
+    if (selectedProvider === CUSTOM_PROVIDER_VALUE) return;
+    const entry = catalogProviders.find((p) => p.id === selectedProvider);
+    const models = Object.keys(entry?.models || {});
     const cfg = config.providers?.[selectedProvider] || {};
     selectedModel = cfg.defaultModel || cfg.default_model || models[0] || "";
   };
   syncModel();
 
+  const providerOptions = [
+    ...catalogProviders.map((p) => ({ id: p.id, label: providerHints[p.id]?.label || p.name || p.id })),
+    { id: CUSTOM_PROVIDER_VALUE, label: "Custom Provider" },
+  ];
+
   const render = () => {
-    const models = getModels();
+    const models =
+      selectedProvider === CUSTOM_PROVIDER_VALUE
+        ? []
+        : Object.keys((catalogProviders.find((p) => p.id === selectedProvider) || {}).models || {});
+
     container.innerHTML = `
-      <div class="grid cols-2 gap-sm">
-        ${(catalog.all || [])
-        .map((p) => `<button class="primary" style="${p.id === selectedProvider ? "" : "background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.1);color:var(--text-muted);box-shadow:none;"}" data-provider="${p.id}">${escapeHtml(providerHints[p.id]?.label || p.name || p.id)}</button>`)
-        .join("")}
+      <div class="grid gap-3 md:grid-cols-2">
+        <div>
+          <label class="mb-1 block text-sm text-slate-300">Provider</label>
+          <select id="provider-select" class="tcp-select">
+            ${providerOptions
+              .map((o) => `<option value="${escapeHtml(o.id)}" ${o.id === selectedProvider ? "selected" : ""}>${escapeHtml(o.label)}</option>`)
+              .join("")}
+          </select>
+        </div>
+        ${
+          selectedProvider === CUSTOM_PROVIDER_VALUE
+            ? `<div>
+                <label class="mb-1 block text-sm text-slate-300">Custom Provider ID</label>
+                <input id="custom-provider-id" class="tcp-input" placeholder="my-provider" value="${escapeHtml(customProviderId)}" />
+              </div>`
+            : `<div>
+                <label class="mb-1 block text-sm text-slate-300">Model</label>
+                <select id="provider-model" class="tcp-select">${models.map((m) => `<option ${m === selectedModel ? "selected" : ""}>${escapeHtml(m)}</option>`).join("")}</select>
+              </div>`
+        }
       </div>
-      <div class="grid cols-2 gap-sm mt">
-        <select id="provider-model" style="height:100%;">${models.map((m) => `<option ${m === selectedModel ? "selected" : ""}>${escapeHtml(m)}</option>`).join("")}</select>
-        <input id="provider-key" type="password" placeholder="${escapeHtml(providerHints[selectedProvider]?.placeholder || "API key (optional)")}" />
-      </div>
-      <div class="row-between mt">
-        <button id="provider-test" class="ghost"><i data-feather="zap"></i> Test Model</button>
-        <button id="provider-save" class="primary"><i data-feather="save"></i> Save Provider Configuration</button>
+
+      ${
+        selectedProvider === CUSTOM_PROVIDER_VALUE
+          ? `<div class="mt-3 grid gap-3 md:grid-cols-2">
+              <div>
+                <label class="mb-1 block text-sm text-slate-300">Base URL</label>
+                <input id="custom-provider-url" class="tcp-input" placeholder="https://api.example.com/v1" value="${escapeHtml(customProviderUrl)}" />
+              </div>
+              <div>
+                <label class="mb-1 block text-sm text-slate-300">Default Model</label>
+                <input id="custom-provider-model" class="tcp-input" placeholder="gpt-4o-mini" value="${escapeHtml(customProviderModel)}" />
+              </div>
+            </div>
+            <p class="tcp-subtle mt-2">Custom providers use OpenAI-compatible chat completions endpoints.</p>`
+          : ""
+      }
+
+      <div class="mt-3 grid gap-3 md:grid-cols-2">
+        <div>
+          <label class="mb-1 block text-sm text-slate-300">API Key (optional)</label>
+          <input id="provider-key" class="tcp-input" type="password" placeholder="${escapeHtml(providerHints[selectedProvider]?.placeholder || "sk-...")}" />
+        </div>
+        <div class="flex items-end justify-end gap-2">
+          <button id="provider-test" class="tcp-btn"><i data-lucide="flask-conical"></i> Test Model Run</button>
+          <button id="provider-save" class="tcp-btn-primary"><i data-lucide="save"></i> Save Provider</button>
+        </div>
       </div>
     `;
-    if (window.feather) window.feather.replace(container);
 
-    container.querySelectorAll("[data-provider]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        selectedProvider = btn.dataset.provider;
-        syncModel();
-        render();
-      });
+    container.querySelector("#provider-select").addEventListener("change", (e) => {
+      selectedProvider = e.target.value;
+      if (selectedProvider !== CUSTOM_PROVIDER_VALUE) syncModel();
+      render();
     });
 
-    container.querySelector("#provider-model").addEventListener("change", (e) => {
-      selectedModel = e.target.value;
-    });
+    const modelEl = container.querySelector("#provider-model");
+    if (modelEl) modelEl.addEventListener("change", (e) => (selectedModel = e.target.value));
+
+    const customIdEl = container.querySelector("#custom-provider-id");
+    if (customIdEl) customIdEl.addEventListener("input", (e) => (customProviderId = e.target.value.trim()));
+
+    const customUrlEl = container.querySelector("#custom-provider-url");
+    if (customUrlEl) customUrlEl.addEventListener("input", (e) => (customProviderUrl = e.target.value.trim()));
+
+    const customModelEl = container.querySelector("#custom-provider-model");
+    if (customModelEl) customModelEl.addEventListener("input", (e) => (customProviderModel = e.target.value.trim()));
 
     container.querySelector("#provider-save").addEventListener("click", async () => {
       const key = container.querySelector("#provider-key").value.trim();
       try {
-        if (key) await state.client.providers.setApiKey(selectedProvider, key);
-        await state.client.providers.setDefaults(selectedProvider, selectedModel);
+        if (selectedProvider === CUSTOM_PROVIDER_VALUE) {
+          if (!customProviderId) throw new Error("Custom provider ID is required.");
+          if (!customProviderUrl) throw new Error("Custom provider URL is required.");
+          if (!customProviderModel) throw new Error("Custom default model is required.");
+
+          await api("/api/engine/config", {
+            method: "PATCH",
+            body: JSON.stringify({
+              default_provider: customProviderId,
+              providers: {
+                [customProviderId]: {
+                  url: customProviderUrl,
+                  default_model: customProviderModel,
+                },
+              },
+            }),
+          });
+
+          if (key) await state.client.providers.setApiKey(customProviderId, key);
+        } else {
+          if (key) await state.client.providers.setApiKey(selectedProvider, key);
+          await state.client.providers.setDefaults(selectedProvider, selectedModel);
+        }
+
         await refreshProviderStatus();
         toast("ok", "Provider configuration saved.");
         renderSettings(ctx);
@@ -98,7 +177,7 @@ async function renderProvidersBlock(ctx, container) {
           }
           if (event.type === "run.complete" || event.type === "run.failed" || event.type === "session.run.finished") break;
         }
-        if (!sawResponse) throw new Error("No model tokens received. Check provider key/model selection.");
+        if (!sawResponse) throw new Error("No model tokens received. Save provider + key first, then retry.");
         await refreshProviderStatus();
         toast("ok", "Model run test succeeded.");
       } catch (e) {

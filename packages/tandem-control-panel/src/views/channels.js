@@ -3,34 +3,30 @@ export async function renderChannels(ctx) {
   const status = await state.client.channels.status().catch(() => ({}));
   const channels = ["telegram", "discord", "slack"];
 
-  byId("view").innerHTML = '<div class="card"><div class="row-between"><h3>Connected Channels</h3><i data-feather="message-circle" class="nav-icon" style="color: var(--accent-light);"></i></div><p class="muted">Link your agent to external messaging platforms below.</p><div id="channels-list" class="list mt"></div></div>';
+  byId("view").innerHTML = '<div class="tcp-card"><div class="mb-3 flex items-center justify-between"><h3 class="tcp-title">Channels</h3><i data-lucide="messages-square"></i></div><div id="channels-list" class="tcp-list"></div></div>';
 
   const list = byId("channels-list");
   list.innerHTML = channels
     .map((c) => {
       const s = status[c] || {};
       return `
-        <div class="list-item static">
-          <div class="row-between" style="margin-bottom: 1rem;">
-            <strong style="text-transform: capitalize; font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem;"><i data-feather="${c === 'telegram' ? 'send' : c === 'discord' ? 'hash' : 'slack'}"></i> ${c}</strong>
-            <span class="status-dot ${s.connected ? "ok" : "warn"}">${s.connected ? "Connected Active" : "Disconnected"}</span>
+        <div class="tcp-list-item">
+          <div class="mb-3 flex items-center justify-between">
+            <strong class="capitalize">${c}</strong>
+            <span class="${s.connected ? "tcp-badge-ok" : "tcp-badge-warn"}">${s.connected ? "connected" : "not connected"}</span>
           </div>
-          <div class="grid cols-chat gap-sm">
-            <input id="${c}-token" placeholder="${c} Bot Token" type="password" />
-            <div class="row-between w-full">
-              <input id="${c}-users" placeholder="Allowed user handles (comma separated)" style="width: 100%;" />
-              <div class="row">
-                <button class="primary small" data-save="${c}"><i data-feather="save"></i> Save</button>
-                <button class="danger small" data-del="${c}"><i data-feather="trash-2"></i></button>
-              </div>
+          <div class="grid gap-3 lg:grid-cols-3">
+            <input id="${c}-token" class="tcp-input" placeholder="bot token" />
+            <input id="${c}-users" class="tcp-input" placeholder="allowed users (comma)" />
+            <div class="flex gap-2">
+              <button class="tcp-btn-primary" data-save="${c}"><i data-lucide="save"></i> Save</button>
+              <button class="tcp-btn-danger" data-del="${c}"><i data-lucide="trash-2"></i></button>
             </div>
           </div>
         </div>
       `;
     })
     .join("");
-
-  if (window.feather) window.feather.replace();
 
   list.querySelectorAll("[data-save]").forEach((btn) =>
     btn.addEventListener("click", async () => {

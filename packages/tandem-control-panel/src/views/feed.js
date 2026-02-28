@@ -4,27 +4,25 @@ function eventTypeOf(data) {
 
 function statusClassForEvent(type) {
   const t = String(type || "").toLowerCase();
-  if (t.includes("fail") || t.includes("error")) return "err";
-  if (t.includes("warn") || t.includes("retry")) return "warn";
-  return "ok";
+  if (t.includes("fail") || t.includes("error")) return "tcp-badge-err";
+  if (t.includes("warn") || t.includes("retry")) return "tcp-badge-warn";
+  return "tcp-badge-info";
 }
 
 export async function renderFeed(ctx) {
   const { byId, escapeHtml, state, addCleanup, toast } = ctx;
   byId("view").innerHTML = `
-    <div class="card">
-      <div class="row-between">
-        <h3 style="display:flex;align-items:center;gap:0.5rem;"><i data-feather="activity" style="color:var(--info-color);"></i> Global Live Feed</h3>
-        <div class="row">
-          <input id="feed-filter" placeholder="Filter events..." style="min-width: 250px;" />
-          <button id="feed-clear" class="ghost small">Clear</button>
+    <div class="tcp-card">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <h3 class="tcp-title flex items-center gap-2"><i data-lucide="activity"></i> Global Live Feed</h3>
+        <div class="flex gap-2">
+          <input id="feed-filter" class="tcp-input min-w-[220px]" placeholder="Filter by type or payload" />
+          <button id="feed-clear" class="tcp-btn">Clear</button>
         </div>
       </div>
-      <div id="feed-events" class="events feed-cards mt"></div>
+      <div id="feed-events" class="grid max-h-[68vh] gap-2 overflow-auto rounded-xl border border-slate-700 bg-black/20 p-2"></div>
     </div>
   `;
-
-  if (window.feather) window.feather.replace();
 
   const host = byId("feed-events");
   const events = [];
@@ -42,20 +40,20 @@ export async function renderFeed(ctx) {
         .map((x) => {
           const type = eventTypeOf(x.data);
           return `
-          <div class="list-item static" style="margin-bottom:0.5rem;">
-            <div class="row-between">
-              <strong style="font-size: 0.95rem; color: white;">${escapeHtml(type)}</strong>
-              <span class="status-dot ${statusClassForEvent(type)}">${new Date(x.at).toLocaleTimeString()}</span>
+          <article class="tcp-list-item">
+            <div class="flex items-center justify-between gap-2">
+              <strong>${escapeHtml(type)}</strong>
+              <span class="${statusClassForEvent(type)}">${new Date(x.at).toLocaleTimeString()}</span>
             </div>
-            <div class="muted mt-sm" style="font-size: 0.8rem;">Session: <span style="color:var(--accent-light);font-family:var(--font-mono);">${escapeHtml(x.data?.sessionID || x.data?.sessionId || "N/A")}</span> &nbsp;|&nbsp; Run: <span style="color:var(--accent-light);font-family:var(--font-mono);">${escapeHtml(x.data?.runID || x.data?.runId || "N/A")}</span></div>
-            <details class="mt-sm">
-              <summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem;outline:none;">Payload</summary>
-              <pre class="code mt-sm" style="background:rgba(0,0,0,0.3);padding:0.5rem;border-radius:8px;border:1px solid rgba(255,255,255,0.05);">${escapeHtml(JSON.stringify(x.data, null, 2))}</pre>
+            <div class="tcp-subtle mt-1">session: ${escapeHtml(x.data?.sessionID || x.data?.sessionId || "n/a")} run: ${escapeHtml(x.data?.runID || x.data?.runId || "n/a")}</div>
+            <details class="mt-2">
+              <summary class="cursor-pointer text-xs text-slate-400">Payload</summary>
+              <pre class="tcp-code mt-2">${escapeHtml(JSON.stringify(x.data, null, 2))}</pre>
             </details>
-          </div>
+          </article>
         `;
         })
-        .join("") || '<p class="muted" style="text-align:center;padding:2rem;">Waiting for events...</p>';
+        .join("") || '<p class="tcp-subtle">No events yet.</p>';
 
     host.scrollTop = host.scrollHeight;
   }

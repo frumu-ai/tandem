@@ -4,6 +4,7 @@ import { renderAgents } from "./agents.js";
 import { renderChannels } from "./channels.js";
 import { renderMcp } from "./mcp.js";
 import { renderSwarm } from "./swarm.js";
+import { renderFiles } from "./files.js";
 import { renderMemory } from "./memory.js";
 import { renderTeams } from "./teams.js";
 import { renderFeed } from "./feed.js";
@@ -16,6 +17,7 @@ export const VIEW_RENDERERS = {
   channels: renderChannels,
   mcp: renderMcp,
   swarm: renderSwarm,
+  files: renderFiles,
   memory: renderMemory,
   teams: renderTeams,
   feed: renderFeed,

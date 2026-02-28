@@ -49,6 +49,7 @@ tandem-engine serve --hostname 127.0.0.1 --port 39731
 - `GET /channels/status`
 - `PUT /channels/{name}`
 - `DELETE /channels/{name}`
+- `GET /global/storage/files?path=channel_uploads&limit=200`
 - `POST /admin/reload-config`
 - `POST /memory/put`
 - `POST /memory/search`
@@ -70,6 +71,25 @@ curl -s http://127.0.0.1:39731/global/health \
 curl -s http://127.0.0.1:39731/channels/status \
   -H "X-Tandem-Token: tk_your_token"
 ```
+
+## Channel Uploads and Media
+
+Channel adapters can persist inbound attachments under the engine storage root in `channel_uploads/...`.
+You can inspect saved files with:
+
+```bash
+curl -s "http://127.0.0.1:39731/global/storage/files?path=channel_uploads&limit=200" \
+  -H "X-Tandem-Token: tk_your_token"
+```
+
+Typical media flow:
+
+1. Channel receives media (`photo`, `document`, etc).
+2. Adapter stores file under `channel_uploads/<channel>/<chat_or_user>/...`.
+3. Adapter forwards prompt parts to engine with both text and file parts.
+4. Runs stream back over SSE like normal chat runs.
+
+If provider/model cannot use a given media type, the run should still complete with text fallback guidance instead of hanging.
 
 ## Security Notes
 
