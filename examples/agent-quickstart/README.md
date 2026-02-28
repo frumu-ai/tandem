@@ -112,6 +112,37 @@ sudo systemctl restart tandem-engine
 sudo systemctl restart tandem-agent-portal
 ```
 
+### Deploy updated engine from source
+
+Use this when you changed Rust engine/runtime code locally and want the VPS service to run the new binary:
+
+```bash
+cd /home/evan/tandem
+cargo build -p tandem-ai --release
+sudo systemctl stop tandem-engine
+sudo install -m 755 target/release/tandem-engine /usr/local/bin/tandem-engine-dev
+sudo systemctl start tandem-engine
+sudo systemctl status --no-pager tandem-engine
+```
+
+Health-check the engine and proxy:
+
+```bash
+curl -sS http://127.0.0.1:39731/global/health | jq .
+KEY=$(sed -n 's/^PORTAL_KEY=//p' /home/evan/tandem/examples/agent-quickstart/.env | tail -n1)
+curl -sS -H "Authorization: Bearer $KEY" http://127.0.0.1:3302/engine/global/health | jq .
+```
+
+### Rebuild and restart the portal service
+
+```bash
+cd /home/evan/tandem/examples/agent-quickstart
+pnpm install
+pnpm build
+sudo systemctl restart tandem-agent-portal
+sudo systemctl status --no-pager tandem-agent-portal
+```
+
 ### Chat opens but agent does not respond
 
 - Verify a provider + model is configured in **Provider Setup**.

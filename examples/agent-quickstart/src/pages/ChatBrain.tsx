@@ -56,6 +56,13 @@ interface ModelSpec {
   provider: string;
   model: string;
 }
+interface MemoryActivity {
+  id: string;
+  action: "store" | "search" | "list";
+  tool: string;
+  status: "started" | "completed" | "failed";
+  at: number;
+}
 type ProviderCfg = {
   defaultModel?: string;
   default_model?: string;
@@ -73,6 +80,20 @@ const sanitizeModelText = (value: string): string => {
 const eventRunId = (props: Record<string, unknown> | undefined): string | undefined => {
   const id = props?.runId ?? props?.runID ?? props?.run_id;
   return typeof id === "string" && id.trim() ? id : undefined;
+};
+
+const parseMemoryAction = (toolName: string): MemoryActivity["action"] | null => {
+  const name = toolName.trim().toLowerCase().replace(/-/g, "_");
+  if (name.endsWith("memory_store") || name === "memory_store") return "store";
+  if (name.endsWith("memory_search") || name === "memory_search") return "search";
+  if (name.endsWith("memory_list") || name === "memory_list") return "list";
+  return null;
+};
+
+const memoryActionLabel = (action: MemoryActivity["action"]): string => {
+  if (action === "store") return "store";
+  if (action === "search") return "search";
+  return "list";
 };
 
 const SESSIONS_KEY = "tandem_aq_sessions";
@@ -260,6 +281,7 @@ export default function ChatBrain() {
     if (typeof window === "undefined") return false;
     return localStorage.getItem(AUTO_ALLOW_KEY) === "1";
   });
+  const [memoryActivity, setMemoryActivity] = useState<MemoryActivity[]>([]);
   const [showSidebar, setShowSidebar] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [logOpen, setLogOpen] = useState(false);
@@ -291,6 +313,29 @@ export default function ChatBrain() {
   const addLog = useCallback((msg: string) => {
     setLog((p) => [...p.slice(-60), msg]);
   }, []);
+
+  const recordMemoryActivity = useCallback(
+    (toolName: string, status: MemoryActivity["status"]) => {
+      const action = parseMemoryAction(toolName);
+      if (!action) return;
+      const item: MemoryActivity = {
+        id: `${toolName}:${status}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+        action,
+        tool: toolName,
+        status,
+        at: Date.now(),
+      };
+      setMemoryActivity((prev) => [item, ...prev].slice(0, 12));
+      if (status === "started") {
+        addLog(`Memory ${memoryActionLabel(action)} started`);
+      } else if (status === "completed") {
+        addLog(`Memory ${memoryActionLabel(action)} completed`);
+      } else {
+        addLog(`Memory ${memoryActionLabel(action)} failed`);
+      }
+    },
+    [addLog]
+  );
 
   const refreshToolIds = useCallback(async () => {
     try {
@@ -575,6 +620,7 @@ export default function ChatBrain() {
         } else if (type === "tool.called" || type === "tool_call.started") {
           const tool = (data.properties?.tool as string) || "tool";
           addLog(`▶ ${tool}`);
+          recordMemoryActivity(tool, "started");
           setMessages((p) => [
             ...p,
             {
@@ -592,7 +638,9 @@ export default function ChatBrain() {
         ) {
           const tool = (data.properties?.tool as string) || "tool";
           const result = String(data.properties?.result || data.properties?.error || "");
+          const failed = type === "tool_call.failed";
           addLog(`✓ ${tool}`);
+          recordMemoryActivity(tool, failed ? "failed" : "completed");
           setMessages((p) => {
             const u = [...p];
             for (let i = u.length - 1; i >= 0; i--) {
@@ -831,6 +879,7 @@ export default function ChatBrain() {
     setLog([]);
     setPendingApprovals([]);
     setMcpAuthChallenges([]);
+    setMemoryActivity([]);
     setIsThinking(false);
     await ensurePrimed(sid);
     void refreshToolIds();
@@ -946,6 +995,7 @@ export default function ChatBrain() {
     setIsThinking(false);
     setMessages([]);
     setLog([]);
+    setMemoryActivity([]);
     const stored = loadStoredSessions().find((s) => s.id === sid);
     if (stored) setSessionTitle(stored.title);
     await loadSession(sid);
@@ -1085,6 +1135,30 @@ export default function ChatBrain() {
               </button>
             </div>
           </div>
+          {memoryActivity.length > 0 && (
+            <div className="mt-2 rounded-lg border border-sky-800/40 bg-sky-950/20 px-3 py-2">
+              <p className="text-[11px] text-sky-300 mb-1">Memory Activity</p>
+              <div className="flex flex-wrap gap-1.5">
+                {memoryActivity.slice(0, 6).map((entry) => {
+                  const statusClass =
+                    entry.status === "completed"
+                      ? "border-emerald-500/30 text-emerald-300 bg-emerald-500/10"
+                      : entry.status === "failed"
+                        ? "border-rose-500/30 text-rose-300 bg-rose-500/10"
+                        : "border-sky-500/30 text-sky-300 bg-sky-500/10";
+                  return (
+                    <span
+                      key={entry.id}
+                      className={`text-[10px] font-mono rounded px-1.5 py-0.5 border ${statusClass}`}
+                      title={`${entry.tool} · ${new Date(entry.at).toLocaleTimeString()}`}
+                    >
+                      memory_{entry.action}:{entry.status}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {SHOW_DEBUG_UI && logOpen && log.length > 0 && (
             <div className="mt-2 rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 max-h-20 overflow-y-auto">
               {log.slice(-8).map((entry, i) => (
