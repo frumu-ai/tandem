@@ -498,6 +498,16 @@ class AgentTeamTemplatesResponse(BaseModel):
     count: int = 0
 
 
+class AgentTeamTemplateWriteResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    ok: Optional[bool] = None
+    template: Optional[dict[str, Any]] = None
+    deleted: Optional[bool] = None
+    template_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("templateID", "templateId", "template_id")
+    )
+
+
 class AgentTeamInstance(BaseModel):
     model_config = ConfigDict(extra="ignore")
     instance_id: Optional[str] = Field(None, validation_alias=AliasChoices("instanceID", "instanceId", "instance_id"))
@@ -542,6 +552,52 @@ class AgentTeamSpawnResponse(BaseModel):
     status: Optional[str] = None
     code: Optional[str] = None
     error: Optional[str] = None
+
+
+# ─── Automations V2 ───────────────────────────────────────────────────────────
+
+
+AutomationV2Status = Literal["active", "paused", "draft"]
+AutomationV2RunStatus = Literal[
+    "queued",
+    "running",
+    "pausing",
+    "paused",
+    "completed",
+    "failed",
+    "cancelled",
+]
+
+
+class AutomationV2Record(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    automation_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("automationID", "automationId", "automation_id", "id")
+    )
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[AutomationV2Status] = None
+
+
+class AutomationV2ListResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    automations: list[AutomationV2Record] = []
+    count: int = 0
+
+
+class AutomationV2RunRecord(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    run_id: Optional[str] = Field(None, validation_alias=AliasChoices("runID", "runId", "run_id"))
+    automation_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("automationID", "automationId", "automation_id")
+    )
+    status: Optional[AutomationV2RunStatus] = None
+
+
+class AutomationV2RunListResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    runs: list[AutomationV2RunRecord] = []
+    count: int = 0
 
 
 # ─── Missions ─────────────────────────────────────────────────────────────────

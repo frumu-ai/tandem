@@ -30,6 +30,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - SDK/API management parity
   - Added API support for agent template lifecycle (`POST/PATCH/DELETE /agent-team/templates`).
   - Added TypeScript client support for `automationsV2` and agent-template create/update/delete methods.
+  - Added Python client parity with `client.automations_v2` and agent-template create/update/delete methods.
 - Control panel V2 builder and operator flow
   - Added Automation Builder V2 UI in `Agents` view with mission metadata, schedule fields, dynamic agent rows, per-agent model policy inputs, and DAG node editor.
   - Added Automations V2 list controls for run-now and pause/resume, plus run inspector actions for pause/resume/cancel.

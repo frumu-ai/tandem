@@ -122,6 +122,49 @@ await client.routines.create({
 })
 ```
 
+### `client.automations_v2`
+
+```python
+automation = await client.automations_v2.create({
+    "name": "Daily Marketing Engine",
+    "status": "active",
+    "schedule": {
+        "type": "interval",
+        "interval_seconds": 86400,
+        "timezone": "UTC",
+        "misfire_policy": "run_once",
+    },
+    "agents": [
+        {
+            "agent_id": "research",
+            "display_name": "Research",
+            "model_policy": {
+                "default_model": {
+                    "provider_id": "openrouter",
+                    "model_id": "openai/gpt-4o-mini",
+                }
+            },
+            "tool_policy": {"allowlist": ["read", "websearch"], "denylist": []},
+            "mcp_policy": {"allowed_servers": []},
+        }
+    ],
+    "flow": {
+        "nodes": [
+            {"node_id": "market-scan", "agent_id": "research", "objective": "Find 3 trend signals."}
+        ]
+    },
+})
+run = await client.automations_v2.run_now(automation.automation_id or "")
+```
+
+### `client.agent_teams` template management
+
+```python
+await client.agent_teams.create_template({"templateID": "marketing-writer", "role": "worker"})
+await client.agent_teams.update_template("marketing-writer", {"system_prompt": "Write concise copy."})
+await client.agent_teams.delete_template("marketing-writer")
+```
+
 ### `client.mcp`
 
 ```python

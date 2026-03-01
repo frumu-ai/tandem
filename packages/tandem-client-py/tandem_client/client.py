@@ -17,6 +17,11 @@ from .types import (
     AgentTeamMissionsResponse,
     AgentTeamSpawnResponse,
     AgentTeamTemplatesResponse,
+    AgentTeamTemplateWriteResponse,
+    AutomationV2ListResponse,
+    AutomationV2Record,
+    AutomationV2RunListResponse,
+    AutomationV2RunRecord,
     ArtifactRecord,
     ChannelsConfigResponse,
     ChannelsStatusResponse,
@@ -107,6 +112,7 @@ class TandemClient:
         self.mcp = _Mcp(self._http)
         self.routines = _Routines(self._http)
         self.automations = _Automations(self._http)
+        self.automations_v2 = _AutomationsV2(self._http)
         self.memory = _Memory(self._http)
         self.skills = _Skills(self._http)
         self.resources = _Resources(self._http)
@@ -986,6 +992,86 @@ class _Automations:
         return RoutineHistoryResponse.model_validate(raw)
 
 
+class _AutomationsV2:
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        self._http = http
+
+    async def list(self) -> AutomationV2ListResponse:
+        res = await self._http.get("/automations/v2")
+        res.raise_for_status()
+        return AutomationV2ListResponse.model_validate(res.json())
+
+    async def create(self, spec: dict[str, Any]) -> AutomationV2Record:
+        res = await self._http.post("/automations/v2", json=spec)
+        res.raise_for_status()
+        return AutomationV2Record.model_validate(res.json().get("automation", {}))
+
+    async def get(self, automation_id: str) -> AutomationV2Record:
+        res = await self._http.get(f"/automations/v2/{quote(automation_id)}")
+        res.raise_for_status()
+        return AutomationV2Record.model_validate(res.json().get("automation", {}))
+
+    async def update(self, automation_id: str, patch: dict[str, Any]) -> AutomationV2Record:
+        res = await self._http.patch(f"/automations/v2/{quote(automation_id)}", json=patch)
+        res.raise_for_status()
+        return AutomationV2Record.model_validate(res.json().get("automation", {}))
+
+    async def delete(self, automation_id: str) -> dict[str, Any]:
+        res = await self._http.delete(f"/automations/v2/{quote(automation_id)}")
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def run_now(self, automation_id: str) -> AutomationV2RunRecord:
+        res = await self._http.post(f"/automations/v2/{quote(automation_id)}/run_now", json={})
+        res.raise_for_status()
+        return AutomationV2RunRecord.model_validate(res.json().get("run", {}))
+
+    async def pause(self, automation_id: str, reason: str = "") -> AutomationV2Record:
+        res = await self._http.post(
+            f"/automations/v2/{quote(automation_id)}/pause", json={"reason": reason}
+        )
+        res.raise_for_status()
+        return AutomationV2Record.model_validate(res.json().get("automation", {}))
+
+    async def resume(self, automation_id: str) -> AutomationV2Record:
+        res = await self._http.post(f"/automations/v2/{quote(automation_id)}/resume", json={})
+        res.raise_for_status()
+        return AutomationV2Record.model_validate(res.json().get("automation", {}))
+
+    async def list_runs(self, automation_id: str, limit: int = 50) -> AutomationV2RunListResponse:
+        res = await self._http.get(
+            f"/automations/v2/{quote(automation_id)}/runs", params={"limit": limit}
+        )
+        res.raise_for_status()
+        return AutomationV2RunListResponse.model_validate(res.json())
+
+    async def get_run(self, run_id: str) -> AutomationV2RunRecord:
+        res = await self._http.get(f"/automations/v2/runs/{quote(run_id)}")
+        res.raise_for_status()
+        return AutomationV2RunRecord.model_validate(res.json().get("run", {}))
+
+    async def pause_run(self, run_id: str, reason: str = "") -> AutomationV2RunRecord:
+        res = await self._http.post(
+            f"/automations/v2/runs/{quote(run_id)}/pause", json={"reason": reason}
+        )
+        res.raise_for_status()
+        return AutomationV2RunRecord.model_validate(res.json().get("run", {}))
+
+    async def resume_run(self, run_id: str, reason: str = "") -> AutomationV2RunRecord:
+        res = await self._http.post(
+            f"/automations/v2/runs/{quote(run_id)}/resume", json={"reason": reason}
+        )
+        res.raise_for_status()
+        return AutomationV2RunRecord.model_validate(res.json().get("run", {}))
+
+    async def cancel_run(self, run_id: str, reason: str = "") -> AutomationV2RunRecord:
+        res = await self._http.post(
+            f"/automations/v2/runs/{quote(run_id)}/cancel", json={"reason": reason}
+        )
+        res.raise_for_status()
+        return AutomationV2RunRecord.model_validate(res.json().get("run", {}))
+
+
 # ─── Agent Teams ──────────────────────────────────────────────────────────────
 
 
@@ -997,6 +1083,23 @@ class _AgentTeams:
         res = await self._http.get("/agent-team/templates")
         res.raise_for_status()
         return AgentTeamTemplatesResponse.model_validate(res.json())
+
+    async def create_template(self, template: dict[str, Any]) -> AgentTeamTemplateWriteResponse:
+        res = await self._http.post("/agent-team/templates", json={"template": template})
+        res.raise_for_status()
+        return AgentTeamTemplateWriteResponse.model_validate(res.json())
+
+    async def update_template(
+        self, template_id: str, patch: dict[str, Any]
+    ) -> AgentTeamTemplateWriteResponse:
+        res = await self._http.patch(f"/agent-team/templates/{quote(template_id)}", json=patch)
+        res.raise_for_status()
+        return AgentTeamTemplateWriteResponse.model_validate(res.json())
+
+    async def delete_template(self, template_id: str) -> AgentTeamTemplateWriteResponse:
+        res = await self._http.delete(f"/agent-team/templates/{quote(template_id)}")
+        res.raise_for_status()
+        return AgentTeamTemplateWriteResponse.model_validate(res.json())
 
     async def list_instances(self, *, mission_id: Optional[str] = None,
                               parent_instance_id: Optional[str] = None,
