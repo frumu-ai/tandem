@@ -63,10 +63,14 @@ import type {
   RoutineHistoryResponse,
   AgentTeamSpawnInput,
   AgentTeamSpawnResponse,
+  AgentTeamTemplateCreateInput,
+  AgentTeamTemplatePatchInput,
   AgentTeamTemplatesResponse,
   AgentTeamInstancesResponse,
   AgentTeamMissionsResponse,
   AgentTeamApprovalsResponse,
+  AutomationV2Spec,
+  AutomationV2RunRecord,
   MissionCreateInput,
   MissionCreateResponse,
   MissionListResponse,
@@ -174,6 +178,8 @@ export class TandemClient {
   readonly routines: Routines;
   /** Mission-scoped automations */
   readonly automations: Automations;
+  /** Persistent automation flows (V2) */
+  readonly automationsV2: AutomationsV2;
   /** Semantic memory / vector store */
   readonly memory: Memory;
   /** Agent skill packs */
@@ -200,6 +206,7 @@ export class TandemClient {
     this.mcp = new Mcp(req);
     this.routines = new Routines(req);
     this.automations = new Automations(req);
+    this.automationsV2 = new AutomationsV2(req);
     this.memory = new Memory(req);
     this.skills = new Skills(req);
     this.resources = new Resources(req);
@@ -1258,6 +1265,107 @@ class Automations {
   }
 }
 
+// ─── AutomationsV2 namespace ─────────────────────────────────────────────────
+
+class AutomationsV2 {
+  constructor(private req: TandemClient["_request"]) {}
+
+  async create(spec: AutomationV2Spec): Promise<{ automation: JsonObject }> {
+    return this.req<{ automation: JsonObject }>("/automations/v2", {
+      method: "POST",
+      body: JSON.stringify(spec),
+    });
+  }
+
+  async list(): Promise<{ automations: JsonObject[]; count: number }> {
+    return this.req<{ automations: JsonObject[]; count: number }>("/automations/v2");
+  }
+
+  async get(id: string): Promise<{ automation: JsonObject }> {
+    return this.req<{ automation: JsonObject }>(`/automations/v2/${encodeURIComponent(id)}`);
+  }
+
+  async update(id: string, patch: Partial<AutomationV2Spec>): Promise<{ automation: JsonObject }> {
+    return this.req<{ automation: JsonObject }>(`/automations/v2/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+
+  async delete(id: string): Promise<{ ok?: boolean; deleted?: boolean }> {
+    return this.req<{ ok?: boolean; deleted?: boolean }>(
+      `/automations/v2/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async runNow(id: string): Promise<{ ok?: boolean; run?: AutomationV2RunRecord }> {
+    return this.req<{ ok?: boolean; run?: AutomationV2RunRecord }>(
+      `/automations/v2/${encodeURIComponent(id)}/run_now`,
+      { method: "POST", body: JSON.stringify({}) }
+    );
+  }
+
+  async pause(id: string, reason?: string): Promise<{ ok?: boolean; automation?: JsonObject }> {
+    return this.req<{ ok?: boolean; automation?: JsonObject }>(
+      `/automations/v2/${encodeURIComponent(id)}/pause`,
+      { method: "POST", body: JSON.stringify({ reason: reason ?? "" }) }
+    );
+  }
+
+  async resume(id: string): Promise<{ ok?: boolean; automation?: JsonObject }> {
+    return this.req<{ ok?: boolean; automation?: JsonObject }>(
+      `/automations/v2/${encodeURIComponent(id)}/resume`,
+      { method: "POST", body: JSON.stringify({}) }
+    );
+  }
+
+  async listRuns(
+    id: string,
+    limit = 50
+  ): Promise<{ runs: AutomationV2RunRecord[]; count: number }> {
+    return this.req<{ runs: AutomationV2RunRecord[]; count: number }>(
+      `/automations/v2/${encodeURIComponent(id)}/runs?limit=${limit}`
+    );
+  }
+
+  async getRun(runId: string): Promise<{ run: AutomationV2RunRecord }> {
+    return this.req<{ run: AutomationV2RunRecord }>(
+      `/automations/v2/runs/${encodeURIComponent(runId)}`
+    );
+  }
+
+  async pauseRun(
+    runId: string,
+    reason?: string
+  ): Promise<{ ok?: boolean; run?: AutomationV2RunRecord }> {
+    return this.req<{ ok?: boolean; run?: AutomationV2RunRecord }>(
+      `/automations/v2/runs/${encodeURIComponent(runId)}/pause`,
+      { method: "POST", body: JSON.stringify({ reason: reason ?? "" }) }
+    );
+  }
+
+  async resumeRun(
+    runId: string,
+    reason?: string
+  ): Promise<{ ok?: boolean; run?: AutomationV2RunRecord }> {
+    return this.req<{ ok?: boolean; run?: AutomationV2RunRecord }>(
+      `/automations/v2/runs/${encodeURIComponent(runId)}/resume`,
+      { method: "POST", body: JSON.stringify({ reason: reason ?? "" }) }
+    );
+  }
+
+  async cancelRun(
+    runId: string,
+    reason?: string
+  ): Promise<{ ok?: boolean; run?: AutomationV2RunRecord }> {
+    return this.req<{ ok?: boolean; run?: AutomationV2RunRecord }>(
+      `/automations/v2/runs/${encodeURIComponent(runId)}/cancel`,
+      { method: "POST", body: JSON.stringify({ reason: reason ?? "" }) }
+    );
+  }
+}
+
 // ─── AgentTeams namespace ─────────────────────────────────────────────────────
 
 class AgentTeams {
@@ -1266,6 +1374,32 @@ class AgentTeams {
   /** List available agent team templates. */
   async listTemplates(): Promise<AgentTeamTemplatesResponse> {
     return this.req<AgentTeamTemplatesResponse>("/agent-team/templates");
+  }
+
+  async createTemplate(
+    input: AgentTeamTemplateCreateInput
+  ): Promise<{ ok?: boolean; template?: JsonObject }> {
+    return this.req<{ ok?: boolean; template?: JsonObject }>("/agent-team/templates", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async updateTemplate(
+    id: string,
+    patch: AgentTeamTemplatePatchInput
+  ): Promise<{ ok?: boolean; template?: JsonObject }> {
+    return this.req<{ ok?: boolean; template?: JsonObject }>(
+      `/agent-team/templates/${encodeURIComponent(id)}`,
+      { method: "PATCH", body: JSON.stringify(patch) }
+    );
+  }
+
+  async deleteTemplate(id: string): Promise<{ ok?: boolean; deleted?: boolean }> {
+    return this.req<{ ok?: boolean; deleted?: boolean }>(
+      `/agent-team/templates/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
   }
 
   /** List agent team instances. */

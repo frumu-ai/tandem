@@ -11,6 +11,7 @@ pub mod plugins;
 pub mod session_title;
 pub mod storage;
 pub mod storage_paths;
+pub mod tool_policy;
 pub mod tool_router;
 
 pub const DEFAULT_ENGINE_HOST: &str = "127.0.0.1";
@@ -28,3 +29,4 @@ pub use plugins::*;
 pub use session_title::*;
 pub use storage::*;
 pub use storage_paths::*;
+pub use tool_policy::*;

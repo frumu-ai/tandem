@@ -2,6 +2,35 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
+## v0.3.28 (Unreleased)
+
+- Control panel UX and workflow hotfixes
+  - Replaced login hero animation with a uniform silicon-chip/data-flow visual.
+  - Clicking `New` in chat now auto-collapses the history sidebar.
+  - Added dashboard charts/summary cards for run and automation activity to improve at-a-glance operational visibility.
+- Chat reliability and approvals-state fixes
+  - Fixed delayed user-message rendering: user messages now appear immediately on send (optimistic render).
+  - Fixed missing right-rail tool activity by normalizing additional tool event families (`session.tool_call`, `session.tool_result`, and tool message-part updates).
+  - Fixed stale approval requests not clearing: pending-status filtering, `once` semantics for one-shot approvals, and session-change refresh now keep approvals list consistent.
+- MCP and Composio connection fixes
+  - Web control panel MCP form now supports auth modes (`auto`, `x-api-key`, `bearer`, `custom`, `none`) with Composio-aware auto-header behavior.
+  - MCP connect failures now surface server-side `last_error` details in UI/toasts.
+  - Fixed runtime MCP parser to accept streamable/SSE JSON-RPC responses during discovery (`initialize`, `tools/list`), resolving Composio `Invalid MCP JSON response: expected value at line 1 column 1` failures.
+- Persistent Automations V2 backend rollout (additive APIs)
+  - Added `automations/v2` endpoints for create/list/get/patch/delete, run-now, automation pause/resume, run pause/resume/cancel, run history, and SSE events.
+  - Added persistent V2 stores (`automations_v2.json`, `automation_v2_runs.json`) with checkpoint metadata for resumable runs.
+  - Added V2 scheduler/executor loops with DAG node dispatch and run checkpoint updates.
+- Per-agent model selection in V2 flows
+  - Added per-agent `model_policy` support and node-level model resolution, enabling mixed-cost agent fleets (cheap models for easy tasks, stronger models for hard tasks).
+- Scheduler + policy enforcement hardening
+  - Replaced cron no-op behavior with real cron evaluation (timezone-aware next-fire + misfire handling).
+  - Tool allowlist/denylist enforcement now supports wildcard/prefix matching (`*`, `mcp.github.*`, `mcp.composio.*`) in runtime/session/capability checks.
+- Hard pause behavior for active routine runs
+  - Pausing a running routine now cancels active tracked session IDs immediately (not status-only), and pause responses include canceled session IDs.
+- SDK/API management parity
+  - Added API support for agent template lifecycle (`POST/PATCH/DELETE /agent-team/templates`).
+  - Added TypeScript client support for `automationsV2` and agent-template create/update/delete methods.
+
 ## v0.3.27 (Unreleased)
 
 - Engine dynamic tool routing + context compaction

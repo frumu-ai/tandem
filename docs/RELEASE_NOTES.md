@@ -1,3 +1,38 @@
+# Tandem v0.3.28 Release Notes (Unreleased)
+
+### Highlights
+
+- **Control panel UX and workflow hotfixes**:
+  - Replaced the control-panel login hero animation with a more uniform silicon-chip/data-flow visual.
+  - Chat `New` action now auto-collapses the history sidebar to prioritize active conversation space.
+  - Added dashboard charts/summary cards for run status and automation activity, improving at-a-glance runtime insight.
+- **Chat runtime reliability + approvals consistency**:
+  - Fixed delayed user message appearance; messages now render immediately on send (optimistic render path).
+  - Fixed right-rail tool activity not populating by expanding accepted event families (`session.tool_call`, `session.tool_result`, and tool-part update variants).
+  - Fixed stale approval request entries persisting after resolution by tightening pending-status filtering and refresh behavior, including one-shot `once` approval semantics.
+- **MCP/Composio connectivity fixes**:
+  - Control panel MCP add/connect flow now supports auth modes (`auto`, `x-api-key`, `bearer`, `custom`, `none`) with Composio-aware auto-header behavior.
+  - MCP add/connect failure toasts now include surfaced server-side `last_error` context after refresh.
+  - Fixed runtime MCP parser to handle streamable/SSE JSON-RPC response envelopes for remote discovery (`initialize`, `tools/list`), resolving Composio errors such as:
+    - `Invalid MCP JSON response: expected value at line 1 column 1`
+- **Persistent Automations V2 backend (additive)**:
+  - Added `automations/v2` API family for lifecycle management, run controls (`run_now`, pause/resume/cancel), run listing/inspection, and V2 SSE events.
+  - Added durable V2 state files: `automations_v2.json` and `automation_v2_runs.json`.
+  - Added V2 scheduler/executor loops with DAG node checkpoint state (`completed_nodes`, `pending_nodes`, `node_outputs`) and resumable run metadata.
+- **Per-agent model routing for cost control**:
+  - Added per-agent `model_policy` in V2 agent profiles and node-level model selection at execution time.
+  - Enables mixed model fleets per automation (for example, lower-cost models for simple nodes and higher-capability models for complex nodes).
+- **Cron + policy runtime hardening**:
+  - Replaced cron no-op scheduling path with real timezone-aware cron next-fire + misfire planning behavior.
+  - Tool policy checks now support wildcard/prefix patterns (`*`, `mcp.github.*`, `mcp.composio.*`) across session and capability enforcement.
+- **Hard pause semantics for active runs**:
+  - Routine run pause now cancels active tracked session IDs immediately and includes canceled sessions in pause responses/events.
+- **Agent template + SDK parity**:
+  - Added agent template write APIs: `POST/PATCH/DELETE /agent-team/templates`.
+  - Added TypeScript client support for new `automationsV2` namespace and template lifecycle helpers.
+
+---
+
 # Tandem v0.3.27 Release Notes (Unreleased)
 
 ### Highlights

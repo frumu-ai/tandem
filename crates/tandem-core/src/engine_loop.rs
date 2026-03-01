@@ -22,8 +22,9 @@ use crate::tool_router::{
     should_escalate_auto_tools, tool_router_enabled, ToolIntent, ToolRoutingDecision,
 };
 use crate::{
-    derive_session_title_from_prompt, title_needs_repair, AgentDefinition, AgentRegistry,
-    CancellationRegistry, EventBus, PermissionAction, PermissionManager, PluginRegistry, Storage,
+    any_policy_matches, derive_session_title_from_prompt, title_needs_repair,
+    tool_name_matches_policy, AgentDefinition, AgentRegistry, CancellationRegistry, EventBus,
+    PermissionAction, PermissionManager, PluginRegistry, Storage,
 };
 use tokio::sync::RwLock;
 
@@ -473,7 +474,10 @@ impl EngineLoop {
                 };
                 if !request_tool_allowlist.is_empty() {
                     tool_schemas.retain(|schema| {
-                        request_tool_allowlist.contains(&normalize_tool_name(&schema.name))
+                        let tool = normalize_tool_name(&schema.name);
+                        request_tool_allowlist
+                            .iter()
+                            .any(|pattern| tool_name_matches_policy(pattern, &tool))
                     });
                 }
                 if active_agent.tools.is_some() {
@@ -497,7 +501,7 @@ impl EngineLoop {
                     if !allowed_tools.is_empty() {
                         tool_schemas.retain(|schema| {
                             let normalized = normalize_tool_name(&schema.name);
-                            allowed_tools.iter().any(|tool| tool == &normalized)
+                            any_policy_matches(&allowed_tools, &normalized)
                         });
                     }
                 }
@@ -1297,7 +1301,7 @@ impl EngineLoop {
             .get(session_id)
             .cloned()
         {
-            if !allowed_tools.is_empty() && !allowed_tools.iter().any(|name| name == &tool) {
+            if !allowed_tools.is_empty() && !any_policy_matches(&allowed_tools, &tool) {
                 return Ok(Some(format!("Tool `{tool}` is not allowed for this run.")));
             }
         }
@@ -2031,7 +2035,13 @@ fn agent_can_use_tool(agent: &AgentDefinition, tool_name: &str) -> bool {
     let target = normalize_tool_name(tool_name);
     match agent.tools.as_ref() {
         None => true,
-        Some(list) => list.iter().any(|t| normalize_tool_name(t) == target),
+        Some(list) => {
+            let normalized = list
+                .iter()
+                .map(|t| normalize_tool_name(t))
+                .collect::<Vec<_>>();
+            any_policy_matches(&normalized, &target)
+        }
     }
 }
 

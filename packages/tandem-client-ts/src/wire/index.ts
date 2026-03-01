@@ -630,6 +630,18 @@ export interface AgentTeamTemplatesResponse {
   count: number;
 }
 
+export interface AgentTeamTemplateCreateInput {
+  template: JsonObject;
+}
+
+export interface AgentTeamTemplatePatchInput {
+  role?: string;
+  system_prompt?: string;
+  skills?: JsonObject[];
+  default_budget?: JsonObject;
+  capabilities?: JsonObject;
+}
+
 export interface AgentTeamInstance {
   instanceID?: string;
   missionID?: string;
@@ -659,6 +671,74 @@ export interface AgentTeamApprovalsResponse {
   spawnApprovals: AgentTeamSpawnApproval[];
   toolApprovals: JsonObject[];
   count: number;
+}
+
+export type AutomationV2Status = "active" | "paused" | "draft";
+export type AutomationV2ScheduleType = "cron" | "interval" | "manual";
+export type AutomationV2RunStatus =
+  | "queued"
+  | "running"
+  | "pausing"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface AutomationV2Schedule {
+  type: AutomationV2ScheduleType;
+  cron_expression?: string;
+  interval_seconds?: number;
+  timezone: string;
+  misfire_policy?: "skip" | "run_once" | "catch_up";
+}
+
+export interface AutomationV2AgentProfile {
+  agent_id: string;
+  template_id?: string;
+  display_name: string;
+  avatar_url?: string;
+  model_policy?: JsonObject;
+  skills?: string[];
+  tool_policy?: { allowlist?: string[]; denylist?: string[] };
+  mcp_policy?: { allowed_servers?: string[]; allowed_tools?: string[] };
+  approval_policy?: string;
+}
+
+export interface AutomationV2FlowNode {
+  node_id: string;
+  agent_id: string;
+  objective: string;
+  depends_on?: string[];
+  retry_policy?: JsonObject;
+  timeout_ms?: number;
+}
+
+export interface AutomationV2Spec {
+  automation_id?: string;
+  name: string;
+  description?: string;
+  status?: AutomationV2Status;
+  schedule: AutomationV2Schedule;
+  agents: AutomationV2AgentProfile[];
+  flow: { nodes: AutomationV2FlowNode[] };
+  execution?: {
+    max_parallel_agents?: number;
+    max_total_runtime_ms?: number;
+    max_total_tool_calls?: number;
+  };
+  output_targets?: string[];
+  creator_id?: string;
+  [key: string]: unknown;
+}
+
+export interface AutomationV2RunRecord {
+  run_id: string;
+  automation_id: string;
+  status: AutomationV2RunStatus;
+  checkpoint?: JsonObject;
+  active_session_ids?: string[];
+  active_instance_ids?: string[];
+  [key: string]: unknown;
 }
 
 // ─── Missions ────────────────────────────────────────────────────────────────

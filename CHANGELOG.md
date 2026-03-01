@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.28] - 2026-03-01
+
+### Added
+
+- **Control panel MCP auth-mode UX**: Added MCP connection auth modes in web control panel (`auto`, `x-api-key`, `bearer`, `custom`, `none`) with Composio-aware auto-header behavior and inline auth-preview guidance.
+- **Dashboard activity visuals**: Added control panel dashboard charts/summary cards for recent runs, status distribution, and automation/schedule activity to improve operator visibility.
+- **Persistent Automations V2 backend foundation**: Added additive `automations/v2` API surface with new persisted state files (`automations_v2.json`, `automation_v2_runs.json`), DAG run checkpoints, run-level controls, and SSE stream endpoint.
+- **Per-agent model policy in V2 runs**: Added per-agent `model_policy` and runtime node-level model resolution so each agent can run different model tiers for cost/perf tuning.
+- **Agent template write APIs**: Added `POST/PATCH/DELETE /agent-team/templates` so template selection and editing can be managed via API (not file-only).
+- **SDK surface for V2 + template management**: TypeScript client now exposes `automationsV2` namespace and agent-team template create/update/delete methods.
+
+### Changed
+
+- **Control panel login hero animation**: Replaced organic login animation with a uniform silicon-chip/data-flow motif for a cleaner and more consistent first-run visual style.
+- **Chat session UX behavior**: “New chat” now auto-collapses the chat history sidebar to prioritize message composition space.
+- **MCP error visibility in control panel**: MCP add/connect now reloads server state after failures and surfaces server `last_error` details directly in UI feedback.
+- **Scheduler cron behavior**: Routine/automation scheduling now evaluates true cron expressions with timezone-aware next-fire computation and misfire planning.
+- **Tool policy matching model**: Runtime allow/deny checks now support exact, wildcard, and prefix policies (`*`, `mcp.github.*`, `mcp.composio.*`) across session and capability gates.
+
+### Fixed
+
+- **User-message render timing in chat**: Fixed delayed user message visibility; user messages now render optimistically at send-time instead of waiting for model response completion.
+- **Tool activity rail population**: Fixed missing tool activity updates in control panel chat by broadening event parsing to include `session.tool_call`, `session.tool_result`, and message part tool event variants.
+- **Approval queue stale-state cleanup**: Fixed stale/previous permission requests persisting in chat approvals rail; pending request filtering, one-time approval semantics (`once`), and refresh-on-session-change behavior now clear resolved approvals reliably.
+- **Composio MCP stream response compatibility**: Fixed MCP runtime parsing for streamable/SSE JSON-RPC responses during remote discovery (`initialize` / `tools/list`), resolving `Invalid MCP JSON response: expected value at line 1 column 1` failures on Composio endpoints.
+- **Routine hard-pause runtime semantics**: Pausing a `running` routine run now actively cancels tracked live session(s) and records cancelled session IDs in pause responses/events.
+
 ## [0.3.27] - 2026-03-01
 
 ### Added

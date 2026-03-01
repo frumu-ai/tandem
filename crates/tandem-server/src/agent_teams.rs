@@ -9,8 +9,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tandem_core::{
-    SpawnAgentHook, SpawnAgentToolContext, SpawnAgentToolResult, ToolPolicyContext,
-    ToolPolicyDecision, ToolPolicyHook,
+    any_policy_matches, SpawnAgentHook, SpawnAgentToolContext, SpawnAgentToolResult,
+    ToolPolicyContext, ToolPolicyDecision, ToolPolicyHook,
 };
 use tandem_orchestrator::{
     AgentInstance, AgentInstanceStatus, AgentRole, AgentTemplate, BudgetLimit, SpawnDecision,
@@ -221,11 +221,12 @@ impl ToolPolicyHook for ServerToolPolicyHook {
         Box::pin(async move {
             let tool = normalize_tool_name(&ctx.tool);
             if let Some(policy) = state.routine_session_policy(&ctx.session_id).await {
-                if !policy.allowed_tools.is_empty()
-                    && !policy
-                        .allowed_tools
-                        .iter()
-                        .any(|name| normalize_tool_name(name) == tool)
+                let allowed_patterns = policy
+                    .allowed_tools
+                    .iter()
+                    .map(|name| normalize_tool_name(name))
+                    .collect::<Vec<_>>();
+                if !policy.allowed_tools.is_empty() && !any_policy_matches(&allowed_patterns, &tool)
                 {
                     let reason = format!(
                         "tool `{}` is not allowed for routine `{}` (run `{}`)",
@@ -326,6 +327,72 @@ impl AgentTeamRuntime {
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| a.template_id.cmp(&b.template_id));
         rows
+    }
+
+    async fn templates_dir_for_loaded_workspace(&self) -> anyhow::Result<PathBuf> {
+        let workspace = self
+            .loaded_workspace
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("agent team workspace not loaded"))?;
+        Ok(PathBuf::from(workspace)
+            .join(".tandem")
+            .join("agent-team")
+            .join("templates"))
+    }
+
+    fn template_filename(template_id: &str) -> String {
+        let safe = template_id
+            .trim()
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let fallback = if safe.is_empty() {
+            "template".to_string()
+        } else {
+            safe
+        };
+        format!("{fallback}.yaml")
+    }
+
+    pub async fn upsert_template(
+        &self,
+        workspace_root: &str,
+        template: AgentTemplate,
+    ) -> anyhow::Result<AgentTemplate> {
+        self.ensure_loaded_for_workspace(workspace_root).await?;
+        let templates_dir = self.templates_dir_for_loaded_workspace().await?;
+        fs::create_dir_all(&templates_dir).await?;
+        let path = templates_dir.join(Self::template_filename(&template.template_id));
+        let payload = serde_yaml::to_string(&template)?;
+        fs::write(path, payload).await?;
+        self.templates
+            .write()
+            .await
+            .insert(template.template_id.clone(), template.clone());
+        Ok(template)
+    }
+
+    pub async fn delete_template(
+        &self,
+        workspace_root: &str,
+        template_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.ensure_loaded_for_workspace(workspace_root).await?;
+        let templates_dir = self.templates_dir_for_loaded_workspace().await?;
+        let path = templates_dir.join(Self::template_filename(template_id));
+        let existed = self.templates.write().await.remove(template_id).is_some();
+        if path.exists() {
+            let _ = fs::remove_file(path).await;
+        }
+        Ok(existed)
     }
 
     pub async fn list_instances(
@@ -1717,20 +1784,20 @@ async fn evaluate_capability_deny(
     session_id: &str,
     message_id: &str,
 ) -> Option<String> {
-    if !caps.tool_denylist.is_empty()
-        && caps
-            .tool_denylist
-            .iter()
-            .any(|name| normalize_tool_name(name) == *tool)
-    {
+    let deny_patterns = caps
+        .tool_denylist
+        .iter()
+        .map(|name| normalize_tool_name(name))
+        .collect::<Vec<_>>();
+    if !deny_patterns.is_empty() && any_policy_matches(&deny_patterns, tool) {
         return Some(format!("tool `{tool}` denied by agent capability policy"));
     }
-    if !caps.tool_allowlist.is_empty()
-        && !caps
-            .tool_allowlist
-            .iter()
-            .any(|name| normalize_tool_name(name) == *tool)
-    {
+    let allow_patterns = caps
+        .tool_allowlist
+        .iter()
+        .map(|name| normalize_tool_name(name))
+        .collect::<Vec<_>>();
+    if !allow_patterns.is_empty() && !any_policy_matches(&allow_patterns, tool) {
         return Some(format!("tool `{tool}` not in agent allowlist"));
     }
 

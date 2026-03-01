@@ -2,11 +2,16 @@
 
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use futures::future::BoxFuture;
+use chrono::{TimeZone, Utc};
+use chrono_tz::Tz;
+use cron::Schedule;
+use futures::future::{join_all, BoxFuture};
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -462,6 +467,8 @@ pub struct RoutineRunRecord {
     pub output_targets: Vec<String>,
     #[serde(default)]
     pub artifacts: Vec<RoutineRunArtifact>,
+    #[serde(default)]
+    pub active_session_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -478,6 +485,167 @@ pub struct RoutineTriggerPlan {
     pub run_count: u32,
     pub scheduled_at_ms: u64,
     pub next_fire_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationV2Status {
+    Active,
+    Paused,
+    Draft,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationV2ScheduleType {
+    Cron,
+    Interval,
+    Manual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationV2Schedule {
+    #[serde(rename = "type")]
+    pub schedule_type: AutomationV2ScheduleType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron_expression: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_seconds: Option<u64>,
+    pub timezone: String,
+    pub misfire_policy: RoutineMisfirePolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationAgentToolPolicy {
+    #[serde(default)]
+    pub allowlist: Vec<String>,
+    #[serde(default)]
+    pub denylist: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationAgentMcpPolicy {
+    #[serde(default)]
+    pub allowed_servers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationAgentProfile {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_policy: Option<Value>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    pub tool_policy: AutomationAgentToolPolicy,
+    pub mcp_policy: AutomationAgentMcpPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationFlowNode {
+    pub node_id: String,
+    pub agent_id: String,
+    pub objective: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_policy: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationFlowSpec {
+    #[serde(default)]
+    pub nodes: Vec<AutomationFlowNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationExecutionPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel_agents: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_runtime_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tool_calls: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationV2Spec {
+    pub automation_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub status: AutomationV2Status,
+    pub schedule: AutomationV2Schedule,
+    #[serde(default)]
+    pub agents: Vec<AutomationAgentProfile>,
+    pub flow: AutomationFlowSpec,
+    pub execution: AutomationExecutionPolicy,
+    #[serde(default)]
+    pub output_targets: Vec<String>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub creator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_fire_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_fired_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationRunStatus {
+    Queued,
+    Running,
+    Pausing,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationRunCheckpoint {
+    #[serde(default)]
+    pub completed_nodes: Vec<String>,
+    #[serde(default)]
+    pub pending_nodes: Vec<String>,
+    #[serde(default)]
+    pub node_outputs: std::collections::HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationV2RunRecord {
+    pub run_id: String,
+    pub automation_id: String,
+    pub trigger_type: String,
+    pub status: AutomationRunStatus,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u64>,
+    #[serde(default)]
+    pub active_session_ids: Vec<String>,
+    #[serde(default)]
+    pub active_instance_ids: Vec<String>,
+    pub checkpoint: AutomationRunCheckpoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -546,11 +714,15 @@ pub struct AppState {
     pub routines: Arc<RwLock<std::collections::HashMap<String, RoutineSpec>>>,
     pub routine_history: Arc<RwLock<std::collections::HashMap<String, Vec<RoutineHistoryEvent>>>>,
     pub routine_runs: Arc<RwLock<std::collections::HashMap<String, RoutineRunRecord>>>,
+    pub automations_v2: Arc<RwLock<std::collections::HashMap<String, AutomationV2Spec>>>,
+    pub automation_v2_runs: Arc<RwLock<std::collections::HashMap<String, AutomationV2RunRecord>>>,
     pub routine_session_policies:
         Arc<RwLock<std::collections::HashMap<String, RoutineSessionPolicy>>>,
     pub routines_path: PathBuf,
     pub routine_history_path: PathBuf,
     pub routine_runs_path: PathBuf,
+    pub automations_v2_path: PathBuf,
+    pub automation_v2_runs_path: PathBuf,
     pub agent_teams: AgentTeamRuntime,
     pub web_ui_enabled: Arc<AtomicBool>,
     pub web_ui_prefix: Arc<std::sync::RwLock<String>>,
@@ -589,10 +761,14 @@ impl AppState {
             routines: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_history: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            automations_v2: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            automation_v2_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_session_policies: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routines_path: resolve_routines_path(),
             routine_history_path: resolve_routine_history_path(),
             routine_runs_path: resolve_routine_runs_path(),
+            automations_v2_path: resolve_automations_v2_path(),
+            automation_v2_runs_path: resolve_automation_v2_runs_path(),
             agent_teams: AgentTeamRuntime::new(resolve_agent_team_audit_path()),
             web_ui_enabled: Arc::new(AtomicBool::new(false)),
             web_ui_prefix: Arc::new(std::sync::RwLock::new("/admin".to_string())),
@@ -700,6 +876,8 @@ impl AppState {
         let _ = self.load_routines().await;
         let _ = self.load_routine_history().await;
         let _ = self.load_routine_runs().await;
+        let _ = self.load_automations_v2().await;
+        let _ = self.load_automation_v2_runs().await;
         let workspace_root = self.workspace_index.snapshot().await.root;
         let _ = self
             .agent_teams
@@ -1031,19 +1209,25 @@ impl AppState {
         routine.allowed_tools = normalize_allowed_tools(routine.allowed_tools);
         routine.output_targets = normalize_non_empty_list(routine.output_targets);
 
-        let interval = match routine.schedule {
+        let now = now_ms();
+        let next_schedule_fire =
+            compute_next_schedule_fire_at_ms(&routine.schedule, &routine.timezone, now)
+                .ok_or_else(|| RoutineStoreError::InvalidSchedule {
+                    detail: "invalid schedule or timezone".to_string(),
+                })?;
+        match routine.schedule {
             RoutineSchedule::IntervalSeconds { seconds } => {
                 if seconds == 0 {
                     return Err(RoutineStoreError::InvalidSchedule {
                         detail: "interval_seconds must be > 0".to_string(),
                     });
                 }
-                Some(seconds)
+                let _ = seconds;
             }
-            RoutineSchedule::Cron { .. } => None,
-        };
+            RoutineSchedule::Cron { .. } => {}
+        }
         if routine.next_fire_at_ms.is_none() {
-            routine.next_fire_at_ms = Some(now_ms().saturating_add(interval.unwrap_or(60) * 1000));
+            routine.next_fire_at_ms = Some(next_schedule_fire);
         }
 
         let mut guard = self.routines.write().await;
@@ -1113,16 +1297,14 @@ impl AppState {
             let Some(next_fire_at_ms) = routine.next_fire_at_ms else {
                 continue;
             };
-            let Some(interval_ms) = routine_interval_ms(&routine.schedule) else {
-                continue;
-            };
             if now_ms < next_fire_at_ms {
                 continue;
             }
-            let (run_count, next_fire_at_ms) = compute_misfire_plan(
+            let (run_count, next_fire_at_ms) = compute_misfire_plan_for_schedule(
                 now_ms,
                 next_fire_at_ms,
-                interval_ms,
+                &routine.schedule,
+                &routine.timezone,
                 &routine.misfire_policy,
             );
             routine.next_fire_at_ms = Some(next_fire_at_ms);
@@ -1213,6 +1395,7 @@ impl AppState {
             allowed_tools: routine.allowed_tools.clone(),
             output_targets: routine.output_targets.clone(),
             artifacts: Vec::new(),
+            active_session_ids: Vec::new(),
         };
         self.routine_runs
             .write()
@@ -1360,6 +1543,289 @@ impl AppState {
         let _ = self.persist_routine_runs().await;
         Some(updated)
     }
+
+    pub async fn add_active_session_id(
+        &self,
+        run_id: &str,
+        session_id: String,
+    ) -> Option<RoutineRunRecord> {
+        let mut guard = self.routine_runs.write().await;
+        let row = guard.get_mut(run_id)?;
+        if !row.active_session_ids.iter().any(|id| id == &session_id) {
+            row.active_session_ids.push(session_id);
+        }
+        row.updated_at_ms = now_ms();
+        let updated = row.clone();
+        drop(guard);
+        let _ = self.persist_routine_runs().await;
+        Some(updated)
+    }
+
+    pub async fn clear_active_session_id(
+        &self,
+        run_id: &str,
+        session_id: &str,
+    ) -> Option<RoutineRunRecord> {
+        let mut guard = self.routine_runs.write().await;
+        let row = guard.get_mut(run_id)?;
+        row.active_session_ids.retain(|id| id != session_id);
+        row.updated_at_ms = now_ms();
+        let updated = row.clone();
+        drop(guard);
+        let _ = self.persist_routine_runs().await;
+        Some(updated)
+    }
+
+    pub async fn load_automations_v2(&self) -> anyhow::Result<()> {
+        if !self.automations_v2_path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&self.automations_v2_path).await?;
+        let parsed =
+            serde_json::from_str::<std::collections::HashMap<String, AutomationV2Spec>>(&raw)
+                .unwrap_or_default();
+        *self.automations_v2.write().await = parsed;
+        Ok(())
+    }
+
+    pub async fn persist_automations_v2(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.automations_v2_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.automations_v2.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.automations_v2_path, payload).await?;
+        Ok(())
+    }
+
+    pub async fn load_automation_v2_runs(&self) -> anyhow::Result<()> {
+        if !self.automation_v2_runs_path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&self.automation_v2_runs_path).await?;
+        let parsed =
+            serde_json::from_str::<std::collections::HashMap<String, AutomationV2RunRecord>>(&raw)
+                .unwrap_or_default();
+        *self.automation_v2_runs.write().await = parsed;
+        Ok(())
+    }
+
+    pub async fn persist_automation_v2_runs(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.automation_v2_runs_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.automation_v2_runs.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.automation_v2_runs_path, payload).await?;
+        Ok(())
+    }
+
+    pub async fn put_automation_v2(
+        &self,
+        mut automation: AutomationV2Spec,
+    ) -> anyhow::Result<AutomationV2Spec> {
+        if automation.automation_id.trim().is_empty() {
+            anyhow::bail!("automation_id is required");
+        }
+        for agent in &mut automation.agents {
+            if agent.display_name.trim().is_empty() {
+                agent.display_name = auto_generated_agent_name(&agent.agent_id);
+            }
+            agent.tool_policy.allowlist =
+                normalize_allowed_tools(agent.tool_policy.allowlist.clone());
+            agent.tool_policy.denylist =
+                normalize_allowed_tools(agent.tool_policy.denylist.clone());
+            agent.mcp_policy.allowed_servers =
+                normalize_non_empty_list(agent.mcp_policy.allowed_servers.clone());
+            agent.mcp_policy.allowed_tools = agent
+                .mcp_policy
+                .allowed_tools
+                .take()
+                .map(normalize_allowed_tools);
+        }
+        let now = now_ms();
+        if automation.created_at_ms == 0 {
+            automation.created_at_ms = now;
+        }
+        automation.updated_at_ms = now;
+        if automation.next_fire_at_ms.is_none() {
+            automation.next_fire_at_ms =
+                automation_schedule_next_fire_at_ms(&automation.schedule, now);
+        }
+        self.automations_v2
+            .write()
+            .await
+            .insert(automation.automation_id.clone(), automation.clone());
+        self.persist_automations_v2().await?;
+        Ok(automation)
+    }
+
+    pub async fn get_automation_v2(&self, automation_id: &str) -> Option<AutomationV2Spec> {
+        self.automations_v2.read().await.get(automation_id).cloned()
+    }
+
+    pub async fn list_automations_v2(&self) -> Vec<AutomationV2Spec> {
+        let mut rows = self
+            .automations_v2
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| a.automation_id.cmp(&b.automation_id));
+        rows
+    }
+
+    pub async fn delete_automation_v2(
+        &self,
+        automation_id: &str,
+    ) -> anyhow::Result<Option<AutomationV2Spec>> {
+        let removed = self.automations_v2.write().await.remove(automation_id);
+        self.persist_automations_v2().await?;
+        Ok(removed)
+    }
+
+    pub async fn create_automation_v2_run(
+        &self,
+        automation: &AutomationV2Spec,
+        trigger_type: &str,
+    ) -> anyhow::Result<AutomationV2RunRecord> {
+        let now = now_ms();
+        let pending_nodes = automation
+            .flow
+            .nodes
+            .iter()
+            .map(|n| n.node_id.clone())
+            .collect::<Vec<_>>();
+        let run = AutomationV2RunRecord {
+            run_id: format!("automation-v2-run-{}", uuid::Uuid::new_v4()),
+            automation_id: automation.automation_id.clone(),
+            trigger_type: trigger_type.to_string(),
+            status: AutomationRunStatus::Queued,
+            created_at_ms: now,
+            updated_at_ms: now,
+            started_at_ms: None,
+            finished_at_ms: None,
+            active_session_ids: Vec::new(),
+            active_instance_ids: Vec::new(),
+            checkpoint: AutomationRunCheckpoint {
+                completed_nodes: Vec::new(),
+                pending_nodes,
+                node_outputs: std::collections::HashMap::new(),
+            },
+            pause_reason: None,
+            resume_reason: None,
+            detail: None,
+        };
+        self.automation_v2_runs
+            .write()
+            .await
+            .insert(run.run_id.clone(), run.clone());
+        self.persist_automation_v2_runs().await?;
+        Ok(run)
+    }
+
+    pub async fn get_automation_v2_run(&self, run_id: &str) -> Option<AutomationV2RunRecord> {
+        self.automation_v2_runs.read().await.get(run_id).cloned()
+    }
+
+    pub async fn list_automation_v2_runs(
+        &self,
+        automation_id: Option<&str>,
+        limit: usize,
+    ) -> Vec<AutomationV2RunRecord> {
+        let mut rows = self
+            .automation_v2_runs
+            .read()
+            .await
+            .values()
+            .filter(|row| {
+                if let Some(id) = automation_id {
+                    row.automation_id == id
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        rows.truncate(limit.clamp(1, 500));
+        rows
+    }
+
+    pub async fn claim_next_queued_automation_v2_run(&self) -> Option<AutomationV2RunRecord> {
+        let mut guard = self.automation_v2_runs.write().await;
+        let run_id = guard
+            .values()
+            .filter(|row| row.status == AutomationRunStatus::Queued)
+            .min_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms))
+            .map(|row| row.run_id.clone())?;
+        let now = now_ms();
+        let run = guard.get_mut(&run_id)?;
+        run.status = AutomationRunStatus::Running;
+        run.updated_at_ms = now;
+        run.started_at_ms.get_or_insert(now);
+        let claimed = run.clone();
+        drop(guard);
+        let _ = self.persist_automation_v2_runs().await;
+        Some(claimed)
+    }
+
+    pub async fn update_automation_v2_run(
+        &self,
+        run_id: &str,
+        update: impl FnOnce(&mut AutomationV2RunRecord),
+    ) -> Option<AutomationV2RunRecord> {
+        let mut guard = self.automation_v2_runs.write().await;
+        let run = guard.get_mut(run_id)?;
+        update(run);
+        run.updated_at_ms = now_ms();
+        if matches!(
+            run.status,
+            AutomationRunStatus::Completed
+                | AutomationRunStatus::Failed
+                | AutomationRunStatus::Cancelled
+        ) {
+            run.finished_at_ms.get_or_insert_with(now_ms);
+        }
+        let out = run.clone();
+        drop(guard);
+        let _ = self.persist_automation_v2_runs().await;
+        Some(out)
+    }
+
+    pub async fn evaluate_automation_v2_misfires(&self, now_ms: u64) -> Vec<String> {
+        let mut fired = Vec::new();
+        let mut guard = self.automations_v2.write().await;
+        for automation in guard.values_mut() {
+            if automation.status != AutomationV2Status::Active {
+                continue;
+            }
+            let Some(next_fire_at_ms) = automation.next_fire_at_ms else {
+                automation.next_fire_at_ms =
+                    automation_schedule_next_fire_at_ms(&automation.schedule, now_ms);
+                continue;
+            };
+            if now_ms < next_fire_at_ms {
+                continue;
+            }
+            let run_count =
+                automation_schedule_due_count(&automation.schedule, now_ms, next_fire_at_ms);
+            let next = automation_schedule_next_fire_at_ms(&automation.schedule, now_ms);
+            automation.next_fire_at_ms = next;
+            automation.last_fired_at_ms = Some(now_ms);
+            for _ in 0..run_count {
+                fired.push(automation.automation_id.clone());
+            }
+        }
+        drop(guard);
+        let _ = self.persist_automations_v2().await;
+        fired
+    }
 }
 
 async fn build_channels_config(
@@ -1485,6 +1951,26 @@ fn resolve_routine_runs_path() -> PathBuf {
     default_state_dir().join("routine_runs.json")
 }
 
+fn resolve_automations_v2_path() -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("automations_v2.json");
+        }
+    }
+    default_state_dir().join("automations_v2.json")
+}
+
+fn resolve_automation_v2_runs_path() -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("automation_v2_runs.json");
+        }
+    }
+    default_state_dir().join("automation_v2_runs.json")
+}
+
 fn resolve_agent_team_audit_path() -> PathBuf {
     if let Ok(base) = std::env::var("TANDEM_STATE_DIR") {
         let trimmed = base.trim();
@@ -1518,6 +2004,73 @@ fn routine_interval_ms(schedule: &RoutineSchedule) -> Option<u64> {
     }
 }
 
+fn parse_timezone(timezone: &str) -> Option<Tz> {
+    timezone.trim().parse::<Tz>().ok()
+}
+
+fn next_cron_fire_at_ms(expression: &str, timezone: &str, from_ms: u64) -> Option<u64> {
+    let tz = parse_timezone(timezone)?;
+    let schedule = Schedule::from_str(expression).ok()?;
+    let from_dt = Utc.timestamp_millis_opt(from_ms as i64).single()?;
+    let local_from = from_dt.with_timezone(&tz);
+    let next = schedule.after(&local_from).next()?;
+    Some(next.with_timezone(&Utc).timestamp_millis().max(0) as u64)
+}
+
+fn compute_next_schedule_fire_at_ms(
+    schedule: &RoutineSchedule,
+    timezone: &str,
+    from_ms: u64,
+) -> Option<u64> {
+    let _ = parse_timezone(timezone)?;
+    match schedule {
+        RoutineSchedule::IntervalSeconds { seconds } => {
+            Some(from_ms.saturating_add(seconds.saturating_mul(1000)))
+        }
+        RoutineSchedule::Cron { expression } => next_cron_fire_at_ms(expression, timezone, from_ms),
+    }
+}
+
+fn compute_misfire_plan_for_schedule(
+    now_ms: u64,
+    next_fire_at_ms: u64,
+    schedule: &RoutineSchedule,
+    timezone: &str,
+    policy: &RoutineMisfirePolicy,
+) -> (u32, u64) {
+    match schedule {
+        RoutineSchedule::IntervalSeconds { .. } => {
+            let Some(interval_ms) = routine_interval_ms(schedule) else {
+                return (0, next_fire_at_ms);
+            };
+            compute_misfire_plan(now_ms, next_fire_at_ms, interval_ms, policy)
+        }
+        RoutineSchedule::Cron { expression } => {
+            let aligned_next = next_cron_fire_at_ms(expression, timezone, now_ms)
+                .unwrap_or_else(|| now_ms.saturating_add(60_000));
+            match policy {
+                RoutineMisfirePolicy::Skip => (0, aligned_next),
+                RoutineMisfirePolicy::RunOnce => (1, aligned_next),
+                RoutineMisfirePolicy::CatchUp { max_runs } => {
+                    let mut count = 0u32;
+                    let mut cursor = next_fire_at_ms;
+                    while cursor <= now_ms && count < *max_runs {
+                        count = count.saturating_add(1);
+                        let Some(next) = next_cron_fire_at_ms(expression, timezone, cursor) else {
+                            break;
+                        };
+                        if next <= cursor {
+                            break;
+                        }
+                        cursor = next;
+                    }
+                    (count, aligned_next)
+                }
+            }
+        }
+    }
+}
+
 fn compute_misfire_plan(
     now_ms: u64,
     next_fire_at_ms: u64,
@@ -1537,6 +2090,53 @@ fn compute_misfire_plan(
             (count, aligned_next)
         }
     }
+}
+
+fn auto_generated_agent_name(agent_id: &str) -> String {
+    let names = [
+        "Maple", "Cinder", "Rivet", "Comet", "Atlas", "Juniper", "Quartz", "Beacon",
+    ];
+    let digest = Sha256::digest(agent_id.as_bytes());
+    let idx = usize::from(digest[0]) % names.len();
+    format!("{}-{:02x}", names[idx], digest[1])
+}
+
+fn schedule_from_automation_v2(schedule: &AutomationV2Schedule) -> Option<RoutineSchedule> {
+    match schedule.schedule_type {
+        AutomationV2ScheduleType::Manual => None,
+        AutomationV2ScheduleType::Interval => Some(RoutineSchedule::IntervalSeconds {
+            seconds: schedule.interval_seconds.unwrap_or(60),
+        }),
+        AutomationV2ScheduleType::Cron => Some(RoutineSchedule::Cron {
+            expression: schedule.cron_expression.clone().unwrap_or_default(),
+        }),
+    }
+}
+
+fn automation_schedule_next_fire_at_ms(
+    schedule: &AutomationV2Schedule,
+    from_ms: u64,
+) -> Option<u64> {
+    let routine_schedule = schedule_from_automation_v2(schedule)?;
+    compute_next_schedule_fire_at_ms(&routine_schedule, &schedule.timezone, from_ms)
+}
+
+fn automation_schedule_due_count(
+    schedule: &AutomationV2Schedule,
+    now_ms: u64,
+    next_fire_at_ms: u64,
+) -> u32 {
+    let Some(routine_schedule) = schedule_from_automation_v2(schedule) else {
+        return 0;
+    };
+    let (count, _) = compute_misfire_plan_for_schedule(
+        now_ms,
+        next_fire_at_ms,
+        &routine_schedule,
+        &schedule.timezone,
+        &schedule.misfire_policy,
+    );
+    count.max(1)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2305,6 +2905,9 @@ pub async fn run_routine_executor(state: AppState) {
             )
             .await;
         state
+            .add_active_session_id(&run.run_id, session_id.clone())
+            .await;
+        state
             .engine_loop
             .set_session_allowed_tools(&session_id, run.allowed_tools.clone())
             .await;
@@ -2345,6 +2948,9 @@ pub async fn run_routine_executor(state: AppState) {
 
         state.clear_routine_session_policy(&session_id).await;
         state
+            .clear_active_session_id(&run.run_id, &session_id)
+            .await;
+        state
             .engine_loop
             .clear_session_allowed_tools(&session_id)
             .await;
@@ -2370,6 +2976,20 @@ pub async fn run_routine_executor(state: AppState) {
                 ));
             }
             Err(error) => {
+                if let Some(latest) = state.get_routine_run(&run.run_id).await {
+                    if latest.status == RoutineRunStatus::Paused {
+                        state.event_bus.publish(EngineEvent::new(
+                            "routine.run.paused",
+                            serde_json::json!({
+                                "runID": run.run_id,
+                                "routineID": run.routine_id,
+                                "sessionID": session_id,
+                                "finishedAtMs": now_ms(),
+                            }),
+                        ));
+                        continue;
+                    }
+                }
                 let detail = truncate_text(&error.to_string(), 500);
                 let _ = state
                     .update_routine_run_status(
@@ -2388,6 +3008,267 @@ pub async fn run_routine_executor(state: AppState) {
                         "finishedAtMs": now_ms(),
                     }),
                 ));
+            }
+        }
+    }
+}
+
+pub async fn run_automation_v2_scheduler(state: AppState) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let now = now_ms();
+        let due = state.evaluate_automation_v2_misfires(now).await;
+        for automation_id in due {
+            let Some(automation) = state.get_automation_v2(&automation_id).await else {
+                continue;
+            };
+            if let Ok(run) = state
+                .create_automation_v2_run(&automation, "scheduled")
+                .await
+            {
+                state.event_bus.publish(EngineEvent::new(
+                    "automation.v2.run.created",
+                    serde_json::json!({
+                        "automationID": automation_id,
+                        "run": run,
+                        "triggerType": "scheduled",
+                    }),
+                ));
+            }
+        }
+    }
+}
+
+async fn execute_automation_v2_node(
+    state: &AppState,
+    run_id: &str,
+    automation: &AutomationV2Spec,
+    node: &AutomationFlowNode,
+    agent: &AutomationAgentProfile,
+) -> anyhow::Result<Value> {
+    let workspace_root = state.workspace_index.snapshot().await.root;
+    let mut session = Session::new(
+        Some(format!(
+            "Automation {} / {}",
+            automation.automation_id, node.node_id
+        )),
+        Some(workspace_root.clone()),
+    );
+    let session_id = session.id.clone();
+    session.workspace_root = Some(workspace_root);
+    state.storage.save_session(session).await?;
+
+    state
+        .update_automation_v2_run(run_id, |run| {
+            if !run.active_session_ids.iter().any(|id| id == &session_id) {
+                run.active_session_ids.push(session_id.clone());
+            }
+        })
+        .await;
+
+    let mut allowlist = agent.tool_policy.allowlist.clone();
+    if let Some(mcp_tools) = agent.mcp_policy.allowed_tools.as_ref() {
+        allowlist.extend(mcp_tools.clone());
+    }
+    state
+        .engine_loop
+        .set_session_allowed_tools(&session_id, normalize_allowed_tools(allowlist))
+        .await;
+
+    let model = agent
+        .model_policy
+        .as_ref()
+        .and_then(|policy| policy.get("default_model"))
+        .and_then(parse_model_spec);
+    let prompt = format!(
+        "Automation ID: {}\nRun ID: {}\nNode ID: {}\nAgent: {}\nObjective: {}",
+        automation.automation_id, run_id, node.node_id, agent.display_name, node.objective
+    );
+    let req = SendMessageRequest {
+        parts: vec![MessagePartInput::Text { text: prompt }],
+        model,
+        agent: None,
+        tool_mode: None,
+        tool_allowlist: None,
+        context_mode: None,
+    };
+    let result = state
+        .engine_loop
+        .run_prompt_async_with_context(
+            session_id.clone(),
+            req,
+            Some(format!("automation-v2:{run_id}")),
+        )
+        .await;
+
+    state
+        .engine_loop
+        .clear_session_allowed_tools(&session_id)
+        .await;
+    state
+        .update_automation_v2_run(run_id, |run| {
+            run.active_session_ids.retain(|id| id != &session_id);
+        })
+        .await;
+
+    result.map(|_| {
+        serde_json::json!({
+            "sessionID": session_id,
+            "status": "completed",
+        })
+    })
+}
+
+pub async fn run_automation_v2_executor(state: AppState) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let Some(run) = state.claim_next_queued_automation_v2_run().await else {
+            continue;
+        };
+        let Some(automation) = state.get_automation_v2(&run.automation_id).await else {
+            let _ = state
+                .update_automation_v2_run(&run.run_id, |row| {
+                    row.status = AutomationRunStatus::Failed;
+                    row.detail = Some("automation not found".to_string());
+                })
+                .await;
+            continue;
+        };
+        let max_parallel = automation
+            .execution
+            .max_parallel_agents
+            .unwrap_or(1)
+            .clamp(1, 16) as usize;
+
+        loop {
+            let Some(latest) = state.get_automation_v2_run(&run.run_id).await else {
+                break;
+            };
+            if matches!(
+                latest.status,
+                AutomationRunStatus::Paused
+                    | AutomationRunStatus::Pausing
+                    | AutomationRunStatus::Cancelled
+                    | AutomationRunStatus::Failed
+                    | AutomationRunStatus::Completed
+            ) {
+                break;
+            }
+            if latest.checkpoint.pending_nodes.is_empty() {
+                let _ = state
+                    .update_automation_v2_run(&run.run_id, |row| {
+                        row.status = AutomationRunStatus::Completed;
+                        row.detail = Some("automation run completed".to_string());
+                    })
+                    .await;
+                break;
+            }
+
+            let completed = latest
+                .checkpoint
+                .completed_nodes
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>();
+            let pending = latest.checkpoint.pending_nodes.clone();
+            let runnable = pending
+                .iter()
+                .filter_map(|node_id| {
+                    let node = automation
+                        .flow
+                        .nodes
+                        .iter()
+                        .find(|n| n.node_id == *node_id)?;
+                    if node.depends_on.iter().all(|dep| completed.contains(dep)) {
+                        Some(node.clone())
+                    } else {
+                        None
+                    }
+                })
+                .take(max_parallel)
+                .collect::<Vec<_>>();
+
+            if runnable.is_empty() {
+                let _ = state
+                    .update_automation_v2_run(&run.run_id, |row| {
+                        row.status = AutomationRunStatus::Failed;
+                        row.detail = Some("flow deadlock: no runnable nodes".to_string());
+                    })
+                    .await;
+                break;
+            }
+
+            let tasks = runnable
+                .iter()
+                .map(|node| {
+                    let Some(agent) = automation
+                        .agents
+                        .iter()
+                        .find(|a| a.agent_id == node.agent_id)
+                        .cloned()
+                    else {
+                        return futures::future::ready((
+                            node.node_id.clone(),
+                            Err(anyhow::anyhow!("agent not found")),
+                        ))
+                        .boxed();
+                    };
+                    let state = state.clone();
+                    let run_id = run.run_id.clone();
+                    let automation = automation.clone();
+                    let node = node.clone();
+                    async move {
+                        let result =
+                            execute_automation_v2_node(&state, &run_id, &automation, &node, &agent)
+                                .await;
+                        (node.node_id, result)
+                    }
+                    .boxed()
+                })
+                .collect::<Vec<_>>();
+            let outcomes = join_all(tasks).await;
+
+            let mut any_failed = false;
+            for (node_id, result) in outcomes {
+                match result {
+                    Ok(output) => {
+                        let _ = state
+                            .update_automation_v2_run(&run.run_id, |row| {
+                                row.checkpoint.pending_nodes.retain(|id| id != &node_id);
+                                if !row
+                                    .checkpoint
+                                    .completed_nodes
+                                    .iter()
+                                    .any(|id| id == &node_id)
+                                {
+                                    row.checkpoint.completed_nodes.push(node_id.clone());
+                                }
+                                row.checkpoint.node_outputs.insert(node_id.clone(), output);
+                            })
+                            .await;
+                    }
+                    Err(error) => {
+                        any_failed = true;
+                        let is_paused = state
+                            .get_automation_v2_run(&run.run_id)
+                            .await
+                            .map(|row| row.status == AutomationRunStatus::Paused)
+                            .unwrap_or(false);
+                        if is_paused {
+                            break;
+                        }
+                        let detail = truncate_text(&error.to_string(), 500);
+                        let _ = state
+                            .update_automation_v2_run(&run.run_id, |row| {
+                                row.status = AutomationRunStatus::Failed;
+                                row.detail = Some(detail.clone());
+                            })
+                            .await;
+                    }
+                }
+            }
+            if any_failed {
+                break;
             }
         }
     }
@@ -3086,6 +3967,7 @@ mod tests {
             allowed_tools: vec![],
             output_targets: vec![],
             artifacts: vec![],
+            active_session_ids: vec![],
         };
 
         {
@@ -3159,6 +4041,7 @@ mod tests {
             allowed_tools: vec!["read".to_string(), "webfetch".to_string()],
             output_targets: vec!["file://reports/release-readiness.md".to_string()],
             artifacts: vec![],
+            active_session_ids: vec![],
         };
 
         let objective = routine_objective_from_args(&run).expect("objective");
@@ -3197,6 +4080,7 @@ mod tests {
             allowed_tools: vec![],
             output_targets: vec![],
             artifacts: vec![],
+            active_session_ids: vec![],
         };
 
         let objective = routine_objective_from_args(&run).expect("objective");

@@ -18,7 +18,7 @@ use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::response::Response;
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use base64::Engine;
 use futures::Stream;
@@ -58,10 +58,13 @@ use tandem_wire::{
 use crate::ResourceStoreError;
 use crate::{
     agent_teams::{emit_spawn_approved, emit_spawn_denied, emit_spawn_requested},
-    evaluate_routine_execution_policy, ActiveRun, AppState, ChannelStatus, DiscordConfigFile,
-    RoutineExecutionDecision, RoutineHistoryEvent, RoutineMisfirePolicy, RoutineRunArtifact,
-    RoutineRunRecord, RoutineRunStatus, RoutineSchedule, RoutineSpec, RoutineStatus,
-    RoutineStoreError, SlackConfigFile, StartupStatus, TelegramConfigFile,
+    evaluate_routine_execution_policy, ActiveRun, AppState, AutomationAgentMcpPolicy,
+    AutomationAgentProfile, AutomationAgentToolPolicy, AutomationExecutionPolicy,
+    AutomationFlowSpec, AutomationRunStatus, AutomationV2Schedule, AutomationV2Spec,
+    AutomationV2Status, ChannelStatus, DiscordConfigFile, RoutineExecutionDecision,
+    RoutineHistoryEvent, RoutineMisfirePolicy, RoutineRunArtifact, RoutineRunRecord,
+    RoutineRunStatus, RoutineSchedule, RoutineSpec, RoutineStatus, RoutineStoreError,
+    SlackConfigFile, StartupStatus, TelegramConfigFile,
 };
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -580,6 +583,20 @@ struct AgentTeamCancelInput {
 }
 
 #[derive(Debug, Deserialize)]
+struct AgentTeamTemplateCreateInput {
+    template: tandem_orchestrator::AgentTemplate,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AgentTeamTemplatePatchInput {
+    role: Option<tandem_orchestrator::AgentRole>,
+    system_prompt: Option<String>,
+    skills: Option<Vec<tandem_orchestrator::SkillRef>>,
+    default_budget: Option<tandem_orchestrator::BudgetLimit>,
+    capabilities: Option<tandem_orchestrator::CapabilitySpec>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RoutineCreateInput {
     routine_id: Option<String>,
     name: String,
@@ -683,6 +700,46 @@ struct AutomationPatchInput {
     #[serde(default)]
     model_policy: Option<Value>,
     next_fire_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AutomationV2CreateInput {
+    automation_id: Option<String>,
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    status: Option<AutomationV2Status>,
+    schedule: AutomationV2Schedule,
+    #[serde(default)]
+    agents: Vec<AutomationAgentProfile>,
+    flow: AutomationFlowSpec,
+    #[serde(default)]
+    execution: Option<AutomationExecutionPolicy>,
+    #[serde(default)]
+    output_targets: Option<Vec<String>>,
+    #[serde(default)]
+    creator_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AutomationV2PatchInput {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    status: Option<AutomationV2Status>,
+    #[serde(default)]
+    schedule: Option<AutomationV2Schedule>,
+    #[serde(default)]
+    agents: Option<Vec<AutomationAgentProfile>>,
+    #[serde(default)]
+    flow: Option<AutomationFlowSpec>,
+    #[serde(default)]
+    execution: Option<AutomationExecutionPolicy>,
+    #[serde(default)]
+    output_targets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -797,6 +854,8 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let status_indexer_state = state.clone();
     let routine_scheduler_state = state.clone();
     let routine_executor_state = state.clone();
+    let automation_v2_scheduler_state = state.clone();
+    let automation_v2_executor_state = state.clone();
     let agent_team_supervisor_state = state.clone();
     let global_memory_ingestor_state = state.clone();
     let mcp_bootstrap_state = state.clone();
@@ -828,6 +887,12 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let status_indexer = tokio::spawn(crate::run_status_indexer(status_indexer_state));
     let routine_scheduler = tokio::spawn(crate::run_routine_scheduler(routine_scheduler_state));
     let routine_executor = tokio::spawn(crate::run_routine_executor(routine_executor_state));
+    let automation_v2_scheduler = tokio::spawn(crate::run_automation_v2_scheduler(
+        automation_v2_scheduler_state,
+    ));
+    let automation_v2_executor = tokio::spawn(crate::run_automation_v2_executor(
+        automation_v2_executor_state,
+    ));
     let agent_team_supervisor = tokio::spawn(crate::run_agent_team_supervisor(
         agent_team_supervisor_state,
     ));
@@ -891,6 +956,8 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     status_indexer.abort();
     routine_scheduler.abort();
     routine_executor.abort();
+    automation_v2_scheduler.abort();
+    automation_v2_executor.abort();
     agent_team_supervisor.abort();
     global_memory_ingestor.abort();
     hygiene_task.abort();
@@ -1247,7 +1314,14 @@ fn app_router(state: AppState) -> Router {
         .route("/mission", get(mission_list).post(mission_create))
         .route("/mission/{id}", get(mission_get))
         .route("/mission/{id}/event", post(mission_apply_event))
-        .route("/agent-team/templates", get(agent_team_templates))
+        .route(
+            "/agent-team/templates",
+            get(agent_team_templates).post(agent_team_template_create),
+        )
+        .route(
+            "/agent-team/templates/{id}",
+            patch(agent_team_template_patch).delete(agent_team_template_delete),
+        )
         .route("/agent-team/instances", get(agent_team_instances))
         .route("/agent-team/missions", get(agent_team_missions))
         .route("/agent-team/approvals", get(agent_team_approvals))
@@ -1323,6 +1397,34 @@ fn app_router(state: AppState) -> Router {
         .route(
             "/automations/runs/{run_id}/artifacts",
             get(automations_run_artifacts).post(automations_run_artifact_add),
+        )
+        .route(
+            "/automations/v2",
+            get(automations_v2_list).post(automations_v2_create),
+        )
+        .route("/automations/v2/events", get(automations_v2_events))
+        .route(
+            "/automations/v2/{id}",
+            get(automations_v2_get)
+                .patch(automations_v2_patch)
+                .delete(automations_v2_delete),
+        )
+        .route("/automations/v2/{id}/run_now", post(automations_v2_run_now))
+        .route("/automations/v2/{id}/pause", post(automations_v2_pause))
+        .route("/automations/v2/{id}/resume", post(automations_v2_resume))
+        .route("/automations/v2/{id}/runs", get(automations_v2_runs))
+        .route("/automations/v2/runs/{run_id}", get(automations_v2_run_get))
+        .route(
+            "/automations/v2/runs/{run_id}/pause",
+            post(automations_v2_run_pause),
+        )
+        .route(
+            "/automations/v2/runs/{run_id}/resume",
+            post(automations_v2_run_resume),
+        )
+        .route(
+            "/automations/v2/runs/{run_id}/cancel",
+            post(automations_v2_run_cancel),
         )
         .route("/resource", get(resource_list))
         .route("/resource/events", get(resource_events))
@@ -6603,6 +6705,138 @@ async fn agent_team_templates(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
+async fn agent_team_template_create(
+    State(state): State<AppState>,
+    Json(input): Json<AgentTeamTemplateCreateInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if input.template.template_id.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "code": "INVALID_TEMPLATE_ID",
+                "error": "template_id is required"
+            })),
+        ));
+    }
+    let workspace_root = state.workspace_index.snapshot().await.root;
+    let template = state
+        .agent_teams
+        .upsert_template(&workspace_root, input.template)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "ok": false,
+                    "code": "TEMPLATE_PERSIST_FAILED",
+                    "error": error.to_string(),
+                })),
+            )
+        })?;
+    Ok(Json(json!({
+        "ok": true,
+        "template": template,
+    })))
+}
+
+async fn agent_team_template_patch(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<AgentTeamTemplatePatchInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let existing = state
+        .agent_teams
+        .list_templates()
+        .await
+        .into_iter()
+        .find(|template| template.template_id == id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "ok": false,
+                    "code": "TEMPLATE_NOT_FOUND",
+                    "error": "template not found",
+                    "templateID": id,
+                })),
+            )
+        })?;
+    let mut updated = existing;
+    if let Some(role) = input.role {
+        updated.role = role;
+    }
+    if let Some(system_prompt) = input.system_prompt {
+        updated.system_prompt = Some(system_prompt);
+    }
+    if let Some(skills) = input.skills {
+        updated.skills = skills;
+    }
+    if let Some(default_budget) = input.default_budget {
+        updated.default_budget = default_budget;
+    }
+    if let Some(capabilities) = input.capabilities {
+        updated.capabilities = capabilities;
+    }
+
+    let workspace_root = state.workspace_index.snapshot().await.root;
+    let template = state
+        .agent_teams
+        .upsert_template(&workspace_root, updated)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "ok": false,
+                    "code": "TEMPLATE_PERSIST_FAILED",
+                    "error": error.to_string(),
+                })),
+            )
+        })?;
+    Ok(Json(json!({
+        "ok": true,
+        "template": template,
+    })))
+}
+
+async fn agent_team_template_delete(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let workspace_root = state.workspace_index.snapshot().await.root;
+    let deleted = state
+        .agent_teams
+        .delete_template(&workspace_root, &id)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "ok": false,
+                    "code": "TEMPLATE_DELETE_FAILED",
+                    "error": error.to_string(),
+                })),
+            )
+        })?;
+    if !deleted {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "ok": false,
+                "code": "TEMPLATE_NOT_FOUND",
+                "error": "template not found",
+                "templateID": id,
+            })),
+        ));
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "deleted": true,
+        "templateID": id,
+    })))
+}
+
 async fn agent_team_instances(
     State(state): State<AppState>,
     Query(query): Query<AgentTeamInstancesQuery>,
@@ -7369,6 +7603,14 @@ async fn routines_run_pause(
         ));
     }
     let reason = reason_or_default(input.reason, "paused by operator");
+    let mut cancelled_sessions = Vec::new();
+    if current.status == RoutineRunStatus::Running {
+        for session_id in &current.active_session_ids {
+            if state.cancellations.cancel(session_id).await {
+                cancelled_sessions.push(session_id.clone());
+            }
+        }
+    }
     let updated = state
         .update_routine_run_status(&run_id, RoutineRunStatus::Paused, Some(reason.clone()))
         .await
@@ -7388,9 +7630,14 @@ async fn routines_run_pause(
             "runID": run_id,
             "routineID": updated.routine_id,
             "reason": reason,
+            "cancelledSessionIDs": cancelled_sessions,
         }),
     ));
-    Ok(Json(json!({ "ok": true, "run": updated })))
+    Ok(Json(json!({
+        "ok": true,
+        "run": updated,
+        "cancelledSessionIDs": cancelled_sessions,
+    })))
 }
 
 async fn routines_run_resume(
@@ -9416,6 +9663,471 @@ async fn automations_events(
         query.run_id,
     ))
     .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
+}
+
+fn normalize_automation_v2_agent(mut agent: AutomationAgentProfile) -> AutomationAgentProfile {
+    if agent.display_name.trim().is_empty() {
+        agent.display_name = agent.agent_id.clone();
+    }
+    if agent.tool_policy.allowlist.is_empty() {
+        agent.tool_policy = AutomationAgentToolPolicy {
+            allowlist: vec!["read".to_string()],
+            denylist: Vec::new(),
+        };
+    }
+    if agent.mcp_policy.allowed_servers.is_empty() {
+        agent.mcp_policy = AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+        };
+    }
+    agent
+}
+
+async fn automations_v2_create(
+    State(state): State<AppState>,
+    Json(input): Json<AutomationV2CreateInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let now = crate::now_ms();
+    let automation = AutomationV2Spec {
+        automation_id: input
+            .automation_id
+            .unwrap_or_else(|| format!("automation-v2-{}", Uuid::new_v4())),
+        name: input.name,
+        description: input.description,
+        status: input.status.unwrap_or(AutomationV2Status::Draft),
+        schedule: input.schedule,
+        agents: input
+            .agents
+            .into_iter()
+            .map(normalize_automation_v2_agent)
+            .collect(),
+        flow: input.flow,
+        execution: input.execution.unwrap_or(AutomationExecutionPolicy {
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+        }),
+        output_targets: input.output_targets.unwrap_or_default(),
+        created_at_ms: now,
+        updated_at_ms: now,
+        creator_id: input.creator_id.unwrap_or_else(|| "unknown".to_string()),
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+    };
+    let stored = state.put_automation_v2(automation).await.map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "AUTOMATION_V2_CREATE_FAILED",
+            })),
+        )
+    })?;
+    Ok(Json(json!({ "automation": stored })))
+}
+
+async fn automations_v2_list(State(state): State<AppState>) -> Json<Value> {
+    let rows = state.list_automations_v2().await;
+    Json(json!({
+        "automations": rows,
+        "count": rows.len(),
+    }))
+}
+
+async fn automations_v2_get(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(automation) = state.get_automation_v2(&id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": id}),
+            ),
+        ));
+    };
+    Ok(Json(json!({ "automation": automation })))
+}
+
+async fn automations_v2_patch(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<AutomationV2PatchInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(mut automation) = state.get_automation_v2(&id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": id}),
+            ),
+        ));
+    };
+    if let Some(name) = input.name {
+        automation.name = name;
+    }
+    if let Some(description) = input.description {
+        automation.description = Some(description);
+    }
+    if let Some(status) = input.status {
+        automation.status = status;
+    }
+    if let Some(schedule) = input.schedule {
+        automation.schedule = schedule;
+    }
+    if let Some(agents) = input.agents {
+        automation.agents = agents
+            .into_iter()
+            .map(normalize_automation_v2_agent)
+            .collect();
+    }
+    if let Some(flow) = input.flow {
+        automation.flow = flow;
+    }
+    if let Some(execution) = input.execution {
+        automation.execution = execution;
+    }
+    if let Some(output_targets) = input.output_targets {
+        automation.output_targets = output_targets;
+    }
+    let stored = state.put_automation_v2(automation).await.map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "AUTOMATION_V2_UPDATE_FAILED",
+            })),
+        )
+    })?;
+    Ok(Json(json!({ "automation": stored })))
+}
+
+async fn automations_v2_delete(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let deleted = state.delete_automation_v2(&id).await.map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "AUTOMATION_V2_DELETE_FAILED",
+            })),
+        )
+    })?;
+    if deleted.is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": id}),
+            ),
+        ));
+    }
+    Ok(Json(
+        json!({ "ok": true, "deleted": true, "automationID": id }),
+    ))
+}
+
+async fn automations_v2_run_now(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(automation) = state.get_automation_v2(&id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": id}),
+            ),
+        ));
+    };
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "AUTOMATION_V2_RUN_CREATE_FAILED",
+                })),
+            )
+        })?;
+    Ok(Json(json!({ "ok": true, "run": run })))
+}
+
+async fn automations_v2_pause(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(mut automation) = state.get_automation_v2(&id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": id}),
+            ),
+        ));
+    };
+    automation.status = AutomationV2Status::Paused;
+    let stored = state.put_automation_v2(automation).await.map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error.to_string(), "code":"AUTOMATION_V2_UPDATE_FAILED"})),
+        )
+    })?;
+    let reason = reason_or_default(input.reason, "paused by operator");
+    let runs = state.list_automation_v2_runs(Some(&id), 100).await;
+    for run in runs {
+        if run.status == AutomationRunStatus::Running {
+            let _ = state
+                .update_automation_v2_run(&run.run_id, |row| {
+                    row.status = AutomationRunStatus::Pausing;
+                    row.pause_reason = Some(reason.clone());
+                })
+                .await;
+            for session_id in run.active_session_ids {
+                let _ = state.cancellations.cancel(&session_id).await;
+            }
+            let _ = state
+                .update_automation_v2_run(&run.run_id, |row| {
+                    row.status = AutomationRunStatus::Paused;
+                })
+                .await;
+        }
+    }
+    Ok(Json(json!({ "ok": true, "automation": stored })))
+}
+
+async fn automations_v2_resume(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(mut automation) = state.get_automation_v2(&id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": id}),
+            ),
+        ));
+    };
+    automation.status = AutomationV2Status::Active;
+    let stored = state.put_automation_v2(automation).await.map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error.to_string(), "code":"AUTOMATION_V2_UPDATE_FAILED"})),
+        )
+    })?;
+    Ok(Json(json!({ "ok": true, "automation": stored })))
+}
+
+async fn automations_v2_runs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<RoutineRunsQuery>,
+) -> Json<Value> {
+    let limit = query.limit.unwrap_or(50);
+    let rows = state.list_automation_v2_runs(Some(&id), limit).await;
+    Json(json!({ "automationID": id, "runs": rows, "count": rows.len() }))
+}
+
+async fn automations_v2_run_get(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(run) = state.get_automation_v2_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Run not found", "code":"AUTOMATION_V2_RUN_NOT_FOUND", "runID": run_id}),
+            ),
+        ));
+    };
+    Ok(Json(json!({ "run": run })))
+}
+
+async fn automations_v2_run_pause(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(current) = state.get_automation_v2_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Run not found", "code":"AUTOMATION_V2_RUN_NOT_FOUND", "runID": run_id}),
+            ),
+        ));
+    };
+    if !matches!(
+        current.status,
+        AutomationRunStatus::Running | AutomationRunStatus::Queued
+    ) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(
+                json!({"error":"Run is not pausable", "code":"AUTOMATION_V2_RUN_NOT_PAUSABLE", "runID": run_id}),
+            ),
+        ));
+    }
+    let reason = reason_or_default(input.reason, "paused by operator");
+    let _ = state
+        .update_automation_v2_run(&run_id, |run| {
+            run.status = AutomationRunStatus::Pausing;
+            run.pause_reason = Some(reason.clone());
+        })
+        .await;
+    let latest = state.get_automation_v2_run(&run_id).await;
+    if let Some(run) = latest {
+        for session_id in run.active_session_ids {
+            let _ = state.cancellations.cancel(&session_id).await;
+        }
+    }
+    let updated = state
+        .update_automation_v2_run(&run_id, |run| {
+            run.status = AutomationRunStatus::Paused;
+        })
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({"error":"Run update failed", "code":"AUTOMATION_V2_RUN_UPDATE_FAILED"}),
+                ),
+            )
+        })?;
+    Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
+async fn automations_v2_run_resume(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(current) = state.get_automation_v2_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Run not found", "code":"AUTOMATION_V2_RUN_NOT_FOUND", "runID": run_id}),
+            ),
+        ));
+    };
+    if current.status != AutomationRunStatus::Paused {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(
+                json!({"error":"Run is not paused", "code":"AUTOMATION_V2_RUN_NOT_PAUSED", "runID": run_id}),
+            ),
+        ));
+    }
+    let reason = reason_or_default(input.reason, "resumed by operator");
+    let updated = state
+        .update_automation_v2_run(&run_id, |run| {
+            run.status = AutomationRunStatus::Queued;
+            run.resume_reason = Some(reason.clone());
+        })
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({"error":"Run update failed", "code":"AUTOMATION_V2_RUN_UPDATE_FAILED"}),
+                ),
+            )
+        })?;
+    Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
+async fn automations_v2_run_cancel(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(current) = state.get_automation_v2_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Run not found", "code":"AUTOMATION_V2_RUN_NOT_FOUND", "runID": run_id}),
+            ),
+        ));
+    };
+    if matches!(
+        current.status,
+        AutomationRunStatus::Cancelled
+            | AutomationRunStatus::Completed
+            | AutomationRunStatus::Failed
+    ) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(
+                json!({"error":"Run already terminal", "code":"AUTOMATION_V2_RUN_TERMINAL", "runID": run_id}),
+            ),
+        ));
+    }
+    for session_id in current.active_session_ids {
+        let _ = state.cancellations.cancel(&session_id).await;
+    }
+    let reason = reason_or_default(input.reason, "cancelled by operator");
+    let updated = state
+        .update_automation_v2_run(&run_id, |run| {
+            run.status = AutomationRunStatus::Cancelled;
+            run.detail = Some(reason.clone());
+        })
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({"error":"Run update failed", "code":"AUTOMATION_V2_RUN_UPDATE_FAILED"}),
+                ),
+            )
+        })?;
+    Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
+async fn automations_v2_events(
+    State(state): State<AppState>,
+    Query(query): Query<AutomationEventsQuery>,
+) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let ready = tokio_stream::once(Ok(Event::default().data(
+        serde_json::to_string(&json!({
+            "status": "ready",
+            "stream": "automations_v2",
+            "timestamp_ms": crate::now_ms(),
+        }))
+        .unwrap_or_default(),
+    )));
+    let rx = state.event_bus.subscribe();
+    let live = BroadcastStream::new(rx).filter_map(move |msg| match msg {
+        Ok(event) => {
+            if !event.event_type.starts_with("automation.v2.") {
+                return None;
+            }
+            if let Some(automation_id) = query.automation_id.as_deref() {
+                let value = event
+                    .properties
+                    .get("automationID")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if value != automation_id {
+                    return None;
+                }
+            }
+            if let Some(run_id) = query.run_id.as_deref() {
+                let value = event
+                    .properties
+                    .get("runID")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if value != run_id {
+                    return None;
+                }
+            }
+            let payload = serde_json::to_string(&event).unwrap_or_default();
+            Some(Ok(Event::default().data(payload)))
+        }
+        Err(_) => None,
+    });
+    Sse::new(ready.chain(live)).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
 }
 
 fn resource_error_response(error: ResourceStoreError) -> (StatusCode, Json<Value>) {
