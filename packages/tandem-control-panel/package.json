@@ -1,6 +1,6 @@
 {
   "name": "@frumu/tandem-panel",
-  "version": "0.3.26",
+  "version": "0.3.27",
   "description": "Full web control center for Tandem Engine (chat, routines, swarm, memory, channels, and ops)",
   "type": "module",
   "bin": {
@@ -23,6 +23,12 @@
     ".env.example",
     "README.md"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frumu-ai/tandem.git"
+  },
+  "homepage": "https://tandem.frumu.ai",
+  "author": "Frumu Ltd",
   "dependencies": {
     "@frumu/tandem": "^0.3.25",
     "@frumu/tandem-client": "^0.3.25",

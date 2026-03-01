@@ -40,10 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SDK prompt parity for routing controls**: TypeScript and Python session prompt clients now support passing routing options (`toolMode`/`toolAllowlist`/`contextMode`) to `prompt_async`.
 - **Provider stream fail-safe behavior**: Engine provider streaming now enforces configurable connect/idle timeouts to fail stuck upstream calls deterministically and release active runs instead of hanging sessions.
 - **Timeout defaults aligned across engine and installers**: Engine runtime defaults now use `TANDEM_PROMPT_CONTEXT_HOOK_TIMEOUT_MS=5000`, `TANDEM_PROVIDER_STREAM_CONNECT_TIMEOUT_MS=30000`, and `TANDEM_PROVIDER_STREAM_IDLE_TIMEOUT_MS=90000`; quickstart/VPS/control-panel installers now write these into default engine env files.
+- **Shell tool timeout guardrail**: Added `bash` tool timeout support (`timeout_ms` arg and `TANDEM_BASH_TIMEOUT_MS`, default `30000`) so stalled shell commands cannot keep runs active indefinitely.
 - **Control panel chat stream resiliency**: Chat stream watchdog now uses longer no-event/max-window thresholds and a run-settlement wait path before surfacing a stuck-run failure.
 
 ### Fixed
 
+- **npm publish provenance metadata for control panel**: Added missing `repository` metadata in `packages/tandem-control-panel/package.json` so npm provenance validation accepts `@frumu/tandem-panel` CI publishes.
 - **Discord allowlist identity matching**: Discord inbound authorization now supports user ID, username, global name, and mention-style identity entries (for example `@name`, `<@id>`, `<@!id>`) instead of ID-only matching.
 - **Discord non-response misconfiguration path**: Fixed common “connected but not responding” states caused by hidden/default Discord settings by exposing mention-only and guild filters in the control panel.
 - **Channel setup consistency across surfaces**: Added unified Discord verify backend (`POST /channels/{name}/verify`) and desktop integration so setup checks are consistent across web and Tauri flows.

@@ -31,6 +31,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - `TANDEM_PROVIDER_STREAM_CONNECT_TIMEOUT_MS` (default `30000`)
     - `TANDEM_PROVIDER_STREAM_IDLE_TIMEOUT_MS` (default `90000`)
     - `TANDEM_PROMPT_CONTEXT_HOOK_TIMEOUT_MS` (default `5000`)
+    - `TANDEM_BASH_TIMEOUT_MS` (default `30000`)
   - This prevents long-lived stuck active runs that caused downstream `SESSION_RUN_CONFLICT` symptoms across web chat and channel adapters.
 - Control panel chat stream watchdog hardening
   - Increased stream no-event and max-window thresholds.
@@ -55,6 +56,9 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Added optional bot avatar support via `identity.bot.avatar_url`, including avatar upload controls in Desktop/Control Panel settings and avatar rendering in Desktop chat plus portal/control-panel shell/chat identity UI.
   - Avatar uploads are now normalized server-side (decode/resize/re-encode), so larger source images are accepted and stored in a bounded form.
   - Core UI/TUI assistant-facing copy reduces hardcoded Tandem naming in primary runtime labels/placeholders.
+- npm publish reliability (control panel)
+  - Added missing `repository` metadata in `packages/tandem-control-panel/package.json`.
+  - Fixes npm provenance validation failure for `@frumu/tandem-panel` publishes from CI (`publish-registries`).
 - Setup flow updates
   - Desktop onboarding wizard now includes an identity setup step with direct navigation to the Settings identity section.
 - Compatibility and protocol naming updates
