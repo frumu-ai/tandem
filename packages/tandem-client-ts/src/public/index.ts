@@ -199,6 +199,47 @@ export interface ProvidersConfigResponse {
   providers: Record<string, ProviderConfigEntry>;
 }
 
+export interface PersonalityProfile {
+  preset?: string;
+  customInstructions?: string | null;
+}
+
+export interface PersonalityConfig {
+  default?: PersonalityProfile;
+  perAgent?: Record<string, PersonalityProfile>;
+}
+
+export interface BotIdentityAliases {
+  desktop?: string;
+  tui?: string;
+  portal?: string;
+  controlPanel?: string;
+  channels?: string;
+  protocol?: string;
+  cli?: string;
+}
+
+export interface BotIdentity {
+  canonicalName?: string;
+  aliases?: BotIdentityAliases;
+}
+
+export interface IdentityConfig {
+  bot?: BotIdentity;
+  personality?: PersonalityConfig;
+}
+
+export interface PersonalityPresetEntry {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface IdentityConfigResponse {
+  identity: IdentityConfig;
+  presets?: PersonalityPresetEntry[];
+}
+
 // ─── Channels ────────────────────────────────────────────────────────────────
 
 export interface ChannelConfigEntry {

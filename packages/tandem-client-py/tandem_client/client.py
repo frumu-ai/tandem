@@ -41,6 +41,8 @@ from .types import (
     PromptTextPartInput,
     ProviderCatalog,
     ProvidersConfigResponse,
+    IdentityConfig,
+    IdentityConfigResponse,
     QuestionsListResponse,
     QuestionRecord,
     ResourceListResponse,
@@ -98,6 +100,7 @@ class TandemClient:
         self.permissions = _Permissions(self._http)
         self.questions = _Questions(self._http)
         self.providers = _Providers(self._http)
+        self.identity = _Identity(self._http)
         self.channels = _Channels(self._http)
         self.mcp = _Mcp(self._http)
         self.routines = _Routines(self._http)
@@ -512,6 +515,28 @@ class _Providers:
         res = await self._http.get("/provider/auth")
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
+
+
+class _Identity:
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        self._http = http
+
+    async def get(self) -> IdentityConfigResponse:
+        """Get bot identity/personality config and personality preset catalog."""
+        res = await self._http.get("/config/identity")
+        res.raise_for_status()
+        return IdentityConfigResponse.model_validate(res.json())
+
+    async def patch(self, identity: IdentityConfig | dict[str, Any]) -> IdentityConfigResponse:
+        """Patch bot identity/personality config."""
+        payload = (
+            identity.model_dump(by_alias=True, exclude_none=True)
+            if isinstance(identity, IdentityConfig)
+            else identity
+        )
+        res = await self._http.patch("/config/identity", json=payload)
+        res.raise_for_status()
+        return IdentityConfigResponse.model_validate(res.json())
 
 
 # ─── Channels ─────────────────────────────────────────────────────────────────

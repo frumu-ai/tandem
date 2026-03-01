@@ -15,10 +15,51 @@ pub struct ProviderConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PersonalityProfileConfig {
+    pub preset: Option<String>,
+    pub custom_instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PersonalityConfig {
+    pub default: Option<PersonalityProfileConfig>,
+    #[serde(default)]
+    pub per_agent: HashMap<String, PersonalityProfileConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BotIdentityAliasesConfig {
+    pub desktop: Option<String>,
+    pub tui: Option<String>,
+    pub portal: Option<String>,
+    pub control_panel: Option<String>,
+    pub channels: Option<String>,
+    pub protocol: Option<String>,
+    pub cli: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BotIdentityConfig {
+    pub canonical_name: Option<String>,
+    #[serde(default)]
+    pub aliases: BotIdentityAliasesConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IdentityConfig {
+    pub bot: Option<BotIdentityConfig>,
+    pub personality: Option<PersonalityConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
     pub default_provider: Option<String>,
+    #[serde(default)]
+    pub identity: IdentityConfig,
+    pub bot_name: Option<String>,
+    pub persona: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -341,7 +382,9 @@ async fn read_json_file(path: &Path) -> anyhow::Result<Value> {
 }
 
 async fn resolve_global_config_path() -> anyhow::Result<PathBuf> {
-    if let Ok(path) = std::env::var("TANDEM_GLOBAL_CONFIG") {
+    if let Ok(path) =
+        std::env::var("AGENT_GLOBAL_CONFIG").or_else(|_| std::env::var("TANDEM_GLOBAL_CONFIG"))
+    {
         let path = PathBuf::from(path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
@@ -367,6 +410,40 @@ async fn resolve_global_config_path() -> anyhow::Result<PathBuf> {
 
 fn env_layer() -> Value {
     let mut root = empty_object();
+
+    if let Ok(bot_name) =
+        std::env::var("AGENT_BOT_NAME").or_else(|_| std::env::var("TANDEM_BOT_NAME"))
+    {
+        if !bot_name.trim().is_empty() {
+            deep_merge(
+                &mut root,
+                &json!({
+                    "identity": {
+                        "bot": {
+                            "canonical_name": bot_name.trim()
+                        }
+                    }
+                }),
+            );
+        }
+    }
+    if let Ok(persona) = std::env::var("AGENT_PERSONA").or_else(|_| std::env::var("TANDEM_PERSONA"))
+    {
+        if !persona.trim().is_empty() {
+            deep_merge(
+                &mut root,
+                &json!({
+                    "identity": {
+                        "personality": {
+                            "default": {
+                                "custom_instructions": persona.trim()
+                            }
+                        }
+                    }
+                }),
+            );
+        }
+    }
 
     if let Ok(enabled) = std::env::var("TANDEM_WEB_UI") {
         if let Some(v) = parse_bool_like(&enabled) {

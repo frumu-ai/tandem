@@ -21,6 +21,8 @@ import type {
   QuestionRecord,
   ProviderCatalog,
   ProvidersConfigResponse,
+  IdentityConfig,
+  IdentityConfigResponse,
   ChannelName,
   ChannelsConfigResponse,
   ChannelsStatusResponse,
@@ -161,6 +163,8 @@ export class TandemClient {
   readonly questions: Questions;
   /** Provider catalog and configuration */
   readonly providers: Providers;
+  /** Bot identity and personality configuration */
+  readonly identity: Identity;
   /** Messaging platform channel integrations */
   readonly channels: Channels;
   /** MCP (Model Context Protocol) server management */
@@ -190,6 +194,7 @@ export class TandemClient {
     this.permissions = new Permissions(req);
     this.questions = new Questions(req);
     this.providers = new Providers(req);
+    this.identity = new Identity(req);
     this.channels = new Channels(req);
     this.mcp = new Mcp(req);
     this.routines = new Routines(req);
@@ -693,6 +698,23 @@ class Providers {
   /** Get authentication status for a provider. */
   async authStatus(): Promise<JsonObject> {
     return this.req<JsonObject>("/provider/auth");
+  }
+}
+
+class Identity {
+  constructor(private req: TandemClient["_request"]) {}
+
+  /** Get current bot identity + personality config and available presets. */
+  async get(): Promise<IdentityConfigResponse> {
+    return this.req<IdentityConfigResponse>("/config/identity");
+  }
+
+  /** Patch bot identity/personality configuration. */
+  async patch(identity: IdentityConfig): Promise<IdentityConfigResponse> {
+    return this.req<IdentityConfigResponse>("/config/identity", {
+      method: "PATCH",
+      body: JSON.stringify(identity),
+    });
   }
 }
 

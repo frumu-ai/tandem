@@ -22,6 +22,15 @@ fn provider_max_tokens() -> u32 {
         .unwrap_or(2048)
 }
 
+fn protocol_title_header() -> String {
+    std::env::var("AGENT_PROTOCOL_TITLE")
+        .ok()
+        .or_else(|| std::env::var("TANDEM_PROTOCOL_TITLE").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Tandem".to_string())
+}
+
 fn sanitize_openai_function_name(name: &str) -> String {
     let mut out = String::new();
     for ch in name.trim().chars() {
@@ -714,7 +723,7 @@ impl Provider for OpenAICompatibleProvider {
             if self.id == "openrouter" {
                 req = req
                     .header("HTTP-Referer", "https://tandem.frumu.ai")
-                    .header("X-Title", "Tandem");
+                    .header("X-Title", protocol_title_header());
             }
             if let Some(api_key) = &self.api_key {
                 req = req.bearer_auth(api_key);
@@ -845,7 +854,7 @@ impl Provider for OpenAICompatibleProvider {
             if self.id == "openrouter" {
                 req = req
                     .header("HTTP-Referer", "https://tandem.frumu.ai")
-                    .header("X-Title", "Tandem");
+                    .header("X-Title", protocol_title_header());
             }
             if let Some(api_key) = &self.api_key {
                 req = req.bearer_auth(api_key);

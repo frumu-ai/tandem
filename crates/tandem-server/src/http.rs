@@ -1170,6 +1170,10 @@ fn app_router(state: AppState) -> Router {
             post(provider_oauth_callback),
         )
         .route("/config", get(get_config).patch(patch_config))
+        .route(
+            "/config/identity",
+            get(get_config_identity).patch(patch_config_identity),
+        )
         .route("/config/providers", get(config_providers))
         .route("/mcp", get(list_mcp).post(add_mcp))
         .route("/mcp/{name}/connect", post(connect_mcp))
@@ -1379,6 +1383,14 @@ async fn auth_gate(State(state): State<AppState>, request: Request, next: Next) 
 }
 
 fn extract_request_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(token) = headers
+        .get("x-agent-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return Some(token.to_string());
+    }
     if let Some(token) = headers
         .get("x-tandem-token")
         .and_then(|v| v.to_str().ok())
@@ -3333,9 +3345,282 @@ fn contains_secret_config_fields(value: &Value) -> bool {
     }
 }
 
+fn merge_json(base: &mut Value, overlay: &Value) {
+    if overlay.is_null() {
+        return;
+    }
+    match (base, overlay) {
+        (Value::Object(base_map), Value::Object(overlay_map)) => {
+            for (key, value) in overlay_map {
+                if value.is_null() {
+                    continue;
+                }
+                match base_map.get_mut(key) {
+                    Some(existing) => merge_json(existing, value),
+                    None => {
+                        base_map.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (base_value, overlay_value) => {
+            *base_value = overlay_value.clone();
+        }
+    }
+}
+
+fn identity_default_value() -> Value {
+    json!({
+        "bot": {
+            "canonical_name": "Tandem",
+            "aliases": {
+                "desktop": "Tandem",
+                "tui": "Tandem TUI",
+                "portal": "Tandem Portal",
+                "control_panel": "Tandem Control Panel",
+                "channels": "Tandem",
+                "protocol": "Tandem",
+                "cli": "Tandem"
+            }
+        },
+        "personality": {
+            "default": {
+                "preset": "balanced",
+                "custom_instructions": null
+            },
+            "per_agent": {}
+        }
+    })
+}
+
+fn personality_presets_catalog() -> Value {
+    json!([
+        {
+            "id": "balanced",
+            "label": "Balanced",
+            "description": "Pragmatic, direct, and neutral tone."
+        },
+        {
+            "id": "concise",
+            "label": "Concise",
+            "description": "Short, high-signal responses focused on outcomes."
+        },
+        {
+            "id": "friendly",
+            "label": "Friendly",
+            "description": "Warm, approachable style while staying practical."
+        },
+        {
+            "id": "mentor",
+            "label": "Mentor",
+            "description": "Guides with context and explicit reasoning."
+        },
+        {
+            "id": "critical",
+            "label": "Critical",
+            "description": "Skeptical, risk-first framing with clear tradeoffs."
+        }
+    ])
+}
+
+fn normalize_effective_config_with_identity(mut value: Value) -> Value {
+    let legacy_bot_name = value
+        .get("bot_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string);
+    let legacy_persona = value
+        .get("persona")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string);
+
+    if !value.is_object() {
+        return value;
+    }
+
+    let root = value.as_object_mut().expect("checked object");
+    if !root.contains_key("identity") || !root.get("identity").is_some_and(Value::is_object) {
+        root.insert("identity".to_string(), identity_default_value());
+    }
+    if let Some(identity) = root.get_mut("identity") {
+        let mut normalized = identity_default_value();
+        merge_json(&mut normalized, identity);
+        *identity = normalized;
+    }
+
+    if let Some(legacy_bot_name) = legacy_bot_name {
+        let canonical_name = root
+            .get("identity")
+            .and_then(Value::as_object)
+            .and_then(|identity| identity.get("bot"))
+            .and_then(Value::as_object)
+            .and_then(|bot| bot.get("canonical_name"))
+            .and_then(Value::as_str);
+        let should_fill = canonical_name
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true);
+        if should_fill {
+            root["identity"]["bot"]["canonical_name"] = Value::String(legacy_bot_name);
+        }
+    }
+
+    if let Some(legacy_persona) = legacy_persona {
+        let has_custom = root
+            .get("identity")
+            .and_then(|identity| identity.get("personality"))
+            .and_then(|personality| personality.get("default"))
+            .and_then(|default| default.get("custom_instructions"))
+            .and_then(Value::as_str)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        if !has_custom {
+            root["identity"]["personality"]["default"]["custom_instructions"] =
+                Value::String(legacy_persona);
+        }
+    }
+
+    let canonical_name = root
+        .get("identity")
+        .and_then(|identity| identity.get("bot"))
+        .and_then(|bot| bot.get("canonical_name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("Tandem")
+        .to_string();
+    if let Some(aliases) = root
+        .get_mut("identity")
+        .and_then(Value::as_object_mut)
+        .and_then(|identity| identity.get_mut("bot"))
+        .and_then(Value::as_object_mut)
+        .and_then(|bot| bot.get_mut("aliases"))
+        .and_then(Value::as_object_mut)
+    {
+        for alias in [
+            "desktop",
+            "portal",
+            "channels",
+            "protocol",
+            "cli",
+            "control_panel",
+        ] {
+            let needs_fill = aliases
+                .get(alias)
+                .and_then(Value::as_str)
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true);
+            if needs_fill {
+                aliases.insert(alias.to_string(), Value::String(canonical_name.clone()));
+            }
+        }
+        let tui_needs_fill = aliases
+            .get("tui")
+            .and_then(Value::as_str)
+            .map(|v| v.trim().is_empty())
+            .unwrap_or(true);
+        if tui_needs_fill {
+            aliases.insert(
+                "tui".to_string(),
+                Value::String(format!("{canonical_name} TUI")),
+            );
+        }
+    }
+
+    let default_preset_empty = root
+        .get("identity")
+        .and_then(|identity| identity.get("personality"))
+        .and_then(|personality| personality.get("default"))
+        .and_then(|default| default.get("preset"))
+        .and_then(Value::as_str)
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true);
+    if default_preset_empty {
+        root["identity"]["personality"]["default"]["preset"] =
+            Value::String("balanced".to_string());
+    }
+
+    root.insert("bot_name".to_string(), Value::String(canonical_name));
+    let compat_persona = root
+        .get("identity")
+        .and_then(|identity| identity.get("personality"))
+        .and_then(|personality| personality.get("default"))
+        .and_then(|default| default.get("custom_instructions"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string);
+    root.insert(
+        "persona".to_string(),
+        compat_persona.map_or(Value::Null, Value::String),
+    );
+
+    value
+}
+
+fn normalize_layers_with_identity(mut value: Value) -> Value {
+    let Some(root) = value.as_object_mut() else {
+        return value;
+    };
+    for layer in ["global", "project", "managed", "env", "runtime", "cli"] {
+        if let Some(entry) = root.get_mut(layer) {
+            let normalized = normalize_effective_config_with_identity(entry.clone());
+            *entry = normalized;
+        }
+    }
+    value
+}
+
+fn normalize_config_patch_input(mut input: Value) -> Value {
+    let Some(root) = input.as_object_mut() else {
+        return input;
+    };
+    let legacy_bot_name = root
+        .get("bot_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string);
+    let legacy_persona = root
+        .get("persona")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string);
+
+    if let Some(legacy_bot_name) = legacy_bot_name {
+        root.entry("identity".to_string())
+            .or_insert_with(|| json!({}));
+        root["identity"]["bot"]["canonical_name"] = Value::String(legacy_bot_name);
+    }
+    if let Some(legacy_persona) = legacy_persona {
+        root.entry("identity".to_string())
+            .or_insert_with(|| json!({}));
+        root["identity"]["personality"]["default"]["custom_instructions"] =
+            Value::String(legacy_persona);
+        if root["identity"]["personality"]["default"]
+            .get("preset")
+            .and_then(Value::as_str)
+            .map(|v| v.trim().is_empty())
+            .unwrap_or(true)
+        {
+            root["identity"]["personality"]["default"]["preset"] =
+                Value::String("balanced".to_string());
+        }
+    }
+
+    root.remove("bot_name");
+    root.remove("persona");
+    input
+}
+
 async fn get_config(State(state): State<AppState>) -> Json<Value> {
-    let effective = redacted(state.config.get_effective_value().await);
-    let layers = redacted(state.config.get_layers_value().await);
+    let effective = normalize_effective_config_with_identity(redacted(
+        state.config.get_effective_value().await,
+    ));
+    let layers = normalize_layers_with_identity(redacted(state.config.get_layers_value().await));
     Json(json!({
         "effective": effective,
         "layers": layers
@@ -3353,7 +3638,11 @@ async fn patch_config(State(state): State<AppState>, Json(input): Json<Value>) -
         )
             .into_response();
     }
-    let effective = match state.config.patch_project(input).await {
+    let effective = match state
+        .config
+        .patch_project(normalize_config_patch_input(input))
+        .await
+    {
         Ok(effective) => effective,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -3361,11 +3650,15 @@ async fn patch_config(State(state): State<AppState>, Json(input): Json<Value>) -
         .providers
         .reload(state.config.get().await.into())
         .await;
-    Json(json!({ "effective": redacted(effective) })).into_response()
+    Json(json!({ "effective": normalize_effective_config_with_identity(redacted(effective)) }))
+        .into_response()
 }
 async fn global_config(State(state): State<AppState>) -> Json<Value> {
-    let global = redacted(state.config.get_global_value().await);
-    let effective = redacted(state.config.get_effective_value().await);
+    let global =
+        normalize_effective_config_with_identity(redacted(state.config.get_global_value().await));
+    let effective = normalize_effective_config_with_identity(redacted(
+        state.config.get_effective_value().await,
+    ));
     Json(json!({
         "global": global,
         "effective": effective
@@ -3383,7 +3676,11 @@ async fn global_config_patch(State(state): State<AppState>, Json(input): Json<Va
         )
             .into_response();
     }
-    let effective = match state.config.patch_global(input).await {
+    let effective = match state
+        .config
+        .patch_global(normalize_config_patch_input(input))
+        .await
+    {
         Ok(effective) => effective,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -3391,7 +3688,61 @@ async fn global_config_patch(State(state): State<AppState>, Json(input): Json<Va
         .providers
         .reload(state.config.get().await.into())
         .await;
-    Json(json!({ "effective": redacted(effective) })).into_response()
+    Json(json!({ "effective": normalize_effective_config_with_identity(redacted(effective)) }))
+        .into_response()
+}
+
+async fn get_config_identity(State(state): State<AppState>) -> Json<Value> {
+    let effective = normalize_effective_config_with_identity(redacted(
+        state.config.get_effective_value().await,
+    ));
+    let identity = effective
+        .get("identity")
+        .cloned()
+        .unwrap_or_else(identity_default_value);
+    Json(json!({
+        "identity": identity,
+        "presets": personality_presets_catalog()
+    }))
+}
+
+async fn patch_config_identity(
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Response {
+    if contains_secret_config_fields(&input) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+            "error": "Secret provider keys are not accepted in config patches.",
+            "code": "CONFIG_SECRET_REJECTED",
+            "hint": "Use PUT /auth/{provider} or environment variables."
+            })),
+        )
+            .into_response();
+    }
+
+    let patch = if input.get("identity").is_some() {
+        normalize_config_patch_input(input)
+    } else {
+        normalize_config_patch_input(json!({ "identity": input }))
+    };
+    let effective = match state.config.patch_project(patch).await {
+        Ok(effective) => effective,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    state
+        .providers
+        .reload(state.config.get().await.into())
+        .await;
+    Json(json!({
+        "identity": normalize_effective_config_with_identity(redacted(effective))
+            .get("identity")
+            .cloned()
+            .unwrap_or_else(identity_default_value),
+        "presets": personality_presets_catalog()
+    }))
+    .into_response()
 }
 async fn config_providers(State(state): State<AppState>) -> Json<Value> {
     let cfg = state.config.get_effective_value().await;

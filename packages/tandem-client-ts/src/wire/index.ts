@@ -180,6 +180,47 @@ export interface ProvidersConfigResponse {
   providers: Record<string, ProviderConfigEntry>;
 }
 
+export interface PersonalityProfile {
+  preset?: string;
+  custom_instructions?: string | null;
+}
+
+export interface PersonalityConfig {
+  default?: PersonalityProfile;
+  per_agent?: Record<string, PersonalityProfile>;
+}
+
+export interface BotIdentityAliases {
+  desktop?: string;
+  tui?: string;
+  portal?: string;
+  control_panel?: string;
+  channels?: string;
+  protocol?: string;
+  cli?: string;
+}
+
+export interface BotIdentity {
+  canonical_name?: string;
+  aliases?: BotIdentityAliases;
+}
+
+export interface IdentityConfig {
+  bot?: BotIdentity;
+  personality?: PersonalityConfig;
+}
+
+export interface PersonalityPresetEntry {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface IdentityConfigResponse {
+  identity: IdentityConfig;
+  presets?: PersonalityPresetEntry[];
+}
+
 // ─── Channels ────────────────────────────────────────────────────────────────
 
 export type ChannelName = "telegram" | "discord" | "slack";

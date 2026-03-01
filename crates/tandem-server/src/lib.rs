@@ -1661,6 +1661,104 @@ impl ServerPromptContextHook {
         out.push("</memory_context>".to_string());
         out.join("\n")
     }
+
+    fn personality_preset_text(preset: &str) -> &'static str {
+        match preset {
+            "concise" => {
+                "Default style: concise and high-signal. Prefer short direct responses unless detail is requested."
+            }
+            "friendly" => {
+                "Default style: friendly and supportive while staying technically rigorous and concrete."
+            }
+            "mentor" => {
+                "Default style: mentor-like. Explain decisions and tradeoffs clearly when complexity is non-trivial."
+            }
+            "critical" => {
+                "Default style: critical and risk-first. Surface failure modes and assumptions early."
+            }
+            _ => {
+                "Default style: balanced, pragmatic, and factual. Focus on concrete outcomes and actionable guidance."
+            }
+        }
+    }
+
+    fn resolve_identity_block(config: &Value, agent_name: Option<&str>) -> Option<String> {
+        let allow_agent_override = agent_name
+            .map(|name| !matches!(name, "compaction" | "title" | "summary"))
+            .unwrap_or(false);
+        let legacy_bot_name = config
+            .get("bot_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let bot_name = config
+            .get("identity")
+            .and_then(|identity| identity.get("bot"))
+            .and_then(|bot| bot.get("canonical_name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .or(legacy_bot_name)
+            .unwrap_or("Tandem");
+
+        let default_profile = config
+            .get("identity")
+            .and_then(|identity| identity.get("personality"))
+            .and_then(|personality| personality.get("default"));
+        let default_preset = default_profile
+            .and_then(|profile| profile.get("preset"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("balanced");
+        let default_custom = default_profile
+            .and_then(|profile| profile.get("custom_instructions"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string);
+        let legacy_persona = config
+            .get("persona")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string);
+
+        let per_agent_profile = if allow_agent_override {
+            agent_name.and_then(|name| {
+                config
+                    .get("identity")
+                    .and_then(|identity| identity.get("personality"))
+                    .and_then(|personality| personality.get("per_agent"))
+                    .and_then(|per_agent| per_agent.get(name))
+            })
+        } else {
+            None
+        };
+        let preset = per_agent_profile
+            .and_then(|profile| profile.get("preset"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or(default_preset);
+        let custom = per_agent_profile
+            .and_then(|profile| profile.get("custom_instructions"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string)
+            .or(default_custom)
+            .or(legacy_persona);
+
+        let mut lines = vec![
+            format!("You are {bot_name}, an AI assistant."),
+            Self::personality_preset_text(preset).to_string(),
+        ];
+        if let Some(custom) = custom {
+            lines.push(format!("Additional personality instructions: {custom}"));
+        }
+        Some(lines.join("\n"))
+    }
 }
 
 impl PromptContextHook for ServerPromptContextHook {
@@ -1675,6 +1773,16 @@ impl PromptContextHook for ServerPromptContextHook {
             let Some(run) = run else {
                 return Ok(messages);
             };
+            let config = this.state.config.get_effective_value().await;
+            if let Some(identity_block) =
+                Self::resolve_identity_block(&config, run.agent_profile.as_deref())
+            {
+                messages.push(ChatMessage {
+                    role: "system".to_string(),
+                    content: identity_block,
+                    attachments: Vec::new(),
+                });
+            }
             let run_id = run.run_id;
             let user_id = run.client_id.unwrap_or_else(|| "default".to_string());
             let query = messages

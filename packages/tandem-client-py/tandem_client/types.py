@@ -180,6 +180,62 @@ class ProvidersConfigResponse(BaseModel):
     providers: dict[str, ProviderConfigEntry] = {}
 
 
+class PersonalityProfile(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    preset: Optional[str] = None
+    custom_instructions: Optional[str] = Field(
+        None, validation_alias=AliasChoices("customInstructions", "custom_instructions")
+    )
+
+
+class PersonalityConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    default: Optional[PersonalityProfile] = None
+    per_agent: dict[str, PersonalityProfile] = Field(
+        default_factory=dict, validation_alias=AliasChoices("perAgent", "per_agent")
+    )
+
+
+class BotIdentityAliases(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    desktop: Optional[str] = None
+    tui: Optional[str] = None
+    portal: Optional[str] = None
+    control_panel: Optional[str] = Field(
+        None, validation_alias=AliasChoices("controlPanel", "control_panel")
+    )
+    channels: Optional[str] = None
+    protocol: Optional[str] = None
+    cli: Optional[str] = None
+
+
+class BotIdentity(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    canonical_name: Optional[str] = Field(
+        None, validation_alias=AliasChoices("canonicalName", "canonical_name")
+    )
+    aliases: Optional[BotIdentityAliases] = None
+
+
+class IdentityConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    bot: Optional[BotIdentity] = None
+    personality: Optional[PersonalityConfig] = None
+
+
+class PersonalityPresetEntry(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    label: str
+    description: Optional[str] = None
+
+
+class IdentityConfigResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    identity: IdentityConfig
+    presets: list[PersonalityPresetEntry] = []
+
+
 # ─── Channels ─────────────────────────────────────────────────────────────────
 
 
