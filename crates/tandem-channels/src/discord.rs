@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::config::{is_user_allowed, DiscordConfig};
+use crate::config::DiscordConfig;
 use crate::traits::{Channel, ChannelMessage, SendMessage};
 
 /// Discord's maximum message length for regular messages.
@@ -105,6 +105,61 @@ fn normalize_incoming_content(
     } else {
         Some(normalized)
     }
+}
+
+fn normalize_discord_identity(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed == "*" {
+        return "*".to_string();
+    }
+    let without_prefix = trimmed.trim_start_matches('@');
+    let without_mention = without_prefix
+        .strip_prefix("<@!")
+        .or_else(|| without_prefix.strip_prefix("<@"))
+        .unwrap_or(without_prefix)
+        .trim_end_matches('>');
+    without_mention.trim().to_ascii_lowercase()
+}
+
+fn is_discord_user_allowed(
+    author_id: &str,
+    author_username: Option<&str>,
+    author_global_name: Option<&str>,
+    author_discriminator: Option<&str>,
+    allowed_users: &[String],
+) -> bool {
+    if allowed_users.is_empty() {
+        return false;
+    }
+    if allowed_users
+        .iter()
+        .any(|entry| normalize_discord_identity(entry) == "*")
+    {
+        return true;
+    }
+
+    let mut candidates = vec![normalize_discord_identity(author_id)];
+    if let Some(username) = author_username {
+        if !username.trim().is_empty() {
+            candidates.push(normalize_discord_identity(username));
+            if let Some(discriminator) = author_discriminator {
+                let discrim = discriminator.trim();
+                if !discrim.is_empty() && discrim != "0" {
+                    candidates.push(normalize_discord_identity(&format!("{username}#{discrim}")));
+                }
+            }
+        }
+    }
+    if let Some(global_name) = author_global_name {
+        if !global_name.trim().is_empty() {
+            candidates.push(normalize_discord_identity(global_name));
+        }
+    }
+
+    allowed_users.iter().any(|entry| {
+        let allowed = normalize_discord_identity(entry);
+        candidates.iter().any(|candidate| candidate == &allowed)
+    })
 }
 
 fn discord_attachment_description(message: &serde_json::Value) -> Option<String> {
@@ -492,8 +547,17 @@ impl Channel for DiscordChannel {
                         continue;
                     }
 
-                    // Allowlist
-                    if !is_user_allowed(author_id, &self.allowed_users) {
+                    // Allowlist: support IDs plus username/global-name for easier config.
+                    let author_username = d["author"]["username"].as_str();
+                    let author_global_name = d["author"]["global_name"].as_str();
+                    let author_discriminator = d["author"]["discriminator"].as_str();
+                    if !is_discord_user_allowed(
+                        author_id,
+                        author_username,
+                        author_global_name,
+                        author_discriminator,
+                        &self.allowed_users,
+                    ) {
                         warn!("Discord: ignoring message from unauthorized user {author_id}");
                         continue;
                     }
@@ -626,7 +690,13 @@ mod tests {
     #[test]
     fn empty_allowlist_denies_everyone() {
         let ch = make_channel();
-        assert!(!is_user_allowed("12345", &ch.allowed_users));
+        assert!(!is_discord_user_allowed(
+            "12345",
+            None,
+            None,
+            None,
+            &ch.allowed_users
+        ));
     }
 
     #[test]
@@ -635,7 +705,13 @@ mod tests {
             allowed_users: vec!["*".into()],
             ..make_channel()
         };
-        assert!(is_user_allowed("12345", &ch.allowed_users));
+        assert!(is_discord_user_allowed(
+            "12345",
+            Some("alice"),
+            Some("Alice"),
+            None,
+            &ch.allowed_users
+        ));
     }
 
     #[test]
@@ -644,8 +720,65 @@ mod tests {
             allowed_users: vec!["111".into(), "222".into()],
             ..make_channel()
         };
-        assert!(is_user_allowed("111", &ch.allowed_users));
-        assert!(!is_user_allowed("333", &ch.allowed_users));
+        assert!(is_discord_user_allowed(
+            "111",
+            Some("alice"),
+            None,
+            None,
+            &ch.allowed_users
+        ));
+        assert!(!is_discord_user_allowed(
+            "333",
+            Some("alice"),
+            None,
+            None,
+            &ch.allowed_users
+        ));
+    }
+
+    #[test]
+    fn username_allowlist_matches_case_insensitive() {
+        let ch = DiscordChannel {
+            allowed_users: vec!["@Alice".into()],
+            ..make_channel()
+        };
+        assert!(is_discord_user_allowed(
+            "999",
+            Some("alice"),
+            None,
+            None,
+            &ch.allowed_users
+        ));
+    }
+
+    #[test]
+    fn global_name_allowlist_matches() {
+        let ch = DiscordChannel {
+            allowed_users: vec!["Team Lead".into()],
+            ..make_channel()
+        };
+        assert!(is_discord_user_allowed(
+            "999",
+            Some("alice"),
+            Some("Team Lead"),
+            None,
+            &ch.allowed_users
+        ));
+    }
+
+    #[test]
+    fn mention_style_allowlist_matches_user_id() {
+        let ch = DiscordChannel {
+            allowed_users: vec!["<@!12345>".into()],
+            ..make_channel()
+        };
+        assert!(is_discord_user_allowed(
+            "12345",
+            Some("alice"),
+            None,
+            None,
+            &ch.allowed_users
+        ));
     }
 
     // ── Base64 / token parsing ────────────────────────────────────────

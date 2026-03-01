@@ -1,3 +1,18 @@
+# Tandem v0.3.27 Release Notes (Unreleased)
+
+### Highlights
+
+- **Discord channel reliability and operator UX uplift**:
+  - Control panel Channels view now loads and pre-fills saved channel settings from `/channels/config`.
+  - Added editable Discord controls for `mention_only` and optional `guild_id` (plus Slack `channel_id` parity in the same surface).
+  - Added channel-level `last_error` visibility in the control panel so channel failures are diagnosable without backend log inspection.
+  - Added inline Discord usage guidance clarifying this integration's message flow (`@bot /help`) and that Discord app slash commands are not auto-registered.
+- **Discord allowlist matching compatibility fix**:
+  - Discord adapter allowlist matching now accepts multiple identity forms: user ID, username, global name, and mention-style entries (`<@id>`, `<@!id>`, `@name`).
+  - Resolves common “bot appears connected/online but ignores messages” failures when allowlists were configured with names rather than raw user IDs.
+
+---
+
 # Tandem v0.3.25 Release Notes (Unreleased)
 
 ### Highlights

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.27] - 2026-03-01
+
+### Changed
+
+- **Control panel channel configuration UX**: Channels view now loads persisted channel config, pre-fills existing values, and supports editing Discord `mention_only`/`guild_id` and Slack `channel_id` directly from the web control panel.
+- **Channel diagnostics visibility in control panel**: Channel cards now surface backend `last_error` status so connector failures are visible without log tailing.
+- **Discord usage guidance in control panel**: Added inline Discord guidance clarifying Tandem command style (`@bot /help`) and that Discord application slash commands are not registered by this integration.
+
+### Fixed
+
+- **Discord allowlist identity matching**: Discord inbound authorization now supports user ID, username, global name, and mention-style identity entries (for example `@name`, `<@id>`, `<@!id>`) instead of ID-only matching.
+- **Discord non-response misconfiguration path**: Fixed common “connected but not responding” states caused by hidden/default Discord settings by exposing mention-only and guild filters in the control panel.
+
 ## [0.3.26] - 2026-02-28
 
 ### Added
