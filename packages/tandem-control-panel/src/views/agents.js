@@ -3,6 +3,7 @@ export async function renderAgents(ctx) {
   const [
     routinesRaw,
     automationsRaw,
+    automationsV2Raw,
     routineRunsRaw,
     automationRunsRaw,
     providersCatalogRaw,
@@ -11,6 +12,8 @@ export async function renderAgents(ctx) {
   ] = await Promise.all([
     state.client.routines.list().catch(() => ({ routines: [] })),
     state.client.automations.list().catch(() => ({ automations: [] })),
+    state.client?.automationsV2?.list?.().catch(() => ({ automations: [] })) ||
+      Promise.resolve({ automations: [] }),
     state.client.routines.listRuns({ limit: 100 }).catch(() => ({ runs: [] })),
     state.client.automations.listRuns({ limit: 100 }).catch(() => ({ runs: [] })),
     state.client.providers.catalog().catch(() => ({ all: [], connected: [], default: null })),
@@ -19,6 +22,7 @@ export async function renderAgents(ctx) {
   ]);
   const routines = routinesRaw.routines || [];
   const automations = automationsRaw.automations || [];
+  const automationsV2 = Array.isArray(automationsV2Raw?.automations) ? automationsV2Raw.automations : [];
   const routineRuns = Array.isArray(routineRunsRaw?.runs) ? routineRunsRaw.runs : [];
   const automationRuns = Array.isArray(automationRunsRaw?.runs) ? automationRunsRaw.runs : [];
   const providerCatalog = Array.isArray(providersCatalogRaw?.all) ? providersCatalogRaw.all : [];
@@ -311,6 +315,53 @@ export async function renderAgents(ctx) {
         </div>`;
       })
       .join("") || '<p class="tcp-subtle">No automations.</p>';
+  const automationV2Key = (automation) =>
+    String(
+      automation?.automation_id || automation?.automationId || automation?.id || automation?.automationID || ""
+    ).trim();
+  const automationsV2Markup =
+    automationsV2
+      .map((a) => {
+        const aid = automationV2Key(a);
+        const status = String(a?.status || "draft").toLowerCase();
+        const nextFire = Number(a?.next_fire_at_ms || a?.nextFireAtMs || 0);
+        const nodeCount = Array.isArray(a?.flow?.nodes) ? a.flow.nodes.length : 0;
+        const agentCount = Array.isArray(a?.agents) ? a.agents.length : 0;
+        return `<div class="tcp-list-item">
+          <div class="flex items-center justify-between gap-2">
+            <span>${escapeHtml(String(a?.name || aid || "Automation V2"))}</span>
+            <div class="flex items-center gap-2">
+              <span class="${runStatusClass(status)}">${escapeHtml(status)}</span>
+              ${
+                aid
+                  ? `<button data-v2-run-now="${escapeHtml(aid)}" class="tcp-btn h-7 px-2 text-xs"><i data-lucide="play"></i> Run</button>`
+                  : ""
+              }
+              ${
+                aid
+                  ? `<button data-v2-toggle="${escapeHtml(aid)}" data-v2-next="${status === "paused" ? "resume" : "pause"}" class="tcp-btn h-7 px-2 text-xs">
+                    <i data-lucide="${status === "paused" ? "play-circle" : "pause-circle"}"></i> ${
+                      status === "paused" ? "Resume" : "Pause"
+                    }
+                  </button>`
+                  : ""
+              }
+              ${
+                aid
+                  ? `<button data-v2-runs="${escapeHtml(aid)}" class="tcp-btn h-7 px-2 text-xs"><i data-lucide="list"></i> Runs</button>`
+                  : ""
+              }
+            </div>
+          </div>
+          <div class="mt-1 flex flex-wrap items-center gap-2 text-xs">
+            <span class="tcp-subtle">${agentCount} agents</span>
+            <span class="tcp-subtle">${nodeCount} nodes</span>
+            <span class="tcp-subtle">${nextFire > 0 ? formatTimestamp(nextFire) : "manual schedule"}</span>
+            <span class="tcp-subtle font-mono">${escapeHtml(aid || "id n/a")}</span>
+          </div>
+        </div>`;
+      })
+      .join("") || '<p class="tcp-subtle">No V2 automations.</p>';
   const recentRunsMarkup =
     dedupedRecentRuns
       .map(({ family, run }) => {
@@ -472,6 +523,56 @@ export async function renderAgents(ctx) {
       <div class="tcp-list">${automationsMarkup}</div>
     </div>
     <div class="tcp-card">
+      <h3 class="tcp-title mb-3">Automation Builder V2</h3>
+      <div class="grid gap-3 md:grid-cols-2">
+        <input id="automation-v2-name" class="tcp-input" placeholder="Automation V2 name" />
+        <input id="automation-v2-description" class="tcp-input" placeholder="Description (optional)" />
+      </div>
+      <div class="mt-3 grid gap-3 md:grid-cols-3">
+        <select id="automation-v2-schedule-type" class="tcp-select">
+          <option value="manual">Manual</option>
+          <option value="interval">Interval</option>
+          <option value="cron">Cron</option>
+        </select>
+        <input id="automation-v2-interval-seconds" class="tcp-input" type="number" min="1" value="3600" placeholder="Interval seconds" />
+        <input id="automation-v2-cron" class="tcp-input" placeholder="Cron expression (UTC by default)" />
+      </div>
+      <div class="mt-3 grid gap-3 md:grid-cols-3">
+        <input id="automation-v2-timezone" class="tcp-input" value="UTC" />
+        <select id="automation-v2-misfire" class="tcp-select">
+          <option value="run_once">run_once</option>
+          <option value="skip">skip</option>
+          <option value="catch_up">catch_up</option>
+        </select>
+        <input id="automation-v2-agent-count" class="tcp-input" type="number" min="1" max="12" value="2" />
+      </div>
+      <div class="mt-2 text-xs text-slate-400">Per-agent model routing is supported. Example model policy: provider/model for each agent row below.</div>
+      <div class="mt-3">
+        <button id="automation-v2-generate-agents" class="tcp-btn"><i data-lucide="users"></i> Generate Agent Rows</button>
+      </div>
+      <div id="automation-v2-agents-editor" class="mt-3 grid gap-2"></div>
+      <div class="mt-4">
+        <div class="mb-2 flex items-center justify-between">
+          <h4 class="text-sm font-semibold text-slate-200">Flow Nodes (DAG)</h4>
+          <button id="automation-v2-add-node" class="tcp-btn h-7 px-2 text-xs"><i data-lucide="plus"></i> Add Node</button>
+        </div>
+        <div id="automation-v2-nodes-editor" class="grid gap-2"></div>
+      </div>
+      <div class="mt-4 flex items-center justify-end gap-2">
+        <button id="automation-v2-create" class="tcp-btn-primary"><i data-lucide="save"></i> Create Automation V2</button>
+      </div>
+    </div>
+    <div class="tcp-card">
+      <h3 class="tcp-title mb-3">Automations V2 (${automationsV2.length})</h3>
+      <div class="tcp-list">${automationsV2Markup}</div>
+    </div>
+    <div class="tcp-card">
+      <h3 class="tcp-title mb-2">Automation V2 Run Inspector</h3>
+      <div id="automation-v2-run-inspector" class="tcp-list">
+        <p class="tcp-subtle">Click a V2 automation "Runs" button to inspect and control run state.</p>
+      </div>
+    </div>
+    <div class="tcp-card">
       <div class="mb-3 flex items-center justify-between gap-2">
         <h3 class="tcp-title">Recent Runs (${dedupedRecentRuns.length})</h3>
         <button id="refresh-runs" class="tcp-btn"><i data-lucide="refresh-cw"></i> Refresh</button>
@@ -566,6 +667,170 @@ export async function renderAgents(ctx) {
     renderAgents(ctx);
   });
   const runInspectorEl = byId("run-inspector");
+  const v2RunInspectorEl = byId("automation-v2-run-inspector");
+  const automationV2Api = state.client?.automationsV2;
+  const v2Enabled = !!automationV2Api;
+  if (!v2Enabled) {
+    v2RunInspectorEl.innerHTML =
+      '<p class="tcp-subtle">Automations V2 client API is unavailable in this build.</p>';
+  }
+  const v2Request = async (fn) => {
+    if (!v2Enabled) throw new Error("Automations V2 API unavailable.");
+    return fn(automationV2Api);
+  };
+  const v2AgentRowMarkup = (index) => `
+    <div class="rounded-xl border border-slate-700/60 bg-slate-900/30 p-3">
+      <div class="mb-2 text-xs text-slate-300 font-semibold">Agent ${index + 1}</div>
+      <div class="grid gap-2 md:grid-cols-2">
+        <input data-v2-agent-field="agent_id" data-v2-agent-index="${index}" class="tcp-input font-mono text-xs" value="agent-${index + 1}" />
+        <input data-v2-agent-field="display_name" data-v2-agent-index="${index}" class="tcp-input" placeholder="Display name" value="Agent ${index + 1}" />
+        <input data-v2-agent-field="model_provider" data-v2-agent-index="${index}" class="tcp-input" placeholder="model provider (e.g. openrouter)" />
+        <input data-v2-agent-field="model_id" data-v2-agent-index="${index}" class="tcp-input" placeholder="model id (e.g. openai/gpt-4o-mini)" />
+        <input data-v2-agent-field="skills" data-v2-agent-index="${index}" class="tcp-input" placeholder="skills csv" />
+        <input data-v2-agent-field="mcp_servers" data-v2-agent-index="${index}" class="tcp-input" placeholder="mcp servers csv (github, composio)" />
+        <input data-v2-agent-field="allowlist" data-v2-agent-index="${index}" class="tcp-input" placeholder="tool allowlist csv (read,mcp.github.*)" />
+        <input data-v2-agent-field="denylist" data-v2-agent-index="${index}" class="tcp-input" placeholder="tool denylist csv" />
+      </div>
+    </div>
+  `;
+  const v2NodeRowMarkup = (index) => `
+    <div class="rounded-xl border border-slate-700/60 bg-slate-900/30 p-3">
+      <div class="mb-2 text-xs text-slate-300 font-semibold">Node ${index + 1}</div>
+      <div class="grid gap-2 md:grid-cols-2">
+        <input data-v2-node-field="node_id" data-v2-node-index="${index}" class="tcp-input font-mono text-xs" value="node-${index + 1}" />
+        <input data-v2-node-field="agent_id" data-v2-node-index="${index}" class="tcp-input font-mono text-xs" value="agent-1" />
+        <input data-v2-node-field="objective" data-v2-node-index="${index}" class="tcp-input md:col-span-2" placeholder="Node objective" />
+        <input data-v2-node-field="depends_on" data-v2-node-index="${index}" class="tcp-input md:col-span-2 font-mono text-xs" placeholder="depends_on csv (node-1,node-2)" />
+        <input data-v2-node-field="timeout_ms" data-v2-node-index="${index}" class="tcp-input" type="number" min="0" placeholder="timeout ms" />
+      </div>
+    </div>
+  `;
+  const parseCsv = (value) =>
+    String(value || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+  const rebuildV2AgentRows = () => {
+    const count = Math.max(
+      1,
+      Math.min(12, Number.parseInt(String(byId("automation-v2-agent-count")?.value || "2"), 10) || 2)
+    );
+    byId("automation-v2-agents-editor").innerHTML = Array.from({ length: count }, (_, i) =>
+      v2AgentRowMarkup(i)
+    ).join("");
+  };
+  const appendV2NodeRow = () => {
+    const editor = byId("automation-v2-nodes-editor");
+    const count = editor.querySelectorAll("[data-v2-node-index]").length;
+    editor.insertAdjacentHTML("beforeend", v2NodeRowMarkup(count));
+  };
+  rebuildV2AgentRows();
+  appendV2NodeRow();
+  byId("automation-v2-generate-agents")?.addEventListener("click", () => {
+    rebuildV2AgentRows();
+    toast("ok", "Agent rows regenerated.");
+  });
+  byId("automation-v2-add-node")?.addEventListener("click", () => {
+    appendV2NodeRow();
+  });
+  byId("automation-v2-create")?.addEventListener("click", async () => {
+    try {
+      const name = String(byId("automation-v2-name")?.value || "").trim();
+      if (!name) throw new Error("Automation V2 name is required.");
+      const description = String(byId("automation-v2-description")?.value || "").trim();
+      const scheduleType = String(byId("automation-v2-schedule-type")?.value || "manual").trim();
+      const timezone = String(byId("automation-v2-timezone")?.value || "UTC").trim() || "UTC";
+      const misfire = String(byId("automation-v2-misfire")?.value || "run_once").trim();
+      const cronExpression = String(byId("automation-v2-cron")?.value || "").trim();
+      const intervalSeconds = Number.parseInt(
+        String(byId("automation-v2-interval-seconds")?.value || "3600"),
+        10
+      );
+      if (scheduleType === "cron" && !cronExpression) {
+        throw new Error("Cron expression is required for cron schedule.");
+      }
+      if (scheduleType === "interval" && !(Number.isFinite(intervalSeconds) && intervalSeconds > 0)) {
+        throw new Error("Interval seconds must be greater than 0.");
+      }
+
+      const agentRows = [...byId("automation-v2-agents-editor").querySelectorAll("[data-v2-agent-index]")];
+      const seenAgents = new Set();
+      const agents = [];
+      for (const row of agentRows) {
+        const idx = String(row.getAttribute("data-v2-agent-index") || "");
+        const read = (field) =>
+          byId("view").querySelector(`[data-v2-agent-index="${idx}"][data-v2-agent-field="${field}"]`)?.value || "";
+        const agentId = String(read("agent_id")).trim();
+        if (!agentId) continue;
+        if (seenAgents.has(agentId)) throw new Error(`Duplicate agent_id: ${agentId}`);
+        seenAgents.add(agentId);
+        const modelProvider = String(read("model_provider")).trim();
+        const modelId = String(read("model_id")).trim();
+        agents.push({
+          agent_id: agentId,
+          display_name: String(read("display_name")).trim() || agentId,
+          model_policy:
+            modelProvider && modelId
+              ? { default_model: { provider_id: modelProvider, model_id: modelId } }
+              : undefined,
+          skills: parseCsv(read("skills")),
+          tool_policy: {
+            allowlist: parseCsv(read("allowlist")),
+            denylist: parseCsv(read("denylist")),
+          },
+          mcp_policy: {
+            allowed_servers: parseCsv(read("mcp_servers")),
+          },
+        });
+      }
+      if (!agents.length) throw new Error("At least one agent is required.");
+
+      const nodeRows = [...byId("automation-v2-nodes-editor").querySelectorAll("[data-v2-node-index]")];
+      const seenNodes = new Set();
+      const nodes = [];
+      for (const row of nodeRows) {
+        const idx = String(row.getAttribute("data-v2-node-index") || "");
+        const read = (field) =>
+          byId("view").querySelector(`[data-v2-node-index="${idx}"][data-v2-node-field="${field}"]`)?.value || "";
+        const nodeId = String(read("node_id")).trim();
+        const objective = String(read("objective")).trim();
+        const agentId = String(read("agent_id")).trim();
+        if (!nodeId || !objective || !agentId) continue;
+        if (seenNodes.has(nodeId)) throw new Error(`Duplicate node_id: ${nodeId}`);
+        seenNodes.add(nodeId);
+        const timeoutMs = Number.parseInt(String(read("timeout_ms")).trim(), 10);
+        nodes.push({
+          node_id: nodeId,
+          objective,
+          agent_id: agentId,
+          depends_on: parseCsv(read("depends_on")),
+          timeout_ms: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
+        });
+      }
+      if (!nodes.length) throw new Error("At least one flow node is required.");
+
+      const payload = {
+        name,
+        description: description || undefined,
+        status: "active",
+        schedule: {
+          type: scheduleType,
+          cron_expression: scheduleType === "cron" ? cronExpression : undefined,
+          interval_seconds: scheduleType === "interval" ? intervalSeconds : undefined,
+          timezone,
+          misfire_policy: misfire,
+        },
+        agents,
+        flow: { nodes },
+        execution: { max_parallel_agents: Math.min(agents.length, 4) },
+      };
+      await v2Request((client) => client.create(payload));
+      toast("ok", "Automation V2 created.");
+      renderAgents(ctx);
+    } catch (e) {
+      toast("err", e instanceof Error ? e.message : String(e));
+    }
+  });
   const runReview = async (runId, family, decision) => {
     const isAutomation = String(family || "").toLowerCase() === "automation";
     const action = String(decision || "").toLowerCase() === "deny" ? "deny" : "approve";
@@ -748,6 +1013,147 @@ export async function renderAgents(ctx) {
         setTimeout(() => {
           renderAgents(ctx);
         }, 500);
+      } catch (e) {
+        toast("err", e instanceof Error ? e.message : String(e));
+      } finally {
+        if (b.isConnected) {
+          b.disabled = false;
+          b.innerHTML = prev;
+          renderIcons(b);
+        }
+      }
+    })
+  );
+  byId("view").querySelectorAll("[data-v2-run-now]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const automationId = String(b.dataset.v2RunNow || "").trim();
+      if (!automationId) return;
+      const prev = b.innerHTML;
+      b.disabled = true;
+      b.innerHTML = '<i data-lucide="refresh-cw" class="animate-spin"></i> Running...';
+      renderIcons(b);
+      try {
+        const response = await v2Request((client) => client.runNow(automationId));
+        const runId = String(response?.run?.run_id || response?.run?.runId || "").trim();
+        toast("ok", runId ? `Automation V2 triggered (run ${runId}).` : "Automation V2 triggered.");
+        setTimeout(() => renderAgents(ctx), 450);
+      } catch (e) {
+        toast("err", e instanceof Error ? e.message : String(e));
+      } finally {
+        if (b.isConnected) {
+          b.disabled = false;
+          b.innerHTML = prev;
+          renderIcons(b);
+        }
+      }
+    })
+  );
+  byId("view").querySelectorAll("[data-v2-toggle]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const automationId = String(b.dataset.v2Toggle || "").trim();
+      const next = String(b.dataset.v2Next || "").trim().toLowerCase();
+      if (!automationId) return;
+      const prev = b.innerHTML;
+      b.disabled = true;
+      b.innerHTML = '<i data-lucide="refresh-cw" class="animate-spin"></i> Saving...';
+      renderIcons(b);
+      try {
+        if (next === "pause") {
+          await v2Request((client) => client.pause(automationId, "paused from control panel"));
+          toast("ok", "Automation V2 paused.");
+        } else {
+          await v2Request((client) => client.resume(automationId));
+          toast("ok", "Automation V2 resumed.");
+        }
+        setTimeout(() => renderAgents(ctx), 300);
+      } catch (e) {
+        toast("err", e instanceof Error ? e.message : String(e));
+      } finally {
+        if (b.isConnected) {
+          b.disabled = false;
+          b.innerHTML = prev;
+          renderIcons(b);
+        }
+      }
+    })
+  );
+  byId("view").querySelectorAll("[data-v2-runs]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const automationId = String(b.dataset.v2Runs || "").trim();
+      if (!automationId) return;
+      const prev = b.innerHTML;
+      b.disabled = true;
+      b.innerHTML = '<i data-lucide="refresh-cw" class="animate-spin"></i> Loading';
+      renderIcons(b);
+      try {
+        const payload = await v2Request((client) => client.listRuns(automationId, 20));
+        const runs = Array.isArray(payload?.runs) ? payload.runs : [];
+        const runRows =
+          runs
+            .map((run) => {
+              const runId = String(run?.run_id || run?.runId || "").trim();
+              const status = String(run?.status || "unknown").toLowerCase();
+              const updatedAt = Number(run?.updated_at_ms || run?.updatedAtMs || 0);
+              return `<div class="rounded-lg border border-slate-700/60 p-2">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-mono text-xs">${escapeHtml(runId || "run n/a")}</span>
+                  <span class="${runStatusClass(status)}">${escapeHtml(status)}</span>
+                </div>
+                <div class="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                  <span class="tcp-subtle">${escapeHtml(formatTimestamp(updatedAt))}</span>
+                  ${
+                    runId
+                      ? `<button data-v2-run-action="pause" data-v2-run-id="${escapeHtml(runId)}" class="tcp-btn h-7 px-2 text-xs">Pause</button>
+                         <button data-v2-run-action="resume" data-v2-run-id="${escapeHtml(runId)}" class="tcp-btn h-7 px-2 text-xs">Resume</button>
+                         <button data-v2-run-action="cancel" data-v2-run-id="${escapeHtml(runId)}" class="tcp-btn-danger h-7 px-2 text-xs">Cancel</button>`
+                      : ""
+                  }
+                </div>
+                <details class="mt-1">
+                  <summary class="cursor-pointer text-xs text-slate-400">Run payload</summary>
+                  <pre class="tcp-code mt-1">${escapeHtml(JSON.stringify(run, null, 2))}</pre>
+                </details>
+              </div>`;
+            })
+            .join("") || '<p class="tcp-subtle">No V2 runs found for this automation.</p>';
+        v2RunInspectorEl.innerHTML = `<div class="tcp-list-item">
+          <div class="mb-2 flex items-center justify-between gap-2">
+            <span class="font-medium">Automation V2: ${escapeHtml(automationId)}</span>
+            <span class="tcp-subtle">${runs.length} runs</span>
+          </div>
+          <div class="grid gap-2">${runRows}</div>
+        </div>`;
+        v2RunInspectorEl.querySelectorAll("[data-v2-run-action]").forEach((btn) =>
+          btn.addEventListener("click", async () => {
+            const action = String(btn.dataset.v2RunAction || "").trim();
+            const runId = String(btn.dataset.v2RunId || "").trim();
+            if (!runId) return;
+            const innerPrev = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i data-lucide="refresh-cw" class="animate-spin"></i>';
+            renderIcons(btn);
+            try {
+              if (action === "pause") {
+                await v2Request((client) => client.pauseRun(runId, "paused from control panel"));
+              } else if (action === "resume") {
+                await v2Request((client) => client.resumeRun(runId, "resumed from control panel"));
+              } else {
+                await v2Request((client) => client.cancelRun(runId, "cancelled from control panel"));
+              }
+              toast("ok", `Run ${runId} ${action} requested.`);
+              setTimeout(() => renderAgents(ctx), 300);
+            } catch (e) {
+              toast("err", e instanceof Error ? e.message : String(e));
+            } finally {
+              if (btn.isConnected) {
+                btn.disabled = false;
+                btn.innerHTML = innerPrev;
+                renderIcons(btn);
+              }
+            }
+          })
+        );
+        renderIcons(v2RunInspectorEl);
       } catch (e) {
         toast("err", e instanceof Error ? e.message : String(e));
       } finally {

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-agent model policy in V2 runs**: Added per-agent `model_policy` and runtime node-level model resolution so each agent can run different model tiers for cost/perf tuning.
 - **Agent template write APIs**: Added `POST/PATCH/DELETE /agent-team/templates` so template selection and editing can be managed via API (not file-only).
 - **SDK surface for V2 + template management**: TypeScript client now exposes `automationsV2` namespace and agent-team template create/update/delete methods.
+- **Control panel Automation Builder V2 (first iteration)**: Added a new V2 builder in `agents` view with schedule setup, configurable agent count, per-agent model/skill/MCP/tool-policy inputs, DAG node editor, and create flow.
 
 ### Changed
 
@@ -23,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP error visibility in control panel**: MCP add/connect now reloads server state after failures and surfaces server `last_error` details directly in UI feedback.
 - **Scheduler cron behavior**: Routine/automation scheduling now evaluates true cron expressions with timezone-aware next-fire computation and misfire planning.
 - **Tool policy matching model**: Runtime allow/deny checks now support exact, wildcard, and prefix policies (`*`, `mcp.github.*`, `mcp.composio.*`) across session and capability gates.
+- **Control panel V2 operations**: Added Automations V2 list/controls in `agents` view, including run-now, automation pause/resume, per-automation runs inspection, and run pause/resume/cancel actions.
 
 ### Fixed
 
