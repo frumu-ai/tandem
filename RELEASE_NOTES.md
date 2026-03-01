@@ -4,6 +4,28 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## v0.3.27 (Unreleased)
 
+- Engine dynamic tool routing + context compaction
+  - Added intent-aware tool router in `tandem-core` to avoid publishing full tool catalogs on every provider call.
+  - New request controls on async prompt paths:
+    - `toolMode`: `auto | none | required`
+    - `toolAllowlist`: explicit tool-name allowlist
+    - `contextMode`: `auto | compact | full`
+  - In `toolMode=auto`, engine now runs a no-tools first pass and escalates only when completion/user intent indicates tools are required.
+  - MCP tools are hidden by default unless explicitly requested by intent or allowlist.
+  - Added router tunables:
+    - `TANDEM_TOOL_ROUTER_ENABLED` (default enabled)
+    - `TANDEM_TOOL_ROUTER_MAX_TOOLS` (default `12`)
+    - `TANDEM_TOOL_ROUTER_MAX_TOOLS_EXPANDED` (default `24`)
+  - Added runtime observability events:
+    - `tool.routing.decision`
+    - `context.profile.selected`
+- Prompt/token efficiency improvements for simple chats
+  - Added compact context profile for short/simple prompts.
+  - Server prompt-context hook now skips memory search/injection for low-signal short greetings/chitchat, reducing unnecessary token bloat.
+- SDK parity updates for routing controls
+  - TypeScript client: `promptAsync` / `promptAsyncParts` now accept routing options (`toolMode`, `toolAllowlist`, `contextMode`).
+  - Python client: `prompt_async` / `prompt_async_parts` now accept `tool_mode`, `tool_allowlist`, `context_mode`.
+
 - Bot identity + personality configuration
   - Added canonical identity API: `GET /config/identity` and `PATCH /config/identity`.
   - Added built-in personality preset catalog: `balanced`, `concise`, `friendly`, `mentor`, `critical`.

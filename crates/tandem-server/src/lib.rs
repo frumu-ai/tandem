@@ -1662,6 +1662,47 @@ impl ServerPromptContextHook {
         out.join("\n")
     }
 
+    fn should_skip_memory_injection(query: &str) -> bool {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return true;
+        }
+        if trimmed.len() > 72 {
+            return false;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        let has_action_signal = [
+            "read ",
+            "edit ",
+            "write ",
+            "search ",
+            "grep ",
+            "run ",
+            "execute ",
+            "file",
+            "code",
+            "repo",
+            "directory",
+            "folder",
+            "mcp",
+            "websearch",
+            "web fetch",
+            "memory",
+            ".rs",
+            ".ts",
+            ".py",
+            "/src",
+            "engine/",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle));
+        if has_action_signal {
+            return false;
+        }
+        let words = lower.split_whitespace().count();
+        words <= 10
+    }
+
     fn personality_preset_text(preset: &str) -> &'static str {
         match preset {
             "concise" => {
@@ -1792,6 +1833,9 @@ impl PromptContextHook for ServerPromptContextHook {
                 .map(|m| m.content.clone())
                 .unwrap_or_default();
             if query.trim().is_empty() {
+                return Ok(messages);
+            }
+            if Self::should_skip_memory_injection(&query) {
                 return Ok(messages);
             }
 
@@ -2185,6 +2229,9 @@ pub async fn run_routine_executor(state: AppState) {
             }],
             model: selected_model,
             agent: None,
+            tool_mode: None,
+            tool_allowlist: None,
+            context_mode: None,
         };
 
         let run_result = state

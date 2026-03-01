@@ -12,6 +12,7 @@ import type {
   PromptAsyncResult,
   PromptPartInput,
   PromptModelOptions,
+  PromptRoutingOptions,
   SessionDiff,
   SessionTodo,
   EngineMessage,
@@ -439,9 +440,10 @@ class Sessions {
   async promptAsync(
     sessionId: string,
     prompt: string,
-    model?: PromptModelOptions
+    model?: PromptModelOptions,
+    routing?: PromptRoutingOptions
   ): Promise<PromptAsyncResult> {
-    return this.promptAsyncParts(sessionId, [{ type: "text", text: prompt }], model);
+    return this.promptAsyncParts(sessionId, [{ type: "text", text: prompt }], model, routing);
   }
 
   /**
@@ -452,7 +454,8 @@ class Sessions {
   async promptAsyncParts(
     sessionId: string,
     parts: PromptPartInput[],
-    model?: PromptModelOptions
+    model?: PromptModelOptions,
+    routing?: PromptRoutingOptions
   ): Promise<PromptAsyncResult> {
     const payload: JsonObject = { parts: parts as unknown as JsonObject[] };
     if (model?.provider && model?.model) {
@@ -461,6 +464,9 @@ class Sessions {
         modelID: model.model,
       };
     }
+    if (routing?.toolMode) payload.toolMode = routing.toolMode;
+    if (routing?.toolAllowlist?.length) payload.toolAllowlist = routing.toolAllowlist;
+    if (routing?.contextMode) payload.contextMode = routing.contextMode;
     const path = `/session/${encodeURIComponent(sessionId)}/prompt_async?return=run`;
 
     const controller = new AbortController();

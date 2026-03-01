@@ -77,6 +77,15 @@ export interface PromptModelOptions {
   model: string;
 }
 
+export type ToolMode = "auto" | "none" | "required";
+export type ContextMode = "auto" | "compact" | "full";
+
+export interface PromptRoutingOptions {
+  toolMode?: ToolMode;
+  toolAllowlist?: string[];
+  contextMode?: ContextMode;
+}
+
 export interface SessionDiff {
   diff?: string;
   files?: string[];

@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Identity configuration API + SDK parity**: Added `GET/PATCH /config/identity` with a typed personality preset catalog (`balanced`, `concise`, `friendly`, `mentor`, `critical`) and TypeScript/Python client support via `client.identity.get()/patch()`.
+- **Dynamic tool router in engine loop**: Added intent-aware tool routing (`chitchat`, `knowledge`, `workspace_read`, `workspace_write`, `shell_exec`, `web_lookup`, `memory_ops`, `mcp_explicit`) with deterministic subset selection and MCP tool gating by default.
+- **Per-request routing controls in prompt API**: Added `SendMessageRequest.tool_mode`, `tool_allowlist`, and `context_mode` (`auto|none|required` and `auto|compact|full`) for explicit runtime routing/context control from clients.
+- **Tool routing/config telemetry events**: Added `tool.routing.decision` and `context.profile.selected` runtime events to expose selected-tool counts, routing pass/mode, and context compaction profile.
 
 ### Changed
 
@@ -29,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Identity settings UI across frontends**: Added bot-name/personality settings editors in Desktop (Tauri) Settings and Control Panel Settings, including personality preset selection and custom instructions save flow through `/config/identity`.
 - **Onboarding wizard identity step (desktop)**: Added a first-run setup shortcut to the new Identity section so bot name/personality can be configured during initial setup.
 - **Engine tool-loop guard tuning**: Engine loop now supports `TANDEM_MAX_TOOL_ITERATIONS` and `TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT` to reduce high-cost retry spirals on repeated tool signatures.
+- **Default tool exposure behavior**: Engine `tool_mode=auto` now starts with a no-tools pass and escalates to a capped intent-matched subset only when needed, instead of publishing the full tool catalog on every call.
+- **Context sizing behavior for trivial prompts**: Added compact context profile selection for short/simple prompts and server-side memory-injection skip heuristics for low-signal greetings/chitchat to reduce token overhead.
+- **SDK prompt parity for routing controls**: TypeScript and Python session prompt clients now support passing routing options (`toolMode`/`toolAllowlist`/`contextMode`) to `prompt_async`.
 
 ### Fixed
 
@@ -38,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Telegram MarkdownV2 heading readability**: Telegram formatter now renders markdown headings as styled heading text instead of leaking literal escaped `###` markers in bot replies.
 - **Telegram MarkdownV2 chunk boundary robustness**: Message chunking now prefers safe markdown-entity boundaries to reduce formatting breakage and parse-mode failures when splitting long responses.
 - **Runaway repeated tool-call retries**: Engine now guards duplicate non-read-only tool signatures (including repeated `bash` calls), emits deterministic loop-guard terminal messaging, and stops wasteful repeated provider/tool cycles.
+- **Tool-context bloat on lightweight prompts**: Short/simple prompts no longer incur full tool list + memory context injection by default, reducing unnecessary token burn and repeated tool-call churn.
 
 ## [0.3.26] - 2026-02-28
 

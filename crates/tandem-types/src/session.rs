@@ -84,6 +84,28 @@ pub struct SendMessageRequest {
     pub parts: Vec<crate::MessagePartInput>,
     pub model: Option<ModelSpec>,
     pub agent: Option<String>,
+    #[serde(default, alias = "toolMode", alias = "tool_mode")]
+    pub tool_mode: Option<ToolMode>,
+    #[serde(default, alias = "toolAllowlist", alias = "tool_allowlist")]
+    pub tool_allowlist: Option<Vec<String>>,
+    #[serde(default, alias = "contextMode", alias = "context_mode")]
+    pub context_mode: Option<ContextMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolMode {
+    Auto,
+    None,
+    Required,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextMode {
+    Auto,
+    Compact,
+    Full,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

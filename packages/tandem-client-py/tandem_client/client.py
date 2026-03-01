@@ -64,6 +64,8 @@ from .types import (
     SystemHealth,
     ToolExecuteResult,
     ToolSchema,
+    ToolMode,
+    ContextMode,
 )
 
 _engine_event_adapter = TypeAdapter(EngineEvent)
@@ -305,7 +307,15 @@ class _Sessions:
         res.raise_for_status()
         return SessionRunStateResponse.model_validate(res.json())
 
-    async def prompt_async(self, session_id: str, prompt: str) -> PromptAsyncResult:
+    async def prompt_async(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        tool_mode: Optional[ToolMode] = None,
+        tool_allowlist: Optional[list[str]] = None,
+        context_mode: Optional[ContextMode] = None,
+    ) -> PromptAsyncResult:
         """
         Start an async run. Use ``client.stream()`` to receive events.
 
@@ -314,10 +324,19 @@ class _Sessions:
         return await self.prompt_async_parts(
             session_id,
             [PromptTextPartInput(type="text", text=prompt)],
+            tool_mode=tool_mode,
+            tool_allowlist=tool_allowlist,
+            context_mode=context_mode,
         )
 
     async def prompt_async_parts(
-        self, session_id: str, parts: list[PromptPartInput | dict[str, Any]]
+        self,
+        session_id: str,
+        parts: list[PromptPartInput | dict[str, Any]],
+        *,
+        tool_mode: Optional[ToolMode] = None,
+        tool_allowlist: Optional[list[str]] = None,
+        context_mode: Optional[ContextMode] = None,
     ) -> PromptAsyncResult:
         """
         Start an async run with explicit prompt parts (text and/or file parts).
@@ -330,6 +349,12 @@ class _Sessions:
                 for p in parts
             ]
         }
+        if tool_mode is not None:
+            payload["toolMode"] = tool_mode
+        if tool_allowlist:
+            payload["toolAllowlist"] = tool_allowlist
+        if context_mode is not None:
+            payload["contextMode"] = context_mode
         res = await self._http.post(
             f"/session/{quote(session_id)}/prompt_async",
             params={"return": "run"},

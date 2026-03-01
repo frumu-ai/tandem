@@ -13,6 +13,8 @@ ChannelName = Literal["telegram", "discord", "slack"]
 SkillLocation = Literal["user", "workspace", "builtin"]
 
 JsonValue = Union[str, int, float, bool, None, dict[str, Any], list[Any]]
+ToolMode = Literal["auto", "none", "required"]
+ContextMode = Literal["auto", "compact", "full"]
 
 
 class SystemHealth(BaseModel):

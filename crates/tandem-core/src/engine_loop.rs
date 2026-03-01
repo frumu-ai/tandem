@@ -9,13 +9,17 @@ use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
 use tandem_providers::{ChatAttachment, ChatMessage, ProviderRegistry, StreamChunk, TokenUsage};
 use tandem_tools::{validate_tool_schemas, ToolRegistry};
 use tandem_types::{
-    EngineEvent, HostOs, HostRuntimeContext, Message, MessagePart, MessagePartInput, MessageRole,
-    ModelSpec, PathStyle, SendMessageRequest, ShellFamily,
+    ContextMode, EngineEvent, HostOs, HostRuntimeContext, Message, MessagePart, MessagePartInput,
+    MessageRole, ModelSpec, PathStyle, SendMessageRequest, ShellFamily, ToolMode,
 };
 use tandem_wire::WireMessagePart;
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
+use crate::tool_router::{
+    classify_intent, default_mode_name, is_short_simple_prompt, select_tool_subset,
+    should_escalate_auto_tools, tool_router_enabled, ToolIntent, ToolRoutingDecision,
+};
 use crate::{
     derive_session_title_from_prompt, title_needs_repair, AgentDefinition, AgentRegistry,
     CancellationRegistry, EventBus, PermissionAction, PermissionManager, PluginRegistry, Storage,
@@ -232,6 +236,16 @@ impl EngineLoop {
             json!({"sessionID": session_id, "status":"running"}),
         ));
         let request_parts = req.parts.clone();
+        let requested_tool_mode = req.tool_mode.clone().unwrap_or(ToolMode::Auto);
+        let requested_context_mode = req.context_mode.clone().unwrap_or(ContextMode::Auto);
+        let request_tool_allowlist = req
+            .tool_allowlist
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tool| normalize_tool_name(&tool))
+            .filter(|tool| !tool.trim().is_empty())
+            .collect::<HashSet<_>>();
         let text = req
             .parts
             .iter()
@@ -326,16 +340,44 @@ impl EngineLoop {
             let mut blocked_mcp_servers: HashSet<String> = HashSet::new();
             let mut websearch_query_blocked = false;
             let mut auto_workspace_probe_attempted = false;
-            let greeting_prompt =
-                runtime_attachments.is_empty() && is_trivial_chitchat_prompt(&text);
+            let intent = classify_intent(&text);
+            let router_enabled = tool_router_enabled();
+            let mut auto_tools_escalated = matches!(requested_tool_mode, ToolMode::Required);
+            let context_is_auto_compact = matches!(requested_context_mode, ContextMode::Auto)
+                && runtime_attachments.is_empty()
+                && is_short_simple_prompt(&text)
+                && matches!(intent, ToolIntent::Chitchat | ToolIntent::Knowledge);
 
             while max_iterations > 0 && !cancel.is_cancelled() {
                 let iteration = 26usize.saturating_sub(max_iterations);
                 max_iterations -= 1;
-                let mut messages = load_chat_history(self.storage.clone(), &session_id).await;
+                let context_profile = if matches!(requested_context_mode, ContextMode::Full) {
+                    ChatHistoryProfile::Full
+                } else if matches!(requested_context_mode, ContextMode::Compact)
+                    || context_is_auto_compact
+                {
+                    ChatHistoryProfile::Compact
+                } else {
+                    ChatHistoryProfile::Standard
+                };
+                let mut messages =
+                    load_chat_history(self.storage.clone(), &session_id, context_profile).await;
                 if iteration == 1 && !runtime_attachments.is_empty() {
                     attach_to_last_user_message(&mut messages, &runtime_attachments);
                 }
+                let history_char_count = messages.iter().map(|m| m.content.len()).sum::<usize>();
+                self.event_bus.publish(EngineEvent::new(
+                    "context.profile.selected",
+                    json!({
+                        "sessionID": session_id,
+                        "messageID": user_message_id,
+                        "iteration": iteration,
+                        "contextMode": format_context_mode(&requested_context_mode, context_is_auto_compact),
+                        "historyMessageCount": messages.len(),
+                        "historyCharCount": history_char_count,
+                        "memoryInjected": false
+                    }),
+                ));
                 let mut system_parts =
                     vec![tandem_runtime_system_prompt(&self.host_runtime_context)];
                 if let Some(system) = active_agent.system_prompt.as_ref() {
@@ -370,11 +412,37 @@ impl EngineLoop {
                         messages = augmented;
                     }
                 }
-                let mut tool_schemas = if greeting_prompt && iteration == 1 {
-                    Vec::new()
+                let all_tools = self.tools.list().await;
+                let mut tool_schemas = if !router_enabled {
+                    all_tools
                 } else {
-                    self.tools.list().await
+                    match requested_tool_mode {
+                        ToolMode::None => Vec::new(),
+                        ToolMode::Required => select_tool_subset(
+                            all_tools,
+                            intent,
+                            &request_tool_allowlist,
+                            iteration > 1,
+                        ),
+                        ToolMode::Auto => {
+                            if !auto_tools_escalated {
+                                Vec::new()
+                            } else {
+                                select_tool_subset(
+                                    all_tools,
+                                    intent,
+                                    &request_tool_allowlist,
+                                    iteration > 1,
+                                )
+                            }
+                        }
+                    }
                 };
+                if !request_tool_allowlist.is_empty() {
+                    tool_schemas.retain(|schema| {
+                        request_tool_allowlist.contains(&normalize_tool_name(&schema.name))
+                    });
+                }
                 if active_agent.tools.is_some() {
                     tool_schemas.retain(|schema| agent_can_use_tool(&active_agent, &schema.name));
                 }
@@ -421,6 +489,34 @@ impl EngineLoop {
                     );
                     anyhow::bail!("{detail}");
                 }
+                let routing_decision = ToolRoutingDecision {
+                    pass: if auto_tools_escalated { 2 } else { 1 },
+                    mode: match requested_tool_mode {
+                        ToolMode::Auto => default_mode_name(),
+                        ToolMode::None => "none",
+                        ToolMode::Required => "required",
+                    },
+                    intent,
+                    selected_count: tool_schemas.len(),
+                    total_available_count: self.tools.list().await.len(),
+                    mcp_included: tool_schemas
+                        .iter()
+                        .any(|schema| normalize_tool_name(&schema.name).starts_with("mcp.")),
+                };
+                self.event_bus.publish(EngineEvent::new(
+                    "tool.routing.decision",
+                    json!({
+                        "sessionID": session_id,
+                        "messageID": user_message_id,
+                        "iteration": iteration,
+                        "pass": routing_decision.pass,
+                        "mode": routing_decision.mode,
+                        "intent": format!("{:?}", routing_decision.intent).to_ascii_lowercase(),
+                        "selectedToolCount": routing_decision.selected_count,
+                        "totalAvailableTools": routing_decision.total_available_count,
+                        "mcpIncluded": routing_decision.mcp_included
+                    }),
+                ));
                 let stream = self
                     .providers
                     .stream_for_provider(
@@ -589,6 +685,19 @@ impl EngineLoop {
                     .collect::<Vec<_>>();
                 if tool_calls.is_empty() {
                     tool_calls = parse_tool_invocations_from_response(&completion);
+                }
+                if router_enabled
+                    && matches!(requested_tool_mode, ToolMode::Auto)
+                    && !auto_tools_escalated
+                    && iteration == 1
+                    && should_escalate_auto_tools(intent, &text, &completion)
+                {
+                    auto_tools_escalated = true;
+                    followup_context = Some(
+                        "Tool access is now enabled for this request. Use only necessary tools and then answer concisely."
+                            .to_string(),
+                    );
+                    continue;
                 }
                 if tool_calls.is_empty()
                     && !auto_workspace_probe_attempted
@@ -1498,7 +1607,12 @@ impl EngineLoop {
         if cancel.is_cancelled() {
             return None;
         }
-        let mut messages = load_chat_history(self.storage.clone(), session_id).await;
+        let mut messages = load_chat_history(
+            self.storage.clone(),
+            session_id,
+            ChatHistoryProfile::Standard,
+        )
+        .await;
         let mut system_parts = vec![tandem_runtime_system_prompt(&self.host_runtime_context)];
         if let Some(system) = active_agent.system_prompt.as_ref() {
             system_parts.push(system.clone());
@@ -3065,48 +3179,18 @@ fn is_os_mismatch_tool_output(output: &str) -> bool {
         || lower.contains("shell command blocked on windows")
 }
 
-fn is_trivial_chitchat_prompt(input: &str) -> bool {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    if trimmed.len() > 48 {
-        return false;
-    }
-    let normalized = trimmed
-        .chars()
-        .filter_map(|ch| {
-            if ch.is_alphanumeric() || ch.is_whitespace() {
-                Some(ch.to_ascii_lowercase())
+fn format_context_mode(requested: &ContextMode, auto_compact: bool) -> &'static str {
+    match requested {
+        ContextMode::Full => "full",
+        ContextMode::Compact => "compact",
+        ContextMode::Auto => {
+            if auto_compact {
+                "auto_compact"
             } else {
-                None
+                "auto_standard"
             }
-        })
-        .collect::<String>();
-    let words = normalized
-        .split_whitespace()
-        .filter(|w| !w.is_empty())
-        .collect::<Vec<_>>();
-    if words.is_empty() || words.len() > 6 {
-        return false;
+        }
     }
-    let joined = words.join(" ");
-    matches!(
-        joined.as_str(),
-        "hi" | "hello"
-            | "hey"
-            | "yo"
-            | "sup"
-            | "hiya"
-            | "good morning"
-            | "good afternoon"
-            | "good evening"
-            | "thanks"
-            | "thank you"
-            | "ok thanks"
-            | "okay thanks"
-            | "cool thanks"
-    )
 }
 
 fn tandem_runtime_system_prompt(host: &HostRuntimeContext) -> String {
@@ -3926,7 +4010,18 @@ async fn emit_plan_question_fallback(
     ));
 }
 
-async fn load_chat_history(storage: std::sync::Arc<Storage>, session_id: &str) -> Vec<ChatMessage> {
+#[derive(Debug, Clone, Copy)]
+enum ChatHistoryProfile {
+    Full,
+    Standard,
+    Compact,
+}
+
+async fn load_chat_history(
+    storage: std::sync::Arc<Storage>,
+    session_id: &str,
+    profile: ChatHistoryProfile,
+) -> Vec<ChatMessage> {
     let Some(session) = storage.get_session(session_id).await else {
         return Vec::new();
     };
@@ -3954,7 +4049,7 @@ async fn load_chat_history(storage: std::sync::Arc<Storage>, session_id: &str) -
             }
         })
         .collect::<Vec<_>>();
-    compact_chat_history(messages)
+    compact_chat_history(messages, profile)
 }
 
 fn attach_to_last_user_message(messages: &mut [ChatMessage], attachments: &[ChatAttachment]) {
@@ -4281,13 +4376,19 @@ fn normalize_todo_status(raw: &str) -> String {
     }
 }
 
-fn compact_chat_history(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    const MAX_CONTEXT_CHARS: usize = 80_000;
-    const KEEP_RECENT_MESSAGES: usize = 40;
+fn compact_chat_history(
+    messages: Vec<ChatMessage>,
+    profile: ChatHistoryProfile,
+) -> Vec<ChatMessage> {
+    let (max_context_chars, keep_recent_messages) = match profile {
+        ChatHistoryProfile::Full => (usize::MAX, usize::MAX),
+        ChatHistoryProfile::Standard => (80_000usize, 40usize),
+        ChatHistoryProfile::Compact => (12_000usize, 12usize),
+    };
 
-    if messages.len() <= KEEP_RECENT_MESSAGES {
+    if messages.len() <= keep_recent_messages {
         let total_chars = messages.iter().map(|m| m.content.len()).sum::<usize>();
-        if total_chars <= MAX_CONTEXT_CHARS {
+        if total_chars <= max_context_chars {
             return messages;
         }
     }
@@ -4296,7 +4397,7 @@ fn compact_chat_history(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let mut dropped_count = 0usize;
     let mut total_chars = kept.iter().map(|m| m.content.len()).sum::<usize>();
 
-    while kept.len() > KEEP_RECENT_MESSAGES || total_chars > MAX_CONTEXT_CHARS {
+    while kept.len() > keep_recent_messages || total_chars > max_context_chars {
         if kept.is_empty() {
             break;
         }
@@ -4426,7 +4527,7 @@ mod tests {
                 attachments: Vec::new(),
             });
         }
-        let compacted = compact_chat_history(messages);
+        let compacted = compact_chat_history(messages, ChatHistoryProfile::Standard);
         assert!(compacted.len() <= 41);
         assert_eq!(compacted[0].role, "system");
         assert!(compacted[0].content.contains("history compacted"));
@@ -4988,28 +5089,6 @@ Call: todowrite(task_id=3, status="in_progress")
         assert!(prompt.contains("Host OS: windows"));
         assert!(prompt.contains("Shell: powershell"));
         assert!(prompt.contains("Path style: windows"));
-    }
-
-    #[test]
-    fn trivial_chitchat_detector_matches_greetings() {
-        assert!(is_trivial_chitchat_prompt("hi"));
-        assert!(is_trivial_chitchat_prompt("Hello!"));
-        assert!(is_trivial_chitchat_prompt("good morning"));
-        assert!(is_trivial_chitchat_prompt("thanks"));
-        assert!(is_trivial_chitchat_prompt("ok thanks"));
-    }
-
-    #[test]
-    fn trivial_chitchat_detector_rejects_action_requests() {
-        assert!(!is_trivial_chitchat_prompt(
-            "Use local code evidence in engine/src/main.rs"
-        ));
-        assert!(!is_trivial_chitchat_prompt(
-            "summarize repository and list risks"
-        ));
-        assert!(!is_trivial_chitchat_prompt(
-            "hello can you grep for TODO in src"
-        ));
     }
 
     #[test]
