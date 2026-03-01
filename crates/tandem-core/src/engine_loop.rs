@@ -315,12 +315,13 @@ impl EngineLoop {
             }
         } else {
             let mut completion = String::new();
-            let mut max_iterations = 25usize;
+            let mut max_iterations = max_tool_iterations();
             let mut followup_context: Option<String> = None;
             let mut last_tool_outputs: Vec<String> = Vec::new();
             let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
             let mut readonly_tool_cache: HashMap<String, String> = HashMap::new();
             let mut readonly_signature_counts: HashMap<String, usize> = HashMap::new();
+            let mut mutable_signature_counts: HashMap<String, usize> = HashMap::new();
             let mut shell_mismatch_signatures: HashSet<String> = HashSet::new();
             let mut blocked_mcp_servers: HashSet<String> = HashSet::new();
             let mut websearch_query_blocked = false;
@@ -595,6 +596,7 @@ impl EngineLoop {
                     let mut executed_productive_tool = false;
                     let mut auth_required_hit_in_cycle = false;
                     let mut guard_budget_hit_in_cycle = false;
+                    let mut duplicate_signature_hit_in_cycle = false;
                     for (tool, args) in tool_calls {
                         if !agent_can_use_tool(&active_agent, &tool) {
                             continue;
@@ -684,6 +686,35 @@ impl EngineLoop {
                                 continue;
                             }
                         }
+                        let is_read_only_signature = is_read_only_tool(&tool_key)
+                            || (tool_key == "batch" && is_read_only_batch_call(&args));
+                        if !is_read_only_signature {
+                            let duplicate_limit = duplicate_signature_limit_for(&tool_key);
+                            let seen = mutable_signature_counts
+                                .entry(signature.clone())
+                                .and_modify(|v| *v = v.saturating_add(1))
+                                .or_insert(1);
+                            if *seen > duplicate_limit {
+                                self.event_bus.publish(EngineEvent::new(
+                                    "tool.loop_guard.triggered",
+                                    json!({
+                                        "sessionID": session_id,
+                                        "messageID": user_message_id,
+                                        "tool": tool_key,
+                                        "reason": "duplicate_signature_retry_exhausted",
+                                        "signatureHash": stable_hash(&signature),
+                                        "duplicateLimit": duplicate_limit,
+                                        "loop_guard_triggered": true
+                                    }),
+                                ));
+                                outputs.push(format!(
+                                    "Tool `{}` call skipped: duplicate call signature retry limit reached ({}).",
+                                    tool_key, duplicate_limit
+                                ));
+                                duplicate_signature_hit_in_cycle = true;
+                                continue;
+                            }
+                        }
                         let budget = tool_budget_for(&tool_key);
                         let entry = tool_call_counts.entry(tool_key.clone()).or_insert(0);
                         if *entry >= budget {
@@ -757,6 +788,11 @@ impl EngineLoop {
                             completion = summarize_guard_budget_outputs(&outputs)
                                 .unwrap_or_else(|| {
                                     "This run hit the per-run tool guard budget, so tool execution was paused to avoid retries. Send a new message to start a fresh run.".to_string()
+                                });
+                        } else if duplicate_signature_hit_in_cycle {
+                            completion = summarize_duplicate_signature_outputs(&outputs)
+                                .unwrap_or_else(|| {
+                                    "This run paused because the same tool call kept repeating. Rephrase the request or provide a different command target and retry.".to_string()
                                 });
                         } else if let Some(summary) = summarize_auth_pending_outputs(&outputs) {
                             completion = summary;
@@ -1984,6 +2020,36 @@ fn summarize_guard_budget_outputs(outputs: &[String]) -> Option<String> {
     ))
 }
 
+fn summarize_duplicate_signature_outputs(outputs: &[String]) -> Option<String> {
+    if outputs.is_empty()
+        || !outputs
+            .iter()
+            .all(|output| is_duplicate_signature_limit_output(output))
+    {
+        return None;
+    }
+    let mut lines = outputs
+        .iter()
+        .filter_map(|output| {
+            let trimmed = output.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect::<Vec<_>>();
+    lines.sort();
+    lines.dedup();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "This run paused because the same tool call kept repeating.\n\n{}\n\nRephrase the request or start a new message with a clearer command target.",
+        lines.join("\n")
+    ))
+}
+
 fn find_first_url(text: &str) -> Option<String> {
     text.split_whitespace().find_map(|token| {
         if token.starts_with("https://") || token.starts_with("http://") {
@@ -2013,6 +2079,30 @@ fn tool_budget_for(tool_name: &str) -> usize {
         return override_budget;
     }
     default_budget
+}
+
+fn max_tool_iterations() -> usize {
+    let default_iterations = 25usize;
+    std::env::var("TANDEM_MAX_TOOL_ITERATIONS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_iterations)
+}
+
+fn duplicate_signature_limit_for(tool_name: &str) -> usize {
+    if let Ok(raw) = std::env::var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT") {
+        if let Ok(parsed) = raw.trim().parse::<usize>() {
+            if parsed > 0 {
+                return parsed;
+            }
+        }
+    }
+    if is_shell_tool_name(tool_name) {
+        2
+    } else {
+        3
+    }
 }
 
 fn env_budget_guards_disabled() -> bool {
@@ -2046,6 +2136,12 @@ fn is_guard_budget_tool_output(output: &str) -> bool {
     output
         .to_ascii_lowercase()
         .contains("per-run guard budget exceeded")
+}
+
+fn is_duplicate_signature_limit_output(output: &str) -> bool {
+    output
+        .to_ascii_lowercase()
+        .contains("duplicate call signature retry limit reached")
 }
 
 fn is_sensitive_path_candidate(path: &Path) -> bool {
@@ -4893,6 +4989,30 @@ Call: todowrite(task_id=3, status="in_progress")
         let summary = summarize_guard_budget_outputs(&outputs).expect("expected summary");
         assert!(summary.contains("per-run tool guard budget"));
         assert!(summary.contains("fresh run"));
+    }
+
+    #[test]
+    fn duplicate_signature_output_detector_matches_expected_text() {
+        assert!(is_duplicate_signature_limit_output(
+            "Tool `bash` call skipped: duplicate call signature retry limit reached (2)."
+        ));
+        assert!(!is_duplicate_signature_limit_output(
+            "Tool `read` result: ok"
+        ));
+    }
+
+    #[test]
+    fn summarize_duplicate_signature_outputs_returns_run_scoped_message() {
+        let outputs = vec![
+            "Tool `bash` call skipped: duplicate call signature retry limit reached (2)."
+                .to_string(),
+            "Tool `bash` call skipped: duplicate call signature retry limit reached (2)."
+                .to_string(),
+        ];
+        let summary =
+            summarize_duplicate_signature_outputs(&outputs).expect("expected duplicate summary");
+        assert!(summary.contains("same tool call kept repeating"));
+        assert!(summary.contains("clearer command target"));
     }
 
     #[test]
