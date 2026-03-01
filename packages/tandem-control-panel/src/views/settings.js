@@ -217,10 +217,25 @@ async function renderProvidersBlock(ctx, container) {
 }
 
 async function renderIdentityBlock(ctx, container) {
-  const { state, toast, escapeHtml, refreshIdentityStatus, renderShell, renderIcons } = ctx;
+  const { state, toast, escapeHtml, refreshIdentityStatus, renderShell, renderIcons, api } = ctx;
+  const getIdentity = async () => {
+    if (state.client?.identity?.get) {
+      return state.client.identity.get();
+    }
+    return api("/api/engine/config/identity", { method: "GET" });
+  };
+  const patchIdentity = async (payload) => {
+    if (state.client?.identity?.patch) {
+      return state.client.identity.patch(payload);
+    }
+    return api("/api/engine/config/identity", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  };
   let payload;
   try {
-    payload = await state.client.identity.get();
+    payload = await getIdentity();
   } catch (e) {
     container.innerHTML = `
       <p class="rounded-xl border border-rose-700/60 bg-rose-950/30 px-3 py-2 text-sm text-rose-300">
@@ -315,7 +330,7 @@ async function renderIdentityBlock(ctx, container) {
         const nextAlias = controlPanelAlias.trim();
         const nextCustom = customInstructions.trim();
 
-        const updated = await state.client.identity.patch({
+        const updated = await patchIdentity({
           identity: {
             bot: {
               canonical_name: nextCanonical,
