@@ -40,7 +40,7 @@ List uploaded files:
 
 ```bash
 curl -s "http://127.0.0.1:39731/global/storage/files?path=channel_uploads&limit=200" \
-  -H "X-Tandem-Token: tk_your_token"
+  -H "X-Agent-Token: tk_your_token"
 ```
 
 ## Storage layout

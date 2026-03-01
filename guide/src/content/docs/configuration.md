@@ -37,8 +37,26 @@ Tandem automatically maps standard API key variables to their respective provide
 
 ### System paths
 
-- `TANDEM_GLOBAL_CONFIG`: Override the path to the global configuration file.
+- `AGENT_GLOBAL_CONFIG`: Canonical override path to the global configuration file.
+- `TANDEM_GLOBAL_CONFIG`: Backward-compatible alias for global config path.
 - `TANDEM_STATE_DIR`: Override the directory where the engine stores its state (logs, database, etc.).
+
+### Identity and personality
+
+- `AGENT_BOT_NAME`: Canonical assistant name override.
+- `AGENT_PERSONA`: Canonical custom personality instruction override.
+- `TANDEM_BOT_NAME`: Backward-compatible alias for bot name.
+- `TANDEM_PERSONA`: Backward-compatible alias for personality.
+
+Use the identity API for structured settings (bot aliases, personality presets, per-agent overrides):
+
+- `GET /config/identity`
+- `PATCH /config/identity`
+
+### Protocol branding
+
+- `AGENT_PROTOCOL_TITLE`: Canonical protocol/application title override used in provider metadata (for example OpenRouter `X-Title`).
+- `TANDEM_PROTOCOL_TITLE`: Backward-compatible alias for protocol title.
 
 ## Config File Format
 

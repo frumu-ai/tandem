@@ -49,7 +49,7 @@ Then verify public health + gated routes:
 ```bash
 curl -s http://127.0.0.1:39731/global/health | jq .
 curl -i -s http://127.0.0.1:39731/config/providers
-curl -s http://127.0.0.1:39731/config/providers -H "X-Tandem-Token: tk_test_token" | jq .
+curl -s http://127.0.0.1:39731/config/providers -H "X-Agent-Token: tk_test_token" | jq .
 ```
 
 ## Automated test layers

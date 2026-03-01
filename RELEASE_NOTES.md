@@ -21,6 +21,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 - Compatibility and protocol naming updates
   - OpenRouter `X-Title` now supports configurable protocol title via `AGENT_PROTOCOL_TITLE` with `TANDEM_PROTOCOL_TITLE` compatibility fallback.
   - Engine auth header parsing now accepts both canonical `x-agent-token` and compatibility `x-tandem-token`.
+  - Guide docs now include identity/personality configuration + SDK coverage and use canonical `X-Agent-Token` examples (with compatibility note for `X-Tandem-Token`).
 
 - Telegram MarkdownV2 rendering and delivery hardening
   - Telegram heading rendering now outputs readable heading text style (instead of visible escaped `###` markers).

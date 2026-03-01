@@ -167,6 +167,26 @@ await client.providers.setApiKey("openrouter", "sk-or-...");
 const status = await client.providers.authStatus();
 ```
 
+### `client.identity`
+
+```typescript
+const identity = await client.identity.get();
+
+await client.identity.patch({
+  identity: {
+    bot: { canonical_name: "Ops Assistant" },
+    personality: {
+      default: {
+        preset: "concise",
+        custom_instructions: "Prioritize deployment safety and rollback clarity.",
+      },
+    },
+  },
+});
+```
+
+Built-in presets include: `balanced`, `concise`, `friendly`, `mentor`, `critical`.
+
 ### `client.channels`
 
 ```typescript

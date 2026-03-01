@@ -56,7 +56,7 @@ Useful options:
 
 ```bash
 curl -s http://127.0.0.1:39731/global/health \
-  -H "X-Tandem-Token: tk_your_token"
+  -H "X-Agent-Token: tk_your_token"
 ```
 
 ## See Also

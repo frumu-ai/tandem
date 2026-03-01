@@ -41,7 +41,7 @@ tandem-engine serve [OPTIONS]
 - `--model <ID>`: Provider model override for this process.
 - `--api-key <KEY>`: API key override for the selected provider for this process.
 - `--config <PATH>`: Override config file path.
-- `--api-token <TOKEN>`: Require token auth for HTTP endpoints (Authorization Bearer or `X-Tandem-Token`, env: `TANDEM_API_TOKEN`).
+- `--api-token <TOKEN>`: Require token auth for HTTP endpoints (Authorization Bearer, canonical `X-Agent-Token`, or compatibility `X-Tandem-Token`; env: `TANDEM_API_TOKEN`).
 - `--web-ui`: Enable embedded web admin UI (env: `TANDEM_WEB_UI`).
 - `--web-ui-prefix <PATH>`: Path prefix for embedded web admin UI (default: `/admin`, env: `TANDEM_WEB_UI_PREFIX`).
 
@@ -240,7 +240,7 @@ Send rich prompt parts (text + files) in one call:
 ```bash
 curl -s -X POST "http://127.0.0.1:39731/session/<session_id>/prompt_async?return=run" \
   -H "content-type: application/json" \
-  -H "X-Tandem-Token: tk_your_token" \
+  -H "X-Agent-Token: tk_your_token" \
   -d '{
     "parts": [
       { "type": "file", "mime": "image/jpeg", "filename": "photo.jpg", "url": "/srv/tandem/channel_uploads/telegram/123/photo.jpg" },
