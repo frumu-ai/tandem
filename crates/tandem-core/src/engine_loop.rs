@@ -1997,6 +1997,9 @@ fn find_first_url(text: &str) -> Option<String> {
 }
 
 fn tool_budget_for(tool_name: &str) -> usize {
+    if env_budget_guards_disabled() {
+        return usize::MAX;
+    }
     let normalized = normalize_tool_name(tool_name);
     let (default_budget, env_key) = match normalized.as_str() {
         "glob" => (4usize, "TANDEM_TOOL_BUDGET_GLOB"),
@@ -2006,11 +2009,37 @@ fn tool_budget_for(tool_name: &str) -> usize {
         "grep" | "search" | "codesearch" => (6usize, "TANDEM_TOOL_BUDGET_SEARCH"),
         _ => (10usize, "TANDEM_TOOL_BUDGET_DEFAULT"),
     };
-    std::env::var(env_key)
+    if let Some(override_budget) = parse_budget_override(env_key) {
+        return override_budget;
+    }
+    default_budget
+}
+
+fn env_budget_guards_disabled() -> bool {
+    std::env::var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS")
         .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(default_budget)
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn parse_budget_override(env_key: &str) -> Option<usize> {
+    let raw = std::env::var(env_key).ok()?;
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if matches!(
+        trimmed.as_str(),
+        "0" | "inf" | "infinite" | "unlimited" | "none"
+    ) {
+        return Some(usize::MAX);
+    }
+    trimmed
+        .parse::<usize>()
+        .ok()
+        .and_then(|value| if value > 0 { Some(value) } else { None })
 }
 
 fn is_guard_budget_tool_output(output: &str) -> bool {
@@ -4885,5 +4914,31 @@ Call: todowrite(task_id=3, status="in_progress")
             "Tool `read` result:\nok".to_string(),
         ];
         assert!(summarize_auth_pending_outputs(&outputs).is_none());
+    }
+
+    #[test]
+    fn parse_budget_override_zero_disables_budget() {
+        unsafe {
+            std::env::set_var("TANDEM_TOOL_BUDGET_DEFAULT", "0");
+        }
+        assert_eq!(
+            parse_budget_override("TANDEM_TOOL_BUDGET_DEFAULT"),
+            Some(usize::MAX)
+        );
+        unsafe {
+            std::env::remove_var("TANDEM_TOOL_BUDGET_DEFAULT");
+        }
+    }
+
+    #[test]
+    fn disable_tool_guard_budgets_env_overrides_all_budgets() {
+        unsafe {
+            std::env::set_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS", "1");
+        }
+        assert_eq!(tool_budget_for("mcp.arcade.gmail_sendemail"), usize::MAX);
+        assert_eq!(tool_budget_for("websearch"), usize::MAX);
+        unsafe {
+            std::env::remove_var("TANDEM_DISABLE_TOOL_GUARD_BUDGETS");
+        }
     }
 }
