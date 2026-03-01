@@ -52,6 +52,8 @@ export async function renderAgents(ctx) {
     providersCatalogRaw,
     providersConfigRaw,
     toolIdsRaw,
+    mcpServersRaw,
+    skillsRaw,
   ] = await Promise.all([
     state.client.routines.list().catch(() => ({ routines: [] })),
     state.client.automations.list().catch(() => ({ automations: [] })),
@@ -62,6 +64,8 @@ export async function renderAgents(ctx) {
     state.client.providers.catalog().catch(() => ({ all: [], connected: [], default: null })),
     state.client.providers.config().catch(() => ({ default: null, providers: {} })),
     state.client.listToolIds().catch(() => []),
+    state.client?.mcp?.list?.().catch(() => ({})) || Promise.resolve({}),
+    state.client?.skills?.list?.().catch(() => ({ skills: [] })) || Promise.resolve({ skills: [] }),
   ]);
   const routines = routinesRaw.routines || [];
   const automations = automationsRaw.automations || [];
@@ -72,6 +76,33 @@ export async function renderAgents(ctx) {
   const providerConfigMap = providersConfigRaw?.providers || {};
   const toolIds = Array.isArray(toolIdsRaw)
     ? toolIdsRaw.map((x) => String(x || "").trim()).filter(Boolean).sort()
+    : [];
+  const normalizeMcpServers = (raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const entries = Array.isArray(raw)
+      ? raw.map((x) => [String(x?.name || ""), x])
+      : Object.entries(raw);
+    return entries
+      .map(([name, cfg]) => {
+        const row = cfg && typeof cfg === "object" ? cfg : {};
+        const serverName = String(row.name || name || "").trim();
+        if (!serverName) return null;
+        const connected = !!row.connected;
+        const enabled = row.enabled !== false;
+        return { name: serverName, connected, enabled };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  };
+  const mcpServers = normalizeMcpServers(mcpServersRaw);
+  const connectedMcpServerNames = mcpServers
+    .filter((s) => s.connected && s.enabled)
+    .map((s) => s.name);
+  const skillNames = Array.isArray(skillsRaw?.skills)
+    ? skillsRaw.skills
+        .map((s) => String(s?.name || s?.id || "").trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b))
     : [];
 
   const slugify = (value = "") =>
@@ -747,6 +778,10 @@ export async function renderAgents(ctx) {
       <div class="mt-3">
         <button id="automation-v2-generate-agents" class="tcp-btn"><i data-lucide="users"></i> Generate Agent Rows</button>
       </div>
+      <datalist id="automation-v2-skill-options">${skillNames
+        .map((name) => `<option value="${escapeHtml(name)}"></option>`)
+        .join("")}</datalist>
+      <datalist id="automation-v2-tool-options">${toolOptionMarkup}</datalist>
       <div id="automation-v2-agents-editor" class="mt-3 grid gap-2"></div>
       <div class="mt-4">
         <div class="mb-2 flex items-center justify-between">
@@ -942,10 +977,32 @@ export async function renderAgents(ctx) {
           <option value="__custom__">Custom model...</option>
         </select>
         <input data-v2-agent-field="model_id_custom" data-v2-agent-index="${index}" class="tcp-input" placeholder="Custom model id (enabled when Custom model selected)" value="${escapeHtml(String(seed.model_id || ""))}" />
-        <input data-v2-agent-field="skills" data-v2-agent-index="${index}" class="tcp-input" placeholder="skills csv" value="${escapeHtml(String(Array.isArray(seed.skills) ? seed.skills.join(", ") : seed.skills || ""))}" />
-        <input data-v2-agent-field="mcp_servers" data-v2-agent-index="${index}" class="tcp-input" placeholder="mcp servers csv (github, composio)" value="${escapeHtml(String(Array.isArray(seed.mcp_servers) ? seed.mcp_servers.join(", ") : seed.mcp_servers || ""))}" />
-        <input data-v2-agent-field="allowlist" data-v2-agent-index="${index}" class="tcp-input" placeholder="tool allowlist csv (read,mcp.github.*)" value="${escapeHtml(String(Array.isArray(seed.allowlist) ? seed.allowlist.join(", ") : seed.allowlist || ""))}" />
-        <input data-v2-agent-field="denylist" data-v2-agent-index="${index}" class="tcp-input" placeholder="tool denylist csv" value="${escapeHtml(String(Array.isArray(seed.denylist) ? seed.denylist.join(", ") : seed.denylist || ""))}" />
+        <input data-v2-agent-field="skills" data-v2-agent-index="${index}" class="tcp-input" list="automation-v2-skill-options" placeholder="Skills (text tags, comma-separated)" value="${escapeHtml(String(Array.isArray(seed.skills) ? seed.skills.join(", ") : seed.skills || ""))}" />
+        <select data-v2-agent-field="tool_mode" data-v2-agent-index="${index}" class="tcp-select">
+          <option value="standard">Standard tools (recommended)</option>
+          <option value="read_only">Read-only tools</option>
+          <option value="custom">Custom allow/deny policy</option>
+        </select>
+        <div class="md:col-span-2 rounded-lg border border-slate-700/60 bg-slate-900/30 p-2">
+          <div class="mb-1 text-xs text-slate-400">Allowed MCP servers for this agent</div>
+          <div class="grid gap-2 sm:grid-cols-2">
+            ${
+              connectedMcpServerNames.length
+                ? connectedMcpServerNames
+                    .map((server) => {
+                      const checked = Array.isArray(seed.mcp_servers) && seed.mcp_servers.includes(server);
+                      return `<label class="inline-flex items-center gap-2 text-xs text-slate-300">
+                        <input data-v2-agent-field="mcp_server_option" data-v2-agent-index="${index}" type="checkbox" value="${escapeHtml(server)}" ${checked ? "checked" : ""} class="h-4 w-4 accent-slate-400" />
+                        ${escapeHtml(server)}
+                      </label>`;
+                    })
+                    .join("")
+                : '<span class="text-xs text-slate-500">No connected MCP servers found. Connect servers in MCP tab.</span>'
+            }
+          </div>
+        </div>
+        <input data-v2-agent-field="allowlist" data-v2-agent-index="${index}" class="tcp-input md:col-span-2" list="automation-v2-tool-options" placeholder="Custom tool allowlist (comma-separated)" value="${escapeHtml(String(Array.isArray(seed.allowlist) ? seed.allowlist.join(", ") : seed.allowlist || ""))}" />
+        <input data-v2-agent-field="denylist" data-v2-agent-index="${index}" class="tcp-input md:col-span-2" list="automation-v2-tool-options" placeholder="Custom tool denylist (comma-separated)" value="${escapeHtml(String(Array.isArray(seed.denylist) ? seed.denylist.join(", ") : seed.denylist || ""))}" />
       </div>
     </div>
   `;
@@ -1011,11 +1068,20 @@ export async function renderAgents(ctx) {
       const providerCustom = readEl("model_provider_custom");
       const modelSelect = readEl("model_id_select");
       const modelCustom = readEl("model_id_custom");
+      const toolMode = readEl("tool_mode");
+      const allowlist = readEl("allowlist");
+      const denylist = readEl("denylist");
+      const seedAllow = parseCsv(String(allowlist?.value || ""));
+      const seedDeny = parseCsv(String(denylist?.value || ""));
+      const isReadOnlySeed = seedAllow.length === 1 && seedAllow[0] === "read" && !seedDeny.length;
+      if (toolMode) {
+        toolMode.value = isReadOnlySeed ? "read_only" : seedAllow.length || seedDeny.length ? "custom" : "standard";
+      }
       const presetProvider = String(providerCustom?.value || "").trim();
       if (providerSelect) {
         if (presetProvider && providerIds.includes(presetProvider)) providerSelect.value = presetProvider;
         else if (presetProvider) providerSelect.value = "__custom__";
-        else providerSelect.value = initialProviderId || "";
+        else providerSelect.value = "";
       }
       syncV2AgentRowModelControls(index);
       if (providerSelect && providerSelect.dataset.wired !== "1") {
@@ -1029,6 +1095,20 @@ export async function renderAgents(ctx) {
       if (modelSelect && modelSelect.dataset.wired !== "1") {
         modelSelect.dataset.wired = "1";
         modelSelect.addEventListener("change", () => syncV2AgentRowModelControls(index));
+      }
+      const syncToolMode = () => {
+        if (!toolMode || !allowlist || !denylist) return;
+        const mode = String(toolMode.value || "standard");
+        const isCustom = mode === "custom";
+        allowlist.disabled = !isCustom;
+        denylist.disabled = !isCustom;
+        allowlist.classList.toggle("opacity-60", !isCustom);
+        denylist.classList.toggle("opacity-60", !isCustom);
+      };
+      syncToolMode();
+      if (toolMode && toolMode.dataset.wired !== "1") {
+        toolMode.dataset.wired = "1";
+        toolMode.addEventListener("change", syncToolMode);
       }
     }
   };
@@ -1262,6 +1342,21 @@ export async function renderAgents(ctx) {
             : providerSelect || String(read("model_provider")).trim();
         const modelId =
           modelSelect === "__custom__" ? modelCustom : modelSelect || String(read("model_id")).trim();
+        const toolMode = String(read("tool_mode")).trim() || "standard";
+        const selectedMcpServers = [
+          ...byId("view").querySelectorAll(
+            `[data-v2-agent-index="${idx}"][data-v2-agent-field="mcp_server_option"]:checked`
+          ),
+        ]
+          .map((node) => String(node.value || "").trim())
+          .filter(Boolean);
+        const allowlist =
+          toolMode === "custom"
+            ? parseCsv(read("allowlist"))
+            : toolMode === "read_only"
+              ? ["read"]
+              : [];
+        const denylist = toolMode === "custom" ? parseCsv(read("denylist")) : [];
         agents.push({
           agent_id: agentId,
           display_name: String(read("display_name")).trim() || agentId,
@@ -1271,11 +1366,11 @@ export async function renderAgents(ctx) {
               : undefined,
           skills: parseCsv(read("skills")),
           tool_policy: {
-            allowlist: parseCsv(read("allowlist")),
-            denylist: parseCsv(read("denylist")),
+            allowlist,
+            denylist,
           },
           mcp_policy: {
-            allowed_servers: parseCsv(read("mcp_servers")),
+            allowed_servers: selectedMcpServers,
           },
         });
       }

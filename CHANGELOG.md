@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Control panel hash-query soft routing**: Fixed excessive full-shell re-renders on same-route hash/query changes (for example Automations tab/wizard clicks), reducing UI flash and stale render races.
 - **Automation Builder model selection UX**: Per-agent provider/model fields now default from configured settings with provider/model dropdowns and explicit custom override inputs for clearer, lower-error setup.
 - **Automation Builder custom model-provider fix**: Fixed agent-row controls so `Custom provider` and `Custom model` fields are editable/enabled when selected, and model options populate from selected/default provider.
+- **Automation Builder policy field simplification**: Replaced ambiguous MCP/tool CSV inputs with connected-MCP selection and tool policy modes (`standard`, `read-only`, `custom`) while keeping advanced custom allow/deny override support.
 
 ## [0.3.27] - 2026-03-01
 

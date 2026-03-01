@@ -20,6 +20,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Fixed same-route hash/query navigation churn causing visible full-page flash on tab/wizard interactions (notably Automations), by using soft in-place rerenders and stale-render guards.
   - Improved Automation Builder clarity for per-agent model routing: provider/model now use settings-aware dropdowns with custom override options instead of manual free-text-only entry.
   - Fixed Automation Builder custom selection controls so choosing `Custom provider` / `Custom model` correctly enables manual input fields and keeps model selection usable.
+  - Simplified Automation Builder agent policy inputs:
+    - Skills input is plain text tags (comma-separated), not markdown/file-based.
+    - MCP policy now uses connected-server selections from MCP config.
+    - Tool policy now uses clear modes (`Standard`, `Read-only`, `Custom allow/deny`) instead of raw CSV-only mental model.
 - Chat reliability and approvals-state fixes
   - Fixed delayed user-message rendering: user messages now appear immediately on send (optimistic render).
   - Fixed missing right-rail tool activity by normalizing additional tool event families (`session.tool_call`, `session.tool_result`, and tool message-part updates).
