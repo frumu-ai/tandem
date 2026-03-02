@@ -423,7 +423,7 @@ async function renderProvidersBlock(ctx, container) {
       const testBtn = container.querySelector("#provider-test");
       const statusEl = container.querySelector("#provider-test-status");
       const originalLabel = testBtn.innerHTML;
-      const TEST_TIMEOUT_MS = 45000;
+      const TEST_TIMEOUT_MS = 120000;
       const waitForRunToSettle = async (sessionId, targetRunId, timeoutMs) => {
         const startedAt = Date.now();
         while (Date.now() - startedAt < timeoutMs) {
@@ -465,16 +465,11 @@ async function renderProvidersBlock(ctx, container) {
             model: runModelId,
           });
           try {
-            const syncReply = await state.client.sessions
-              .promptSync(sid, "Reply with exactly: READY")
-              .catch(() => "");
-            if (String(syncReply || "").trim()) {
-              return String(syncReply).trim();
-            }
-
+            // Use one async run path only. Mixing promptSync + promptAsync can
+            // leave a long-running sync run in-flight and make the test look stuck.
             const { runId } = await state.client.sessions.promptAsync(
               sid,
-              "Reply with exactly: READY",
+              "Provider connectivity test: reply with READY.",
               { provider: runProviderId, model: runModelId }
             );
             if (statusEl) {
@@ -536,9 +531,10 @@ async function renderProvidersBlock(ctx, container) {
         await refreshProviderStatus();
         if (statusEl) {
           statusEl.className = "mt-2 text-xs text-lime-300";
-          statusEl.textContent = assistantText.toUpperCase().includes("READY")
+          const normalized = assistantText.toUpperCase();
+          statusEl.textContent = normalized.includes("READY")
             ? "Model test succeeded."
-            : `Model replied: ${assistantText.slice(0, 140)}`;
+            : `Model responded successfully: ${assistantText.slice(0, 140)}`;
         }
         toast("ok", "Model run test completed.");
       } catch (e) {

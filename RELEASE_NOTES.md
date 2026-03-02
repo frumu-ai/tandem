@@ -268,6 +268,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Restored multi-theme switching in Settings Appearance:
     - full theme list is back (`Web Control`, `Electric Blue`, `Emerald Night`, `Hello Bunny`, `Porcelain`, `Neon Riot`)
     - dropdown + quick-swatch selectors both apply themes instantly across the control panel
+  - Hardened provider test behavior in Settings:
+    - removed mixed `prompt_sync` + `prompt_async` test path
+    - now runs a single async probe request to avoid run-conflict/stuck-wait behavior
+    - extended provider-test wait timeout and improved status copy for non-`READY` successful replies
 
 - Internal execution tracking
   - Added implementation Kanban board:

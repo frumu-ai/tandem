@@ -73,6 +73,7 @@ Owner: Core Runtime + Product Architecture
   - [x] Harden Settings tab icon hydration for async subview updates
   - [x] Align `#/agents` top tab treatment with Settings underline tab style
   - [x] Restore multi-theme selector + full theme catalog in Settings Appearance
+  - [x] Fix provider test flow in Settings to use single async probe (remove sync/async double-run stall path)
 
 ## Active Backlog
 
