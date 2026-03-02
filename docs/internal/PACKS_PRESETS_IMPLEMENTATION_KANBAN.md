@@ -23,10 +23,10 @@ Owner: Core Runtime + Product Architecture
 
 - [ ] Chat attachment ingestion flow
   - [x] Backend detect/install endpoints for attachment paths
-  - [ ] Connector dispatch event: `attachment.received` normalization across Discord/Slack/Telegram
+  - [x] Connector dispatch ingestion hook for `.zip` attachment path detection/install
   - [ ] Auto-render pack card in chat surfaces on `pack.detected`
   - [ ] Wire Install/Inspect actions from card to PackManager endpoints
-  - [ ] Trusted-source auto-install policy checks in ingestion path
+  - [x] Trusted-source auto-install policy checks in ingestion path
 
 ## Backlog
 

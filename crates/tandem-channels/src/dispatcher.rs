@@ -387,6 +387,32 @@ async fn process_channel_message(
     }
     let mut prompt_content = msg.content.clone();
     if let Some(attachment) = msg.attachment.as_deref() {
+        if is_zip_attachment(&msg) {
+            if let Some(pack_reply) =
+                handle_pack_attachment_if_present(&msg, base_url, api_token).await
+            {
+                if let Err(e) = channel.stop_typing(&msg.reply_target).await {
+                    warn!(
+                        "failed to stop typing indicator for channel '{}': {e}",
+                        channel.name()
+                    );
+                }
+                if let Err(e) = channel
+                    .send(&SendMessage {
+                        content: pack_reply,
+                        recipient: msg.reply_target.clone(),
+                        image_urls: Vec::new(),
+                    })
+                    .await
+                {
+                    error!(
+                        "failed to send pack ingestion reply via '{}': {e}",
+                        channel.name()
+                    );
+                }
+                return;
+            }
+        }
         let persisted = persist_channel_attachment_reference(
             base_url,
             api_token,
@@ -437,6 +463,165 @@ async fn process_channel_message(
     {
         error!("failed to send channel reply via '{}': {e}", channel.name());
     }
+}
+
+fn is_zip_attachment(msg: &ChannelMessage) -> bool {
+    let candidates = [
+        msg.attachment_filename.as_deref(),
+        msg.attachment_path.as_deref(),
+        msg.attachment_url.as_deref(),
+        msg.attachment.as_deref(),
+    ];
+    candidates.into_iter().flatten().any(has_zip_suffix)
+}
+
+fn has_zip_suffix(value: &str) -> bool {
+    value
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(value)
+        .to_ascii_lowercase()
+        .ends_with(".zip")
+}
+
+fn parse_trusted_pack_sources(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect()
+}
+
+fn source_is_trusted_for_auto_install(msg: &ChannelMessage, trusted: &[String]) -> bool {
+    if trusted.is_empty() {
+        return false;
+    }
+    let channel = msg.channel.to_ascii_lowercase();
+    let reply_target = msg.reply_target.to_ascii_lowercase();
+    let sender = msg.sender.to_ascii_lowercase();
+    trusted.iter().any(|rule| {
+        if rule == "*" {
+            return true;
+        }
+        let rule = rule.to_ascii_lowercase();
+        if rule == channel || rule == sender {
+            return true;
+        }
+        let combined_channel_room = format!("{channel}:{reply_target}");
+        if rule == combined_channel_room {
+            return true;
+        }
+        let combined_full = format!("{channel}:{reply_target}:{sender}");
+        rule == combined_full
+    })
+}
+
+async fn handle_pack_attachment_if_present(
+    msg: &ChannelMessage,
+    base_url: &str,
+    api_token: &str,
+) -> Option<String> {
+    let Some(path) = msg.attachment_path.as_deref() else {
+        return Some(
+            "Detected a .zip attachment. Pack detection requires a local attachment path; this upload did not provide one."
+                .to_string(),
+        );
+    };
+    let client = reqwest::Client::new();
+    let detect_resp = add_auth(client.post(format!("{base_url}/packs/detect")), api_token)
+        .json(&serde_json::json!({
+            "path": path,
+            "attachment_id": msg.id,
+            "connector": msg.channel,
+            "channel_id": msg.reply_target,
+            "sender_id": msg.sender,
+        }))
+        .send()
+        .await;
+    let detect_resp = match detect_resp {
+        Ok(resp) => resp,
+        Err(err) => {
+            warn!("pack detect request failed: {}", err);
+            return Some(format!("Pack detection failed: {err}"));
+        }
+    };
+    let status = detect_resp.status();
+    let payload: serde_json::Value = detect_resp.json().await.unwrap_or_default();
+    if !status.is_success() {
+        return Some(format!(
+            "Pack detection failed ({status}): {}",
+            payload
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+    let is_pack = payload
+        .get("is_pack")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !is_pack {
+        return None;
+    }
+
+    let trusted_raw = std::env::var("TANDEM_PACK_AUTO_INSTALL_TRUSTED_SOURCES").unwrap_or_default();
+    let trusted = parse_trusted_pack_sources(&trusted_raw);
+    let auto_install = source_is_trusted_for_auto_install(msg, &trusted);
+    if !auto_install {
+        return Some(format!(
+            "Tandem Pack detected in attachment `{}`. Auto-install is disabled for this source.\n\nInstall manually from UI or call `/packs/install_from_attachment` with `attachment_id={}` and `path={}`.",
+            msg.attachment_filename
+                .as_deref()
+                .or(msg.attachment.as_deref())
+                .unwrap_or("upload.zip"),
+            msg.id,
+            path
+        ));
+    }
+
+    let install_resp = add_auth(
+        client.post(format!("{base_url}/packs/install_from_attachment")),
+        api_token,
+    )
+    .json(&serde_json::json!({
+        "attachment_id": msg.id,
+        "path": path,
+        "connector": msg.channel,
+        "channel_id": msg.reply_target,
+        "sender_id": msg.sender,
+    }))
+    .send()
+    .await;
+    let install_resp = match install_resp {
+        Ok(resp) => resp,
+        Err(err) => {
+            warn!("pack install_from_attachment request failed: {}", err);
+            return Some(format!("Tandem Pack detected but install failed: {err}"));
+        }
+    };
+    let status = install_resp.status();
+    let payload: serde_json::Value = install_resp.json().await.unwrap_or_default();
+    if !status.is_success() {
+        return Some(format!(
+            "Tandem Pack detected but install failed ({status}): {}",
+            payload
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+    let pack_name = payload
+        .get("installed")
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let pack_version = payload
+        .get("installed")
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    Some(format!(
+        "Tandem Pack detected and installed: `{pack_name}` `{pack_version}`."
+    ))
 }
 
 fn synthesize_attachment_prompt(
@@ -2248,5 +2433,62 @@ mod tests {
             sanitize_resource_segment("abc/def:ghi"),
             "abc_def_ghi".to_string()
         );
+    }
+
+    #[test]
+    fn zip_attachment_detection_handles_filename_path_and_url() {
+        let mut msg = ChannelMessage {
+            id: "m1".to_string(),
+            sender: "u1".to_string(),
+            reply_target: "c1".to_string(),
+            content: "hello".to_string(),
+            channel: "discord".to_string(),
+            timestamp: chrono::Utc::now(),
+            attachment: None,
+            attachment_url: None,
+            attachment_path: None,
+            attachment_mime: None,
+            attachment_filename: Some("pack.zip".to_string()),
+        };
+        assert!(is_zip_attachment(&msg));
+        msg.attachment_filename = None;
+        msg.attachment_path = Some("/tmp/upload.PACK.ZIP".to_string());
+        assert!(is_zip_attachment(&msg));
+        msg.attachment_path = None;
+        msg.attachment_url = Some("https://example.com/x/y/pack.zip?sig=1".to_string());
+        assert!(is_zip_attachment(&msg));
+    }
+
+    #[test]
+    fn trusted_source_matching_supports_channel_room_sender_scopes() {
+        let msg = ChannelMessage {
+            id: "m1".to_string(),
+            sender: "userA".to_string(),
+            reply_target: "room1".to_string(),
+            content: "hello".to_string(),
+            channel: "discord".to_string(),
+            timestamp: chrono::Utc::now(),
+            attachment: None,
+            attachment_url: None,
+            attachment_path: None,
+            attachment_mime: None,
+            attachment_filename: None,
+        };
+        assert!(source_is_trusted_for_auto_install(
+            &msg,
+            &["discord".to_string()]
+        ));
+        assert!(source_is_trusted_for_auto_install(
+            &msg,
+            &["discord:room1".to_string()]
+        ));
+        assert!(source_is_trusted_for_auto_install(
+            &msg,
+            &["discord:room1:usera".to_string()]
+        ));
+        assert!(!source_is_trusted_for_auto_install(
+            &msg,
+            &["slack".to_string()]
+        ));
     }
 }

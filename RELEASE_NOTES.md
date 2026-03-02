@@ -114,6 +114,13 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - `get_bindings`, `set_bindings`, `discovery`, `resolve`
   - Added README examples for pack and capability workflows.
 
+- Channel attachment ingestion updates (pack-aware)
+  - Channel dispatcher now inspects `.zip` uploads via `/packs/detect` to trigger Tandem Pack detection flow.
+  - Added trusted-source auto-install policy for channel uploads:
+    - `TANDEM_PACK_AUTO_INSTALL_TRUSTED_SOURCES`
+  - For trusted sources, dispatcher calls `/packs/install_from_attachment` automatically.
+  - For untrusted sources, dispatcher responds with manual install guidance instead of auto-installing.
+
 - Internal execution tracking
   - Added implementation Kanban board:
     - `docs/internal/PACKS_PRESETS_IMPLEMENTATION_KANBAN.md`

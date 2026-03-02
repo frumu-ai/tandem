@@ -70,6 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added `client.packs` namespace methods for list/inspect/install/install_from_attachment/uninstall/export/detect/updates/update
   - added `client.capabilities` namespace methods for bindings get/set, discovery, and resolve
   - refreshed Python SDK README usage examples for pack/capability flows
+- **Channel attachment pack ingestion flow (initial)**:
+  - channel dispatcher now checks `.zip` attachments for tandem-pack marker via `/packs/detect`
+  - trusted-source auto-install policy added via `TANDEM_PACK_AUTO_INSTALL_TRUSTED_SOURCES`
+  - trusted zip uploads can auto-install through `/packs/install_from_attachment`
+  - untrusted detections now return explicit install guidance to the user (no auto-install)
 - **Pack implementation Kanban tracking**:
   - added `docs/internal/PACKS_PRESETS_IMPLEMENTATION_KANBAN.md` for phased execution tracking
 - **Deterministic composition and governance rules** in specs:
