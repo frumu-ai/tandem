@@ -460,7 +460,8 @@ async function renderProvidersBlock(ctx, container) {
 
         const runSingleTest = async () => {
           const sid = await state.client.sessions.create({
-            title: `Provider test ${new Date().toISOString()}`,
+            title: `__provider_test__ ${new Date().toISOString()}`,
+            directory: "/tmp/tandem-provider-test",
             provider: runProviderId,
             model: runModelId,
           });

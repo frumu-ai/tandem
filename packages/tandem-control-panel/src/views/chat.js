@@ -178,17 +178,24 @@ export async function renderChat(ctx) {
   }
 
   async function loadSessions() {
+    const isInternalProviderTestSession = (session) =>
+      String(session?.title || "")
+        .trim()
+        .toLowerCase()
+        .startsWith("__provider_test__");
     try {
       const list = await state.client.sessions.list({ pageSize: 50 });
-      if (Array.isArray(list)) return list;
-      if (Array.isArray(list?.sessions)) return list.sessions;
+      if (Array.isArray(list)) return list.filter((row) => !isInternalProviderTestSession(row));
+      if (Array.isArray(list?.sessions))
+        return list.sessions.filter((row) => !isInternalProviderTestSession(row));
     } catch {
       // Fallback below handles older/newer response shapes via raw engine endpoint.
     }
     try {
       const raw = await api("/api/engine/session?page_size=50");
-      if (Array.isArray(raw)) return raw;
-      if (Array.isArray(raw?.sessions)) return raw.sessions;
+      if (Array.isArray(raw)) return raw.filter((row) => !isInternalProviderTestSession(row));
+      if (Array.isArray(raw?.sessions))
+        return raw.sessions.filter((row) => !isInternalProviderTestSession(row));
       return [];
     } catch {
       return [];

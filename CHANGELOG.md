@@ -165,6 +165,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Automations tab style parity**: Updated `#/agents` section tabs to reuse the same underline tab styling and accessibility roles used in Settings.
 - **Multi-theme selection restored**: Re-enabled full control-panel theme catalog (Web Control, Electric Blue, Emerald Night, Hello Bunny, Porcelain, Neon Riot) and restored Settings Appearance selector with quick theme swatches.
 - **Provider test reliability**: Simplified Settings `Test Model Run` flow to a single async run path (removed sync+async double-run behavior), increased wait timeout, and clarified success messaging to prevent false “waiting” stalls with OpenRouter/default providers.
+- **Provider test session isolation**: Provider test now runs in an internal non-workspace session (`/tmp/tandem-provider-test`) with internal title prefix, and chat session lists filter these internal sessions so users do not see provider-test artifacts.
 - **Provider-key visibility mismatch in web control panel**: fixed false “No stored key detected” status caused by a stubbed auth-status route and non-durable auth writes.
 - **Provider test ambiguity**: fixed settings “Test Model Run” paths that could execute with implicit defaults instead of the selected provider/model.
 

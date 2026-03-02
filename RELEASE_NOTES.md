@@ -272,6 +272,9 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - removed mixed `prompt_sync` + `prompt_async` test path
     - now runs a single async probe request to avoid run-conflict/stuck-wait behavior
     - extended provider-test wait timeout and improved status copy for non-`READY` successful replies
+  - Isolated provider-test sessions from normal chat UX:
+    - provider test uses internal non-workspace session metadata
+    - chat session lists now hide internal `__provider_test__` sessions
 
 - Internal execution tracking
   - Added implementation Kanban board:
