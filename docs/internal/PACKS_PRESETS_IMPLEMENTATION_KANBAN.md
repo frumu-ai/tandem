@@ -35,11 +35,17 @@ Owner: Core Runtime + Product Architecture
   - [x] Structured `missing_capability` error contract end-to-end in workflow runtime (resolver API returns structured conflict payload)
   - [x] Initial spine bindings for GitHub + Slack across Composio/Arcade/MCP/custom (+ alias-aware matching)
 
+- [x] Trust/signing + marketplace readiness
+  - [x] Parse and expose `tandempack.sig` status in inspect endpoint
+  - [x] Verification badges (`unverified`, `verified`, `official`) in API payloads
+  - [x] Permission/risk sheet generation API for pre-install UX (`pack.inspect.permission_sheet`)
+  - [x] Secret scanning hooks integrated (`TANDEM_PACK_SECRET_SCAN_STRICT` for local strict reject)
+
 ## Active Backlog
 
 - [ ] Preset registry implementation
   - [x] Build layered registry: built-ins + installed packs + project overrides
-  - [ ] Deterministic prompt composition engine (core->domain->style->safety)
+  - [x] Deterministic prompt composition engine (core->domain->style->safety)
   - [ ] Fork/edit/save flow for immutable installed presets
   - [ ] Permission/capability summary computation at agent + automation levels
   - [ ] Export composed project overrides as pack content
@@ -50,12 +56,6 @@ Owner: Core Runtime + Product Architecture
   - [ ] Agent Preset builder with prompt preview + capability summary
   - [ ] Automation Preset builder with step-agent binding swaps
   - [x] Upgrade flow with permissions diff + re-approval (stub-backed API/UI signaling)
-
-- [x] Trust/signing + marketplace readiness
-  - [x] Parse and expose `tandempack.sig` status in inspect endpoint
-  - [x] Verification badges (`unverified`, `verified`, `official`) in API payloads
-  - [x] Permission/risk sheet generation API for pre-install UX (`pack.inspect.permission_sheet`)
-  - [x] Secret scanning hooks integrated (`TANDEM_PACK_SECRET_SCAN_STRICT` for local strict reject)
 
 ## Done
 

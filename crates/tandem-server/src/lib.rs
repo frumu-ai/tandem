@@ -40,6 +40,7 @@ mod agent_teams;
 mod capability_resolver;
 mod http;
 mod pack_manager;
+mod preset_composer;
 mod preset_registry;
 pub mod webui;
 
@@ -47,6 +48,7 @@ pub use agent_teams::AgentTeamRuntime;
 pub use capability_resolver::CapabilityResolver;
 pub use http::serve;
 pub use pack_manager::PackManager;
+pub use preset_composer::PromptComposeInput;
 pub use preset_registry::PresetRegistry;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

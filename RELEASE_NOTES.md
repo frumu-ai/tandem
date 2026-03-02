@@ -71,6 +71,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - `agent_presets`
     - `automation_presets`
     - `generated_at_ms`
+  - Added deterministic prompt composition endpoint:
+    - `POST /presets/compose/preview`
+    - enforces deterministic ordering (`core` -> `domain` -> `style` -> `safety`)
+    - returns stable `composition_hash` and ordered fragment IDs for testability
 
 - PackManager runtime/API implementation (first tranche)
   - Added initial server PackManager endpoints:

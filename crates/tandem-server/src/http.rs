@@ -1429,6 +1429,13 @@ async fn presets_index(State(state): State<AppState>) -> Result<Json<Value>, Sta
     Ok(Json(json!({ "index": index })))
 }
 
+async fn presets_compose_preview(
+    Json(input): Json<crate::preset_composer::PromptComposeInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let out = crate::preset_composer::compose(input);
+    Ok(Json(json!({ "composition": out })))
+}
+
 fn app_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1670,6 +1677,7 @@ fn app_router(state: AppState) -> Router {
         .route("/capabilities/discovery", get(capabilities_discovery))
         .route("/capabilities/resolve", post(capabilities_resolve))
         .route("/presets/index", get(presets_index))
+        .route("/presets/compose/preview", post(presets_compose_preview))
         .route("/channels/config", get(channels_config))
         .route("/channels/status", get(channels_status))
         .route("/channels/{name}/verify", post(channels_verify))
@@ -10808,6 +10816,7 @@ async fn openapi_doc() -> Json<Value> {
             "/capabilities/discovery":{"get":{"summary":"Discover available provider tools for capability resolution"}},
             "/capabilities/resolve":{"post":{"summary":"Resolve required capabilities to provider tools based on bindings and preference"}},
             "/presets/index":{"get":{"summary":"List layered preset registry index (builtins, packs, overrides)"}},
+            "/presets/compose/preview":{"post":{"summary":"Deterministically compose preset prompt fragments (core->domain->style->safety)"}},
             "/mission":{"get":{"summary":"List missions"},"post":{"summary":"Create mission"}},
             "/mission/{id}":{"get":{"summary":"Get mission"}},
             "/mission/{id}/event":{"post":{"summary":"Apply mission event through reducer"}},
@@ -11538,6 +11547,48 @@ mod tests {
             .get("generated_at_ms")
             .and_then(|v| v.as_u64())
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn presets_compose_preview_is_deterministic() {
+        let state = test_state().await;
+        let app = app_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/presets/compose/preview")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "base_prompt": "Base",
+                    "fragments": [
+                        {"id":"zeta","phase":"style","content":"Style Z"},
+                        {"id":"alpha","phase":"core","content":"Core A"},
+                        {"id":"safe","phase":"safety","content":"Do no harm"}
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        let ordered = payload
+            .get("composition")
+            .and_then(|v| v.get("ordered_fragment_ids"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0].as_str(), Some("alpha"));
+        assert_eq!(ordered[1].as_str(), Some("zeta"));
+        assert_eq!(ordered[2].as_str(), Some("safe"));
+        assert!(payload
+            .get("composition")
+            .and_then(|v| v.get("composition_hash"))
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false));
     }
 
     #[tokio::test]
