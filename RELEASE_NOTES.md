@@ -228,6 +228,9 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - install from attachment metadata (`attachment_id` + `path`)
   - Added `Pack Events` rail in Chat with the same one-click actions so pack detection/install can be handled without leaving chat context.
 
+- Control panel packs compatibility fix
+  - Fixed `Packs` view failures on environments where `state.client.packs` or `state.client.capabilities` namespaces are not present by adding direct `/api/engine/*` fallback calls for list/inspect/install/uninstall/export/update/discovery.
+
 - Internal execution tracking
   - Added implementation Kanban board:
     - `docs/internal/PACKS_PRESETS_IMPLEMENTATION_KANBAN.md`

@@ -7,6 +7,45 @@ export async function renderPacks(ctx) {
     return "tcp-badge-err";
   };
   const asArray = (value) => (Array.isArray(value) ? value : []);
+  const packsApi = {
+    list: () =>
+      state.client?.packs?.list
+        ? state.client.packs.list()
+        : api("/api/engine/packs", { method: "GET" }),
+    inspect: (selector) =>
+      state.client?.packs?.inspect
+        ? state.client.packs.inspect(selector)
+        : api(`/api/engine/packs/${encodeURIComponent(selector)}`, { method: "GET" }),
+    install: (request) =>
+      state.client?.packs?.install
+        ? state.client.packs.install(request)
+        : api("/api/engine/packs/install", { method: "POST", body: JSON.stringify(request) }),
+    uninstall: (request) =>
+      state.client?.packs?.uninstall
+        ? state.client.packs.uninstall(request)
+        : api("/api/engine/packs/uninstall", { method: "POST", body: JSON.stringify(request) }),
+    export: (request) =>
+      state.client?.packs?.export
+        ? state.client.packs.export(request)
+        : api("/api/engine/packs/export", { method: "POST", body: JSON.stringify(request) }),
+    updates: (selector) =>
+      state.client?.packs?.updates
+        ? state.client.packs.updates(selector)
+        : api(`/api/engine/packs/${encodeURIComponent(selector)}/updates`, { method: "GET" }),
+    update: (selector, request) =>
+      state.client?.packs?.update
+        ? state.client.packs.update(selector, request)
+        : api(`/api/engine/packs/${encodeURIComponent(selector)}/update`, {
+            method: "POST",
+            body: JSON.stringify(request || {}),
+          }),
+  };
+  const capabilitiesApi = {
+    discovery: () =>
+      state.client?.capabilities?.discovery
+        ? state.client.capabilities.discovery()
+        : api("/api/engine/capabilities/discovery", { method: "GET" }),
+  };
   const parseCsv = (value) =>
     String(value || "")
       .split(",")
@@ -400,7 +439,7 @@ export async function renderPacks(ctx) {
 
   const loadPacks = async () => {
     try {
-      const payload = await state.client.packs.list();
+      const payload = await packsApi.list();
       const packs = Array.isArray(payload?.packs) ? payload.packs : [];
       if (!packs.length) {
         packsListEl.innerHTML = '<div class="tcp-card"><p class="tcp-subtle">No installed packs.</p></div>';
@@ -435,10 +474,10 @@ export async function renderPacks(ctx) {
 
       packsListEl.querySelectorAll("[data-pack-inspect]").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          const id = btn.getAttribute("data-pack-inspect");
-          if (!id) return;
-          try {
-            const inspected = await state.client.packs.inspect(id);
+            const id = btn.getAttribute("data-pack-inspect");
+            if (!id) return;
+            try {
+            const inspected = await packsApi.inspect(id);
             setInspectSummary(inspected);
             setMeta(inspected);
           } catch (e) {
@@ -449,10 +488,10 @@ export async function renderPacks(ctx) {
 
       packsListEl.querySelectorAll("[data-pack-export]").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          const id = btn.getAttribute("data-pack-export");
-          if (!id) return;
-          try {
-            const exported = await state.client.packs.export({ pack_id: id });
+            const id = btn.getAttribute("data-pack-export");
+            if (!id) return;
+            try {
+            const exported = await packsApi.export({ pack_id: id });
             toast("ok", `Exported to ${exported?.exported?.path || "unknown path"}`);
           } catch (e) {
             toast("err", `Export failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -462,10 +501,10 @@ export async function renderPacks(ctx) {
 
       packsListEl.querySelectorAll("[data-pack-updates]").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          const id = btn.getAttribute("data-pack-updates");
-          if (!id) return;
-          try {
-            const updates = await state.client.packs.updates(id);
+            const id = btn.getAttribute("data-pack-updates");
+            if (!id) return;
+            try {
+            const updates = await packsApi.updates(id);
             setMeta(updates);
             const count = Array.isArray(updates?.updates) ? updates.updates.length : 0;
             const needsReapproval = !!updates?.reapproval_required;
@@ -483,10 +522,10 @@ export async function renderPacks(ctx) {
 
       packsListEl.querySelectorAll("[data-pack-update]").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          const id = btn.getAttribute("data-pack-update");
-          if (!id) return;
-          try {
-            const updated = await state.client.packs.update(id, {});
+            const id = btn.getAttribute("data-pack-update");
+            if (!id) return;
+            try {
+            const updated = await packsApi.update(id, {});
             setMeta(updated);
             const needsReapproval = !!updated?.reapproval_required;
             toast(
@@ -510,7 +549,7 @@ export async function renderPacks(ctx) {
           if (!id) return;
           if (!window.confirm(`Uninstall pack ${id}?`)) return;
           try {
-            await state.client.packs.uninstall({ pack_id: id });
+            await packsApi.uninstall({ pack_id: id });
             toast("ok", `Uninstalled ${id}`);
             await loadPacks();
           } catch (e) {
@@ -535,7 +574,7 @@ export async function renderPacks(ctx) {
 
   byId("packs-cap-discovery-btn")?.addEventListener("click", async () => {
     try {
-      const discovery = await state.client.capabilities.discovery();
+      const discovery = await capabilitiesApi.discovery();
       setMeta(discovery);
       const count = Array.isArray(discovery?.tools) ? discovery.tools.length : 0;
       toast("ok", `Discovered ${count} tools`);
@@ -552,7 +591,7 @@ export async function renderPacks(ctx) {
       return;
     }
     try {
-      const payload = await state.client.packs.install({
+      const payload = await packsApi.install({
         url: url || undefined,
         path: path || undefined,
         source: { kind: "control_panel" },

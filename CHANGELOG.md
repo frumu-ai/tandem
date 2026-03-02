@@ -139,6 +139,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - immutable installed pack sources with project-local fork/override editing model
   - explicit routine safety default (`disabled` on install)
 
+### Fixed
+
+- **Control panel packs runtime compatibility**: `Packs` view now falls back to direct engine endpoints when `state.client.packs`/`state.client.capabilities` namespaces are unavailable, preventing `Cannot read properties of undefined (reading 'list')` failures.
+
 ## [0.3.28] - 2026-03-01
 
 ### Added
