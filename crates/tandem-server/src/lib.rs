@@ -37,11 +37,13 @@ use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::ToolRegistry;
 
 mod agent_teams;
+mod capability_resolver;
 mod http;
 mod pack_manager;
 pub mod webui;
 
 pub use agent_teams::AgentTeamRuntime;
+pub use capability_resolver::CapabilityResolver;
 pub use http::serve;
 pub use pack_manager::PackManager;
 
@@ -750,6 +752,7 @@ pub struct AppState {
     pub channels_runtime: Arc<tokio::sync::Mutex<ChannelRuntime>>,
     pub host_runtime_context: HostRuntimeContext,
     pub pack_manager: Arc<PackManager>,
+    pub capability_resolver: Arc<CapabilityResolver>,
 }
 
 #[derive(Debug, Clone)]
@@ -799,6 +802,7 @@ impl AppState {
             host_runtime_context: detect_host_runtime_context(),
             token_cost_per_1k_usd: resolve_token_cost_per_1k_usd(),
             pack_manager: Arc::new(PackManager::new(PackManager::default_root())),
+            capability_resolver: Arc::new(CapabilityResolver::new(PackManager::default_root())),
         }
     }
 

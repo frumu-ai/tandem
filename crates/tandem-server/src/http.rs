@@ -58,6 +58,7 @@ use tandem_wire::{
 use crate::ResourceStoreError;
 use crate::{
     agent_teams::{emit_spawn_approved, emit_spawn_denied, emit_spawn_requested},
+    capability_resolver::{CapabilityBindingsFile, CapabilityResolveInput},
     evaluate_routine_execution_policy,
     pack_manager::{PackExportRequest, PackInstallRequest, PackUninstallRequest},
     ActiveRun, AppState, AutomationAgentMcpPolicy, AutomationAgentProfile,
@@ -1262,6 +1263,89 @@ async fn packs_detect(
     })))
 }
 
+async fn capabilities_bindings_get(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    let bindings = state
+        .capability_resolver
+        .list_bindings()
+        .await
+        .map_err(|err| {
+            tracing::warn!("capability bindings get failed: {}", err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(json!({ "bindings": bindings })))
+}
+
+async fn capabilities_bindings_put(
+    State(state): State<AppState>,
+    Json(file): Json<CapabilityBindingsFile>,
+) -> Result<Json<Value>, StatusCode> {
+    state
+        .capability_resolver
+        .set_bindings(file)
+        .await
+        .map_err(|err| {
+            tracing::warn!("capability bindings put failed: {}", err);
+            StatusCode::BAD_REQUEST
+        })?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn capabilities_discovery(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+    let discovered = state
+        .capability_resolver
+        .discover_from_runtime(state.mcp.list_tools().await, state.tools.list().await)
+        .await;
+    Ok(Json(json!({ "tools": discovered })))
+}
+
+async fn capabilities_resolve(
+    State(state): State<AppState>,
+    Json(input): Json<CapabilityResolveInput>,
+) -> Result<Response, StatusCode> {
+    let discovered = state
+        .capability_resolver
+        .discover_from_runtime(state.mcp.list_tools().await, state.tools.list().await)
+        .await;
+    let result = state
+        .capability_resolver
+        .resolve(input.clone(), discovered)
+        .await
+        .map_err(|err| {
+            tracing::warn!("capability resolve failed: {}", err);
+            StatusCode::BAD_REQUEST
+        })?;
+    if !result.missing_required.is_empty() {
+        let bindings = state
+            .capability_resolver
+            .list_bindings()
+            .await
+            .unwrap_or_else(|_| CapabilityBindingsFile::default());
+        let mut suggestions = HashMap::<String, Vec<String>>::new();
+        for missing in &result.missing_required {
+            let rows = bindings
+                .bindings
+                .iter()
+                .filter(|row| row.capability_id == *missing)
+                .map(|row| format!("{}:{}", row.provider, row.tool_name))
+                .collect::<Vec<_>>();
+            suggestions.insert(missing.clone(), rows);
+        }
+        let workflow_id = input
+            .workflow_id
+            .clone()
+            .unwrap_or_else(|| "unknown_workflow".to_string());
+        let payload = crate::capability_resolver::CapabilityResolver::missing_capability_error(
+            &workflow_id,
+            &result.missing_required,
+            &suggestions,
+        );
+        return Ok((StatusCode::CONFLICT, Json(payload)).into_response());
+    }
+    Ok(Json(json!({ "resolution": result })).into_response())
+}
+
 fn app_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1494,6 +1578,12 @@ fn app_router(state: AppState) -> Router {
         .route("/packs/uninstall", post(packs_uninstall))
         .route("/packs/export", post(packs_export))
         .route("/packs/detect", post(packs_detect))
+        .route(
+            "/capabilities/bindings",
+            get(capabilities_bindings_get).put(capabilities_bindings_put),
+        )
+        .route("/capabilities/discovery", get(capabilities_discovery))
+        .route("/capabilities/resolve", post(capabilities_resolve))
         .route("/channels/config", get(channels_config))
         .route("/channels/status", get(channels_status))
         .route("/channels/{name}/verify", post(channels_verify))
@@ -10626,6 +10716,9 @@ async fn openapi_doc() -> Json<Value> {
             "/packs/uninstall":{"post":{"summary":"Uninstall tandem pack"}},
             "/packs/export":{"post":{"summary":"Export installed tandem pack as zip"}},
             "/packs/detect":{"post":{"summary":"Detect tandem pack marker in zip and emit pack.detected"}},
+            "/capabilities/bindings":{"get":{"summary":"List capability bindings"},"put":{"summary":"Replace capability bindings file"}},
+            "/capabilities/discovery":{"get":{"summary":"Discover available provider tools for capability resolution"}},
+            "/capabilities/resolve":{"post":{"summary":"Resolve required capabilities to provider tools based on bindings and preference"}},
             "/mission":{"get":{"summary":"List missions"},"post":{"summary":"Create mission"}},
             "/mission/{id}":{"get":{"summary":"Get mission"}},
             "/mission/{id}/event":{"post":{"summary":"Apply mission event through reducer"}},
@@ -11093,6 +11186,73 @@ mod tests {
         let uninstall_resp = app.clone().oneshot(uninstall_req).await.expect("response");
         assert_eq!(uninstall_resp.status(), StatusCode::OK);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn capabilities_resolve_prefers_arcade_when_requested() {
+        let state = test_state().await;
+        let app = app_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/capabilities/resolve")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "workflow_id": "wf-pr",
+                    "required_capabilities": ["github.create_pull_request"],
+                    "provider_preference": ["arcade", "composio"],
+                    "available_tools": [
+                        {"provider":"composio","tool_name":"mcp.composio.github_create_pull_request","schema":{}},
+                        {"provider":"arcade","tool_name":"mcp.arcade.github_create_pull_request","schema":{}}
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        let provider = payload
+            .get("resolution")
+            .and_then(|v| v.get("resolved"))
+            .and_then(|v| v.as_array())
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("provider"))
+            .and_then(|v| v.as_str());
+        assert_eq!(provider, Some("arcade"));
+    }
+
+    #[tokio::test]
+    async fn capabilities_resolve_returns_missing_capability_error() {
+        let state = test_state().await;
+        let app = app_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/capabilities/resolve")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "workflow_id": "wf-pr",
+                    "required_capabilities": ["github.create_pull_request"],
+                    "provider_preference": ["arcade", "composio"],
+                    "available_tools": []
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("missing_capability")
+        );
+        assert_eq!(
+            payload.get("workflow_id").and_then(|v| v.as_str()),
+            Some("wf-pr")
+        );
     }
 
     #[tokio::test]

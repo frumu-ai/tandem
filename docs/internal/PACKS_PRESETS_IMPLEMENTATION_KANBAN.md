@@ -31,10 +31,10 @@ Owner: Core Runtime + Product Architecture
 ## Backlog
 
 - [ ] Capability abstraction plumbing
-  - [ ] Provider discovery adapter contract: `list_tools()` + schema metadata
-  - [ ] Capability bindings registry (data files, no code changes required)
-  - [ ] Resolver selection order: user/org/pack preference + provider health
-  - [ ] Structured `missing_capability` error contract end-to-end in workflow runtime
+  - [x] Provider discovery adapter contract: `list_tools()` + schema metadata (MCP + local tool registry discovery endpoint)
+  - [x] Capability bindings registry (data files, no code changes required)
+  - [x] Resolver selection order: user/org/pack preference + provider health (preference-order MVP)
+  - [x] Structured `missing_capability` error contract end-to-end in workflow runtime (resolver API returns structured conflict payload)
   - [ ] Initial spine bindings for GitHub + Slack across Composio/MCP/custom
 
 - [ ] Preset registry implementation

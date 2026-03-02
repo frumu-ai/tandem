@@ -83,6 +83,21 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - `pack.install.failed`
     - `registry.updated`
 
+- Capability Resolver runtime/API implementation (first tranche)
+  - Added capability endpoints:
+    - `GET /capabilities/bindings`
+    - `PUT /capabilities/bindings`
+    - `GET /capabilities/discovery`
+    - `POST /capabilities/resolve`
+  - Added data-driven capability bindings storage at:
+    - `TANDEM_HOME/packs/bindings/capability_bindings.json`
+  - Added runtime discovery of available tools from:
+    - MCP `list_tools()` namespaced catalog
+    - local tool registry schemas
+  - Added provider preference-based resolution with MVP default priority:
+    - `composio` -> `arcade` -> `mcp` -> `custom`
+  - Added structured resolver conflict payload (`missing_capability`) for unresolved required capabilities.
+
 - Internal execution tracking
   - Added implementation Kanban board:
     - `docs/internal/PACKS_PRESETS_IMPLEMENTATION_KANBAN.md`

@@ -50,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - safe install extraction checks added (path traversal, size/count/depth limits)
   - deterministic install/index paths under `TANDEM_HOME/packs` with atomic index writes
   - pack lifecycle events emitted (`pack.detected`, `pack.install.started|succeeded|failed`, `registry.updated`)
+- **Initial capability resolver runtime/API implementation (server)**:
+  - added capability routes:
+    - `GET /capabilities/bindings`
+    - `PUT /capabilities/bindings`
+    - `GET /capabilities/discovery`
+    - `POST /capabilities/resolve`
+  - data-driven bindings store under `TANDEM_HOME/packs/bindings/capability_bindings.json`
+  - provider discovery from MCP tool catalog (`list_tools`) + local tool registry schemas
+  - preference-aware resolver selection with default order (`composio` > `arcade` > `mcp` > `custom`)
+  - structured `missing_capability` conflict payload for unresolved required capabilities
 - **Pack implementation Kanban tracking**:
   - added `docs/internal/PACKS_PRESETS_IMPLEMENTATION_KANBAN.md` for phased execution tracking
 - **Deterministic composition and governance rules** in specs:
