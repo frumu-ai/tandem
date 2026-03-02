@@ -4,6 +4,7 @@ export const ROUTES = [
   ["agents", "Automations", "clock"],
   ["channels", "Channels", "message-circle"],
   ["mcp", "MCP", "link"],
+  ["packs", "Packs", "package"],
   ["swarm", "Swarm (Live)", "share-2"],
   ["files", "Files", "folder-open"],
   ["memory", "Memory", "database"],

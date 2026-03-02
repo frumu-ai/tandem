@@ -127,6 +127,17 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Added capability API helpers:
     - `capabilities_bindings_get`, `capabilities_bindings_put`, `capabilities_discovery`, `capabilities_resolve`
 
+- Control Panel Pack Library UI (`packages/tandem-control-panel`)
+  - Added new `Packs` route in left nav.
+  - Added Pack Library view with actions:
+    - list installed packs
+    - inspect metadata
+    - install from URL/path
+    - export
+    - uninstall
+    - update checks and update stub calls
+  - Added capability discovery action to inspect currently discovered tools from UI.
+
 - Internal execution tracking
   - Added implementation Kanban board:
     - `docs/internal/PACKS_PRESETS_IMPLEMENTATION_KANBAN.md`
