@@ -516,6 +516,19 @@ struct PackUpdateApplyInput {
 }
 
 #[derive(Debug, Deserialize)]
+struct PresetForkInput {
+    kind: String,
+    source_path: String,
+    #[serde(default)]
+    target_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PresetOverrideWriteInput {
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct SkillLocationQuery {
     location: Option<SkillLocation>,
 }
@@ -1436,6 +1449,73 @@ async fn presets_compose_preview(
     Ok(Json(json!({ "composition": out })))
 }
 
+async fn presets_fork(
+    State(state): State<AppState>,
+    Json(input): Json<PresetForkInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let source_path = std::path::PathBuf::from(&input.source_path);
+    let path = state
+        .preset_registry
+        .fork_to_override(&input.kind, &source_path, input.target_id.as_deref())
+        .await
+        .map_err(|err| {
+            tracing::warn!("preset fork failed: {}", err);
+            StatusCode::BAD_REQUEST
+        })?;
+    state.event_bus.publish(EngineEvent::new(
+        "registry.updated",
+        json!({ "entity": "presets" }),
+    ));
+    Ok(Json(json!({
+        "forked": true,
+        "path": path.to_string_lossy(),
+    })))
+}
+
+async fn presets_override_put(
+    State(state): State<AppState>,
+    Path((kind, id)): Path<(String, String)>,
+    Json(input): Json<PresetOverrideWriteInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let path = state
+        .preset_registry
+        .save_override(&kind, &id, &input.content)
+        .await
+        .map_err(|err| {
+            tracing::warn!("preset override put failed: {}", err);
+            StatusCode::BAD_REQUEST
+        })?;
+    state.event_bus.publish(EngineEvent::new(
+        "registry.updated",
+        json!({ "entity": "presets" }),
+    ));
+    Ok(Json(json!({
+        "saved": true,
+        "path": path.to_string_lossy(),
+    })))
+}
+
+async fn presets_override_delete(
+    State(state): State<AppState>,
+    Path((kind, id)): Path<(String, String)>,
+) -> Result<Json<Value>, StatusCode> {
+    let removed = state
+        .preset_registry
+        .delete_override(&kind, &id)
+        .await
+        .map_err(|err| {
+            tracing::warn!("preset override delete failed: {}", err);
+            StatusCode::BAD_REQUEST
+        })?;
+    if removed {
+        state.event_bus.publish(EngineEvent::new(
+            "registry.updated",
+            json!({ "entity": "presets" }),
+        ));
+    }
+    Ok(Json(json!({ "removed": removed })))
+}
+
 fn app_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1678,6 +1758,11 @@ fn app_router(state: AppState) -> Router {
         .route("/capabilities/resolve", post(capabilities_resolve))
         .route("/presets/index", get(presets_index))
         .route("/presets/compose/preview", post(presets_compose_preview))
+        .route("/presets/fork", post(presets_fork))
+        .route(
+            "/presets/overrides/{kind}/{id}",
+            put(presets_override_put).delete(presets_override_delete),
+        )
         .route("/channels/config", get(channels_config))
         .route("/channels/status", get(channels_status))
         .route("/channels/{name}/verify", post(channels_verify))
@@ -10817,6 +10902,8 @@ async fn openapi_doc() -> Json<Value> {
             "/capabilities/resolve":{"post":{"summary":"Resolve required capabilities to provider tools based on bindings and preference"}},
             "/presets/index":{"get":{"summary":"List layered preset registry index (builtins, packs, overrides)"}},
             "/presets/compose/preview":{"post":{"summary":"Deterministically compose preset prompt fragments (core->domain->style->safety)"}},
+            "/presets/fork":{"post":{"summary":"Fork builtin/pack preset file into project overrides"}},
+            "/presets/overrides/{kind}/{id}":{"put":{"summary":"Save project override preset content"},"delete":{"summary":"Delete project override preset"}},
             "/mission":{"get":{"summary":"List missions"},"post":{"summary":"Create mission"}},
             "/mission/{id}":{"get":{"summary":"Get mission"}},
             "/mission/{id}/event":{"post":{"summary":"Apply mission event through reducer"}},
@@ -11589,6 +11676,107 @@ mod tests {
             .and_then(|v| v.as_str())
             .map(|s| !s.is_empty())
             .unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn presets_override_put_and_delete_roundtrip() {
+        let state = test_state().await;
+        let app = app_router(state);
+        let put_req = Request::builder()
+            .method("PUT")
+            .uri("/presets/overrides/agent_preset/dev_agent")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "content": "id: dev_agent\nversion: 1.0.0\n"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let put_resp = app.clone().oneshot(put_req).await.expect("response");
+        assert_eq!(put_resp.status(), StatusCode::OK);
+        let put_body = to_bytes(put_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let put_payload: Value = serde_json::from_slice(&put_body).expect("json");
+        assert_eq!(
+            put_payload.get("saved").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let del_req = Request::builder()
+            .method("DELETE")
+            .uri("/presets/overrides/agent_preset/dev_agent")
+            .body(Body::empty())
+            .expect("request");
+        let del_resp = app.clone().oneshot(del_req).await.expect("response");
+        assert_eq!(del_resp.status(), StatusCode::OK);
+        let del_body = to_bytes(del_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let del_payload: Value = serde_json::from_slice(&del_body).expect("json");
+        assert_eq!(
+            del_payload.get("removed").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn presets_fork_copies_source_into_overrides() {
+        let state = test_state().await;
+        let app = app_router(state);
+        let seed_req = Request::builder()
+            .method("PUT")
+            .uri("/presets/overrides/skill_module/source_seed")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "content": "id: source_seed\nversion: 1.0.0\n"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let seed_resp = app.clone().oneshot(seed_req).await.expect("response");
+        assert_eq!(seed_resp.status(), StatusCode::OK);
+        let seed_body = to_bytes(seed_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let seed_payload: Value = serde_json::from_slice(&seed_body).expect("json");
+        let source_path = seed_payload
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        assert!(!source_path.is_empty());
+
+        let fork_req = Request::builder()
+            .method("POST")
+            .uri("/presets/fork")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "kind": "skill_module",
+                    "source_path": source_path,
+                    "target_id": "forked_skill"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let fork_resp = app.clone().oneshot(fork_req).await.expect("response");
+        assert_eq!(fork_resp.status(), StatusCode::OK);
+        let fork_body = to_bytes(fork_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let fork_payload: Value = serde_json::from_slice(&fork_body).expect("json");
+        assert_eq!(
+            fork_payload.get("forked").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        let forked_path = fork_payload
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(forked_path.ends_with("forked_skill.yaml"));
     }
 
     #[tokio::test]

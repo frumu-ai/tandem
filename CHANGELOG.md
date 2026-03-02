@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added `GET /presets/index` route for shared backend preset discovery
   - added index contract with `skill_modules`, `agent_presets`, `automation_presets`, and source-layer metadata
   - added deterministic prompt composition engine and `POST /presets/compose/preview` route (`core -> domain -> style -> safety` ordering + stable composition hash)
+  - added project override lifecycle endpoints for immutable-pack editing flow:
+    - `POST /presets/fork`
+    - `PUT /presets/overrides/{kind}/{id}`
+    - `DELETE /presets/overrides/{kind}/{id}`
 - **Initial PackManager runtime/API implementation (server)**:
   - added pack routes:
     - `GET /packs`

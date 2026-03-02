@@ -75,6 +75,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - `POST /presets/compose/preview`
     - enforces deterministic ordering (`core` -> `domain` -> `style` -> `safety`)
     - returns stable `composition_hash` and ordered fragment IDs for testability
+  - Added immutable-source fork/edit/save APIs for project overrides:
+    - `POST /presets/fork` (fork from builtin/pack/runtime path into overrides)
+    - `PUT /presets/overrides/{kind}/{id}` (save editable override)
+    - `DELETE /presets/overrides/{kind}/{id}` (remove override)
 
 - PackManager runtime/API implementation (first tranche)
   - Added initial server PackManager endpoints:

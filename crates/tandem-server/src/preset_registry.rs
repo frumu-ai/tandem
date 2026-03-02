@@ -58,6 +58,71 @@ impl PresetRegistry {
         Ok(out)
     }
 
+    pub async fn fork_to_override(
+        &self,
+        kind: &str,
+        source_path: &Path,
+        target_id: Option<&str>,
+    ) -> anyhow::Result<PathBuf> {
+        let source = std::fs::canonicalize(source_path)
+            .with_context(|| format!("canonicalize {}", source_path.display()))?;
+        let packs_root = self
+            .packs_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.packs_root.clone());
+        let runtime_root = self
+            .runtime_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.runtime_root.clone());
+        if !source.starts_with(&packs_root) && !source.starts_with(&runtime_root) {
+            return Err(anyhow::anyhow!(
+                "fork source path must be inside packs/runtime roots"
+            ));
+        }
+        let content = std::fs::read_to_string(&source)
+            .with_context(|| format!("read {}", source.display()))?;
+        let id = target_id
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                source
+                    .file_stem()
+                    .map(|v| v.to_string_lossy().to_string())
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .unwrap_or_else(|| "override".to_string());
+        self.save_override(kind, &id, &content).await
+    }
+
+    pub async fn save_override(
+        &self,
+        kind: &str,
+        id: &str,
+        content: &str,
+    ) -> anyhow::Result<PathBuf> {
+        let dir = self
+            .runtime_root
+            .join(OVERRIDES_DIR)
+            .join(kind_dir_name(kind)?);
+        tokio::fs::create_dir_all(&dir).await?;
+        let path = dir.join(format!("{id}.yaml"));
+        tokio::fs::write(&path, content).await?;
+        Ok(path)
+    }
+
+    pub async fn delete_override(&self, kind: &str, id: &str) -> anyhow::Result<bool> {
+        let path = self
+            .runtime_root
+            .join(OVERRIDES_DIR)
+            .join(kind_dir_name(kind)?)
+            .join(format!("{id}.yaml"));
+        if path.exists() {
+            tokio::fs::remove_file(&path).await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     fn index_builtin_and_overrides(&self, out: &mut PresetIndex) -> anyhow::Result<()> {
         let builtins = self.runtime_root.join(BUILTINS_DIR);
         self.index_layer_dir(&builtins, "builtin", None, out)?;
@@ -182,6 +247,15 @@ fn collect_presets_into(
     Ok(())
 }
 
+fn kind_dir_name(kind: &str) -> anyhow::Result<&'static str> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "skill_module" | "skill_modules" => Ok("skill_modules"),
+        "agent_preset" | "agent_presets" => Ok("agent_presets"),
+        "automation_preset" | "automation_presets" => Ok("automation_presets"),
+        other => Err(anyhow::anyhow!("unsupported preset kind: {}", other)),
+    }
+}
+
 fn read_preset_metadata(path: &Path) -> anyhow::Result<(String, String, Vec<String>)> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let ext = path
@@ -266,6 +340,28 @@ mod tests {
             index.automation_presets[0].pack.as_deref(),
             Some("sample-pack@1.0.0")
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn save_and_delete_override_roundtrip() {
+        let root = std::env::temp_dir().join(format!("tandem-presets-test-{}", Uuid::new_v4()));
+        let registry = PresetRegistry::new(root.join("packs"), root.join("runtime"));
+        let path = registry
+            .save_override(
+                "agent_preset",
+                "dev-agent",
+                "id: dev-agent\nversion: 1.0.1\n",
+            )
+            .await
+            .expect("save");
+        assert!(path.exists());
+        let deleted = registry
+            .delete_override("agent_preset", "dev-agent")
+            .await
+            .expect("delete");
+        assert!(deleted);
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(root);
     }
 }
