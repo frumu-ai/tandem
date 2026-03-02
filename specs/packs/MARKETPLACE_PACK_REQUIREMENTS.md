@@ -31,7 +31,7 @@ marketplace:
     publisher_id: "pub_tandem_official"
     display_name: "Tandem"
     verification_tier: "official"
-    website: "https://tandem.ai"
+    website: "https://tandem.frumu.ai/"
     support: "support@tandem.ai"
   listing:
     display_name: "GitHub PR Workflow"
@@ -152,7 +152,7 @@ marketplace:
     publisher_id: "pub_tandem_official"
     display_name: "Tandem"
     verification_tier: "official"
-    website: "https://tandem.ai"
+    website: "https://tandem.frumu.ai/"
     support: "support@tandem.ai"
   listing:
     display_name: "GitHub PR Workflow"

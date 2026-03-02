@@ -17,7 +17,7 @@ This schema is store/catalog metadata, not the on-disk `tandempack.yaml` itself.
     "publisher_id": "pub_tandem_official",
     "display_name": "Tandem",
     "verification_tier": "official",
-    "website": "https://tandem.ai"
+    "website": "https://tandem.frumu.ai/"
   },
   "listing": {
     "display_name": "GitHub PR Workflow",

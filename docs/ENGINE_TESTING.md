@@ -54,6 +54,14 @@ cargo run -p tandem-ai -- serve --host 127.0.0.1 --port 39731
 cargo test -p tandem-server -p tandem-core -p tandem-ai
 ```
 
+# Teesting with packages/tandem-control-panel
+
+```bash
+cargo build -p tandem-ai --release
+sudo install -m 755 target/release/tandem-engine /usr/local/bin/tandem-engine-dev
+sudo systemctl restart tandem-engine
+```
+
 ## API Token Security Validation
 
 Verify token-gated API behavior:

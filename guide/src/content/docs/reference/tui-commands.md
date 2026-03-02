@@ -493,7 +493,7 @@ Send freeform answer text to a question request.
 Pass-through tool call directly to engine.
 
 ```text
-/tool webfetch {"url":"https://tandem.ai","return":"text"}
+/tool webfetch {"url":"https://tandem.frumu.ai/","return":"text"}
 ```
 
 ### `/steer <message>`
