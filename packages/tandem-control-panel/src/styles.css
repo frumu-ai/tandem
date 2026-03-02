@@ -211,8 +211,10 @@
 .toasts {
   position: fixed;
   top: 16px;
-  right: 16px;
+  left: 50%;
+  transform: translateX(-50%);
   display: grid;
+  justify-items: center;
   gap: 10px;
   z-index: 60;
   pointer-events: none;

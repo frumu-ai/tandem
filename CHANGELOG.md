@@ -122,6 +122,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - chat session deletion
     - pack uninstall
     - file deletion
+  - moved toast notifications to top-center placement for consistent global visibility
     - capability summary via `/presets/capability_summary`
     - fork/save override flows via `/presets/fork` and `/presets/overrides/agent_preset/{id}`
   - added Automation Preset Builder section with:
