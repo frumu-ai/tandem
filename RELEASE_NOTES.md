@@ -94,6 +94,11 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - signature status reflects root `tandempack.sig` presence (`present_unverified` vs `unsigned`)
     - publisher verification tier is surfaced and normalized into UI-safe badge levels (`unverified`, `verified`, `official`)
     - risk summary includes capability counts, routine declaration flag, and non-portable dependency signal
+  - Added structured `permission_sheet` in pack inspect responses for pre-install/install review UX:
+    - required/optional capabilities
+    - provider-specific dependency list
+    - routine declaration list + enabled state
+    - derived risk level (`standard` or `elevated`)
 
 - Capability Resolver runtime/API implementation (first tranche)
   - Added capability endpoints:

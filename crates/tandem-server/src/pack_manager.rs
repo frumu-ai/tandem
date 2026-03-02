@@ -69,6 +69,7 @@ pub struct PackInspection {
     pub manifest: Value,
     pub trust: Value,
     pub risk: Value,
+    pub permission_sheet: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,11 +155,13 @@ impl PackManager {
         let manifest: Value = serde_yaml::from_str(&manifest_raw).context("parse manifest yaml")?;
         let trust = inspect_trust(&manifest, &installed.install_path);
         let risk = inspect_risk(&manifest, &installed);
+        let permission_sheet = inspect_permission_sheet(&manifest, &risk);
         Ok(PackInspection {
             installed,
             manifest,
             trust,
             risk,
+            permission_sheet,
         })
     }
 
@@ -699,6 +702,39 @@ fn inspect_risk(manifest: &Value, installed: &PackInstallRecord) -> Value {
     })
 }
 
+fn inspect_permission_sheet(manifest: &Value, risk: &Value) -> Value {
+    let required_capabilities = manifest
+        .pointer("/capabilities/required")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let optional_capabilities = manifest
+        .pointer("/capabilities/optional")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let provider_specific = manifest
+        .pointer("/capabilities/provider_specific")
+        .map(|v| match v {
+            Value::Array(rows) => rows.clone(),
+            _ => Vec::new(),
+        })
+        .unwrap_or_default();
+    let routines = manifest
+        .pointer("/contents/routines")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    serde_json::json!({
+        "required_capabilities": required_capabilities,
+        "optional_capabilities": optional_capabilities,
+        "provider_specific_dependencies": provider_specific,
+        "routines_declared": routines,
+        "routines_enabled": risk.get("routines_enabled").cloned().unwrap_or(Value::Bool(false)),
+        "risk_level": if !provider_specific.is_empty() { "elevated" } else { "standard" },
+    })
+}
+
 #[allow(dead_code)]
 pub fn map_missing_capability_error(
     workflow_id: &str,
@@ -850,6 +886,22 @@ mod tests {
                 .get("routines_declared")
                 .and_then(|v| v.as_bool()),
             Some(true)
+        );
+        assert_eq!(
+            inspection
+                .permission_sheet
+                .get("required_capabilities")
+                .and_then(|v| v.as_array())
+                .map(|v| v.len()),
+            Some(1)
+        );
+        assert_eq!(
+            inspection
+                .permission_sheet
+                .get("routines_declared")
+                .and_then(|v| v.as_array())
+                .map(|v| v.len()),
+            Some(1)
         );
         let _ = std::fs::remove_dir_all(root);
     }

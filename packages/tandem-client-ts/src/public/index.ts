@@ -495,6 +495,7 @@ export interface PackInspectionResponse {
     manifest?: JsonObject;
     trust?: JsonObject;
     risk?: JsonObject;
+    permission_sheet?: JsonObject;
   };
 }
 

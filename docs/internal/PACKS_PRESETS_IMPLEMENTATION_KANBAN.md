@@ -54,7 +54,7 @@ Owner: Core Runtime + Product Architecture
 - [ ] Trust/signing + marketplace readiness
   - [x] Parse and expose `tandempack.sig` status in inspect endpoint
   - [x] Verification badges (`unverified`, `verified`, `official`) in API payloads
-  - [ ] Permission/risk sheet generation API for pre-install UX (inspect now includes lightweight risk summary)
+  - [x] Permission/risk sheet generation API for pre-install UX (`pack.inspect.permission_sheet`)
   - [ ] Secret scanning hooks and reject reason taxonomy integration
 
 ## Done
