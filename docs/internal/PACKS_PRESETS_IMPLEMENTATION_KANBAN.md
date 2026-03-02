@@ -19,7 +19,7 @@ Owner: Core Runtime + Product Architecture
   - [x] Atomic index update (tmp write then rename)
   - [x] `current` pointer per pack name
   - [x] Per-pack lock granularity (install/uninstall serialize per pack name; index writes remain atomic)
-  - [ ] Zip-bomb ratio heuristic and compressed/uncompressed ratio checks
+  - [x] Zip-bomb ratio heuristic and compressed/uncompressed ratio checks
 
 - [ ] Chat attachment ingestion flow
   - [x] Backend detect/install endpoints for attachment paths

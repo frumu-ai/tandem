@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `POST /packs/{selector}/update` (stub)
   - root-marker detection enforced via zip central directory entry `tandempack.yaml`
   - safe install extraction checks added (path traversal, size/count/depth limits)
+  - zip-bomb hardening added via entry/archive compressed-to-uncompressed ratio checks
   - deterministic install/index paths under `TANDEM_HOME/packs` with atomic index writes
   - per-pack install/uninstall locking added so concurrent operations serialize by pack name while keeping index writes atomic
   - pack lifecycle events emitted (`pack.detected`, `pack.install.started|succeeded|failed`, `registry.updated`)

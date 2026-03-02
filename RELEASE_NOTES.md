@@ -77,6 +77,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - path traversal rejection
     - max file count/size/depth enforcement
     - max extracted bytes guardrail
+    - entry/archive compression-ratio guardrails to reduce zip-bomb risk
   - Added deterministic pack install/index layout under `TANDEM_HOME/packs` with atomic index updates.
   - Added per-pack install/uninstall locking (by pack name) while preserving atomic index writes.
   - Added install lifecycle event emission for UI progress/status:

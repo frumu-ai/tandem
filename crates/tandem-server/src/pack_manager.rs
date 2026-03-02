@@ -22,6 +22,8 @@ const MAX_EXTRACTED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_FILES: usize = 5_000;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_PATH_DEPTH: usize = 24;
+const MAX_ENTRY_COMPRESSION_RATIO: u64 = 200;
+const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackManifest {
@@ -487,6 +489,7 @@ fn safe_extract_zip(zip_path: &Path, out_dir: &Path) -> anyhow::Result<()> {
     let mut archive = ZipArchive::new(file).context("open zip archive")?;
     let mut extracted_files = 0usize;
     let mut extracted_total = 0u64;
+    let mut compressed_total = 0u64;
     for i in 0..archive.len() {
         let entry = archive.by_index(i).context("zip entry read")?;
         let entry_name = entry.name().to_string();
@@ -496,6 +499,16 @@ fn safe_extract_zip(zip_path: &Path, out_dir: &Path) -> anyhow::Result<()> {
         validate_zip_entry_name(&entry_name)?;
         let out_path = out_dir.join(&entry_name);
         let size = entry.size();
+        let compressed_size = entry.compressed_size().max(1);
+        let entry_ratio = size.saturating_div(compressed_size);
+        if entry_ratio > MAX_ENTRY_COMPRESSION_RATIO {
+            return Err(anyhow!(
+                "zip entry compression ratio too high: {} ({}/{})",
+                entry_name,
+                size,
+                compressed_size
+            ));
+        }
         if size > MAX_FILE_BYTES {
             return Err(anyhow!(
                 "zip entry exceeds max size: {} ({} > {})",
@@ -518,6 +531,15 @@ fn safe_extract_zip(zip_path: &Path, out_dir: &Path) -> anyhow::Result<()> {
                 "zip extracted bytes exceed max ({} > {})",
                 extracted_total,
                 MAX_EXTRACTED_BYTES
+            ));
+        }
+        compressed_total = compressed_total.saturating_add(compressed_size);
+        let archive_ratio_ceiling = compressed_total.saturating_mul(MAX_ARCHIVE_COMPRESSION_RATIO);
+        if extracted_total > archive_ratio_ceiling {
+            return Err(anyhow!(
+                "zip archive compression ratio too high (extracted={} compressed={})",
+                extracted_total,
+                compressed_total
             ));
         }
         if let Some(parent) = out_path.parent() {
@@ -695,6 +717,20 @@ mod tests {
         std::fs::create_dir_all(&out).expect("mkdir out");
         let err = safe_extract_zip(&bad, &out).expect_err("should fail");
         assert!(err.to_string().contains("unsafe zip entry path"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn safe_extract_blocks_extreme_compression_ratio() {
+        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let bad = root.join("bomb.zip");
+        let repeated = "A".repeat(300_000);
+        write_zip(&bad, &[("payload.txt", repeated.as_str())]);
+        let out = root.join("out");
+        std::fs::create_dir_all(&out).expect("mkdir out");
+        let err = safe_extract_zip(&bad, &out).expect_err("should fail");
+        assert!(err.to_string().contains("compression ratio"));
         let _ = std::fs::remove_dir_all(root);
     }
 }
