@@ -69,5 +69,5 @@ Owner: Core Runtime + Product Architecture
 - [ ] Valid zip without root marker does not auto-install and returns `is_pack=false`
 - [ ] Valid pack zip installs to deterministic path and updates index/current atomically
 - [ ] Pack install emits lifecycle events (`pack.detected`, `pack.install.*`, `registry.updated`)
-- [ ] Workflow capability request can resolve `github.create_pull_request` via at least one non-hardcoded binding
-- [ ] Missing required capability returns structured error consumable by UI/chat
+- [x] Workflow capability request can resolve `github.create_pull_request` via at least one non-hardcoded binding
+- [x] Missing required capability returns structured error consumable by UI/chat

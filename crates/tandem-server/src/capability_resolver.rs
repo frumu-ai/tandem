@@ -610,4 +610,39 @@ mod tests {
         assert_eq!(result.resolved[0].capability_id, "slack.reply_in_thread");
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[tokio::test]
+    async fn resolve_honors_explicit_provider_preference() {
+        let root =
+            std::env::temp_dir().join(format!("tandem-cap-resolver-{}", uuid::Uuid::new_v4()));
+        let resolver = CapabilityResolver::new(root.clone());
+        let result = resolver
+            .resolve(
+                CapabilityResolveInput {
+                    workflow_id: Some("wf-4".to_string()),
+                    required_capabilities: vec!["github.create_pull_request".to_string()],
+                    optional_capabilities: vec![],
+                    provider_preference: vec!["arcade".to_string(), "composio".to_string()],
+                    available_tools: vec![
+                        CapabilityToolAvailability {
+                            provider: "composio".to_string(),
+                            tool_name: "mcp.composio.github_create_pull_request".to_string(),
+                            schema: Value::Null,
+                        },
+                        CapabilityToolAvailability {
+                            provider: "arcade".to_string(),
+                            tool_name: "mcp.arcade.github_create_pull_request".to_string(),
+                            schema: Value::Null,
+                        },
+                    ],
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("resolve");
+        assert_eq!(result.missing_required, Vec::<String>::new());
+        assert_eq!(result.resolved.len(), 1);
+        assert_eq!(result.resolved[0].provider, "arcade");
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

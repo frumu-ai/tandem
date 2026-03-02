@@ -66,6 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - alias-aware tool-name matching added (normalizes separator variants and supports per-binding `tool_name_aliases`)
   - expanded curated spine bindings for GitHub + Slack (data-driven defaults; no full-catalog mapping)
   - structured `missing_capability` conflict payload for unresolved required capabilities
+  - added resolver regression coverage for explicit provider preference override when multiple providers satisfy the same capability
 - **TypeScript SDK parity for packs + capabilities**:
   - added `client.packs` namespace methods for list/inspect/install/uninstall/export/detect/updates/update
   - added `client.capabilities` namespace methods for bindings get/set, discovery, and resolve

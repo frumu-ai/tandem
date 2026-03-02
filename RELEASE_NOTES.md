@@ -105,6 +105,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - supports explicit per-binding `tool_name_aliases`
   - Expanded curated capability spine defaults for GitHub + Slack bindings across Composio/Arcade/MCP/custom without introducing full-catalog mapping.
   - Added structured resolver conflict payload (`missing_capability`) for unresolved required capabilities.
+  - Added resolver test coverage for explicit provider preference selection when both Composio and Arcade tool mappings are present.
 
 - TypeScript SDK parity updates (`@frumu/tandem-client`)
   - Added `client.packs` namespace:
