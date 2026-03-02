@@ -138,6 +138,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - capability/policy merge semantics
   - immutable installed pack sources with project-local fork/override editing model
   - explicit routine safety default (`disabled` on install)
+- **Durable provider auth persistence (engine-wide)**:
+  - added provider-key persistence in `tandem-core` with keychain-first storage and secure file fallback
+  - engine startup now restores persisted provider keys into runtime provider config
+  - `GET /provider/auth` now returns real per-provider auth status (`has_key`, `configured`, `source`)
+  - `PUT /auth/{provider}` and `DELETE /auth/{provider}` now persist/remove provider keys for cross-restart behavior
+- **Control panel provider wizard hardening**:
+  - provider readiness now requires a stored key for key-based providers (non-`ollama`/`local`)
+  - provider model tests now pin explicit provider/model and preflight for missing-key conditions
+  - custom provider IDs are normalized consistently when saving/testing keys
 
 ### Fixed
 
@@ -154,6 +163,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Starter pack templates + personal tutorial**: Added three concrete importable starter templates under `examples/packs/` (`daily_github_pr_reviewer`, `slack_release_notes_writer`, `customer_support_drafter`) and a step-by-step personal walkthrough at `specs/packs/PERSONAL_TUTORIAL_FIRST_PACK.md`.
 - **Settings icon hydration stability**: Added mutation-observer-backed icon rehydration in Settings so icons remain visible when switching tabs with async subview updates.
 - **Automations tab style parity**: Updated `#/agents` section tabs to reuse the same underline tab styling and accessibility roles used in Settings.
+- **Provider-key visibility mismatch in web control panel**: fixed false “No stored key detected” status caused by a stubbed auth-status route and non-durable auth writes.
+- **Provider test ambiguity**: fixed settings “Test Model Run” paths that could execute with implicit defaults instead of the selected provider/model.
 
 ## [0.3.28] - 2026-03-01
 

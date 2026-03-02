@@ -4,6 +4,19 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## v0.4.0 (Unreleased)
 
+- Engine provider auth persistence + status API overhaul
+  - Provider keys set via `PUT /auth/{provider}` are now durable across engine restarts.
+  - Added engine-wide provider auth persistence in `tandem-core` with keychain-first storage and secure file fallback.
+  - Engine startup now restores persisted provider keys into runtime provider config before provider registry init.
+  - `GET /provider/auth` now returns real per-provider status including `has_key`, `configured`, `connected`, and `source`.
+  - `DELETE /auth/{provider}` now removes both runtime and persisted provider auth state.
+
+- Web control panel provider onboarding reliability
+  - Provider readiness now enforces key presence for providers that require API keys (non-local providers).
+  - Settings “Test Model Run” now pins explicit provider/model and blocks early when key prerequisites are missing.
+  - Custom provider IDs are normalized consistently during save/test/delete key flows.
+  - Reduced false “No stored key detected” states by consuming the real `/provider/auth` status response.
+
 - Marketplace Pack architecture/spec expansion
   - Added a full marketplace-ready spec set under `specs/packs/`:
     - `MARKETPLACE_PACK_REQUIREMENTS.md`
