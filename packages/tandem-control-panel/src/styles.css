@@ -5,13 +5,37 @@
 @layer base {
   :root {
     color-scheme: dark;
+    --color-background: #121212;
+    --color-surface: #141414;
+    --color-surface-elevated: #1a1a1a;
+    --color-border: rgba(245, 245, 245, 0.1);
+    --color-border-subtle: rgba(245, 245, 245, 0.06);
+    --color-primary: #f59e0b;
+    --color-primary-hover: #d97706;
+    --color-primary-muted: #b45309;
+    --color-secondary: #ef4444;
+    --color-secondary-hover: #dc2626;
+    --color-success: #10b981;
+    --color-warning: #f59e0b;
+    --color-error: #ef4444;
+    --color-text: #f5f5f5;
+    --color-text-muted: rgba(245, 245, 245, 0.7);
+    --color-text-subtle: rgba(245, 245, 245, 0.5);
+    --color-glass: rgba(255, 255, 255, 0.03);
+    --color-glass-border: rgba(255, 255, 255, 0.08);
+    --font-sans: "Geist Sans", "Inter", system-ui, -apple-system, sans-serif;
+    --font-mono: "Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --tcp-glow-a: rgba(245, 158, 11, 0.16);
+    --tcp-glow-b: rgba(239, 68, 68, 0.12);
   }
 
   body {
-    @apply bg-canvas text-slate-100 antialiased;
+    @apply bg-canvas antialiased;
+    color: var(--color-text);
+    font-family: var(--font-sans);
     background-image:
-      radial-gradient(55rem 55rem at 100% -10%, rgba(148, 163, 184, 0.08), transparent 60%),
-      radial-gradient(65rem 65rem at -5% 105%, rgba(100, 116, 139, 0.06), transparent 60%);
+      radial-gradient(55rem 55rem at 100% -10%, var(--tcp-glow-a), transparent 60%),
+      radial-gradient(65rem 65rem at -5% 105%, var(--tcp-glow-b), transparent 60%);
   }
 
   ::-webkit-scrollbar {
@@ -30,15 +54,23 @@
 
 @layer components {
   .tcp-card {
-    @apply rounded-2xl border border-slate-700/80 bg-card/80 p-5 shadow-soft backdrop-blur-sm;
+    @apply rounded-2xl p-5 shadow-soft backdrop-blur-sm;
+    border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+    background: color-mix(in srgb, var(--color-surface-elevated) 88%, transparent);
   }
 
   .tcp-panel {
-    @apply rounded-2xl border border-slate-700 bg-panel/90 p-5 shadow-soft;
+    @apply rounded-2xl p-5 shadow-soft;
+    border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+    background: color-mix(in srgb, var(--color-surface) 92%, transparent);
   }
 
   .tcp-input {
-    @apply w-full rounded-xl border border-slate-600 bg-muted px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-400 focus:border-slate-500 focus:ring-2 focus:ring-slate-500/40;
+    @apply w-full rounded-xl px-3 py-2.5 text-sm placeholder:text-slate-400 focus:ring-2;
+    border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+    background: color-mix(in srgb, var(--color-surface-elevated) 88%, #000 12%);
+    color: var(--color-text);
+    --tw-ring-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
   }
 
   .tcp-select {
@@ -46,7 +78,15 @@
   }
 
   .tcp-btn {
-    @apply inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-500/70 bg-slate-800/55 px-3.5 text-[13px] font-medium leading-none text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_8px_18px_rgba(2,6,23,0.24)] backdrop-blur-sm transition-all duration-150 hover:border-slate-400/80 hover:bg-slate-700/60 hover:text-white active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3.5 text-[13px] font-medium leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_8px_18px_rgba(2,6,23,0.24)] backdrop-blur-sm transition-all duration-150 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+    border: 1px solid color-mix(in srgb, var(--color-border) 95%, transparent);
+    background: color-mix(in srgb, var(--color-surface-elevated) 80%, transparent);
+    color: var(--color-text);
+  }
+
+  .tcp-btn:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 42%, var(--color-border) 58%);
+    background: color-mix(in srgb, var(--color-surface-elevated) 72%, var(--color-primary) 8%);
   }
 
   .tcp-btn svg {
@@ -55,7 +95,21 @@
   }
 
   .tcp-btn-primary {
-    @apply tcp-btn border-slate-400/70 bg-gradient-to-b from-slate-500/55 to-slate-700/65 text-slate-50 hover:from-slate-400/65 hover:to-slate-600/70;
+    @apply tcp-btn text-slate-50;
+    border-color: color-mix(in srgb, var(--color-primary) 48%, transparent);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary) 50%, transparent),
+      color-mix(in srgb, var(--color-primary-muted) 65%, transparent)
+    );
+  }
+
+  .tcp-btn-primary:hover {
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary-hover) 58%, transparent),
+      color-mix(in srgb, var(--color-primary-muted) 78%, transparent)
+    );
   }
 
   .tcp-btn-danger {
@@ -87,7 +141,8 @@
   }
 
   .tcp-subtle {
-    @apply text-sm text-slate-400;
+    @apply text-sm;
+    color: var(--color-text-muted);
   }
 
   .tcp-list {
@@ -95,23 +150,38 @@
   }
 
   .tcp-list-item {
-    @apply rounded-xl border border-slate-700 bg-muted/80 p-3;
+    @apply rounded-xl p-3;
+    border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+    background: color-mix(in srgb, var(--color-surface-elevated) 86%, #000 14%);
   }
 
   .tcp-code {
-    @apply rounded-xl border border-slate-700 bg-black/30 p-3 font-mono text-xs text-slate-300;
+    @apply rounded-xl p-3 font-mono text-xs;
+    border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+    background: color-mix(in srgb, var(--color-surface) 75%, #000 25%);
+    color: var(--color-text-muted);
   }
 
   .nav-item {
-    @apply tcp-btn h-10 w-full justify-start border-transparent bg-transparent text-slate-300 shadow-none hover:border-slate-600/70 hover:bg-slate-800/60;
+    @apply tcp-btn h-10 w-full justify-start border-transparent bg-transparent shadow-none;
+    color: var(--color-text-muted);
   }
 
   .nav-item.active {
-    @apply border-slate-400/70 bg-gradient-to-b from-slate-600/50 to-slate-800/70 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_12px_22px_rgba(2,6,23,0.3)];
+    color: var(--color-text);
+    border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary) 22%, var(--color-surface-elevated) 78%),
+      color-mix(in srgb, var(--color-surface) 88%, #000 12%)
+    );
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 12px 22px rgba(2, 6, 23, 0.3);
   }
 
   .toast {
-    @apply max-w-sm rounded-xl border bg-panel/95 px-4 py-3 text-sm shadow-soft;
+    @apply max-w-sm rounded-xl border px-4 py-3 text-sm shadow-soft;
+    border-color: color-mix(in srgb, var(--color-border) 95%, transparent);
+    background: color-mix(in srgb, var(--color-surface) 95%, transparent);
   }
 
   .toast-ok {
@@ -882,9 +952,9 @@
 .tcp-settings-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.2rem;
-  border-bottom: 1px solid rgba(71, 85, 105, 0.62);
-  padding: 0.1rem 0;
+  gap: 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  padding: 0 0 0.2rem;
 }
 
 .tcp-settings-tab {
@@ -892,29 +962,25 @@
   align-items: center;
   justify-content: center;
   gap: 0.38rem;
-  height: 2.35rem;
-  padding: 0 0.9rem;
-  border: 1px solid transparent;
-  border-radius: 0.5rem 0.5rem 0 0;
-  color: rgb(203 213 225);
+  height: 2.1rem;
+  padding: 0 0.5rem;
+  border: none;
+  border-radius: 0;
+  color: var(--color-text-muted);
   background: transparent;
   font-size: 0.8rem;
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0.01em;
-  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+  transition: color 140ms ease, border-color 140ms ease;
 }
 
 .tcp-settings-tab:hover {
-  border-color: rgba(71, 85, 105, 0.75);
-  color: rgb(241 245 249);
-  background: rgba(30, 41, 59, 0.45);
+  color: var(--color-text);
 }
 
 .tcp-settings-tab.active {
-  border-color: rgba(71, 85, 105, 0.82);
-  color: rgb(248 250 252);
-  background: rgba(30, 41, 59, 0.65);
+  color: var(--color-text);
 }
 
 .tcp-settings-tab-underline {
@@ -923,7 +989,7 @@
 }
 
 .tcp-settings-tab-underline.active {
-  border-bottom-color: rgba(148, 163, 184, 0.95);
+  border-bottom-color: var(--color-primary);
 }
 
 .tcp-settings-tab svg {

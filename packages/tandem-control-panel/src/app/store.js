@@ -58,6 +58,7 @@ export function createState() {
     botName: "Tandem",
     botAvatarUrl: "",
     controlPanelName: "Tandem Control Panel",
+    themeId: "charcoal_fire",
     currentSessionId: "",
     chatUploadedFiles: [],
     filesDir: "uploads",

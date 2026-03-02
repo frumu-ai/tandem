@@ -8,6 +8,7 @@ import { createToasts } from "./app/toasts.js";
 import { createState, NAV_ROUTES, ROUTES, providerHints } from "./app/store.js";
 import { VIEW_RENDERERS } from "./views/index.js";
 import { renderIcons } from "./app/icons.js";
+import { THEMES, applyTheme, getActiveThemeId, setControlPanelTheme } from "./app/themes.js";
 
 const app = document.getElementById("app");
 const state = createState();
@@ -31,7 +32,15 @@ const ctx = {
   refreshProviderStatus,
   refreshIdentityStatus,
   renderIcons,
+  THEMES,
+  setTheme,
 };
+
+function setTheme(themeId) {
+  const theme = setControlPanelTheme(themeId);
+  state.themeId = theme.id;
+  return theme;
+}
 
 function addCleanup(fn) {
   state.cleanup.push(fn);
@@ -91,6 +100,7 @@ async function checkAuth() {
     state.botName = "Tandem";
     state.botAvatarUrl = "";
     state.controlPanelName = "Tandem Control Panel";
+    state.themeId = getActiveThemeId();
   }
 }
 
@@ -488,6 +498,8 @@ window.addEventListener("hashchange", () => {
 });
 
 async function boot() {
+  state.themeId = getActiveThemeId();
+  applyTheme(state.themeId);
   state.route = ensureRoute(routeFromHash(), ROUTES);
   await checkAuth();
   if (!state.authed) {

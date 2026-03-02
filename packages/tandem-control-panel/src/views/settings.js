@@ -27,7 +27,7 @@ function writeSettingsTabToHash(tab) {
 }
 
 export async function renderSettings(ctx) {
-  const { byId, state, escapeHtml, renderIcons } = ctx;
+  const { byId, state, escapeHtml, renderIcons, THEMES = [], setTheme } = ctx;
   const activeTab = parseSettingsTabFromHash();
   byId("view").innerHTML = `
     <div class="tcp-card">
@@ -65,6 +65,21 @@ export async function renderSettings(ctx) {
     content.innerHTML = `
       <div class="tcp-card">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 class="tcp-title flex items-center gap-2"><i data-lucide="sparkles"></i> Appearance</h3>
+          <span class="tcp-badge-info">Desktop Theme Parity</span>
+        </div>
+        <p class="tcp-subtle mb-3">Choose the shared Tandem theme used across desktop and control panel.</p>
+        <div class="grid gap-3 md:grid-cols-2">
+          <div>
+            <label class="mb-1 block text-sm text-slate-300">Theme</label>
+            <select id="settings-theme-id" class="tcp-select">
+              ${THEMES.map((theme) => `<option value="${escapeHtml(theme.id)}" ${theme.id === state.themeId ? "selected" : ""}>${escapeHtml(theme.name)}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="tcp-card">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h3 class="tcp-title flex items-center gap-2"><i data-lucide="settings-2"></i> Provider Setup Wizard</h3>
           <span class="${state.providerReady ? "tcp-badge-ok" : "tcp-badge-warn"}">${state.providerReady ? "Ready" : "Not Configured"}</span>
         </div>
@@ -82,8 +97,15 @@ export async function renderSettings(ctx) {
         <p class="tcp-subtle">Use Logout in the sidebar to clear your current portal session token binding.</p>
       </div>
     `;
+    byId("settings-theme-id")?.addEventListener("change", (e) => {
+      const id = String(e?.target?.value || "").trim();
+      if (!id || !setTheme) return;
+      setTheme(id);
+      renderSettings(ctx);
+    });
     await renderProvidersBlock(ctx, byId("provider-settings"));
     await renderIdentityBlock(ctx, byId("identity-settings"));
+    renderIcons(byId("view"));
     return;
   }
 

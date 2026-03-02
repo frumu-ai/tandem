@@ -60,6 +60,12 @@ Owner: Core Runtime + Product Architecture
   - [x] Convert Settings integration launchers into tabs (`General`, `Packs`, `Channels`, `MCP`, `Files`) and keep users on `#/settings`
   - [x] Add migration prompts in Automations and legacy surfaces to direct users to Settings
 
+- [x] Control Panel visual polish + desktop theme parity
+  - [x] Add shared control-panel theme registry + runtime apply hooks (`tandem.themeId`)
+  - [x] Add Settings > Appearance theme selector for cross-surface parity
+  - [x] Refactor shell styles (cards/nav/buttons/inputs/settings tabs) to token-driven theme variables
+  - [x] Expand icon registry for packs/presets/settings surfaces to prevent missing icons across rerenders
+
 ## Active Backlog
 
 - [ ] None (current v0.4.0 packs/presets scope complete)

@@ -1,0 +1,207 @@
+export const DEFAULT_THEME_ID = "charcoal_fire";
+const STORAGE_KEY = "tandem.themeId";
+
+export const THEMES = [
+  {
+    id: "charcoal_fire",
+    name: "Charcoal & Fire",
+    cssVars: {
+      "--color-background": "#121212",
+      "--color-surface": "#141414",
+      "--color-surface-elevated": "#1a1a1a",
+      "--color-border": "rgba(245, 245, 245, 0.10)",
+      "--color-border-subtle": "rgba(245, 245, 245, 0.06)",
+      "--color-primary": "#F59E0B",
+      "--color-primary-hover": "#D97706",
+      "--color-primary-muted": "#B45309",
+      "--color-secondary": "#EF4444",
+      "--color-secondary-hover": "#DC2626",
+      "--color-success": "#10B981",
+      "--color-warning": "#F59E0B",
+      "--color-error": "#EF4444",
+      "--color-text": "#F5F5F5",
+      "--color-text-muted": "rgba(245, 245, 245, 0.70)",
+      "--color-text-subtle": "rgba(245, 245, 245, 0.50)",
+      "--color-glass": "rgba(255, 255, 255, 0.03)",
+      "--color-glass-border": "rgba(255, 255, 255, 0.08)",
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono": '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+      "--tcp-glow-a": "rgba(245, 158, 11, 0.16)",
+      "--tcp-glow-b": "rgba(239, 68, 68, 0.12)"
+    }
+  },
+  {
+    id: "electric_blue",
+    name: "Electric Blue",
+    cssVars: {
+      "--color-background": "#0a0a0f",
+      "--color-surface": "#12121a",
+      "--color-surface-elevated": "#1a1a24",
+      "--color-border": "#2a2a3a",
+      "--color-border-subtle": "#1f1f2e",
+      "--color-primary": "#3b82f6",
+      "--color-primary-hover": "#2563eb",
+      "--color-primary-muted": "#1d4ed8",
+      "--color-secondary": "#8b5cf6",
+      "--color-secondary-hover": "#7c3aed",
+      "--color-success": "#10b981",
+      "--color-warning": "#f59e0b",
+      "--color-error": "#ef4444",
+      "--color-text": "#f8fafc",
+      "--color-text-muted": "#94a3b8",
+      "--color-text-subtle": "#64748b",
+      "--color-glass": "rgba(18, 18, 26, 0.8)",
+      "--color-glass-border": "rgba(255, 255, 255, 0.1)",
+      "--font-sans": '"Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono": '"JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+      "--tcp-glow-a": "rgba(59, 130, 246, 0.18)",
+      "--tcp-glow-b": "rgba(139, 92, 246, 0.12)"
+    }
+  },
+  {
+    id: "emerald_night",
+    name: "Emerald Night",
+    cssVars: {
+      "--color-background": "#0b1010",
+      "--color-surface": "#0f1616",
+      "--color-surface-elevated": "#142020",
+      "--color-border": "rgba(226, 232, 240, 0.12)",
+      "--color-border-subtle": "rgba(226, 232, 240, 0.08)",
+      "--color-primary": "#10B981",
+      "--color-primary-hover": "#059669",
+      "--color-primary-muted": "#047857",
+      "--color-secondary": "#22D3EE",
+      "--color-secondary-hover": "#06B6D4",
+      "--color-success": "#22C55E",
+      "--color-warning": "#F59E0B",
+      "--color-error": "#EF4444",
+      "--color-text": "#F1F5F9",
+      "--color-text-muted": "rgba(241, 245, 249, 0.72)",
+      "--color-text-subtle": "rgba(241, 245, 249, 0.52)",
+      "--color-glass": "rgba(15, 22, 22, 0.75)",
+      "--color-glass-border": "rgba(255, 255, 255, 0.10)",
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono": '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+      "--tcp-glow-a": "rgba(16, 185, 129, 0.15)",
+      "--tcp-glow-b": "rgba(34, 211, 238, 0.12)"
+    }
+  },
+  {
+    id: "hello_bunny",
+    name: "Hello Bunny",
+    cssVars: {
+      "--color-background": "#140A12",
+      "--color-surface": "#1C0E1A",
+      "--color-surface-elevated": "#251022",
+      "--color-border": "rgba(255, 228, 242, 0.12)",
+      "--color-border-subtle": "rgba(255, 228, 242, 0.08)",
+      "--color-primary": "#FB7185",
+      "--color-primary-hover": "#F43F5E",
+      "--color-primary-muted": "#E11D48",
+      "--color-secondary": "#C084FC",
+      "--color-secondary-hover": "#A855F7",
+      "--color-success": "#34D399",
+      "--color-warning": "#FBBF24",
+      "--color-error": "#FB7185",
+      "--color-text": "#FFEAF4",
+      "--color-text-muted": "rgba(255, 234, 244, 0.74)",
+      "--color-text-subtle": "rgba(255, 234, 244, 0.52)",
+      "--color-glass": "rgba(255, 255, 255, 0.04)",
+      "--color-glass-border": "rgba(255, 228, 242, 0.10)",
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono": '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+      "--tcp-glow-a": "rgba(251, 113, 133, 0.18)",
+      "--tcp-glow-b": "rgba(192, 132, 252, 0.14)"
+    }
+  },
+  {
+    id: "porcelain",
+    name: "Porcelain",
+    cssVars: {
+      "--color-background": "#F8FAFC",
+      "--color-surface": "#FFFFFF",
+      "--color-surface-elevated": "#F1F5F9",
+      "--color-border": "rgba(15, 23, 42, 0.12)",
+      "--color-border-subtle": "rgba(15, 23, 42, 0.08)",
+      "--color-primary": "#6366F1",
+      "--color-primary-hover": "#4F46E5",
+      "--color-primary-muted": "#4338CA",
+      "--color-secondary": "#F472B6",
+      "--color-secondary-hover": "#EC4899",
+      "--color-success": "#10B981",
+      "--color-warning": "#F59E0B",
+      "--color-error": "#EF4444",
+      "--color-text": "#0F172A",
+      "--color-text-muted": "rgba(15, 23, 42, 0.70)",
+      "--color-text-subtle": "rgba(15, 23, 42, 0.50)",
+      "--color-glass": "rgba(255, 255, 255, 0.72)",
+      "--color-glass-border": "rgba(15, 23, 42, 0.10)",
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono": '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+      "--tcp-glow-a": "rgba(99, 102, 241, 0.12)",
+      "--tcp-glow-b": "rgba(244, 114, 182, 0.10)"
+    }
+  },
+  {
+    id: "neon_riot",
+    name: "Neon Riot",
+    cssVars: {
+      "--color-background": "#050014",
+      "--color-surface": "#0B0720",
+      "--color-surface-elevated": "#140A3A",
+      "--color-border": "rgba(248, 250, 252, 0.16)",
+      "--color-border-subtle": "rgba(248, 250, 252, 0.10)",
+      "--color-primary": "#00E5FF",
+      "--color-primary-hover": "#00B8D4",
+      "--color-primary-muted": "#00838F",
+      "--color-secondary": "#FF3DF5",
+      "--color-secondary-hover": "#D500F9",
+      "--color-success": "#22C55E",
+      "--color-warning": "#FBBF24",
+      "--color-error": "#FB7185",
+      "--color-text": "#F8FAFC",
+      "--color-text-muted": "rgba(248, 250, 252, 0.72)",
+      "--color-text-subtle": "rgba(248, 250, 252, 0.52)",
+      "--color-glass": "rgba(5, 0, 20, 0.55)",
+      "--color-glass-border": "rgba(255, 255, 255, 0.14)",
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono": '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+      "--tcp-glow-a": "rgba(0, 229, 255, 0.2)",
+      "--tcp-glow-b": "rgba(255, 61, 245, 0.16)"
+    }
+  }
+];
+
+export function getThemeById(themeId) {
+  const id = String(themeId || "").trim();
+  return THEMES.find((theme) => theme.id === id) || THEMES[0];
+}
+
+export function getActiveThemeId() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return getThemeById(saved).id;
+  } catch {
+    return DEFAULT_THEME_ID;
+  }
+}
+
+export function applyTheme(themeId) {
+  const theme = getThemeById(themeId);
+  for (const [name, value] of Object.entries(theme.cssVars)) {
+    document.documentElement.style.setProperty(name, String(value));
+  }
+  document.documentElement.dataset.theme = theme.id;
+  document.documentElement.style.colorScheme = theme.id === "porcelain" ? "light" : "dark";
+  return theme;
+}
+
+export function setControlPanelTheme(themeId) {
+  const theme = applyTheme(themeId);
+  try {
+    localStorage.setItem(STORAGE_KEY, theme.id);
+  } catch {
+    // ignore storage failures
+  }
+  return theme;
+}
