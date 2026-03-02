@@ -103,6 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Rust UI network client parity (`tandem-tui`):**
   - added `EngineClient` methods for pack lifecycle endpoints (`packs_list/get/install/uninstall/export/detect/updates/update`)
   - added `EngineClient` methods for capability resolver endpoints (`capabilities_bindings_get/put`, `capabilities_discovery`, `capabilities_resolve`)
+  - added `EngineClient` methods for preset flows (`presets_index`, `presets_compose_preview`, `presets_capability_summary`, `presets_fork`, `presets_override_put`)
 - **Control Panel Pack Library surface (`packages/tandem-control-panel`)**:
   - added dedicated `Packs` route/view for install/inspect/export/uninstall/update-stub actions
   - added control-panel UI hooks for capability discovery (`client.capabilities.discovery()`)

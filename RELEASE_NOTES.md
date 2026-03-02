@@ -178,6 +178,8 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - `packs_list`, `packs_get`, `packs_install`, `packs_uninstall`, `packs_export`, `packs_detect`, `packs_updates`, `packs_update`
   - Added capability API helpers:
     - `capabilities_bindings_get`, `capabilities_bindings_put`, `capabilities_discovery`, `capabilities_resolve`
+  - Added preset API helpers:
+    - `presets_index`, `presets_compose_preview`, `presets_capability_summary`, `presets_fork`, `presets_override_put`
 
 - Control Panel Pack Library UI (`packages/tandem-control-panel`)
   - Added new `Packs` route in left nav.

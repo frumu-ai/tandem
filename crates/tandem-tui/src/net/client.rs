@@ -470,6 +470,40 @@ pub struct PackUpdateResult {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct PresetRecord {
+    pub id: String,
+    pub version: String,
+    pub kind: String,
+    pub layer: String,
+    #[serde(default)]
+    pub pack: Option<String>,
+    pub path: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub required_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct PresetIndex {
+    #[serde(default)]
+    pub skill_modules: Vec<PresetRecord>,
+    #[serde(default)]
+    pub agent_presets: Vec<PresetRecord>,
+    #[serde(default)]
+    pub automation_presets: Vec<PresetRecord>,
+    #[serde(default)]
+    pub generated_at_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+struct PresetsIndexResponse {
+    index: PresetIndex,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct CapabilityBinding {
     pub capability_id: String,
     pub provider: String,
@@ -1466,6 +1500,53 @@ impl EngineClient {
         let url = format!("{}/packs/{}/update", self.base_url, selector);
         let resp = self.client.post(&url).json(&request).send().await?;
         let payload = resp.json::<PackUpdateResult>().await?;
+        Ok(payload)
+    }
+
+    pub async fn presets_index(&self) -> Result<PresetIndex> {
+        let url = format!("{}/presets/index", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        let payload = resp.json::<PresetsIndexResponse>().await?;
+        Ok(payload.index)
+    }
+
+    pub async fn presets_compose_preview(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/presets/compose/preview", self.base_url);
+        let resp = self.client.post(&url).json(&request).send().await?;
+        let payload = resp.json::<serde_json::Value>().await?;
+        Ok(payload)
+    }
+
+    pub async fn presets_capability_summary(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/presets/capability_summary", self.base_url);
+        let resp = self.client.post(&url).json(&request).send().await?;
+        let payload = resp.json::<serde_json::Value>().await?;
+        Ok(payload)
+    }
+
+    pub async fn presets_fork(&self, request: serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}/presets/fork", self.base_url);
+        let resp = self.client.post(&url).json(&request).send().await?;
+        let payload = resp.json::<serde_json::Value>().await?;
+        Ok(payload)
+    }
+
+    pub async fn presets_override_put(
+        &self,
+        kind: &str,
+        id: &str,
+        content: &str,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/presets/overrides/{}/{}", self.base_url, kind, id);
+        let body = serde_json::json!({ "content": content });
+        let resp = self.client.put(&url).json(&body).send().await?;
+        let payload = resp.json::<serde_json::Value>().await?;
         Ok(payload)
     }
 
