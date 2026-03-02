@@ -35,7 +35,7 @@ Owner: Core Runtime + Product Architecture
   - [x] Capability bindings registry (data files, no code changes required)
   - [x] Resolver selection order: user/org/pack preference + provider health (preference-order MVP)
   - [x] Structured `missing_capability` error contract end-to-end in workflow runtime (resolver API returns structured conflict payload)
-  - [ ] Initial spine bindings for GitHub + Slack across Composio/MCP/custom
+  - [x] Initial spine bindings for GitHub + Slack across Composio/Arcade/MCP/custom (+ alias-aware matching)
 
 - [ ] Preset registry implementation
   - [ ] Build layered registry: built-ins + installed packs + project overrides

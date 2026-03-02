@@ -63,6 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - data-driven bindings store under `TANDEM_HOME/packs/bindings/capability_bindings.json`
   - provider discovery from MCP tool catalog (`list_tools`) + local tool registry schemas
   - preference-aware resolver selection with default order (`composio` > `arcade` > `mcp` > `custom`)
+  - alias-aware tool-name matching added (normalizes separator variants and supports per-binding `tool_name_aliases`)
+  - expanded curated spine bindings for GitHub + Slack (data-driven defaults; no full-catalog mapping)
   - structured `missing_capability` conflict payload for unresolved required capabilities
 - **TypeScript SDK parity for packs + capabilities**:
   - added `client.packs` namespace methods for list/inspect/install/uninstall/export/detect/updates/update

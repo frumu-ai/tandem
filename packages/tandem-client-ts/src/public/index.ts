@@ -529,6 +529,7 @@ export interface CapabilityBindingRecord {
   capability_id: string;
   provider: string;
   tool_name: string;
+  tool_name_aliases?: string[];
   request_transform?: JsonObject | null;
   response_transform?: JsonObject | null;
   metadata?: JsonObject;

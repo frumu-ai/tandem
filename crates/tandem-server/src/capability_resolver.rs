@@ -13,6 +13,8 @@ pub struct CapabilityBinding {
     pub provider: String,
     pub tool_name: String,
     #[serde(default)]
+    pub tool_name_aliases: Vec<String>,
+    #[serde(default)]
     pub request_transform: Option<Value>,
     #[serde(default)]
     pub response_transform: Option<Value>,
@@ -142,7 +144,7 @@ impl CapabilityResolver {
             .map(|row| {
                 (
                     row.provider.to_ascii_lowercase(),
-                    row.tool_name.to_ascii_lowercase(),
+                    canonical_tool_name(&row.tool_name),
                 )
             })
             .collect::<HashSet<_>>();
@@ -171,8 +173,7 @@ impl CapabilityResolver {
             let mut chosen: Option<(usize, &CapabilityBinding)> = None;
             for (idx, candidate) in candidates {
                 let provider = candidate.provider.to_ascii_lowercase();
-                let tool = candidate.tool_name.to_ascii_lowercase();
-                if !available_set.contains(&(provider.clone(), tool)) {
+                if !binding_matches_available(candidate, &provider, &available_set) {
                     continue;
                 }
                 if let Some((chosen_idx, chosen_binding)) = chosen {
@@ -323,69 +324,199 @@ fn validate_bindings(file: &CapabilityBindingsFile) -> anyhow::Result<()> {
         if binding.tool_name.trim().is_empty() {
             return Err(anyhow!("binding tool_name is required"));
         }
+        for alias in &binding.tool_name_aliases {
+            if alias.trim().is_empty() {
+                return Err(anyhow!(
+                    "binding tool_name_aliases cannot contain empty values"
+                ));
+            }
+        }
     }
     Ok(())
 }
 
 fn default_spine_bindings() -> Vec<CapabilityBinding> {
     vec![
-        CapabilityBinding {
-            capability_id: "github.create_pull_request".to_string(),
-            provider: "composio".to_string(),
-            tool_name: "mcp.composio.github_create_pull_request".to_string(),
-            request_transform: None,
-            response_transform: None,
-            metadata: serde_json::json!({"spine": true}),
-        },
-        CapabilityBinding {
-            capability_id: "github.create_pull_request".to_string(),
-            provider: "arcade".to_string(),
-            tool_name: "mcp.arcade.github_create_pull_request".to_string(),
-            request_transform: None,
-            response_transform: None,
-            metadata: serde_json::json!({"spine": true}),
-        },
-        CapabilityBinding {
-            capability_id: "github.create_pull_request".to_string(),
-            provider: "mcp".to_string(),
-            tool_name: "mcp.github.create_pull_request".to_string(),
-            request_transform: None,
-            response_transform: None,
-            metadata: serde_json::json!({"spine": true}),
-        },
-        CapabilityBinding {
-            capability_id: "github.create_issue".to_string(),
-            provider: "composio".to_string(),
-            tool_name: "mcp.composio.github_create_issue".to_string(),
-            request_transform: None,
-            response_transform: None,
-            metadata: serde_json::json!({"spine": true}),
-        },
-        CapabilityBinding {
-            capability_id: "github.create_issue".to_string(),
-            provider: "arcade".to_string(),
-            tool_name: "mcp.arcade.github_create_issue".to_string(),
-            request_transform: None,
-            response_transform: None,
-            metadata: serde_json::json!({"spine": true}),
-        },
-        CapabilityBinding {
-            capability_id: "slack.post_message".to_string(),
-            provider: "composio".to_string(),
-            tool_name: "mcp.composio.slack_post_message".to_string(),
-            request_transform: None,
-            response_transform: None,
-            metadata: serde_json::json!({"spine": true}),
-        },
-        CapabilityBinding {
-            capability_id: "slack.post_message".to_string(),
-            provider: "arcade".to_string(),
-            tool_name: "mcp.arcade.slack_post_message".to_string(),
-            request_transform: None,
-            response_transform: None,
-            metadata: serde_json::json!({"spine": true}),
-        },
+        make_binding(
+            "github.create_pull_request",
+            "composio",
+            "mcp.composio.github_create_pull_request",
+            &[
+                "mcp.composio.github.create_pull_request",
+                "mcp.composio.github_create_pr",
+            ],
+        ),
+        make_binding(
+            "github.create_pull_request",
+            "arcade",
+            "mcp.arcade.github_create_pull_request",
+            &["mcp.arcade.github.create_pull_request"],
+        ),
+        make_binding(
+            "github.create_pull_request",
+            "mcp",
+            "mcp.github.create_pull_request",
+            &["mcp.github_create_pull_request"],
+        ),
+        make_binding(
+            "github.create_issue",
+            "composio",
+            "mcp.composio.github_create_issue",
+            &["mcp.composio.github.create_issue"],
+        ),
+        make_binding(
+            "github.create_issue",
+            "arcade",
+            "mcp.arcade.github_create_issue",
+            &["mcp.arcade.github.create_issue"],
+        ),
+        make_binding(
+            "github.create_issue",
+            "mcp",
+            "mcp.github.create_issue",
+            &["mcp.github_create_issue"],
+        ),
+        make_binding(
+            "github.list_issues",
+            "composio",
+            "mcp.composio.github_list_issues",
+            &["mcp.composio.github.list_issues"],
+        ),
+        make_binding(
+            "github.get_issue",
+            "composio",
+            "mcp.composio.github_get_issue",
+            &["mcp.composio.github.get_issue"],
+        ),
+        make_binding(
+            "github.close_issue",
+            "composio",
+            "mcp.composio.github_close_issue",
+            &["mcp.composio.github.close_issue"],
+        ),
+        make_binding(
+            "github.create_branch",
+            "composio",
+            "mcp.composio.github_create_branch",
+            &["mcp.composio.github.create_branch"],
+        ),
+        make_binding(
+            "github.list_pull_requests",
+            "composio",
+            "mcp.composio.github_list_pull_requests",
+            &["mcp.composio.github.list_pull_requests"],
+        ),
+        make_binding(
+            "github.get_pull_request",
+            "composio",
+            "mcp.composio.github_get_pull_request",
+            &["mcp.composio.github.get_pull_request"],
+        ),
+        make_binding(
+            "github.comment_on_issue",
+            "composio",
+            "mcp.composio.github_create_issue_comment",
+            &["mcp.composio.github.comment_on_issue"],
+        ),
+        make_binding(
+            "github.comment_on_pull_request",
+            "composio",
+            "mcp.composio.github_create_pull_request_review_comment",
+            &["mcp.composio.github.comment_on_pull_request"],
+        ),
+        make_binding(
+            "github.list_repositories",
+            "composio",
+            "mcp.composio.github_list_repositories",
+            &["mcp.composio.github.list_repositories"],
+        ),
+        make_binding(
+            "slack.post_message",
+            "composio",
+            "mcp.composio.slack_post_message",
+            &["mcp.composio.slack.post_message"],
+        ),
+        make_binding(
+            "slack.post_message",
+            "arcade",
+            "mcp.arcade.slack_post_message",
+            &["mcp.arcade.slack.post_message"],
+        ),
+        make_binding(
+            "slack.reply_in_thread",
+            "composio",
+            "mcp.composio.slack_reply_to_thread",
+            &[
+                "mcp.composio.slack_reply_in_thread",
+                "mcp.composio.slack.reply_in_thread",
+            ],
+        ),
+        make_binding(
+            "slack.update_message",
+            "composio",
+            "mcp.composio.slack_update_message",
+            &["mcp.composio.slack.update_message"],
+        ),
+        make_binding(
+            "slack.list_channels",
+            "composio",
+            "mcp.composio.slack_list_channels",
+            &["mcp.composio.slack.list_channels"],
+        ),
+        make_binding(
+            "slack.get_channel_history",
+            "composio",
+            "mcp.composio.slack_get_channel_history",
+            &["mcp.composio.slack.get_channel_history"],
+        ),
     ]
+}
+
+fn make_binding(
+    capability_id: &str,
+    provider: &str,
+    tool_name: &str,
+    aliases: &[&str],
+) -> CapabilityBinding {
+    CapabilityBinding {
+        capability_id: capability_id.to_string(),
+        provider: provider.to_string(),
+        tool_name: tool_name.to_string(),
+        tool_name_aliases: aliases.iter().map(|row| row.to_string()).collect(),
+        request_transform: None,
+        response_transform: None,
+        metadata: serde_json::json!({"spine": true}),
+    }
+}
+
+fn canonical_tool_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_sep = false;
+    for ch in name.chars().flat_map(|c| c.to_lowercase()) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_was_sep = false;
+        } else if !last_was_sep {
+            out.push('_');
+            last_was_sep = true;
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+fn binding_matches_available(
+    binding: &CapabilityBinding,
+    provider: &str,
+    available_set: &HashSet<(String, String)>,
+) -> bool {
+    let mut names = Vec::with_capacity(1 + binding.tool_name_aliases.len());
+    names.push(binding.tool_name.as_str());
+    for alias in &binding.tool_name_aliases {
+        names.push(alias.as_str());
+    }
+    names.into_iter().any(|tool_name| {
+        available_set.contains(&(provider.to_string(), canonical_tool_name(tool_name)))
+    })
 }
 
 #[cfg(test)]
@@ -449,6 +580,34 @@ mod tests {
             result.missing_required,
             vec!["github.create_pull_request".to_string()]
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn resolve_matches_alias_with_name_normalization() {
+        let root =
+            std::env::temp_dir().join(format!("tandem-cap-resolver-{}", uuid::Uuid::new_v4()));
+        let resolver = CapabilityResolver::new(root.clone());
+        let result = resolver
+            .resolve(
+                CapabilityResolveInput {
+                    workflow_id: Some("wf-3".to_string()),
+                    required_capabilities: vec!["slack.reply_in_thread".to_string()],
+                    optional_capabilities: vec![],
+                    provider_preference: vec![],
+                    available_tools: vec![CapabilityToolAvailability {
+                        provider: "composio".to_string(),
+                        tool_name: "mcp.composio.slack.reply.in.thread".to_string(),
+                        schema: Value::Null,
+                    }],
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("resolve");
+        assert_eq!(result.missing_required, Vec::<String>::new());
+        assert_eq!(result.resolved.len(), 1);
+        assert_eq!(result.resolved[0].capability_id, "slack.reply_in_thread");
         let _ = std::fs::remove_dir_all(root);
     }
 }

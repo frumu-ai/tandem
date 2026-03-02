@@ -100,6 +100,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - local tool registry schemas
   - Added provider preference-based resolution with MVP default priority:
     - `composio` -> `arcade` -> `mcp` -> `custom`
+  - Added alias-aware tool-name matching in resolver:
+    - supports separator/casing variation via normalized matching
+    - supports explicit per-binding `tool_name_aliases`
+  - Expanded curated capability spine defaults for GitHub + Slack bindings across Composio/Arcade/MCP/custom without introducing full-catalog mapping.
   - Added structured resolver conflict payload (`missing_capability`) for unresolved required capabilities.
 
 - TypeScript SDK parity updates (`@frumu/tandem-client`)
