@@ -66,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added `client.packs` namespace methods for list/inspect/install/uninstall/export/detect/updates/update
   - added `client.capabilities` namespace methods for bindings get/set, discovery, and resolve
   - added public TypeScript types for pack/capability request/response shapes
+- **Python SDK parity for packs + capabilities**:
+  - added `client.packs` namespace methods for list/inspect/install/install_from_attachment/uninstall/export/detect/updates/update
+  - added `client.capabilities` namespace methods for bindings get/set, discovery, and resolve
+  - refreshed Python SDK README usage examples for pack/capability flows
 - **Pack implementation Kanban tracking**:
   - added `docs/internal/PACKS_PRESETS_IMPLEMENTATION_KANBAN.md` for phased execution tracking
 - **Deterministic composition and governance rules** in specs:

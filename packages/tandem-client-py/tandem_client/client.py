@@ -115,6 +115,8 @@ class TandemClient:
         self.automations_v2 = _AutomationsV2(self._http)
         self.memory = _Memory(self._http)
         self.skills = _Skills(self._http)
+        self.packs = _Packs(self._http)
+        self.capabilities = _Capabilities(self._http)
         self.resources = _Resources(self._http)
         self.agent_teams = _AgentTeams(self._http)
         self.missions = _Missions(self._http)
@@ -814,6 +816,151 @@ class _Resources:
         payload: dict[str, Any] = {"key": key}
         if if_match_rev is not None: payload["if_match_rev"] = if_match_rev
         res = await self._http.delete("/resource", json=payload)
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+
+# ─── Packs ────────────────────────────────────────────────────────────────────
+
+
+class _Packs:
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        self._http = http
+
+    async def list(self) -> dict[str, Any]:
+        res = await self._http.get("/packs")
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def inspect(self, selector: str) -> dict[str, Any]:
+        res = await self._http.get(f"/packs/{quote(selector)}")
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def install(
+        self,
+        *,
+        path: Optional[str] = None,
+        url: Optional[str] = None,
+        source: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if path:
+            payload["path"] = path
+        if url:
+            payload["url"] = url
+        if source is not None:
+            payload["source"] = source
+        res = await self._http.post("/packs/install", json=payload)
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def install_from_attachment(
+        self,
+        *,
+        attachment_id: str,
+        path: str,
+        connector: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        sender_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "attachment_id": attachment_id,
+            "path": path,
+        }
+        if connector:
+            payload["connector"] = connector
+        if channel_id:
+            payload["channel_id"] = channel_id
+        if sender_id:
+            payload["sender_id"] = sender_id
+        res = await self._http.post("/packs/install_from_attachment", json=payload)
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def uninstall(
+        self,
+        *,
+        pack_id: Optional[str] = None,
+        name: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if pack_id:
+            payload["pack_id"] = pack_id
+        if name:
+            payload["name"] = name
+        if version:
+            payload["version"] = version
+        res = await self._http.post("/packs/uninstall", json=payload)
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def export(
+        self,
+        *,
+        pack_id: Optional[str] = None,
+        name: Optional[str] = None,
+        version: Optional[str] = None,
+        output_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if pack_id:
+            payload["pack_id"] = pack_id
+        if name:
+            payload["name"] = name
+        if version:
+            payload["version"] = version
+        if output_path:
+            payload["output_path"] = output_path
+        res = await self._http.post("/packs/export", json=payload)
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def detect(self, *, path: str, **kwargs: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"path": path, **kwargs}
+        res = await self._http.post("/packs/detect", json=payload)
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def updates(self, selector: str) -> dict[str, Any]:
+        res = await self._http.get(f"/packs/{quote(selector)}/updates")
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def update(self, selector: str, *, target_version: Optional[str] = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if target_version:
+            payload["target_version"] = target_version
+        res = await self._http.post(f"/packs/{quote(selector)}/update", json=payload)
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+
+# ─── Capabilities ─────────────────────────────────────────────────────────────
+
+
+class _Capabilities:
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        self._http = http
+
+    async def get_bindings(self) -> dict[str, Any]:
+        res = await self._http.get("/capabilities/bindings")
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def set_bindings(self, bindings: dict[str, Any]) -> dict[str, Any]:
+        res = await self._http.put("/capabilities/bindings", json=bindings)
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def discovery(self) -> dict[str, Any]:
+        res = await self._http.get("/capabilities/discovery")
+        res.raise_for_status()
+        return res.json()  # type: ignore[no-any-return]
+
+    async def resolve(self, payload: dict[str, Any]) -> dict[str, Any]:
+        res = await self._http.post("/capabilities/resolve", json=payload)
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 

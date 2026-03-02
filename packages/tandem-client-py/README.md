@@ -191,6 +191,28 @@ status = await client.channels.status()
 print(status.telegram.connected)
 ```
 
+### `client.packs`
+
+```python
+packs = await client.packs.list()
+detected = await client.packs.detect(path="/tmp/my-pack.zip")
+if detected.get("is_pack"):
+    await client.packs.install(path="/tmp/my-pack.zip", source={"kind": "local"})
+```
+
+### `client.capabilities`
+
+```python
+bindings = await client.capabilities.get_bindings()
+discovery = await client.capabilities.discovery()
+resolution = await client.capabilities.resolve(
+    {
+        "workflow_id": "wf-pr",
+        "required_capabilities": ["github.create_pull_request"],
+    }
+)
+```
+
 ### `client.permissions`
 
 ```python

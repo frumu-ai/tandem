@@ -10,7 +10,7 @@ Owner: Core Runtime + Product Architecture
   - [x] Add attachment-aware install route: `POST /packs/install_from_attachment`
   - [x] Add marker detection route: `POST /packs/detect`
   - [x] Add update check/apply routes (`GET /packs/{id}/updates`, `POST /packs/{id}/update`) as no-op stubs for now
-  - [ ] Add TS/Python client methods for new pack routes: TS done, Python pending
+  - [x] Add TS/Python client methods for new pack routes
 
 - [ ] Pack installer runtime hardening
   - [x] Root marker rule enforced (`tandempack.yaml` at zip root)

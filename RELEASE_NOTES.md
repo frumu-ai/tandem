@@ -107,6 +107,13 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - `getBindings`, `setBindings`, `discovery`, `resolve`
   - Added public TS types for pack and capability contracts used by these APIs.
 
+- Python SDK parity updates (`tandem-client-py`)
+  - Added `client.packs` namespace:
+    - `list`, `inspect`, `install`, `install_from_attachment`, `uninstall`, `export`, `detect`, `updates`, `update`
+  - Added `client.capabilities` namespace:
+    - `get_bindings`, `set_bindings`, `discovery`, `resolve`
+  - Added README examples for pack and capability workflows.
+
 - Internal execution tracking
   - Added implementation Kanban board:
     - `docs/internal/PACKS_PRESETS_IMPLEMENTATION_KANBAN.md`
