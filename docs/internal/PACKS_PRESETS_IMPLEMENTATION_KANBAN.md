@@ -24,8 +24,8 @@ Owner: Core Runtime + Product Architecture
 - [ ] Chat attachment ingestion flow
   - [x] Backend detect/install endpoints for attachment paths
   - [x] Connector dispatch ingestion hook for `.zip` attachment path detection/install
-  - [ ] Auto-render pack card in chat surfaces on `pack.detected`
-  - [ ] Wire Install/Inspect actions from card to PackManager endpoints
+  - [x] Auto-render pack card in control-panel feed/chat surfaces on `pack.detected`
+  - [x] Wire Install/Open actions from feed/chat cards to PackManager endpoints
   - [x] Trusted-source auto-install policy checks in ingestion path
 
 ## Backlog

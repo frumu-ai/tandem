@@ -82,6 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added dedicated `Packs` route/view for install/inspect/export/uninstall/update-stub actions
   - added control-panel UI hooks for capability discovery (`client.capabilities.discovery()`)
   - added pack install flows for URL/server-path sources from within control panel
+- **Control Panel pack-event action surfaces (`packages/tandem-control-panel`)**:
+  - added pack-specific event cards in `Live Feed` for `pack.*` events
+  - added one-click actions from feed cards: open pack library, install from path, install from attachment
+  - added `Chat` right-rail `Pack Events` stream with the same install/open actions
 - **Pack implementation Kanban tracking**:
   - added `docs/internal/PACKS_PRESETS_IMPLEMENTATION_KANBAN.md` for phased execution tracking
 - **Deterministic composition and governance rules** in specs:

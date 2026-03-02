@@ -138,6 +138,13 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - update checks and update stub calls
   - Added capability discovery action to inspect currently discovered tools from UI.
 
+- Control Panel pack event cards + actions
+  - Added `pack.*` event-specific cards in `Live Feed` with direct actions:
+    - open Pack Library
+    - install from detected path
+    - install from attachment metadata (`attachment_id` + `path`)
+  - Added `Pack Events` rail in Chat with the same one-click actions so pack detection/install can be handled without leaving chat context.
+
 - Internal execution tracking
   - Added implementation Kanban board:
     - `docs/internal/PACKS_PRESETS_IMPLEMENTATION_KANBAN.md`

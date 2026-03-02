@@ -44,7 +44,7 @@ function saveAutoApprovePreference(enabled) {
 }
 
 export async function renderChat(ctx) {
-  const { state, byId, toast, escapeHtml, api, renderIcons, addCleanup } = ctx;
+  const { state, byId, toast, escapeHtml, api, renderIcons, addCleanup, setRoute } = ctx;
   const sessions = await loadSessions();
   if (!state.currentSessionId) state.currentSessionId = sessions[0]?.id || "";
   let sessionsOpen = false;
@@ -106,6 +106,16 @@ export async function renderChat(ctx) {
         </section>
         <section class="min-h-0 flex-1">
           <div class="mb-2 flex items-center justify-between">
+            <p class="chat-rail-label">Pack Events</p>
+            <div class="flex items-center gap-2">
+              <span id="chat-pack-events-count" class="chat-rail-count">0</span>
+              <button id="chat-pack-events-clear" class="tcp-btn h-7 px-2 text-[11px]">Clear</button>
+            </div>
+          </div>
+          <div id="chat-pack-events" class="chat-tools-activity"></div>
+        </section>
+        <section class="min-h-0 flex-1">
+          <div class="mb-2 flex items-center justify-between">
             <p class="chat-rail-label">Tool Activity</p>
             <button id="chat-tools-clear" class="tcp-btn h-7 px-2 text-[11px]">Clear</button>
           </div>
@@ -133,6 +143,9 @@ export async function renderChat(ctx) {
   const chatToolCountEl = byId("chat-tool-count");
   const railToolsCountEl = byId("chat-rail-tools-count");
   const railPermissionsCountEl = byId("chat-rail-permissions-count");
+  const packEventsCountEl = byId("chat-pack-events-count");
+  const packEventsClearEl = byId("chat-pack-events-clear");
+  const packEventsListEl = byId("chat-pack-events");
   const permissionsListEl = byId("chat-permissions-list");
   const approveAllEl = byId("chat-approve-all");
   const autoApproveEl = byId("chat-auto-approve");
@@ -143,6 +156,8 @@ export async function renderChat(ctx) {
   const uploadState = new Map();
   const toolActivity = [];
   const toolEventSeen = new Set();
+  const packEvents = [];
+  const packEventSeen = new Set();
   const permissionRequests = [];
   const permissionBusy = new Set();
   let autoApproveTools = loadAutoApprovePreference();
@@ -215,6 +230,7 @@ export async function renderChat(ctx) {
     sessions.unshift(rec);
     state.currentSessionId = sid;
     resetToolTracking();
+    resetPackTracking();
     renderSessions();
     await refreshPermissionRequests();
     await renderMessages();
@@ -282,6 +298,137 @@ export async function renderChat(ctx) {
         })
         .join("") || '<p class="chat-rail-empty">No tool events yet.</p>';
     setChatHeader();
+  }
+
+  function normalizePackEvent(rawType, rawProps) {
+    const props = rawProps && typeof rawProps === "object" ? rawProps : {};
+    const type = String(rawType || "").trim() || "pack.event";
+    const path = String(props.path || "").trim();
+    const attachment_id = String(props.attachment_id || props.attachmentId || "").trim();
+    const connector = String(props.connector || "").trim();
+    const channel_id = String(props.channel_id || props.channelId || "").trim();
+    const sender_id = String(props.sender_id || props.senderId || "").trim();
+    const name = String(props.name || "").trim();
+    const version = String(props.version || "").trim();
+    const error = String(props.error || "").trim();
+    const detailBits = [];
+    if (name) detailBits.push(name);
+    if (version) detailBits.push(version);
+    if (path) detailBits.push(path);
+    if (connector) detailBits.push(connector);
+    if (channel_id) detailBits.push(`channel=${channel_id}`);
+    if (sender_id) detailBits.push(`sender=${sender_id}`);
+    const summary = detailBits.join(" · ");
+    return {
+      id: `${type}:${attachment_id || path || name || "event"}`,
+      type,
+      path,
+      attachment_id,
+      connector,
+      channel_id,
+      sender_id,
+      error,
+      summary: summary || type,
+      at: Date.now(),
+    };
+  }
+
+  function renderPackRail() {
+    if (!packEventsCountEl || !packEventsListEl) return;
+    packEventsCountEl.textContent = String(packEvents.length);
+    packEventsListEl.innerHTML =
+      packEvents
+        .slice(0, 20)
+        .map((ev) => {
+          const at = new Date(ev.at).toLocaleTimeString();
+          return `
+          <article class="rounded-sm border border-zinc-800 bg-zinc-900/65 px-2 py-1.5">
+            <div class="flex items-center justify-between gap-2">
+              <div class="truncate text-[11px] text-zinc-200" title="${escapeHtml(ev.type)}">${escapeHtml(ev.type)}</div>
+              <span class="text-[10px] text-zinc-500">${escapeHtml(at)}</span>
+            </div>
+            <div class="mt-0.5 text-[10px] text-zinc-500">${escapeHtml(ev.summary)}</div>
+            ${ev.error ? `<div class="mt-1 text-[10px] text-rose-300">${escapeHtml(ev.error)}</div>` : ""}
+            <div class="mt-1 flex flex-wrap gap-1">
+              <button class="tcp-btn h-6 px-1.5 text-[10px]" data-pack-open="1">Packs</button>
+              ${
+                ev.path
+                  ? `<button class="tcp-btn h-6 px-1.5 text-[10px]" data-pack-install-path="${escapeHtml(ev.path)}">Install path</button>`
+                  : ""
+              }
+              ${
+                ev.path && ev.attachment_id
+                  ? `<button class="tcp-btn h-6 px-1.5 text-[10px]" data-pack-install-attachment="${escapeHtml(ev.attachment_id)}" data-pack-path="${escapeHtml(ev.path)}" data-pack-connector="${escapeHtml(ev.connector)}" data-pack-channel="${escapeHtml(ev.channel_id)}" data-pack-sender="${escapeHtml(ev.sender_id)}">Install attach</button>`
+                  : ""
+              }
+            </div>
+          </article>
+        `;
+        })
+        .join("") || '<p class="chat-rail-empty">No pack events yet.</p>';
+
+    packEventsListEl.querySelectorAll("[data-pack-open]").forEach((el) => {
+      el.addEventListener("click", () => {
+        setRoute?.("packs");
+      });
+    });
+    packEventsListEl.querySelectorAll("[data-pack-install-path]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const path = String(el.getAttribute("data-pack-install-path") || "").trim();
+        if (!path) return;
+        try {
+          const payload = await state.client.packs.install({
+            path,
+            source: { kind: "control_panel_chat", event: "pack.detected" },
+          });
+          toast(
+            "ok",
+            `Installed ${payload?.installed?.name || "pack"} ${payload?.installed?.version || ""}`.trim()
+          );
+        } catch (e) {
+          toast("err", `Install failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      });
+    });
+    packEventsListEl.querySelectorAll("[data-pack-install-attachment]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const attachmentID = String(el.getAttribute("data-pack-install-attachment") || "").trim();
+        const path = String(el.getAttribute("data-pack-path") || "").trim();
+        if (!attachmentID || !path) return;
+        try {
+          const payload = await state.client.packs.installFromAttachment({
+            attachment_id: attachmentID,
+            path,
+            connector: String(el.getAttribute("data-pack-connector") || "").trim() || undefined,
+            channel_id: String(el.getAttribute("data-pack-channel") || "").trim() || undefined,
+            sender_id: String(el.getAttribute("data-pack-sender") || "").trim() || undefined,
+          });
+          toast(
+            "ok",
+            `Installed ${payload?.installed?.name || "pack"} ${payload?.installed?.version || ""}`.trim()
+          );
+        } catch (e) {
+          toast("err", `Install failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      });
+    });
+  }
+
+  function resetPackTracking() {
+    packEvents.splice(0, packEvents.length);
+    packEventSeen.clear();
+    renderPackRail();
+  }
+
+  function recordPackEvent(rawType, rawProps) {
+    const normalized = normalizePackEvent(rawType, rawProps);
+    if (!String(normalized.type).toLowerCase().startsWith("pack.")) return;
+    if (packEventSeen.has(normalized.id)) return;
+    packEventSeen.add(normalized.id);
+    if (packEventSeen.size > 400) packEventSeen.clear();
+    packEvents.unshift(normalized);
+    if (packEvents.length > 80) packEvents.length = 80;
+    renderPackRail();
   }
 
   function resetToolTracking() {
@@ -725,6 +872,7 @@ export async function renderChat(ctx) {
       if (!state.currentSessionId) await createSession();
     }
     resetToolTracking();
+    resetPackTracking();
     renderSessions();
     await renderMessages();
   }
@@ -749,6 +897,7 @@ export async function renderChat(ctx) {
       btn.addEventListener("click", async () => {
         state.currentSessionId = btn.dataset.sid;
         resetToolTracking();
+        resetPackTracking();
         renderSessions();
         await refreshPermissionRequests();
         await renderMessages();
@@ -1084,6 +1233,9 @@ export async function renderChat(ctx) {
             renderPermissionRail();
             void refreshPermissionRequests();
           }
+          if (String(event.type || "").toLowerCase().startsWith("pack.")) {
+            recordPackEvent(event.type, event.properties || {});
+          }
           if (evRunId && evRunId !== runId) continue;
           if (event.type === "session.response") {
             const delta = String(event.properties?.delta || "");
@@ -1255,6 +1407,9 @@ export async function renderChat(ctx) {
   byId("chat-tools-clear")?.addEventListener("click", () => {
     resetToolTracking();
   });
+  packEventsClearEl?.addEventListener("click", () => {
+    resetPackTracking();
+  });
   filePickInnerEl.addEventListener("click", () => {
     fileInputEl.click();
   });
@@ -1275,6 +1430,7 @@ export async function renderChat(ctx) {
   renderSessions();
   renderUploadedFiles();
   renderToolRail();
+  renderPackRail();
   renderPermissionRail();
   void refreshAvailableTools();
   void refreshPermissionRequests();
