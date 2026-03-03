@@ -117,7 +117,10 @@ export async function renderAgents(ctx) {
       out.push({
         id,
         server: serverRaw,
-        description: String(row.description || "").trim(),
+        description: String(row.description || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 180),
       });
     }
     out.sort((a, b) => a.id.localeCompare(b.id));
@@ -2126,10 +2129,10 @@ export async function renderAgents(ctx) {
     const rows = filtered.slice(0, 80).map((tool) => {
       const added = allowSet.has(tool.id);
       return `
-        <div class="flex w-full max-w-full items-center justify-between gap-2 rounded border border-slate-700/60 bg-slate-900/40 px-2 py-1">
-          <div class="min-w-0">
-            <div class="truncate font-mono text-[11px] text-slate-200">${escapeHtml(tool.id)}</div>
-            <div class="truncate text-[11px] text-slate-400">${escapeHtml(tool.server || "mcp")} ${tool.description ? `- ${escapeHtml(tool.description)}` : ""}</div>
+        <div class="grid w-full max-w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded border border-slate-700/60 bg-slate-900/40 px-2 py-1 overflow-hidden">
+          <div class="min-w-0 overflow-hidden">
+            <div class="block overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[11px] text-slate-200">${escapeHtml(tool.id)}</div>
+            <div class="block overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-slate-400">${escapeHtml(tool.server || "mcp")}${tool.description ? ` - ${escapeHtml(tool.description)}` : ""}</div>
           </div>
           <button class="tcp-btn h-7 px-2 text-xs" data-routine-add-tool="${escapeHtml(tool.id)}" ${added ? "disabled" : ""}>${added ? "Added" : "Add"}</button>
         </div>
