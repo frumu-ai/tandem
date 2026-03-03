@@ -659,7 +659,7 @@ export async function renderChat(ctx) {
           approve_pack_install: true,
           approve_enable_routines: false,
         },
-        secret_refs_confirmed: false,
+        secret_refs_confirmed: true,
       }),
     });
   }
@@ -1292,7 +1292,7 @@ export async function renderChat(ctx) {
                 approve_pack_install: true,
                 approve_enable_routines: false,
               },
-              secret_refs_confirmed: replyCommand?.mode === "connectors",
+              secret_refs_confirmed: true,
             }),
           });
         } else if (replyCommand?.mode === "confirm" || replyCommand?.mode === "connectors") {
