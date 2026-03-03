@@ -50,7 +50,7 @@ After setup, the script prints your portal URL and sign-in token:
 | 8    | Creates and starts two systemd services: `tandem-engine` + `tandem-agent-portal` |
 | 9    | Runs an engine health check and prints the final URL + token                     |
 
-**Re-running is safe** — existing tokens and provider keys are preserved.
+**Re-running is safe** — existing tokens, custom engine env settings, and provider keys are preserved.
 
 ---
 

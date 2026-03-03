@@ -206,19 +206,35 @@ BASH_TIMEOUT_MS="${TANDEM_BASH_TIMEOUT_MS:-30000}"
 "${SUDO_CMD[@]}" mkdir -p /etc/tandem "$STATE_DIR"
 "${SUDO_CMD[@]}" chown -R "$SERVICE_USER":"$SERVICE_USER" "$STATE_DIR"
 
-# Preserve provider API keys across re-runs
+# Preserve custom engine env and provider API keys across re-runs
+EXISTING_ENGINE_ENV="$("${SUDO_CMD[@]}" sh -c "test -f '$ENGINE_ENV_PATH' && cat '$ENGINE_ENV_PATH' || true")"
 PROVIDER_KEY_REGEX='^(OPENROUTER_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|GROQ_API_KEY|MISTRAL_API_KEY|COHERE_API_KEY|TOGETHER_API_KEY|GITHUB_TOKEN)='
-PRESERVED_PROVIDER_ENV=""
-if "${SUDO_CMD[@]}" test -f "$ENGINE_ENV_PATH"; then
-  PRESERVED_PROVIDER_ENV="$("${SUDO_CMD[@]}" grep -E "$PROVIDER_KEY_REGEX" "$ENGINE_ENV_PATH" || true)"
-fi
+PRESERVED_ENGINE_ENV="$(printf '%s\n' "$EXISTING_ENGINE_ENV" | grep -Ev '^(TANDEM_API_TOKEN|TANDEM_STATE_DIR|TANDEM_MEMORY_DB_PATH|TANDEM_ENABLE_GLOBAL_MEMORY|TANDEM_TOOL_ROUTER_ENABLED|TANDEM_PROMPT_CONTEXT_HOOK_TIMEOUT_MS|TANDEM_PROVIDER_STREAM_CONNECT_TIMEOUT_MS|TANDEM_PROVIDER_STREAM_IDLE_TIMEOUT_MS|TANDEM_PERMISSION_WAIT_TIMEOUT_MS|TANDEM_TOOL_EXEC_TIMEOUT_MS|TANDEM_BASH_TIMEOUT_MS)=' | grep -Ev "$PROVIDER_KEY_REGEX" || true)"
+EXISTING_PROVIDER_ENV="$(printf '%s\n' "$EXISTING_ENGINE_ENV" | grep -E "$PROVIDER_KEY_REGEX" || true)"
 # Also pick up keys pre-populated in project .env
+PROJECT_PROVIDER_ENV=""
 if [[ -f "$PROJECT_DIR/.env" ]]; then
   PROJECT_PROVIDER_ENV="$(grep -E "$PROVIDER_KEY_REGEX" "$PROJECT_DIR/.env" || true)"
-  if [[ -n "$PROJECT_PROVIDER_ENV" ]]; then
-    PRESERVED_PROVIDER_ENV="$(printf '%s\n%s' "$PRESERVED_PROVIDER_ENV" "$PROJECT_PROVIDER_ENV" | sort -u -t= -k1,1)"
-  fi
 fi
+# Keep existing provider keys by default, but let project .env override/add values.
+MERGED_PROVIDER_ENV="$(
+  {
+    printf '%s\n' "$EXISTING_PROVIDER_ENV"
+    printf '%s\n' "$PROJECT_PROVIDER_ENV"
+  } | awk -F= '/^[A-Z0-9_]+=/ {
+      key=$1
+      if (!(key in seen)) {
+        order[++count]=key
+        seen[key]=1
+      }
+      value[key]=$0
+    }
+    END {
+      for (i=1; i<=count; i++) {
+        print value[order[i]]
+      }
+    }'
+)"
 
 "${SUDO_CMD[@]}" tee "$ENGINE_ENV_PATH" >/dev/null <<EOF
 TANDEM_API_TOKEN=$TOKEN
@@ -233,8 +249,11 @@ TANDEM_PERMISSION_WAIT_TIMEOUT_MS=$PERMISSION_WAIT_TIMEOUT_MS
 TANDEM_TOOL_EXEC_TIMEOUT_MS=$TOOL_EXEC_TIMEOUT_MS
 TANDEM_BASH_TIMEOUT_MS=$BASH_TIMEOUT_MS
 EOF
-if [[ -n "$PRESERVED_PROVIDER_ENV" ]]; then
-  printf '%s\n' "$PRESERVED_PROVIDER_ENV" | "${SUDO_CMD[@]}" tee -a "$ENGINE_ENV_PATH" >/dev/null
+if [[ -n "$PRESERVED_ENGINE_ENV" ]]; then
+  printf '%s\n' "$PRESERVED_ENGINE_ENV" | "${SUDO_CMD[@]}" tee -a "$ENGINE_ENV_PATH" >/dev/null
+fi
+if [[ -n "$MERGED_PROVIDER_ENV" ]]; then
+  printf '%s\n' "$MERGED_PROVIDER_ENV" | "${SUDO_CMD[@]}" tee -a "$ENGINE_ENV_PATH" >/dev/null
 fi
 # Add provider key hints if not already present
 if ! "${SUDO_CMD[@]}" grep -q '^# OPENROUTER_API_KEY=' "$ENGINE_ENV_PATH"; then

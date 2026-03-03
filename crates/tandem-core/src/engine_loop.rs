@@ -342,6 +342,7 @@ impl EngineLoop {
             let mut shell_mismatch_signatures: HashSet<String> = HashSet::new();
             let mut blocked_mcp_servers: HashSet<String> = HashSet::new();
             let mut websearch_query_blocked = false;
+            let websearch_duplicate_signature_limit = websearch_duplicate_signature_limit();
             let mut auto_workspace_probe_attempted = false;
             let intent = classify_intent(&text);
             let router_enabled = tool_router_enabled();
@@ -941,23 +942,28 @@ impl EngineLoop {
                                 .and_modify(|v| *v = v.saturating_add(1))
                                 .or_insert(1);
                             signature_count = *count;
-                            if tool_key == "websearch" && *count > 2 {
-                                self.event_bus.publish(EngineEvent::new(
-                                    "tool.loop_guard.triggered",
-                                    json!({
-                                        "sessionID": session_id,
-                                        "messageID": user_message_id,
-                                        "tool": tool_key,
-                                        "reason": "duplicate_signature_retry_exhausted",
-                                        "queryHash": extract_websearch_query(&args).map(|q| stable_hash(&q)),
-                                        "loop_guard_triggered": true
-                                    }),
-                                ));
-                                outputs.push(
-                                    "Tool `websearch` call skipped: WEBSEARCH_LOOP_GUARD"
-                                        .to_string(),
-                                );
-                                continue;
+                            if tool_key == "websearch" {
+                                if let Some(limit) = websearch_duplicate_signature_limit {
+                                    if *count > limit {
+                                        self.event_bus.publish(EngineEvent::new(
+                                            "tool.loop_guard.triggered",
+                                            json!({
+                                                "sessionID": session_id,
+                                                "messageID": user_message_id,
+                                                "tool": tool_key,
+                                                "reason": "duplicate_signature_retry_exhausted",
+                                                "duplicateLimit": limit,
+                                                "queryHash": extract_websearch_query(&args).map(|q| stable_hash(&q)),
+                                                "loop_guard_triggered": true
+                                            }),
+                                        ));
+                                        outputs.push(
+                                            "Tool `websearch` call skipped: WEBSEARCH_LOOP_GUARD"
+                                                .to_string(),
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
                             if tool_key != "websearch" && *count > 1 {
                                 if let Some(cached) = readonly_tool_cache.get(&signature) {
@@ -2573,6 +2579,13 @@ fn duplicate_signature_limit_for(tool_name: &str) -> usize {
     } else {
         3
     }
+}
+
+fn websearch_duplicate_signature_limit() -> Option<usize> {
+    std::env::var("TANDEM_WEBSEARCH_DUPLICATE_SIGNATURE_LIMIT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
 }
 
 fn is_terminal_tool_for_followup(tool_name: &str) -> bool {
@@ -5963,6 +5976,25 @@ Call: todowrite(task_id=3, status="in_progress")
             std::env::remove_var("TANDEM_TOOL_LOOP_DUPLICATE_SIGNATURE_LIMIT");
         }
         assert_eq!(duplicate_signature_limit_for("pack_builder"), 1);
+    }
+
+    #[test]
+    fn websearch_duplicate_signature_limit_is_unset_by_default() {
+        unsafe {
+            std::env::remove_var("TANDEM_WEBSEARCH_DUPLICATE_SIGNATURE_LIMIT");
+        }
+        assert_eq!(websearch_duplicate_signature_limit(), None);
+    }
+
+    #[test]
+    fn websearch_duplicate_signature_limit_reads_env() {
+        unsafe {
+            std::env::set_var("TANDEM_WEBSEARCH_DUPLICATE_SIGNATURE_LIMIT", "5");
+        }
+        assert_eq!(websearch_duplicate_signature_limit(), Some(5));
+        unsafe {
+            std::env::remove_var("TANDEM_WEBSEARCH_DUPLICATE_SIGNATURE_LIMIT");
+        }
     }
 
     #[test]
