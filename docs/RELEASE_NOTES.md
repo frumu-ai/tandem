@@ -31,8 +31,8 @@
   - Added baseline permission allow for `pack_builder` so pack-generation prompts from control panel and channel integrations do not timeout waiting for initial tool approval.
   - `pack_builder` still enforces explicit apply-time approvals for connector registration/install/enable actions.
 - **Pack Builder token-burn guardrail**:
-  - Engine loop now treats productive `pack_builder` calls as terminal for the iteration and emits tool summary directly, avoiding repeated model follow-up turns for the same request.
   - Duplicate-signature retry limit for `pack_builder` is now `1` to stop repeated identical calls quickly.
+  - Added same-run duplicate-call guard so repeated `pack_builder` execution attempts are skipped deterministically.
 - **OpenAI tool-schema compatibility hardening for MCP connectors**:
   - Added recursive provider-side schema normalization before tool dispatch so MCP schemas that use tuple `items` or omit nested object `properties` are transformed into OpenAI-compatible function parameter schemas.
   - Fixes provider 400 `invalid_function_parameters` failures seen on models such as `openai/gpt-5.3-codex` when MCP tools (for example Airtable list-records) are present in the toolset.
@@ -59,6 +59,10 @@
     - `use connectors: ...` -> apply with explicit connector override
   - Control panel chat now uses the same API-first pack-builder flow for pack intents and confirmation replies, reducing provider calls and avoiding opaque/truncated JSON tool dumps in assistant output.
   - Added endpoint regression tests covering preview/pending/cancel roundtrip, thread-scoped apply correctness, and missing-secret apply blocking semantics.
+- **Pack Builder chat flow parity and in-thread UX**:
+  - Restored LLM-led initial pack creation flow in engine loop so pack requests can continue with assistant-guided clarification when needed.
+  - Control panel chat now renders Pack Builder preview/apply states inline in the conversation thread (with deterministic apply/cancel actions), not only in side-rail event views.
+  - Channel dispatcher no longer short-circuits initial pack-intent messages into immediate canned previews; deterministic `confirm`/`cancel` command mapping remains for apply/cancel.
 
 ---
 

@@ -65,8 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `pack_builder` tool is now allowed by default in baseline engine permission rules to prevent pack-creation requests timing out on first-use approval prompts
   - internal `pack_builder` apply-phase approvals remain required for connector registration, pack install, and routine enablement
 - **Pack Builder retry-cost guardrail**:
-  - engine now treats successful `pack_builder` execution as terminal for the current loop iteration and returns tool output directly instead of forcing additional model follow-up turns
   - duplicate-signature loop limit for `pack_builder` reduced to `1` to fail fast on repeated identical calls
+  - added same-run duplicate-call guard for `pack_builder` to skip repeated execution attempts within one run cycle
 - **Pack Builder UX + apply flow reliability**:
   - preview responses now return a concise human-readable summary (metadata remains structured JSON) instead of dumping raw/truncated JSON into chat output
   - fixed `connector_selection_required` to only trigger for unresolved external capabilities (built-in-satisfied external needs no longer force connector selection)
@@ -80,6 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `apply_blocked_auth`
   - cancelled plans are now terminal for later apply attempts (`plan_cancelled`)
   - control-panel chat now uses API-first pack-builder flow (preview/apply/cancel) for pack-intent and confirmation messages, reducing provider token burn and removing reliance on assistant paraphrase for state transitions
+  - restored LLM-led initial pack creation flow (removed forced terminal short-circuit after `pack_builder` tool completion) so the assistant can continue in-chat guidance/questions when needed
+  - control-panel chat now renders `pack_builder` state inline in the message thread (preview/apply cards with deterministic actions) instead of relying on side-rail-only visibility
+  - channel dispatcher no longer short-circuits initial pack-intent messages into immediate preview text; deterministic `confirm`/`cancel` command mapping remains in place
 
 ## [0.4.0] - Unreleased
 

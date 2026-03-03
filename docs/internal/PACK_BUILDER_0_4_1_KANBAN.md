@@ -36,6 +36,10 @@ Owner: Tandem Engine
   - [x] `use connectors: ...` -> `/pack-builder/apply` with connector override
 - [x] Add control-panel chat API-first pack-builder flow for preview/apply/cancel commands
 - [x] Add parity regression tests for API endpoints + thread-scoped apply selection
+- [x] Restore LLM-led initial chat flow for pack creation (remove hard terminal tool-cycle for `pack_builder`)
+- [x] Add duplicate-call guard to prevent repeated `pack_builder` executions in the same run cycle
+- [x] Render Pack Builder preview/apply cards inline in chat thread (not only in side rail)
+- [x] Remove channel auto-preview interception for initial intent (LLM/tool-driven initial pass; deterministic confirm/cancel preserved)
 
 ## Completed
 
@@ -53,5 +57,6 @@ Owner: Tandem Engine
   - `830cec6` (OpenAI provider schema hardening for MCP tool dispatch)
   - `da0d07f` (pack-builder preview/apply UX hardening + safe auto-apply + tests)
   - `62f1442` (engine confirmation bridge for apply-by-chat across surfaces)
-  - `TBD` (pack-builder session-local confirmation fallback + tests)
-  - `TBD` (pack-builder API-first parity endpoints + channel/control-panel direct apply path)
+  - `28796f8` (pack-builder session-local confirmation fallback + tests)
+  - `1d4f579` (pack-builder API-first parity endpoints + channel/control-panel direct apply path)
+  - `6001205` (restore LLM-led chat flow + inline in-thread pack-builder cards + channel interception rollback)
