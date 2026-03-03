@@ -37,6 +37,13 @@ use crate::slack::SlackChannel;
 use crate::telegram::TelegramChannel;
 use crate::traits::{Channel, ChannelMessage, SendMessage};
 
+#[derive(Debug)]
+enum PackBuilderReplyCommand {
+    Confirm,
+    Cancel,
+    UseConnectors(Vec<String>),
+}
+
 // ---------------------------------------------------------------------------
 // Auth helper
 // ---------------------------------------------------------------------------
@@ -378,6 +385,80 @@ async fn process_channel_message(
             return;
         }
     };
+    let thread_key = format!("{}:{}", msg.channel, msg.reply_target);
+
+    if let Some(cmd) = parse_pack_builder_reply_command(&msg.content) {
+        let response = match cmd {
+            PackBuilderReplyCommand::Confirm => {
+                apply_pending_pack_builder(
+                    base_url,
+                    api_token,
+                    &session_id,
+                    &thread_key,
+                    None,
+                    false,
+                )
+                .await
+            }
+            PackBuilderReplyCommand::Cancel => {
+                cancel_pending_pack_builder(base_url, api_token, &session_id, &thread_key).await
+            }
+            PackBuilderReplyCommand::UseConnectors(connectors) => {
+                apply_pending_pack_builder(
+                    base_url,
+                    api_token,
+                    &session_id,
+                    &thread_key,
+                    Some(connectors),
+                    true,
+                )
+                .await
+            }
+        };
+        if let Some(reply) = response {
+            if let Err(e) = channel
+                .send(&SendMessage {
+                    content: reply,
+                    recipient: msg.reply_target,
+                    image_urls: Vec::new(),
+                })
+                .await
+            {
+                error!(
+                    "failed to send pack-builder channel reply via '{}': {e}",
+                    channel.name()
+                );
+            }
+            return;
+        }
+    }
+
+    if is_pack_builder_intent(&msg.content) {
+        let preview = preview_pack_builder_for_channel(
+            base_url,
+            api_token,
+            &session_id,
+            &thread_key,
+            &msg.content,
+        )
+        .await;
+        if let Some(reply) = preview {
+            if let Err(e) = channel
+                .send(&SendMessage {
+                    content: reply,
+                    recipient: msg.reply_target,
+                    image_urls: Vec::new(),
+                })
+                .await
+            {
+                error!(
+                    "failed to send pack-builder preview via '{}': {e}",
+                    channel.name()
+                );
+            }
+            return;
+        }
+    }
 
     if let Err(e) = channel.start_typing(&msg.reply_target).await {
         warn!(
@@ -467,6 +548,271 @@ async fn process_channel_message(
     {
         error!("failed to send channel reply via '{}': {e}", channel.name());
     }
+}
+
+fn parse_pack_builder_reply_command(content: &str) -> Option<PackBuilderReplyCommand> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "ok" | "okay"
+            | "yes"
+            | "y"
+            | "confirm"
+            | "confirmed"
+            | "approve"
+            | "approved"
+            | "go"
+            | "go ahead"
+            | "proceed"
+            | "do it"
+            | "run it"
+            | "apply"
+    ) {
+        return Some(PackBuilderReplyCommand::Confirm);
+    }
+    if matches!(lower.as_str(), "cancel" | "stop" | "abort") {
+        return Some(PackBuilderReplyCommand::Cancel);
+    }
+    if let Some(rest) = trimmed
+        .to_ascii_lowercase()
+        .strip_prefix("use connectors:")
+        .map(ToString::to_string)
+    {
+        let connectors = rest
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect::<Vec<_>>();
+        if !connectors.is_empty() {
+            return Some(PackBuilderReplyCommand::UseConnectors(connectors));
+        }
+    }
+    None
+}
+
+async fn preview_pack_builder_for_channel(
+    base_url: &str,
+    api_token: &str,
+    session_id: &str,
+    thread_key: &str,
+    goal: &str,
+) -> Option<String> {
+    let client = reqwest::Client::new();
+    let resp = add_auth(
+        client.post(format!("{base_url}/pack-builder/preview")),
+        api_token,
+    )
+    .json(&serde_json::json!({
+        "session_id": session_id,
+        "thread_key": thread_key,
+        "goal": goal,
+        "auto_apply": false
+    }))
+    .send()
+    .await
+    .ok()?;
+    let status = resp.status();
+    let payload: serde_json::Value = resp.json().await.unwrap_or_default();
+    if !status.is_success() {
+        return Some(format!(
+            "Pack Builder preview failed ({status}): {}",
+            payload
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+    Some(format_pack_builder_preview_message(&payload))
+}
+
+async fn apply_pending_pack_builder(
+    base_url: &str,
+    api_token: &str,
+    session_id: &str,
+    thread_key: &str,
+    connectors_override: Option<Vec<String>>,
+    secret_refs_confirmed: bool,
+) -> Option<String> {
+    let client = reqwest::Client::new();
+    let pending_resp = add_auth(
+        client.get(format!("{base_url}/pack-builder/pending")),
+        api_token,
+    )
+    .query(&[("session_id", session_id), ("thread_key", thread_key)])
+    .send()
+    .await
+    .ok()?;
+    let pending_status = pending_resp.status();
+    let pending_payload: serde_json::Value = pending_resp.json().await.unwrap_or_default();
+    if !pending_status.is_success() {
+        return Some("No pending pack-builder plan found for this thread.".to_string());
+    }
+    let plan_id = pending_payload
+        .get("pending")
+        .and_then(|v| v.get("plan_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if plan_id.is_empty() {
+        return Some("No pending pack-builder plan found for this thread.".to_string());
+    }
+
+    let apply_resp = add_auth(
+        client.post(format!("{base_url}/pack-builder/apply")),
+        api_token,
+    )
+    .json(&serde_json::json!({
+        "plan_id": plan_id,
+        "session_id": session_id,
+        "thread_key": thread_key,
+        "selected_connectors": connectors_override.unwrap_or_default(),
+        "approvals": {
+            "approve_connector_registration": true,
+            "approve_pack_install": true,
+            "approve_enable_routines": false
+        },
+        "secret_refs_confirmed": secret_refs_confirmed
+    }))
+    .send()
+    .await
+    .ok()?;
+    let status = apply_resp.status();
+    let payload: serde_json::Value = apply_resp.json().await.unwrap_or_default();
+    if !status.is_success() {
+        return Some(format!(
+            "Pack Builder apply failed ({status}): {}",
+            payload
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+    Some(format_pack_builder_apply_message(&payload))
+}
+
+async fn cancel_pending_pack_builder(
+    base_url: &str,
+    api_token: &str,
+    session_id: &str,
+    thread_key: &str,
+) -> Option<String> {
+    let client = reqwest::Client::new();
+    let resp = add_auth(
+        client.post(format!("{base_url}/pack-builder/cancel")),
+        api_token,
+    )
+    .json(&serde_json::json!({
+        "session_id": session_id,
+        "thread_key": thread_key
+    }))
+    .send()
+    .await
+    .ok()?;
+    let status = resp.status();
+    let payload: serde_json::Value = resp.json().await.unwrap_or_default();
+    if !status.is_success() {
+        return Some(format!(
+            "Pack Builder cancel failed ({status}): {}",
+            payload
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+        ));
+    }
+    Some("Pack Builder plan cancelled for this thread.".to_string())
+}
+
+fn format_pack_builder_preview_message(payload: &serde_json::Value) -> String {
+    let mut lines = Vec::new();
+    lines.push("Pack Builder Preview".to_string());
+    if let Some(goal) = payload.get("goal").and_then(|v| v.as_str()) {
+        lines.push(format!("- Goal: {}", goal));
+    }
+    if let Some(plan_id) = payload.get("plan_id").and_then(|v| v.as_str()) {
+        lines.push(format!("- Plan ID: {}", plan_id));
+    }
+    if let Some(pack_name) = payload
+        .get("pack")
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+    {
+        lines.push(format!("- Pack: {}", pack_name));
+    }
+    let connectors = payload
+        .get("selected_connectors")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if connectors.is_empty() {
+        lines.push("- Selected connectors: none".to_string());
+    } else {
+        lines.push("- Selected connectors:".to_string());
+        for row in connectors {
+            if let Some(slug) = row.as_str() {
+                lines.push(format!("  - {}", slug));
+            }
+        }
+    }
+    let required_secrets = payload
+        .get("required_secrets")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if !required_secrets.is_empty() {
+        lines.push("- Required secrets:".to_string());
+        for row in required_secrets {
+            if let Some(secret) = row.as_str() {
+                lines.push(format!("  - {}", secret));
+            }
+        }
+    }
+    lines.push("- Reply `confirm` to apply, `cancel` to abort.".to_string());
+    lines.push("- Optional: `use connectors: slug1, slug2`".to_string());
+    lines.join("\n")
+}
+
+fn format_pack_builder_apply_message(payload: &serde_json::Value) -> String {
+    let status = payload.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if status == "apply_blocked_missing_secrets" {
+        let mut lines = vec![
+            "Pack Builder Apply Blocked".to_string(),
+            "- Missing required secrets.".to_string(),
+        ];
+        for row in payload
+            .get("required_secrets")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            if let Some(secret) = row.as_str() {
+                lines.push(format!("  - {}", secret));
+            }
+        }
+        lines.push("- Set secrets, then reply `confirm` again.".to_string());
+        return lines.join("\n");
+    }
+    if status == "apply_blocked_auth" {
+        return "Pack Builder Apply Blocked\n- Connector authentication/setup is required.\n- Complete auth and reply `confirm` again.".to_string();
+    }
+    let pack_name = payload
+        .get("pack_installed")
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown-pack");
+    let pack_version = payload
+        .get("pack_installed")
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    format!(
+        "Pack Builder Apply Complete\n- Installed: {} {}\n- Routine state: paused by default",
+        pack_name, pack_version
+    )
 }
 
 #[derive(Debug, Default)]
@@ -2442,6 +2788,29 @@ mod tests {
         let route = route_agent_for_channel_message(text);
         assert!(route.agent.is_none());
         assert!(route.tool_allowlist.is_none());
+    }
+
+    #[test]
+    fn parses_pack_builder_confirm_cancel_and_connector_override() {
+        assert!(matches!(
+            parse_pack_builder_reply_command("confirm"),
+            Some(PackBuilderReplyCommand::Confirm)
+        ));
+        assert!(matches!(
+            parse_pack_builder_reply_command("ok"),
+            Some(PackBuilderReplyCommand::Confirm)
+        ));
+        assert!(matches!(
+            parse_pack_builder_reply_command("cancel"),
+            Some(PackBuilderReplyCommand::Cancel)
+        ));
+        let parsed = parse_pack_builder_reply_command("use connectors: notion, slack");
+        match parsed {
+            Some(PackBuilderReplyCommand::UseConnectors(rows)) => {
+                assert_eq!(rows, vec!["notion".to_string(), "slack".to_string()]);
+            }
+            _ => panic!("expected connector override parse"),
+        }
     }
 
     // ── SessionRecord ─────────────────────────────────────────────────────

@@ -1092,6 +1092,47 @@ struct ToolExecutionInput {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct PackBuilderPreviewRequest {
+    goal: Option<String>,
+    session_id: Option<String>,
+    thread_key: Option<String>,
+    auto_apply: Option<bool>,
+    selected_connectors: Option<Vec<String>>,
+    schedule: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PackBuilderApplyRequest {
+    plan_id: Option<String>,
+    session_id: Option<String>,
+    thread_key: Option<String>,
+    selected_connectors: Option<Vec<String>>,
+    approvals: Option<PackBuilderApprovals>,
+    secret_refs_confirmed: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PackBuilderApprovals {
+    approve_connector_registration: Option<bool>,
+    approve_pack_install: Option<bool>,
+    approve_enable_routines: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PackBuilderCancelRequest {
+    plan_id: Option<String>,
+    session_id: Option<String>,
+    thread_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PackBuilderPendingQuery {
+    plan_id: Option<String>,
+    session_id: Option<String>,
+    thread_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct McpAddInput {
     name: Option<String>,
     transport: Option<String>,
@@ -1139,6 +1180,88 @@ async fn execute_tool(
         "output": result.output,
         "metadata": result.metadata
     })))
+}
+
+async fn run_pack_builder_tool(state: &AppState, args: Value) -> Result<Value, StatusCode> {
+    let result = state
+        .tools
+        .execute("pack_builder", args)
+        .await
+        .map_err(|e| {
+            tracing::warn!("pack_builder tool execution failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let mut metadata = result.metadata;
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.entry("output".to_string())
+            .or_insert_with(|| Value::String(result.output));
+    }
+    Ok(metadata)
+}
+
+async fn pack_builder_preview(
+    State(state): State<AppState>,
+    Json(input): Json<PackBuilderPreviewRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let args = json!({
+        "mode": "preview",
+        "goal": input.goal,
+        "__session_id": input.session_id,
+        "thread_key": input.thread_key,
+        "auto_apply": input.auto_apply.unwrap_or(false),
+        "selected_connectors": input.selected_connectors.unwrap_or_default(),
+        "schedule": input.schedule,
+    });
+    let payload = run_pack_builder_tool(&state, args).await?;
+    Ok(Json(payload))
+}
+
+async fn pack_builder_apply(
+    State(state): State<AppState>,
+    Json(input): Json<PackBuilderApplyRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let approvals = input.approvals.unwrap_or_default();
+    let args = json!({
+        "mode": "apply",
+        "plan_id": input.plan_id,
+        "__session_id": input.session_id,
+        "thread_key": input.thread_key,
+        "selected_connectors": input.selected_connectors.unwrap_or_default(),
+        "approve_connector_registration": approvals.approve_connector_registration.unwrap_or(false),
+        "approve_pack_install": approvals.approve_pack_install.unwrap_or(false),
+        "approve_enable_routines": approvals.approve_enable_routines.unwrap_or(false),
+        "secret_refs_confirmed": input.secret_refs_confirmed,
+    });
+    let payload = run_pack_builder_tool(&state, args).await?;
+    Ok(Json(payload))
+}
+
+async fn pack_builder_cancel(
+    State(state): State<AppState>,
+    Json(input): Json<PackBuilderCancelRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let args = json!({
+        "mode": "cancel",
+        "plan_id": input.plan_id,
+        "__session_id": input.session_id,
+        "thread_key": input.thread_key,
+    });
+    let payload = run_pack_builder_tool(&state, args).await?;
+    Ok(Json(payload))
+}
+
+async fn pack_builder_pending(
+    State(state): State<AppState>,
+    Query(query): Query<PackBuilderPendingQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let args = json!({
+        "mode": "pending",
+        "plan_id": query.plan_id,
+        "__session_id": query.session_id,
+        "thread_key": query.thread_key,
+    });
+    let payload = run_pack_builder_tool(&state, args).await?;
+    Ok(Json(payload))
 }
 
 async fn packs_list(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
@@ -1935,6 +2058,10 @@ fn app_router(state: AppState) -> Router {
         .route("/tool/ids", get(tool_ids))
         .route("/tool", get(tool_list_for_model))
         .route("/tool/execute", post(execute_tool))
+        .route("/pack-builder/preview", post(pack_builder_preview))
+        .route("/pack-builder/apply", post(pack_builder_apply))
+        .route("/pack-builder/cancel", post(pack_builder_cancel))
+        .route("/pack-builder/pending", get(pack_builder_pending))
         .route(
             "/worktree",
             get(list_worktrees)
@@ -12380,6 +12507,274 @@ mod tests {
         assert_eq!(
             metadata.get("error").and_then(|v| v.as_str()),
             Some("approval_required")
+        );
+    }
+
+    #[tokio::test]
+    async fn pack_builder_preview_apply_cancel_pending_endpoints_roundtrip() {
+        let state = test_state().await;
+        state
+            .tools
+            .register_tool(
+                "pack_builder".to_string(),
+                Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
+            )
+            .await;
+        let app = app_router(state);
+
+        let preview_req = Request::builder()
+            .method("POST")
+            .uri("/pack-builder/preview")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "session_id": "pb-session-1",
+                    "thread_key": "web:thread-a",
+                    "auto_apply": false,
+                    "goal": "Create a pack to summarize public headline news daily."
+                })
+                .to_string(),
+            ))
+            .expect("preview request");
+        let preview_resp = app
+            .clone()
+            .oneshot(preview_req)
+            .await
+            .expect("preview response");
+        assert_eq!(preview_resp.status(), StatusCode::OK);
+        let preview_body = to_bytes(preview_resp.into_body(), usize::MAX)
+            .await
+            .expect("preview body");
+        let preview_payload: Value = serde_json::from_slice(&preview_body).expect("preview json");
+        let plan_id = preview_payload
+            .get("plan_id")
+            .and_then(|v| v.as_str())
+            .expect("plan_id")
+            .to_string();
+        assert_eq!(
+            preview_payload.get("status").and_then(|v| v.as_str()),
+            Some("preview_pending")
+        );
+
+        let pending_req = Request::builder()
+            .method("GET")
+            .uri("/pack-builder/pending?session_id=pb-session-1&thread_key=web%3Athread-a")
+            .body(Body::empty())
+            .expect("pending request");
+        let pending_resp = app
+            .clone()
+            .oneshot(pending_req)
+            .await
+            .expect("pending response");
+        assert_eq!(pending_resp.status(), StatusCode::OK);
+        let pending_body = to_bytes(pending_resp.into_body(), usize::MAX)
+            .await
+            .expect("pending body");
+        let pending_payload: Value = serde_json::from_slice(&pending_body).expect("pending json");
+        assert_eq!(
+            pending_payload
+                .get("pending")
+                .and_then(|v| v.get("plan_id"))
+                .and_then(|v| v.as_str()),
+            Some(plan_id.as_str())
+        );
+
+        let cancel_req = Request::builder()
+            .method("POST")
+            .uri("/pack-builder/cancel")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "session_id": "pb-session-1",
+                    "thread_key": "web:thread-a",
+                    "plan_id": plan_id
+                })
+                .to_string(),
+            ))
+            .expect("cancel request");
+        let cancel_resp = app
+            .clone()
+            .oneshot(cancel_req)
+            .await
+            .expect("cancel response");
+        assert_eq!(cancel_resp.status(), StatusCode::OK);
+        let cancel_body = to_bytes(cancel_resp.into_body(), usize::MAX)
+            .await
+            .expect("cancel body");
+        let cancel_payload: Value = serde_json::from_slice(&cancel_body).expect("cancel json");
+        assert_eq!(
+            cancel_payload.get("status").and_then(|v| v.as_str()),
+            Some("cancelled")
+        );
+    }
+
+    #[tokio::test]
+    async fn pack_builder_apply_endpoint_honors_thread_scoped_pending_plan() {
+        let state = test_state().await;
+        state
+            .tools
+            .register_tool(
+                "pack_builder".to_string(),
+                Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
+            )
+            .await;
+        let app = app_router(state);
+
+        let preview_a = Request::builder()
+            .method("POST")
+            .uri("/pack-builder/preview")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "session_id": "pb-session-threads",
+                    "thread_key": "thread:a",
+                    "auto_apply": false,
+                    "goal": "Create a useful automation pack"
+                })
+                .to_string(),
+            ))
+            .expect("preview request");
+        let preview_a_resp = app
+            .clone()
+            .oneshot(preview_a)
+            .await
+            .expect("preview response");
+        assert_eq!(preview_a_resp.status(), StatusCode::OK);
+        let preview_a_body = to_bytes(preview_a_resp.into_body(), usize::MAX)
+            .await
+            .expect("preview body");
+        let preview_a_payload: Value =
+            serde_json::from_slice(&preview_a_body).expect("preview json");
+        let plan_thread_a = preview_a_payload
+            .get("plan_id")
+            .and_then(|v| v.as_str())
+            .expect("plan id")
+            .to_string();
+
+        let preview_b = Request::builder()
+            .method("POST")
+            .uri("/pack-builder/preview")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "session_id": "pb-session-threads",
+                    "thread_key": "thread:b",
+                    "auto_apply": false,
+                    "goal": "Create a useful automation pack"
+                })
+                .to_string(),
+            ))
+            .expect("preview request");
+        let preview_b_resp = app
+            .clone()
+            .oneshot(preview_b)
+            .await
+            .expect("preview response");
+        assert_eq!(preview_b_resp.status(), StatusCode::OK);
+
+        let apply_req = Request::builder()
+            .method("POST")
+            .uri("/pack-builder/apply")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "session_id": "pb-session-threads",
+                    "thread_key": "thread:a",
+                    "approvals": {
+                        "approve_pack_install": true,
+                        "approve_connector_registration": true,
+                        "approve_enable_routines": false
+                    },
+                    "secret_refs_confirmed": true
+                })
+                .to_string(),
+            ))
+            .expect("apply request");
+        let apply_resp = app.oneshot(apply_req).await.expect("apply response");
+        assert_eq!(apply_resp.status(), StatusCode::OK);
+        let apply_body = to_bytes(apply_resp.into_body(), usize::MAX)
+            .await
+            .expect("apply body");
+        let apply_payload: Value = serde_json::from_slice(&apply_body).expect("apply json");
+        assert_eq!(
+            apply_payload.get("plan_id").and_then(|v| v.as_str()),
+            Some(plan_thread_a.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn pack_builder_apply_endpoint_blocks_when_required_secrets_missing() {
+        let state = test_state().await;
+        state
+            .tools
+            .register_tool(
+                "pack_builder".to_string(),
+                Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
+            )
+            .await;
+        let app = app_router(state);
+
+        let preview_req = Request::builder()
+            .method("POST")
+            .uri("/pack-builder/preview")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "session_id": "pb-session-secrets",
+                    "thread_key": "thread:secrets",
+                    "auto_apply": false,
+                    "goal": "Create a pack that syncs Notion updates to Slack every day"
+                })
+                .to_string(),
+            ))
+            .expect("preview request");
+        let preview_resp = app
+            .clone()
+            .oneshot(preview_req)
+            .await
+            .expect("preview response");
+        assert_eq!(preview_resp.status(), StatusCode::OK);
+        let preview_body = to_bytes(preview_resp.into_body(), usize::MAX)
+            .await
+            .expect("preview body");
+        let preview_payload: Value = serde_json::from_slice(&preview_body).expect("preview json");
+        let required = preview_payload
+            .get("required_secrets")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if required.is_empty() {
+            return;
+        }
+
+        let apply_req = Request::builder()
+            .method("POST")
+            .uri("/pack-builder/apply")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "session_id": "pb-session-secrets",
+                    "thread_key": "thread:secrets",
+                    "plan_id": preview_payload.get("plan_id").and_then(|v| v.as_str()).unwrap_or_default(),
+                    "approvals": {
+                        "approve_pack_install": true,
+                        "approve_connector_registration": true,
+                        "approve_enable_routines": false
+                    },
+                    "secret_refs_confirmed": false
+                })
+                .to_string(),
+            ))
+            .expect("apply request");
+        let apply_resp = app.oneshot(apply_req).await.expect("apply response");
+        assert_eq!(apply_resp.status(), StatusCode::OK);
+        let apply_body = to_bytes(apply_resp.into_body(), usize::MAX)
+            .await
+            .expect("apply body");
+        let apply_payload: Value = serde_json::from_slice(&apply_body).expect("apply json");
+        assert_eq!(
+            apply_payload.get("status").and_then(|v| v.as_str()),
+            Some("apply_blocked_missing_secrets")
         );
     }
 

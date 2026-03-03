@@ -24,6 +24,18 @@ Owner: Tandem Engine
 - [x] Add regression tests for built-in-only connector gating + safe auto-apply
 - [x] Add chat confirmation bridge (`confirm` -> apply last preview plan_id) to support control panel, Tauri, and channel threads
 - [x] Add pack-builder session-local confirmation fallback to prevent accidental `pack-builder-ok` installs when model emits preview+short-goal
+- [x] Add server-owned workflow persistence for pack-builder plans/workflows (`pack_builder_plans.json`, `pack_builder_workflows.json`)
+- [x] Add API-first parity endpoints: `POST /pack-builder/preview|apply|cancel` and `GET /pack-builder/pending`
+- [x] Route `/tool/execute pack_builder` and API endpoints through same workflow behavior (preview/apply/cancel/pending)
+- [x] Add blocked apply statuses for missing secrets/auth with deterministic next actions
+- [x] Add thread-scoped pending-plan resolution to prevent cross-thread confirm/apply collisions
+- [x] Add channel API-first pack-builder flow:
+  - [x] intent preview via `/pack-builder/preview`
+  - [x] `confirm` -> `/pack-builder/apply`
+  - [x] `cancel` -> `/pack-builder/cancel`
+  - [x] `use connectors: ...` -> `/pack-builder/apply` with connector override
+- [x] Add control-panel chat API-first pack-builder flow for preview/apply/cancel commands
+- [x] Add parity regression tests for API endpoints + thread-scoped apply selection
 
 ## Completed
 
@@ -42,3 +54,4 @@ Owner: Tandem Engine
   - `da0d07f` (pack-builder preview/apply UX hardening + safe auto-apply + tests)
   - `62f1442` (engine confirmation bridge for apply-by-chat across surfaces)
   - `TBD` (pack-builder session-local confirmation fallback + tests)
+  - `TBD` (pack-builder API-first parity endpoints + channel/control-panel direct apply path)

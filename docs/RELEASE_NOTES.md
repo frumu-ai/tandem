@@ -44,6 +44,21 @@
   - Safe previews now auto-apply by default when no connector choice, manual auth/setup, or secret input is required; routines are still registered paused unless explicitly enabled.
   - Added conversational confirmation bridging: a follow-up chat reply like `confirm` after preview now maps to `pack_builder` apply with recovered `plan_id`, avoiding accidental creation of a new pack from the word “confirm”.
   - Added tool-level session fallback: `pack_builder` tracks last preview plan per session and upgrades short confirmation goals (`ok`, `confirm`, `apply`) to apply for that plan, ensuring consistent behavior across control panel, desktop, and channel adapters.
+- **Pack Builder API-first parity across surfaces (web/desktop/channels)**:
+  - Added deterministic workflow endpoints:
+    - `POST /pack-builder/preview`
+    - `POST /pack-builder/apply`
+    - `POST /pack-builder/cancel`
+    - `GET /pack-builder/pending`
+  - Added server-owned workflow persistence for pending and terminal states (`pack_builder_workflows.json`) plus persisted prepared plans for restart resilience (`pack_builder_plans.json`).
+  - Added session+thread scoped pending-plan resolution to prevent cross-thread mis-apply when users reply `confirm` from different channel threads.
+  - Added channel adapter command mapping (Telegram/Discord/Slack dispatcher):
+    - pack intent -> direct preview endpoint
+    - `confirm`/`ok` -> direct apply endpoint for pending plan
+    - `cancel` -> direct cancel endpoint
+    - `use connectors: ...` -> apply with explicit connector override
+  - Control panel chat now uses the same API-first pack-builder flow for pack intents and confirmation replies, reducing provider calls and avoiding opaque/truncated JSON tool dumps in assistant output.
+  - Added endpoint regression tests covering preview/pending/cancel roundtrip, thread-scoped apply correctness, and missing-secret apply blocking semantics.
 
 ---
 

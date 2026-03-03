@@ -44,6 +44,66 @@ function saveAutoApprovePreference(enabled) {
   }
 }
 
+function isPackBuilderIntent(content) {
+  const lower = String(content || "").toLowerCase();
+  const mentionsPack =
+    lower.includes("pack") || lower.includes("automation") || lower.includes("workflow");
+  const mentionsCreate =
+    lower.includes("create") ||
+    lower.includes("build") ||
+    lower.includes("make") ||
+    lower.includes("generate") ||
+    lower.includes("setup");
+  const mentionsExternal =
+    lower.includes("notion") ||
+    lower.includes("slack") ||
+    lower.includes("stripe") ||
+    lower.includes("mcp") ||
+    lower.includes("connector") ||
+    lower.includes("headline") ||
+    lower.includes("news") ||
+    lower.includes("email");
+  return mentionsPack && mentionsCreate && mentionsExternal;
+}
+
+function parsePackBuilderReplyCommand(content) {
+  const trimmed = String(content || "").trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  if (
+    [
+      "ok",
+      "okay",
+      "yes",
+      "y",
+      "confirm",
+      "confirmed",
+      "approve",
+      "approved",
+      "go",
+      "go ahead",
+      "proceed",
+      "do it",
+      "run it",
+      "apply",
+    ].includes(lower)
+  ) {
+    return { mode: "confirm" };
+  }
+  if (["cancel", "stop", "abort"].includes(lower)) {
+    return { mode: "cancel" };
+  }
+  if (lower.startsWith("use connectors:")) {
+    const list = trimmed
+      .slice(trimmed.indexOf(":") + 1)
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (list.length) return { mode: "connectors", connectors: list };
+  }
+  return null;
+}
+
 export async function renderChat(ctx) {
   const { state, byId, toast, escapeHtml, api, renderIcons, addCleanup, setRoute } = ctx;
   const sessions = await loadSessions();
@@ -430,7 +490,8 @@ export async function renderChat(ctx) {
 
   function recordPackEvent(rawType, rawProps) {
     const normalized = normalizePackEvent(rawType, rawProps);
-    if (!String(normalized.type).toLowerCase().startsWith("pack.")) return;
+    const lower = String(normalized.type).toLowerCase();
+    if (!lower.startsWith("pack.") && !lower.startsWith("pack_builder.")) return;
     if (packEventSeen.has(normalized.id)) return;
     packEventSeen.add(normalized.id);
     if (packEventSeen.size > 400) packEventSeen.clear();
@@ -476,6 +537,30 @@ export async function renderChat(ctx) {
           ? `<div class="chat-msg-attachments mt-1">${attachedCount} attachment${attachedCount === 1 ? "" : "s"}</div>`
           : ""
       }
+    `;
+    messagesEl.appendChild(bubble);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function appendTransientAssistantMessage(text) {
+    const content = String(text || "").trim();
+    if (!content) return;
+    const assistantLabel = String(state.botName || "Assistant").trim() || "Assistant";
+    const assistantAvatar = String(state.botAvatarUrl || "").trim();
+    const bubble = document.createElement("div");
+    bubble.className = "chat-msg assistant";
+    bubble.innerHTML = `
+      <div class="chat-msg-role">
+        <span class="inline-flex items-center gap-2">
+          ${
+            assistantAvatar
+              ? `<img src="${escapeHtml(assistantAvatar)}" alt="${escapeHtml(assistantLabel)}" class="chat-avatar-ring h-5 w-5 rounded-full object-cover" />`
+              : ""
+          }
+          <span>${escapeHtml(assistantLabel)}</span>
+        </span>
+      </div>
+      <div class="tcp-markdown tcp-markdown-ai">${renderMarkdown(content)}</div>
     `;
     messagesEl.appendChild(bubble);
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -1027,6 +1112,61 @@ export async function renderChat(ctx) {
     try {
       if (!state.currentSessionId) await createSession();
       appendTransientUserMessage(prompt, attached.length);
+      const threadKey = `control-panel:${String(state.currentSessionId || "").trim()}`;
+      const replyCommand = parsePackBuilderReplyCommand(promptRaw);
+      if (replyCommand || isPackBuilderIntent(promptRaw)) {
+        let payload = null;
+        if (replyCommand?.mode === "cancel") {
+          payload = await api("/api/engine/pack-builder/cancel", {
+            method: "POST",
+            body: JSON.stringify({
+              session_id: state.currentSessionId,
+              thread_key: threadKey,
+            }),
+          });
+        } else if (replyCommand?.mode === "confirm" || replyCommand?.mode === "connectors") {
+          const pending = await api(
+            `/api/engine/pack-builder/pending?session_id=${encodeURIComponent(state.currentSessionId)}&thread_key=${encodeURIComponent(threadKey)}`,
+            { method: "GET" }
+          );
+          const planId = String(pending?.pending?.plan_id || pending?.plan_id || "").trim();
+          if (!planId) {
+            throw new Error("No pending pack-builder plan for this chat thread.");
+          }
+          payload = await api("/api/engine/pack-builder/apply", {
+            method: "POST",
+            body: JSON.stringify({
+              plan_id: planId,
+              session_id: state.currentSessionId,
+              thread_key: threadKey,
+              selected_connectors: replyCommand?.mode === "connectors" ? replyCommand.connectors : [],
+              approvals: {
+                approve_connector_registration: true,
+                approve_pack_install: true,
+                approve_enable_routines: false,
+              },
+              secret_refs_confirmed: replyCommand?.mode === "connectors",
+            }),
+          });
+        } else {
+          payload = await api("/api/engine/pack-builder/preview", {
+            method: "POST",
+            body: JSON.stringify({
+              goal: promptRaw,
+              session_id: state.currentSessionId,
+              thread_key: threadKey,
+              auto_apply: false,
+            }),
+          });
+        }
+        const summary = String(payload?.output || "").trim() || JSON.stringify(payload || {}, null, 2);
+        appendTransientAssistantMessage(summary);
+        if (attached.length > 0) {
+          uploadedFiles.splice(0, uploadedFiles.length);
+          renderUploadedFiles();
+        }
+        return;
+      }
       const modelRoute = await resolveModelRoute();
       if (!modelRoute) {
         throw new Error(
@@ -1247,6 +1387,9 @@ export async function renderChat(ctx) {
             void refreshPermissionRequests();
           }
           if (String(event.type || "").toLowerCase().startsWith("pack.")) {
+            recordPackEvent(event.type, event.properties || {});
+          }
+          if (String(event.type || "").toLowerCase().startsWith("pack_builder.")) {
             recordPackEvent(event.type, event.properties || {});
           }
           if (evRunId && evRunId !== runId) continue;

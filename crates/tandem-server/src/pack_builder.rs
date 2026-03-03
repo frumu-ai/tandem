@@ -3,6 +3,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -23,16 +24,117 @@ use crate::{
 pub struct PackBuilderTool {
     state: AppState,
     plans: Arc<RwLock<HashMap<String, PreparedPlan>>>,
+    plans_path: PathBuf,
     last_plan_by_session: Arc<RwLock<HashMap<String, String>>>,
+    workflows: Arc<RwLock<HashMap<String, WorkflowRecord>>>,
+    workflows_path: PathBuf,
 }
 
 impl PackBuilderTool {
     pub fn new(state: AppState) -> Self {
+        let workflows_path = resolve_pack_builder_workflows_path();
+        let plans_path = resolve_pack_builder_plans_path();
         Self {
             state,
-            plans: Arc::new(RwLock::new(HashMap::new())),
+            plans: Arc::new(RwLock::new(load_plans(&plans_path))),
+            plans_path,
             last_plan_by_session: Arc::new(RwLock::new(HashMap::new())),
+            workflows: Arc::new(RwLock::new(load_workflows(&workflows_path))),
+            workflows_path,
         }
+    }
+
+    async fn upsert_workflow(
+        &self,
+        event_type: &str,
+        status: WorkflowStatus,
+        plan_id: &str,
+        session_id: Option<&str>,
+        thread_key: Option<&str>,
+        goal: &str,
+        metadata: &Value,
+    ) {
+        let now = now_ms();
+        let workflow_id = format!("wf-{}", plan_id);
+        let mut workflows = self.workflows.write().await;
+        let created_at_ms = workflows
+            .get(plan_id)
+            .map(|row| row.created_at_ms)
+            .unwrap_or(now);
+        workflows.insert(
+            plan_id.to_string(),
+            WorkflowRecord {
+                workflow_id: workflow_id.clone(),
+                plan_id: plan_id.to_string(),
+                session_id: session_id.map(ToString::to_string),
+                thread_key: thread_key.map(ToString::to_string),
+                goal: goal.to_string(),
+                status: status.clone(),
+                metadata: metadata.clone(),
+                created_at_ms,
+                updated_at_ms: now,
+            },
+        );
+        retain_recent_workflows(&mut workflows, 256);
+        save_workflows(&self.workflows_path, &workflows);
+        drop(workflows);
+
+        self.state.event_bus.publish(tandem_types::EngineEvent::new(
+            event_type,
+            json!({
+                "sessionID": session_id.unwrap_or_default(),
+                "threadKey": thread_key.unwrap_or_default(),
+                "planID": plan_id,
+                "status": workflow_status_label(&status),
+                "metadata": metadata,
+            }),
+        ));
+    }
+
+    async fn resolve_plan_id_from_session(
+        &self,
+        session_id: Option<&str>,
+        thread_key: Option<&str>,
+    ) -> Option<String> {
+        if let Some(session) = session_id {
+            if let Some(thread) = thread_key {
+                let scoped_key = session_thread_scope_key(session, Some(thread));
+                if let Some(found) = self
+                    .last_plan_by_session
+                    .read()
+                    .await
+                    .get(&scoped_key)
+                    .cloned()
+                {
+                    return Some(found);
+                }
+            }
+        }
+        if let Some(session) = session_id {
+            if let Some(found) = self.last_plan_by_session.read().await.get(session).cloned() {
+                return Some(found);
+            }
+        }
+        let workflows = self.workflows.read().await;
+        let mut best: Option<(&String, u64)> = None;
+        for (plan_id, wf) in workflows.iter() {
+            if !matches!(wf.status, WorkflowStatus::PreviewPending) {
+                continue;
+            }
+            if session_id.is_some() && wf.session_id.as_deref() != session_id {
+                continue;
+            }
+            if let Some(thread) = thread_key {
+                if wf.thread_key.as_deref() != Some(thread) {
+                    continue;
+                }
+            }
+            let ts = wf.updated_at_ms;
+            if best.map(|(_, b)| ts > b).unwrap_or(true) {
+                best = Some((plan_id, ts));
+            }
+        }
+        best.map(|(plan_id, _)| plan_id.clone())
     }
 }
 
@@ -58,6 +160,10 @@ struct PackBuilderInput {
     schedule: Option<PreviewScheduleInput>,
     #[serde(default, rename = "__session_id")]
     session_id: Option<String>,
+    #[serde(default)]
+    thread_key: Option<String>,
+    #[serde(default)]
+    secret_refs_confirmed: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -70,7 +176,7 @@ struct PreviewScheduleInput {
     timezone: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConnectorCandidate {
     slug: String,
     name: String,
@@ -83,7 +189,7 @@ struct ConnectorCandidate {
     score: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PreparedPlan {
     plan_id: String,
     goal: String,
@@ -100,9 +206,34 @@ struct PreparedPlan {
     generated_zip_path: PathBuf,
     routine_ids: Vec<String>,
     routine_template: RoutineTemplate,
+    created_at_ms: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WorkflowStatus {
+    PreviewPending,
+    ApplyBlockedMissingSecrets,
+    ApplyBlockedAuth,
+    ApplyComplete,
+    Cancelled,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkflowRecord {
+    workflow_id: String,
+    plan_id: String,
+    session_id: Option<String>,
+    thread_key: Option<String>,
+    goal: String,
+    status: WorkflowStatus,
+    metadata: Value,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RoutineTemplate {
     routine_id: String,
     name: String,
@@ -112,7 +243,7 @@ struct RoutineTemplate {
     allowed_tools: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CapabilityNeed {
     id: String,
     external: bool,
@@ -162,10 +293,12 @@ impl Tool for PackBuilderTool {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "mode": {"type": "string", "enum": ["preview", "apply"]},
+                    "mode": {"type": "string", "enum": ["preview", "apply", "cancel", "pending"]},
                     "goal": {"type": "string"},
                     "auto_apply": {"type": "boolean"},
                     "plan_id": {"type": "string"},
+                    "thread_key": {"type": "string"},
+                    "secret_refs_confirmed": {"oneOf":[{"type":"boolean"},{"type":"array","items":{"type":"string"}}]},
                     "selected_connectors": {"type": "array", "items": {"type": "string"}},
                     "approve_connector_registration": {"type": "boolean"},
                     "approve_pack_install": {"type": "boolean"},
@@ -194,42 +327,37 @@ impl Tool for PackBuilderTool {
             .to_ascii_lowercase();
 
         if mode == "apply" && input.plan_id.is_none() {
-            if let Some(session_id) = input.session_id.as_deref() {
-                if let Some(last_plan_id) = self
-                    .last_plan_by_session
-                    .read()
-                    .await
-                    .get(session_id)
-                    .cloned()
-                {
-                    input.plan_id = Some(last_plan_id);
-                }
-            }
+            input.plan_id = self
+                .resolve_plan_id_from_session(
+                    input.session_id.as_deref(),
+                    input.thread_key.as_deref(),
+                )
+                .await;
         }
 
         if mode == "preview" {
             let goal_text = input.goal.as_deref().map(str::trim).unwrap_or("");
             if is_confirmation_goal_text(goal_text) {
-                if let Some(session_id) = input.session_id.as_deref() {
-                    if let Some(last_plan_id) = self
-                        .last_plan_by_session
-                        .read()
-                        .await
-                        .get(session_id)
-                        .cloned()
-                    {
-                        input.mode = Some("apply".to_string());
-                        input.plan_id = Some(last_plan_id);
-                        input.approve_pack_install = Some(true);
-                        input.approve_connector_registration = Some(true);
-                        input.approve_enable_routines = Some(false);
-                        mode = "apply".to_string();
-                    }
+                if let Some(last_plan_id) = self
+                    .resolve_plan_id_from_session(
+                        input.session_id.as_deref(),
+                        input.thread_key.as_deref(),
+                    )
+                    .await
+                {
+                    input.mode = Some("apply".to_string());
+                    input.plan_id = Some(last_plan_id);
+                    input.approve_pack_install = Some(true);
+                    input.approve_connector_registration = Some(true);
+                    input.approve_enable_routines = Some(false);
+                    mode = "apply".to_string();
                 }
             }
         }
 
         match mode.as_str() {
+            "cancel" => self.cancel(input).await,
+            "pending" => self.pending(input).await,
             "apply" => self.apply(input).await,
             _ => self.preview(input).await,
         }
@@ -383,23 +511,41 @@ impl PackBuilderTool {
             generated_zip_path: zip_path.clone(),
             routine_ids: vec![routine_template.routine_id.clone()],
             routine_template,
+            created_at_ms: now_ms(),
         };
-        self.plans.write().await.insert(plan_id.clone(), prepared);
+        {
+            let mut plans = self.plans.write().await;
+            plans.insert(plan_id.clone(), prepared);
+            retain_recent_plans(&mut plans, 256);
+            save_plans(&self.plans_path, &plans);
+        }
         if let Some(session_id) = input
             .session_id
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
         {
-            self.last_plan_by_session
-                .write()
-                .await
-                .insert(session_id.to_string(), plan_id.clone());
+            let mut last = self.last_plan_by_session.write().await;
+            last.insert(session_id.to_string(), plan_id.clone());
+            if let Some(thread_key) = input
+                .thread_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                last.insert(
+                    session_thread_scope_key(session_id, Some(thread_key)),
+                    plan_id.clone(),
+                );
+            }
         }
 
         let output = json!({
+            "workflow_id": format!("wf-{}", plan_id),
             "mode": "preview",
             "plan_id": plan_id,
+            "session_id": input.session_id,
+            "thread_key": input.thread_key,
             "goal": goal,
             "pack": {
                 "pack_id": pack_id,
@@ -415,6 +561,12 @@ impl PackBuilderTool {
             "zip_path": zip_path.to_string_lossy(),
             "auto_apply_requested": auto_apply_requested,
             "auto_apply_ready": auto_apply_ready,
+            "status": "preview_pending",
+            "next_actions": build_preview_next_actions(
+                connector_selection_required,
+                &required_secrets,
+                !selected_connector_slugs.is_empty(),
+            ),
             "approval_required": {
                 "register_connectors": !selected_connector_slugs.is_empty(),
                 "install_pack": true,
@@ -435,6 +587,8 @@ impl PackBuilderTool {
                     approve_enable_routines: Some(false),
                     schedule: None,
                     session_id: input.session_id.clone(),
+                    thread_key: input.thread_key.clone(),
+                    secret_refs_confirmed: Some(json!(true)),
                 })
                 .await?;
             let mut metadata = applied.metadata.clone();
@@ -442,11 +596,32 @@ impl PackBuilderTool {
                 obj.insert("auto_applied_from_preview".to_string(), json!(true));
                 obj.insert("preview_plan_id".to_string(), json!(plan_id));
             }
+            self.upsert_workflow(
+                "pack_builder.apply_completed",
+                WorkflowStatus::ApplyComplete,
+                plan_id.as_str(),
+                input.session_id.as_deref(),
+                input.thread_key.as_deref(),
+                goal.as_str(),
+                &metadata,
+            )
+            .await;
             return Ok(ToolResult {
                 output: render_pack_builder_apply_output(&metadata),
                 metadata,
             });
         }
+
+        self.upsert_workflow(
+            "pack_builder.preview_ready",
+            WorkflowStatus::PreviewPending,
+            plan_id.as_str(),
+            input.session_id.as_deref(),
+            input.thread_key.as_deref(),
+            goal.as_str(),
+            &output,
+        )
+        .await;
 
         Ok(ToolResult {
             output: render_pack_builder_preview_output(&output),
@@ -455,8 +630,27 @@ impl PackBuilderTool {
     }
 
     async fn apply(&self, input: PackBuilderInput) -> anyhow::Result<ToolResult> {
-        let Some(plan_id) = input.plan_id.as_deref() else {
+        let resolved_plan_id = if input.plan_id.is_none() {
+            self.resolve_plan_id_from_session(
+                input.session_id.as_deref(),
+                input.thread_key.as_deref(),
+            )
+            .await
+        } else {
+            input.plan_id.clone()
+        };
+        let Some(plan_id) = resolved_plan_id.as_deref() else {
             let output = json!({"error":"plan_id is required for apply"});
+            self.upsert_workflow(
+                "pack_builder.error",
+                WorkflowStatus::Error,
+                "unknown",
+                input.session_id.as_deref(),
+                input.thread_key.as_deref(),
+                input.goal.as_deref().unwrap_or_default(),
+                &output,
+            )
+            .await;
             return Ok(ToolResult {
                 output: render_pack_builder_apply_output(&output),
                 metadata: output,
@@ -469,19 +663,62 @@ impl PackBuilderTool {
         };
         let Some(plan) = plan else {
             let output = json!({"error":"unknown plan_id", "plan_id": plan_id});
+            self.upsert_workflow(
+                "pack_builder.error",
+                WorkflowStatus::Error,
+                plan_id,
+                input.session_id.as_deref(),
+                input.thread_key.as_deref(),
+                input.goal.as_deref().unwrap_or_default(),
+                &output,
+            )
+            .await;
             return Ok(ToolResult {
                 output: render_pack_builder_apply_output(&output),
                 metadata: output,
             });
         };
 
+        let session_id = input.session_id.as_deref();
+        let thread_key = input.thread_key.as_deref();
+        if self
+            .workflows
+            .read()
+            .await
+            .get(plan_id)
+            .map(|wf| matches!(wf.status, WorkflowStatus::Cancelled))
+            .unwrap_or(false)
+        {
+            let output = json!({
+                "error":"plan_cancelled",
+                "plan_id": plan_id,
+                "status":"cancelled",
+                "next_actions": ["Create a new preview to continue."]
+            });
+            return Ok(ToolResult {
+                output: render_pack_builder_apply_output(&output),
+                metadata: output,
+            });
+        }
+
         if input.approve_pack_install != Some(true) {
             let output = json!({
                 "error": "approval_required",
                 "required": {
                     "approve_pack_install": true
-                }
+                },
+                "status": "error"
             });
+            self.upsert_workflow(
+                "pack_builder.error",
+                WorkflowStatus::Error,
+                plan_id,
+                session_id,
+                thread_key,
+                &plan.goal,
+                &output,
+            )
+            .await;
             return Ok(ToolResult {
                 output: render_pack_builder_apply_output(&output),
                 metadata: output,
@@ -500,13 +737,103 @@ impl PackBuilderTool {
                 "required": {
                     "approve_connector_registration": true,
                     "approve_pack_install": true
-                }
+                },
+                "status": "error"
             });
+            self.upsert_workflow(
+                "pack_builder.error",
+                WorkflowStatus::Error,
+                plan_id,
+                session_id,
+                thread_key,
+                &plan.goal,
+                &output,
+            )
+            .await;
             return Ok(ToolResult {
                 output: render_pack_builder_apply_output(&output),
                 metadata: output,
             });
         }
+
+        if !plan.required_secrets.is_empty()
+            && !secret_refs_confirmed(&input.secret_refs_confirmed, &plan.required_secrets)
+        {
+            let output = json!({
+                "workflow_id": format!("wf-{}", plan.plan_id),
+                "mode": "apply",
+                "plan_id": plan.plan_id,
+                "session_id": input.session_id,
+                "thread_key": input.thread_key,
+                "goal": plan.goal,
+                "status": "apply_blocked_missing_secrets",
+                "required_secrets": plan.required_secrets,
+                "next_actions": [
+                    "Set required secrets in engine settings/environment.",
+                    "Re-run apply with `secret_refs_confirmed` after secrets are set."
+                ],
+            });
+            self.upsert_workflow(
+                "pack_builder.apply_blocked",
+                WorkflowStatus::ApplyBlockedMissingSecrets,
+                plan_id,
+                session_id,
+                thread_key,
+                &plan.goal,
+                &output,
+            )
+            .await;
+            return Ok(ToolResult {
+                output: render_pack_builder_apply_output(&output),
+                metadata: output,
+            });
+        }
+
+        let auth_blocked = selected.iter().any(|slug| {
+            plan.recommended_connectors
+                .iter()
+                .any(|c| &c.slug == slug && (c.requires_setup || c.transport_url.contains('{')))
+        });
+        if auth_blocked {
+            let output = json!({
+                "workflow_id": format!("wf-{}", plan.plan_id),
+                "mode": "apply",
+                "plan_id": plan.plan_id,
+                "session_id": input.session_id,
+                "thread_key": input.thread_key,
+                "goal": plan.goal,
+                "status": "apply_blocked_auth",
+                "selected_connectors": selected,
+                "next_actions": [
+                    "Complete connector setup/auth from the connector documentation.",
+                    "Re-run apply after connector auth is completed."
+                ],
+            });
+            self.upsert_workflow(
+                "pack_builder.apply_blocked",
+                WorkflowStatus::ApplyBlockedAuth,
+                plan_id,
+                session_id,
+                thread_key,
+                &plan.goal,
+                &output,
+            )
+            .await;
+            return Ok(ToolResult {
+                output: render_pack_builder_apply_output(&output),
+                metadata: output,
+            });
+        }
+
+        self.state.event_bus.publish(tandem_types::EngineEvent::new(
+            "pack_builder.apply_started",
+            json!({
+                "sessionID": session_id.unwrap_or_default(),
+                "threadKey": thread_key.unwrap_or_default(),
+                "planID": plan_id,
+                "status": "apply_started",
+            }),
+        ));
 
         let mut connector_results = Vec::<Value>::new();
         let mut registered_servers = Vec::<String>::new();
@@ -605,8 +932,11 @@ impl PackBuilderTool {
         let preset_path = save_pack_preset(&plan, &registered_servers)?;
 
         let output = json!({
+            "workflow_id": format!("wf-{}", plan.plan_id),
             "mode": "apply",
             "plan_id": plan.plan_id,
+            "session_id": input.session_id,
+            "thread_key": input.thread_key,
             "capabilities": {
                 "required": plan.capabilities_required,
                 "optional": plan.capabilities_optional
@@ -622,6 +952,11 @@ impl PackBuilderTool {
             "routines_registered": routines_registered,
             "routines_enabled": input.approve_enable_routines == Some(true),
             "fallback_warnings": plan.fallback_warnings,
+            "status": "apply_complete",
+            "next_actions": [
+                "Review the installed pack in Packs view.",
+                "Enable the paused routine when ready."
+            ],
             "pack_preset": {
                 "path": preset_path.to_string_lossy().to_string(),
                 "required_secrets": plan.required_secrets,
@@ -629,8 +964,119 @@ impl PackBuilderTool {
             }
         });
 
+        self.upsert_workflow(
+            "pack_builder.apply_completed",
+            WorkflowStatus::ApplyComplete,
+            plan_id,
+            session_id,
+            thread_key,
+            &plan.goal,
+            &output,
+        )
+        .await;
+
         Ok(ToolResult {
             output: render_pack_builder_apply_output(&output),
+            metadata: output,
+        })
+    }
+
+    async fn cancel(&self, input: PackBuilderInput) -> anyhow::Result<ToolResult> {
+        let plan_id = if let Some(plan_id) = input.plan_id.as_deref().map(str::trim) {
+            if !plan_id.is_empty() {
+                Some(plan_id.to_string())
+            } else {
+                None
+            }
+        } else {
+            self.resolve_plan_id_from_session(
+                input.session_id.as_deref(),
+                input.thread_key.as_deref(),
+            )
+            .await
+        };
+        let Some(plan_id) = plan_id else {
+            let output = json!({"error":"plan_id is required for cancel"});
+            return Ok(ToolResult {
+                output: render_pack_builder_apply_output(&output),
+                metadata: output,
+            });
+        };
+        let goal = self
+            .plans
+            .read()
+            .await
+            .get(&plan_id)
+            .map(|p| p.goal.clone())
+            .unwrap_or_default();
+        let output = json!({
+            "workflow_id": format!("wf-{}", plan_id),
+            "mode": "cancel",
+            "plan_id": plan_id,
+            "session_id": input.session_id,
+            "thread_key": input.thread_key,
+            "goal": goal,
+            "status": "cancelled",
+            "next_actions": ["Create a new preview when ready."]
+        });
+        self.upsert_workflow(
+            "pack_builder.cancelled",
+            WorkflowStatus::Cancelled,
+            output
+                .get("plan_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            input.session_id.as_deref(),
+            input.thread_key.as_deref(),
+            output
+                .get("goal")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            &output,
+        )
+        .await;
+        Ok(ToolResult {
+            output: "Pack Builder Apply Cancelled\n- Pending plan cancelled.".to_string(),
+            metadata: output,
+        })
+    }
+
+    async fn pending(&self, input: PackBuilderInput) -> anyhow::Result<ToolResult> {
+        let plan_id = if let Some(plan_id) = input.plan_id.as_deref().map(str::trim) {
+            if !plan_id.is_empty() {
+                Some(plan_id.to_string())
+            } else {
+                None
+            }
+        } else {
+            self.resolve_plan_id_from_session(
+                input.session_id.as_deref(),
+                input.thread_key.as_deref(),
+            )
+            .await
+        };
+        let Some(plan_id) = plan_id else {
+            let output = json!({"status":"none","pending":null});
+            return Ok(ToolResult {
+                output: "No pending pack-builder plan for this session.".to_string(),
+                metadata: output,
+            });
+        };
+        let workflows = self.workflows.read().await;
+        let Some(record) = workflows.get(&plan_id) else {
+            let output = json!({"status":"none","plan_id":plan_id});
+            return Ok(ToolResult {
+                output: "No pending pack-builder plan found.".to_string(),
+                metadata: output,
+            });
+        };
+        let output = json!({
+            "status":"ok",
+            "pending": record,
+            "plan_id": plan_id
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string()),
             metadata: output,
         })
     }
@@ -727,12 +1173,68 @@ fn render_pack_builder_preview_output(meta: &Value) -> String {
 }
 
 fn render_pack_builder_apply_output(meta: &Value) -> String {
+    if let Some(status) = meta.get("status").and_then(Value::as_str) {
+        match status {
+            "apply_blocked_missing_secrets" => {
+                let required = meta
+                    .get("required_secrets")
+                    .and_then(Value::as_array)
+                    .map(|rows| {
+                        rows.iter()
+                            .filter_map(Value::as_str)
+                            .map(|v| format!("- {}", v))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let mut lines = vec![
+                    "Pack Builder Apply Blocked".to_string(),
+                    "- Reason: missing required secrets.".to_string(),
+                ];
+                if !required.is_empty() {
+                    lines.push("- Required secrets:".to_string());
+                    lines.extend(required);
+                }
+                lines.push("- Action: set secrets, then apply again.".to_string());
+                return lines.join("\n");
+            }
+            "apply_blocked_auth" => {
+                let connectors = meta
+                    .get("selected_connectors")
+                    .and_then(Value::as_array)
+                    .map(|rows| {
+                        rows.iter()
+                            .filter_map(Value::as_str)
+                            .map(|v| format!("- {}", v))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let mut lines = vec![
+                    "Pack Builder Apply Blocked".to_string(),
+                    "- Reason: connector authentication/setup required.".to_string(),
+                ];
+                if !connectors.is_empty() {
+                    lines.push("- Connectors awaiting setup:".to_string());
+                    lines.extend(connectors);
+                }
+                lines.push("- Action: complete connector auth, then apply again.".to_string());
+                return lines.join("\n");
+            }
+            "cancelled" => {
+                return "Pack Builder Apply Cancelled\n- Pending plan cancelled.".to_string();
+            }
+            _ => {}
+        }
+    }
+
     if let Some(error) = meta.get("error").and_then(Value::as_str) {
         return match error {
             "approval_required" => {
                 "Pack Builder Apply Blocked\n- Approval required for this apply step.".to_string()
             }
             "unknown plan_id" => "Pack Builder Apply Failed\n- Plan not found.".to_string(),
+            "plan_cancelled" => {
+                "Pack Builder Apply Failed\n- Plan was already cancelled.".to_string()
+            }
             _ => format!("Pack Builder Apply Failed\n- {}", error),
         };
     }
@@ -803,6 +1305,193 @@ fn render_pack_builder_apply_output(meta: &Value) -> String {
     }
 
     lines.join("\n")
+}
+
+fn resolve_pack_builder_workflows_path() -> PathBuf {
+    if let Ok(dir) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("pack_builder_workflows.json");
+        }
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        return data_dir
+            .join("tandem")
+            .join("data")
+            .join("pack_builder_workflows.json");
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".tandem")
+        .join("data")
+        .join("pack_builder_workflows.json")
+}
+
+fn resolve_pack_builder_plans_path() -> PathBuf {
+    if let Ok(dir) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("pack_builder_plans.json");
+        }
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        return data_dir
+            .join("tandem")
+            .join("data")
+            .join("pack_builder_plans.json");
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".tandem")
+        .join("data")
+        .join("pack_builder_plans.json")
+}
+
+fn load_workflows(path: &PathBuf) -> HashMap<String, WorkflowRecord> {
+    let Ok(bytes) = fs::read(path) else {
+        return HashMap::new();
+    };
+    serde_json::from_slice::<HashMap<String, WorkflowRecord>>(&bytes).unwrap_or_default()
+}
+
+fn save_workflows(path: &PathBuf, workflows: &HashMap<String, WorkflowRecord>) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(workflows) {
+        let _ = fs::write(path, bytes);
+    }
+}
+
+fn load_plans(path: &PathBuf) -> HashMap<String, PreparedPlan> {
+    let Ok(bytes) = fs::read(path) else {
+        return HashMap::new();
+    };
+    serde_json::from_slice::<HashMap<String, PreparedPlan>>(&bytes).unwrap_or_default()
+}
+
+fn save_plans(path: &PathBuf, plans: &HashMap<String, PreparedPlan>) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(plans) {
+        let _ = fs::write(path, bytes);
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn retain_recent_workflows(workflows: &mut HashMap<String, WorkflowRecord>, keep: usize) {
+    if workflows.len() <= keep {
+        return;
+    }
+    let mut rows = workflows
+        .iter()
+        .map(|(key, value)| (key.clone(), value.updated_at_ms))
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    let keep_keys = rows
+        .into_iter()
+        .take(keep)
+        .map(|(key, _)| key)
+        .collect::<BTreeSet<_>>();
+    workflows.retain(|key, _| keep_keys.contains(key));
+}
+
+fn retain_recent_plans(plans: &mut HashMap<String, PreparedPlan>, keep: usize) {
+    if plans.len() <= keep {
+        return;
+    }
+    let mut rows = plans
+        .iter()
+        .map(|(key, value)| (key.clone(), value.created_at_ms))
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    let keep_keys = rows
+        .into_iter()
+        .take(keep)
+        .map(|(key, _)| key)
+        .collect::<BTreeSet<_>>();
+    plans.retain(|key, _| keep_keys.contains(key));
+}
+
+fn session_thread_scope_key(session_id: &str, thread_key: Option<&str>) -> String {
+    let thread = thread_key.unwrap_or_default().trim();
+    if thread.is_empty() {
+        return session_id.trim().to_string();
+    }
+    format!("{}::{}", session_id.trim(), thread)
+}
+
+fn workflow_status_label(status: &WorkflowStatus) -> &'static str {
+    match status {
+        WorkflowStatus::PreviewPending => "preview_pending",
+        WorkflowStatus::ApplyBlockedMissingSecrets => "apply_blocked_missing_secrets",
+        WorkflowStatus::ApplyBlockedAuth => "apply_blocked_auth",
+        WorkflowStatus::ApplyComplete => "apply_complete",
+        WorkflowStatus::Cancelled => "cancelled",
+        WorkflowStatus::Error => "error",
+    }
+}
+
+fn build_preview_next_actions(
+    connector_selection_required: bool,
+    required_secrets: &[String],
+    has_connector_registration: bool,
+) -> Vec<String> {
+    let mut actions = Vec::new();
+    if connector_selection_required {
+        actions.push("Select connector(s) before applying.".to_string());
+    }
+    if !required_secrets.is_empty() {
+        actions.push("Set required secrets in engine settings/environment.".to_string());
+    }
+    if has_connector_registration {
+        actions.push("Confirm connector registration and pack install.".to_string());
+    } else {
+        actions.push("Apply to install the generated pack.".to_string());
+    }
+    actions
+}
+
+fn secret_refs_confirmed(confirmed: &Option<Value>, required: &[String]) -> bool {
+    if required.is_empty() {
+        return true;
+    }
+    if env_has_all_required_secrets(required) {
+        return true;
+    }
+    let Some(value) = confirmed else {
+        return false;
+    };
+    if value.as_bool() == Some(true) {
+        return true;
+    }
+    let Some(rows) = value.as_array() else {
+        return false;
+    };
+    let confirmed = rows
+        .iter()
+        .filter_map(Value::as_str)
+        .map(|v| v.trim().to_ascii_uppercase())
+        .collect::<BTreeSet<_>>();
+    required
+        .iter()
+        .all(|item| confirmed.contains(&item.to_ascii_uppercase()))
+}
+
+fn env_has_all_required_secrets(required: &[String]) -> bool {
+    required.iter().all(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    })
 }
 
 fn build_schedule(input: Option<&PreviewScheduleInput>) -> (RoutineSchedule, String, String) {

@@ -25,9 +25,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - preview output now includes candidate connector list (with docs/transport/auth metadata), selected MCP mapping, required secrets, and approval requirements
   - apply path now supports MCP registration/connect, tool sync, pack install, and paused-by-default routine registration (explicit enable approval required)
   - persisted generated pack presets under `presets/overrides/pack_presets/` including connector selections, registered servers, required credentials, and selected MCP tools
+- **Pack Builder API-first parity workflow contract**:
+  - added first-class endpoints:
+    - `POST /pack-builder/preview`
+    - `POST /pack-builder/apply`
+    - `POST /pack-builder/cancel`
+    - `GET /pack-builder/pending`
+  - endpoints delegate to the same `pack_builder` implementation as `/tool/execute` to keep preview/apply/cancel semantics identical across invocation paths
+  - added persisted workflow + prepared-plan stores (`pack_builder_workflows.json`, `pack_builder_plans.json`) for restart-safe pending state
+  - added thread-scoped pending-plan resolution (`session_id + thread_key`) to prevent cross-thread confirmation/apply collisions
+  - added new regression coverage for preview/pending/cancel endpoint roundtrip, thread-scoped apply behavior, and missing-secret apply blocking
 - **Pack Builder activation and routing surfaces**:
   - added default `pack_builder` agent profile with MCP-first system prompt and restricted tool allowlist
   - added channel-dispatcher intent routing for “create/build automation pack” style requests to `pack_builder` with explicit tool allowlist
+  - added API-first channel command mapping for pack-builder workflows:
+    - preview is created via `/pack-builder/preview` (no provider round-trip)
+    - `confirm`/`ok` -> `/pack-builder/apply` for pending plan on that channel thread
+    - `cancel` -> `/pack-builder/cancel`
+    - `use connectors: ...` -> `/pack-builder/apply` with connector override
 - **Preset index compatibility expansion**:
   - extended server preset index contract with `pack_presets` collection
   - updated control panel packs view to consume `pack_presets` safely
@@ -60,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - safe previews now auto-apply by default (install pack + register routine paused) when no connector choice/secrets/manual setup are required
   - chat confirmation bridge: when a user replies with confirmation text after a Pack Builder preview, engine normalizes the next `pack_builder` call to `mode=apply` using the preview `plan_id` recovered from conversation context (prevents accidental new “confirm” packs across control panel, desktop, and channel threads)
   - pack-builder tool now also keeps last preview `plan_id` per session and interprets short confirmation goals (`ok`, `confirm`, `apply`, etc.) as apply of that session’s pending plan, so accidental `pack-builder-ok` installs are prevented even when model-side tool args are imperfect
+  - apply output now renders explicit blocked summaries for:
+    - `apply_blocked_missing_secrets`
+    - `apply_blocked_auth`
+  - cancelled plans are now terminal for later apply attempts (`plan_cancelled`)
+  - control-panel chat now uses API-first pack-builder flow (preview/apply/cancel) for pack-intent and confirmation messages, reducing provider token burn and removing reliance on assistant paraphrase for state transitions
 
 ## [0.4.0] - Unreleased
 
