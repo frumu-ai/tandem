@@ -17,6 +17,15 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - `pack_builder` is now baseline-allowed in engine permission defaults so first-run pack creation from chat/channels does not timeout on tool approval prompts.
   - Added runtime loop guardrails for `pack_builder` to reduce token waste on repeated identical tool calls (terminal follow-up behavior + duplicate-signature limit `1`).
 
+- Semantic tool retrieval for MCP-heavy toolsets (`v0.4.1` scope)
+  - Added embedding-backed semantic tool retrieval in `ToolRegistry` so the engine can send a relevant top-K tool subset instead of all schemas every turn.
+  - Added startup bulk indexing (`tools.index_all`) plus incremental indexing on runtime tool registration (`register_tool`) so MCP servers connected after startup are indexed immediately.
+  - Added index cleanup on `unregister_tool` and `unregister_by_prefix` so MCP disconnect/refresh does not leave stale vectors.
+  - Engine loop now uses semantic retrieval by default (`TANDEM_SEMANTIC_TOOL_RETRIEVAL=1`) with `TANDEM_SEMANTIC_TOOL_RETRIEVAL_K` default `24` (aligned with existing expanded tool cap behavior).
+  - Explicit allowlist/policy matches are unioned from the full tool list to prevent required tools from being dropped by top-K retrieval.
+  - Runtime system prompt now includes a compact connected-integrations catalog (MCP server names only), gated by `TANDEM_MCP_CATALOG_IN_SYSTEM_PROMPT`.
+  - Graceful fallback remains intact: when embeddings are unavailable/disabled, retrieval falls back to full tool listing.
+
 - MCP catalog moved into engine and exposed to frontends
   - Added engine-managed embedded catalog endpoints:
     - `GET /mcp/catalog`

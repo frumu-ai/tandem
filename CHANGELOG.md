@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Semantic tool retrieval for tool-schema context reduction**:
+  - added embedding-backed tool retrieval in `ToolRegistry` (`retrieve(query, k)`) to avoid sending all tool schemas on every provider call
+  - retrieval indexing now tracks runtime lifecycle events:
+    - startup bulk indexing via `tools.index_all().await`
+    - incremental indexing on `register_tool` (covers MCP tools connected after startup)
+    - vector cleanup on `unregister_tool` and `unregister_by_prefix` (covers MCP disconnect/refresh paths)
+  - engine loop now uses semantic retrieval candidates by default (`TANDEM_SEMANTIC_TOOL_RETRIEVAL=1`) with `TANDEM_SEMANTIC_TOOL_RETRIEVAL_K` defaulting to `24` (aligned to existing expanded tool cap)
+  - explicit policy tools are unioned from the full tool list so request/agent/session allowlist matches are not dropped by top-K retrieval
+  - runtime system prompt now includes a compact connected MCP integration catalog (server names only) gated by `TANDEM_MCP_CATALOG_IN_SYSTEM_PROMPT`
 - **MCP-first Pack Builder workflow in engine**:
   - added built-in `pack_builder` tool with `preview`/`apply` phases for generating installable Tandem packs from plain-English goals
   - external capabilities now map to MCP catalog connectors by default, with explicit fallback warnings when no connector match is available

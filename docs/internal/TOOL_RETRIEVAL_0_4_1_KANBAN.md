@@ -5,13 +5,13 @@ Owner: Tandem Engine
 
 ## To Do
 
-- [ ] Add v0.4.1 changelog entry details for semantic retrieval rollout
-- [ ] Add v0.4.1 release notes entry for semantic retrieval + MCP context reduction
-- [ ] Final validation pass (`tandem-tools`, `tandem-core` targeted tests, engine compile)
+- [x] Add v0.4.1 changelog entry details for semantic retrieval rollout
+- [x] Add v0.4.1 release notes entry for semantic retrieval + MCP context reduction
+- [x] Final validation pass (`tandem-tools`, `tandem-core` targeted tests, engine compile)
 
 ## In Progress
 
-- [ ] Track delivery commits in this file
+- [x] Track delivery commits in this file
 
 ## Done
 
@@ -38,4 +38,5 @@ Owner: Tandem Engine
 
 ## Delivery Commits
 
-- `TBD`
+- `ff2a64b` — semantic retrieval runtime integration + MCP catalog prompt + kanban board
+- `TBD` — release docs + kanban completion snapshot
