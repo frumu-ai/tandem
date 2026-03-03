@@ -828,6 +828,20 @@ impl AppState {
         self.runtime.get().is_some()
     }
 
+    pub async fn wait_until_ready_or_failed(&self, attempts: usize, sleep_ms: u64) -> bool {
+        for _ in 0..attempts {
+            if self.is_ready() {
+                return true;
+            }
+            let startup = self.startup_snapshot().await;
+            if matches!(startup.status, StartupStatus::Failed) {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+        }
+        self.is_ready()
+    }
+
     pub fn mode_label(&self) -> &'static str {
         if self.in_process_mode.load(Ordering::Relaxed) {
             "in-process"
@@ -903,6 +917,12 @@ impl AppState {
         self.runtime
             .set(runtime)
             .map_err(|_| anyhow::anyhow!("runtime already initialized"))?;
+        self.tools
+            .register_tool(
+                "pack_builder".to_string(),
+                Arc::new(crate::pack_builder::PackBuilderTool::new(self.clone())),
+            )
+            .await;
         self.engine_loop
             .set_spawn_agent_hook(std::sync::Arc::new(
                 crate::agent_teams::ServerSpawnAgentHook::new(self.clone()),
@@ -2826,6 +2846,10 @@ fn derive_status_index_update(event: &EngineEvent) -> Option<StatusIndexUpdate> 
 }
 
 pub async fn run_status_indexer(state: AppState) {
+    if !state.wait_until_ready_or_failed(120, 250).await {
+        tracing::warn!("status indexer: skipped because runtime did not become ready");
+        return;
+    }
     let mut rx = state.event_bus.subscribe();
     loop {
         match rx.recv().await {
@@ -2852,6 +2876,10 @@ pub async fn run_status_indexer(state: AppState) {
 }
 
 pub async fn run_agent_team_supervisor(state: AppState) {
+    if !state.wait_until_ready_or_failed(120, 250).await {
+        tracing::warn!("agent team supervisor: skipped because runtime did not become ready");
+        return;
+    }
     let mut rx = state.event_bus.subscribe();
     loop {
         match rx.recv().await {
@@ -2865,6 +2893,10 @@ pub async fn run_agent_team_supervisor(state: AppState) {
 }
 
 pub async fn run_usage_aggregator(state: AppState) {
+    if !state.wait_until_ready_or_failed(120, 250).await {
+        tracing::warn!("usage aggregator: skipped because runtime did not become ready");
+        return;
+    }
     let mut rx = state.event_bus.subscribe();
     loop {
         match rx.recv().await {

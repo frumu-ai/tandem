@@ -64,7 +64,6 @@ use crate::{
         CapabilityResolveInput,
     },
     evaluate_routine_execution_policy, mcp_catalog,
-    pack_builder::PackBuilderTool,
     pack_manager::{PackExportRequest, PackInstallRequest, PackUninstallRequest},
     ActiveRun, AppState, AutomationAgentMcpPolicy, AutomationAgentProfile,
     AutomationAgentToolPolicy, AutomationExecutionPolicy, AutomationFlowSpec, AutomationRunStatus,
@@ -916,14 +915,6 @@ struct LegacyProviderInfo {
 }
 
 pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
-    state
-        .tools
-        .register_tool(
-            "pack_builder".to_string(),
-            Arc::new(PackBuilderTool::new(state.clone())),
-        )
-        .await;
-
     let reaper_state = state.clone();
     let status_indexer_state = state.clone();
     let routine_scheduler_state = state.clone();
@@ -1046,19 +1037,11 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
 }
 
 async fn bootstrap_mcp_servers_when_ready(state: AppState) {
-    for _ in 0..120 {
-        if state.is_ready() {
-            bootstrap_mcp_servers(&state).await;
-            return;
-        }
-        let startup = state.startup_snapshot().await;
-        if matches!(startup.status, crate::StartupStatus::Failed) {
-            tracing::warn!("mcp bootstrap: skipped because runtime startup failed");
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+    if state.wait_until_ready_or_failed(120, 250).await {
+        bootstrap_mcp_servers(&state).await;
+    } else {
+        tracing::warn!("mcp bootstrap: skipped because runtime startup failed or timed out");
     }
-    tracing::warn!("mcp bootstrap: timed out waiting for runtime readiness");
 }
 
 async fn bootstrap_mcp_servers(state: &AppState) {
@@ -6325,6 +6308,10 @@ async fn ingest_event_memory_records(
 }
 
 async fn run_global_memory_ingestor(state: AppState) {
+    if !state.wait_until_ready_or_failed(120, 250).await {
+        tracing::warn!("global memory ingestor: skipped because runtime did not become ready");
+        return;
+    }
     let mut rx = state.event_bus.subscribe();
     let Some(db) = open_global_memory_db().await else {
         tracing::warn!("global memory ingestor disabled: could not open memory database");
