@@ -1192,11 +1192,31 @@ impl AppState {
             return Ok(());
         }
         let raw = fs::read_to_string(&self.routines_path).await?;
-        let parsed = serde_json::from_str::<std::collections::HashMap<String, RoutineSpec>>(&raw)
-            .unwrap_or_default();
-        let mut guard = self.routines.write().await;
-        *guard = parsed;
-        Ok(())
+        match serde_json::from_str::<std::collections::HashMap<String, RoutineSpec>>(&raw) {
+            Ok(parsed) => {
+                let mut guard = self.routines.write().await;
+                *guard = parsed;
+                Ok(())
+            }
+            Err(primary_err) => {
+                let backup_path = sibling_backup_path(&self.routines_path);
+                if backup_path.exists() {
+                    let backup_raw = fs::read_to_string(&backup_path).await?;
+                    if let Ok(parsed_backup) = serde_json::from_str::<
+                        std::collections::HashMap<String, RoutineSpec>,
+                    >(&backup_raw)
+                    {
+                        let mut guard = self.routines.write().await;
+                        *guard = parsed_backup;
+                        return Ok(());
+                    }
+                }
+                Err(anyhow::anyhow!(
+                    "failed to parse routines store {}: {primary_err}",
+                    self.routines_path.display()
+                ))
+            }
+        }
     }
 
     pub async fn load_routine_history(&self) -> anyhow::Result<()> {
@@ -1234,7 +1254,13 @@ impl AppState {
             let guard = self.routines.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.routines_path, payload).await?;
+        let backup_path = sibling_backup_path(&self.routines_path);
+        if self.routines_path.exists() {
+            let _ = fs::copy(&self.routines_path, &backup_path).await;
+        }
+        let tmp_path = sibling_tmp_path(&self.routines_path);
+        fs::write(&tmp_path, payload).await?;
+        fs::rename(&tmp_path, &self.routines_path).await?;
         Ok(())
     }
 
@@ -2155,6 +2181,24 @@ fn default_state_dir() -> PathBuf {
     dirs::home_dir()
         .map(|home| home.join(".tandem").join("data"))
         .unwrap_or_else(|| PathBuf::from(".tandem"))
+}
+
+fn sibling_backup_path(path: &PathBuf) -> PathBuf {
+    let base = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state.json");
+    let backup_name = format!("{base}.bak");
+    path.with_file_name(backup_name)
+}
+
+fn sibling_tmp_path(path: &PathBuf) -> PathBuf {
+    let base = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state.json");
+    let tmp_name = format!("{base}.tmp");
+    path.with_file_name(tmp_name)
 }
 
 fn routine_interval_ms(schedule: &RoutineSchedule) -> Option<u64> {
@@ -4008,6 +4052,50 @@ mod tests {
         assert_eq!(list[0].routine_id, "routine-1");
 
         let _ = tokio::fs::remove_file(routines_path).await;
+    }
+
+    #[tokio::test]
+    async fn load_routines_recovers_from_backup_when_primary_corrupt() {
+        let routines_path = tmp_routines_file("backup-recovery");
+        let backup_path = sibling_backup_path(&routines_path);
+        let mut state = AppState::new_starting("routines-backup-recovery".to_string(), true);
+        state.routines_path = routines_path.clone();
+
+        let primary = "{ not valid json";
+        tokio::fs::write(&routines_path, primary)
+            .await
+            .expect("write corrupt primary");
+        let backup = serde_json::json!({
+            "routine-1": {
+                "routine_id": "routine-1",
+                "name": "Recovered",
+                "status": "active",
+                "schedule": { "interval_seconds": { "seconds": 60 } },
+                "timezone": "UTC",
+                "misfire_policy": { "type": "run_once" },
+                "entrypoint": "mission.default",
+                "args": {},
+                "allowed_tools": [],
+                "output_targets": [],
+                "creator_type": "user",
+                "creator_id": "u-1",
+                "requires_approval": true,
+                "external_integrations_allowed": false,
+                "next_fire_at_ms": null,
+                "last_fired_at_ms": null
+            }
+        });
+        tokio::fs::write(&backup_path, serde_json::to_string_pretty(&backup).unwrap())
+            .await
+            .expect("write backup");
+
+        state.load_routines().await.expect("load from backup");
+        let list = state.list_routines().await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].routine_id, "routine-1");
+
+        let _ = tokio::fs::remove_file(routines_path).await;
+        let _ = tokio::fs::remove_file(backup_path).await;
     }
 
     #[tokio::test]

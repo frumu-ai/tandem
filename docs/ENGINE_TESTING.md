@@ -57,7 +57,7 @@ cargo test -p tandem-server -p tandem-core -p tandem-ai
 # Teesting with packages/tandem-control-panel
 
 ```bash
-cargo build -p tandem-ai --release
+cargo build -p tandem-ai
 sudo install -m 755 target/release/tandem-engine /usr/local/bin/tandem-engine-dev
 sudo systemctl restart tandem-engine
 ```
