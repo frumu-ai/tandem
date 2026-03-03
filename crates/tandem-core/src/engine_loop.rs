@@ -2662,7 +2662,7 @@ fn provider_stream_connect_timeout_ms() -> usize {
         .ok()
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(30_000)
+        .unwrap_or(90_000)
 }
 
 fn provider_stream_idle_timeout_ms() -> usize {

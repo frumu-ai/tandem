@@ -10,6 +10,8 @@ Owner: Tandem Engine
 - [x] Final validation pass (`tandem-tools`, `tandem-core` targeted tests, engine compile)
 - [x] Add semantic-retrieval reliability hardening for action-heavy prompts (web/email)
 - [x] Add guardrails for non-offered tool calls and false email-send claims
+- [x] Default Pack Builder-created routines to autonomous execution (`active`, no manual approval)
+- [x] Increase default provider stream connect timeout for routine reliability (30s -> 90s)
 
 ## In Progress
 
@@ -30,6 +32,8 @@ Owner: Tandem Engine
 - [x] Add retrieval fallback-to-full-tools guard when top-K omits required web/email tool families
 - [x] Add `tool.call.rejected_unoffered` event + available-tool hinting for unsupported per-turn calls
 - [x] Add final-response guard preventing “email sent” claims without successful email tool execution
+- [x] Change pack-builder apply defaults to `approve_* = true` for API-first unattended workflows
+- [x] Change generated routine YAML/output defaults to no-approval autonomous behavior
 
 ## Notes
 
@@ -44,9 +48,13 @@ Owner: Tandem Engine
   - for web-research/email-delivery prompts, if semantic retrieval omits required families, engine falls back to full list for that turn
   - out-of-offer tool calls are rejected deterministically (no silent unknown-tool execution)
   - email-send success claims require actual successful email-like tool evidence in-run
+- Automation defaults:
+  - pack-builder apply now enables routines by default and writes `requires_approval=false`
+  - provider stream connect timeout default raised to 90s for slower providers/scheduled runs
 
 ## Delivery Commits
 
 - `ff2a64b` — semantic retrieval runtime integration + MCP catalog prompt + kanban board
 - `e6d564f` — v0.4.1 changelog/release notes updates + kanban completion snapshot
 - `9c5ed20` — reliability hotfix for retrieval fallback, unoffered-tool rejection, and email-claim evidence guard
+- `TBD` — autonomous pack-builder defaults + provider connect-timeout uplift

@@ -30,6 +30,18 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - non-offered tool calls are rejected with available-tool hints instead of silently executing guessed names
     - assistant cannot claim email delivery succeeded unless a successful email-like tool action was executed in the run
 
+- Pack Builder autonomous routines + routine-run connect reliability (`v0.4.1` scope)
+  - Pack Builder apply now defaults to autonomous execution for unattended automation:
+    - generated routines are enabled by default (`status=active`)
+    - generated routines default to `requires_approval=false`
+    - pack-builder apply API defaults approval flags to `true` unless explicitly overridden
+  - Generated routine YAML from pack-builder now reflects no-approval default.
+  - Increased default provider stream connect timeout from `30000` to `90000` ms to reduce routine runs failing before the model begins streaming.
+  - Updated env/setup defaults accordingly:
+    - `.env.example`
+    - `examples/vps-web-portal/engine.env.example`
+    - quickstart/VPS setup scripts
+
 - MCP catalog moved into engine and exposed to frontends
   - Added engine-managed embedded catalog endpoints:
     - `GET /mcp/catalog`

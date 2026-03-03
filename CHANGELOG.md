@@ -84,6 +84,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - provider call routing telemetry now emits retrieval fallback fields (`retrievalEnabled`, `retrievalK`, `fallbackToFullTools`, `fallbackReason`) to aid diagnosis
   - tool calls not offered in the current turn are now rejected deterministically with explicit available-tool hints instead of attempting execution against unavailable/guessed tool names
   - final response guard now blocks false “email sent” claims unless a successful email-like tool action was actually executed in the run
+- **Pack Builder autonomous routine defaults**:
+  - pack-builder apply now defaults to autonomous routine registration for unattended automation:
+    - generated routines default to `status: active`
+    - generated routines default to `requires_approval: false`
+    - API apply route approval flags now default to `true` for connector registration, pack install, and routine enablement
+  - pack-builder generated routine YAML now emits `requires_approval: false` and apply output reflects enabled-by-default routine behavior
+- **Provider stream connect timeout resilience**:
+  - default provider stream connect timeout increased from `30_000 ms` to `90_000 ms` to reduce false startup/connect failures for scheduled routines and slower providers
+  - updated default env examples and quickstart setup scripts to `TANDEM_PROVIDER_STREAM_CONNECT_TIMEOUT_MS=90000`
 - **Pack Builder permission friction across chat/channels**:
   - `pack_builder` tool is now allowed by default in baseline engine permission rules to prevent pack-creation requests timing out on first-use approval prompts
   - internal `pack_builder` apply-phase approvals remain required for connector registration, pack install, and routine enablement

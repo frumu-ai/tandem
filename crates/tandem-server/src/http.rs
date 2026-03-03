@@ -1227,9 +1227,9 @@ async fn pack_builder_apply(
         "__session_id": input.session_id,
         "thread_key": input.thread_key,
         "selected_connectors": input.selected_connectors.unwrap_or_default(),
-        "approve_connector_registration": approvals.approve_connector_registration.unwrap_or(false),
-        "approve_pack_install": approvals.approve_pack_install.unwrap_or(false),
-        "approve_enable_routines": approvals.approve_enable_routines.unwrap_or(false),
+        "approve_connector_registration": approvals.approve_connector_registration.unwrap_or(true),
+        "approve_pack_install": approvals.approve_pack_install.unwrap_or(true),
+        "approve_enable_routines": approvals.approve_enable_routines.unwrap_or(true),
         "secret_refs_confirmed": input.secret_refs_confirmed,
     });
     let payload = run_pack_builder_tool(&state, args).await?;

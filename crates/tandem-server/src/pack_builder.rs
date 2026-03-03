@@ -372,7 +372,7 @@ impl Tool for PackBuilderTool {
                     input.plan_id = Some(last_plan_id);
                     input.approve_pack_install = Some(true);
                     input.approve_connector_registration = Some(true);
-                    input.approve_enable_routines = Some(false);
+                    input.approve_enable_routines = Some(true);
                     mode = "apply".to_string();
                 }
             }
@@ -593,9 +593,9 @@ impl PackBuilderTool {
                 !selected_connector_slugs.is_empty(),
             ),
             "approval_required": {
-                "register_connectors": !selected_connector_slugs.is_empty(),
-                "install_pack": true,
-                "enable_routines": true
+                "register_connectors": false,
+                "install_pack": false,
+                "enable_routines": false
             }
         });
 
@@ -617,7 +617,7 @@ impl PackBuilderTool {
                     plan_id: Some(plan_id.clone()),
                     approve_connector_registration: Some(true),
                     approve_pack_install: Some(true),
-                    approve_enable_routines: Some(false),
+                    approve_enable_routines: Some(true),
                     schedule: None,
                     session_id: input.session_id.clone(),
                     thread_key: input.thread_key.clone(),
@@ -965,7 +965,7 @@ impl PackBuilderTool {
             let mut routine = RoutineSpec {
                 routine_id: routine_id.clone(),
                 name: plan.routine_template.name.clone(),
-                status: RoutineStatus::Paused,
+                status: RoutineStatus::Active,
                 schedule: plan.routine_template.schedule.clone(),
                 timezone: plan.routine_template.timezone.clone(),
                 misfire_policy: RoutineMisfirePolicy::RunOnce,
@@ -982,13 +982,13 @@ impl PackBuilderTool {
                 output_targets: vec![format!("run/{}/report.md", routine_id)],
                 creator_type: "agent".to_string(),
                 creator_id: "pack_builder".to_string(),
-                requires_approval: true,
+                requires_approval: false,
                 external_integrations_allowed: true,
                 next_fire_at_ms: None,
                 last_fired_at_ms: None,
             };
-            if input.approve_enable_routines == Some(true) {
-                routine.status = RoutineStatus::Active;
+            if input.approve_enable_routines == Some(false) {
+                routine.status = RoutineStatus::Paused;
             }
             let stored = self
                 .state
@@ -1019,12 +1019,12 @@ impl PackBuilderTool {
             "connectors": connector_results,
             "registered_servers": registered_servers,
             "routines_registered": routines_registered,
-            "routines_enabled": input.approve_enable_routines == Some(true),
+            "routines_enabled": input.approve_enable_routines != Some(false),
             "fallback_warnings": plan.fallback_warnings,
             "status": "apply_complete",
             "next_actions": [
                 "Review the installed pack in Packs view.",
-                "Enable the paused routine when ready."
+                "Routine is enabled by default and will run on schedule."
             ],
             "pack_preset": {
                 "path": preset_path.to_string_lossy().to_string(),
@@ -1374,7 +1374,7 @@ fn render_pack_builder_apply_output(meta: &Value) -> String {
             if routines_enabled {
                 "enabled"
             } else {
-                "installed paused (recommended)"
+                "paused"
             }
         ),
     ];
@@ -1749,7 +1749,7 @@ fn render_routine_yaml(
     }
     lines.push("output_targets:".to_string());
     lines.push(format!("  - run/{}/report.md", routine_id));
-    lines.push("requires_approval: true".to_string());
+    lines.push("requires_approval: false".to_string());
     lines.push("external_integrations_allowed: true".to_string());
     lines.join("\n") + "\n"
 }
