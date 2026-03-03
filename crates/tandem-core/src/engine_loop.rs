@@ -2729,7 +2729,30 @@ fn normalize_tool_args(
             missing_terminal_reason = Some("WEBFETCH_URL_MISSING".to_string());
         }
     } else if normalized_tool == "pack_builder" {
-        if let Some(goal) = extract_pack_builder_goal_arg(&args) {
+        let mode = extract_pack_builder_mode_arg(&args);
+        let plan_id = extract_pack_builder_plan_id_arg(&args);
+        if mode.as_deref() == Some("apply") && plan_id.is_none() {
+            if let Some(inferred_plan) =
+                infer_pack_builder_apply_plan_id(latest_user_text, latest_assistant_context)
+            {
+                args_source = "recovered_from_context".to_string();
+                args_integrity = "recovered".to_string();
+                args = set_pack_builder_apply_args(args, inferred_plan);
+            } else {
+                args_source = "missing".to_string();
+                args_integrity = "empty".to_string();
+                missing_terminal = true;
+                missing_terminal_reason = Some("PACK_BUILDER_PLAN_ID_MISSING".to_string());
+            }
+        } else if mode.as_deref() == Some("apply") {
+            args = ensure_pack_builder_default_mode(args);
+        } else if let Some(inferred_plan) =
+            infer_pack_builder_apply_plan_id(latest_user_text, latest_assistant_context)
+        {
+            args_source = "recovered_from_context".to_string();
+            args_integrity = "recovered".to_string();
+            args = set_pack_builder_apply_args(args, inferred_plan);
+        } else if let Some(goal) = extract_pack_builder_goal_arg(&args) {
             args = set_pack_builder_goal_arg(args, goal);
         } else if let Some(inferred) = infer_pack_builder_goal_from_text(latest_user_text) {
             args_source = "inferred_from_user".to_string();
@@ -3017,6 +3040,136 @@ fn set_pack_builder_goal_arg(args: Value, goal: String) -> Value {
     let mut obj = args.as_object().cloned().unwrap_or_default();
     obj.insert("goal".to_string(), Value::String(goal));
     Value::Object(obj)
+}
+
+fn set_pack_builder_apply_args(args: Value, plan_id: String) -> Value {
+    let mut obj = args.as_object().cloned().unwrap_or_default();
+    obj.insert("mode".to_string(), Value::String("apply".to_string()));
+    obj.insert("plan_id".to_string(), Value::String(plan_id));
+    obj.insert(
+        "approve_connector_registration".to_string(),
+        Value::Bool(true),
+    );
+    obj.insert("approve_pack_install".to_string(), Value::Bool(true));
+    obj.insert("approve_enable_routines".to_string(), Value::Bool(false));
+    Value::Object(obj)
+}
+
+fn extract_pack_builder_mode_arg(args: &Value) -> Option<String> {
+    for key in ["mode"] {
+        if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
+            let mode = value.trim().to_ascii_lowercase();
+            if !mode.is_empty() {
+                return Some(mode);
+            }
+        }
+    }
+    for container in ["arguments", "args", "input", "params"] {
+        if let Some(obj) = args.get(container) {
+            if let Some(value) = obj.get("mode").and_then(|v| v.as_str()) {
+                let mode = value.trim().to_ascii_lowercase();
+                if !mode.is_empty() {
+                    return Some(mode);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_pack_builder_plan_id_arg(args: &Value) -> Option<String> {
+    for key in ["plan_id", "planId"] {
+        if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
+            let plan_id = value.trim();
+            if !plan_id.is_empty() {
+                return Some(plan_id.to_string());
+            }
+        }
+    }
+    for container in ["arguments", "args", "input", "params"] {
+        if let Some(obj) = args.get(container) {
+            for key in ["plan_id", "planId"] {
+                if let Some(value) = obj.get(key).and_then(|v| v.as_str()) {
+                    let plan_id = value.trim();
+                    if !plan_id.is_empty() {
+                        return Some(plan_id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_pack_builder_plan_id_from_text(text: &str) -> Option<String> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut idx = 0usize;
+    while idx + 5 <= bytes.len() {
+        if &bytes[idx..idx + 5] != b"plan-" {
+            idx += 1;
+            continue;
+        }
+        let mut end = idx + 5;
+        while end < bytes.len() {
+            let ch = bytes[end] as char;
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        if end > idx + 5 {
+            let candidate = &text[idx..end];
+            if candidate.len() >= 10 {
+                return Some(candidate.to_string());
+            }
+        }
+        idx = end.saturating_add(1);
+    }
+    None
+}
+
+fn is_pack_builder_confirmation_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "confirm"
+            | "confirmed"
+            | "approve"
+            | "approved"
+            | "yes"
+            | "y"
+            | "ok"
+            | "okay"
+            | "go"
+            | "go ahead"
+            | "ship it"
+            | "do it"
+            | "apply"
+            | "run it"
+            | "✅"
+            | "👍"
+    )
+}
+
+fn infer_pack_builder_apply_plan_id(
+    latest_user_text: &str,
+    latest_assistant_context: &str,
+) -> Option<String> {
+    if let Some(plan_id) = extract_pack_builder_plan_id_from_text(latest_user_text) {
+        return Some(plan_id);
+    }
+    if !is_pack_builder_confirmation_text(latest_user_text) {
+        return None;
+    }
+    extract_pack_builder_plan_id_from_text(latest_assistant_context)
 }
 
 fn ensure_pack_builder_default_mode(args: Value) -> Value {
@@ -5212,6 +5365,73 @@ Call: todowrite(task_id=3, status="in_progress")
         );
         assert_eq!(normalized.args_source, "provider_json");
         assert_eq!(normalized.args_integrity, "ok");
+    }
+
+    #[test]
+    fn normalize_tool_args_pack_builder_confirm_reuses_plan_from_context() {
+        let assistant_context =
+            "Pack Builder Preview\n- Plan ID: plan-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let normalized =
+            normalize_tool_args("pack_builder", json!({}), "confirm", assistant_context);
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("mode").and_then(|v| v.as_str()),
+            Some("apply")
+        );
+        assert_eq!(
+            normalized.args.get("plan_id").and_then(|v| v.as_str()),
+            Some("plan-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        );
+        assert_eq!(
+            normalized
+                .args
+                .get("approve_pack_install")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(normalized.args_source, "recovered_from_context");
+    }
+
+    #[test]
+    fn normalize_tool_args_pack_builder_apply_recovers_missing_plan_id() {
+        let assistant_context =
+            "{\"mode\":\"preview\",\"plan_id\":\"plan-11111111-2222-3333-4444-555555555555\"}";
+        let normalized = normalize_tool_args(
+            "pack_builder",
+            json!({"mode":"apply"}),
+            "yes",
+            assistant_context,
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("mode").and_then(|v| v.as_str()),
+            Some("apply")
+        );
+        assert_eq!(
+            normalized.args.get("plan_id").and_then(|v| v.as_str()),
+            Some("plan-11111111-2222-3333-4444-555555555555")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_pack_builder_short_new_goal_does_not_force_apply() {
+        let assistant_context =
+            "Pack Builder Preview\n- Plan ID: plan-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let normalized = normalize_tool_args(
+            "pack_builder",
+            json!({}),
+            "create jira sync",
+            assistant_context,
+        );
+        assert!(!normalized.missing_terminal);
+        assert_eq!(
+            normalized.args.get("mode").and_then(|v| v.as_str()),
+            Some("preview")
+        );
+        assert_eq!(
+            normalized.args.get("goal").and_then(|v| v.as_str()),
+            Some("create jira sync")
+        );
     }
 
     #[test]
