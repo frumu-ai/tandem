@@ -76,22 +76,84 @@ fn build_openai_tool_aliases(
 fn normalize_openai_function_parameters(schema: serde_json::Value) -> serde_json::Value {
     let mut schema = match schema {
         serde_json::Value::Object(obj) => serde_json::Value::Object(obj),
-        _ => json!({"type":"object","properties":{}}),
+        _ => json!({}),
     };
 
-    if let Some(obj) = schema.as_object_mut() {
-        if obj.get("type").and_then(|v| v.as_str()) != Some("object") {
-            obj.insert(
-                "type".to_string(),
-                serde_json::Value::String("object".to_string()),
-            );
-        }
+    normalize_openai_schema_node(&mut schema);
+
+    let Some(obj) = schema.as_object_mut() else {
+        return json!({"type":"object","properties":{}});
+    };
+    if obj.get("type").and_then(|v| v.as_str()) != Some("object") {
+        obj.insert(
+            "type".to_string(),
+            serde_json::Value::String("object".to_string()),
+        );
+    }
+    if !obj.contains_key("properties") || !obj["properties"].is_object() {
+        obj.insert("properties".to_string(), json!({}));
+    }
+
+    schema
+}
+
+fn normalize_openai_schema_node(node: &mut serde_json::Value) {
+    let Some(obj) = node.as_object_mut() else {
+        return;
+    };
+
+    if obj.get("type").and_then(|v| v.as_str()) == Some("object") || obj.contains_key("properties")
+    {
         if !obj.contains_key("properties") || !obj["properties"].is_object() {
             obj.insert("properties".to_string(), json!({}));
         }
     }
 
-    schema
+    if obj.get("type").and_then(|v| v.as_str()) == Some("array") && !obj.contains_key("items") {
+        obj.insert("items".to_string(), json!({}));
+    }
+
+    if let Some(items) = obj.get_mut("items") {
+        normalize_openai_items_schema(items);
+    }
+
+    if let Some(additional) = obj.get_mut("additionalProperties") {
+        normalize_openai_schema_or_bool(additional);
+    }
+
+    if let Some(properties) = obj.get_mut("properties").and_then(|v| v.as_object_mut()) {
+        for property_schema in properties.values_mut() {
+            normalize_openai_schema_or_bool(property_schema);
+        }
+    }
+
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if let Some(variants) = obj.get_mut(key).and_then(|v| v.as_array_mut()) {
+            for variant in variants.iter_mut() {
+                normalize_openai_schema_or_bool(variant);
+            }
+        }
+    }
+}
+
+fn normalize_openai_schema_or_bool(node: &mut serde_json::Value) {
+    match node {
+        serde_json::Value::Object(_) => normalize_openai_schema_node(node),
+        serde_json::Value::Bool(_) => {}
+        _ => *node = json!({}),
+    }
+}
+
+fn normalize_openai_items_schema(items: &mut serde_json::Value) {
+    if let Some(tuple_items) = items.as_array_mut() {
+        let replacement = tuple_items
+            .iter()
+            .find(|candidate| candidate.is_object() || candidate.is_boolean())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        *items = replacement;
+    }
+    normalize_openai_schema_or_bool(items);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1634,6 +1696,41 @@ mod tests {
                 .and_then(|v| v.as_object())
                 .is_some(),
             "properties object should exist"
+        );
+    }
+
+    #[test]
+    fn normalize_openai_function_parameters_rewrites_tuple_array_items() {
+        let normalized = normalize_openai_function_parameters(json!({
+            "type": "object",
+            "properties": {
+                "fieldIds": {
+                    "type": "array",
+                    "items": [
+                        { "$ref": "#/properties/fieldIds/items" }
+                    ]
+                }
+            }
+        }));
+        assert!(
+            normalized["properties"]["fieldIds"]["items"].is_object(),
+            "array items should be object/bool for OpenAI-compatible tools"
+        );
+    }
+
+    #[test]
+    fn normalize_openai_function_parameters_adds_nested_object_properties() {
+        let normalized = normalize_openai_function_parameters(json!({
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "object"
+                }
+            }
+        }));
+        assert!(
+            normalized["properties"]["filters"]["properties"].is_object(),
+            "nested object schemas should include properties for OpenAI validation"
         );
     }
 }
