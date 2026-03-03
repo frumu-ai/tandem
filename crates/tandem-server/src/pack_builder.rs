@@ -204,6 +204,7 @@ impl PackBuilderTool {
 
         let needs = infer_capabilities_from_goal(&goal);
         let all_catalog = catalog_servers();
+        let builtin_tools = available_builtin_tools(&self.state).await;
         let mut recommended_connectors = Vec::<ConnectorCandidate>::new();
         let mut selected_mcp_tools = BTreeSet::<String>::new();
         let mut required = Vec::<String>::new();
@@ -217,6 +218,9 @@ impl PackBuilderTool {
                 optional.push(need.id.clone());
             }
             if !need.external {
+                continue;
+            }
+            if need_satisfied_by_builtin(&builtin_tools, need) {
                 continue;
             }
             let mut candidates = score_candidates_for_need(&all_catalog, need);
@@ -875,6 +879,26 @@ fn score_candidates_for_need(
         });
     }
     out
+}
+
+async fn available_builtin_tools(state: &AppState) -> BTreeSet<String> {
+    state
+        .tools
+        .list()
+        .await
+        .into_iter()
+        .map(|schema| schema.name)
+        .filter(|name| !name.starts_with("mcp."))
+        .collect()
+}
+
+fn need_satisfied_by_builtin(builtin_tools: &BTreeSet<String>, need: &CapabilityNeed) -> bool {
+    let has = |name: &str| builtin_tools.contains(name);
+    match need.id.as_str() {
+        "news.latest" | "web.research" => has("websearch") && has("webfetch"),
+        "question.ask" => has("question"),
+        _ => false,
+    }
 }
 
 fn derive_required_secret_refs(connectors: &[ConnectorCandidate]) -> Vec<String> {
