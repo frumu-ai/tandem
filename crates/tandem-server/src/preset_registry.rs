@@ -36,6 +36,8 @@ pub struct PresetIndex {
     pub agent_presets: Vec<PresetRecord>,
     #[serde(default)]
     pub automation_presets: Vec<PresetRecord>,
+    #[serde(default)]
+    pub pack_presets: Vec<PresetRecord>,
     pub generated_at_ms: u64,
 }
 
@@ -70,6 +72,7 @@ impl PresetRegistry {
         sort_records(&mut out.skill_modules);
         sort_records(&mut out.agent_presets);
         sort_records(&mut out.automation_presets);
+        sort_records(&mut out.pack_presets);
         Ok(out)
     }
 
@@ -150,9 +153,14 @@ impl PresetRegistry {
             return Err(anyhow::anyhow!("name and version are required"));
         }
         let overrides_root = self.runtime_root.join(OVERRIDES_DIR);
-        let has_any = ["skill_modules", "agent_presets", "automation_presets"]
-            .iter()
-            .any(|dir| overrides_root.join(dir).exists());
+        let has_any = [
+            "skill_modules",
+            "agent_presets",
+            "automation_presets",
+            "pack_presets",
+        ]
+        .iter()
+        .any(|dir| overrides_root.join(dir).exists());
         if !has_any {
             return Err(anyhow::anyhow!("no overrides found to export"));
         }
@@ -166,7 +174,12 @@ impl PresetRegistry {
         let stage_pack = stage_root.join("pack");
         tokio::fs::create_dir_all(&stage_pack).await?;
 
-        for dir in ["skill_modules", "agent_presets", "automation_presets"] {
+        for dir in [
+            "skill_modules",
+            "agent_presets",
+            "automation_presets",
+            "pack_presets",
+        ] {
             let src = overrides_root.join(dir);
             if src.exists() {
                 copy_dir_recursive(&src, &stage_pack.join(dir))?;
@@ -273,8 +286,15 @@ impl PresetRegistry {
             &base.join("automation_presets"),
             "automation_preset",
             layer,
-            pack,
+            pack.clone(),
             &mut out.automation_presets,
+        )?;
+        collect_presets_into(
+            &base.join("pack_presets"),
+            "pack_preset",
+            layer,
+            pack,
+            &mut out.pack_presets,
         )?;
         Ok(())
     }
@@ -334,6 +354,7 @@ fn kind_dir_name(kind: &str) -> anyhow::Result<&'static str> {
         "skill_module" | "skill_modules" => Ok("skill_modules"),
         "agent_preset" | "agent_presets" => Ok("agent_presets"),
         "automation_preset" | "automation_presets" => Ok("automation_presets"),
+        "pack_preset" | "pack_presets" => Ok("pack_presets"),
         other => Err(anyhow::anyhow!("unsupported preset kind: {}", other)),
     }
 }
@@ -505,6 +526,8 @@ mod tests {
             .expect("mkdir overrides");
         std::fs::create_dir_all(packs_root.join("sample-pack/1.0.0/automation_presets"))
             .expect("mkdir packs");
+        std::fs::create_dir_all(runtime_root.join("presets/overrides/pack_presets"))
+            .expect("mkdir pack presets");
         std::fs::write(
             runtime_root.join("presets/builtins/skill_modules/git.yaml"),
             "id: git.core\nversion: 1.0.0\ntags: [git]\npublisher: tandem\ncapabilities:\n  required:\n    - github.create_pull_request\n",
@@ -520,15 +543,22 @@ mod tests {
             "id: auto.release\nversion: 2.0.0\n",
         )
         .expect("write");
+        std::fs::write(
+            runtime_root.join("presets/overrides/pack_presets/news_pack.yaml"),
+            "id: pack.news\nversion: 0.4.1\n",
+        )
+        .expect("write");
 
         let registry = PresetRegistry::new(packs_root, runtime_root);
         let index = registry.index().await.expect("index");
         assert_eq!(index.skill_modules.len(), 1);
         assert_eq!(index.agent_presets.len(), 1);
         assert_eq!(index.automation_presets.len(), 1);
+        assert_eq!(index.pack_presets.len(), 1);
         assert_eq!(index.skill_modules[0].layer, "builtin");
         assert_eq!(index.agent_presets[0].layer, "override");
         assert_eq!(index.automation_presets[0].layer, "pack");
+        assert_eq!(index.pack_presets[0].kind, "pack_preset");
         assert_eq!(
             index.automation_presets[0].pack.as_deref(),
             Some("sample-pack@1.0.0")
@@ -560,6 +590,20 @@ mod tests {
             .expect("delete");
         assert!(deleted);
         assert!(!path.exists());
+        let pack_path = registry
+            .save_override(
+                "pack_preset",
+                "generated-pack",
+                "id: generated-pack\nversion: 0.4.1\n",
+            )
+            .await
+            .expect("save pack preset");
+        assert!(pack_path.exists());
+        let deleted_pack = registry
+            .delete_override("pack_preset", "generated-pack")
+            .await
+            .expect("delete pack preset");
+        assert!(deleted_pack);
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -125,6 +125,26 @@ After receiving answers, continue planning and update todos."
             skills: None,
         },
         AgentDefinition {
+            name: "pack_builder".to_string(),
+            mode: AgentMode::Primary,
+            hidden: false,
+            system_prompt: Some(
+                "You are Pack Builder. Build Tandem packs from plain-English goals.\n\
+Treat external data sources/actions as MCP-first: resolve to concrete MCP servers/tools where possible.\n\
+Prefer explicit MCP tool IDs in generated missions and agent instructions.\n\
+Use built-in tools only when no viable MCP mapping exists, and call that out clearly.\n\
+Always provide a preview summary (connectors, tools, secrets, schedule) before apply."
+                    .to_string(),
+            ),
+            tools: Some(vec![
+                "pack_builder".to_string(),
+                "question".to_string(),
+                "websearch".to_string(),
+                "webfetch".to_string(),
+            ]),
+            skills: None,
+        },
+        AgentDefinition {
             name: "explore".to_string(),
             mode: AgentMode::Subagent,
             hidden: false,

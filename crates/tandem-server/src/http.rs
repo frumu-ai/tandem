@@ -12069,6 +12069,143 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pack_builder_preview_external_goal_prefers_mcp_and_generates_mcp_actions() {
+        let state = test_state().await;
+        state
+            .tools
+            .register_tool(
+                "pack_builder".to_string(),
+                Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
+            )
+            .await;
+        let app = app_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tool/execute")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tool": "pack_builder",
+                    "args": {
+                        "mode": "preview",
+                        "goal": "create a pack that checks latest headline news and posts to slack"
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+
+        let metadata = payload.get("metadata").cloned().unwrap_or(Value::Null);
+        let mapped = metadata
+            .get("mcp_mapping")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            mapped.iter().any(|row| {
+                row.as_str()
+                    .is_some_and(|name| name.starts_with("mcp.") && !name.trim().is_empty())
+            }),
+            "expected at least one MCP tool mapping for external goal"
+        );
+
+        let zip_path = metadata
+            .get("zip_path")
+            .and_then(|v| v.as_str())
+            .expect("zip path in preview");
+        let file = std::fs::File::open(zip_path).expect("open zip");
+        let mut archive = zip::ZipArchive::new(file).expect("zip archive");
+        let mut mission = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("missions/default.yaml").expect("mission"),
+            &mut mission,
+        )
+        .expect("read mission");
+        assert!(
+            mission.lines().any(|line| line.contains("action: mcp.")),
+            "mission should explicitly invoke discovered MCP tool IDs"
+        );
+    }
+
+    #[tokio::test]
+    async fn pack_builder_apply_requires_explicit_approvals() {
+        let state = test_state().await;
+        state
+            .tools
+            .register_tool(
+                "pack_builder".to_string(),
+                Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
+            )
+            .await;
+        let app = app_router(state.clone());
+
+        let preview_req = Request::builder()
+            .method("POST")
+            .uri("/tool/execute")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tool": "pack_builder",
+                    "args": {
+                        "mode": "preview",
+                        "goal": "create a pack for notion and slack sync"
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("preview request");
+        let preview_resp = app
+            .clone()
+            .oneshot(preview_req)
+            .await
+            .expect("preview response");
+        assert_eq!(preview_resp.status(), StatusCode::OK);
+        let preview_body = to_bytes(preview_resp.into_body(), usize::MAX)
+            .await
+            .expect("preview body");
+        let preview_payload: Value = serde_json::from_slice(&preview_body).expect("preview json");
+        let plan_id = preview_payload
+            .get("metadata")
+            .and_then(|v| v.get("plan_id"))
+            .and_then(|v| v.as_str())
+            .expect("plan id");
+
+        let apply_req = Request::builder()
+            .method("POST")
+            .uri("/tool/execute")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tool": "pack_builder",
+                    "args": {
+                        "mode": "apply",
+                        "plan_id": plan_id
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("apply request");
+        let apply_resp = app.oneshot(apply_req).await.expect("apply response");
+        assert_eq!(apply_resp.status(), StatusCode::OK);
+        let apply_body = to_bytes(apply_resp.into_body(), usize::MAX)
+            .await
+            .expect("apply body");
+        let apply_payload: Value = serde_json::from_slice(&apply_body).expect("apply json");
+        let metadata = apply_payload
+            .get("metadata")
+            .cloned()
+            .unwrap_or(Value::Null);
+        assert_eq!(
+            metadata.get("error").and_then(|v| v.as_str()),
+            Some("approval_required")
+        );
+    }
+
+    #[tokio::test]
     async fn presets_index_route_returns_layered_index_shape() {
         let state = test_state().await;
         let app = app_router(state);
@@ -12092,6 +12229,10 @@ mod tests {
             .is_some());
         assert!(index
             .get("automation_presets")
+            .and_then(|v| v.as_array())
+            .is_some());
+        assert!(index
+            .get("pack_presets")
             .and_then(|v| v.as_array())
             .is_some());
         assert!(index

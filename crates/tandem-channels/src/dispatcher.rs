@@ -433,6 +433,8 @@ async fn process_channel_message(
         );
     }
 
+    let route = route_agent_for_channel_message(&msg.content);
+
     let response = run_in_session(
         &session_id,
         &prompt_content,
@@ -442,6 +444,8 @@ async fn process_channel_message(
         msg.attachment_url.as_deref(),
         msg.attachment_mime.as_deref(),
         msg.attachment_filename.as_deref(),
+        route.agent.as_deref(),
+        route.tool_allowlist.as_ref(),
     )
     .await;
     if let Err(e) = channel.stop_typing(&msg.reply_target).await {
@@ -463,6 +467,46 @@ async fn process_channel_message(
     {
         error!("failed to send channel reply via '{}': {e}", channel.name());
     }
+}
+
+#[derive(Debug, Default)]
+struct AgentRouteDecision {
+    agent: Option<String>,
+    tool_allowlist: Option<Vec<String>>,
+}
+
+fn route_agent_for_channel_message(content: &str) -> AgentRouteDecision {
+    if !is_pack_builder_intent(content) {
+        return AgentRouteDecision::default();
+    }
+    AgentRouteDecision {
+        agent: Some("pack_builder".to_string()),
+        tool_allowlist: Some(vec![
+            "pack_builder".to_string(),
+            "question".to_string(),
+            "websearch".to_string(),
+            "webfetch".to_string(),
+        ]),
+    }
+}
+
+fn is_pack_builder_intent(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    let mentions_pack =
+        lower.contains("pack") || lower.contains("automation") || lower.contains("workflow");
+    let mentions_create = lower.contains("create")
+        || lower.contains("build")
+        || lower.contains("make")
+        || lower.contains("generate")
+        || lower.contains("setup");
+    let mentions_external = lower.contains("notion")
+        || lower.contains("slack")
+        || lower.contains("stripe")
+        || lower.contains("mcp")
+        || lower.contains("connector")
+        || lower.contains("headline")
+        || lower.contains("news");
+    mentions_pack && mentions_create && mentions_external
 }
 
 fn is_zip_attachment(msg: &ChannelMessage) -> bool {
@@ -998,6 +1042,8 @@ async fn run_in_session(
     attachment_url: Option<&str>,
     attachment_mime: Option<&str>,
     attachment_filename: Option<&str>,
+    agent: Option<&str>,
+    tool_allowlist: Option<&Vec<String>>,
 ) -> anyhow::Result<String> {
     let timeout_secs: u64 = std::env::var("TANDEM_CHANNEL_MAX_WAIT_SECONDS")
         .ok()
@@ -1020,6 +1066,12 @@ async fn run_in_session(
     }
     parts.push(serde_json::json!({ "type": "text", "text": content }));
     let mut body = serde_json::json!({ "parts": parts });
+    if let Some(agent) = agent {
+        body["agent"] = serde_json::json!(agent);
+    }
+    if let Some(allowlist) = tool_allowlist {
+        body["tool_allowlist"] = serde_json::json!(allowlist);
+    }
     if let Ok(Some(model)) = fetch_default_model_spec(&client, base_url, api_token).await {
         body["model"] = model;
     }
@@ -2369,6 +2421,27 @@ mod tests {
             parse_slash_command("  /help  "),
             Some(SlashCommand::Help)
         ));
+    }
+
+    #[test]
+    fn detects_pack_builder_intent() {
+        let text = "create me a pack that checks latest headline news and posts to slack";
+        assert!(is_pack_builder_intent(text));
+        let route = route_agent_for_channel_message(text);
+        assert_eq!(route.agent.as_deref(), Some("pack_builder"));
+        assert!(route
+            .tool_allowlist
+            .as_ref()
+            .is_some_and(|v| v.iter().any(|t| t == "pack_builder")));
+    }
+
+    #[test]
+    fn non_pack_intent_uses_default_route() {
+        let text = "what model am I using?";
+        assert!(!is_pack_builder_intent(text));
+        let route = route_agent_for_channel_message(text);
+        assert!(route.agent.is_none());
+        assert!(route.tool_allowlist.is_none());
     }
 
     // ── SessionRecord ─────────────────────────────────────────────────────

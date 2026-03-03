@@ -176,6 +176,7 @@ export async function renderPacks(ctx) {
   const getSkills = () => asArray(presetIndex?.skill_modules);
   const getAgentPresets = () => asArray(presetIndex?.agent_presets);
   const getAutomationPresets = () => asArray(presetIndex?.automation_presets);
+  const getPackPresets = () => asArray(presetIndex?.pack_presets);
   const findAgentPreset = (id) => getAgentPresets().find((row) => String(row?.id || "") === String(id || ""));
   const findAutomationPreset = (id) =>
     getAutomationPresets().find((row) => String(row?.id || "") === String(id || ""));
@@ -412,12 +413,26 @@ export async function renderPacks(ctx) {
   const loadPresetIndex = async () => {
     try {
       const payload = await api("/api/presets/index");
-      presetIndex = payload?.index || { skill_modules: [], agent_presets: [], automation_presets: [] };
+      presetIndex = payload?.index || {
+        skill_modules: [],
+        agent_presets: [],
+        automation_presets: [],
+        pack_presets: [],
+      };
+      if (!Array.isArray(presetIndex?.pack_presets)) {
+        presetIndex.pack_presets = [];
+      }
+      console.debug("[packs] loaded pack presets", getPackPresets().length);
       renderPresetSelects();
       renderSkills();
       renderAutomationRows();
     } catch (e) {
-      presetIndex = { skill_modules: [], agent_presets: [], automation_presets: [] };
+      presetIndex = {
+        skill_modules: [],
+        agent_presets: [],
+        automation_presets: [],
+        pack_presets: [],
+      };
       renderPresetSelects();
       renderSkills();
       renderAutomationRows();
