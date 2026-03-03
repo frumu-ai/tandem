@@ -477,6 +477,76 @@ export async function renderMcp(ctx) {
       await renderMcp(ctx);
     }
   };
+  const openTomlModal = async (picked) => {
+    if (!picked?.slug) return;
+
+    const existing = document.querySelector(".tcp-doc-overlay");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.className = "tcp-doc-overlay";
+    overlay.innerHTML = `
+      <div class="tcp-doc-dialog" role="dialog" aria-modal="true" aria-labelledby="tcp-doc-title">
+        <div class="tcp-doc-header">
+          <h3 id="tcp-doc-title" class="tcp-doc-title">TOML · ${escapeHtml(picked.name || picked.slug)}</h3>
+          <div class="tcp-doc-actions">
+            <button type="button" class="tcp-btn" data-doc-copy disabled>Copy</button>
+            <button type="button" class="tcp-btn" data-doc-close>Close</button>
+          </div>
+        </div>
+        <pre class="tcp-doc-pre" data-doc-body>Loading TOML…</pre>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const closeBtn = overlay.querySelector("[data-doc-close]");
+    const copyBtn = overlay.querySelector("[data-doc-copy]");
+    const bodyPre = overlay.querySelector("[data-doc-body]");
+
+    const cleanup = () => {
+      document.removeEventListener("keydown", onKeyDown);
+      overlay.remove();
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cleanup();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) cleanup();
+    });
+    closeBtn?.addEventListener("click", cleanup);
+    copyBtn?.addEventListener("click", async () => {
+      try {
+        const text = String(bodyPre?.textContent || "");
+        if (!text || text.startsWith("Failed to load")) return;
+        await navigator.clipboard.writeText(text);
+        toast("ok", "TOML copied.");
+      } catch {
+        toast("err", "Failed to copy TOML.");
+      }
+    });
+
+    try {
+      const res = await fetch(`/api/engine/mcp/catalog/${encodeURIComponent(picked.slug)}/toml`, {
+        method: "GET",
+        credentials: "include",
+        headers: { Accept: "application/toml,text/plain;q=0.9,*/*;q=0.8" },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const toml = await res.text();
+      if (bodyPre) bodyPre.textContent = toml || "Empty TOML response.";
+      if (copyBtn) copyBtn.disabled = !toml;
+    } catch (e) {
+      if (bodyPre) {
+        bodyPre.textContent = `Failed to load TOML for ${picked.slug}: ${
+          e instanceof Error ? e.message : String(e)
+        }`;
+      }
+    }
+  };
 
   const renderCatalog = () => {
     const query = String(catalogSearchEl?.value || "")
@@ -522,7 +592,7 @@ export async function renderMcp(ctx) {
             <button class="tcp-btn" data-catalog-apply="${escapeHtml(row.slug)}">Apply</button>
             <button class="tcp-btn" data-catalog-add="${escapeHtml(row.slug)}" ${alreadyConfigured ? "disabled" : ""}>${alreadyConfigured ? "Added" : "Add"}</button>
             <button class="tcp-btn-primary" data-catalog-add-connect="${escapeHtml(row.slug)}" ${alreadyConfigured ? "disabled" : ""}>${alreadyConfigured ? "Added" : "Add + Connect"}</button>
-            <a class="tcp-btn" href="/api/engine/mcp/catalog/${encodeURIComponent(row.slug)}/toml" target="_blank" rel="noreferrer">Open TOML</a>
+            <button class="tcp-btn" data-catalog-toml="${escapeHtml(row.slug)}">View TOML</button>
             ${
               row.documentationUrl
                 ? `<a class="tcp-btn" href="${escapeHtml(row.documentationUrl)}" target="_blank" rel="noreferrer">Docs</a>`
@@ -559,6 +629,13 @@ export async function renderMcp(ctx) {
         const slug = String(button.getAttribute("data-catalog-add-connect") || "").trim();
         const picked = catalog.servers.find((row) => row.slug === slug);
         addCatalogServer(picked, true);
+      });
+    });
+    catalogListEl.querySelectorAll("[data-catalog-toml]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const slug = String(button.getAttribute("data-catalog-toml") || "").trim();
+        const picked = catalog.servers.find((row) => row.slug === slug);
+        openTomlModal(picked);
       });
     });
   };

@@ -64,6 +64,7 @@ use crate::{
         CapabilityResolveInput,
     },
     evaluate_routine_execution_policy, mcp_catalog,
+    pack_builder::PackBuilderTool,
     pack_manager::{PackExportRequest, PackInstallRequest, PackUninstallRequest},
     ActiveRun, AppState, AutomationAgentMcpPolicy, AutomationAgentProfile,
     AutomationAgentToolPolicy, AutomationExecutionPolicy, AutomationFlowSpec, AutomationRunStatus,
@@ -915,6 +916,14 @@ struct LegacyProviderInfo {
 }
 
 pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
+    state
+        .tools
+        .register_tool(
+            "pack_builder".to_string(),
+            Arc::new(PackBuilderTool::new(state.clone())),
+        )
+        .await;
+
     let reaper_state = state.clone();
     let status_indexer_state = state.clone();
     let routine_scheduler_state = state.clone();
