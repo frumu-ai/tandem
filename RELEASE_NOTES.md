@@ -4,6 +4,16 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## v0.4.0 (Unreleased)
 
+- Pack Builder MCP-first automation flow (`v0.4.1` scope)
+  - Added built-in `pack_builder` tool with `preview` and `apply` modes for creating Tandem packs from plain-English goals.
+  - External capabilities are now connector-first: builder maps to MCP catalog servers by default and only falls back to built-ins when no match exists (with warnings).
+  - Generated mission/agent artifacts now include explicit `mcp.*` tool IDs so routines invoke registered connectors directly.
+  - Preview now returns connector candidates (docs/transport/auth/setup), selected MCP mapping, required secrets, and explicit approval requirements.
+  - Apply now enforces user approvals for connector registration and pack install; routines are registered paused by default unless explicitly enabled.
+  - Added persisted `pack_presets` metadata with registered MCP servers and required credentials for reliable preset reloads.
+  - Added channel intent routing to automatically dispatch pack-creation requests to the `pack_builder` agent.
+  - Added MCP-focused regression tests across server HTTP, preset registry, and channel routing.
+
 - MCP catalog moved into engine and exposed to frontends
   - Added engine-managed embedded catalog endpoints:
     - `GET /mcp/catalog`

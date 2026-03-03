@@ -1,3 +1,32 @@
+# Tandem v0.4.1 Release Notes (Unreleased)
+
+### Highlights
+
+- **MCP-first Pack Builder in the engine**:
+  - Added built-in `pack_builder` tool with two-phase execution:
+    - `preview`: parse goal, resolve external capabilities to MCP catalog servers, generate pack artifacts, and return approval summary
+    - `apply`: register/connect selected MCP servers, install the generated zip, register routines paused-by-default, and persist preset metadata
+  - Pack generation now emits explicit MCP tool invocations (`action: mcp.*`) in `missions/default.yaml` and discovered tool IDs in `agents/default.md`.
+  - Preview now exposes connector candidates (name, description, docs URL, transport URL, auth/setup requirements, score), selected MCP mappings, required secrets, and fallback warnings where no connector exists.
+  - Connector-first behavior is now default for external data/actions; built-ins are fallback-only when no MCP match exists.
+- **Pack preset persistence + cross-surface compatibility**:
+  - Added `pack_presets` to preset registry indexing and override export/copy flows.
+  - Pack apply flow now writes `presets/overrides/pack_presets/<pack_id>.yaml` capturing:
+    - registered connector servers
+    - required credentials/env refs
+    - selected MCP tool IDs
+  - Updated control panel packs view to handle and surface `pack_presets`.
+  - Updated TUI preset index contract/output to include `pack_presets`.
+- **Routing and test hardening for Pack Builder**:
+  - Added channel-dispatcher routing for natural-language “create/build automation pack” requests to `pack_builder` with restricted allowlist.
+  - Added HTTP and unit test coverage ensuring:
+    - external goals map to at least one `mcp.*` tool in preview
+    - generated mission files contain explicit MCP action calls
+    - apply mode blocks without explicit approvals
+    - preset registry indexes/saves/deletes `pack_preset`
+
+---
+
 # Tandem v0.4.0 Release Notes (Unreleased)
 
 ### Highlights

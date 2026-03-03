@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - Unreleased
+
+### Added
+
+- **MCP-first Pack Builder workflow in engine**:
+  - added built-in `pack_builder` tool with `preview`/`apply` phases for generating installable Tandem packs from plain-English goals
+  - external capabilities now map to MCP catalog connectors by default, with explicit fallback warnings when no connector match is available
+  - generated pack `missions/` and `agents/` now include explicit discovered MCP tool IDs instead of abstract connector instructions
+  - preview output now includes candidate connector list (with docs/transport/auth metadata), selected MCP mapping, required secrets, and approval requirements
+  - apply path now supports MCP registration/connect, tool sync, pack install, and paused-by-default routine registration (explicit enable approval required)
+  - persisted generated pack presets under `presets/overrides/pack_presets/` including connector selections, registered servers, required credentials, and selected MCP tools
+- **Pack Builder activation and routing surfaces**:
+  - added default `pack_builder` agent profile with MCP-first system prompt and restricted tool allowlist
+  - added channel-dispatcher intent routing for “create/build automation pack” style requests to `pack_builder` with explicit tool allowlist
+- **Preset index compatibility expansion**:
+  - extended server preset index contract with `pack_presets` collection
+  - updated control panel packs view to consume `pack_presets` safely
+  - updated TUI preset index response model and `/preset index` output to include `pack_presets`
+- **Regression coverage for MCP connector usage**:
+  - added HTTP test asserting external-goal pack previews produce MCP tool mappings and mission steps containing `action: mcp.*`
+  - added apply-phase test asserting explicit approval gating
+  - added preset-registry tests for indexing and override lifecycle of `pack_preset`
+  - added channel router tests for pack-builder intent detection and default-route fallback
+
 ## [0.4.0] - Unreleased
 
 ### Added
