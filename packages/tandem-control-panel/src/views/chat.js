@@ -44,28 +44,6 @@ function saveAutoApprovePreference(enabled) {
   }
 }
 
-function isPackBuilderIntent(content) {
-  const lower = String(content || "").toLowerCase();
-  const mentionsPack =
-    lower.includes("pack") || lower.includes("automation") || lower.includes("workflow");
-  const mentionsCreate =
-    lower.includes("create") ||
-    lower.includes("build") ||
-    lower.includes("make") ||
-    lower.includes("generate") ||
-    lower.includes("setup");
-  const mentionsExternal =
-    lower.includes("notion") ||
-    lower.includes("slack") ||
-    lower.includes("stripe") ||
-    lower.includes("mcp") ||
-    lower.includes("connector") ||
-    lower.includes("headline") ||
-    lower.includes("news") ||
-    lower.includes("email");
-  return mentionsPack && mentionsCreate && mentionsExternal;
-}
-
 function parsePackBuilderReplyCommand(content) {
   const trimmed = String(content || "").trim();
   if (!trimmed) return null;
@@ -491,7 +469,7 @@ export async function renderChat(ctx) {
   function recordPackEvent(rawType, rawProps) {
     const normalized = normalizePackEvent(rawType, rawProps);
     const lower = String(normalized.type).toLowerCase();
-    if (!lower.startsWith("pack.") && !lower.startsWith("pack_builder.")) return;
+    if (!lower.startsWith("pack.")) return;
     if (packEventSeen.has(normalized.id)) return;
     packEventSeen.add(normalized.id);
     if (packEventSeen.size > 400) packEventSeen.clear();
@@ -563,6 +541,150 @@ export async function renderChat(ctx) {
       <div class="tcp-markdown tcp-markdown-ai">${renderMarkdown(content)}</div>
     `;
     messagesEl.appendChild(bubble);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function extractPackBuilderMetadata(eventType, props) {
+    const type = String(eventType || "").toLowerCase();
+    const source = props && typeof props === "object" ? props : {};
+    if (type.startsWith("pack_builder.")) {
+      return source.metadata && typeof source.metadata === "object" ? source.metadata : source;
+    }
+    const tool = extractToolName(source);
+    if (tool !== "pack_builder") return null;
+    if (source.metadata && typeof source.metadata === "object") return source.metadata;
+    if (source.result && typeof source.result === "object" && source.result.metadata) {
+      return source.result.metadata;
+    }
+    return null;
+  }
+
+  function renderPackBuilderInlineCard(meta) {
+    const status = String(meta?.status || "").trim() || "preview_pending";
+    const goal = String(meta?.goal || "").trim();
+    const planId = String(meta?.plan_id || "").trim();
+    const packName = String(meta?.pack?.name || meta?.pack_installed?.name || "").trim();
+    const connectors = Array.isArray(meta?.selected_connectors) ? meta.selected_connectors : [];
+    const requiredSecrets = Array.isArray(meta?.required_secrets) ? meta.required_secrets : [];
+    const statusLabel =
+      status === "apply_complete"
+        ? "Applied"
+        : status === "apply_blocked_missing_secrets"
+          ? "Blocked: missing secrets"
+          : status === "apply_blocked_auth"
+            ? "Blocked: auth required"
+            : status === "cancelled"
+              ? "Cancelled"
+              : "Preview pending";
+    const allowActions =
+      status === "preview_pending" ||
+      status === "apply_blocked_missing_secrets" ||
+      status === "apply_blocked_auth";
+    return `
+      <div class="chat-pack-event-card">
+        <div class="chat-pack-event-title">Pack Builder</div>
+        <div class="chat-pack-event-summary mt-0.5">${escapeHtml(statusLabel)}</div>
+        ${goal ? `<div class="chat-pack-event-summary mt-1"><strong>Goal:</strong> ${escapeHtml(goal)}</div>` : ""}
+        ${planId ? `<div class="chat-pack-event-summary mt-1"><strong>Plan:</strong> ${escapeHtml(planId)}</div>` : ""}
+        ${packName ? `<div class="chat-pack-event-summary mt-1"><strong>Pack:</strong> ${escapeHtml(packName)}</div>` : ""}
+        ${
+          connectors.length
+            ? `<div class="chat-pack-event-summary mt-1"><strong>Connectors:</strong> ${escapeHtml(connectors.join(", "))}</div>`
+            : ""
+        }
+        ${
+          requiredSecrets.length
+            ? `<div class="chat-pack-event-error mt-1"><strong>Required secrets:</strong> ${escapeHtml(requiredSecrets.join(", "))}</div>`
+            : ""
+        }
+        ${
+          allowActions && planId
+            ? `<div class="mt-2 flex gap-1">
+                <button class="tcp-btn h-6 px-1.5 text-[10px]" data-pb-action="confirm" data-pb-plan="${escapeHtml(planId)}">Confirm</button>
+                <button class="tcp-btn-danger h-6 px-1.5 text-[10px]" data-pb-action="cancel" data-pb-plan="${escapeHtml(planId)}">Cancel</button>
+              </div>`
+            : ""
+        }
+      </div>
+    `;
+  }
+
+  async function runPackBuilderInlineAction(action, planId) {
+    const sessionId = String(state.currentSessionId || "").trim();
+    if (!sessionId || !planId) return null;
+    const threadKey = `control-panel:${sessionId}`;
+    if (action === "cancel") {
+      return api("/api/engine/pack-builder/cancel", {
+        method: "POST",
+        body: JSON.stringify({
+          plan_id: planId,
+          session_id: sessionId,
+          thread_key: threadKey,
+        }),
+      });
+    }
+    return api("/api/engine/pack-builder/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        plan_id: planId,
+        session_id: sessionId,
+        thread_key: threadKey,
+        approvals: {
+          approve_connector_registration: true,
+          approve_pack_install: true,
+          approve_enable_routines: false,
+        },
+        secret_refs_confirmed: false,
+      }),
+    });
+  }
+
+  function upsertPackBuilderInlineCard(meta) {
+    if (!meta || typeof meta !== "object") return;
+    const planId = String(meta?.plan_id || "").trim();
+    const cardMarkup = renderPackBuilderInlineCard(meta);
+    let bubble = null;
+    if (planId) {
+      bubble = [...messagesEl.querySelectorAll("[data-pack-builder-plan]")]
+        .find((node) => String(node.getAttribute("data-pack-builder-plan") || "") === planId);
+    }
+    if (!bubble) {
+      bubble = document.createElement("div");
+      bubble.className = "chat-msg assistant";
+      if (planId) bubble.setAttribute("data-pack-builder-plan", planId);
+      const assistantLabel = String(state.botName || "Assistant").trim() || "Assistant";
+      const assistantAvatar = String(state.botAvatarUrl || "").trim();
+      bubble.innerHTML = `
+        <div class="chat-msg-role">
+          <span class="inline-flex items-center gap-2">
+            ${
+              assistantAvatar
+                ? `<img src="${escapeHtml(assistantAvatar)}" alt="${escapeHtml(assistantLabel)}" class="chat-avatar-ring h-5 w-5 rounded-full object-cover" />`
+                : ""
+            }
+            <span>${escapeHtml(assistantLabel)}</span>
+          </span>
+        </div>
+        <div class="chat-pack-builder-inline">${cardMarkup}</div>
+      `;
+      messagesEl.appendChild(bubble);
+    } else {
+      const host = bubble.querySelector(".chat-pack-builder-inline");
+      if (host) host.innerHTML = cardMarkup;
+    }
+    bubble.querySelectorAll("[data-pb-action]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const action = String(el.getAttribute("data-pb-action") || "").trim();
+        const targetPlan = String(el.getAttribute("data-pb-plan") || "").trim();
+        if (!action || !targetPlan) return;
+        try {
+          const payload = await runPackBuilderInlineAction(action, targetPlan);
+          if (payload) upsertPackBuilderInlineCard(payload);
+        } catch (e) {
+          toast("err", e instanceof Error ? e.message : String(e));
+        }
+      });
+    });
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -1114,7 +1236,7 @@ export async function renderChat(ctx) {
       appendTransientUserMessage(prompt, attached.length);
       const threadKey = `control-panel:${String(state.currentSessionId || "").trim()}`;
       const replyCommand = parsePackBuilderReplyCommand(promptRaw);
-      if (replyCommand || isPackBuilderIntent(promptRaw)) {
+      if (replyCommand) {
         let payload = null;
         if (replyCommand?.mode === "cancel") {
           payload = await api("/api/engine/pack-builder/cancel", {
@@ -1148,16 +1270,8 @@ export async function renderChat(ctx) {
               secret_refs_confirmed: replyCommand?.mode === "connectors",
             }),
           });
-        } else {
-          payload = await api("/api/engine/pack-builder/preview", {
-            method: "POST",
-            body: JSON.stringify({
-              goal: promptRaw,
-              session_id: state.currentSessionId,
-              thread_key: threadKey,
-              auto_apply: false,
-            }),
-          });
+        } else if (replyCommand?.mode === "confirm" || replyCommand?.mode === "connectors") {
+          // handled above
         }
         const summary = String(payload?.output || "").trim() || JSON.stringify(payload || {}, null, 2);
         appendTransientAssistantMessage(summary);
@@ -1389,8 +1503,9 @@ export async function renderChat(ctx) {
           if (String(event.type || "").toLowerCase().startsWith("pack.")) {
             recordPackEvent(event.type, event.properties || {});
           }
-          if (String(event.type || "").toLowerCase().startsWith("pack_builder.")) {
-            recordPackEvent(event.type, event.properties || {});
+          const packBuilderMeta = extractPackBuilderMetadata(event.type, event.properties || {});
+          if (packBuilderMeta) {
+            upsertPackBuilderInlineCard(packBuilderMeta);
           }
           if (evRunId && evRunId !== runId) continue;
           if (event.type === "session.response") {

@@ -133,7 +133,9 @@ After receiving answers, continue planning and update todos."
 Treat external data sources/actions as MCP-first: resolve to concrete MCP servers/tools where possible.\n\
 Prefer explicit MCP tool IDs in generated missions and agent instructions.\n\
 Use built-in tools only when no viable MCP mapping exists, and call that out clearly.\n\
-Always provide a preview summary (connectors, tools, secrets, schedule) before apply."
+Always provide a preview summary (connectors, tools, secrets, schedule) before apply.\n\
+When connector choice, auth, or secrets block progress, call the `question` tool to ask one structured follow-up question.\n\
+Do not apply until the user confirms."
                     .to_string(),
             ),
             tools: Some(vec![

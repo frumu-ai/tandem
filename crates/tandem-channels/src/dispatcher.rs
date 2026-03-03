@@ -433,33 +433,6 @@ async fn process_channel_message(
         }
     }
 
-    if is_pack_builder_intent(&msg.content) {
-        let preview = preview_pack_builder_for_channel(
-            base_url,
-            api_token,
-            &session_id,
-            &thread_key,
-            &msg.content,
-        )
-        .await;
-        if let Some(reply) = preview {
-            if let Err(e) = channel
-                .send(&SendMessage {
-                    content: reply,
-                    recipient: msg.reply_target,
-                    image_urls: Vec::new(),
-                })
-                .await
-            {
-                error!(
-                    "failed to send pack-builder preview via '{}': {e}",
-                    channel.name()
-                );
-            }
-            return;
-        }
-    }
-
     if let Err(e) = channel.start_typing(&msg.reply_target).await {
         warn!(
             "failed to start typing indicator for channel '{}': {e}",
@@ -594,41 +567,6 @@ fn parse_pack_builder_reply_command(content: &str) -> Option<PackBuilderReplyCom
     None
 }
 
-async fn preview_pack_builder_for_channel(
-    base_url: &str,
-    api_token: &str,
-    session_id: &str,
-    thread_key: &str,
-    goal: &str,
-) -> Option<String> {
-    let client = reqwest::Client::new();
-    let resp = add_auth(
-        client.post(format!("{base_url}/pack-builder/preview")),
-        api_token,
-    )
-    .json(&serde_json::json!({
-        "session_id": session_id,
-        "thread_key": thread_key,
-        "goal": goal,
-        "auto_apply": false
-    }))
-    .send()
-    .await
-    .ok()?;
-    let status = resp.status();
-    let payload: serde_json::Value = resp.json().await.unwrap_or_default();
-    if !status.is_success() {
-        return Some(format!(
-            "Pack Builder preview failed ({status}): {}",
-            payload
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-        ));
-    }
-    Some(format_pack_builder_preview_message(&payload))
-}
-
 async fn apply_pending_pack_builder(
     base_url: &str,
     api_token: &str,
@@ -725,55 +663,6 @@ async fn cancel_pending_pack_builder(
         ));
     }
     Some("Pack Builder plan cancelled for this thread.".to_string())
-}
-
-fn format_pack_builder_preview_message(payload: &serde_json::Value) -> String {
-    let mut lines = Vec::new();
-    lines.push("Pack Builder Preview".to_string());
-    if let Some(goal) = payload.get("goal").and_then(|v| v.as_str()) {
-        lines.push(format!("- Goal: {}", goal));
-    }
-    if let Some(plan_id) = payload.get("plan_id").and_then(|v| v.as_str()) {
-        lines.push(format!("- Plan ID: {}", plan_id));
-    }
-    if let Some(pack_name) = payload
-        .get("pack")
-        .and_then(|v| v.get("name"))
-        .and_then(|v| v.as_str())
-    {
-        lines.push(format!("- Pack: {}", pack_name));
-    }
-    let connectors = payload
-        .get("selected_connectors")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    if connectors.is_empty() {
-        lines.push("- Selected connectors: none".to_string());
-    } else {
-        lines.push("- Selected connectors:".to_string());
-        for row in connectors {
-            if let Some(slug) = row.as_str() {
-                lines.push(format!("  - {}", slug));
-            }
-        }
-    }
-    let required_secrets = payload
-        .get("required_secrets")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    if !required_secrets.is_empty() {
-        lines.push("- Required secrets:".to_string());
-        for row in required_secrets {
-            if let Some(secret) = row.as_str() {
-                lines.push(format!("  - {}", secret));
-            }
-        }
-    }
-    lines.push("- Reply `confirm` to apply, `cancel` to abort.".to_string());
-    lines.push("- Optional: `use connectors: slug1, slug2`".to_string());
-    lines.join("\n")
 }
 
 fn format_pack_builder_apply_message(payload: &serde_json::Value) -> String {
