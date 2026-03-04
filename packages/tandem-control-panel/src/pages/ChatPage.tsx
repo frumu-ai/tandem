@@ -1076,7 +1076,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
   const attachedCount = uploads.length;
 
   return (
-    <div ref={rootRef} className="chat-layout min-w-0 h-full min-h-0">
+    <div ref={rootRef} className="chat-layout min-w-0 min-h-0 h-full flex-1">
       <motion.aside
         className={`chat-sessions-panel ${sessionsOpen ? "open" : ""}`}
         initial={false}

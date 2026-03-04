@@ -93,8 +93,8 @@ export function AppShell({
           </button>
         </div>
       </aside>
-      <main className="min-w-0 p-3 md:p-5">
-        <section className="mb-3 grid gap-3 rounded-xl border border-slate-700/40 bg-slate-950/30 p-3 md:grid-cols-3">
+      <main className="flex h-screen min-w-0 flex-col p-3 md:p-5">
+        <section className="mb-3 grid shrink-0 gap-3 rounded-xl border border-slate-700/40 bg-slate-950/30 p-3 md:grid-cols-3">
           <div className="flex items-center justify-between rounded-lg border border-slate-700/50 bg-black/20 p-2">
             <span className="tcp-subtle text-xs">Engine</span>
             <span className={statusBar.engineHealthy ? "tcp-badge-ok" : "tcp-badge-warn"}>
@@ -114,7 +114,7 @@ export function AppShell({
         <AnimatePresence mode="wait">
           <motion.section
             key={routeKey}
-            className="grid h-[calc(100vh-10.5rem)] gap-4 tcp-view-surface"
+            className="flex min-h-0 flex-1 flex-col gap-4 tcp-view-surface"
           >
             {children}
           </motion.section>

@@ -667,7 +667,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-main-shell {
-    @apply min-h-0;
+    @apply h-full min-h-0;
     border-right: 1px solid color-mix(in srgb, var(--color-border-subtle) 92%, transparent);
     background: color-mix(in srgb, var(--color-surface) 86%, #000 14%);
   }
