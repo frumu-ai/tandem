@@ -2,6 +2,27 @@
 
 ### Highlights
 
+- **Blackboard as central coordination layer + control panel parity**:
+  - Extended engine blackboard with first-class task state (`blackboard.tasks`) including workflow IDs, task lineage references, lease ownership/token/expiry, retries, and optimistic task revision (`task_rev`).
+  - Added append-only task patch operations:
+    - `add_task`
+    - `update_task_lease`
+    - `update_task_state`
+  - Added task coordination endpoints:
+    - `POST /context/runs/{run_id}/tasks`
+    - `POST /context/runs/{run_id}/tasks/claim`
+    - `POST /context/runs/{run_id}/tasks/{task_id}/transition`
+    - `GET /context/runs/{run_id}/blackboard/patches`
+  - Task lifecycle transitions now emit context-run events (`context.task.created`, `context.task.claimed`, `context.task.started`, `context.task.completed`, `context.task.failed`, etc.) carrying `patch_seq` + `task_rev`.
+  - Replay now reports blackboard drift for task parity (revision/count/status) and returns replayed and persisted blackboard payloads for debug comparison.
+  - Control panel swarm API shim now forwards blackboard patches and task state from engine context runs.
+  - `packages/tandem-control-panel` Swarm view now includes blackboard modes:
+    - Docked
+    - Expanded
+    - Fullscreen debug
+  - Blackboard UI now renders run status/current step/why-next-step, decision lineage, agent activity lanes, workflow progress, artifact lineage, drift alerts, and patch feed.
+  - Added regression tests covering claim race single-winner behavior, `command_id` idempotency, task revision conflicts, monotonic patch sequence, and replay/task compatibility.
+
 - **MCP-first Pack Builder in the engine**:
   - Added built-in `pack_builder` tool with two-phase execution:
     - `preview`: parse goal, resolve external capabilities to MCP catalog servers, generate pack artifacts, and return approval summary

@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Blackboard promoted as run coordination backbone (engine + control panel)**:
+  - extended context blackboard state with first-class task rows (`tasks`) including workflow/lineage fields, lease metadata, retries, and optimistic `task_rev`
+  - added task patch ops to append-only blackboard log:
+    - `add_task`
+    - `update_task_lease`
+    - `update_task_state`
+  - added simplified task coordination endpoints:
+    - `POST /context/runs/{run_id}/tasks`
+    - `POST /context/runs/{run_id}/tasks/claim`
+    - `POST /context/runs/{run_id}/tasks/{task_id}/transition`
+    - `GET /context/runs/{run_id}/blackboard/patches`
+  - task lifecycle now emits run events (`context.task.created`, `context.task.claimed`, `context.task.started`, `context.task.completed`, `context.task.failed`, etc.) with `patch_seq` and `task_rev` for UI projections
+  - replay/drift responses now include blackboard task parity checks (revision/count/status) and replay-vs-persisted blackboard payloads for debugging
+  - control panel swarm route now forwards blackboard patch streams (`blackboardPatches`) and blackboard-aware task state
+  - control panel `SwarmPage` now ships blackboard panel modes:
+    - docked view
+    - expanded view
+    - fullscreen debug view
+  - new control panel blackboard views include run status/current step/why-next-step context, decision lineage, agent lanes, workflow progress, artifact lineage, drift alerts, and patch feed
+  - added regression tests for:
+    - single-winner concurrent claims
+    - `command_id` idempotency
+    - optimistic `task_rev` mismatch handling
+    - monotonic patch sequence and dedupe behavior
+    - replay compatibility with task blackboard state
+
 - **Automation creation UX simplified (control panel)**:
   - replaced the fragmented `Agents`, `Packs`, and `Teams` pages with a unified `Automations` hub (`AutomationsPage.tsx`)
   - added a 4-step wizard: **What?** (plain-English goal) → **When?** (visual schedule presets + custom cron) → **How?** (execution mode selector) → **Review & Deploy**

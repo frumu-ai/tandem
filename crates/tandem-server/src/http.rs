@@ -267,8 +267,65 @@ struct ContextBlackboardState {
     #[serde(default)]
     artifacts: Vec<ContextBlackboardArtifact>,
     #[serde(default)]
+    tasks: Vec<ContextBlackboardTask>,
+    #[serde(default)]
     summaries: ContextBlackboardSummaries,
+    #[serde(default)]
     revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ContextBlackboardTaskStatus {
+    Pending,
+    Runnable,
+    InProgress,
+    Blocked,
+    Done,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ContextBlackboardTask {
+    id: String,
+    task_type: String,
+    #[serde(default)]
+    payload: Value,
+    status: ContextBlackboardTaskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workflow_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_task_id: Option<String>,
+    #[serde(default)]
+    depends_on_task_ids: Vec<String>,
+    #[serde(default)]
+    decision_ids: Vec<String>,
+    #[serde(default)]
+    artifact_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assigned_agent: Option<String>,
+    #[serde(default)]
+    priority: i32,
+    #[serde(default)]
+    attempt: u32,
+    #[serde(default)]
+    max_attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    next_retry_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lease_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lease_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lease_expires_at_ms: Option<u64>,
+    #[serde(default)]
+    task_rev: u64,
+    created_ts: u64,
+    updated_ts: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,6 +337,9 @@ enum ContextBlackboardPatchOp {
     AddArtifact,
     SetRollingSummary,
     SetLatestContextPack,
+    AddTask,
+    UpdateTaskLease,
+    UpdateTaskState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +356,76 @@ struct ContextBlackboardPatchRecord {
 struct ContextBlackboardPatchInput {
     op: ContextBlackboardPatchOp,
     payload: Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct ContextBlackboardPatchesQuery {
+    since_seq: Option<u64>,
+    tail: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ContextTaskCreateInput {
+    #[serde(default)]
+    command_id: Option<String>,
+    id: Option<String>,
+    task_type: String,
+    #[serde(default)]
+    payload: Value,
+    status: Option<ContextBlackboardTaskStatus>,
+    #[serde(default)]
+    workflow_id: Option<String>,
+    #[serde(default)]
+    workflow_node_id: Option<String>,
+    #[serde(default)]
+    parent_task_id: Option<String>,
+    #[serde(default)]
+    depends_on_task_ids: Vec<String>,
+    #[serde(default)]
+    decision_ids: Vec<String>,
+    #[serde(default)]
+    artifact_ids: Vec<String>,
+    #[serde(default)]
+    priority: Option<i32>,
+    #[serde(default)]
+    max_attempts: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ContextTaskCreateBatchInput {
+    tasks: Vec<ContextTaskCreateInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ContextTaskClaimInput {
+    agent_id: String,
+    #[serde(default)]
+    command_id: Option<String>,
+    #[serde(default)]
+    task_type: Option<String>,
+    #[serde(default)]
+    workflow_id: Option<String>,
+    #[serde(default)]
+    lease_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ContextTaskTransitionInput {
+    action: String,
+    #[serde(default)]
+    command_id: Option<String>,
+    #[serde(default)]
+    expected_task_rev: Option<u64>,
+    #[serde(default)]
+    lease_token: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    status: Option<ContextBlackboardTaskStatus>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    lease_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,6 +450,12 @@ struct ContextReplayDrift {
     status_mismatch: bool,
     why_next_step_mismatch: bool,
     step_count_mismatch: bool,
+    #[serde(default)]
+    blackboard_revision_mismatch: bool,
+    #[serde(default)]
+    blackboard_task_count_mismatch: bool,
+    #[serde(default)]
+    blackboard_task_status_mismatch: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -2020,7 +2156,19 @@ fn app_router(state: AppState) -> Router {
         )
         .route(
             "/context/runs/{run_id}/blackboard/patches",
-            post(context_run_blackboard_patch),
+            get(context_run_blackboard_patches_get).post(context_run_blackboard_patch),
+        )
+        .route(
+            "/context/runs/{run_id}/tasks",
+            post(context_run_tasks_create),
+        )
+        .route(
+            "/context/runs/{run_id}/tasks/claim",
+            post(context_run_tasks_claim),
+        )
+        .route(
+            "/context/runs/{run_id}/tasks/{task_id}/transition",
+            post(context_run_task_transition),
         )
         .route(
             "/context/runs/{run_id}/checkpoints",
@@ -9530,6 +9678,10 @@ fn apply_context_blackboard_patch(
     blackboard: &mut ContextBlackboardState,
     patch: &ContextBlackboardPatchRecord,
 ) -> Result<(), StatusCode> {
+    let mut task_idx: HashMap<String, usize> = HashMap::new();
+    for (idx, task) in blackboard.tasks.iter().enumerate() {
+        task_idx.insert(task.id.clone(), idx);
+    }
     match patch.op {
         ContextBlackboardPatchOp::AddFact => {
             let row = serde_json::from_value::<ContextBlackboardItem>(patch.payload.clone())
@@ -9567,9 +9719,248 @@ fn apply_context_blackboard_patch(
                 .to_string();
             blackboard.summaries.latest_context_pack = value;
         }
+        ContextBlackboardPatchOp::AddTask => {
+            let task = serde_json::from_value::<ContextBlackboardTask>(patch.payload.clone())
+                .map_err(|_| StatusCode::BAD_REQUEST)?;
+            if let Some(idx) = task_idx.get(&task.id).copied() {
+                blackboard.tasks[idx] = task;
+            } else {
+                blackboard.tasks.push(task);
+            }
+        }
+        ContextBlackboardPatchOp::UpdateTaskLease => {
+            let task_id = patch
+                .payload
+                .get("task_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or(StatusCode::BAD_REQUEST)?
+                .to_string();
+            let Some(idx) = task_idx.get(&task_id).copied() else {
+                return Err(StatusCode::NOT_FOUND);
+            };
+            let task = blackboard.tasks.get_mut(idx).ok_or(StatusCode::NOT_FOUND)?;
+            task.lease_owner = patch
+                .payload
+                .get("lease_owner")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            task.lease_token = patch
+                .payload
+                .get("lease_token")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            task.lease_expires_at_ms = patch
+                .payload
+                .get("lease_expires_at_ms")
+                .and_then(Value::as_u64);
+            if let Some(agent_id) = patch
+                .payload
+                .get("assigned_agent")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                task.assigned_agent = Some(agent_id.to_string());
+            }
+            if let Some(next_rev) = patch.payload.get("task_rev").and_then(Value::as_u64) {
+                task.task_rev = next_rev;
+            } else {
+                task.task_rev = task.task_rev.saturating_add(1);
+            }
+            task.updated_ts = patch.ts_ms;
+        }
+        ContextBlackboardPatchOp::UpdateTaskState => {
+            let task_id = patch
+                .payload
+                .get("task_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or(StatusCode::BAD_REQUEST)?
+                .to_string();
+            let Some(idx) = task_idx.get(&task_id).copied() else {
+                return Err(StatusCode::NOT_FOUND);
+            };
+            let task = blackboard.tasks.get_mut(idx).ok_or(StatusCode::NOT_FOUND)?;
+            let status = patch
+                .payload
+                .get("status")
+                .cloned()
+                .ok_or(StatusCode::BAD_REQUEST)
+                .and_then(|row| {
+                    serde_json::from_value::<ContextBlackboardTaskStatus>(row)
+                        .map_err(|_| StatusCode::BAD_REQUEST)
+                })?;
+            task.status = status;
+            if let Some(lease_owner) = patch
+                .payload
+                .get("lease_owner")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                task.lease_owner = Some(lease_owner.to_string());
+            }
+            if patch.payload.get("lease_owner").is_some()
+                && patch
+                    .payload
+                    .get("lease_owner")
+                    .and_then(Value::as_str)
+                    .is_none()
+            {
+                task.lease_owner = None;
+            }
+            if let Some(lease_token) = patch
+                .payload
+                .get("lease_token")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                task.lease_token = Some(lease_token.to_string());
+            }
+            if patch.payload.get("lease_token").is_some()
+                && patch
+                    .payload
+                    .get("lease_token")
+                    .and_then(Value::as_str)
+                    .is_none()
+            {
+                task.lease_token = None;
+            }
+            task.lease_expires_at_ms = patch
+                .payload
+                .get("lease_expires_at_ms")
+                .and_then(Value::as_u64);
+            if let Some(agent_id) = patch
+                .payload
+                .get("assigned_agent")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                task.assigned_agent = Some(agent_id.to_string());
+            }
+            if let Some(err_text) = patch
+                .payload
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                task.last_error = Some(err_text.to_string());
+            }
+            if let Some(next_retry_at_ms) = patch
+                .payload
+                .get("next_retry_at_ms")
+                .and_then(Value::as_u64)
+            {
+                task.next_retry_at_ms = Some(next_retry_at_ms);
+            }
+            if let Some(next_attempt) = patch.payload.get("attempt").and_then(Value::as_u64) {
+                task.attempt = next_attempt as u32;
+            }
+            if let Some(next_rev) = patch.payload.get("task_rev").and_then(Value::as_u64) {
+                task.task_rev = next_rev;
+            } else {
+                task.task_rev = task.task_rev.saturating_add(1);
+            }
+            task.updated_ts = patch.ts_ms;
+        }
     }
     blackboard.revision = patch.seq;
     Ok(())
+}
+
+fn load_context_blackboard_patches(
+    state: &AppState,
+    run_id: &str,
+    since_seq: Option<u64>,
+    tail: Option<usize>,
+) -> Vec<ContextBlackboardPatchRecord> {
+    let path = context_run_blackboard_patches_path(state, run_id);
+    let rows = std::fs::read_to_string(path).unwrap_or_default();
+    let mut parsed = rows
+        .lines()
+        .filter_map(|line| serde_json::from_str::<ContextBlackboardPatchRecord>(line).ok())
+        .filter(|row| {
+            if let Some(min_seq) = since_seq {
+                return row.seq > min_seq;
+            }
+            true
+        })
+        .collect::<Vec<_>>();
+    parsed.sort_by_key(|row| row.seq);
+    if let Some(tail_count) = tail {
+        if parsed.len() > tail_count {
+            parsed = parsed.split_off(parsed.len().saturating_sub(tail_count));
+        }
+    }
+    parsed
+}
+
+fn next_context_blackboard_patch_seq(state: &AppState, run_id: &str) -> u64 {
+    load_context_blackboard_patches(state, run_id, None, Some(1))
+        .last()
+        .map(|row| row.seq)
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
+fn append_context_blackboard_patch(
+    state: &AppState,
+    run_id: &str,
+    op: ContextBlackboardPatchOp,
+    payload: Value,
+) -> Result<(ContextBlackboardPatchRecord, ContextBlackboardState), StatusCode> {
+    let patch = ContextBlackboardPatchRecord {
+        patch_id: format!("bbp-{}", Uuid::new_v4()),
+        run_id: run_id.to_string(),
+        seq: next_context_blackboard_patch_seq(state, run_id),
+        ts_ms: crate::now_ms(),
+        op,
+        payload,
+    };
+    append_jsonl_line(
+        &context_run_blackboard_patches_path(state, run_id),
+        &serde_json::to_value(&patch).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    )?;
+    let mut blackboard = load_context_blackboard(state, run_id);
+    apply_context_blackboard_patch(&mut blackboard, &patch)?;
+    save_context_blackboard(state, run_id, &blackboard)?;
+    Ok((patch, blackboard))
+}
+
+fn context_task_status_event_name(status: &ContextBlackboardTaskStatus) -> &'static str {
+    match status {
+        ContextBlackboardTaskStatus::InProgress => "context.task.started",
+        ContextBlackboardTaskStatus::Done => "context.task.completed",
+        ContextBlackboardTaskStatus::Failed => "context.task.failed",
+        ContextBlackboardTaskStatus::Blocked => "context.task.blocked",
+        ContextBlackboardTaskStatus::Runnable | ContextBlackboardTaskStatus::Pending => {
+            "context.task.requeued"
+        }
+    }
+}
+
+fn context_run_lock_map(
+) -> &'static std::sync::OnceLock<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>
+{
+    static LOCKS: std::sync::OnceLock<
+        tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    &LOCKS
+}
+
+async fn context_run_lock_for(run_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let map = context_run_lock_map().get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+    let mut guard = map.lock().await;
+    guard
+        .entry(run_id.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 async fn context_run_create(
@@ -10305,38 +10696,480 @@ async fn context_run_blackboard_get(
     Ok(Json(json!({ "blackboard": blackboard })))
 }
 
+fn context_blackboard_has_command_id(state: &AppState, run_id: &str, command_id: &str) -> bool {
+    if command_id.trim().is_empty() {
+        return false;
+    }
+    load_context_blackboard_patches(state, run_id, None, Some(500))
+        .iter()
+        .any(|patch| {
+            patch
+                .payload
+                .get("command_id")
+                .and_then(Value::as_str)
+                .map(|value| value == command_id)
+                .unwrap_or(false)
+        })
+}
+
+async fn context_run_blackboard_patches_get(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Query(query): Query<ContextBlackboardPatchesQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let patches = load_context_blackboard_patches(&state, &run_id, query.since_seq, query.tail);
+    Ok(Json(json!({ "patches": patches })))
+}
+
 async fn context_run_blackboard_patch(
     State(state): State<AppState>,
     Path(run_id): Path<String>,
     Json(input): Json<ContextBlackboardPatchInput>,
 ) -> Result<Json<Value>, StatusCode> {
-    let patch_path = context_run_blackboard_patches_path(&state, &run_id);
-    let seq = {
-        let rows = std::fs::read_to_string(&patch_path).unwrap_or_default();
-        rows.lines()
-            .filter_map(|line| serde_json::from_str::<ContextBlackboardPatchRecord>(line).ok())
-            .map(|row| row.seq)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1)
-    };
-    let patch = ContextBlackboardPatchRecord {
-        patch_id: format!("bbp-{}", Uuid::new_v4()),
-        run_id: run_id.clone(),
-        seq,
-        ts_ms: crate::now_ms(),
-        op: input.op,
-        payload: input.payload,
-    };
-    append_jsonl_line(
-        &patch_path,
-        &serde_json::to_value(&patch).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-    )?;
-    let mut blackboard = load_context_blackboard(&state, &run_id);
-    apply_context_blackboard_patch(&mut blackboard, &patch)?;
-    save_context_blackboard(&state, &run_id, &blackboard)?;
+    let lock = context_run_lock_for(&run_id).await;
+    let _guard = lock.lock().await;
+    let (patch, blackboard) =
+        append_context_blackboard_patch(&state, &run_id, input.op, input.payload)?;
     Ok(Json(
         json!({ "ok": true, "patch": patch, "blackboard": blackboard }),
+    ))
+}
+
+async fn context_run_tasks_create(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<ContextTaskCreateBatchInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let lock = context_run_lock_for(&run_id).await;
+    let _guard = lock.lock().await;
+    if input.tasks.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let run_status = load_context_run_state(&state, &run_id)
+        .await
+        .ok()
+        .map(|run| run.status)
+        .unwrap_or(ContextRunStatus::Planning);
+    let mut created = Vec::<ContextBlackboardTask>::new();
+    let mut patches = Vec::<ContextBlackboardPatchRecord>::new();
+
+    for row in input.tasks {
+        if row.task_type.trim().is_empty() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        if let Some(command_id) = row.command_id.as_deref() {
+            if context_blackboard_has_command_id(&state, &run_id, command_id) {
+                continue;
+            }
+        }
+        let now = crate::now_ms();
+        let task = ContextBlackboardTask {
+            id: row
+                .id
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| format!("task-{}", Uuid::new_v4())),
+            task_type: row.task_type.trim().to_string(),
+            payload: row.payload,
+            status: row.status.unwrap_or(ContextBlackboardTaskStatus::Pending),
+            workflow_id: row
+                .workflow_id
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            workflow_node_id: row
+                .workflow_node_id
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            parent_task_id: row
+                .parent_task_id
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            depends_on_task_ids: row
+                .depends_on_task_ids
+                .into_iter()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .collect::<Vec<_>>(),
+            decision_ids: row.decision_ids,
+            artifact_ids: row.artifact_ids,
+            assigned_agent: None,
+            priority: row.priority.unwrap_or(0),
+            attempt: 0,
+            max_attempts: row.max_attempts.unwrap_or(3),
+            last_error: None,
+            next_retry_at_ms: None,
+            lease_owner: None,
+            lease_token: None,
+            lease_expires_at_ms: None,
+            task_rev: 1,
+            created_ts: now,
+            updated_ts: now,
+        };
+        let mut payload =
+            serde_json::to_value(&task).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Some(command_id) = row.command_id {
+            payload["command_id"] = json!(command_id);
+        }
+        let (patch, _) = append_context_blackboard_patch(
+            &state,
+            &run_id,
+            ContextBlackboardPatchOp::AddTask,
+            payload,
+        )?;
+        let _ = context_run_event_append(
+            State(state.clone()),
+            Path(run_id.clone()),
+            Json(ContextRunEventAppendInput {
+                event_type: "context.task.created".to_string(),
+                status: run_status.clone(),
+                step_id: Some(task.id.clone()),
+                payload: json!({
+                    "task_id": task.id,
+                    "task_type": task.task_type,
+                    "patch_seq": patch.seq,
+                    "task_rev": task.task_rev,
+                    "workflow_id": task.workflow_id,
+                }),
+            }),
+        )
+        .await;
+        patches.push(patch);
+        created.push(task);
+    }
+
+    let blackboard = load_context_blackboard(&state, &run_id);
+    Ok(Json(
+        json!({ "ok": true, "tasks": created, "patches": patches, "blackboard": blackboard }),
+    ))
+}
+
+async fn context_run_tasks_claim(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<ContextTaskClaimInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let lock = context_run_lock_for(&run_id).await;
+    let _guard = lock.lock().await;
+    if input.agent_id.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if let Some(command_id) = input.command_id.as_deref() {
+        if context_blackboard_has_command_id(&state, &run_id, command_id) {
+            return Ok(Json(json!({
+                "ok": true,
+                "deduped": true,
+                "task": null,
+                "blackboard": load_context_blackboard(&state, &run_id),
+            })));
+        }
+    }
+    let run_status = load_context_run_state(&state, &run_id)
+        .await
+        .ok()
+        .map(|run| run.status)
+        .unwrap_or(ContextRunStatus::Running);
+    let blackboard = load_context_blackboard(&state, &run_id);
+    let now = crate::now_ms();
+    let mut task_idx = blackboard
+        .tasks
+        .iter()
+        .enumerate()
+        .filter(|(_, task)| {
+            if let Some(task_type) = input.task_type.as_deref() {
+                if task.task_type != task_type {
+                    return false;
+                }
+            }
+            if let Some(workflow_id) = input.workflow_id.as_deref() {
+                if task.workflow_id.as_deref() != Some(workflow_id) {
+                    return false;
+                }
+            }
+            matches!(
+                task.status,
+                ContextBlackboardTaskStatus::Runnable | ContextBlackboardTaskStatus::Pending
+            )
+        })
+        .filter(|(_, task)| {
+            task.depends_on_task_ids.iter().all(|dep| {
+                blackboard
+                    .tasks
+                    .iter()
+                    .find(|row| row.id == *dep)
+                    .map(|row| matches!(row.status, ContextBlackboardTaskStatus::Done))
+                    .unwrap_or(false)
+            })
+        })
+        .map(|(idx, _)| idx)
+        .collect::<Vec<_>>();
+    task_idx.sort_by(|a, b| {
+        let left = &blackboard.tasks[*a];
+        let right = &blackboard.tasks[*b];
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.created_ts.cmp(&right.created_ts))
+    });
+    let Some(selected_idx) = task_idx.first().copied() else {
+        return Ok(Json(json!({
+            "ok": true,
+            "task": null,
+            "blackboard": blackboard,
+        })));
+    };
+    let selected = blackboard.tasks[selected_idx].clone();
+    let lease_ms = input.lease_ms.unwrap_or(30_000).clamp(5_000, 300_000);
+    let lease_token = format!("lease-{}", Uuid::new_v4());
+    let next_rev = selected.task_rev.saturating_add(1);
+    let mut payload = json!({
+        "task_id": selected.id,
+        "status": ContextBlackboardTaskStatus::InProgress,
+        "assigned_agent": input.agent_id.trim(),
+        "lease_owner": input.agent_id.trim(),
+        "lease_token": lease_token,
+        "lease_expires_at_ms": now.saturating_add(lease_ms),
+        "task_rev": next_rev,
+    });
+    if let Some(command_id) = input.command_id {
+        payload["command_id"] = json!(command_id);
+    }
+    let (patch, mut blackboard) = append_context_blackboard_patch(
+        &state,
+        &run_id,
+        ContextBlackboardPatchOp::UpdateTaskState,
+        payload,
+    )?;
+    let claimed = blackboard
+        .tasks
+        .iter()
+        .find(|task| task.id == selected.id)
+        .cloned();
+    let _ = context_run_event_append(
+        State(state.clone()),
+        Path(run_id.clone()),
+        Json(ContextRunEventAppendInput {
+            event_type: "context.task.claimed".to_string(),
+            status: run_status.clone(),
+            step_id: Some(selected.id.clone()),
+            payload: json!({
+                "task_id": selected.id,
+                "agent_id": input.agent_id.trim(),
+                "patch_seq": patch.seq,
+                "task_rev": next_rev,
+                "workflow_id": selected.workflow_id,
+            }),
+        }),
+    )
+    .await;
+    if let Some(task) = claimed.as_ref() {
+        let _ = context_run_event_append(
+            State(state.clone()),
+            Path(run_id.clone()),
+            Json(ContextRunEventAppendInput {
+                event_type: "context.task.started".to_string(),
+                status: run_status,
+                step_id: Some(task.id.clone()),
+                payload: json!({
+                    "task_id": task.id,
+                    "patch_seq": patch.seq,
+                    "task_rev": task.task_rev,
+                }),
+            }),
+        )
+        .await;
+    }
+    blackboard = load_context_blackboard(&state, &run_id);
+    Ok(Json(
+        json!({ "ok": true, "task": claimed, "patch": patch, "blackboard": blackboard }),
+    ))
+}
+
+async fn context_run_task_transition(
+    State(state): State<AppState>,
+    Path((run_id, task_id)): Path<(String, String)>,
+    Json(input): Json<ContextTaskTransitionInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let lock = context_run_lock_for(&run_id).await;
+    let _guard = lock.lock().await;
+    if let Some(command_id) = input.command_id.as_deref() {
+        if context_blackboard_has_command_id(&state, &run_id, command_id) {
+            return Ok(Json(json!({
+                "ok": true,
+                "deduped": true,
+                "task": load_context_blackboard(&state, &run_id)
+                    .tasks
+                    .into_iter()
+                    .find(|row| row.id == task_id),
+                "blackboard": load_context_blackboard(&state, &run_id),
+            })));
+        }
+    }
+    let run_status = load_context_run_state(&state, &run_id)
+        .await
+        .ok()
+        .map(|run| run.status)
+        .unwrap_or(ContextRunStatus::Running);
+    let blackboard = load_context_blackboard(&state, &run_id);
+    let Some(current) = blackboard
+        .tasks
+        .iter()
+        .find(|row| row.id == task_id)
+        .cloned()
+    else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    if let Some(expected_rev) = input.expected_task_rev {
+        if expected_rev != current.task_rev {
+            return Ok(Json(json!({
+                "ok": false,
+                "error": "task revision mismatch",
+                "code": "TASK_REV_MISMATCH",
+                "task_rev": current.task_rev
+            })));
+        }
+    }
+    if let Some(token) = input.lease_token.as_deref() {
+        if current.lease_token.as_deref() != Some(token) {
+            return Ok(Json(json!({
+                "ok": false,
+                "error": "invalid lease token",
+                "code": "TASK_LEASE_INVALID"
+            })));
+        }
+    }
+    let action = input.action.trim().to_ascii_lowercase();
+    let next_rev = current.task_rev.saturating_add(1);
+    let now = crate::now_ms();
+    let (op, mut payload) = match action.as_str() {
+        "heartbeat" => (
+            ContextBlackboardPatchOp::UpdateTaskLease,
+            json!({
+                "task_id": task_id,
+                "lease_owner": input.agent_id.clone().or(current.lease_owner.clone()),
+                "assigned_agent": input.agent_id.clone().or(current.assigned_agent.clone()),
+                "lease_token": input.lease_token.clone().or(current.lease_token.clone()),
+                "lease_expires_at_ms": now.saturating_add(input.lease_ms.unwrap_or(30_000).clamp(5_000, 300_000)),
+                "task_rev": next_rev,
+            }),
+        ),
+        "status" => (
+            ContextBlackboardPatchOp::UpdateTaskState,
+            json!({
+                "task_id": task_id,
+                "status": input.status.clone().ok_or(StatusCode::BAD_REQUEST)?,
+                "lease_owner": current.lease_owner,
+                "lease_token": current.lease_token,
+                "lease_expires_at_ms": current.lease_expires_at_ms,
+                "assigned_agent": input.agent_id.clone().or(current.assigned_agent),
+                "task_rev": next_rev,
+                "error": input.error.clone(),
+                "attempt": current.attempt,
+            }),
+        ),
+        "complete" => (
+            ContextBlackboardPatchOp::UpdateTaskState,
+            json!({
+                "task_id": task_id,
+                "status": ContextBlackboardTaskStatus::Done,
+                "lease_owner": Value::Null,
+                "lease_token": Value::Null,
+                "lease_expires_at_ms": Value::Null,
+                "assigned_agent": input.agent_id.clone().or(current.assigned_agent),
+                "task_rev": next_rev,
+                "attempt": current.attempt,
+            }),
+        ),
+        "fail" => (
+            ContextBlackboardPatchOp::UpdateTaskState,
+            json!({
+                "task_id": task_id,
+                "status": ContextBlackboardTaskStatus::Failed,
+                "lease_owner": Value::Null,
+                "lease_token": Value::Null,
+                "lease_expires_at_ms": Value::Null,
+                "assigned_agent": input.agent_id.clone().or(current.assigned_agent),
+                "task_rev": next_rev,
+                "error": input.error.clone().or(current.last_error),
+                "attempt": current.attempt.saturating_add(1),
+            }),
+        ),
+        "release" => (
+            ContextBlackboardPatchOp::UpdateTaskState,
+            json!({
+                "task_id": task_id,
+                "status": ContextBlackboardTaskStatus::Runnable,
+                "lease_owner": Value::Null,
+                "lease_token": Value::Null,
+                "lease_expires_at_ms": Value::Null,
+                "assigned_agent": current.assigned_agent,
+                "task_rev": next_rev,
+                "attempt": current.attempt,
+            }),
+        ),
+        "retry" => (
+            ContextBlackboardPatchOp::UpdateTaskState,
+            json!({
+                "task_id": task_id,
+                "status": ContextBlackboardTaskStatus::Runnable,
+                "lease_owner": Value::Null,
+                "lease_token": Value::Null,
+                "lease_expires_at_ms": Value::Null,
+                "assigned_agent": current.assigned_agent,
+                "task_rev": next_rev,
+                "error": Value::Null,
+                "attempt": current.attempt.saturating_add(1),
+                "next_retry_at_ms": now,
+            }),
+        ),
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    if let Some(command_id) = input.command_id {
+        payload["command_id"] = json!(command_id);
+    }
+    let (patch, blackboard) = append_context_blackboard_patch(&state, &run_id, op, payload)?;
+    let task = blackboard
+        .tasks
+        .iter()
+        .find(|row| row.id == task_id)
+        .cloned();
+    let (event_type, event_payload) = if action == "heartbeat" {
+        (
+            "context.task.heartbeat".to_string(),
+            json!({
+                "task_id": task_id,
+                "patch_seq": patch.seq,
+                "task_rev": task.as_ref().map(|row| row.task_rev),
+            }),
+        )
+    } else {
+        let status = task
+            .as_ref()
+            .map(|row| row.status.clone())
+            .unwrap_or(ContextBlackboardTaskStatus::Blocked);
+        (
+            context_task_status_event_name(&status).to_string(),
+            json!({
+                "task_id": task_id,
+                "patch_seq": patch.seq,
+                "task_rev": task.as_ref().map(|row| row.task_rev),
+                "status": status,
+                "error": input.error,
+            }),
+        )
+    };
+    let _ = context_run_event_append(
+        State(state.clone()),
+        Path(run_id.clone()),
+        Json(ContextRunEventAppendInput {
+            event_type,
+            status: run_status,
+            step_id: Some(task_id.clone()),
+            payload: event_payload,
+        }),
+    )
+    .await;
+    Ok(Json(
+        json!({ "ok": true, "task": task, "patch": patch, "blackboard": blackboard }),
     ))
 }
 
@@ -10572,6 +11405,23 @@ fn context_run_replay_materialize(
     replay
 }
 
+fn context_blackboard_replay_materialize(
+    persisted: &ContextBlackboardState,
+    checkpoint: Option<&ContextCheckpointRecord>,
+    patches: &[ContextBlackboardPatchRecord],
+) -> ContextBlackboardState {
+    let mut replay = checkpoint
+        .map(|cp| cp.blackboard.clone())
+        .unwrap_or_else(ContextBlackboardState::default);
+    if checkpoint.is_none() && replay.revision == 0 && persisted.revision > 0 {
+        replay.revision = 0;
+    }
+    for patch in patches {
+        let _ = apply_context_blackboard_patch(&mut replay, patch);
+    }
+    replay
+}
+
 async fn context_run_replay(
     State(state): State<AppState>,
     Path(run_id): Path<String>,
@@ -10594,16 +11444,44 @@ async fn context_run_replay(
         events.retain(|row| row.seq <= upto_seq);
     }
     let replay = context_run_replay_materialize(&run_id, &persisted, checkpoint.as_ref(), &events);
+    let persisted_blackboard = load_context_blackboard(&state, &run_id);
+    let mut patches = load_context_blackboard_patches(&state, &run_id, None, None);
+    if let Some(cp) = checkpoint.as_ref() {
+        patches.retain(|patch| patch.ts_ms > cp.ts_ms);
+    }
+    let replay_blackboard =
+        context_blackboard_replay_materialize(&persisted_blackboard, checkpoint.as_ref(), &patches);
+    let blackboard_revision_mismatch = replay_blackboard.revision != persisted_blackboard.revision;
+    let blackboard_task_count_mismatch =
+        replay_blackboard.tasks.len() != persisted_blackboard.tasks.len();
+    let mut replay_task_status = HashMap::<String, ContextBlackboardTaskStatus>::new();
+    for task in &replay_blackboard.tasks {
+        replay_task_status.insert(task.id.clone(), task.status.clone());
+    }
+    let blackboard_task_status_mismatch = persisted_blackboard.tasks.iter().any(|task| {
+        replay_task_status
+            .get(&task.id)
+            .map(|status| status != &task.status)
+            .unwrap_or(true)
+    });
     let status_mismatch = replay.status != persisted.status;
     let why_next_step_mismatch =
         persisted.why_next_step.is_some() && replay.why_next_step != persisted.why_next_step;
     let step_count_mismatch =
         !persisted.steps.is_empty() && replay.steps.len() != persisted.steps.len();
     let drift = ContextReplayDrift {
-        mismatch: status_mismatch || why_next_step_mismatch || step_count_mismatch,
+        mismatch: status_mismatch
+            || why_next_step_mismatch
+            || step_count_mismatch
+            || blackboard_revision_mismatch
+            || blackboard_task_count_mismatch
+            || blackboard_task_status_mismatch,
         status_mismatch,
         why_next_step_mismatch,
         step_count_mismatch,
+        blackboard_revision_mismatch,
+        blackboard_task_count_mismatch,
+        blackboard_task_status_mismatch,
     };
     Ok(Json(json!({
         "ok": true,
@@ -10611,8 +11489,11 @@ async fn context_run_replay(
         "from_checkpoint": checkpoint.is_some(),
         "checkpoint_seq": checkpoint.as_ref().map(|cp| cp.seq),
         "events_applied": events.len(),
+        "blackboard_patches_applied": patches.len(),
         "replay": replay,
+        "replay_blackboard": replay_blackboard,
         "persisted": persisted,
+        "persisted_blackboard": persisted_blackboard,
         "drift": drift
     })))
 }
@@ -19131,5 +20012,732 @@ mod tests {
             })
             .unwrap_or(false);
         assert!(has_todo_synced);
+    }
+
+    #[tokio::test]
+    async fn context_tasks_claim_is_single_winner_under_race() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_run_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "ctx-run-task-race",
+                    "objective": "claim race"
+                })
+                .to_string(),
+            ))
+            .expect("create run request");
+        let create_run_resp = app
+            .clone()
+            .oneshot(create_run_req)
+            .await
+            .expect("create run response");
+        assert_eq!(create_run_resp.status(), StatusCode::OK);
+
+        let create_tasks_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-race/tasks")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tasks": [
+                        {
+                            "id": "task-1",
+                            "task_type": "unit_work",
+                            "status": "runnable",
+                            "payload": {"title": "Only task"}
+                        }
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("create tasks request");
+        let create_tasks_resp = app
+            .clone()
+            .oneshot(create_tasks_req)
+            .await
+            .expect("create tasks response");
+        assert_eq!(create_tasks_resp.status(), StatusCode::OK);
+
+        let claim_one = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-race/tasks/claim")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "agent_id": "agent-a",
+                    "command_id": "claim-a"
+                })
+                .to_string(),
+            ))
+            .expect("claim one request");
+        let claim_two = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-race/tasks/claim")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "agent_id": "agent-b",
+                    "command_id": "claim-b"
+                })
+                .to_string(),
+            ))
+            .expect("claim two request");
+
+        let (resp_one, resp_two) = tokio::join!(
+            app.clone().oneshot(claim_one),
+            app.clone().oneshot(claim_two)
+        );
+        let resp_one = resp_one.expect("claim one response");
+        let resp_two = resp_two.expect("claim two response");
+        assert_eq!(resp_one.status(), StatusCode::OK);
+        assert_eq!(resp_two.status(), StatusCode::OK);
+
+        let body_one = to_bytes(resp_one.into_body(), usize::MAX)
+            .await
+            .expect("claim one body");
+        let body_two = to_bytes(resp_two.into_body(), usize::MAX)
+            .await
+            .expect("claim two body");
+        let payload_one: Value = serde_json::from_slice(&body_one).expect("claim one json");
+        let payload_two: Value = serde_json::from_slice(&body_two).expect("claim two json");
+
+        let winner_count = [payload_one.clone(), payload_two.clone()]
+            .iter()
+            .filter(|payload| !payload.get("task").unwrap_or(&Value::Null).is_null())
+            .count();
+        assert_eq!(winner_count, 1);
+    }
+
+    #[tokio::test]
+    async fn context_task_transition_command_id_is_idempotent() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_run_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "ctx-run-task-idempotent",
+                    "objective": "idempotent transition"
+                })
+                .to_string(),
+            ))
+            .expect("create run request");
+        let create_run_resp = app
+            .clone()
+            .oneshot(create_run_req)
+            .await
+            .expect("create run response");
+        assert_eq!(create_run_resp.status(), StatusCode::OK);
+
+        let create_tasks_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-idempotent/tasks")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tasks": [
+                        {
+                            "id": "task-1",
+                            "task_type": "unit_work",
+                            "status": "in_progress",
+                            "payload": {"title": "Task"}
+                        }
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("create tasks request");
+        let create_tasks_resp = app
+            .clone()
+            .oneshot(create_tasks_req)
+            .await
+            .expect("create tasks response");
+        assert_eq!(create_tasks_resp.status(), StatusCode::OK);
+
+        let transition_req_one = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-idempotent/tasks/task-1/transition")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "action": "fail",
+                    "command_id": "cmd-fail-1",
+                    "error": "boom"
+                })
+                .to_string(),
+            ))
+            .expect("transition one request");
+        let transition_resp_one = app
+            .clone()
+            .oneshot(transition_req_one)
+            .await
+            .expect("transition one response");
+        assert_eq!(transition_resp_one.status(), StatusCode::OK);
+
+        let transition_req_two = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-idempotent/tasks/task-1/transition")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "action": "fail",
+                    "command_id": "cmd-fail-1",
+                    "error": "boom"
+                })
+                .to_string(),
+            ))
+            .expect("transition two request");
+        let transition_resp_two = app
+            .clone()
+            .oneshot(transition_req_two)
+            .await
+            .expect("transition two response");
+        assert_eq!(transition_resp_two.status(), StatusCode::OK);
+        let transition_two_body = to_bytes(transition_resp_two.into_body(), usize::MAX)
+            .await
+            .expect("transition two body");
+        let transition_two_payload: Value =
+            serde_json::from_slice(&transition_two_body).expect("transition two json");
+        assert_eq!(
+            transition_two_payload
+                .get("deduped")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn context_task_transition_rejects_task_revision_mismatch() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_run_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "ctx-run-task-rev",
+                    "objective": "rev mismatch"
+                })
+                .to_string(),
+            ))
+            .expect("create run request");
+        let create_run_resp = app
+            .clone()
+            .oneshot(create_run_req)
+            .await
+            .expect("create run response");
+        assert_eq!(create_run_resp.status(), StatusCode::OK);
+
+        let create_tasks_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-rev/tasks")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tasks": [
+                        {
+                            "id": "task-1",
+                            "task_type": "unit_work",
+                            "status": "runnable"
+                        }
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("create tasks request");
+        let create_tasks_resp = app
+            .clone()
+            .oneshot(create_tasks_req)
+            .await
+            .expect("create tasks response");
+        assert_eq!(create_tasks_resp.status(), StatusCode::OK);
+
+        let transition_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-rev/tasks/task-1/transition")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "action": "status",
+                    "status": "in_progress",
+                    "expected_task_rev": 999
+                })
+                .to_string(),
+            ))
+            .expect("transition request");
+        let transition_resp = app
+            .clone()
+            .oneshot(transition_req)
+            .await
+            .expect("transition response");
+        assert_eq!(transition_resp.status(), StatusCode::OK);
+        let transition_body = to_bytes(transition_resp.into_body(), usize::MAX)
+            .await
+            .expect("transition body");
+        let transition_payload: Value =
+            serde_json::from_slice(&transition_body).expect("transition json");
+        assert_eq!(
+            transition_payload.get("ok").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            transition_payload.get("code").and_then(Value::as_str),
+            Some("TASK_REV_MISMATCH")
+        );
+    }
+
+    #[tokio::test]
+    async fn context_blackboard_patches_endpoint_includes_task_patch() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_run_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "ctx-run-bbp-task",
+                    "objective": "blackboard patches contract"
+                })
+                .to_string(),
+            ))
+            .expect("create run request");
+        let create_run_resp = app
+            .clone()
+            .oneshot(create_run_req)
+            .await
+            .expect("create run response");
+        assert_eq!(create_run_resp.status(), StatusCode::OK);
+
+        let create_task_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-bbp-task/tasks")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tasks": [
+                        {
+                            "id": "task-1",
+                            "task_type": "analysis",
+                            "status": "runnable",
+                            "command_id": "task-create-1"
+                        }
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("create task request");
+        let create_task_resp = app
+            .clone()
+            .oneshot(create_task_req)
+            .await
+            .expect("create task response");
+        assert_eq!(create_task_resp.status(), StatusCode::OK);
+
+        let patches_req = Request::builder()
+            .method("GET")
+            .uri("/context/runs/ctx-run-bbp-task/blackboard/patches")
+            .body(Body::empty())
+            .expect("patches request");
+        let patches_resp = app
+            .clone()
+            .oneshot(patches_req)
+            .await
+            .expect("patches response");
+        assert_eq!(patches_resp.status(), StatusCode::OK);
+        let patches_body = to_bytes(patches_resp.into_body(), usize::MAX)
+            .await
+            .expect("patches body");
+        let patches_payload: Value = serde_json::from_slice(&patches_body).expect("patches json");
+        let rows = patches_payload
+            .get("patches")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(rows.iter().any(|row| {
+            row.get("op")
+                .and_then(Value::as_str)
+                .map(|op| op == "add_task")
+                .unwrap_or(false)
+        }));
+    }
+
+    #[tokio::test]
+    async fn context_tasks_claim_and_transition_contract_roundtrip() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_run_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "ctx-run-task-contract",
+                    "objective": "task contract"
+                })
+                .to_string(),
+            ))
+            .expect("create run request");
+        let create_run_resp = app
+            .clone()
+            .oneshot(create_run_req)
+            .await
+            .expect("create run response");
+        assert_eq!(create_run_resp.status(), StatusCode::OK);
+
+        let create_task_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-contract/tasks")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tasks": [
+                        {
+                            "id": "task-1",
+                            "task_type": "build",
+                            "status": "runnable",
+                            "payload": {"title":"Build"}
+                        }
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("create task request");
+        let create_task_resp = app
+            .clone()
+            .oneshot(create_task_req)
+            .await
+            .expect("create task response");
+        assert_eq!(create_task_resp.status(), StatusCode::OK);
+
+        let claim_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-contract/tasks/claim")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "agent_id": "agent-contract",
+                    "command_id": "claim-contract-1"
+                })
+                .to_string(),
+            ))
+            .expect("claim request");
+        let claim_resp = app
+            .clone()
+            .oneshot(claim_req)
+            .await
+            .expect("claim response");
+        assert_eq!(claim_resp.status(), StatusCode::OK);
+        let claim_body = to_bytes(claim_resp.into_body(), usize::MAX)
+            .await
+            .expect("claim body");
+        let claim_payload: Value = serde_json::from_slice(&claim_body).expect("claim json");
+        let task_rev = claim_payload
+            .get("task")
+            .and_then(|v| v.get("task_rev"))
+            .and_then(Value::as_u64)
+            .expect("task_rev");
+        let lease_token = claim_payload
+            .get("task")
+            .and_then(|v| v.get("lease_token"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .expect("lease token");
+
+        let complete_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-contract/tasks/task-1/transition")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "action": "complete",
+                    "expected_task_rev": task_rev,
+                    "lease_token": lease_token,
+                    "agent_id": "agent-contract",
+                    "command_id": "complete-contract-1"
+                })
+                .to_string(),
+            ))
+            .expect("complete request");
+        let complete_resp = app
+            .clone()
+            .oneshot(complete_req)
+            .await
+            .expect("complete response");
+        assert_eq!(complete_resp.status(), StatusCode::OK);
+        let complete_body = to_bytes(complete_resp.into_body(), usize::MAX)
+            .await
+            .expect("complete body");
+        let complete_payload: Value =
+            serde_json::from_slice(&complete_body).expect("complete json");
+        assert_eq!(
+            complete_payload
+                .get("task")
+                .and_then(|v| v.get("status"))
+                .and_then(Value::as_str),
+            Some("done")
+        );
+        assert!(complete_payload
+            .get("patch")
+            .and_then(|v| v.get("seq"))
+            .and_then(Value::as_u64)
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn context_task_commands_are_idempotent_and_patch_seq_is_monotonic() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_run_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "ctx-run-task-idempotency-matrix",
+                    "objective": "idempotency matrix"
+                })
+                .to_string(),
+            ))
+            .expect("create run request");
+        let create_run_resp = app
+            .clone()
+            .oneshot(create_run_req)
+            .await
+            .expect("create run response");
+        assert_eq!(create_run_resp.status(), StatusCode::OK);
+
+        let create_task_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-idempotency-matrix/tasks")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tasks": [
+                        {
+                            "id": "task-1",
+                            "task_type": "analysis",
+                            "status": "runnable",
+                            "command_id": "create-task-cmd-1"
+                        }
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("create task request");
+        let create_task_resp = app
+            .clone()
+            .oneshot(create_task_req)
+            .await
+            .expect("create task response");
+        assert_eq!(create_task_resp.status(), StatusCode::OK);
+
+        let create_task_dedup_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-idempotency-matrix/tasks")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tasks": [
+                        {
+                            "id": "task-1",
+                            "task_type": "analysis",
+                            "status": "runnable",
+                            "command_id": "create-task-cmd-1"
+                        }
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("create task dedup request");
+        let create_task_dedup_resp = app
+            .clone()
+            .oneshot(create_task_dedup_req)
+            .await
+            .expect("create task dedup response");
+        assert_eq!(create_task_dedup_resp.status(), StatusCode::OK);
+        let create_task_dedup_body = to_bytes(create_task_dedup_resp.into_body(), usize::MAX)
+            .await
+            .expect("create dedup body");
+        let create_task_dedup_payload: Value =
+            serde_json::from_slice(&create_task_dedup_body).expect("create dedup json");
+        assert_eq!(
+            create_task_dedup_payload
+                .get("tasks")
+                .and_then(Value::as_array)
+                .map(|rows| rows.len()),
+            Some(0)
+        );
+
+        let claim_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-idempotency-matrix/tasks/claim")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "agent_id": "agent-idempotent",
+                    "command_id": "claim-task-cmd-1"
+                })
+                .to_string(),
+            ))
+            .expect("claim request");
+        let claim_resp = app
+            .clone()
+            .oneshot(claim_req)
+            .await
+            .expect("claim response");
+        assert_eq!(claim_resp.status(), StatusCode::OK);
+        let claim_body = to_bytes(claim_resp.into_body(), usize::MAX)
+            .await
+            .expect("claim body");
+        let claim_payload: Value = serde_json::from_slice(&claim_body).expect("claim json");
+        let claim_task_rev = claim_payload
+            .get("task")
+            .and_then(|v| v.get("task_rev"))
+            .and_then(Value::as_u64)
+            .expect("claim task rev");
+        let lease_token = claim_payload
+            .get("task")
+            .and_then(|v| v.get("lease_token"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .expect("claim lease token");
+
+        let claim_dedup_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-idempotency-matrix/tasks/claim")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "agent_id": "agent-idempotent",
+                    "command_id": "claim-task-cmd-1"
+                })
+                .to_string(),
+            ))
+            .expect("claim dedup request");
+        let claim_dedup_resp = app
+            .clone()
+            .oneshot(claim_dedup_req)
+            .await
+            .expect("claim dedup response");
+        assert_eq!(claim_dedup_resp.status(), StatusCode::OK);
+        let claim_dedup_body = to_bytes(claim_dedup_resp.into_body(), usize::MAX)
+            .await
+            .expect("claim dedup body");
+        let claim_dedup_payload: Value =
+            serde_json::from_slice(&claim_dedup_body).expect("claim dedup json");
+        assert_eq!(
+            claim_dedup_payload.get("deduped").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(claim_dedup_payload
+            .get("task")
+            .map(Value::is_null)
+            .unwrap_or(false));
+
+        let complete_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-idempotency-matrix/tasks/task-1/transition")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "action": "complete",
+                    "agent_id": "agent-idempotent",
+                    "command_id": "complete-task-cmd-1",
+                    "expected_task_rev": claim_task_rev,
+                    "lease_token": lease_token
+                })
+                .to_string(),
+            ))
+            .expect("complete request");
+        let complete_resp = app
+            .clone()
+            .oneshot(complete_req)
+            .await
+            .expect("complete response");
+        assert_eq!(complete_resp.status(), StatusCode::OK);
+
+        let complete_dedup_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs/ctx-run-task-idempotency-matrix/tasks/task-1/transition")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "action": "complete",
+                    "agent_id": "agent-idempotent",
+                    "command_id": "complete-task-cmd-1",
+                    "expected_task_rev": claim_task_rev + 1
+                })
+                .to_string(),
+            ))
+            .expect("complete dedup request");
+        let complete_dedup_resp = app
+            .clone()
+            .oneshot(complete_dedup_req)
+            .await
+            .expect("complete dedup response");
+        assert_eq!(complete_dedup_resp.status(), StatusCode::OK);
+        let complete_dedup_body = to_bytes(complete_dedup_resp.into_body(), usize::MAX)
+            .await
+            .expect("complete dedup body");
+        let complete_dedup_payload: Value =
+            serde_json::from_slice(&complete_dedup_body).expect("complete dedup json");
+        assert_eq!(
+            complete_dedup_payload
+                .get("deduped")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let patches_req = Request::builder()
+            .method("GET")
+            .uri("/context/runs/ctx-run-task-idempotency-matrix/blackboard/patches")
+            .body(Body::empty())
+            .expect("patches request");
+        let patches_resp = app
+            .clone()
+            .oneshot(patches_req)
+            .await
+            .expect("patches response");
+        assert_eq!(patches_resp.status(), StatusCode::OK);
+        let patches_body = to_bytes(patches_resp.into_body(), usize::MAX)
+            .await
+            .expect("patches body");
+        let patches_payload: Value = serde_json::from_slice(&patches_body).expect("patches json");
+        let rows = patches_payload
+            .get("patches")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(rows.len(), 3);
+        let mut seqs = rows
+            .iter()
+            .filter_map(|row| row.get("seq").and_then(Value::as_u64))
+            .collect::<Vec<_>>();
+        assert_eq!(seqs.len(), 3);
+        let mut sorted = seqs.clone();
+        sorted.sort_unstable();
+        assert_eq!(seqs, sorted);
+        assert_eq!(
+            rows.iter()
+                .filter_map(|row| row.get("op").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["add_task", "update_task_state", "update_task_state"]
+        );
+        seqs.dedup();
+        assert_eq!(seqs.len(), 3);
     }
 }

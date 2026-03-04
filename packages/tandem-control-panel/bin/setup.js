@@ -1349,20 +1349,25 @@ function eventsToLogs(events = []) {
 }
 
 async function contextRunSnapshot(session, runId) {
-  const [runPayload, eventsPayload, blackboardPayload, replayPayload] = await Promise.all([
+  const [runPayload, eventsPayload, blackboardPayload, replayPayload, patchesPayload] = await Promise.all([
     engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}`),
     engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}/events?tail=300`),
     engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}/blackboard`).catch(() => ({})),
     engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}/replay`).catch(() => ({})),
+    engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}/blackboard/patches?tail=300`).catch(
+      () => ({})
+    ),
   ]);
   const run = runPayload?.run || {};
   const events = Array.isArray(eventsPayload?.events) ? eventsPayload.events : [];
+  const blackboardPatches = Array.isArray(patchesPayload?.patches) ? patchesPayload.patches : [];
   const tasks = contextRunToTasks(run);
   const taskMap = Object.fromEntries(tasks.map((task) => [task.taskId, task]));
   return {
     run,
     events,
     blackboard: blackboardPayload?.blackboard || null,
+    blackboardPatches,
     replay: replayPayload || null,
     registry: {
       key: "context.run.steps",
@@ -1785,6 +1790,85 @@ async function handleSwarmApi(req, res, session) {
     return true;
   }
 
+  if (pathname === "/api/swarm/tasks/create" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const runId = String(body?.runId || swarmState.runId || "").trim();
+      const tasks = Array.isArray(body?.tasks) ? body.tasks : [];
+      if (!runId || !tasks.length) throw new Error("Missing runId or tasks");
+      const payload = await engineRequestJson(
+        session,
+        `/context/runs/${encodeURIComponent(runId)}/tasks`,
+        {
+          method: "POST",
+          body: { tasks },
+        }
+      );
+      sendJson(res, 200, payload);
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/swarm/tasks/claim" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const runId = String(body?.runId || swarmState.runId || "").trim();
+      if (!runId) throw new Error("Missing runId");
+      const claimBody = {
+        agent_id: String(body?.agentId || "control_panel").trim(),
+        command_id: body?.commandId || undefined,
+        task_type: body?.taskType || undefined,
+        workflow_id: body?.workflowId || undefined,
+        lease_ms: Number(body?.leaseMs || 30000),
+      };
+      const payload = await engineRequestJson(
+        session,
+        `/context/runs/${encodeURIComponent(runId)}/tasks/claim`,
+        {
+          method: "POST",
+          body: claimBody,
+        }
+      );
+      sendJson(res, 200, payload);
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/swarm/tasks/transition" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const runId = String(body?.runId || swarmState.runId || "").trim();
+      const taskId = String(body?.taskId || "").trim();
+      if (!runId || !taskId) throw new Error("Missing runId or taskId");
+      const transitionBody = {
+        action: body?.action || "status",
+        command_id: body?.commandId || undefined,
+        expected_task_rev: body?.expectedTaskRev ?? undefined,
+        lease_token: body?.leaseToken || undefined,
+        agent_id: body?.agentId || undefined,
+        status: body?.status || undefined,
+        error: body?.error || undefined,
+        lease_ms: body?.leaseMs || undefined,
+      };
+      const payload = await engineRequestJson(
+        session,
+        `/context/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/transition`,
+        {
+          method: "POST",
+          body: transitionBody,
+        }
+      );
+      sendJson(res, 200, payload);
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
   if (pathname.startsWith("/api/swarm/run/") && req.method === "GET") {
     const runId = decodeURIComponent(pathname.replace("/api/swarm/run/", "").trim());
     if (!runId) {
@@ -1800,6 +1884,7 @@ async function handleSwarmApi(req, res, session) {
         run: snapshot.run,
         events: snapshot.events,
         blackboard: snapshot.blackboard,
+        blackboardPatches: snapshot.blackboardPatches,
         replay: snapshot.replay,
         tasks: contextRunToTasks(snapshot.run),
       });

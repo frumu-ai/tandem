@@ -4,6 +4,22 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## v0.4.1 (Unreleased)
 
+- Blackboard as central coordination layer + control panel parity
+  - Engine blackboard now includes first-class task coordination state (`blackboard.tasks`) with workflow references, task lineage fields, lease metadata, retries, and optimistic task revision (`task_rev`).
+  - Added append-only task patch operations:
+    - `add_task`
+    - `update_task_lease`
+    - `update_task_state`
+  - Added task lifecycle endpoints:
+    - `POST /context/runs/{run_id}/tasks`
+    - `POST /context/runs/{run_id}/tasks/claim`
+    - `POST /context/runs/{run_id}/tasks/{task_id}/transition`
+    - `GET /context/runs/{run_id}/blackboard/patches`
+  - Added task lifecycle event emission on context runs (`context.task.created/claimed/started/completed/failed/...`) carrying `patch_seq` + `task_rev` for deterministic UI refresh.
+  - Replay now includes blackboard parity checks for task revision/count/status and returns replayed/persisted blackboard payloads for drift diagnostics.
+  - Control panel swarm shim now forwards blackboard patch streams, and `SwarmPage` now supports blackboard docked, expanded, and fullscreen debug views with decision lineage, agent lanes, workflow progress, artifact lineage, and drift indicators.
+  - Added contract/regression tests for claim races, command-id idempotency, optimistic revision mismatch, monotonic patch sequence, and replay parity.
+
 - Automation creation UX — simplified to "just describe what you want"
   - Replaced the fragmented `Agents`, `Packs`, and `Teams` pages with a single **Automations** hub (`AutomationsPage`).
   - New **4-step creation wizard**: describe your goal in plain English → pick a recurring schedule → choose how agents run → review & deploy. No YAML, no route navigation between pages.
