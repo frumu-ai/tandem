@@ -38,6 +38,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - loop guard stops repeated same-step execution when step state does not advance after completion (`STEP_STATE_NOT_ADVANCING`)
     - compatibility reconcile path now marks stale completed steps as `done` via engine API when run-state transitions lag, and emits `step_completion_reconciled`
     - `/api/swarm/status` now returns resolved model + executor state/reason for faster diagnosis
+  - Added run list cleanup controls in control panel:
+    - per-run `Hide` action and bulk `Hide Completed` action in Swarm view
+    - hidden runs are user-scoped and persisted locally (`~/.tandem/control-panel/swarm-hidden-runs.json`)
+    - hidden runs are filtered from `/api/swarm/runs` by default without deleting engine run data
 - Automation creation UX — simplified to "just describe what you want"
   - Replaced the fragmented `Agents`, `Packs`, and `Teams` pages with a single **Automations** hub (`AutomationsPage`).
   - New **4-step creation wizard**: describe your goal in plain English → pick a recurring schedule → choose how agents run → review & deploy. No YAML, no route navigation between pages.

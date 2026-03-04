@@ -129,6 +129,7 @@ const ENGINE_HOST = (process.env.TANDEM_ENGINE_HOST || "127.0.0.1").trim();
 const ENGINE_PORT = Number.parseInt(process.env.TANDEM_ENGINE_PORT || "39731", 10);
 const ENGINE_URL = (process.env.TANDEM_ENGINE_URL || `http://${ENGINE_HOST}:${ENGINE_PORT}`).replace(/\/+$/, "");
 const SWARM_RUNS_PATH = resolve(homedir(), ".tandem", "control-panel", "swarm-runs.json");
+const SWARM_HIDDEN_RUNS_PATH = resolve(homedir(), ".tandem", "control-panel", "swarm-hidden-runs.json");
 const AUTO_START_ENGINE = (process.env.TANDEM_CONTROL_PANEL_AUTO_START_ENGINE || "1") !== "0";
 const CONFIGURED_ENGINE_TOKEN = (
   process.env.TANDEM_CONTROL_PANEL_ENGINE_TOKEN ||
@@ -279,6 +280,35 @@ async function saveSwarmRunsHistory(runs = []) {
   const payload = JSON.stringify({ version: 1, updatedAtMs: Date.now(), runs: runs.slice(-100) }, null, 2);
   await mkdir(dirname(SWARM_RUNS_PATH), { recursive: true });
   await writeFile(SWARM_RUNS_PATH, payload, "utf8");
+}
+
+async function loadHiddenSwarmRunIds() {
+  try {
+    const raw = await readFile(SWARM_HIDDEN_RUNS_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    const ids = Array.isArray(parsed?.runIds) ? parsed.runIds : [];
+    return new Set(
+      ids
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+        .slice(0, 5000)
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+async function saveHiddenSwarmRunIds(runIdSet) {
+  const runIds = Array.from(runIdSet)
+    .map((id) => String(id || "").trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  await mkdir(dirname(SWARM_HIDDEN_RUNS_PATH), { recursive: true });
+  await writeFile(
+    SWARM_HIDDEN_RUNS_PATH,
+    JSON.stringify({ updatedAt: Date.now(), runIds }, null, 2),
+    "utf8"
+  );
 }
 
 async function recordSwarmRun(update = {}) {
@@ -1893,7 +1923,12 @@ async function handleSwarmApi(req, res, session) {
     const workspace = String(url.searchParams.get("workspace") || "").trim();
     const query = workspace ? `?workspace=${encodeURIComponent(resolve(workspace))}&limit=100` : "?limit=100";
     const payload = await engineRequestJson(session, `/context/runs${query}`).catch(() => ({ runs: [] }));
-    const runs = Array.isArray(payload?.runs) ? payload.runs : [];
+    const includeHidden = String(url.searchParams.get("include_hidden") || "").trim() === "1";
+    const hiddenRunIds = await loadHiddenSwarmRunIds();
+    const allRuns = Array.isArray(payload?.runs) ? payload.runs : [];
+    const runs = includeHidden
+      ? allRuns
+      : allRuns.filter((run) => !hiddenRunIds.has(String(run?.run_id || "").trim()));
     const active = runs.filter((run) => {
       const status = String(run?.status || "").toLowerCase();
       return !["completed", "failed", "cancelled"].includes(status);
@@ -1903,7 +1938,74 @@ async function handleSwarmApi(req, res, session) {
       runs,
       active,
       recent: runs.slice(0, 30),
+      hiddenCount: hiddenRunIds.size,
     });
+    return true;
+  }
+
+  if (pathname === "/api/swarm/runs/hide" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const runIds = (Array.isArray(body?.runIds) ? body.runIds : [])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+        .slice(0, 500);
+      if (!runIds.length) throw new Error("Missing runIds");
+      const hidden = await loadHiddenSwarmRunIds();
+      for (const runId of runIds) hidden.add(runId);
+      await saveHiddenSwarmRunIds(hidden);
+      if (runIds.includes(String(swarmState.runId || "").trim())) {
+        swarmState.runId = "";
+      }
+      sendJson(res, 200, { ok: true, hiddenCount: hidden.size, hiddenRunIds: runIds });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/swarm/runs/unhide" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const runIds = (Array.isArray(body?.runIds) ? body.runIds : [])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+        .slice(0, 500);
+      if (!runIds.length) throw new Error("Missing runIds");
+      const hidden = await loadHiddenSwarmRunIds();
+      for (const runId of runIds) hidden.delete(runId);
+      await saveHiddenSwarmRunIds(hidden);
+      sendJson(res, 200, { ok: true, hiddenCount: hidden.size, unhiddenRunIds: runIds });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/swarm/runs/hide_completed" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const workspace = String(body?.workspace || "").trim();
+      const query = workspace ? `?workspace=${encodeURIComponent(resolve(workspace))}&limit=1000` : "?limit=1000";
+      const payload = await engineRequestJson(session, `/context/runs${query}`).catch(() => ({ runs: [] }));
+      const allRuns = Array.isArray(payload?.runs) ? payload.runs : [];
+      const completedRunIds = allRuns
+        .filter((run) => {
+          const status = String(run?.status || "").toLowerCase();
+          return ["completed", "failed", "cancelled"].includes(status);
+        })
+        .map((run) => String(run?.run_id || "").trim())
+        .filter(Boolean);
+      const hidden = await loadHiddenSwarmRunIds();
+      for (const runId of completedRunIds) hidden.add(runId);
+      await saveHiddenSwarmRunIds(hidden);
+      if (completedRunIds.includes(String(swarmState.runId || "").trim())) {
+        swarmState.runId = "";
+      }
+      sendJson(res, 200, { ok: true, hiddenCount: hidden.size, hiddenNow: completedRunIds.length });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
     return true;
   }
 

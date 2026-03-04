@@ -41,6 +41,10 @@
     - added executor loop guard that stops repeated same-step replay when step state does not advance after completion
     - added compatibility reconcile path that marks stale completed steps as `done` via engine API when transition events do not materialize immediately
     - `/api/swarm/status` now includes resolved model metadata and executor state/reason for diagnostics
+  - Added run list cleanup controls in control panel:
+    - per-run `Hide` and bulk `Hide Completed` actions in Swarm
+    - hidden runs are user-scoped and stored at `~/.tandem/control-panel/swarm-hidden-runs.json`
+    - run cleanup is non-destructive (filters/hides from UI list by default, no engine run deletion)
 - **MCP-first Pack Builder in the engine**:
   - Added built-in `pack_builder` tool with two-phase execution:
     - `preview`: parse goal, resolve external capabilities to MCP catalog servers, generate pack artifacts, and return approval summary

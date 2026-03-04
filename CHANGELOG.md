@@ -158,6 +158,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added loop guard that stops swarm execution when a step remains non-`done` after completion (`STEP_STATE_NOT_ADVANCING`) to avoid hidden infinite replays on stale step state
   - added engine-compat reconciliation path: when step completion events do not materialize `done` immediately, control panel now patches run step state to `done` via engine API and emits `step_completion_reconciled`
   - `/api/swarm/status` now surfaces resolved model source + executor state/reason for immediate diagnosis
+- **Swarm run list cleanup controls**:
+  - added user-scoped cleanup endpoints in control panel:
+    - `POST /api/swarm/runs/hide`
+    - `POST /api/swarm/runs/unhide`
+    - `POST /api/swarm/runs/hide_completed`
+  - hidden runs are persisted in `~/.tandem/control-panel/swarm-hidden-runs.json` and filtered from `/api/swarm/runs` by default
+  - `SwarmPage` now supports per-run `Hide` and bulk `Hide Completed` actions for decluttering old test runs without destructive engine-side deletion
 - **Engine startup stability during pre-ready phase**:
   - background server tasks now wait for runtime readiness before accessing `AppState` runtime-backed fields
   - fixes startup panic `runtime accessed before startup completion` that could mark control-panel connectivity unhealthy on boot

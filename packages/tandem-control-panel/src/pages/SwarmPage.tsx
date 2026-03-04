@@ -56,6 +56,7 @@ export function SwarmPage({ api, toast, navigate }: AppPageProps) {
   });
 
   const runs = Array.isArray(runsQuery.data?.runs) ? runsQuery.data.runs : [];
+  const hiddenCount = Number(runsQuery.data?.hiddenCount || 0);
   const runId = selectedRunId || String(statusQuery.data?.runId || runs[0]?.run_id || "");
 
   const runQuery = useQuery({
@@ -117,6 +118,17 @@ export function SwarmPage({ api, toast, navigate }: AppPageProps) {
         if (executorState === "error" && executorReason) {
           toast("err", executorReason);
         }
+      }
+      if (vars?.path === "/api/swarm/runs/hide") {
+        setSelectedRunId("");
+        toast(
+          "ok",
+          `Hidden ${Array.isArray(vars?.body?.runIds) ? vars.body.runIds.length : 1} run(s).`
+        );
+      }
+      if (vars?.path === "/api/swarm/runs/hide_completed") {
+        setSelectedRunId("");
+        toast("ok", `Hidden completed runs (${Number(payload?.hiddenNow || 0)}).`);
       }
       await queryClient.invalidateQueries({ queryKey: ["swarm"] });
     },
@@ -437,6 +449,23 @@ export function SwarmPage({ api, toast, navigate }: AppPageProps) {
               Cancel
             </button>
           </div>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="tcp-subtle">
+              visible runs: {runs.length}
+              {hiddenCount > 0 ? ` | hidden: ${hiddenCount}` : ""}
+            </span>
+            <button
+              className="tcp-btn h-7 px-2 text-xs"
+              onClick={() =>
+                actionMutation.mutate({
+                  path: "/api/swarm/runs/hide_completed",
+                  body: { workspace: workspaceRoot || statusQuery.data?.workspaceRoot || "" },
+                })
+              }
+            >
+              Hide Completed
+            </button>
+          </div>
           <div className="mb-3 grid gap-2 md:grid-cols-3">
             <div className="rounded-lg border border-slate-700/60 bg-slate-900/20 p-2 text-xs">
               <div className="font-medium">Resolved model</div>
@@ -473,30 +502,47 @@ export function SwarmPage({ api, toast, navigate }: AppPageProps) {
                 const id = String(run?.run_id || run?.runId || "");
                 const active = id === runId;
                 return (
-                  <motion.button
+                  <motion.div
                     key={id}
-                    className={`tcp-list-item min-w-0 overflow-hidden text-left ${active ? "border-amber-400/60" : ""}`}
-                    onClick={() => setSelectedRunId(id)}
+                    className={`tcp-list-item min-w-0 overflow-hidden ${active ? "border-amber-400/60" : ""}`}
                     initial={{ opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -6 }}
                   >
-                    <div className="flex min-w-0 items-start justify-between gap-2">
-                      <span
-                        className="block min-w-0 flex-1 text-sm font-medium leading-snug"
-                        style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
-                        title={String(run?.objective || id)}
+                    <div className="flex min-w-0 items-start gap-2">
+                      <button
+                        className="min-w-0 flex-1 text-left"
+                        onClick={() => setSelectedRunId(id)}
                       >
-                        {String(run?.objective || id)}
-                      </span>
-                      <span className="tcp-badge-info shrink-0">
-                        {String(run?.status || "unknown")}
-                      </span>
+                        <div className="flex min-w-0 items-start justify-between gap-2">
+                          <span
+                            className="block min-w-0 flex-1 text-sm font-medium leading-snug"
+                            style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
+                            title={String(run?.objective || id)}
+                          >
+                            {String(run?.objective || id)}
+                          </span>
+                          <span className="tcp-badge-info shrink-0">
+                            {String(run?.status || "unknown")}
+                          </span>
+                        </div>
+                        <div className="tcp-subtle text-xs" style={{ overflowWrap: "anywhere" }}>
+                          {id}
+                        </div>
+                      </button>
+                      <button
+                        className="tcp-btn h-7 shrink-0 px-2 text-xs"
+                        onClick={() =>
+                          actionMutation.mutate({
+                            path: "/api/swarm/runs/hide",
+                            body: { runIds: [id] },
+                          })
+                        }
+                      >
+                        Hide
+                      </button>
                     </div>
-                    <div className="tcp-subtle text-xs" style={{ overflowWrap: "anywhere" }}>
-                      {id}
-                    </div>
-                  </motion.button>
+                  </motion.div>
                 );
               })}
             </AnimatePresence>
