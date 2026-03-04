@@ -1,0 +1,9 @@
+name: AI News Digest
+schedule:
+  type: cron
+  cron_expression: "0 8 * * *"
+  timezone: user_local
+inputs:
+  topics:
+    - "AI"
+    - "developer tools"

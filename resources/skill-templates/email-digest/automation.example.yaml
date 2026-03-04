@@ -1,0 +1,7 @@
+name: Daily Email Digest
+schedule:
+  type: cron
+  cron_expression: "0 9 * * *"
+  timezone: user_local
+inputs:
+  recipient: "me@example.com"

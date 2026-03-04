@@ -1,0 +1,7 @@
+name: Incident Issue Reporter
+schedule:
+  type: interval
+  interval_seconds: 900
+  timezone: user_local
+inputs:
+  repo: "org/repo"

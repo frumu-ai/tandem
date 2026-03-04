@@ -1,0 +1,9 @@
+name: Notion Weekly Report
+schedule:
+  type: cron
+  cron_expression: "0 9 * * 1"
+  timezone: user_local
+inputs:
+  sources:
+    - "workspace/weekly"
+  recipient: "team@example.com"

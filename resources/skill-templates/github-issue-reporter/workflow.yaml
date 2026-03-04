@@ -1,0 +1,4 @@
+kind: pack_builder_recipe
+skill_id: github-issue-reporter
+execution_mode: team
+goal_template: "Monitor incidents and create GitHub issues in {{repo}}."

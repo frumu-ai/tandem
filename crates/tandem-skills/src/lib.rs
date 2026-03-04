@@ -984,14 +984,27 @@ fn default_template_roots() -> Vec<PathBuf> {
         }
     }
     if let Ok(cwd) = std::env::current_dir() {
-        out.push(
-            cwd.join("src-tauri")
-                .join("resources")
-                .join("skill-templates"),
-        );
-        out.push(cwd.join("resources").join("skill-templates"));
+        // Search cwd and ancestor directories so frontends launched from subfolders
+        // (e.g. control-panel) can still discover engine-owned template roots.
+        for ancestor in cwd.ancestors().take(8) {
+            out.push(ancestor.join("resources").join("skill-templates"));
+            out.push(
+                ancestor
+                    .join("src-tauri")
+                    .join("resources")
+                    .join("skill-templates"),
+            );
+        }
     }
-    out
+    let mut dedup = Vec::new();
+    let mut seen = HashSet::new();
+    for root in out {
+        let key = root.to_string_lossy().to_string();
+        if seen.insert(key) {
+            dedup.push(root);
+        }
+    }
+    dedup
 }
 
 fn load_skill_candidates(file_or_path: &str) -> Result<Vec<SkillCandidate>, String> {

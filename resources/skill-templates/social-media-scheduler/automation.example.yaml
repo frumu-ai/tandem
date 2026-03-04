@@ -1,0 +1,9 @@
+name: Weekly Social Scheduler
+schedule:
+  type: cron
+  cron_expression: "0 10 * * 1"
+  timezone: user_local
+inputs:
+  channels:
+    - "linkedin"
+    - "x"

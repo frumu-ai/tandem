@@ -1,0 +1,8 @@
+name: Competitor Price Alerts
+schedule:
+  type: cron
+  cron_expression: "0 */6 * * *"
+  timezone: user_local
+inputs:
+  urls:
+    - "https://example.com/pricing"

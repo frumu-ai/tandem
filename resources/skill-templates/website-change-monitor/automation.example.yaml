@@ -1,0 +1,8 @@
+name: Website Change Monitor
+schedule:
+  type: interval
+  interval_seconds: 1800
+  timezone: user_local
+inputs:
+  urls:
+    - "https://example.com"

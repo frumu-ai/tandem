@@ -1,0 +1,8 @@
+name: Service Health Monitor
+schedule:
+  type: interval
+  interval_seconds: 300
+  timezone: user_local
+inputs:
+  endpoints:
+    - "https://api.example.com/health"

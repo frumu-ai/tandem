@@ -1,0 +1,7 @@
+name: Weekly Research Brief
+schedule:
+  type: cron
+  cron_expression: "0 11 * * 5"
+  timezone: user_local
+inputs:
+  query: "AI coding assistants"

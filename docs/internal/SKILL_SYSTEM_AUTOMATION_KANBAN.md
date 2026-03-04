@@ -54,6 +54,7 @@ Ship a control-panel-first Skill System with:
 - [x] Add SDK method for generated-skill install
 - [x] Add wizard install action for generated skill artifacts
 - [x] Add server endpoint smoke coverage for new skill APIs
+- [x] Add engine-owned template path (`resources/skill-templates`) + ancestor root discovery for control-panel launches
 - [ ] Add persistent eval threshold policy enforcement for scheduled activation
 
 ## Commit Log
@@ -65,3 +66,4 @@ Ship a control-panel-first Skill System with:
 - [x] 2026-03-04: Add skills compile/generate endpoints + review compile UI + validation badge
 - [x] 2026-03-04: Add advanced skill builder form + YAML artifact preview in wizard
 - [ ] 2026-03-04: Add generate/install hardening and endpoint smoke coverage (pending commit)
+- [ ] 2026-03-04: Move starter templates to engine-owned resources + resilient discovery roots (pending commit)

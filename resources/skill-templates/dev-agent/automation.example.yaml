@@ -1,0 +1,8 @@
+name: Dev Agent Manual Run
+schedule:
+  type: manual
+  timezone: user_local
+inputs:
+  repository_path: "."
+  task_prompt: "Fix failing auth tests"
+  commit_enabled: false

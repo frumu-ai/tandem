@@ -1,0 +1,24 @@
+kind: automation_v2_dag
+skill_id: dev-agent
+agents:
+  - agent_id: planner
+    display_name: Planner
+  - agent_id: worker
+    display_name: Worker
+  - agent_id: reviewer
+    display_name: Reviewer
+flow:
+  nodes:
+    - node_id: analyze
+      agent_id: planner
+      objective: Analyze repository and produce execution plan.
+    - node_id: implement
+      agent_id: worker
+      objective: Implement changes and run tests.
+      depends_on: [analyze]
+    - node_id: review
+      agent_id: reviewer
+      objective: Validate correctness and risks.
+      depends_on: [implement]
+execution:
+  max_parallel_agents: 1

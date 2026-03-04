@@ -1,0 +1,4 @@
+kind: pack_builder_recipe
+skill_id: server-monitor
+execution_mode: single
+goal_template: "Monitor service health for {{endpoints}} and alert on failures."

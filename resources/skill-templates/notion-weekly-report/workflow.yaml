@@ -1,0 +1,4 @@
+kind: pack_builder_recipe
+skill_id: notion-weekly-report
+execution_mode: team
+goal_template: "Create a weekly Notion report from {{sources}} and send to {{recipient}}."

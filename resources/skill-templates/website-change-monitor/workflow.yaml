@@ -1,0 +1,4 @@
+kind: pack_builder_recipe
+skill_id: website-change-monitor
+execution_mode: single
+goal_template: "Track website changes for {{urls}} and notify on updates."
