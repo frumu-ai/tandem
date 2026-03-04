@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { useMemo, useState } from "react";
+import { renderMarkdownSafe } from "../lib/markdown";
 import { PageCard, EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 
@@ -12,6 +14,7 @@ function toArray(input: any, key: string) {
 export function MemoryPage({ client, toast }: AppPageProps) {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const memoryQuery = useQuery({
     queryKey: ["memory", query],
@@ -33,6 +36,21 @@ export function MemoryPage({ client, toast }: AppPageProps) {
   });
 
   const items = toArray(memoryQuery.data, "items");
+  const rendered = useMemo(
+    () =>
+      items.map((item: any, index: number) => {
+        const id = String(item?.id || `mem-${index}`);
+        const text = String(item?.text || item?.content || item?.value || "");
+        const compact = text.length > 340 ? `${text.slice(0, 340)}...` : text;
+        return {
+          id,
+          text,
+          compact,
+          html: renderMarkdownSafe(text),
+        };
+      }),
+    [items]
+  );
 
   return (
     <div className="grid gap-4">
@@ -50,24 +68,63 @@ export function MemoryPage({ client, toast }: AppPageProps) {
         </div>
 
         <div className="grid gap-2">
-          {items.length ? (
-            items.map((item: any, index: number) => {
-              const id = String(item?.id || `mem-${index}`);
+          {rendered.length ? (
+            rendered.map((item) => {
+              const expanded = expandedId === item.id;
               return (
-                <div key={id} className="tcp-list-item">
+                <motion.article
+                  key={item.id}
+                  layout
+                  className={`tcp-list-item cursor-pointer transition-colors ${expanded ? "border-amber-500/60" : ""}`}
+                  onClick={() => setExpandedId(expanded ? null : item.id)}
+                >
                   <div className="mb-1 flex items-center justify-between gap-2">
-                    <strong>{id}</strong>
-                    <button
-                      className="tcp-btn-danger h-7 px-2 text-xs"
-                      onClick={() => deleteMutation.mutate(id)}
-                    >
-                      Delete
-                    </button>
+                    <strong className="truncate">{item.id}</strong>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[11px] ${expanded ? "tcp-badge-info" : "tcp-subtle"}`}>
+                        {expanded ? "expanded" : "compact"}
+                      </span>
+                      <button
+                        className="tcp-btn-danger h-7 px-2 text-xs"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          deleteMutation.mutate(item.id);
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
-                  <div className="tcp-subtle text-xs whitespace-pre-wrap">
-                    {String(item?.text || item?.content || item?.value || "")}
-                  </div>
-                </div>
+
+                  <AnimatePresence initial={false} mode="wait">
+                    {expanded ? (
+                      <motion.div
+                        key="expanded"
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.18, ease: "easeOut" }}
+                        className="overflow-hidden"
+                      >
+                        <div
+                          className="tcp-markdown tcp-markdown-ai rounded-lg border border-slate-700/60 bg-black/20 p-3 text-sm"
+                          dangerouslySetInnerHTML={{ __html: item.html }}
+                        />
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="compact"
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        transition={{ duration: 0.14, ease: "easeOut" }}
+                        className="tcp-subtle text-xs whitespace-pre-wrap"
+                      >
+                        {item.compact || "(empty)"}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </motion.article>
               );
             })
           ) : (
