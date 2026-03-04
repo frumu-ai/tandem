@@ -21282,6 +21282,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_blackboard_legacy_payload_without_tasks_is_backward_compatible() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_run_req = Request::builder()
+            .method("POST")
+            .uri("/context/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "ctx-run-legacy-blackboard",
+                    "objective": "legacy compatibility"
+                })
+                .to_string(),
+            ))
+            .expect("create run request");
+        let create_run_resp = app
+            .clone()
+            .oneshot(create_run_req)
+            .await
+            .expect("create run response");
+        assert_eq!(create_run_resp.status(), StatusCode::OK);
+
+        let legacy_blackboard_path =
+            context_run_blackboard_path(&state, "ctx-run-legacy-blackboard");
+        std::fs::write(
+            &legacy_blackboard_path,
+            json!({
+                "facts": [{"id":"f-1","ts_ms":1,"text":"legacy fact"}],
+                "decisions": [],
+                "open_questions": [],
+                "artifacts": [],
+                "summaries": {"rolling":"legacy rolling","latest_context_pack":""},
+                "revision": 7
+            })
+            .to_string(),
+        )
+        .expect("write legacy blackboard");
+
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/context/runs/ctx-run-legacy-blackboard/blackboard")
+            .body(Body::empty())
+            .expect("get request");
+        let get_resp = app.clone().oneshot(get_req).await.expect("get response");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            payload
+                .get("blackboard")
+                .and_then(|v| v.get("revision"))
+                .and_then(Value::as_u64),
+            Some(7)
+        );
+        assert_eq!(
+            payload
+                .get("blackboard")
+                .and_then(|v| v.get("tasks"))
+                .and_then(Value::as_array)
+                .map(|rows| rows.len()),
+            Some(0)
+        );
+        assert_eq!(
+            payload
+                .get("blackboard")
+                .and_then(|v| v.get("facts"))
+                .and_then(Value::as_array)
+                .map(|rows| rows.len()),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
     async fn context_tasks_claim_and_transition_contract_roundtrip() {
         let state = test_state().await;
         let app = app_router(state.clone());

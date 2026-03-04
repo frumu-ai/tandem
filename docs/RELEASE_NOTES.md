@@ -18,6 +18,7 @@
   - Added optional `context_run_id` support on skill-router endpoints (`/skills/router/match`, `/skills/compile`) to materialize routing outcomes as blackboard tasks.
   - Desktop blackboard convergence step: `orchestrator_get_blackboard` and `orchestrator_get_blackboard_patches` now prefer engine context-run blackboard APIs and use local orchestrator store only as compatibility fallback.
   - Desktop legacy read path convergence: `orchestrator_get_events`, `orchestrator_list_runs`, and `orchestrator_load_run` now prefer engine context-run APIs first, retaining local fallback for older orchestrator snapshots.
+  - Added backward compatibility coverage for legacy blackboard payloads that do not include `tasks`.
   - Task lifecycle transitions now emit context-run events (`context.task.created`, `context.task.claimed`, `context.task.started`, `context.task.completed`, `context.task.failed`, etc.) carrying `patch_seq` + `task_rev`.
   - Replay now reports blackboard drift for task parity (revision/count/status) and returns replayed and persisted blackboard payloads for debug comparison.
   - Control panel swarm API shim now forwards blackboard patches and task state from engine context runs.

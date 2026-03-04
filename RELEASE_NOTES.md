@@ -21,6 +21,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Added optional `context_run_id` on `/skills/router/match` and `/skills/compile`; skill routing/compile outputs now emit blackboard task records for workflow coordination.
   - Desktop convergence: Tauri `orchestrator_get_blackboard` and `orchestrator_get_blackboard_patches` now read engine context-run blackboard/patch streams first, with local orchestrator storage as temporary fallback.
   - Additional desktop convergence: legacy read commands (`orchestrator_get_events`, `orchestrator_list_runs`, `orchestrator_load_run`) now use engine context-run APIs first, with local fallback only for legacy run data.
+  - Added compatibility guard for legacy persisted blackboards that predate `tasks`; engine now loads them with safe defaults.
   - Replay now includes blackboard parity checks for task revision/count/status and returns replayed/persisted blackboard payloads for drift diagnostics.
   - Control panel swarm shim now forwards blackboard patch streams, and `SwarmPage` now supports blackboard docked, expanded, and fullscreen debug views with decision lineage, agent lanes, workflow progress, artifact lineage, and drift indicators.
   - Added contract/regression tests for claim races, command-id idempotency, optimistic revision mismatch, monotonic patch sequence, and replay parity.

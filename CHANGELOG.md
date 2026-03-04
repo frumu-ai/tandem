@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Tauri `orchestrator_get_blackboard_patches` now prefers engine `/context/runs/{run_id}/blackboard/patches` with legacy local fallback during migration
     - legacy Tauri read commands (`orchestrator_get_events`, `orchestrator_list_runs`, `orchestrator_load_run`) now prefer engine context-run APIs first, with local store fallback only for legacy runs
   - task lifecycle now emits run events (`context.task.created`, `context.task.claimed`, `context.task.started`, `context.task.completed`, `context.task.failed`, etc.) with `patch_seq` and `task_rev` for UI projections
+  - validated backward compatibility for legacy persisted blackboards (payloads without `tasks` now deserialize with safe defaults)
   - replay/drift responses now include blackboard task parity checks (revision/count/status) and replay-vs-persisted blackboard payloads for debugging
   - control panel swarm route now forwards blackboard patch streams (`blackboardPatches`) and blackboard-aware task state
   - control panel `SwarmPage` now ships blackboard panel modes:
