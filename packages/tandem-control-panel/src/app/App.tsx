@@ -9,7 +9,7 @@ import { useHashRoute } from "./useHashRoute";
 import { ToastProvider, useToast } from "./toast";
 import { HashRouteOutlet } from "./HashRouteOutlet";
 import { AppShell } from "./AppShell";
-import { providerHints, createState } from "./store.js";
+import { providerHints } from "./store.js";
 import { THEMES, applyTheme, getActiveThemeId, setControlPanelTheme } from "./themes.js";
 import { renderIcons } from "./icons.js";
 import { api } from "../lib/api";
@@ -181,10 +181,8 @@ function AppBody() {
   const { route, navigate } = useHashRoute();
   const [themeId, setThemeId] = useState(getActiveThemeId());
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [legacyRerenderTick, setLegacyRerenderTick] = useState(0);
   const [providerGateNoticeShown, setProviderGateNoticeShown] = useState(false);
   const autoLoginAttempted = useRef(false);
-  const legacyStateRef = useRef<any>(createState());
 
   useEffect(() => {
     applyTheme(themeId);
@@ -278,10 +276,6 @@ function AppBody() {
     await queryClient.invalidateQueries({ queryKey: ["identity"] });
   }, [queryClient]);
 
-  const renderShell = useCallback(() => {
-    setLegacyRerenderTick((v) => v + 1);
-  }, []);
-
   const setTheme = useCallback(
     (nextThemeId: string) => {
       const theme = setControlPanelTheme(nextThemeId);
@@ -297,35 +291,27 @@ function AppBody() {
     controlPanelName: "Tandem Control Panel",
   };
 
-  const legacyState = legacyStateRef.current;
-  legacyState.authed = authed;
-  legacyState.route = currentRoute;
-  legacyState.me = authQuery.data || null;
-  legacyState.client = client;
-  legacyState.needsProviderOnboarding = needsProviderOnboarding;
-  legacyState.providerReady = !!providerQuery.data?.ready;
-  legacyState.providerDefault = providerQuery.data?.defaultProvider || "";
-  legacyState.providerDefaultModel = providerQuery.data?.defaultModel || "";
-  legacyState.providerConnected = providerQuery.data?.connected || [];
-  legacyState.providerError = providerQuery.data?.error || "";
-  legacyState.providerGateNoticeShown = providerGateNoticeShown;
-  legacyState.botName = identity.botName;
-  legacyState.botAvatarUrl = identity.botAvatarUrl;
-  legacyState.controlPanelName = identity.controlPanelName;
-  legacyState.themeId = themeId;
-
   const commonPageProps = {
-    legacyState,
+    client: client!,
     api,
     toast,
     navigate,
+    currentRoute,
+    providerStatus: {
+      ready: !!providerQuery.data?.ready,
+      defaultProvider: providerQuery.data?.defaultProvider || "",
+      defaultModel: providerQuery.data?.defaultModel || "",
+      connected: providerQuery.data?.connected || [],
+      error: providerQuery.data?.error || "",
+      needsOnboarding: !!providerQuery.data?.needsOnboarding,
+    },
+    identity,
     refreshProviderStatus,
     refreshIdentityStatus,
-    renderShell,
     providerHints,
-    routes: APP_ROUTES,
     themes: THEMES,
     setTheme,
+    themeId,
   };
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
@@ -342,9 +328,8 @@ function AppBody() {
         label: "New chat session",
         group: "Actions",
         onSelect: () => {
-          legacyState.currentSessionId = "";
+          window.dispatchEvent(new CustomEvent("tcp:new-chat"));
           navigate("chat");
-          renderShell();
         },
       },
       {
@@ -377,7 +362,7 @@ function AppBody() {
     ];
 
     return [...routeActions, ...engineActions];
-  }, [legacyState, navigate, renderShell, toast]);
+  }, [navigate, toast]);
 
   usePaletteHotkey(() => setPaletteOpen((v) => !v));
 
@@ -424,7 +409,7 @@ function AppBody() {
             ? 1
             : 0,
         }}
-        routeKey={`${currentRoute}:${legacyRerenderTick}`}
+        routeKey={currentRoute}
         providerGate={
           providerLocked ? (
             <motion.div
