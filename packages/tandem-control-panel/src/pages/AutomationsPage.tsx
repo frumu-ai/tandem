@@ -24,6 +24,8 @@ interface WizardState {
   cron: string;
   mode: ExecutionMode;
   maxAgents: string;
+  routedSkill: string;
+  routingConfidence: string;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -89,7 +91,21 @@ function toArray(input: any, key: string) {
 
 // ─── Wizard Steps ───────────────────────────────────────────────────────────
 
-function Step1Goal({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function Step1Goal({
+  value,
+  onChange,
+  routedSkill,
+  routingConfidence,
+  topMatches,
+  isMatching,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  routedSkill: string;
+  routingConfidence: string;
+  topMatches: Array<{ skill_name?: string; confidence?: number }>;
+  isMatching: boolean;
+}) {
   return (
     <div className="grid gap-4">
       <p className="text-sm text-slate-400">
@@ -116,6 +132,32 @@ function Step1Goal({ value, onChange }: { value: string; onChange: (v: string) =
             </button>
           ))}
         </div>
+      </div>
+      <div className="rounded-xl border border-slate-700/50 bg-slate-900/30 p-3 text-xs text-slate-300">
+        <div className="flex items-center justify-between gap-2">
+          <span className="uppercase tracking-wide text-slate-500">Skill routing</span>
+          <span className="text-slate-500">{isMatching ? "Analyzing…" : "Ready"}</span>
+        </div>
+        {routedSkill ? (
+          <p className="mt-1">
+            Selected flow: <strong>{routedSkill}</strong>{" "}
+            {routingConfidence ? `(${routingConfidence})` : ""}
+          </p>
+        ) : (
+          <p className="mt-1 text-slate-400">
+            No flow selected yet. Tandem will fall back to generic pack builder mode.
+          </p>
+        )}
+        {topMatches.length ? (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {topMatches.slice(0, 3).map((m, idx) => (
+              <span key={`${String(m?.skill_name || "match")}-${idx}`} className="tcp-badge-info">
+                {String(m?.skill_name || "unknown")}{" "}
+                {typeof m?.confidence === "number" ? `${Math.round(m.confidence * 100)}%` : ""}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -276,6 +318,15 @@ function Step4Review({
             </span>
           </div>
         </div>
+        {wizard.routedSkill ? (
+          <div className="grid gap-1">
+            <span className="text-xs text-slate-500 uppercase tracking-wide">Selected Flow</span>
+            <span className="text-sm font-medium text-slate-200">
+              {wizard.routedSkill}
+              {wizard.routingConfidence ? ` (${wizard.routingConfidence})` : ""}
+            </span>
+          </div>
+        ) : null}
         {wizard.cron ? (
           <div className="grid gap-1">
             <span className="text-xs text-slate-500 uppercase tracking-wide">Cron</span>
@@ -309,12 +360,29 @@ function Step4Review({
 function CreateWizard({ client, toast }: { client: any; toast: any }) {
   const queryClient = useQueryClient();
   const [step, setStep] = useState<WizardStep>(1);
+  const [routerMatches, setRouterMatches] = useState<
+    Array<{ skill_name?: string; confidence?: number }>
+  >([]);
   const [wizard, setWizard] = useState<WizardState>({
     goal: "",
     schedulePreset: "Every morning",
     cron: "",
     mode: "team",
     maxAgents: "4",
+    routedSkill: "",
+    routingConfidence: "",
+  });
+
+  const matchMutation = useMutation({
+    mutationFn: async (goal: string) => {
+      if (!goal.trim() || !client?.skills?.match) {
+        return null;
+      }
+      return client.skills.match({ goal, maxMatches: 3, threshold: 0.35 });
+    },
+    onError: () => {
+      // Keep routing non-blocking.
+    },
   });
 
   const deployMutation = useMutation({
@@ -335,6 +403,9 @@ function CreateWizard({ client, toast }: { client: any; toast: any }) {
       });
       const prompt = [
         `Create an automation pack for this goal: "${wizard.goal}"`,
+        wizard.routedSkill
+          ? `Preferred skill flow: ${wizard.routedSkill}${wizard.routingConfidence ? ` (${wizard.routingConfidence})` : ""}`
+          : "No skill flow selected; infer best approach.",
         `Execution mode: ${wizard.mode}${wizard.mode === "swarm" ? ` (max ${wizard.maxAgents} agents)` : ""}`,
         wizard.schedulePreset !== "Manual only"
           ? `Schedule: ${wizard.cron || preset?.cron || `every ${preset?.intervalSeconds}s`}`
@@ -358,7 +429,10 @@ function CreateWizard({ client, toast }: { client: any; toast: any }) {
         cron: "",
         mode: "team",
         maxAgents: "4",
+        routedSkill: "",
+        routingConfidence: "",
       });
+      setRouterMatches([]);
       setStep(1);
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
@@ -374,6 +448,28 @@ function CreateWizard({ client, toast }: { client: any; toast: any }) {
           : true;
 
   const STEPS = ["What?", "When?", "How?", "Review"];
+  const goToNextStep = async () => {
+    if (step === 1) {
+      const result = await matchMutation.mutateAsync(wizard.goal);
+      if (result && result.decision === "match" && result.skill_name) {
+        setWizard((s) => ({
+          ...s,
+          routedSkill: String(result.skill_name),
+          routingConfidence:
+            typeof result.confidence === "number" ? `${Math.round(result.confidence * 100)}%` : "",
+        }));
+      } else {
+        setWizard((s) => ({
+          ...s,
+          routedSkill: "",
+          routingConfidence: "",
+        }));
+      }
+      const top = Array.isArray((result as any)?.top_matches) ? (result as any).top_matches : [];
+      setRouterMatches(top);
+    }
+    setStep((s) => (s + 1) as WizardStep);
+  };
 
   return (
     <div className="grid gap-4">
@@ -433,6 +529,10 @@ function CreateWizard({ client, toast }: { client: any; toast: any }) {
             <Step1Goal
               value={wizard.goal}
               onChange={(v) => setWizard((s) => ({ ...s, goal: v }))}
+              routedSkill={wizard.routedSkill}
+              routingConfidence={wizard.routingConfidence}
+              topMatches={routerMatches}
+              isMatching={matchMutation.isPending}
             />
           ) : step === 2 ? (
             <Step2Schedule
@@ -477,7 +577,9 @@ function CreateWizard({ client, toast }: { client: any; toast: any }) {
           <button
             className="tcp-btn-primary"
             disabled={!canAdvance}
-            onClick={() => setStep((s) => (s + 1) as WizardStep)}
+            onClick={() => {
+              void goToNextStep();
+            }}
           >
             Next →
           </button>

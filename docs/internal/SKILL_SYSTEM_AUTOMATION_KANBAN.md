@@ -33,9 +33,9 @@ Ship a control-panel-first Skill System with:
 - [x] Add `client.skills.match()`
 
 ## Phase 3 - Control Panel Wizard Integration (Simple Mode)
-- [ ] In `AutomationsPage` Step 1, call router for top skill suggestion
-- [ ] Show matched skill and extracted params in wizard state
-- [ ] Keep fallback path to existing pack_builder prompt flow
+- [x] In `AutomationsPage` Step 1, call router for top skill suggestion
+- [x] Show matched skill and extracted params in wizard state
+- [x] Keep fallback path to existing pack_builder prompt flow
 - [ ] Review step shows compile/validation summary (or fallback notes)
 
 ## Phase 4 - Evaluation Loop Scaffolding
@@ -52,3 +52,4 @@ Ship a control-panel-first Skill System with:
 ## Commit Log
 - [x] 2026-03-04: Add initial kanban board (`docs/internal/SKILL_SYSTEM_AUTOMATION_KANBAN.md`)
 - [x] 2026-03-04: Add backend skill catalog/validate/router endpoints + SDK updates + tests
+- [x] 2026-03-04: Integrate control-panel wizard skill routing (non-blocking fallback to pack builder)

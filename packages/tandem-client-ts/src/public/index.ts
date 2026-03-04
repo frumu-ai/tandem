@@ -444,9 +444,13 @@ export interface SkillTemplatesResponse {
 export interface SkillCatalogRecord {
   info: SkillRecord;
   sections?: string[];
+  missing_sections?: string[];
   missingSections?: string[];
+  schedule_compatibility?: string[];
   scheduleCompatibility?: string[];
+  has_manifest?: boolean;
   hasManifest?: boolean;
+  has_workflow?: boolean;
   hasWorkflow?: boolean;
 }
 
@@ -462,9 +466,13 @@ export interface SkillValidationItem {
   name?: string;
   issues?: SkillValidationIssue[];
   sections?: string[];
+  missing_sections?: string[];
   missingSections?: string[];
+  schedule_compatibility?: string[];
   scheduleCompatibility?: string[];
+  has_manifest?: boolean;
   hasManifest?: boolean;
+  has_workflow?: boolean;
   hasWorkflow?: boolean;
 }
 
@@ -476,16 +484,19 @@ export interface SkillValidationResponse {
 }
 
 export interface SkillRouterMatch {
-  skillName: string;
+  skill_name?: string;
+  skillName?: string;
   confidence: number;
   reason: string;
 }
 
 export interface SkillRouterMatchResponse {
   decision: "match" | "no_match" | string;
+  skill_name?: string;
   skillName?: string;
   confidence: number;
   reason: string;
+  top_matches?: SkillRouterMatch[];
   topMatches?: SkillRouterMatch[];
 }
 
