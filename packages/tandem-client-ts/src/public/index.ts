@@ -548,6 +548,12 @@ export interface SkillGenerateResponse {
   artifacts?: Record<string, string>;
 }
 
+export interface SkillGenerateInstallResponse {
+  status: string;
+  skill?: SkillRecord;
+  validation?: Record<string, unknown>;
+}
+
 // ─── Resources ───────────────────────────────────────────────────────────────
 
 export interface ResourceRecord {

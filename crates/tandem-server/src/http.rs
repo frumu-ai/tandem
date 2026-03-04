@@ -37,7 +37,7 @@ use tandem_orchestrator::{
     AgentInstanceStatus, DefaultMissionReducer, MissionEvent, MissionReducer, MissionSpec,
     NoopMissionReducer, SpawnRequest, SpawnSource, WorkItem, WorkItemStatus,
 };
-use tandem_skills::{SkillLocation, SkillService, SkillsConflictPolicy};
+use tandem_skills::{SkillBundleArtifacts, SkillLocation, SkillService, SkillsConflictPolicy};
 use tokio::process::Command;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_stream::StreamExt;
@@ -612,6 +612,25 @@ struct SkillsCompileRequest {
 struct SkillsGenerateRequest {
     prompt: Option<String>,
     threshold: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SkillsGenerateInstallRequest {
+    prompt: Option<String>,
+    threshold: Option<f64>,
+    location: Option<SkillLocation>,
+    conflict_policy: Option<SkillsConflictPolicy>,
+    artifacts: Option<SkillsGenerateArtifactsInput>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SkillsGenerateArtifactsInput {
+    #[serde(rename = "SKILL.md")]
+    skill_md: Option<String>,
+    #[serde(rename = "workflow.yaml")]
+    workflow_yaml: Option<String>,
+    #[serde(rename = "automation.example.yaml")]
+    automation_example_yaml: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -2169,6 +2188,7 @@ fn app_router(state: AppState) -> Router {
         .route("/skills/router/match", post(skills_router_match))
         .route("/skills/compile", post(skills_compile))
         .route("/skills/generate", post(skills_generate))
+        .route("/skills/generate/install", post(skills_generate_install))
         .route("/skills/evals/benchmark", post(skills_eval_benchmark))
         .route("/skills/evals/triggers", post(skills_eval_triggers))
         .route("/skills/templates", get(skills_templates_list))
@@ -5942,6 +5962,52 @@ fn slugify_skill_name(input: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+#[derive(Debug, Clone)]
+struct GeneratedSkillScaffold {
+    router: Value,
+    artifacts: SkillBundleArtifacts,
+}
+
+fn generate_skill_scaffold(
+    service: &SkillService,
+    prompt: &str,
+    threshold: f64,
+) -> Result<GeneratedSkillScaffold, String> {
+    let routed = service.route_skill_match(prompt, 3, threshold)?;
+    let suggested_name = routed
+        .skill_name
+        .clone()
+        .unwrap_or_else(|| slugify_skill_name(prompt));
+    let skill_md = format!(
+        "---\nname: {name}\ndescription: Generated from prompt.\nversion: 0.1.0\n---\n\n# Skill: {title}\n\n## Purpose\n{purpose}\n\n## Inputs\n- user prompt\n\n## Agents\n- worker\n\n## Tools\n- webfetch\n\n## Workflow\n1. Interpret user intent\n2. Execute workflow steps\n3. Return result\n\n## Outputs\n- completed task result\n\n## Schedule compatibility\n- manual\n",
+        name = suggested_name,
+        title = suggested_name.replace('-', " "),
+        purpose = prompt.trim()
+    );
+    let workflow_yaml = if suggested_name == "dev-agent" {
+        "kind: automation_v2_dag\nskill_id: dev-agent\n".to_string()
+    } else {
+        format!(
+            "kind: pack_builder_recipe\nskill_id: {}\nexecution_mode: team\ngoal_template: \"{}\"\n",
+            suggested_name,
+            prompt.replace('"', "'")
+        )
+    };
+    let automation_example = format!(
+        "name: {}\nschedule:\n  type: manual\n  timezone: user_local\ninputs:\n  prompt: \"{}\"\n",
+        suggested_name.replace('-', " "),
+        prompt.replace('"', "'")
+    );
+    Ok(GeneratedSkillScaffold {
+        router: json!(routed),
+        artifacts: SkillBundleArtifacts {
+            skill_md,
+            workflow_yaml: Some(workflow_yaml),
+            automation_example_yaml: Some(automation_example),
+        },
+    })
+}
+
 async fn skills_compile(
     Json(input): Json<SkillsCompileRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<ErrorEnvelope>)> {
@@ -6019,42 +6085,68 @@ async fn skills_generate(
     }
     let service = skills_service();
     let threshold = input.threshold.unwrap_or(0.35).clamp(0.0, 1.0);
-    let routed = service
-        .route_skill_match(&prompt, 3, threshold)
+    let scaffold = generate_skill_scaffold(&service, &prompt, threshold)
         .map_err(|e| skill_error(StatusCode::BAD_REQUEST, e))?;
-    let suggested_name = routed
-        .skill_name
-        .clone()
-        .unwrap_or_else(|| slugify_skill_name(&prompt));
-    let skill_md = format!(
-        "---\nname: {name}\ndescription: Generated from prompt.\nversion: 0.1.0\n---\n\n# Skill: {title}\n\n## Purpose\n{purpose}\n\n## Inputs\n- user prompt\n\n## Agents\n- worker\n\n## Tools\n- webfetch\n\n## Workflow\n1. Interpret user intent\n2. Execute workflow steps\n3. Return result\n\n## Outputs\n- completed task result\n\n## Schedule compatibility\n- manual\n",
-        name = suggested_name,
-        title = suggested_name.replace('-', " "),
-        purpose = prompt.trim()
-    );
-    let workflow_yaml = if suggested_name == "dev-agent" {
-        "kind: automation_v2_dag\nskill_id: dev-agent\n".to_string()
-    } else {
-        format!(
-            "kind: pack_builder_recipe\nskill_id: {}\nexecution_mode: team\ngoal_template: \"{}\"\n",
-            suggested_name,
-            prompt.replace('"', "'")
-        )
-    };
-    let automation_example = format!(
-        "name: {}\nschedule:\n  type: manual\n  timezone: user_local\ninputs:\n  prompt: \"{}\"\n",
-        suggested_name.replace('-', " "),
-        prompt.replace('"', "'")
-    );
     Ok(Json(json!({
         "status": "generated_scaffold",
         "prompt": prompt,
-        "router": routed,
+        "router": scaffold.router,
         "artifacts": {
-            "SKILL.md": skill_md,
-            "workflow.yaml": workflow_yaml,
-            "automation.example.yaml": automation_example
+            "SKILL.md": scaffold.artifacts.skill_md,
+            "workflow.yaml": scaffold.artifacts.workflow_yaml,
+            "automation.example.yaml": scaffold.artifacts.automation_example_yaml
         }
+    })))
+}
+
+async fn skills_generate_install(
+    Json(input): Json<SkillsGenerateInstallRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ErrorEnvelope>)> {
+    let location = input.location.unwrap_or(SkillLocation::Project);
+    let conflict_policy = input.conflict_policy.unwrap_or(SkillsConflictPolicy::Skip);
+    let service = skills_service();
+    let artifacts = if let Some(raw) = input.artifacts {
+        let skill_md = raw.skill_md.unwrap_or_default();
+        if skill_md.trim().is_empty() {
+            return Err(skill_error(
+                StatusCode::BAD_REQUEST,
+                "artifacts.SKILL.md is required when artifacts are provided",
+            ));
+        }
+        SkillBundleArtifacts {
+            skill_md,
+            workflow_yaml: raw.workflow_yaml,
+            automation_example_yaml: raw.automation_example_yaml,
+        }
+    } else {
+        let prompt = input.prompt.unwrap_or_default();
+        if prompt.trim().is_empty() {
+            return Err(skill_error(
+                StatusCode::BAD_REQUEST,
+                "Missing prompt or artifacts for /skills/generate/install",
+            ));
+        }
+        let threshold = input.threshold.unwrap_or(0.35).clamp(0.0, 1.0);
+        generate_skill_scaffold(&service, &prompt, threshold)
+            .map_err(|e| skill_error(StatusCode::BAD_REQUEST, e))?
+            .artifacts
+    };
+    let validation = service
+        .validate_skill_source(Some(&artifacts.skill_md), None)
+        .map_err(|e| skill_error(StatusCode::BAD_REQUEST, e))?;
+    if validation.invalid > 0 {
+        return Err(skill_error(
+            StatusCode::BAD_REQUEST,
+            "Generated skill did not pass SKILL.md validation",
+        ));
+    }
+    let installed = service
+        .install_skill_bundle(artifacts, location, conflict_policy)
+        .map_err(|e| skill_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({
+        "status": "installed",
+        "skill": installed,
+        "validation": validation
     })))
 }
 
@@ -12024,7 +12116,15 @@ async fn openapi_doc() -> Json<Value> {
             "/tool":{"get":{"summary":"List tools"}},
             "/skills":{"get":{"summary":"List installed skills"},"post":{"summary":"Import skill from content or file/zip"}},
             "/skills/{name}":{"get":{"summary":"Load skill content"},"delete":{"summary":"Delete skill by name and location"}},
+            "/skills/catalog":{"get":{"summary":"List enriched skill catalog records"}},
             "/skills/import/preview":{"post":{"summary":"Preview skill import conflicts/actions"}},
+            "/skills/validate":{"post":{"summary":"Validate skill content/path and required sections"}},
+            "/skills/router/match":{"post":{"summary":"Match goal text to best skill"}},
+            "/skills/compile":{"post":{"summary":"Compile selected/routed skill into execution summary"}},
+            "/skills/generate":{"post":{"summary":"Generate scaffold skill artifacts from prompt"}},
+            "/skills/generate/install":{"post":{"summary":"Install generated/custom skill bundle artifacts"}},
+            "/skills/evals/benchmark":{"post":{"summary":"Run benchmark scaffold for skill routing quality"}},
+            "/skills/evals/triggers":{"post":{"summary":"Run trigger recall scaffold for a target skill"}},
             "/skills/templates":{"get":{"summary":"List installable skill templates"}},
             "/skills/templates/{id}/install":{"post":{"summary":"Install a skill template"}},
             "/memory/put":{"post":{"summary":"Store global memory content"}},
@@ -14382,6 +14482,60 @@ mod tests {
         let legacy_payload: Value = serde_json::from_slice(&legacy_body).expect("json");
         assert!(legacy_payload.get("skills").is_some());
         assert!(legacy_payload.get("deprecation_warning").is_some());
+
+        let generate_req = Request::builder()
+            .method("POST")
+            .uri("/skills/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"prompt":"check my email every morning"}).to_string(),
+            ))
+            .expect("request");
+        let generate_resp = app.clone().oneshot(generate_req).await.expect("response");
+        assert_eq!(generate_resp.status(), StatusCode::OK);
+        let generate_body = to_bytes(generate_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let generate_payload: Value = serde_json::from_slice(&generate_body).expect("json");
+        assert_eq!(
+            generate_payload.get("status").and_then(|v| v.as_str()),
+            Some("generated_scaffold")
+        );
+        assert!(generate_payload.get("artifacts").is_some());
+
+        let compile_req = Request::builder()
+            .method("POST")
+            .uri("/skills/compile")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"goal":"non matching empty set"}).to_string(),
+            ))
+            .expect("request");
+        let compile_resp = app.clone().oneshot(compile_req).await.expect("response");
+        assert_eq!(compile_resp.status(), StatusCode::BAD_REQUEST);
+
+        let eval_req = Request::builder()
+            .method("POST")
+            .uri("/skills/evals/benchmark")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"cases":[{"prompt":"check my email every morning","expected_skill":"email-digest"}]}).to_string(),
+            ))
+            .expect("request");
+        let eval_resp = app.clone().oneshot(eval_req).await.expect("response");
+        assert_eq!(eval_resp.status(), StatusCode::OK);
+        let eval_body = to_bytes(eval_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let eval_payload: Value = serde_json::from_slice(&eval_body).expect("json");
+        assert_eq!(
+            eval_payload.get("status").and_then(|v| v.as_str()),
+            Some("scaffold")
+        );
+        assert!(eval_payload
+            .get("accuracy")
+            .and_then(|v| v.as_f64())
+            .is_some());
     }
 
     #[tokio::test]

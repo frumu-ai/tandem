@@ -115,7 +115,10 @@ function Step1Goal({
   artifactPreviewKey,
   onSelectArtifactPreviewKey,
   onGenerateSkill,
+  onInstallGeneratedSkill,
   isGeneratingSkill,
+  isInstallingSkill,
+  installStatus,
   topMatches,
   isMatching,
 }: {
@@ -138,7 +141,10 @@ function Step1Goal({
   artifactPreviewKey: string;
   onSelectArtifactPreviewKey: (v: string) => void;
   onGenerateSkill: () => void;
+  onInstallGeneratedSkill: () => void;
   isGeneratingSkill: boolean;
+  isInstallingSkill: boolean;
+  installStatus: string;
   topMatches: Array<{ skill_name?: string; confidence?: number }>;
   isMatching: boolean;
 }) {
@@ -215,6 +221,13 @@ function Step1Goal({
               disabled={!value.trim() || isGeneratingSkill}
             >
               {isGeneratingSkill ? "Generating…" : "Generate Skill from Prompt"}
+            </button>
+            <button
+              className="tcp-btn h-7 px-2 text-xs"
+              onClick={onInstallGeneratedSkill}
+              disabled={!generatedSkill?.artifacts || isInstallingSkill}
+            >
+              {isInstallingSkill ? "Installing…" : "Install Generated Skill"}
             </button>
           </div>
         </div>
@@ -299,6 +312,7 @@ function Step1Goal({
             Generate scaffold files from your prompt, then refine before installation.
           </p>
         )}
+        {installStatus ? <p className="mt-2 text-slate-300">{installStatus}</p> : null}
       </div>
     </div>
   );
@@ -541,6 +555,7 @@ function CreateWizard({ client, toast }: { client: any; toast: any }) {
   const [generatedSkill, setGeneratedSkill] = useState<any>(null);
   const [showArtifactPreview, setShowArtifactPreview] = useState<boolean>(false);
   const [artifactPreviewKey, setArtifactPreviewKey] = useState<string>("SKILL.md");
+  const [installStatus, setInstallStatus] = useState<string>("");
   const [wizard, setWizard] = useState<WizardState>({
     goal: "",
     schedulePreset: "Every morning",
@@ -629,11 +644,45 @@ function CreateWizard({ client, toast }: { client: any; toast: any }) {
       const firstKey = Object.keys((res as any)?.artifacts || {})[0];
       setArtifactPreviewKey(firstKey || "SKILL.md");
       setShowArtifactPreview(false);
+      setInstallStatus("");
     },
     onError: () => {
       setGeneratedSkill(null);
       setShowArtifactPreview(false);
+      setInstallStatus("Skill generation failed.");
     },
+  });
+
+  const installGeneratedSkillMutation = useMutation({
+    mutationFn: async () => {
+      if (!client?.skills?.generateInstall) {
+        return null;
+      }
+      const artifacts = generatedSkill?.artifacts as Record<string, string> | undefined;
+      if (!artifacts || !artifacts["SKILL.md"]) {
+        throw new Error("No generated artifacts available to install.");
+      }
+      return client.skills.generateInstall({
+        location: "project",
+        conflictPolicy: "rename",
+        artifacts: {
+          "SKILL.md": artifacts["SKILL.md"],
+          "workflow.yaml": artifacts["workflow.yaml"],
+          "automation.example.yaml": artifacts["automation.example.yaml"],
+        },
+      });
+    },
+    onSuccess: (res) => {
+      const name = (res as any)?.skill?.name;
+      setInstallStatus(
+        name
+          ? `Installed generated skill as '${String(name)}' in project skills.`
+          : "Installed generated skill in project skills."
+      );
+      void queryClient.invalidateQueries({ queryKey: ["automations"] });
+    },
+    onError: (error) =>
+      setInstallStatus(`Install failed: ${error instanceof Error ? error.message : String(error)}`),
   });
 
   const deployMutation = useMutation({
@@ -693,6 +742,7 @@ function CreateWizard({ client, toast }: { client: any; toast: any }) {
       setGeneratedSkill(null);
       setShowArtifactPreview(false);
       setArtifactPreviewKey("SKILL.md");
+      setInstallStatus("");
       setStep(1);
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
@@ -820,7 +870,12 @@ function CreateWizard({ client, toast }: { client: any; toast: any }) {
               onGenerateSkill={() => {
                 void generateSkillMutation.mutateAsync();
               }}
+              onInstallGeneratedSkill={() => {
+                void installGeneratedSkillMutation.mutateAsync();
+              }}
               isGeneratingSkill={generateSkillMutation.isPending}
+              isInstallingSkill={installGeneratedSkillMutation.isPending}
+              installStatus={installStatus}
               topMatches={routerMatches}
               isMatching={matchMutation.isPending}
             />

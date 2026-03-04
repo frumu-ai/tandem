@@ -52,6 +52,7 @@ import type {
   SkillsTriggerEvalResponse,
   SkillCompileResponse,
   SkillGenerateResponse,
+  SkillGenerateInstallResponse,
   ResourceRecord,
   ResourceListResponse,
   ResourceWriteOptions,
@@ -1121,6 +1122,37 @@ class Skills {
     return this.req<SkillGenerateResponse>("/skills/generate", {
       method: "POST",
       body: JSON.stringify(options),
+    });
+  }
+
+  /** Install generated or custom artifacts into local skills. */
+  async generateInstall(options: {
+    prompt?: string;
+    threshold?: number;
+    location?: SkillLocation;
+    conflictPolicy?: "skip" | "overwrite" | "rename";
+    artifacts?: {
+      "SKILL.md"?: string;
+      "workflow.yaml"?: string;
+      "automation.example.yaml"?: string;
+    };
+  }): Promise<SkillGenerateInstallResponse> {
+    const payload = {
+      prompt: options.prompt,
+      threshold: options.threshold,
+      location: options.location,
+      conflict_policy: options.conflictPolicy,
+      artifacts: options.artifacts
+        ? {
+            "SKILL.md": options.artifacts["SKILL.md"],
+            "workflow.yaml": options.artifacts["workflow.yaml"],
+            "automation.example.yaml": options.artifacts["automation.example.yaml"],
+          }
+        : undefined,
+    };
+    return this.req<SkillGenerateInstallResponse>("/skills/generate/install", {
+      method: "POST",
+      body: JSON.stringify(payload),
     });
   }
 }

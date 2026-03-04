@@ -159,6 +159,15 @@ pub struct SkillRouterResult {
     pub top_matches: Vec<SkillRouterMatch>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SkillBundleArtifacts {
+    pub skill_md: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_yaml: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automation_example_yaml: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct SkillFrontmatter {
     name: String,
@@ -821,6 +830,61 @@ impl SkillService {
                 format!("top match confidence below threshold ({:.2})", threshold)
             },
             top_matches: limited,
+        })
+    }
+
+    pub fn install_skill_bundle(
+        &self,
+        artifacts: SkillBundleArtifacts,
+        location: SkillLocation,
+        conflict_policy: SkillsConflictPolicy,
+    ) -> Result<SkillInfo, String> {
+        let (parsed_name, description, _body, fm) =
+            parse_skill_content_with_metadata(&artifacts.skill_md)?;
+        let base = self.base_dir_for(location.clone(), None)?;
+        fs::create_dir_all(&base).map_err(|e| format!("Failed to create {:?}: {}", base, e))?;
+        let existing = base.join(&parsed_name);
+        let final_name = if existing.exists() {
+            match conflict_policy {
+                SkillsConflictPolicy::Skip => {
+                    return Err(format!("Skill '{}' already exists", parsed_name));
+                }
+                SkillsConflictPolicy::Overwrite => parsed_name.clone(),
+                SkillsConflictPolicy::Rename => resolve_conflict_name(&base, &parsed_name),
+            }
+        } else {
+            parsed_name.clone()
+        };
+        let target_dir = base.join(&final_name);
+        if target_dir.exists() {
+            fs::remove_dir_all(&target_dir)
+                .map_err(|e| format!("Failed to remove {:?}: {}", target_dir, e))?;
+        }
+        fs::create_dir_all(&target_dir)
+            .map_err(|e| format!("Failed to create {:?}: {}", target_dir, e))?;
+        fs::write(target_dir.join("SKILL.md"), artifacts.skill_md)
+            .map_err(|e| format!("Failed to write {:?}: {}", target_dir, e))?;
+        if let Some(workflow) = artifacts.workflow_yaml {
+            fs::write(target_dir.join("workflow.yaml"), workflow)
+                .map_err(|e| format!("Failed to write workflow.yaml: {}", e))?;
+        }
+        if let Some(example) = artifacts.automation_example_yaml {
+            fs::write(target_dir.join("automation.example.yaml"), example)
+                .map_err(|e| format!("Failed to write automation.example.yaml: {}", e))?;
+        }
+
+        Ok(SkillInfo {
+            name: final_name,
+            description,
+            location,
+            path: target_dir.to_string_lossy().to_string(),
+            version: fm.version,
+            author: fm.author,
+            tags: fm.tags,
+            requires: fm.requires,
+            compatibility: fm.compatibility,
+            triggers: fm.triggers,
+            parse_error: None,
         })
     }
 
@@ -1595,5 +1659,65 @@ Summarize important information.
         assert_eq!(matched.decision, "match");
         assert_eq!(matched.skill_name.as_deref(), Some("email-digest"));
         assert!(matched.confidence >= 0.35);
+    }
+
+    #[test]
+    fn install_skill_bundle_writes_expected_files() {
+        let tmp = TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let svc = SkillService::with_roots(
+            Some(workspace.clone()),
+            tmp.path().join("global").join("skills"),
+            vec![],
+        );
+        let artifacts = SkillBundleArtifacts {
+            skill_md: sample_skill_full("bundle-skill", "bundle"),
+            workflow_yaml: Some("kind: pack_builder_recipe\nskill_id: bundle-skill\n".to_string()),
+            automation_example_yaml: Some("name: Example\nschedule:\n  type: manual\n".to_string()),
+        };
+        let installed = svc
+            .install_skill_bundle(
+                artifacts,
+                SkillLocation::Project,
+                SkillsConflictPolicy::Overwrite,
+            )
+            .expect("install");
+        assert_eq!(installed.name, "bundle-skill");
+        let dir = workspace.join(".tandem").join("skill").join("bundle-skill");
+        assert!(dir.join("SKILL.md").exists());
+        assert!(dir.join("workflow.yaml").exists());
+        assert!(dir.join("automation.example.yaml").exists());
+    }
+
+    #[test]
+    fn install_skill_bundle_respects_rename_conflict_policy() {
+        let tmp = TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let base = workspace.join(".tandem").join("skill").join("bundle-skill");
+        fs::create_dir_all(&base).expect("mkdir");
+        fs::write(
+            base.join("SKILL.md"),
+            sample_skill_full("bundle-skill", "old"),
+        )
+        .expect("write");
+        let svc = SkillService::with_roots(
+            Some(workspace),
+            tmp.path().join("global").join("skills"),
+            vec![],
+        );
+        let artifacts = SkillBundleArtifacts {
+            skill_md: sample_skill_full("bundle-skill", "new"),
+            workflow_yaml: None,
+            automation_example_yaml: None,
+        };
+        let installed = svc
+            .install_skill_bundle(
+                artifacts,
+                SkillLocation::Project,
+                SkillsConflictPolicy::Rename,
+            )
+            .expect("install");
+        assert_ne!(installed.name, "bundle-skill");
+        assert!(installed.name.starts_with("bundle-skill-"));
     }
 }

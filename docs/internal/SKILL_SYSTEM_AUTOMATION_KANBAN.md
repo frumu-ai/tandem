@@ -16,7 +16,7 @@ Ship a control-panel-first Skill System with:
 
 ## Phase 0 - Foundations and Tracking
 - [x] Create execution kanban in `docs/internal`
-- [ ] Keep this board updated per commit
+- [~] Keep this board updated per commit
 
 ## Phase 1 - Backend Skill API Foundations
 - [x] Add `GET /skills/catalog` (enriched metadata)
@@ -49,6 +49,13 @@ Ship a control-panel-first Skill System with:
 - [x] Add advanced skill builder form + YAML toggle
 - [x] Add "Generate Skill from Prompt" flow (gated by validation)
 
+## Phase 6 - Production Hardening
+- [x] Add generated-skill install API (`/skills/generate/install`) with validation + conflict policy handling
+- [x] Add SDK method for generated-skill install
+- [x] Add wizard install action for generated skill artifacts
+- [x] Add server endpoint smoke coverage for new skill APIs
+- [ ] Add persistent eval threshold policy enforcement for scheduled activation
+
 ## Commit Log
 - [x] 2026-03-04: Add initial kanban board (`docs/internal/SKILL_SYSTEM_AUTOMATION_KANBAN.md`)
 - [x] 2026-03-04: Add backend skill catalog/validate/router endpoints + SDK updates + tests
@@ -56,4 +63,5 @@ Ship a control-panel-first Skill System with:
 - [x] 2026-03-04: Add skill evaluation scaffold endpoints + SDK methods + spec doc
 - [x] 2026-03-04: Add 10 built-in skill templates
 - [x] 2026-03-04: Add skills compile/generate endpoints + review compile UI + validation badge
-- [ ] 2026-03-04: Add advanced skill builder form + YAML artifact preview in wizard (pending commit)
+- [x] 2026-03-04: Add advanced skill builder form + YAML artifact preview in wizard
+- [ ] 2026-03-04: Add generate/install hardening and endpoint smoke coverage (pending commit)
