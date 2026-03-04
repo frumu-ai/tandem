@@ -1,20 +1,24 @@
+// All registered routes (for router/command palette)
 export const ROUTES = [
   ["dashboard", "Dashboard", "home"],
   ["chat", "Chat", "message-square"],
-  ["agents", "Automations", "clock"],
-  ["channels", "Channels", "message-circle"],
-  ["mcp", "MCP", "link"],
-  ["packs", "Packs", "package"],
+  ["automations", "Automations", "bot"],
   ["swarm", "Swarm (Live)", "share-2"],
-  ["files", "Files", "folder-open"],
   ["memory", "Memory", "database"],
-  ["teams", "Teams", "users"],
   ["feed", "Live Feed", "radio"],
   ["settings", "Settings", "settings"],
+  // Legacy routes kept for backwards compat (not in primary nav)
+  ["agents", "Routines", "clock"],
+  ["packs", "Packs", "package"],
+  ["teams", "Teams", "users"],
+  ["channels", "Channels", "message-circle"],
+  ["mcp", "MCP", "link"],
+  ["files", "Files", "folder-open"],
 ];
 
-export const NAV_ROUTES = ROUTES.filter(
-  ([id]) => !["channels", "mcp", "packs", "files"].includes(id)
+// Primary nav — 7 items your grandma can understand
+export const NAV_ROUTES = ROUTES.filter(([id]) =>
+  ["dashboard", "chat", "automations", "swarm", "memory", "feed", "settings"].includes(id)
 );
 
 export const providerHints = {

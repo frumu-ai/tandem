@@ -2,7 +2,28 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.4.0 (Unreleased)
+## v0.4.1 (Unreleased)
+
+- Automation creation UX — simplified to "just describe what you want"
+  - Replaced the fragmented `Agents`, `Packs`, and `Teams` pages with a single **Automations** hub (`AutomationsPage`).
+  - New **4-step creation wizard**: describe your goal in plain English → pick a recurring schedule → choose how agents run → review & deploy. No YAML, no route navigation between pages.
+  - **Execution mode selector** surfaces the orchestration options most users never found before: `Single Agent`, `Agent Team` (recommended), or `Swarm`. Agent Team is now the default — you get an orchestrated multi-agent run out of the box.
+  - **My Automations** tab combines installed packs, scheduled routines, and recent run history in one scrollable view.
+  - **Teams & Approvals** tab shows active agent-team instances and pending spawn approvals so operators can approve/deny without leaving the page.
+  - Legacy deep-links (`#/agents`, `#/packs`, `#/teams`) all redirect to `/automations` — existing bookmarks keep working.
+  - Primary sidebar trimmed from 12 items to 7: Dashboard, Chat, Automations, Swarm, Memory, Live Feed, Settings.
+
+- Pack Builder orchestration/swarm execution modes
+  - `pack_builder` tool now accepts `execution_mode` (`single` | `team` | `swarm`) and `max_agents` fields.
+  - Generated routine YAML now includes an `args.orchestration` block so the runtime knows to dispatch to an agent team or parallel swarm instead of a single loop.
+  - Default changed to `team` — new packs created via chat now schedule against an orchestrated agent team by default.
+
+- Pack Builder zip storage race condition fixed
+  - Generated pack zip artifacts are now written to a persistent directory (`~/.tandem/data/pack_builder_zips/` or `TANDEM_STATE_DIR/pack_builder_zips/`) instead of the OS temp directory.
+  - This closes a silent failure mode where OS-level temp cleanup between the `preview` and `apply` steps caused `preview_artifacts_missing` errors, making pack creation via chat unreliable in practice.
+  - Old staging directories for evicted plan IDs are now cleaned up automatically.
+
+## v0.4.0 (2026-03-03)
 
 - Pack Builder MCP-first automation flow (`v0.4.1` scope)
   - Added built-in `pack_builder` tool with `preview` and `apply` modes for creating Tandem packs from plain-English goals.

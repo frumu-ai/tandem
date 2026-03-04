@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automation creation UX simplified (control panel)**:
+  - replaced the fragmented `Agents`, `Packs`, and `Teams` pages with a unified `Automations` hub (`AutomationsPage.tsx`)
+  - added a 4-step wizard: **What?** (plain-English goal) → **When?** (visual schedule presets + custom cron) → **How?** (execution mode selector) → **Review & Deploy**
+  - execution mode selector offers **Single Agent**, **Agent Team** (recommended default), and **Swarm** — guides users toward orchestration instead of single-agent loops
+  - **My Automations** tab consolidates installed packs, scheduled routines, and recent run history in one view with run-now actions
+  - **Teams & Approvals** tab surfaces active agent team instances and pending spawn approvals
+  - legacy routes (`#/agents`, `#/packs`, `#/teams`) auto-redirect to `/automations` for backward compatibility
+  - primary sidebar navigation reduced from 12 to 7 items: **Dashboard, Chat, Automations, Swarm, Memory, Live Feed, Settings**
+- **Pack Builder orchestration/swarm execution mode**:
+  - `pack_builder` tool now accepts `execution_mode` (`"single"` | `"team"` | `"swarm"`) and `max_agents` (integer, 2–32) fields
+  - execution mode and orchestration config are stored in the routine `args.orchestration` block so the runtime can dispatch to an agent team or parallel swarm instead of a single agent loop
+  - default mode changed from `"standalone"` to `"team"` — orchestrated agent teams are now the default for new automations created via the chat/pack-builder flow
+  - tool schema updated to document these fields with enum constraints
+
+- **Pack Builder zip storage race condition fixed**:
+  - generated pack zip files are now saved to a persistent state directory (`~/.tandem/data/pack_builder_zips/` or `TANDEM_STATE_DIR/pack_builder_zips/`) instead of `std::env::temp_dir()`
+  - previously, OS-level temp-dir cleanup between `preview` and `apply` phases caused silent `preview_artifacts_missing` failures when an `apply` was submitted seconds or minutes later
+  - `retain_recent_plans()` now performs best-effort cleanup of evicted plan staging directories to prevent accumulation of stale zip archives
+
 - **Semantic tool retrieval for tool-schema context reduction**:
   - added embedding-backed tool retrieval in `ToolRegistry` (`retrieve(query, k)`) to avoid sending all tool schemas on every provider call
   - retrieval indexing now tracks runtime lifecycle events:
@@ -120,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - control-panel chat now renders `pack_builder` state inline in the message thread (preview/apply cards with deterministic actions) instead of relying on side-rail-only visibility
   - channel dispatcher no longer short-circuits initial pack-intent messages into immediate preview text; deterministic `confirm`/`cancel` command mapping remains in place
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-03-03
 
 ### Added
 
