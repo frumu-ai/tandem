@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
+import { normalizeMessages } from "../features/chat/messages";
+import { saveStoredSessionId } from "../features/chat/session";
 import { useEngineStream } from "../features/stream/useEngineStream";
 import { PageCard, EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
@@ -29,6 +31,17 @@ function normalizeTasks(runPayload: any) {
   }
   if (Array.isArray(runPayload?.tasks)) return runPayload.tasks;
   return [];
+}
+
+function statusBadgeClass(status: string) {
+  const s = String(status || "")
+    .trim()
+    .toLowerCase();
+  if (s === "done" || s === "completed" || s === "active") return "tcp-badge-ok";
+  if (s === "failed" || s === "error" || s === "cancelled" || s === "canceled")
+    return "tcp-badge-err";
+  if (s === "running" || s === "in_progress" || s === "runnable") return "tcp-badge-warn";
+  return "tcp-badge-info";
 }
 
 export function SwarmPage({ api, toast, navigate }: AppPageProps) {
@@ -67,11 +80,79 @@ export function SwarmPage({ api, toast, navigate }: AppPageProps) {
   });
 
   const tasks = normalizeTasks(runQuery.data);
+  const runEvents = Array.isArray(runQuery.data?.events) ? runQuery.data.events : [];
   const blackboard = runQuery.data?.blackboard || null;
   const blackboardPatches = Array.isArray(runQuery.data?.blackboardPatches)
     ? runQuery.data.blackboardPatches
     : [];
   const replayDrift = runQuery.data?.replay?.drift || {};
+  const runStatus = String(runQuery.data?.run?.status || "")
+    .trim()
+    .toLowerCase();
+  const lastErrorText = String(statusQuery.data?.lastError || "").trim();
+
+  const sessionsByStepId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const evt of runEvents) {
+      if (
+        String(evt?.type || "")
+          .trim()
+          .toLowerCase() !== "step_completed"
+      )
+        continue;
+      const stepId = String(evt?.step_id || "").trim();
+      const payload = evt?.payload && typeof evt.payload === "object" ? evt.payload : {};
+      const sessionId = String(payload?.session_id || "").trim();
+      if (stepId && sessionId) map.set(stepId, sessionId);
+    }
+    return map;
+  }, [runEvents]);
+
+  const latestOutput = useMemo(() => {
+    let latest: any = null;
+    let latestTs = 0;
+    for (const evt of runEvents) {
+      if (
+        String(evt?.type || "")
+          .trim()
+          .toLowerCase() !== "step_completed"
+      )
+        continue;
+      const payload = evt?.payload && typeof evt.payload === "object" ? evt.payload : {};
+      const sessionId = String(payload?.session_id || "").trim();
+      if (!sessionId) continue;
+      const ts = Number(evt?.ts_ms || 0);
+      if (!latest || ts >= latestTs) {
+        latest = { event: evt, sessionId };
+        latestTs = ts;
+      }
+    }
+    return latest;
+  }, [runEvents]);
+
+  const outputSessionQuery = useQuery({
+    queryKey: ["swarm", "run-output-session", latestOutput?.sessionId || ""],
+    enabled: !!latestOutput?.sessionId,
+    queryFn: () =>
+      api(`/api/engine/session/${encodeURIComponent(String(latestOutput?.sessionId || ""))}`),
+    refetchInterval: 6000,
+  });
+
+  const latestAssistantOutput = useMemo(() => {
+    const messages = normalizeMessages(outputSessionQuery.data, "Assistant");
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === "assistant" && String(messages[i]?.text || "").trim()) {
+        return String(messages[i].text || "").trim();
+      }
+    }
+    return "";
+  }, [outputSessionQuery.data]);
+
+  const shouldShowLastError =
+    !!lastErrorText &&
+    !(
+      runStatus === "completed" && /all steps are done; marking run completed/i.test(lastErrorText)
+    );
 
   useEngineStream(
     runId ? `/api/swarm/events?runId=${encodeURIComponent(runId)}` : "",
@@ -490,9 +571,9 @@ export function SwarmPage({ api, toast, navigate }: AppPageProps) {
               </div>
             </div>
           </div>
-          {String(statusQuery.data?.lastError || "").trim() ? (
+          {shouldShowLastError ? (
             <div className="mb-3 rounded-lg border border-rose-400/40 bg-rose-950/25 p-2 text-xs text-rose-200">
-              last error: {String(statusQuery.data?.lastError || "")}
+              last error: {lastErrorText}
             </div>
           ) : null}
 
@@ -522,7 +603,9 @@ export function SwarmPage({ api, toast, navigate }: AppPageProps) {
                           >
                             {String(run?.objective || id)}
                           </span>
-                          <span className="tcp-badge-info shrink-0">
+                          <span
+                            className={`${statusBadgeClass(String(run?.status || "unknown"))} shrink-0`}
+                          >
                             {String(run?.status || "unknown")}
                           </span>
                         </div>
@@ -592,11 +675,45 @@ export function SwarmPage({ api, toast, navigate }: AppPageProps) {
             </div>
           </div>
 
+          <div className="mb-3 rounded-xl border border-slate-700/60 bg-slate-900/30 p-3">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <div className="font-medium">Run Output</div>
+              {latestOutput?.sessionId ? (
+                <button
+                  className="tcp-btn h-7 px-2 text-xs"
+                  onClick={() => {
+                    saveStoredSessionId(String(latestOutput.sessionId));
+                    navigate("chat");
+                  }}
+                >
+                  Open Session
+                </button>
+              ) : null}
+            </div>
+            {latestOutput?.sessionId ? (
+              <>
+                <div className="tcp-subtle text-xs">
+                  step: {String(latestOutput?.event?.step_id || "n/a")} | session:{" "}
+                  {String(latestOutput.sessionId)}
+                </div>
+                <div className="mt-2 tcp-code max-h-40 overflow-auto whitespace-pre-wrap break-words">
+                  {latestAssistantOutput || "No assistant output text found in this session yet."}
+                </div>
+              </>
+            ) : (
+              <div className="tcp-subtle text-xs">
+                No completed step output session yet. Run at least one step to populate results.
+              </div>
+            )}
+          </div>
+
           <div className="grid max-h-[40vh] gap-2 overflow-auto">
             {tasks.length ? (
               tasks.map((task: any, index: number) => {
                 const stepId = String(task?.taskId || task?.step_id || `step-${index}`);
-                const sessionId = String(task?.sessionId || task?.session_id || "");
+                const sessionId = String(
+                  sessionsByStepId.get(stepId) || task?.sessionId || task?.session_id || ""
+                );
                 const rawTitle = String(task?.title || stepId);
                 const isExpanded = Boolean(expandedTaskTitles[stepId]);
                 const shouldClamp = rawTitle.length > 180;
@@ -612,7 +729,11 @@ export function SwarmPage({ api, toast, navigate }: AppPageProps) {
                       >
                         {displayTitle}
                       </strong>
-                      <span className="tcp-badge-warn">
+                      <span
+                        className={statusBadgeClass(
+                          String(task?.stepStatus || task?.status || "pending")
+                        )}
+                      >
                         {String(task?.stepStatus || task?.status || "pending")}
                       </span>
                     </div>
@@ -656,7 +777,10 @@ export function SwarmPage({ api, toast, navigate }: AppPageProps) {
                       {sessionId ? (
                         <button
                           className="tcp-btn h-7 px-2 text-xs"
-                          onClick={() => navigate("chat")}
+                          onClick={() => {
+                            saveStoredSessionId(sessionId);
+                            navigate("chat");
+                          }}
                         >
                           Open Session
                         </button>

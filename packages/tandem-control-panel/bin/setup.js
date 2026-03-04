@@ -1655,6 +1655,10 @@ async function driveContextRunExecution(session, runId) {
           await appendContextRunEvent(session, runId, "run_completed", "completed", {
             why_next_step: "all steps completed",
           });
+          swarmState.lastError = "";
+          swarmState.executorState = "idle";
+          swarmState.executorReason = "run completed";
+          return;
         }
         swarmState.lastError = String(nextPayload?.why_next_step || latestRun?.why_next_step || "No actionable step selected.");
         swarmState.executorState = "blocked";

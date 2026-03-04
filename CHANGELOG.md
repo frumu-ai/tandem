@@ -165,6 +165,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `POST /api/swarm/runs/hide_completed`
   - hidden runs are persisted in `~/.tandem/control-panel/swarm-hidden-runs.json` and filtered from `/api/swarm/runs` by default
   - `SwarmPage` now supports per-run `Hide` and bulk `Hide Completed` actions for decluttering old test runs without destructive engine-side deletion
+- **Swarm completion/output observability in control panel**:
+  - fixed false error surfacing on successful completion: executor no longer writes `all steps are done` into `lastError` when a run legitimately completes
+  - Swarm page now renders a dedicated `Run Output` panel with latest completed step, session ID, and assistant output preview
+  - task cards now resolve `Open Session` from step completion events (`session_id`) so users can always inspect generated outputs
+  - run/task status badges now use semantic colors (`completed/done` = success, `failed` = error, `in_progress` = warning)
 - **Engine startup stability during pre-ready phase**:
   - background server tasks now wait for runtime readiness before accessing `AppState` runtime-backed fields
   - fixes startup panic `runtime accessed before startup completion` that could mark control-panel connectivity unhealthy on boot

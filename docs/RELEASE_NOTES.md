@@ -45,6 +45,11 @@
     - per-run `Hide` and bulk `Hide Completed` actions in Swarm
     - hidden runs are user-scoped and stored at `~/.tandem/control-panel/swarm-hidden-runs.json`
     - run cleanup is non-destructive (filters/hides from UI list by default, no engine run deletion)
+  - Fixed completed-run false error surfacing and improved output discoverability:
+    - successful completion no longer writes completion text into swarm `lastError`
+    - added Swarm `Run Output` panel with latest completed step + session ID + assistant output preview
+    - task `Open Session` now resolves from `step_completed` event payload `session_id`
+    - run/task status badges now map to semantic success/warn/error styles
 - **MCP-first Pack Builder in the engine**:
   - Added built-in `pack_builder` tool with two-phase execution:
     - `preview`: parse goal, resolve external capabilities to MCP catalog servers, generate pack artifacts, and return approval summary

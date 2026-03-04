@@ -42,6 +42,11 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - per-run `Hide` action and bulk `Hide Completed` action in Swarm view
     - hidden runs are user-scoped and persisted locally (`~/.tandem/control-panel/swarm-hidden-runs.json`)
     - hidden runs are filtered from `/api/swarm/runs` by default without deleting engine run data
+  - Fixed completed-run false error UI state and added explicit output visibility:
+    - normal completion no longer sets swarm `lastError` to `all steps are done; marking run completed`
+    - Swarm now shows a `Run Output` panel with latest completed step, session ID, and assistant output preview
+    - task `Open Session` links now resolve from step completion events (`session_id`) for reliable output access
+    - status badges now use semantic colors for done/completed, failed, and in-progress states
 - Automation creation UX — simplified to "just describe what you want"
   - Replaced the fragmented `Agents`, `Packs`, and `Teams` pages with a single **Automations** hub (`AutomationsPage`).
   - New **4-step creation wizard**: describe your goal in plain English → pick a recurring schedule → choose how agents run → review & deploy. No YAML, no route navigation between pages.
