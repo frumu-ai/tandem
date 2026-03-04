@@ -3,8 +3,8 @@
 import { spawn } from "child_process";
 import { createServer } from "http";
 import { readFileSync, existsSync, createReadStream, createWriteStream } from "fs";
-import { mkdir, readdir, stat, rm, readFile, writeFile, readlink } from "fs/promises";
-import { randomBytes } from "crypto";
+import { mkdir, readdir, stat, rm, readFile, writeFile } from "fs/promises";
+import { createHash, randomBytes } from "crypto";
 import { join, dirname, extname, normalize, resolve, basename } from "path";
 import { Transform } from "stream";
 import { pipeline } from "stream/promises";
@@ -128,11 +128,6 @@ const PORTAL_PORT = Number.parseInt(process.env.TANDEM_CONTROL_PANEL_PORT || "39
 const ENGINE_HOST = (process.env.TANDEM_ENGINE_HOST || "127.0.0.1").trim();
 const ENGINE_PORT = Number.parseInt(process.env.TANDEM_ENGINE_PORT || "39731", 10);
 const ENGINE_URL = (process.env.TANDEM_ENGINE_URL || `http://${ENGINE_HOST}:${ENGINE_PORT}`).replace(/\/+$/, "");
-const SWARM_RESOURCE_KEYS = [
-  String(process.env.SWARM_RESOURCE_KEY || "").trim(),
-  "swarm.active_tasks",
-  "project/swarm.active_tasks",
-].filter((key, idx, arr) => key && arr.indexOf(key) === idx);
 const SWARM_RUNS_PATH = resolve(homedir(), ".tandem", "control-panel", "swarm-runs.json");
 const AUTO_START_ENGINE = (process.env.TANDEM_CONTROL_PANEL_AUTO_START_ENGINE || "1") !== "0";
 const CONFIGURED_ENGINE_TOKEN = (
@@ -202,9 +197,9 @@ const swarmState = {
   repoRoot: "",
   preflight: {
     gitAvailable: null,
-    repoReady: false,
+    repoReady: true,
     autoInitialized: false,
-    code: "",
+    code: "workspace_ready",
     reason: "",
     guidance: "",
   },
@@ -302,39 +297,6 @@ async function recordSwarmRun(update = {}) {
     return runId;
   } catch {
     return String(update.runId || "").trim();
-  }
-}
-
-async function discoverRunningSwarmManagers() {
-  try {
-    const { stdout } = await runCmd("ps", ["-eo", "pid=,args="], { stdio: "pipe" });
-    const lines = String(stdout || "").split(/\r?\n/).filter(Boolean);
-    const out = [];
-    for (const line of lines) {
-      if (!line.includes("examples/agent-swarm/src/manager.mjs")) continue;
-      const m = line.trim().match(/^(\d+)\s+(.*)$/);
-      if (!m) continue;
-      const pid = Number(m[1]);
-      const args = String(m[2] || "");
-      let cwd = "";
-      try {
-        cwd = await readlink(`/proc/${pid}/cwd`);
-      } catch {
-        cwd = "";
-      }
-      const marker = "examples/agent-swarm/src/manager.mjs";
-      const idx = args.indexOf(marker);
-      const objective = idx >= 0 ? args.slice(idx + marker.length).trim() : "";
-      out.push({
-        pid,
-        command: args,
-        objective,
-        workspaceRoot: cwd,
-      });
-    }
-    return out;
-  } catch {
-    return [];
   }
 }
 
@@ -777,100 +739,6 @@ function appendSwarmLog(stream, text) {
     if (swarmState.logs.length > 800) swarmState.logs.shift();
     pushSwarmEvent("log", { stream, line });
   }
-}
-
-function appendSwarmReason(reason) {
-  const item = { at: Date.now(), ...reason };
-  swarmState.reasons.push(item);
-  if (swarmState.reasons.length > 500) swarmState.reasons.shift();
-  pushSwarmEvent("reason", item);
-}
-
-function compareRegistryTransitions(previousRegistry, nextRegistry) {
-  const prevTasks = previousRegistry?.tasks || {};
-  const nextTasks = nextRegistry?.tasks || {};
-  const transitions = [];
-
-  for (const [taskId, next] of Object.entries(nextTasks)) {
-    const prev = prevTasks[taskId];
-    if (!prev) {
-      transitions.push({
-        kind: "task_transition",
-        taskId,
-        from: "new",
-        to: next.status || "unknown",
-        role: next.ownerRole || "",
-        reason: next.statusReason || "task registered",
-      });
-      continue;
-    }
-    if ((prev.status || "") !== (next.status || "")) {
-      transitions.push({
-        kind: "task_transition",
-        taskId,
-        from: prev.status || "unknown",
-        to: next.status || "unknown",
-        role: next.ownerRole || "",
-        reason: next.statusReason || `${prev.status || "unknown"} -> ${next.status || "unknown"}`,
-      });
-    } else if ((prev.statusReason || "") !== (next.statusReason || "") && next.statusReason) {
-      transitions.push({
-        kind: "task_reason",
-        taskId,
-        from: next.status || "unknown",
-        to: next.status || "unknown",
-        role: next.ownerRole || "",
-        reason: next.statusReason,
-      });
-    }
-  }
-
-  return transitions;
-}
-
-async function monitorSwarmRegistry(token) {
-  try {
-    const latest = await readSwarmRegistry(token);
-    const latestValue = latest?.value || { tasks: {} };
-    const previous = swarmState.registryCache?.value || { tasks: {} };
-    const transitions = compareRegistryTransitions(previous, latestValue);
-    if (transitions.length > 0) {
-      for (const t of transitions) appendSwarmReason(t);
-      pushSwarmEvent("registry_update", { count: transitions.length });
-    }
-    swarmState.registryCache = latest;
-  } catch (e) {
-    appendSwarmLog("stderr", `[swarm-monitor] ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
-
-function clearSwarmMonitor() {
-  if (swarmState.monitorTimer) {
-    clearInterval(swarmState.monitorTimer);
-    swarmState.monitorTimer = null;
-  }
-}
-
-function beginSwarmMonitoring(token, attachedPid = null) {
-  clearSwarmMonitor();
-  void monitorSwarmRegistry(token);
-  swarmState.monitorTimer = setInterval(() => {
-    if (swarmState.status !== "running") return;
-    if (attachedPid) {
-      try {
-        process.kill(attachedPid, 0);
-      } catch {
-        swarmState.status = "idle";
-        swarmState.stoppedAt = Date.now();
-        swarmState.lastError = "";
-        swarmState.attachedPid = null;
-        clearSwarmMonitor();
-        pushSwarmEvent("status", { status: swarmState.status, attachedPid: null });
-        return;
-      }
-    }
-    void monitorSwarmRegistry(token);
-  }, 3000);
 }
 
 async function engineHealth(token = "") {
@@ -1344,125 +1212,408 @@ async function proxyEngineRequest(req, res, session) {
   }
 }
 
-async function readSwarmRegistry(token) {
-  for (const key of SWARM_RESOURCE_KEYS) {
-    try {
-      const response = await fetch(`${ENGINE_URL}/resource/${encodeURIComponent(key)}`, {
-        headers: {
-          authorization: `Bearer ${token}`,
-          "x-tandem-token": token,
-        },
-        signal: AbortSignal.timeout(1200),
-      });
-      if (!response.ok) continue;
-      const record = await response.json();
-      const value =
-        record?.value && typeof record.value === "object"
-          ? record.value
-          : record?.resource?.value && typeof record.resource.value === "object"
-            ? record.resource.value
-            : null;
-      if (value && typeof value === "object") {
-        const recordKey = String(record?.key || record?.resource?.key || key || "").trim() || key;
-        return { key: recordKey, value };
-      }
-    } catch {
-      // ignore
-    }
+function contextStepStatusToLegacyTaskStatus(status) {
+  switch (String(status || "").trim().toLowerCase()) {
+    case "in_progress":
+      return "running";
+    case "runnable":
+    case "pending":
+      return "pending";
+    case "blocked":
+      return "blocked";
+    case "done":
+      return "complete";
+    case "failed":
+      return "failed";
+    default:
+      return "pending";
   }
+}
+
+function contextRunStatusToSwarmStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (
+    [
+      "queued",
+      "planning",
+      "awaiting_approval",
+      "running",
+      "paused",
+      "blocked",
+      "completed",
+      "failed",
+      "cancelled",
+    ].includes(normalized)
+  ) {
+    return normalized;
+  }
+  return "idle";
+}
+
+function buildWorkspaceId(workspaceRoot) {
+  const digest = createHash("sha1").update(String(workspaceRoot || "")).digest("hex");
+  return `ws-${digest.slice(0, 16)}`;
+}
+
+function workspaceExistsAsDirectory(workspaceRoot) {
+  const normalized = resolve(String(workspaceRoot || "").trim());
+  if (!existsSync(normalized)) return null;
+  return stat(normalized)
+    .then((info) => (info.isDirectory() ? normalized : null))
+    .catch(() => null);
+}
+
+async function engineRequestJson(session, path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const body = options.body;
+  const response = await fetch(`${ENGINE_URL}${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${session.token}`,
+      "x-tandem-token": session.token,
+      ...(body ? { "content-type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(options.timeoutMs || 8000),
+  });
+  if (!response.ok) {
+    let detail = `${method} ${path} failed: ${response.status}`;
+    try {
+      const payload = await response.json();
+      detail = String(payload?.error || payload?.message || detail);
+    } catch {
+      try {
+        detail = (await response.text()) || detail;
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(detail);
+  }
+  if (response.status === 204) return {};
+  const text = await response.text();
+  if (!text.trim()) return {};
+  return JSON.parse(text);
+}
+
+function contextRunToTasks(run) {
+  const steps = Array.isArray(run?.steps) ? run.steps : [];
+  return steps.map((step) => ({
+    taskId: String(step.step_id || ""),
+    title: String(step.title || step.step_id || "Untitled step"),
+    ownerRole: "context_driver",
+    status: contextStepStatusToLegacyTaskStatus(step.status),
+    stepStatus: String(step.status || "pending"),
+    statusReason: String(run?.why_next_step || ""),
+    lastUpdateMs: Number(run?.updated_at_ms || Date.now()),
+    runId: String(run?.run_id || ""),
+    sessionId: `context-${String(run?.run_id || "")}`,
+    branch: "",
+    worktreePath: "",
+  }));
+}
+
+function eventsToReasons(events = []) {
+  return events
+    .map((evt) => {
+      const payload = evt?.payload && typeof evt.payload === "object" ? evt.payload : {};
+      return {
+        at: Number(evt?.ts_ms || Date.now()),
+        kind: "task_transition",
+        taskId: String(evt?.step_id || payload?.step_id || "run"),
+        role: "context_driver",
+        from: "",
+        to: String(evt?.status || ""),
+        reason: String(payload?.why_next_step || payload?.error || evt?.type || "updated"),
+      };
+    })
+    .slice(-250);
+}
+
+function eventsToLogs(events = []) {
+  return events
+    .map((evt) => {
+      const payload = evt?.payload && typeof evt.payload === "object" ? evt.payload : {};
+      const details = payload?.error || payload?.why_next_step || "";
+      const line = details
+        ? `${evt?.type || "event"} ${evt?.status || ""}: ${details}`
+        : `${evt?.type || "event"} ${evt?.status || ""}`.trim();
+      return {
+        at: Number(evt?.ts_ms || Date.now()),
+        stream: "event",
+        line,
+      };
+    })
+    .slice(-300);
+}
+
+async function contextRunSnapshot(session, runId) {
+  const [runPayload, eventsPayload, blackboardPayload, replayPayload] = await Promise.all([
+    engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}`),
+    engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}/events?tail=300`),
+    engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}/blackboard`).catch(() => ({})),
+    engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}/replay`).catch(() => ({})),
+  ]);
+  const run = runPayload?.run || {};
+  const events = Array.isArray(eventsPayload?.events) ? eventsPayload.events : [];
+  const tasks = contextRunToTasks(run);
+  const taskMap = Object.fromEntries(tasks.map((task) => [task.taskId, task]));
   return {
-    key: SWARM_RESOURCE_KEYS[0] || "swarm.active_tasks",
-    value: { version: 1, updatedAtMs: Date.now(), tasks: {} },
+    run,
+    events,
+    blackboard: blackboardPayload?.blackboard || null,
+    replay: replayPayload || null,
+    registry: {
+      key: "context.run.steps",
+      value: {
+        version: 1,
+        updatedAtMs: Number(run?.updated_at_ms || Date.now()),
+        tasks: taskMap,
+      },
+    },
+    reasons: eventsToReasons(events),
+    logs: eventsToLogs(events),
   };
 }
 
-function stopSwarm() {
-  if (!swarmState.process && !swarmState.attachedPid) return;
-  const stoppingRunId = swarmState.runId;
-  const stoppingObjective = swarmState.objective;
-  const stoppingWorkspaceRoot = swarmState.workspaceRoot;
-  const stoppingAttachedPid = swarmState.attachedPid;
-  swarmState.status = "stopping";
-  clearSwarmMonitor();
-  if (swarmState.process) {
-    swarmState.process.kill("SIGTERM");
-  } else if (swarmState.attachedPid) {
-    try {
-      process.kill(swarmState.attachedPid, "SIGTERM");
-    } catch {
-      // ignore
-    }
-    swarmState.attachedPid = null;
-    swarmState.status = "idle";
-    swarmState.stoppedAt = Date.now();
-    void recordSwarmRun({
-      runId: stoppingRunId,
-      objective: stoppingObjective,
-      workspaceRoot: stoppingWorkspaceRoot,
-      status: "idle",
-      startedAt: swarmState.startedAt || Date.now(),
-      stoppedAt: swarmState.stoppedAt || Date.now(),
-      pid: stoppingAttachedPid,
-      attached: true,
-    });
+async function appendContextRunEvent(session, runId, eventType, status, payload = {}, stepId = null) {
+  return engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}/events`, {
+    method: "POST",
+    body: {
+      type: eventType,
+      status,
+      step_id: stepId || undefined,
+      payload,
+    },
+  });
+}
+
+function parseObjectiveTodos(objective, max = 6) {
+  const lines = String(objective || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const todos = [];
+  for (const line of lines) {
+    if (todos.length >= max) break;
+    const normalized = line.replace(/^[-*#\d\.\)\[\]\s]+/, "").trim();
+    if (normalized.length < 8) continue;
+    todos.push(normalized);
   }
-  pushSwarmEvent("status", { status: swarmState.status });
+  if (!todos.length) {
+    return ["Draft implementation plan", "Execute implementation", "Validate output"];
+  }
+  return todos;
+}
+
+function isRunTerminal(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  return ["completed", "failed", "cancelled"].includes(normalized);
+}
+
+async function seedContextRunSteps(session, runId, objective) {
+  const todoRows = parseObjectiveTodos(objective, 8).map((content, idx) => ({
+    id: `step-${idx + 1}`,
+    content,
+    status: "pending",
+  }));
+  await engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}/todos/sync`, {
+    method: "POST",
+    body: {
+      replace: true,
+      todos: todoRows,
+      source_session_id: null,
+      source_run_id: runId,
+    },
+  });
+}
+
+async function createExecutionSession(session, run) {
+  const workspaceRoot = String(run?.workspace?.canonical_path || REPO_ROOT).trim();
+  const modelProvider = String(run?.model_provider || "").trim();
+  const modelId = String(run?.model_id || "").trim();
+  const payload = await engineRequestJson(session, "/session", {
+    method: "POST",
+    body: {
+      title: `Swarm ${String(run?.run_id || "").trim()}`,
+      directory: workspaceRoot,
+      workspace_root: workspaceRoot,
+      provider: modelProvider || undefined,
+      model:
+        modelProvider && modelId
+          ? {
+              providerID: modelProvider,
+              modelID: modelId,
+            }
+          : undefined,
+    },
+  });
+  return String(payload?.id || "").trim();
+}
+
+function stepPromptText(run, step, stepIndex, totalSteps) {
+  return [
+    "Execute this swarm step.",
+    "",
+    `Objective: ${String(run?.objective || "").trim()}`,
+    `Workspace: ${String(run?.workspace?.canonical_path || "").trim()}`,
+    `Step (${stepIndex + 1}/${totalSteps}): ${String(step?.title || step?.step_id || "").trim()}`,
+    "",
+    "Requirements:",
+    "- Make the required code/project changes for this step.",
+    "- Keep scope limited to this step.",
+    "- Return a concise summary of changes and blockers.",
+  ].join("\n");
+}
+
+async function runStepWithLLM(session, run, step, stepIndex, totalSteps) {
+  const sessionId = await createExecutionSession(session, run);
+  if (!sessionId) throw new Error("Failed to create execution session.");
+  const prompt = stepPromptText(run, step, stepIndex, totalSteps);
+  await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}/prompt_sync`, {
+    method: "POST",
+    timeoutMs: 10 * 60 * 1000,
+    body: {
+      parts: [{ type: "text", text: prompt }],
+    },
+  });
+  return sessionId;
+}
+
+const swarmExecutors = new Map();
+
+async function driveContextRunExecution(session, runId) {
+  if (swarmExecutors.has(runId)) return;
+  const runner = (async () => {
+    for (let cycle = 0; cycle < 24; cycle += 1) {
+      const runPayload = await engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}`);
+      const run = runPayload?.run || {};
+      if (isRunTerminal(run.status)) return;
+
+      const nextPayload = await engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}/driver/next`, {
+        method: "POST",
+        body: { dry_run: false },
+      });
+      const selectedStepId = String(nextPayload?.selected_step_id || "").trim();
+      const latestRun = nextPayload?.run || run;
+      const steps = Array.isArray(latestRun?.steps) ? latestRun.steps : [];
+
+      if (!selectedStepId) {
+        if (steps.length && steps.every((step) => String(step?.status || "").toLowerCase() === "done")) {
+          await appendContextRunEvent(session, runId, "run_completed", "completed", {
+            why_next_step: "all steps completed",
+          });
+        }
+        return;
+      }
+
+      const stepIndex = steps.findIndex((step) => String(step?.step_id || "") === selectedStepId);
+      const step = stepIndex >= 0 ? steps[stepIndex] : { step_id: selectedStepId, title: selectedStepId };
+
+      try {
+        await appendContextRunEvent(
+          session,
+          runId,
+          "step_started",
+          "running",
+          {
+            step_status: "in_progress",
+            step_title: String(step?.title || selectedStepId),
+            why_next_step: `executing ${selectedStepId}`,
+          },
+          selectedStepId
+        );
+        const sessionId = await runStepWithLLM(session, latestRun, step, Math.max(stepIndex, 0), Math.max(steps.length, 1));
+        await appendContextRunEvent(
+          session,
+          runId,
+          "step_completed",
+          "running",
+          {
+            step_status: "done",
+            step_title: String(step?.title || selectedStepId),
+            session_id: sessionId,
+            why_next_step: `completed ${selectedStepId}`,
+          },
+          selectedStepId
+        );
+      } catch (error) {
+        const message = String(error?.message || error || "Unknown step failure");
+        await appendContextRunEvent(
+          session,
+          runId,
+          "step_failed",
+          "failed",
+          {
+            step_status: "failed",
+            error: message,
+            why_next_step: `step failed: ${selectedStepId}`,
+          },
+          selectedStepId
+        );
+        return;
+      }
+    }
+  })()
+    .catch((error) => {
+      swarmState.lastError = String(error?.message || error || "Run executor failed");
+    })
+    .finally(() => {
+      swarmExecutors.delete(runId);
+    });
+  swarmExecutors.set(runId, runner);
 }
 
 async function startSwarm(session, config = {}) {
-  if (!isLocalEngineUrl(ENGINE_URL)) {
-    throw new Error("Swarm orchestration is disabled when using a remote engine URL.");
-  }
-  if (swarmState.process) {
-    throw new Error("Swarm runtime is already running.");
-  }
-
   const objective = String(config.objective || "Ship a small feature end-to-end").trim();
-  const workspaceRoot = resolve(String(config.workspaceRoot || REPO_ROOT).trim());
-  const maxTasks = Math.max(1, Number.parseInt(String(config.maxTasks || 3), 10) || 3);
-  let modelProvider = String(config.modelProvider || "").trim();
-  let modelId = String(config.modelId || "").trim();
-  if (!modelProvider || !modelId) {
-    modelProvider = "";
-    modelId = "";
+  const workspaceRootRaw = String(config.workspaceRoot || REPO_ROOT).trim();
+  const workspaceRoot = await workspaceExistsAsDirectory(workspaceRootRaw);
+  if (!workspaceRoot) {
+    throw new Error(`Workspace root does not exist or is not a directory: ${resolve(workspaceRootRaw)}`);
   }
-  const rawMcpServers = Array.isArray(config.mcpServers)
-    ? config.mcpServers
-    : String(config.mcpServers || "")
-        .split(",")
-        .map((v) => v.trim())
-        .filter(Boolean);
-  const mcpServers = rawMcpServers
-    .map((v) => String(v || "").trim())
+  const maxTasks = Math.max(1, Number.parseInt(String(config.maxTasks || 3), 10) || 3);
+  const modelProvider = String(config.modelProvider || "").trim();
+  const modelId = String(config.modelId || "").trim();
+  const mcpServers = (Array.isArray(config.mcpServers) ? config.mcpServers : [])
+    .map((entry) => String(entry || "").trim())
     .filter(Boolean)
     .slice(0, 64);
-  const preflight = await preflightSwarmWorkspace(workspaceRoot, {
-    allowInitNonEmpty: config.allowInitNonEmpty === true,
-  });
-  setSwarmPreflight({
-    gitAvailable: preflight.gitAvailable,
-    repoReady: preflight.repoReady,
-    autoInitialized: preflight.autoInitialized,
-    code: preflight.code || "",
-    reason: preflight.reason || "",
-    guidance: preflight.guidance || "",
-  });
-  swarmState.repoRoot = preflight.repoRoot || "";
-  if (!preflight.gitAvailable) {
-    throw new Error(`${preflight.reason}. ${preflight.guidance}`);
-  }
-  if (!preflight.repoReady) {
-    throw new Error(preflight.reason || "Workspace preflight failed.");
-  }
 
-  const managerPath = join(REPO_ROOT, "examples", "agent-swarm", "src", "manager.mjs");
-  if (!existsSync(managerPath)) {
-    throw new Error(`Missing swarm manager at ${managerPath}`);
-  }
+  const created = await engineRequestJson(session, "/context/runs", {
+    method: "POST",
+    body: {
+      objective,
+      run_type: "interactive",
+      source_client: "control_panel",
+      model_provider: modelProvider || undefined,
+      model_id: modelId || undefined,
+      mcp_servers: mcpServers,
+      workspace: {
+        workspace_id: buildWorkspaceId(workspaceRoot),
+        canonical_path: workspaceRoot,
+        lease_epoch: 1,
+      },
+    },
+  });
+  const run = created?.run;
+  const runId = String(run?.run_id || "").trim();
+  if (!runId) throw new Error("Context run creation failed (missing run_id).");
 
-  swarmState.logs = [];
-  swarmState.reasons = [];
-  swarmState.status = "starting";
+  await appendContextRunEvent(session, runId, "planning_started", "planning", {
+    source_client: "control_panel",
+    max_tasks: maxTasks,
+    model_provider: modelProvider || undefined,
+    model_id: modelId || undefined,
+    mcp_servers: mcpServers,
+  });
+  await seedContextRunSteps(session, runId, objective);
+  await appendContextRunEvent(session, runId, "plan_seeded_local", "planning", {
+    source: "local_objective_parser",
+    note: "Initial steps were seeded from objective text. No model call yet.",
+  });
+
+  swarmState.status = "planning";
   swarmState.startedAt = Date.now();
   swarmState.stoppedAt = null;
   swarmState.objective = objective;
@@ -1471,107 +1622,46 @@ async function startSwarm(session, config = {}) {
   swarmState.modelProvider = modelProvider;
   swarmState.modelId = modelId;
   swarmState.mcpServers = mcpServers;
-  swarmState.repoRoot = preflight.repoRoot || workspaceRoot;
+  swarmState.repoRoot = workspaceRoot;
   swarmState.lastError = "";
-  swarmState.runId = randomBytes(8).toString("hex");
+  swarmState.runId = runId;
   swarmState.attachedPid = null;
   swarmState.registryCache = null;
-
-  pushSwarmEvent("status", {
-    status: swarmState.status,
-    objective,
-    workspaceRoot,
-    maxTasks,
-    modelProvider: modelProvider || undefined,
-    modelId: modelId || undefined,
-    mcpServers,
-    repoRoot: swarmState.repoRoot || undefined,
-    preflight: swarmState.preflight,
-    runId: swarmState.runId,
+  setSwarmPreflight({
+    gitAvailable: null,
+    repoReady: true,
+    autoInitialized: false,
+    code: "workspace_ready",
+    reason: "",
+    guidance: "",
   });
-
-  const child = spawn(process.execPath, [managerPath, objective], {
-    cwd: workspaceRoot,
-    env: {
-      ...process.env,
-      ...buildGitSafeEnv(process.env, preflight.repoRoot || workspaceRoot),
-      TANDEM_BASE_URL: ENGINE_URL,
-      TANDEM_API_TOKEN: session.token,
-      SWARM_MAX_TASKS: String(maxTasks),
-      SWARM_OBJECTIVE: objective,
-      SWARM_MODEL_PROVIDER: modelProvider,
-      SWARM_MODEL_ID: modelId,
-      SWARM_MCP_SERVERS: mcpServers.join(","),
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  swarmState.process = child;
-
-  child.stdout.on("data", (chunk) => appendSwarmLog("stdout", chunk));
-  child.stderr.on("data", (chunk) => appendSwarmLog("stderr", chunk));
-
-  child.on("spawn", () => {
-    swarmState.status = "running";
-    void recordSwarmRun({
-      runId: swarmState.runId,
-      objective,
-      workspaceRoot,
-      status: "running",
-      startedAt: swarmState.startedAt,
-      pid: child.pid,
-      attached: false,
-    });
-    pushSwarmEvent("status", { status: swarmState.status, runId: swarmState.runId, pid: child.pid });
-    beginSwarmMonitoring(session.token);
-  });
-
-  child.on("error", (e) => {
-    swarmState.status = "error";
-    swarmState.lastError = e.message;
-    clearSwarmMonitor();
-    appendSwarmLog("stderr", e.message);
-    pushSwarmEvent("status", { status: swarmState.status, error: e.message });
-  });
-
-  child.on("exit", (code, signal) => {
-    const failed = code && code !== 0;
-    swarmState.status = failed ? "error" : "idle";
-    swarmState.stoppedAt = Date.now();
-    swarmState.lastError = failed ? `Exited with code ${code}` : "";
-    swarmState.process = null;
-    clearSwarmMonitor();
-    pushSwarmEvent("status", {
-      status: swarmState.status,
-      code,
-      signal,
-      error: swarmState.lastError || undefined,
-    });
-    void recordSwarmRun({
-      runId: swarmState.runId,
-      objective: swarmState.objective,
-      workspaceRoot: swarmState.workspaceRoot,
-      status: swarmState.status,
-      startedAt: swarmState.startedAt || Date.now(),
-      stoppedAt: swarmState.stoppedAt || Date.now(),
-      pid: child.pid,
-      attached: false,
-    });
-  });
+  pushSwarmEvent("status", { status: swarmState.status, runId: runId });
+  return runId;
 }
 
 async function handleSwarmApi(req, res, session) {
-  const pathname = new URL(req.url, `http://127.0.0.1:${PORTAL_PORT}`).pathname;
+  const url = new URL(req.url, `http://127.0.0.1:${PORTAL_PORT}`);
+  const pathname = url.pathname;
+  const statusFromRun = async (runId) => {
+    if (!runId) return null;
+    try {
+      const payload = await engineRequestJson(session, `/context/runs/${encodeURIComponent(runId)}`);
+      return payload?.run || null;
+    } catch {
+      return null;
+    }
+  };
 
   if (pathname === "/api/swarm/status" && req.method === "GET") {
-    const detectedGit = await detectGitAvailable();
-    if (swarmState.preflight?.gitAvailable !== detectedGit) {
-      setSwarmPreflight({
-        gitAvailable: detectedGit,
-        code: detectedGit ? "ok" : "git_missing",
-        reason: detectedGit ? "" : "Git executable not found",
-        guidance: guidanceForGitInstall(),
-      });
+    const run = await statusFromRun(swarmState.runId);
+    if (run) {
+      swarmState.status = contextRunStatusToSwarmStatus(run.status);
+      swarmState.objective = String(run.objective || swarmState.objective || "");
+      swarmState.workspaceRoot = String(run.workspace?.canonical_path || swarmState.workspaceRoot || REPO_ROOT);
+      swarmState.repoRoot = swarmState.workspaceRoot;
+    } else if (swarmState.runId) {
+      swarmState.status = "idle";
+      swarmState.stoppedAt = Date.now();
     }
     sendJson(res, 200, {
       ok: true,
@@ -1590,16 +1680,25 @@ async function handleSwarmApi(req, res, session) {
       attachedPid: swarmState.attachedPid || null,
       localEngine: isLocalEngineUrl(ENGINE_URL),
       lastError: swarmState.lastError || null,
+      currentRunId: swarmState.runId || "",
     });
     return true;
   }
 
   if (pathname === "/api/swarm/runs" && req.method === "GET") {
-    const [active, recent] = await Promise.all([discoverRunningSwarmManagers(), loadSwarmRunsHistory()]);
+    const workspace = String(url.searchParams.get("workspace") || "").trim();
+    const query = workspace ? `?workspace=${encodeURIComponent(resolve(workspace))}&limit=100` : "?limit=100";
+    const payload = await engineRequestJson(session, `/context/runs${query}`).catch(() => ({ runs: [] }));
+    const runs = Array.isArray(payload?.runs) ? payload.runs : [];
+    const active = runs.filter((run) => {
+      const status = String(run?.status || "").toLowerCase();
+      return !["completed", "failed", "cancelled"].includes(status);
+    });
     sendJson(res, 200, {
       ok: true,
+      runs,
       active,
-      recent: recent.slice(-30).reverse(),
+      recent: runs.slice(0, 30),
     });
     return true;
   }
@@ -1607,56 +1706,103 @@ async function handleSwarmApi(req, res, session) {
   if (pathname === "/api/swarm/start" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      await startSwarm(session, body || {});
-      sendJson(res, 200, { ok: true });
+      const runId = await startSwarm(session, body || {});
+      sendJson(res, 200, { ok: true, runId });
     } catch (e) {
       sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
     }
     return true;
   }
 
-  if (pathname === "/api/swarm/stop" && req.method === "POST") {
-    stopSwarm();
-    sendJson(res, 200, { ok: true, status: swarmState.status });
+  if (pathname === "/api/swarm/approve" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const runId = String(body?.runId || swarmState.runId || "").trim();
+      if (!runId) throw new Error("Missing runId");
+      await appendContextRunEvent(session, runId, "plan_approved", "running", {});
+      void driveContextRunExecution(session, runId);
+      sendJson(res, 200, { ok: true, runId });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
     return true;
   }
 
-  if (pathname === "/api/swarm/attach" && req.method === "POST") {
+  if (pathname === "/api/swarm/pause" && req.method === "POST") {
     try {
-      if (swarmState.process) throw new Error("Cannot attach while managed swarm process is running.");
       const body = await readJsonBody(req);
-      const pid = Number(body?.pid || 0);
-      if (!Number.isFinite(pid) || pid <= 0) throw new Error("Invalid swarm manager pid.");
-      process.kill(pid, 0);
-      const workspaceRoot = resolve(String(body?.workspaceRoot || REPO_ROOT).trim());
-      const objective = String(body?.objective || "Attached swarm manager").trim();
-      swarmState.status = "running";
-      swarmState.startedAt = Number(body?.startedAt || 0) || Date.now();
-      swarmState.stoppedAt = null;
-      swarmState.objective = objective;
-      swarmState.workspaceRoot = workspaceRoot;
-      swarmState.attachedPid = pid;
-      swarmState.process = null;
-      swarmState.lastError = "";
-      swarmState.runId = String(body?.runId || "").trim() || randomBytes(8).toString("hex");
-      swarmState.logs = [];
-      swarmState.reasons = [];
-      void recordSwarmRun({
-        runId: swarmState.runId,
-        objective,
-        workspaceRoot,
-        status: "running",
-        startedAt: swarmState.startedAt,
-        pid,
-        attached: true,
+      const runId = String(body?.runId || swarmState.runId || "").trim();
+      if (!runId) throw new Error("Missing runId");
+      await appendContextRunEvent(session, runId, "run_paused", "paused", {});
+      sendJson(res, 200, { ok: true, runId });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/swarm/resume" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const runId = String(body?.runId || swarmState.runId || "").trim();
+      if (!runId) throw new Error("Missing runId");
+      await appendContextRunEvent(session, runId, "run_resumed", "running", {});
+      sendJson(res, 200, { ok: true, runId });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if ((pathname === "/api/swarm/cancel" || pathname === "/api/swarm/stop") && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const runId = String(body?.runId || swarmState.runId || "").trim();
+      if (!runId) throw new Error("Missing runId");
+      await appendContextRunEvent(session, runId, "run_cancelled", "cancelled", {});
+      if (swarmState.runId === runId) {
+        swarmState.status = "cancelled";
+        swarmState.stoppedAt = Date.now();
+      }
+      sendJson(res, 200, { ok: true, runId });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/swarm/retry" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const runId = String(body?.runId || swarmState.runId || "").trim();
+      const stepId = String(body?.stepId || "").trim();
+      if (!runId || !stepId) throw new Error("Missing runId or stepId");
+      await appendContextRunEvent(session, runId, "task_retry_requested", "running", {}, stepId);
+      sendJson(res, 200, { ok: true, runId, stepId });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    return true;
+  }
+
+  if (pathname.startsWith("/api/swarm/run/") && req.method === "GET") {
+    const runId = decodeURIComponent(pathname.replace("/api/swarm/run/", "").trim());
+    if (!runId) {
+      sendJson(res, 400, { ok: false, error: "Missing run id." });
+      return true;
+    }
+    try {
+      const snapshot = await contextRunSnapshot(session, runId);
+      swarmState.runId = runId;
+      swarmState.status = contextRunStatusToSwarmStatus(snapshot.run?.status);
+      sendJson(res, 200, {
+        ok: true,
+        run: snapshot.run,
+        events: snapshot.events,
+        blackboard: snapshot.blackboard,
+        replay: snapshot.replay,
+        tasks: contextRunToTasks(snapshot.run),
       });
-      beginSwarmMonitoring(session.token, pid);
-      pushSwarmEvent("status", {
-        status: swarmState.status,
-        attachedPid: pid,
-        runId: swarmState.runId,
-      });
-      sendJson(res, 200, { ok: true, status: swarmState.status, attachedPid: pid });
     } catch (e) {
       sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
     }
@@ -1664,29 +1810,45 @@ async function handleSwarmApi(req, res, session) {
   }
 
   if (pathname === "/api/swarm/snapshot" && req.method === "GET") {
-    let registry = await readSwarmRegistry(session.token);
-    const registryTasks =
-      registry?.value?.tasks && typeof registry.value.tasks === "object"
-        ? Object.keys(registry.value.tasks).length
-        : 0;
-    const cachedTasks =
-      swarmState.registryCache?.value?.tasks && typeof swarmState.registryCache.value.tasks === "object"
-        ? Object.keys(swarmState.registryCache.value.tasks).length
-        : 0;
-    if (registryTasks === 0 && cachedTasks > 0) {
-      registry = swarmState.registryCache;
+    const runId = String(url.searchParams.get("runId") || swarmState.runId || "").trim();
+    if (!runId) {
+      sendJson(res, 200, {
+        ok: true,
+        status: "idle",
+        registry: { key: "context.run.steps", value: { version: 1, updatedAtMs: Date.now(), tasks: {} } },
+        logs: [],
+        reasons: [],
+        startedAt: swarmState.startedAt,
+        stoppedAt: swarmState.stoppedAt,
+        lastError: swarmState.lastError || null,
+        localEngine: isLocalEngineUrl(ENGINE_URL),
+        runId: "",
+      });
+      return true;
     }
-    sendJson(res, 200, {
-      ok: true,
-      status: swarmState.status,
-      registry,
-      logs: swarmState.logs.slice(-300),
-      reasons: swarmState.reasons.slice(-250),
-      startedAt: swarmState.startedAt,
-      stoppedAt: swarmState.stoppedAt,
-      lastError: swarmState.lastError || null,
-      localEngine: isLocalEngineUrl(ENGINE_URL),
-    });
+    try {
+      const snapshot = await contextRunSnapshot(session, runId);
+      swarmState.registryCache = snapshot.registry;
+      swarmState.logs = snapshot.logs;
+      swarmState.reasons = snapshot.reasons;
+      swarmState.status = contextRunStatusToSwarmStatus(snapshot.run?.status);
+      sendJson(res, 200, {
+        ok: true,
+        status: swarmState.status,
+        runId,
+        registry: snapshot.registry,
+        logs: snapshot.logs,
+        reasons: snapshot.reasons,
+        startedAt: Number(snapshot.run?.started_at_ms || swarmState.startedAt || Date.now()),
+        stoppedAt: ["completed", "failed", "cancelled"].includes(String(snapshot.run?.status || ""))
+          ? Number(snapshot.run?.ended_at_ms || Date.now())
+          : null,
+        lastError: String(snapshot.run?.last_error || ""),
+        localEngine: isLocalEngineUrl(ENGINE_URL),
+      });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
     return true;
   }
 
@@ -1696,9 +1858,35 @@ async function handleSwarmApi(req, res, session) {
       "cache-control": "no-cache",
       connection: "keep-alive",
     });
-    res.write(`data: ${JSON.stringify({ kind: "hello", ts: Date.now(), status: swarmState.status })}\n\n`);
-    swarmSseClients.add(res);
-    req.on("close", () => swarmSseClients.delete(res));
+    const runId = String(url.searchParams.get("runId") || swarmState.runId || "").trim();
+    let closed = false;
+    let sinceSeq = 0;
+    const close = () => {
+      closed = true;
+    };
+    req.on("close", close);
+    res.write(
+      `data: ${JSON.stringify({ kind: "hello", ts: Date.now(), status: swarmState.status, runId })}\n\n`
+    );
+    const tick = async () => {
+      if (closed || !runId) return;
+      try {
+        const payload = await engineRequestJson(
+          session,
+          `/context/runs/${encodeURIComponent(runId)}/events?since_seq=${sinceSeq}`
+        );
+        const events = Array.isArray(payload?.events) ? payload.events : [];
+        for (const event of events) {
+          sinceSeq = Math.max(sinceSeq, Number(event?.seq || 0));
+          res.write(`data: ${JSON.stringify({ kind: "event", ts: Date.now(), runId, event })}\n\n`);
+        }
+      } catch {
+        // ignore transient poll failures
+      }
+    };
+    const interval = setInterval(tick, 1500);
+    tick();
+    req.on("close", () => clearInterval(interval));
     return true;
   }
 
@@ -1807,7 +1995,6 @@ function shutdown(signal) {
   }
   if (swarmState.process && !swarmState.process.killed) {
     try {
-      clearSwarmMonitor();
       swarmState.process.kill("SIGTERM");
     } catch {}
   }

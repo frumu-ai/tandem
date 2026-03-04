@@ -904,6 +904,37 @@ impl PackBuilderTool {
             }),
         ));
 
+        if !plan.generated_zip_path.exists() {
+            let output = json!({
+                "workflow_id": format!("wf-{}", plan.plan_id),
+                "mode": "apply",
+                "plan_id": plan.plan_id,
+                "session_id": input.session_id,
+                "thread_key": input.thread_key,
+                "goal": plan.goal,
+                "status": "apply_blocked_missing_preview_artifacts",
+                "error": "preview_artifacts_missing",
+                "next_actions": [
+                    "Run a new Pack Builder preview for this goal.",
+                    "Confirm apply from the new preview."
+                ]
+            });
+            self.upsert_workflow(
+                "pack_builder.apply_blocked",
+                WorkflowStatus::Error,
+                plan_id,
+                session_id,
+                thread_key,
+                &plan.goal,
+                &output,
+            )
+            .await;
+            return Ok(ToolResult {
+                output: render_pack_builder_apply_output(&output),
+                metadata: output,
+            });
+        }
+
         let mut connector_results = Vec::<Value>::new();
         let mut registered_servers = Vec::<String>::new();
 
@@ -1307,6 +1338,9 @@ fn render_pack_builder_apply_output(meta: &Value) -> String {
             }
             "cancelled" => {
                 return "Pack Builder Apply Cancelled\n- Pending plan cancelled.".to_string();
+            }
+            "apply_blocked_missing_preview_artifacts" => {
+                return "Pack Builder Apply Blocked\n- Preview artifacts expired. Run preview again, then confirm.".to_string();
             }
             _ => {}
         }

@@ -115,6 +115,13 @@ struct ContextRunReplayQuery {
     from_checkpoint: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, Default, Clone)]
+struct ContextRunListQuery {
+    workspace: Option<String>,
+    run_type: Option<String>,
+    limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ContextRunStatus {
@@ -158,6 +165,14 @@ struct ContextRunStep {
 struct ContextRunState {
     run_id: String,
     run_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_client: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_id: Option<String>,
+    #[serde(default)]
+    mcp_servers: Vec<String>,
     status: ContextRunStatus,
     objective: String,
     workspace: ContextWorkspaceLease,
@@ -167,6 +182,12 @@ struct ContextRunState {
     why_next_step: Option<String>,
     revision: u64,
     created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    started_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ended_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
     updated_at_ms: u64,
 }
 
@@ -176,6 +197,10 @@ struct ContextRunCreateInput {
     objective: String,
     run_type: Option<String>,
     workspace: Option<ContextWorkspaceLease>,
+    source_client: Option<String>,
+    model_provider: Option<String>,
+    model_id: Option<String>,
+    mcp_servers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9101,6 +9126,25 @@ async fn context_run_create(
     let run = ContextRunState {
         run_id: run_id.clone(),
         run_type: input.run_type.unwrap_or_else(|| "interactive".to_string()),
+        source_client: input
+            .source_client
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty()),
+        model_provider: input
+            .model_provider
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty()),
+        model_id: input
+            .model_id
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty()),
+        mcp_servers: input
+            .mcp_servers
+            .unwrap_or_default()
+            .into_iter()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>(),
         status: ContextRunStatus::Queued,
         objective: input.objective,
         workspace: input.workspace.unwrap_or_default(),
@@ -9108,17 +9152,33 @@ async fn context_run_create(
         why_next_step: None,
         revision: 1,
         created_at_ms: now,
+        started_at_ms: None,
+        ended_at_ms: None,
+        last_error: None,
         updated_at_ms: now,
     };
     save_context_run_state(&state, &run).await?;
     Ok(Json(json!({ "ok": true, "run": run })))
 }
 
-async fn context_run_list(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+async fn context_run_list(
+    State(state): State<AppState>,
+    Query(query): Query<ContextRunListQuery>,
+) -> Result<Json<Value>, StatusCode> {
     let root = context_runs_root(&state);
     if !root.exists() {
         return Ok(Json(json!({ "runs": [] })));
     }
+    let workspace_filter = query
+        .workspace
+        .as_deref()
+        .and_then(tandem_core::normalize_workspace_path);
+    let run_type_filter = query
+        .run_type
+        .as_ref()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty());
+    let limit = query.limit.unwrap_or(100).clamp(1, 1000);
     let mut rows = Vec::<ContextRunState>::new();
     let mut dir = tokio::fs::read_dir(root)
         .await
@@ -9134,10 +9194,21 @@ async fn context_run_list(State(state): State<AppState>) -> Result<Json<Value>, 
         }
         let run_id = entry.file_name().to_string_lossy().to_string();
         if let Ok(run) = load_context_run_state(&state, &run_id).await {
+            if let Some(workspace) = workspace_filter.as_deref() {
+                if run.workspace.canonical_path.trim() != workspace {
+                    continue;
+                }
+            }
+            if let Some(run_type) = run_type_filter.as_deref() {
+                if run.run_type.trim().to_ascii_lowercase() != run_type {
+                    continue;
+                }
+            }
             rows.push(run);
         }
     }
     rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    rows.truncate(limit);
     Ok(Json(json!({ "runs": rows })))
 }
 
@@ -9441,6 +9512,169 @@ async fn context_run_driver_next(
     })))
 }
 
+fn context_event_payload_text(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+}
+
+fn materialize_plan_steps_from_objective(objective: &str) -> Vec<ContextRunStep> {
+    let mut steps = objective
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let normalized = line
+                .trim_start_matches(|c: char| {
+                    matches!(c, '-' | '*' | '#' | '0'..='9' | '.' | ')' | '[' | ']')
+                })
+                .trim();
+            if normalized.len() < 8 {
+                None
+            } else {
+                Some(normalized.to_string())
+            }
+        })
+        .take(6)
+        .enumerate()
+        .map(|(idx, title)| ContextRunStep {
+            step_id: format!("step-{}", idx.saturating_add(1)),
+            title,
+            status: ContextStepStatus::Pending,
+        })
+        .collect::<Vec<_>>();
+
+    if steps.is_empty() {
+        steps = vec![
+            ContextRunStep {
+                step_id: "step-1".to_string(),
+                title: "Plan implementation approach".to_string(),
+                status: ContextStepStatus::Pending,
+            },
+            ContextRunStep {
+                step_id: "step-2".to_string(),
+                title: "Execute implementation and produce artifacts".to_string(),
+                status: ContextStepStatus::Pending,
+            },
+            ContextRunStep {
+                step_id: "step-3".to_string(),
+                title: "Validate and finalize output".to_string(),
+                status: ContextStepStatus::Pending,
+            },
+        ];
+    }
+    steps
+}
+
+fn apply_context_event_transition(run: &mut ContextRunState, input: &ContextRunEventAppendInput) {
+    let event_type = input.event_type.trim().to_ascii_lowercase();
+    match event_type.as_str() {
+        "planning_started" => {
+            if run.steps.is_empty() {
+                run.steps = materialize_plan_steps_from_objective(&run.objective);
+            }
+            run.status = ContextRunStatus::AwaitingApproval;
+            run.why_next_step = Some("plan generated and awaiting approval".to_string());
+            run.started_at_ms = run.started_at_ms.or(Some(crate::now_ms()));
+            run.ended_at_ms = None;
+            run.last_error = None;
+        }
+        "plan_approved" => {
+            run.status = ContextRunStatus::Running;
+            run.started_at_ms = run.started_at_ms.or(Some(crate::now_ms()));
+            run.ended_at_ms = None;
+            run.last_error = None;
+            if let Some(step) = run.steps.iter_mut().find(|step| {
+                matches!(
+                    step.status,
+                    ContextStepStatus::Pending | ContextStepStatus::Runnable
+                )
+            }) {
+                step.status = ContextStepStatus::InProgress;
+                run.why_next_step =
+                    Some(format!("executing step `{}` after approval", step.step_id));
+            }
+        }
+        "run_paused" => {
+            run.status = ContextRunStatus::Paused;
+            run.why_next_step = Some("run paused by operator".to_string());
+        }
+        "run_resumed" => {
+            run.status = ContextRunStatus::Running;
+            run.why_next_step = Some("run resumed by operator".to_string());
+            run.ended_at_ms = None;
+        }
+        "run_cancelled" => {
+            run.status = ContextRunStatus::Cancelled;
+            run.why_next_step = Some("run cancelled by operator".to_string());
+            run.ended_at_ms = Some(crate::now_ms());
+        }
+        "task_retry_requested" => {
+            if let Some(step_id) = input
+                .step_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                if let Some(step) = run.steps.iter_mut().find(|step| step.step_id == step_id) {
+                    step.status = ContextStepStatus::Runnable;
+                }
+                run.why_next_step = Some(format!("retry requested for step `{step_id}`"));
+            }
+            run.status = ContextRunStatus::Running;
+            run.ended_at_ms = None;
+            run.last_error = None;
+        }
+        "revision_requested" => {
+            run.status = ContextRunStatus::Blocked;
+            let feedback =
+                context_event_payload_text(&input.payload, "feedback").unwrap_or_default();
+            run.why_next_step = Some(if feedback.is_empty() {
+                "revision requested by operator".to_string()
+            } else {
+                format!("revision requested: {feedback}")
+            });
+        }
+        _ => {
+            run.status = input.status.clone();
+            if let Some(step_id) = input
+                .step_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                if let Some(step_status_text) =
+                    context_event_payload_text(&input.payload, "step_status")
+                {
+                    if let Some(step_status) = parse_context_step_status_text(&step_status_text) {
+                        if let Some(step) =
+                            run.steps.iter_mut().find(|step| step.step_id == step_id)
+                        {
+                            step.status = step_status;
+                        }
+                    }
+                }
+            }
+            if let Some(why) = context_event_payload_text(&input.payload, "why_next_step") {
+                run.why_next_step = Some(why);
+            }
+            if let Some(err_text) = context_event_payload_text(&input.payload, "error") {
+                run.last_error = Some(err_text);
+            }
+        }
+    }
+
+    if matches!(
+        run.status,
+        ContextRunStatus::Completed | ContextRunStatus::Failed | ContextRunStatus::Cancelled
+    ) {
+        run.ended_at_ms = Some(crate::now_ms());
+    }
+}
+
 async fn context_run_event_append(
     State(state): State<AppState>,
     Path(run_id): Path<String>,
@@ -9453,10 +9687,10 @@ async fn context_run_event_append(
         run_id: run_id.clone(),
         seq,
         ts_ms: crate::now_ms(),
-        event_type: input.event_type,
+        event_type: input.event_type.clone(),
         status: input.status.clone(),
         step_id: input.step_id.clone(),
-        payload: input.payload,
+        payload: input.payload.clone(),
     };
     append_jsonl_line(
         &events_path,
@@ -9464,7 +9698,7 @@ async fn context_run_event_append(
     )?;
 
     if let Ok(mut run) = load_context_run_state(&state, &run_id).await {
-        run.status = input.status;
+        apply_context_event_transition(&mut run, &input);
         run.revision = run.revision.saturating_add(1);
         run.updated_at_ms = crate::now_ms();
         save_context_run_state(&state, &run).await?;
@@ -17355,7 +17589,80 @@ mod tests {
                 .get("run")
                 .and_then(|run| run.get("status"))
                 .and_then(Value::as_str),
-            Some("planning")
+            Some("awaiting_approval")
+        );
+    }
+
+    #[tokio::test]
+    async fn context_run_list_supports_workspace_filter_and_limit() {
+        let state = test_state().await;
+        let app = app_router(state.clone());
+
+        let create_one = Request::builder()
+            .method("POST")
+            .uri("/context/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "ctx-run-list-1",
+                    "objective": "first",
+                    "workspace": {
+                        "workspace_id": "ws-1",
+                        "canonical_path": "/tmp/ws-one",
+                        "lease_epoch": 1
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("create one request");
+        let create_two = Request::builder()
+            .method("POST")
+            .uri("/context/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": "ctx-run-list-2",
+                    "objective": "second",
+                    "workspace": {
+                        "workspace_id": "ws-2",
+                        "canonical_path": "/tmp/ws-two",
+                        "lease_epoch": 1
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("create two request");
+        let _ = app.clone().oneshot(create_one).await.expect("create one");
+        let _ = app.clone().oneshot(create_two).await.expect("create two");
+
+        let filtered_req = Request::builder()
+            .method("GET")
+            .uri("/context/runs?workspace=/tmp/ws-two&limit=1")
+            .body(Body::empty())
+            .expect("filtered list request");
+        let filtered_resp = app
+            .clone()
+            .oneshot(filtered_req)
+            .await
+            .expect("filtered list response");
+        assert_eq!(filtered_resp.status(), StatusCode::OK);
+        let filtered_body = to_bytes(filtered_resp.into_body(), usize::MAX)
+            .await
+            .expect("filtered list body");
+        let filtered_payload: Value =
+            serde_json::from_slice(&filtered_body).expect("filtered list json");
+        let rows = filtered_payload
+            .get("runs")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0]
+                .get("workspace")
+                .and_then(|v| v.get("canonical_path"))
+                .and_then(Value::as_str),
+            Some("/tmp/ws-two")
         );
     }
 
