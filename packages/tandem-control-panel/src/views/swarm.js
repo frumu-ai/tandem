@@ -1,17 +1,18 @@
+import { subscribeSse } from "../services/sse.js";
+
 function pickStatusClass(status) {
   const normalized = String(status || "").toLowerCase();
-  if (normalized.includes("fail") || normalized.includes("error")) return "tcp-badge-err";
-  if (normalized.includes("wait") || normalized.includes("queue") || normalized.includes("new") || normalized.includes("block")) return "tcp-badge-warn";
-  return "tcp-badge-ok";
-}
-
-function reasonText(reason) {
-  if (!reason) return "";
-  if (reason.kind === "task_transition") {
-    return `${reason.taskId}: ${reason.from} -> ${reason.to} (${reason.reason || "status changed"})`;
+  if (normalized.includes("fail") || normalized.includes("error") || normalized.includes("cancel")) return "tcp-badge-err";
+  if (
+    normalized.includes("wait") ||
+    normalized.includes("queue") ||
+    normalized.includes("new") ||
+    normalized.includes("block") ||
+    normalized.includes("paused")
+  ) {
+    return "tcp-badge-warn";
   }
-  if (reason.kind === "task_reason") return `${reason.taskId}: ${reason.reason || "updated"}`;
-  return reason.reason || JSON.stringify(reason);
+  return "tcp-badge-ok";
 }
 
 function normalizeMcpServers(raw) {
@@ -46,12 +47,10 @@ function normalizeMcpServers(raw) {
 
 function swarmFormHasFocus() {
   const active = document.activeElement;
-  if (!active) return false;
-  if (!(active instanceof HTMLElement)) return false;
+  if (!active || !(active instanceof HTMLElement)) return false;
   if (!active.closest("[data-swarm-form]")) return false;
   const tag = String(active.tagName || "").toLowerCase();
-  if (tag === "textarea") return true;
-  if (tag === "select") return true;
+  if (tag === "textarea" || tag === "select") return true;
   if (tag !== "input") return false;
   const type = String(active.getAttribute("type") || "text").toLowerCase();
   return !["button", "submit", "reset", "checkbox", "radio", "range"].includes(type);
@@ -81,27 +80,40 @@ function ageText(ts) {
   return `${day}d ago`;
 }
 
-function boardColumns() {
+function runStages() {
+  return [
+    "queued",
+    "planning",
+    "awaiting_approval",
+    "running",
+    "paused",
+    "blocked",
+    "completed",
+    "failed",
+    "cancelled",
+  ];
+}
+
+function stepColumns() {
   return [
     { key: "pending", label: "Pending" },
-    { key: "running", label: "Running" },
+    { key: "runnable", label: "Runnable" },
+    { key: "in_progress", label: "In Progress" },
     { key: "blocked", label: "Blocked" },
-    { key: "ready_for_review", label: "Review" },
-    { key: "complete", label: "Complete" },
+    { key: "done", label: "Done" },
     { key: "failed", label: "Failed" },
   ];
 }
 
-function normalizeTaskStatus(raw) {
+function normalizeStepStatus(raw) {
   const status = String(raw || "pending").trim().toLowerCase();
-  if (["pending", "running", "blocked", "ready_for_review", "complete", "failed"].includes(status)) {
+  if (["pending", "runnable", "in_progress", "blocked", "done", "failed"].includes(status)) {
     return status;
   }
-  if (status.includes("fail") || status.includes("error")) return "failed";
+  if (status.includes("run") || status.includes("active")) return "in_progress";
   if (status.includes("block") || status.includes("wait")) return "blocked";
-  if (status.includes("review")) return "ready_for_review";
-  if (status.includes("run") || status.includes("active")) return "running";
-  if (status.includes("done") || status.includes("complete")) return "complete";
+  if (status.includes("done") || status.includes("complete")) return "done";
+  if (status.includes("fail") || status.includes("error")) return "failed";
   return "pending";
 }
 
@@ -120,27 +132,14 @@ function copyText(text) {
   return Promise.resolve();
 }
 
-function buildTaskCard(task, escapeHtml) {
-  const taskId = String(task.taskId || "task");
+function buildStepCard(task, runId, escapeHtml) {
+  const stepId = String(task.taskId || "task");
   const title = String(task.title || task.taskId || "Untitled task");
-  const owner = String(task.ownerRole || "unknown");
-  const status = String(task.status || "unknown");
-  const statusReason = String(task.statusReason || "");
-  const sessionId = String(task.sessionId || "");
-  const runId = String(task.runId || "");
-  const branch = String(task.branch || "");
-  const worktree = String(task.worktreePath || "");
-  const prUrl = String(task.prUrl || "");
-  const prNumber = task.prNumber != null ? String(task.prNumber) : "";
-  const checksStatus = String(task.checksStatus || "");
+  const stepStatus = String(task.stepStatus || "pending");
+  const reason = String(task.statusReason || "");
   const updated = Number(task.lastUpdateMs || 0);
-
-  const copyPayload = [
-    `taskId=${taskId}`,
-    sessionId ? `sessionId=${sessionId}` : "",
-    runId ? `runId=${runId}` : "",
-    branch ? `branch=${branch}` : "",
-  ]
+  const sessionId = String(task.sessionId || "");
+  const copyPayload = [`runId=${runId}`, `stepId=${stepId}`, sessionId ? `sessionId=${sessionId}` : ""]
     .filter(Boolean)
     .join("\n");
 
@@ -148,25 +147,20 @@ function buildTaskCard(task, escapeHtml) {
     <div class="mb-2 flex items-start justify-between gap-2">
       <div class="min-w-0">
         <div class="truncate font-semibold text-slate-100" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
-        <div class="truncate text-xs text-slate-400">${escapeHtml(taskId)}</div>
+        <div class="truncate text-xs text-slate-400">${escapeHtml(stepId)}</div>
       </div>
-      <span class="${pickStatusClass(status)}">${escapeHtml(status)}</span>
+      <span class="${pickStatusClass(stepStatus)}">${escapeHtml(stepStatus)}</span>
     </div>
     <div class="grid gap-1 text-xs text-slate-300">
-      <div><span class="text-slate-400">Owner:</span> ${escapeHtml(owner)}</div>
-      <div><span class="text-slate-400">Reason:</span> ${escapeHtml(statusReason || "-")}</div>
+      <div><span class="text-slate-400">Reason:</span> ${escapeHtml(reason || "-")}</div>
       <div><span class="text-slate-400">Updated:</span> ${escapeHtml(ageText(updated))}</div>
+      <div><span class="text-slate-400">Run:</span> ${escapeHtml(runId)}</div>
       <div><span class="text-slate-400">Session:</span> ${escapeHtml(sessionId || "-")}</div>
-      <div><span class="text-slate-400">Run:</span> ${escapeHtml(runId || "-")}</div>
-      <div><span class="text-slate-400">Branch:</span> ${escapeHtml(branch || "-")}</div>
-      <div class="truncate" title="${escapeHtml(worktree || "-")}"><span class="text-slate-400">Worktree:</span> ${escapeHtml(worktree || "-")}</div>
-      ${prUrl ? `<div><span class="text-slate-400">PR:</span> <a class="underline" href="${escapeHtml(prUrl)}" target="_blank" rel="noreferrer">#${escapeHtml(prNumber || "link")}</a></div>` : ""}
-      ${checksStatus ? `<div><span class="text-slate-400">Checks:</span> ${escapeHtml(checksStatus)}</div>` : ""}
     </div>
     <div class="mt-3 flex flex-wrap gap-2">
-      <button class="tcp-btn h-7 px-2 text-xs" data-swarm-copy="${escapeHtml(copyPayload)}">Copy IDs</button>
-      <button class="tcp-btn h-7 px-2 text-xs" data-swarm-focus-task="${escapeHtml(taskId)}">Focus Logs</button>
-      ${sessionId ? `<button class="tcp-btn h-7 px-2 text-xs" data-swarm-open-session="${escapeHtml(sessionId)}">Open Session</button>` : ""}
+      <button class="tcp-btn h-7 px-2 text-xs" data-step-copy="${escapeHtml(copyPayload)}">Copy IDs</button>
+      <button class="tcp-btn h-7 px-2 text-xs" data-step-retry="${escapeHtml(stepId)}">Retry</button>
+      ${sessionId ? `<button class="tcp-btn h-7 px-2 text-xs" data-step-open-session="${escapeHtml(sessionId)}">Open Session</button>` : ""}
     </div>
   </article>`;
 }
@@ -179,505 +173,455 @@ export async function renderSwarm(ctx, options = {}) {
   if (state.__swarmRenderInFlight) return;
   state.__swarmRenderInFlight = true;
   try {
-  const renderRouteSnapshot = state.route;
-  if (state.__swarmLiveCleanup && Array.isArray(state.__swarmLiveCleanup)) {
-    for (const fn of state.__swarmLiveCleanup) {
-      try {
-        fn();
-      } catch {
-        // ignore cleanup failure
+    const renderRouteSnapshot = state.route;
+    if (state.__swarmLiveCleanup && Array.isArray(state.__swarmLiveCleanup)) {
+      for (const fn of state.__swarmLiveCleanup) {
+        try {
+          fn();
+        } catch {
+          // ignore cleanup failure
+        }
       }
     }
-  }
-  state.__swarmLiveCleanup = [];
+    state.__swarmLiveCleanup = [];
 
-  const [status, snapshot, providerCatalog, providerConfig, mcpRaw, runsPayload] = await Promise.all([
-    api("/api/swarm/status").catch(() => ({ status: "error" })),
-    api("/api/swarm/snapshot").catch(() => ({ registry: { value: { tasks: {} } }, logs: [], reasons: [] })),
-    state.client?.providers?.catalog?.().catch(() => ({ all: [] })),
-    state.client?.providers?.config?.().catch(() => ({ default: "", providers: {} })),
-    state.client?.mcp?.list?.().catch(() => ({})),
-    api("/api/swarm/runs").catch(() => ({ active: [], recent: [] })),
-  ]);
-  if (state.route !== renderRouteSnapshot) return;
+    const [status, providerCatalog, providerConfig, mcpRaw] = await Promise.all([
+      api("/api/swarm/status").catch(() => ({ status: "error" })),
+      state.client?.providers?.catalog?.().catch(() => ({ all: [] })),
+      state.client?.providers?.config?.().catch(() => ({ default: "", providers: {} })),
+      state.client?.mcp?.list?.().catch(() => ({})),
+    ]);
+    if (state.route !== renderRouteSnapshot) return;
 
-  const tasks = Object.values(snapshot.registry?.value?.tasks || {});
-  const reasons = (snapshot.reasons || []).slice().reverse();
-  const providers = Array.isArray(providerCatalog?.all)
-    ? providerCatalog.all
-        .map((row) => ({
-          id: String(row?.id || "").trim(),
-          models: Object.keys(row?.models || {}).filter(Boolean),
-        }))
-        .filter((row) => row.id)
-        .sort((a, b) => a.id.localeCompare(b.id))
-    : [];
-  const connectedMcp = normalizeMcpServers(mcpRaw).filter((row) => row.connected && row.enabled);
-  const activeRuns = Array.isArray(runsPayload?.active) ? runsPayload.active : [];
-  const recentRuns = Array.isArray(runsPayload?.recent) ? runsPayload.recent : [];
+    if (!state.__swarmDraft || typeof state.__swarmDraft !== "object") state.__swarmDraft = {};
+    const draft = state.__swarmDraft;
+    if (!draft.workspaceRoot) draft.workspaceRoot = String(status.workspaceRoot || "").trim();
+    if (!draft.objective) draft.objective = String(status.objective || "Ship a small feature end-to-end").trim();
+    if (!draft.maxTasks) draft.maxTasks = String(status.maxTasks || 3);
+    if (!draft.modelProvider) draft.modelProvider = String(status.modelProvider || providerConfig?.default || "").trim();
 
-  if (!state.__swarmDraft || typeof state.__swarmDraft !== "object") state.__swarmDraft = {};
-  const draft = state.__swarmDraft;
-  if (!draft.workspaceRoot) draft.workspaceRoot = String(status.workspaceRoot || "").trim();
-  if (!draft.objective) draft.objective = String(status.objective || "Ship a small feature end-to-end");
-  if (!draft.maxTasks) draft.maxTasks = String(status.maxTasks || 3);
-  if (typeof draft.allowInitNonEmpty !== "boolean") draft.allowInitNonEmpty = false;
-  if (!draft.modelProvider) draft.modelProvider = String(status.modelProvider || providerConfig?.default || "").trim();
-  const modelsForProvider = providers.find((row) => row.id === draft.modelProvider)?.models || [];
-  if (!draft.modelId) {
-    const configuredDefault = String(providerConfig?.providers?.[draft.modelProvider]?.default_model || "").trim();
-    draft.modelId = String(status.modelId || configuredDefault || modelsForProvider[0] || "").trim();
-  }
-  if (!Array.isArray(draft.mcpServers)) {
-    draft.mcpServers = Array.isArray(status.mcpServers)
-      ? status.mcpServers.map((v) => String(v).trim()).filter(Boolean)
+    const providers = Array.isArray(providerCatalog?.all)
+      ? providerCatalog.all
+          .map((row) => ({
+            id: String(row?.id || "").trim(),
+            models: Object.keys(row?.models || {}).filter(Boolean),
+          }))
+          .filter((row) => row.id)
+          .sort((a, b) => a.id.localeCompare(b.id))
       : [];
-  }
+    const modelsForProvider = providers.find((row) => row.id === draft.modelProvider)?.models || [];
+    if (!draft.modelId) {
+      const configuredDefault = String(providerConfig?.providers?.[draft.modelProvider]?.default_model || "").trim();
+      draft.modelId = String(status.modelId || configuredDefault || modelsForProvider[0] || "").trim();
+    }
+    if (!Array.isArray(draft.mcpServers)) {
+      draft.mcpServers = Array.isArray(status.mcpServers)
+        ? status.mcpServers.map((v) => String(v).trim()).filter(Boolean)
+        : [];
+    }
 
-  const selectedMcp = new Set(
-    draft.mcpServers.map((v) => String(v).trim().toLowerCase()).filter(Boolean)
-  );
+    const selectedWorkspace = String(draft.workspaceRoot || status.workspaceRoot || "").trim();
+    const runsPayload = await api(`/api/swarm/runs?workspace=${encodeURIComponent(selectedWorkspace)}`).catch(() => ({ runs: [] }));
+    const runs = Array.isArray(runsPayload?.runs) ? runsPayload.runs : [];
+    if (!state.__swarmSelectedRunId) {
+      state.__swarmSelectedRunId = String(status.currentRunId || runs[0]?.run_id || "").trim();
+    }
+    if (state.__swarmSelectedRunId && !runs.some((r) => String(r?.run_id || "") === state.__swarmSelectedRunId)) {
+      state.__swarmSelectedRunId = String(runs[0]?.run_id || "").trim();
+    }
 
-  const groupedTasks = {
-    pending: [],
-    running: [],
-    blocked: [],
-    ready_for_review: [],
-    complete: [],
-    failed: [],
-  };
-  for (const task of tasks) {
-    groupedTasks[normalizeTaskStatus(task.status)].push(task);
-  }
-  for (const key of Object.keys(groupedTasks)) {
-    groupedTasks[key].sort((a, b) => (b.lastUpdateMs || 0) - (a.lastUpdateMs || 0));
-  }
+    const selectedRunId = String(state.__swarmSelectedRunId || "").trim();
+    const runPayload = selectedRunId
+      ? await api(`/api/swarm/run/${encodeURIComponent(selectedRunId)}`).catch(() => ({ run: null, events: [], tasks: [] }))
+      : { run: null, events: [], tasks: [] };
+    const run = runPayload?.run || null;
+    const events = Array.isArray(runPayload?.events) ? runPayload.events : [];
+    const blackboard = runPayload?.blackboard || null;
+    const tasks = Array.isArray(runPayload?.tasks) ? runPayload.tasks : [];
+    const runStatus = String(run?.status || status.status || "idle").trim().toLowerCase();
+    const needsApproval = runStatus === "awaiting_approval" || runStatus === "planning";
+    const seededLocally = events.some((evt) => String(evt?.type || "").trim() === "plan_seeded_local");
 
-  const preflight = status.preflight || {};
-  const preflightCode = String(preflight.code || "").trim();
-  const gitMissing = preflight.gitAvailable === false;
-  const preflightProblem = preflight.repoReady === false && String(preflight.reason || "").trim();
-  const startDisabled = !status.localEngine || gitMissing;
-  const startTitle = !status.localEngine
-    ? "Swarm orchestration is disabled on remote engine URLs."
-    : gitMissing
-      ? `${String(preflight.reason || "Git executable not found")}. ${String(preflight.guidance || "")}`.trim()
-      : "Start swarm";
+    const grouped = {
+      pending: [],
+      runnable: [],
+      in_progress: [],
+      blocked: [],
+      done: [],
+      failed: [],
+    };
+    for (const task of tasks) {
+      grouped[normalizeStepStatus(task.stepStatus || task.status)].push(task);
+    }
+    for (const key of Object.keys(grouped)) {
+      grouped[key].sort((a, b) => (b.lastUpdateMs || 0) - (a.lastUpdateMs || 0));
+    }
 
-  const viewEl = byId("view");
-  viewEl.innerHTML = `
-    <div class="tcp-card" data-swarm-form="1">
-      <div class="mb-3 flex items-center justify-between gap-3">
-        <h3 class="tcp-title flex items-center gap-2"><i data-lucide="cpu"></i> Node Swarm Orchestrator</h3>
-        <span class="${pickStatusClass(status.status)}">${escapeHtml(status.status || "idle")}</span>
-      </div>
-      <p class="mb-3 rounded-xl border border-slate-700/60 bg-slate-900/25 px-3 py-2 text-xs text-slate-300">
-        Swarm uses real task state from <code>swarm.active_tasks</code>. The board below reflects actual task transitions.
-      </p>
-      ${gitMissing ? `<p class="mb-3 rounded-xl border border-rose-700/60 bg-rose-950/25 px-3 py-2 text-sm text-rose-300">${escapeHtml(preflight.reason || "Git executable not found")}. ${escapeHtml(preflight.guidance || "Install Git and restart.")}</p>` : ""}
-      ${
-        !gitMissing && preflightProblem
-          ? `<div class="mb-3 rounded-xl border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-sm text-amber-300">
-               <div>${escapeHtml(preflight.reason)}</div>
-               ${
-                 preflightCode === "not_repo_non_empty"
-                   ? '<div class="mt-2 flex gap-2"><button id="swarm-init-nonempty" class="tcp-btn h-8 px-3 text-xs">Initialize This Directory As Git Repo</button></div>'
-                   : ""
-               }
-             </div>`
-          : ""
-      }
-      ${status.repoRoot ? `<p class="mb-3 rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-2 text-xs text-slate-300"><strong>Repo root:</strong> ${escapeHtml(status.repoRoot)}</p>` : ""}
-      <div class="mb-3 rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-2 text-xs text-slate-300">
-        <div class="mb-2 flex items-center justify-between gap-2">
-          <strong>Recover Swarms</strong>
-          <span>${activeRuns.length} active detected</span>
+    const selectedMcp = new Set(draft.mcpServers.map((v) => String(v || "").toLowerCase()));
+    const connectedMcp = normalizeMcpServers(mcpRaw).filter((row) => row.connected && row.enabled);
+
+    const viewEl = byId("view");
+    viewEl.innerHTML = `
+      <div class="tcp-card" data-swarm-form="1">
+        <div class="mb-3 flex items-center justify-between gap-3">
+          <h3 class="tcp-title flex items-center gap-2"><i data-lucide="cpu"></i> Swarm Context Runs</h3>
+          <span class="${pickStatusClass(run?.status || status.status || "idle")}">${escapeHtml(String(run?.status || status.status || "idle"))}</span>
         </div>
-        <div class="grid gap-2">
-          ${
-            activeRuns.length
-              ? activeRuns
-                  .slice(0, 8)
-                  .map(
-                    (row) => `<div class="tcp-list-item">
-                      <div class="flex items-center justify-between gap-2">
-                        <span class="tcp-badge-ok">PID ${escapeHtml(String(row.pid || ""))}</span>
-                        <button class="tcp-btn h-7 px-2 text-xs" data-swarm-attach-pid="${escapeHtml(String(row.pid || ""))}" data-swarm-attach-root="${escapeHtml(String(row.workspaceRoot || ""))}" data-swarm-attach-objective="${escapeHtml(String(row.objective || ""))}">Resume Tracking</button>
-                      </div>
-                      <div class="mt-1 text-xs text-slate-300">${escapeHtml(String(row.workspaceRoot || ""))}</div>
-                      <div class="mt-1 text-xs text-slate-500">${escapeHtml(String(row.objective || "objective unavailable"))}</div>
-                    </div>`
-                  )
-                  .join("")
-              : '<div class="tcp-subtle">No active swarm manager process detected.</div>'
-          }
-          ${
-            recentRuns.length
-              ? `<details><summary class="cursor-pointer text-xs text-slate-400">Recent swarm runs</summary>
-                <div class="mt-2 grid gap-2">${recentRuns
-                  .slice(0, 6)
-                  .map(
-                    (row) => `<div class="tcp-list-item">
-                        <div class="flex items-center justify-between gap-2">
-                          <span class="${pickStatusClass(row.status)}">${escapeHtml(String(row.status || "unknown"))}</span>
-                          <span class="text-xs text-slate-500">${escapeHtml(ageText(row.startedAt))}</span>
-                        </div>
-                        <div class="mt-1 text-xs text-slate-300">${escapeHtml(String(row.workspaceRoot || ""))}</div>
-                      </div>`
-                  )
-                  .join("")}</div></details>`
-              : ""
-          }
+        <p class="mb-3 rounded-xl border border-slate-700/60 bg-slate-900/25 px-3 py-2 text-xs text-slate-300">
+          Control Panel Swarm now uses canonical <code>context/runs</code> with explicit planning approval.
+        </p>
+
+        <div class="mb-3 grid gap-3 md:grid-cols-[1fr_160px_auto]">
+          <input id="swarm-root" class="tcp-input" value="${escapeHtml(draft.workspaceRoot || "")}" placeholder="workspace root" />
+          <input id="swarm-max" class="tcp-input" type="number" min="1" value="${escapeHtml(String(draft.maxTasks || 3))}" />
+          <button id="swarm-start" class="tcp-btn-primary"><i data-lucide="play"></i> New Run</button>
         </div>
-      </div>
-      <div class="grid gap-3 md:grid-cols-[1fr_160px_auto]">
-        <input id="swarm-root" class="tcp-input" value="${escapeHtml(draft.workspaceRoot || "")}" placeholder="workspace root" />
-        <input id="swarm-max" class="tcp-input" type="number" min="1" value="${escapeHtml(String(draft.maxTasks || 3))}" />
-        <div class="flex gap-2">
-          <button id="swarm-start" class="tcp-btn-primary" ${startDisabled ? "disabled" : ""} title="${escapeHtml(startTitle)}"><i data-lucide="play"></i> Start</button>
-          <button id="swarm-stop" class="tcp-btn-danger"><i data-lucide="square"></i> Stop</button>
+
+        <div class="grid gap-3 lg:grid-cols-2">
+          <div class="grid gap-2">
+            <label for="swarm-model-provider" class="text-xs uppercase tracking-wide text-slate-400">Model Provider</label>
+            <select id="swarm-model-provider" class="tcp-select">
+              <option value="">Default provider/model</option>
+              ${providers
+                .map((row) => `<option value="${escapeHtml(row.id)}" ${row.id === draft.modelProvider ? "selected" : ""}>${escapeHtml(row.id)}</option>`)
+                .join("")}
+            </select>
+          </div>
+          <div class="grid gap-2">
+            <label for="swarm-model-id" class="text-xs uppercase tracking-wide text-slate-400">Model ID</label>
+            <select id="swarm-model-id" class="tcp-select" ${draft.modelProvider ? "" : "disabled"}>
+              ${
+                draft.modelProvider
+                  ? (providers.find((row) => row.id === draft.modelProvider)?.models || [])
+                      .map(
+                        (modelId) =>
+                          `<option value="${escapeHtml(modelId)}" ${modelId === draft.modelId ? "selected" : ""}>${escapeHtml(modelId)}</option>`
+                      )
+                      .join("")
+                  : '<option value="">Uses provider default</option>'
+              }
+            </select>
+          </div>
         </div>
-      </div>
-      <div class="mt-3 grid gap-3 lg:grid-cols-2">
-        <div class="grid gap-2">
-          <label for="swarm-model-provider" class="text-xs uppercase tracking-wide text-slate-400">Model Provider</label>
-          <select id="swarm-model-provider" class="tcp-select">
-            <option value="">Default provider/model</option>
-            ${providers
-              .map(
-                (row) =>
-                  `<option value="${escapeHtml(row.id)}" ${row.id === draft.modelProvider ? "selected" : ""}>${escapeHtml(row.id)}</option>`
-              )
-              .join("")}
-          </select>
+
+        <div class="mt-3 grid gap-2">
+          <label for="swarm-objective" class="text-xs uppercase tracking-wide text-slate-400">Objective (Markdown)</label>
+          <textarea id="swarm-objective" class="tcp-input min-h-[180px] resize-y leading-relaxed" placeholder="Describe the swarm objective in markdown...">${escapeHtml(draft.objective || "")}</textarea>
         </div>
-        <div class="grid gap-2">
-          <label for="swarm-model-id" class="text-xs uppercase tracking-wide text-slate-400">Model ID</label>
-          <select id="swarm-model-id" class="tcp-select" ${draft.modelProvider ? "" : "disabled"}>
+
+        <div class="mt-3 grid gap-2">
+          <div class="text-xs uppercase tracking-wide text-slate-400">MCP Servers</div>
+          <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             ${
-              draft.modelProvider
-                ? (providers.find((row) => row.id === draft.modelProvider)?.models || [])
+              connectedMcp.length
+                ? connectedMcp
                     .map(
-                      (modelId) =>
-                        `<option value="${escapeHtml(modelId)}" ${modelId === draft.modelId ? "selected" : ""}>${escapeHtml(modelId)}</option>`
+                      (row) => `<label class="tcp-list-item flex items-center gap-2 text-sm">
+                    <input type="checkbox" data-swarm-mcp-option="${escapeHtml(row.name)}" ${selectedMcp.has(row.name.toLowerCase()) ? "checked" : ""} />
+                    <span>${escapeHtml(row.name)}</span>
+                  </label>`
                     )
                     .join("")
-                : '<option value="">Uses provider default</option>'
+                : '<p class="tcp-subtle">No connected MCP servers found. Connect them in Settings > MCP.</p>'
             }
-          </select>
-        </div>
-      </div>
-      <div class="mt-3 grid gap-2">
-        <label for="swarm-objective" class="text-xs uppercase tracking-wide text-slate-400">Objective (Markdown)</label>
-        <textarea id="swarm-objective" class="tcp-input min-h-[180px] resize-y leading-relaxed" placeholder="Describe the swarm objective in markdown...">${escapeHtml(draft.objective || "")}</textarea>
-      </div>
-      <div class="mt-3 grid gap-2">
-        <div class="text-xs uppercase tracking-wide text-slate-400">MCP Servers</div>
-        <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          ${
-            connectedMcp.length
-              ? connectedMcp
-                  .map(
-                    (row) => `<label class="tcp-list-item flex items-center gap-2 text-sm">
-            <input type="checkbox" data-swarm-mcp-option="${escapeHtml(row.name)}" ${selectedMcp.has(row.name.toLowerCase()) ? "checked" : ""} />
-            <span>${escapeHtml(row.name)}</span>
-          </label>`
-                  )
-                  .join("")
-              : '<p class="tcp-subtle">No connected MCP servers found. Connect them in Settings > MCP.</p>'
-          }
-        </div>
-      </div>
-      ${status.localEngine ? "" : '<p class="mt-3 rounded-xl border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-sm text-amber-300">Swarm orchestration is disabled on remote engine URLs. Monitoring remains available.</p>'}
-    </div>
-
-    <div class="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(340px,1fr)]">
-      <div class="tcp-card">
-        <div class="mb-3 flex items-center justify-between gap-2">
-          <h3 class="tcp-title">Swarm Kanban</h3>
-          <span class="tcp-subtle text-xs">${tasks.length} tasks</span>
-        </div>
-        <div class="grid gap-3 xl:grid-cols-3 2xl:grid-cols-6">
-          ${boardColumns()
-            .map((col) => {
-              const entries = groupedTasks[col.key] || [];
-              return `<section class="rounded-xl border border-slate-700/70 bg-slate-950/30 p-2">
-                <div class="mb-2 flex items-center justify-between gap-2">
-                  <h4 class="text-xs font-semibold uppercase tracking-wide text-slate-300">${escapeHtml(col.label)}</h4>
-                  <span class="tcp-badge-info">${entries.length}</span>
-                </div>
-                <div class="grid max-h-[520px] gap-2 overflow-auto">
-                  ${entries.map((task) => buildTaskCard(task, escapeHtml)).join("") || '<p class="px-2 py-1 text-xs text-slate-500">No tasks</p>'}
-                </div>
-              </section>`;
-            })
-            .join("")}
+          </div>
         </div>
       </div>
 
-      <aside class="grid gap-4">
-        <div class="tcp-card">
+      <div class="grid gap-4 xl:grid-cols-[minmax(260px,320px)_minmax(0,1fr)_minmax(320px,420px)]">
+        <aside class="tcp-card">
           <div class="mb-3 flex items-center justify-between gap-2">
-            <h3 class="tcp-title">Swarm Why Timeline</h3>
-            <div class="flex gap-2">
-              <select id="swarm-reason-kind" class="tcp-select !w-auto !py-1.5 text-xs">
-                <option value="">All kinds</option>
-                <option value="task_transition">task_transition</option>
-                <option value="task_reason">task_reason</option>
-              </select>
-              <input id="swarm-reason-task" class="tcp-input !w-44 !py-1.5 text-xs" placeholder="Filter by task id" />
+            <h3 class="tcp-title">Context Runs</h3>
+            <span class="tcp-subtle text-xs">${runs.length} runs</span>
+          </div>
+          <div class="grid max-h-[620px] gap-2 overflow-auto">
+            ${
+              runs.length
+                ? runs
+                    .map((row) => {
+                      const runId = String(row?.run_id || "");
+                      const active = runId === selectedRunId;
+                      return `<button class="tcp-list-item text-left ${active ? "border border-emerald-600/60" : ""}" data-run-select="${escapeHtml(runId)}">
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="${pickStatusClass(row?.status)}">${escapeHtml(String(row?.status || "unknown"))}</span>
+                          <span class="text-xs text-slate-500">${escapeHtml(ageText(row?.updated_at_ms))}</span>
+                        </div>
+                        <div class="mt-1 truncate text-xs text-slate-300">${escapeHtml(runId)}</div>
+                        <div class="mt-1 line-clamp-2 text-xs text-slate-500">${escapeHtml(String(row?.objective || ""))}</div>
+                      </button>`;
+                    })
+                    .join("")
+                : '<p class="tcp-subtle">No runs found for this workspace.</p>'
+            }
+          </div>
+        </aside>
+
+        <div class="tcp-card">
+          <div class="mb-3 flex items-center justify-between gap-3">
+            <h3 class="tcp-title">Swarm Kanban</h3>
+            <div class="flex flex-wrap gap-2">
+              <button id="swarm-approve" class="tcp-btn h-8 px-3 text-xs" ${selectedRunId ? "" : "disabled"}>${needsApproval ? "Approve Plan & Start Execution" : "Approve Plan"}</button>
+              <button id="swarm-pause" class="tcp-btn h-8 px-3 text-xs" ${selectedRunId ? "" : "disabled"}>Pause</button>
+              <button id="swarm-resume" class="tcp-btn h-8 px-3 text-xs" ${selectedRunId ? "" : "disabled"}>Resume</button>
+              <button id="swarm-cancel" class="tcp-btn-danger h-8 px-3 text-xs" ${selectedRunId ? "" : "disabled"}>Cancel</button>
             </div>
           </div>
-          <div id="swarm-reasons" class="grid max-h-[360px] gap-2 overflow-auto"></div>
+          ${
+            needsApproval
+              ? `<div class="mb-3 rounded-xl border border-amber-700/60 bg-amber-950/25 px-3 py-2 text-sm text-amber-300">
+                  <strong>Execution is waiting for approval.</strong> Steps are visible, but no LLM calls will run until you click <em>Approve Plan & Start Execution</em>.
+                </div>`
+              : ""
+          }
+          ${
+            seededLocally
+              ? `<div class="mb-3 rounded-xl border border-slate-700/60 bg-slate-900/25 px-3 py-2 text-xs text-slate-300">
+                  Initial tasks were seeded locally from the objective text (non-LLM) so the board can render before execution starts.
+                </div>`
+              : ""
+          }
+          <div class="mb-3 rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-2 text-xs text-slate-300">
+            <div><strong>Run ID:</strong> ${escapeHtml(selectedRunId || "-")}</div>
+            <div><strong>Workspace:</strong> ${escapeHtml(String(run?.workspace?.canonical_path || draft.workspaceRoot || "-"))}</div>
+            <div><strong>Why next step:</strong> ${escapeHtml(String(run?.why_next_step || "-") || "-")}</div>
+          </div>
+          <div class="grid gap-3 xl:grid-cols-3 2xl:grid-cols-6">
+            ${stepColumns()
+              .map((col) => {
+                const entries = grouped[col.key] || [];
+                return `<section class="rounded-xl border border-slate-700/70 bg-slate-950/30 p-2">
+                  <div class="mb-2 flex items-center justify-between gap-2">
+                    <h4 class="text-xs font-semibold uppercase tracking-wide text-slate-300">${escapeHtml(col.label)}</h4>
+                    <span class="tcp-badge-info">${entries.length}</span>
+                  </div>
+                  <div class="grid max-h-[520px] gap-2 overflow-auto">
+                    ${entries.map((task) => buildStepCard(task, selectedRunId, escapeHtml)).join("") || '<p class="px-2 py-1 text-xs text-slate-500">No steps</p>'}
+                  </div>
+                </section>`;
+              })
+              .join("")}
+          </div>
         </div>
 
-        <div class="tcp-card">
-          <h3 class="tcp-title mb-3">Swarm Logs</h3>
-          <pre id="swarm-logs" class="tcp-code max-h-[360px] overflow-auto"></pre>
-        </div>
-      </aside>
-    </div>
-  `;
+        <aside class="grid gap-4">
+          <div class="tcp-card">
+            <h3 class="tcp-title mb-3">Timeline</h3>
+            <div class="grid max-h-[300px] gap-2 overflow-auto">
+              ${
+                events.length
+                  ? events
+                      .slice()
+                      .reverse()
+                      .map(
+                        (evt) => `<div class="tcp-list-item">
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="text-xs text-slate-400">${new Date(Number(evt?.ts_ms || Date.now())).toLocaleTimeString()}</span>
+                          <span class="${pickStatusClass(evt?.status)}">${escapeHtml(String(evt?.status || "unknown"))}</span>
+                        </div>
+                        <div class="mt-1 text-sm text-slate-200">${escapeHtml(String(evt?.type || "event"))}</div>
+                        <div class="mt-1 text-xs text-slate-500">${escapeHtml(String(evt?.step_id || "run"))}</div>
+                      </div>`
+                      )
+                      .join("")
+                  : '<p class="tcp-subtle">No timeline events yet.</p>'
+              }
+            </div>
+          </div>
 
-  function renderReasons() {
-    const kind = byId("swarm-reason-kind")?.value?.trim() || "";
-    const taskFilter = byId("swarm-reason-task")?.value?.trim()?.toLowerCase() || "";
-    const filtered = reasons.filter((r) => {
-      if (kind && r.kind !== kind) return false;
-      if (taskFilter && !String(r.taskId || "").toLowerCase().includes(taskFilter)) return false;
-      return true;
-    });
+          <div class="tcp-card">
+            <h3 class="tcp-title mb-3">Blackboard</h3>
+            <div class="text-xs text-slate-300">
+              <div><strong>Facts:</strong> ${Number(blackboard?.facts?.length || 0)}</div>
+              <div><strong>Decisions:</strong> ${Number(blackboard?.decisions?.length || 0)}</div>
+              <div><strong>Open questions:</strong> ${Number(blackboard?.open_questions?.length || 0)}</div>
+              <div class="mt-2 text-slate-400">${escapeHtml(String(blackboard?.summaries?.rolling || "No rolling summary yet."))}</div>
+            </div>
+          </div>
 
-    const reasonsEl = byId("swarm-reasons");
-    if (!reasonsEl) return;
-    reasonsEl.innerHTML =
-      filtered
-        .map(
-          (r) => `
-        <div class="tcp-list-item">
-          <div class="flex items-center justify-between gap-2"><span class="text-xs text-slate-400">${new Date(r.at).toLocaleTimeString()}</span><span class="${pickStatusClass(r.to || r.from)}">${escapeHtml(r.kind || "reason")}</span></div>
-          <div class="mt-1"><strong>${escapeHtml(r.taskId || "swarm")}</strong> <span class="tcp-subtle">${escapeHtml(r.role || "")}</span></div>
-          <div class="mt-1 text-sm text-slate-300">${escapeHtml(reasonText(r))}</div>
-        </div>
-      `
-        )
-        .join("") || '<p class="tcp-subtle">No timeline reasons yet.</p>';
-  }
+          <div class="tcp-card">
+            <h3 class="tcp-title mb-3">Events Log</h3>
+            <pre class="tcp-code max-h-[240px] overflow-auto">${escapeHtml(
+              events
+                .slice(-120)
+                .map((evt) => `[${new Date(Number(evt?.ts_ms || Date.now())).toLocaleTimeString()}] ${evt?.type || "event"} ${evt?.status || ""}`.trim())
+                .join("\n")
+            )}</pre>
+          </div>
+        </aside>
+      </div>
+    `;
 
-  byId("swarm-reason-kind")?.addEventListener("change", renderReasons);
-  byId("swarm-reason-task")?.addEventListener("input", renderReasons);
-  renderReasons();
+    const formRoot = viewEl.querySelector("[data-swarm-form]");
+    formRoot?.addEventListener("pointerdown", () => setSwarmRefreshLock(state, 1500));
+    formRoot?.addEventListener("focusin", () => setSwarmRefreshLock(state, 60_000));
+    formRoot?.addEventListener("focusout", () => setSwarmRefreshLock(state, 1200));
 
-  byId("swarm-logs").textContent = (snapshot.logs || [])
-    .slice(-200)
-    .map((l) => `[${new Date(l.at).toLocaleTimeString()}] ${l.stream}: ${l.line}`)
-    .join("\n");
-
-  const setDraftValue = (key, value) => {
-    draft[key] = value;
-  };
-  const formRoot = viewEl.querySelector("[data-swarm-form]");
-  formRoot?.addEventListener("pointerdown", () => setSwarmRefreshLock(state, 1500));
-  formRoot?.addEventListener("focusin", () => setSwarmRefreshLock(state, 60_000));
-  formRoot?.addEventListener("focusout", () => setSwarmRefreshLock(state, 1200));
-  const collectCurrentFormState = () => {
-    const workspaceRoot = String(byId("swarm-root")?.value ?? draft.workspaceRoot ?? "").trim();
-    const objective = String(byId("swarm-objective")?.value ?? draft.objective ?? "").trim();
-    const maxTasks = Number.parseInt(
-      String(byId("swarm-max")?.value ?? draft.maxTasks ?? "3"),
-      10
-    ) || 3;
-    const modelProvider = String(
-      byId("swarm-model-provider")?.value ?? draft.modelProvider ?? ""
-    ).trim();
-    const modelId = String(byId("swarm-model-id")?.value ?? draft.modelId ?? "").trim();
-    const mcpServers = [...viewEl.querySelectorAll("[data-swarm-mcp-option]:checked")]
-      .map((node) => String(node.getAttribute("data-swarm-mcp-option") || "").trim())
-      .filter(Boolean);
-    draft.workspaceRoot = workspaceRoot;
-    draft.objective = objective;
-    draft.maxTasks = String(maxTasks);
-    draft.modelProvider = modelProvider;
-    draft.modelId = modelId;
-    draft.mcpServers = mcpServers;
-    return {
-      workspaceRoot,
-      objective,
-      maxTasks,
-      modelProvider,
-      modelId,
-      mcpServers,
+    const setDraftValue = (key, value) => {
+      draft[key] = value;
     };
-  };
 
-  byId("swarm-root")?.addEventListener("input", (event) =>
-    setDraftValue("workspaceRoot", String(event.target?.value || ""))
-  );
-  byId("swarm-objective")?.addEventListener("input", (event) =>
-    setDraftValue("objective", String(event.target?.value || ""))
-  );
-  byId("swarm-max")?.addEventListener("input", (event) =>
-    setDraftValue("maxTasks", String(event.target?.value || ""))
-  );
-  byId("swarm-model-provider")?.addEventListener("change", (event) => {
-    const providerId = String(event.target?.value || "").trim();
-    setDraftValue("modelProvider", providerId);
-    const modelCandidates = providers.find((row) => row.id === providerId)?.models || [];
-    const configuredDefault = String(
-      providerConfig?.providers?.[providerId]?.default_model || ""
-    ).trim();
-    setDraftValue(
-      "modelId",
-      modelCandidates.includes(configuredDefault) ? configuredDefault : modelCandidates[0] || ""
-    );
-    renderSwarm(ctx);
-  });
-  byId("swarm-model-id")?.addEventListener("change", (event) =>
-    setDraftValue("modelId", String(event.target?.value || "").trim())
-  );
-
-  viewEl.querySelectorAll("[data-swarm-mcp-option]").forEach((el) =>
-    el.addEventListener("change", () => {
-      const picked = [...viewEl.querySelectorAll("[data-swarm-mcp-option]:checked")]
+    const collectCurrentFormState = () => {
+      const workspaceRoot = String(byId("swarm-root")?.value ?? draft.workspaceRoot ?? "").trim();
+      const objective = String(byId("swarm-objective")?.value ?? draft.objective ?? "").trim();
+      const maxTasks = Number.parseInt(String(byId("swarm-max")?.value ?? draft.maxTasks ?? "3"), 10) || 3;
+      const modelProvider = String(byId("swarm-model-provider")?.value ?? draft.modelProvider ?? "").trim();
+      const modelId = String(byId("swarm-model-id")?.value ?? draft.modelId ?? "").trim();
+      const mcpServers = [...viewEl.querySelectorAll("[data-swarm-mcp-option]:checked")]
         .map((node) => String(node.getAttribute("data-swarm-mcp-option") || "").trim())
         .filter(Boolean);
-      setDraftValue("mcpServers", picked);
-    })
-  );
+      Object.assign(draft, { workspaceRoot, objective, maxTasks: String(maxTasks), modelProvider, modelId, mcpServers });
+      return { workspaceRoot, objective, maxTasks, modelProvider, modelId, mcpServers };
+    };
 
-  viewEl.querySelectorAll("[data-swarm-copy]").forEach((button) =>
-    button.addEventListener("click", async () => {
-      const value = String(button.getAttribute("data-swarm-copy") || "");
+    byId("swarm-root")?.addEventListener("input", (event) => setDraftValue("workspaceRoot", String(event.target?.value || "")));
+    byId("swarm-objective")?.addEventListener("input", (event) => setDraftValue("objective", String(event.target?.value || "")));
+    byId("swarm-max")?.addEventListener("input", (event) => setDraftValue("maxTasks", String(event.target?.value || "")));
+
+    byId("swarm-model-provider")?.addEventListener("change", (event) => {
+      const providerId = String(event.target?.value || "").trim();
+      setDraftValue("modelProvider", providerId);
+      const modelCandidates = providers.find((row) => row.id === providerId)?.models || [];
+      const configuredDefault = String(providerConfig?.providers?.[providerId]?.default_model || "").trim();
+      setDraftValue("modelId", modelCandidates.includes(configuredDefault) ? configuredDefault : modelCandidates[0] || "");
+      renderSwarm(ctx, { force: true });
+    });
+    byId("swarm-model-id")?.addEventListener("change", (event) => setDraftValue("modelId", String(event.target?.value || "").trim()));
+
+    viewEl.querySelectorAll("[data-swarm-mcp-option]").forEach((el) =>
+      el.addEventListener("change", () => {
+        const picked = [...viewEl.querySelectorAll("[data-swarm-mcp-option]:checked")]
+          .map((node) => String(node.getAttribute("data-swarm-mcp-option") || "").trim())
+          .filter(Boolean);
+        setDraftValue("mcpServers", picked);
+      })
+    );
+
+    byId("swarm-start")?.addEventListener("click", async () => {
       try {
-        await copyText(value);
-        toast("ok", "Task identifiers copied.");
-      } catch {
-        toast("err", "Failed to copy task identifiers.");
-      }
-    })
-  );
-
-  viewEl.querySelectorAll("[data-swarm-focus-task]").forEach((button) =>
-    button.addEventListener("click", () => {
-      const taskId = String(button.getAttribute("data-swarm-focus-task") || "").trim();
-      const input = byId("swarm-reason-task");
-      if (input) input.value = taskId;
-      renderReasons();
-      byId("swarm-logs")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    })
-  );
-
-  viewEl.querySelectorAll("[data-swarm-open-session]").forEach((button) =>
-    button.addEventListener("click", () => {
-      const sessionId = String(button.getAttribute("data-swarm-open-session") || "").trim();
-      if (!sessionId) return;
-      state.currentSessionId = sessionId;
-      if (typeof setRoute === "function") {
-        setRoute("chat");
-      }
-    })
-  );
-
-  byId("swarm-start")?.addEventListener("click", async () => {
-    try {
-      const current = collectCurrentFormState();
-      await api("/api/swarm/start", {
-        method: "POST",
-        body: JSON.stringify({
-          workspaceRoot: current.workspaceRoot,
-          objective: current.objective,
-          maxTasks: current.maxTasks,
-          modelProvider: current.modelProvider,
-          modelId: current.modelId,
-          mcpServers: current.mcpServers,
-          allowInitNonEmpty: !!draft.allowInitNonEmpty,
-        }),
-      });
-      toast("ok", "Swarm started.");
-      renderSwarm(ctx, { force: true });
-    } catch (e) {
-      toast("err", e instanceof Error ? e.message : String(e));
-    }
-  });
-
-  byId("swarm-init-nonempty")?.addEventListener("click", async () => {
-    draft.allowInitNonEmpty = true;
-    try {
-      const current = collectCurrentFormState();
-      await api("/api/swarm/start", {
-        method: "POST",
-        body: JSON.stringify({
-          workspaceRoot: current.workspaceRoot,
-          objective: current.objective,
-          maxTasks: current.maxTasks,
-          modelProvider: current.modelProvider,
-          modelId: current.modelId,
-          mcpServers: current.mcpServers,
-          allowInitNonEmpty: true,
-        }),
-      });
-      toast("ok", "Directory initialized as a Git repo. Swarm started.");
-      draft.allowInitNonEmpty = false;
-      renderSwarm(ctx, { force: true });
-    } catch (e) {
-      toast("err", e instanceof Error ? e.message : String(e));
-    }
-  });
-
-  byId("swarm-stop")?.addEventListener("click", async () => {
-    try {
-      await api("/api/swarm/stop", { method: "POST" });
-      toast("ok", "Swarm stop requested.");
-      renderSwarm(ctx, { force: true });
-    } catch (e) {
-      toast("err", e instanceof Error ? e.message : String(e));
-    }
-  });
-
-  viewEl.querySelectorAll("[data-swarm-attach-pid]").forEach((button) =>
-    button.addEventListener("click", async () => {
-      try {
-        const pid = Number(button.getAttribute("data-swarm-attach-pid") || "0");
-        const workspaceRoot = String(button.getAttribute("data-swarm-attach-root") || "").trim();
-        const objective = String(button.getAttribute("data-swarm-attach-objective") || "").trim();
-        if (!pid) throw new Error("Invalid swarm PID.");
-        await api("/api/swarm/attach", {
+        const current = collectCurrentFormState();
+        const result = await api("/api/swarm/start", {
           method: "POST",
-          body: JSON.stringify({ pid, workspaceRoot, objective }),
+          body: JSON.stringify(current),
         });
-        toast("ok", `Attached swarm tracker to pid ${pid}.`);
+        if (result?.runId) state.__swarmSelectedRunId = String(result.runId || "").trim();
+        toast("ok", "Swarm context run created. Planning started.");
         renderSwarm(ctx, { force: true });
       } catch (e) {
         toast("err", e instanceof Error ? e.message : String(e));
       }
-    })
-  );
+    });
 
-  const poll = setInterval(() => {
-    if (state.route !== "swarm") return;
-    if (swarmFormHasFocus()) return;
-    if (swarmRefreshLocked(state)) return;
-    renderSwarm(ctx);
-  }, 4000);
-  const stopPoll = () => clearInterval(poll);
-  state.__swarmLiveCleanup.push(stopPoll);
-  addCleanup(stopPoll);
+    byId("swarm-approve")?.addEventListener("click", async () => {
+      if (!selectedRunId) return;
+      try {
+        await api("/api/swarm/approve", { method: "POST", body: JSON.stringify({ runId: selectedRunId }) });
+        toast("ok", "Plan approved. Execution started.");
+        renderSwarm(ctx, { force: true });
+      } catch (e) {
+        toast("err", e instanceof Error ? e.message : String(e));
+      }
+    });
 
-  try {
-    const evt = new EventSource("/api/swarm/events", { withCredentials: true });
-    evt.onmessage = () => {
+    byId("swarm-pause")?.addEventListener("click", async () => {
+      if (!selectedRunId) return;
+      try {
+        await api("/api/swarm/pause", { method: "POST", body: JSON.stringify({ runId: selectedRunId }) });
+        toast("ok", "Run paused.");
+        renderSwarm(ctx, { force: true });
+      } catch (e) {
+        toast("err", e instanceof Error ? e.message : String(e));
+      }
+    });
+
+    byId("swarm-resume")?.addEventListener("click", async () => {
+      if (!selectedRunId) return;
+      try {
+        await api("/api/swarm/resume", { method: "POST", body: JSON.stringify({ runId: selectedRunId }) });
+        toast("ok", "Run resumed.");
+        renderSwarm(ctx, { force: true });
+      } catch (e) {
+        toast("err", e instanceof Error ? e.message : String(e));
+      }
+    });
+
+    byId("swarm-cancel")?.addEventListener("click", async () => {
+      if (!selectedRunId) return;
+      try {
+        await api("/api/swarm/cancel", { method: "POST", body: JSON.stringify({ runId: selectedRunId }) });
+        toast("ok", "Run cancelled.");
+        renderSwarm(ctx, { force: true });
+      } catch (e) {
+        toast("err", e instanceof Error ? e.message : String(e));
+      }
+    });
+
+    viewEl.querySelectorAll("[data-run-select]").forEach((button) =>
+      button.addEventListener("click", () => {
+        state.__swarmSelectedRunId = String(button.getAttribute("data-run-select") || "").trim();
+        setSwarmRefreshLock(state, 800);
+        renderSwarm(ctx, { force: true });
+      })
+    );
+
+    viewEl.querySelectorAll("[data-step-copy]").forEach((button) =>
+      button.addEventListener("click", async () => {
+        try {
+          await copyText(String(button.getAttribute("data-step-copy") || ""));
+          toast("ok", "Identifiers copied.");
+        } catch {
+          toast("err", "Copy failed.");
+        }
+      })
+    );
+
+    viewEl.querySelectorAll("[data-step-retry]").forEach((button) =>
+      button.addEventListener("click", async () => {
+        const stepId = String(button.getAttribute("data-step-retry") || "").trim();
+        if (!selectedRunId || !stepId) return;
+        try {
+          await api("/api/swarm/retry", {
+            method: "POST",
+            body: JSON.stringify({ runId: selectedRunId, stepId }),
+          });
+          toast("ok", `Retry requested for ${stepId}.`);
+          renderSwarm(ctx, { force: true });
+        } catch (e) {
+          toast("err", e instanceof Error ? e.message : String(e));
+        }
+      })
+    );
+
+    viewEl.querySelectorAll("[data-step-open-session]").forEach((button) =>
+      button.addEventListener("click", () => {
+        const sessionId = String(button.getAttribute("data-step-open-session") || "").trim();
+        if (!sessionId) return;
+        state.currentSessionId = sessionId;
+        if (typeof setRoute === "function") setRoute("chat");
+      })
+    );
+
+    const poll = setInterval(() => {
       if (state.route !== "swarm") return;
       if (swarmFormHasFocus()) return;
       if (swarmRefreshLocked(state)) return;
       renderSwarm(ctx);
-    };
-    evt.onerror = () => evt.close();
-    const stopEvt = () => evt.close();
+    }, 4000);
+
+    const stopPoll = () => clearInterval(poll);
+    state.__swarmLiveCleanup.push(stopPoll);
+    addCleanup(stopPoll);
+
+    const stopEvt = subscribeSse(
+      `/api/swarm/events${selectedRunId ? `?runId=${encodeURIComponent(selectedRunId)}` : ""}`,
+      () => {
+        if (state.route !== "swarm") return;
+        if (swarmFormHasFocus()) return;
+        if (swarmRefreshLocked(state)) return;
+        renderSwarm(ctx);
+      }
+    );
     state.__swarmLiveCleanup.push(stopEvt);
     addCleanup(stopEvt);
-  } catch {
-    // ignore
-  }
   } finally {
     state.__swarmRenderInFlight = false;
     state.__swarmRenderedOnce = true;

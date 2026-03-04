@@ -1,3 +1,5 @@
+import { subscribeSse } from "../services/sse.js";
+
 function eventTypeOf(data) {
   return data?.type || data?.event || "event";
 }
@@ -167,22 +169,24 @@ export async function renderFeed(ctx) {
     host.scrollTop = host.scrollHeight;
   }
 
-  const evt = new EventSource("/api/engine/global/event", { withCredentials: true });
-  evt.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      events.push({ at: Date.now(), data });
-      while (events.length > 300) events.shift();
-      if (state.route === "feed") renderEvents();
-    } catch {
-      // ignore
+  const stopEvt = subscribeSse(
+    "/api/engine/global/event",
+    (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        events.push({ at: Date.now(), data });
+        while (events.length > 300) events.shift();
+        if (state.route === "feed") renderEvents();
+      } catch {
+        // ignore
+      }
+    },
+    {
+      onError: () => {
+        if (state.route === "feed") toast("err", "Live feed disconnected.");
+      },
     }
-  };
-
-  evt.onerror = () => {
-    evt.close();
-    toast("err", "Live feed disconnected.");
-  };
+  );
 
   byId("feed-filter").addEventListener("input", renderEvents);
   byId("feed-clear").addEventListener("click", () => {
@@ -190,6 +194,6 @@ export async function renderFeed(ctx) {
     renderEvents();
   });
 
-  addCleanup(() => evt.close());
+  addCleanup(stopEvt);
   renderEvents();
 }
