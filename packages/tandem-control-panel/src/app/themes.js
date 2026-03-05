@@ -1,10 +1,10 @@
-export const DEFAULT_THEME_ID = "web_control";
+export const DEFAULT_THEME_ID = "charcoal_fire";
 const STORAGE_KEY = "tandem.themeId";
 
 export const THEMES = [
   {
-    id: "web_control",
-    name: "Web Control",
+    id: "charcoal_fire",
+    name: "Charcoal & Fire",
     cssVars: {
       "--color-background": "#121212",
       "--color-surface": "#141414",
@@ -125,8 +125,8 @@ export const THEMES = [
       "--color-background": "#F8FAFC",
       "--color-surface": "#FFFFFF",
       "--color-surface-elevated": "#F1F5F9",
-      "--color-border": "rgba(15, 23, 42, 0.20)",
-      "--color-border-subtle": "rgba(15, 23, 42, 0.14)",
+      "--color-border": "rgba(15, 23, 42, 0.12)",
+      "--color-border-subtle": "rgba(15, 23, 42, 0.08)",
       "--color-primary": "#6366F1",
       "--color-primary-hover": "#4F46E5",
       "--color-primary-muted": "#4338CA",
@@ -135,9 +135,9 @@ export const THEMES = [
       "--color-success": "#10B981",
       "--color-warning": "#F59E0B",
       "--color-error": "#EF4444",
-      "--color-text": "#0B1220",
-      "--color-text-muted": "rgba(11, 18, 32, 0.82)",
-      "--color-text-subtle": "rgba(11, 18, 32, 0.66)",
+      "--color-text": "#0F172A",
+      "--color-text-muted": "rgba(15, 23, 42, 0.70)",
+      "--color-text-subtle": "rgba(15, 23, 42, 0.50)",
       "--color-glass": "rgba(255, 255, 255, 0.72)",
       "--color-glass-border": "rgba(15, 23, 42, 0.10)",
       "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
@@ -176,10 +176,98 @@ export const THEMES = [
       "--tcp-glow-b": "rgba(255, 61, 245, 0.14)",
     },
   },
+  {
+    id: "cosmic_glass",
+    name: "Cosmic Glass",
+    cssVars: {
+      "--color-background": "#03020F",
+      "--color-surface": "rgba(9, 6, 28, 0.72)",
+      "--color-surface-elevated": "rgba(18, 12, 40, 0.82)",
+      "--color-border": "rgba(120, 105, 255, 0.22)",
+      "--color-border-subtle": "rgba(120, 105, 255, 0.12)",
+      "--color-primary": "#7C5CFF",
+      "--color-primary-hover": "#6A40FF",
+      "--color-primary-muted": "#4C2ED8",
+      "--color-secondary": "#FF7AD9",
+      "--color-secondary-hover": "#FF4FC3",
+      "--color-success": "#3BE4C0",
+      "--color-warning": "#F9D86B",
+      "--color-error": "#FF5C7A",
+      "--color-text": "#F3F0FF",
+      "--color-text-muted": "rgba(243, 240, 255, 0.74)",
+      "--color-text-subtle": "rgba(243, 240, 255, 0.52)",
+      "--color-glass": "rgba(14, 10, 40, 0.48)",
+      "--color-glass-border": "rgba(255, 255, 255, 0.16)",
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono":
+        '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+      "--tcp-glow-a": "rgba(124, 92, 255, 0.20)",
+      "--tcp-glow-b": "rgba(255, 122, 217, 0.14)",
+    },
+  },
+  {
+    id: "pink_pony",
+    name: "Pink Pony",
+    cssVars: {
+      "--color-background": "#240818",
+      "--color-surface": "rgba(56, 12, 38, 0.94)",
+      "--color-surface-elevated": "rgba(72, 16, 48, 0.96)",
+      "--color-border": "rgba(255, 184, 217, 0.36)",
+      "--color-border-subtle": "rgba(255, 184, 217, 0.22)",
+      "--color-primary": "#FF5FB1",
+      "--color-primary-hover": "#FF3B9A",
+      "--color-primary-muted": "#D91E7D",
+      "--color-secondary": "#FFB8E6",
+      "--color-secondary-hover": "#FF98D8",
+      "--color-success": "#58E5C1",
+      "--color-warning": "#FFD166",
+      "--color-error": "#FF5C8A",
+      "--color-text": "#FFF7FC",
+      "--color-text-muted": "rgba(255, 247, 252, 0.86)",
+      "--color-text-subtle": "rgba(255, 247, 252, 0.68)",
+      "--color-glass": "rgba(74, 17, 50, 0.78)",
+      "--color-glass-border": "rgba(255, 220, 238, 0.30)",
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono":
+        '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+      "--tcp-glow-a": "rgba(255, 95, 177, 0.20)",
+      "--tcp-glow-b": "rgba(255, 184, 230, 0.14)",
+    },
+  },
+  {
+    id: "zen_dusk",
+    name: "Zen Dusk",
+    cssVars: {
+      "--color-background": "#0B1110",
+      "--color-surface": "#101716",
+      "--color-surface-elevated": "#141D1C",
+      "--color-border": "rgba(226, 232, 240, 0.12)",
+      "--color-border-subtle": "rgba(226, 232, 240, 0.06)",
+      "--color-primary": "#7CC8A4",
+      "--color-primary-hover": "#6AB690",
+      "--color-primary-muted": "#559B7B",
+      "--color-secondary": "#9FB8B0",
+      "--color-secondary-hover": "#8AA59C",
+      "--color-success": "#5EC79B",
+      "--color-warning": "#E6C17B",
+      "--color-error": "#E38B8B",
+      "--color-text": "#E6EFEA",
+      "--color-text-muted": "rgba(230, 239, 234, 0.72)",
+      "--color-text-subtle": "rgba(230, 239, 234, 0.50)",
+      "--color-glass": "rgba(20, 28, 26, 0.72)",
+      "--color-glass-border": "rgba(255, 255, 255, 0.08)",
+      "--font-sans": '"Geist Sans", "Inter", system-ui, -apple-system, sans-serif',
+      "--font-mono":
+        '"Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+      "--tcp-glow-a": "rgba(124, 200, 164, 0.16)",
+      "--tcp-glow-b": "rgba(159, 184, 176, 0.12)",
+    },
+  },
 ];
 
 export function getThemeById(themeId) {
-  const id = String(themeId || "").trim() || DEFAULT_THEME_ID;
+  let id = String(themeId || "").trim() || DEFAULT_THEME_ID;
+  if (id === "web_control") id = "charcoal_fire";
   return THEMES.find((theme) => theme.id === id) || THEMES[0];
 }
 

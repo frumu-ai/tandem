@@ -34,11 +34,17 @@ export function AppShell({
   providerGate?: any;
 }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const avatarUrl = String(identity.botAvatarUrl || "").trim();
+  const [avatarErrored, setAvatarErrored] = useState(false);
 
   useEffect(() => {
     if (!mobileNavOpen) return;
     setMobileNavOpen(false);
   }, [currentRoute]);
+
+  useEffect(() => {
+    setAvatarErrored(false);
+  }, [avatarUrl]);
 
   const renderNavItems = (onDone?: () => void) =>
     navRoutes.map(([id, label, icon]) => {
@@ -75,14 +81,20 @@ export function AppShell({
     <>
       <div className="tcp-brand-tile mb-4 flex items-center gap-3 rounded-xl p-3">
         <div className="tcp-brand-avatar grid h-10 w-10 place-items-center overflow-hidden rounded-xl">
-          {identity.botAvatarUrl ? (
+          {avatarUrl && !avatarErrored ? (
             <img
-              src={identity.botAvatarUrl}
+              key="brand-avatar-image"
+              src={avatarUrl}
               alt={identity.botName}
-              className="h-full w-full object-cover"
+              className="block h-full w-full object-cover"
+              onError={() => setAvatarErrored(true)}
             />
           ) : (
-            <i data-lucide="cpu"></i>
+            <span key="brand-avatar-fallback" className="text-xs font-semibold uppercase">
+              {String(identity.botName || "T")
+                .trim()
+                .slice(0, 1) || "T"}
+            </span>
           )}
         </div>
         <div>
@@ -96,33 +108,38 @@ export function AppShell({
       <div className="mt-3 grid gap-2">
         <button
           type="button"
-          className="tcp-btn"
+          className="tcp-btn w-full justify-start"
           onClick={() => {
             onPaletteOpen();
             if (mobile) setMobileNavOpen(false);
           }}
         >
-          <span>Command Palette</span>
+          <span className="inline-flex items-center gap-1.5">
+            <i data-lucide="search"></i>
+            <span>Command Palette</span>
+          </span>
           <kbd className="text-[10px] text-slate-400">Ctrl/Cmd+K</kbd>
         </button>
         <button
           type="button"
-          className="tcp-btn"
+          className="tcp-btn w-full justify-start"
           onClick={() => {
             onThemeCycle();
             if (mobile) setMobileNavOpen(false);
           }}
         >
+          <i data-lucide="sparkles"></i>
           Cycle Theme
         </button>
         <button
           type="button"
-          className="tcp-btn"
+          className="tcp-btn w-full justify-start"
           onClick={() => {
             onLogout();
             if (mobile) setMobileNavOpen(false);
           }}
         >
+          <i data-lucide="log-out"></i>
           Logout
         </button>
       </div>

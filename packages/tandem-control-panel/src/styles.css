@@ -35,7 +35,7 @@
     color: var(--color-text);
     font-family: var(--font-sans);
     letter-spacing: 0.003em;
-    background-image: radial-gradient(42rem 42rem at 85% -8%, var(--tcp-glow-a), transparent 64%);
+    background-image: none;
   }
 
   ::-webkit-scrollbar {
@@ -133,7 +133,9 @@
   }
 
   .tcp-badge-info {
-    @apply tcp-badge border-sky-600/60 text-sky-300;
+    @apply tcp-badge;
+    border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
+    color: color-mix(in srgb, var(--color-primary) 76%, var(--color-text) 24%);
   }
 
   .tcp-title {
@@ -185,7 +187,8 @@
   }
 
   .toast-info {
-    @apply border-sky-700 text-sky-300;
+    border-color: color-mix(in srgb, var(--color-primary) 42%, transparent);
+    color: color-mix(in srgb, var(--color-primary) 78%, var(--color-text) 22%);
   }
 
   .toast-warn {
@@ -488,15 +491,15 @@
 }
 
 .tcp-markdown a {
-  color: color-mix(in srgb, var(--color-primary) 72%, #0369a1 28%);
+  color: color-mix(in srgb, var(--color-primary) 88%, var(--color-text) 12%);
   text-decoration: none;
-  border-bottom: 1px dashed rgba(186, 230, 253, 0.55);
+  border-bottom: 1px dashed color-mix(in srgb, var(--color-primary) 45%, transparent);
   transition: color 120ms ease, border-color 120ms ease;
 }
 
 .tcp-markdown a:hover {
-  color: color-mix(in srgb, var(--color-primary-hover) 78%, #0c4a6e 22%);
-  border-bottom-color: rgba(224, 242, 254, 0.85);
+  color: color-mix(in srgb, var(--color-primary-hover) 92%, var(--color-text) 8%);
+  border-bottom-color: color-mix(in srgb, var(--color-primary-hover) 62%, transparent);
 }
 
 .tcp-markdown code {
@@ -1460,45 +1463,80 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
 }
 
+#app .text-slate-500,
+#app .text-zinc-500,
 #view .text-slate-500,
 #view .text-zinc-500 {
   color: var(--color-text-subtle) !important;
 }
 
+#app .text-slate-400,
+#app .text-zinc-400,
 #view .text-slate-400,
 #view .text-zinc-400 {
   color: var(--color-text-muted) !important;
 }
 
+#app .text-slate-300,
+#app .text-zinc-300,
 #view .text-slate-300,
 #view .text-zinc-300 {
   color: var(--color-text-muted) !important;
 }
 
+#app .text-slate-200,
+#app .text-zinc-200,
 #view .text-slate-200,
 #view .text-zinc-200 {
   color: var(--color-text) !important;
 }
 
+#app [class*="border-slate-"],
+#app [class*="border-zinc-"],
 #view [class*="border-slate-"],
 #view [class*="border-zinc-"] {
   border-color: color-mix(in srgb, var(--color-border-subtle) 88%, transparent) !important;
 }
 
+#app [class*="bg-amber-"],
 #view [class*="bg-amber-"] {
   background: color-mix(in srgb, var(--color-warning) 16%, transparent) !important;
 }
 
+#app [class*="border-amber-"],
 #view [class*="border-amber-"] {
   border-color: color-mix(in srgb, var(--color-warning) 36%, transparent) !important;
 }
 
+#app [class*="bg-rose-"],
 #view [class*="bg-rose-"] {
   background: color-mix(in srgb, var(--color-error) 14%, transparent) !important;
 }
 
+#app [class*="border-rose-"],
 #view [class*="border-rose-"] {
   border-color: color-mix(in srgb, var(--color-error) 34%, transparent) !important;
+}
+
+#app [class*="bg-slate-"],
+#app [class*="bg-zinc-"],
+#view [class*="bg-slate-"],
+#view [class*="bg-zinc-"] {
+  background: color-mix(in srgb, var(--color-surface-elevated) 86%, transparent) !important;
+}
+
+#app [class*="text-sky-"],
+#app [class*="text-blue-"],
+#view [class*="text-sky-"],
+#view [class*="text-blue-"] {
+  color: color-mix(in srgb, var(--color-primary) 82%, var(--color-text) 18%) !important;
+}
+
+#app [class*="border-sky-"],
+#app [class*="border-blue-"],
+#view [class*="border-sky-"],
+#view [class*="border-blue-"] {
+  border-color: color-mix(in srgb, var(--color-primary) 42%, transparent) !important;
 }
 
 .wire-line-active {

@@ -94,7 +94,10 @@ export function CommandPalette({
                       onClose();
                     }}
                   >
-                    <span>{action.label}</span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <i data-lucide="list"></i>
+                      <span>{action.label}</span>
+                    </span>
                     <span className="tcp-subtle text-xs">{action.group}</span>
                   </button>
                 ))}

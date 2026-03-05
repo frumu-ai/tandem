@@ -4,7 +4,6 @@ export const ROUTES = [
   ["chat", "Chat", "message-square"],
   ["automations", "Automations", "bot"],
   ["orchestrator", "Orchestrator", "sparkles"],
-  ["swarm", "Swarm (Live)", "share-2"],
   ["memory", "Memory", "database"],
   ["feed", "Live Feed", "radio"],
   ["settings", "Settings", "settings"],
@@ -15,11 +14,14 @@ export const ROUTES = [
   ["channels", "Channels", "message-circle"],
   ["mcp", "MCP", "link"],
   ["files", "Files", "folder-open"],
+  // Internal detail routes (not in primary nav)
+  ["packs-detail", "Packs", "package"],
+  ["teams-detail", "Teams", "users"],
 ];
 
 // Primary nav — 7 items your grandma can understand
 export const NAV_ROUTES = ROUTES.filter(([id]) =>
-  ["dashboard", "chat", "automations", "orchestrator", "swarm", "memory", "feed", "settings"].includes(id)
+  ["dashboard", "chat", "automations", "orchestrator", "memory", "feed", "settings"].includes(id)
 );
 
 export const providerHints = {

@@ -12,20 +12,27 @@ export type RouteId =
   | "channels"
   | "mcp"
   | "packs"
-  | "swarm"
   | "files"
   | "memory"
   | "teams"
   | "feed"
-  | "settings";
+  | "settings"
+  | "packs-detail"
+  | "teams-detail";
 
-// Legacy routes that should redirect to the new automations page
-const LEGACY_TO_AUTOMATIONS = new Set(["agents", "packs", "teams"]);
+// Legacy routes that should redirect to modern surfaces
+const LEGACY_ROUTE_REDIRECTS = new Map<string, RouteId>([
+  ["agents", "automations"],
+  ["packs", "automations"],
+  ["teams", "automations"],
+  ["swarm", "orchestrator"],
+]);
 
 const routeSet = new Set(APP_ROUTES.map(([id]) => id));
 
 export function ensureRouteId(route: string, fallback: RouteId = "dashboard"): RouteId {
-  if (LEGACY_TO_AUTOMATIONS.has(route)) return "automations";
+  const redirected = LEGACY_ROUTE_REDIRECTS.get(String(route || "").trim());
+  if (redirected) return redirected;
   return routeSet.has(route) ? (route as RouteId) : fallback;
 }
 

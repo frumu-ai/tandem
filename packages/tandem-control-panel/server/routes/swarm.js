@@ -1,4 +1,4 @@
-import { readdir } from "fs/promises";
+import { readFile, readdir, stat } from "fs/promises";
 import { resolve } from "path";
 import { deriveRunBudget, inferStatusFromEvents, mapOrchestratorPath } from "../services/orchestratorService.js";
 
@@ -83,7 +83,11 @@ export function createSwarmApiHandler(deps) {
         executorState: swarmState.executorState || "idle",
         executorReason: swarmState.executorReason || null,
         executorMode: swarmState.executorMode || "context_steps",
+        verificationMode: swarmState.verificationMode || "strict",
         currentRunId: swarmState.runId || "",
+        buildVersion: swarmState.buildVersion || "",
+        buildFingerprint: swarmState.buildFingerprint || "",
+        buildStartedAt: swarmState.buildStartedAt || null,
       });
       return true;
     }
@@ -132,6 +136,94 @@ export function createSwarmApiHandler(deps) {
           dir: currentDir,
           parent: parent === currentDir ? null : parent,
           directories,
+        });
+      } catch (e) {
+        sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+      return true;
+    }
+
+    if (routePath === "/api/swarm/workspaces/files" && req.method === "GET") {
+      try {
+        const workspaceRootRaw = String(
+          url.searchParams.get("workspaceRoot") || swarmState.workspaceRoot || REPO_ROOT
+        ).trim();
+        const workspaceRoot = await workspaceExistsAsDirectory(workspaceRootRaw);
+        if (!workspaceRoot) throw new Error(`Workspace not found: ${resolve(workspaceRootRaw || REPO_ROOT)}`);
+        const requestedDir = String(url.searchParams.get("dir") || workspaceRoot).trim();
+        const currentDir = await workspaceExistsAsDirectory(requestedDir);
+        if (!currentDir) throw new Error(`Directory not found: ${resolve(requestedDir || workspaceRoot)}`);
+        if (currentDir !== workspaceRoot && !currentDir.startsWith(`${workspaceRoot}/`)) {
+          throw new Error("Directory must be inside workspace root.");
+        }
+        const entries = await readdir(currentDir, { withFileTypes: true });
+        const directories = entries
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => ({
+            name: entry.name,
+            path: resolve(currentDir, entry.name),
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .slice(0, 300);
+        const files = (
+          await Promise.all(
+            entries
+              .filter((entry) => entry.isFile())
+              .slice(0, 500)
+              .map(async (entry) => {
+                const path = resolve(currentDir, entry.name);
+                const info = await stat(path).catch(() => null);
+                if (!info || !info.isFile()) return null;
+                return {
+                  name: entry.name,
+                  path,
+                  size: Number(info.size || 0),
+                  updatedAt: Number(info.mtimeMs || 0),
+                };
+              })
+          )
+        )
+          .filter(Boolean)
+          .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+        const parent = resolve(currentDir, "..");
+        const insideParent =
+          parent === workspaceRoot || (parent !== currentDir && parent.startsWith(`${workspaceRoot}/`));
+        sendJson(res, 200, {
+          ok: true,
+          workspaceRoot,
+          dir: currentDir,
+          parent: insideParent ? parent : null,
+          directories,
+          files,
+        });
+      } catch (e) {
+        sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+      return true;
+    }
+
+    if (routePath === "/api/swarm/workspaces/read" && req.method === "GET") {
+      try {
+        const workspaceRootRaw = String(
+          url.searchParams.get("workspaceRoot") || swarmState.workspaceRoot || REPO_ROOT
+        ).trim();
+        const workspaceRoot = await workspaceExistsAsDirectory(workspaceRootRaw);
+        if (!workspaceRoot) throw new Error(`Workspace not found: ${resolve(workspaceRootRaw || REPO_ROOT)}`);
+        const filePath = resolve(String(url.searchParams.get("path") || "").trim());
+        if (!filePath) throw new Error("Missing file path.");
+        if (filePath !== workspaceRoot && !filePath.startsWith(`${workspaceRoot}/`)) {
+          throw new Error("File must be inside workspace root.");
+        }
+        const info = await stat(filePath);
+        if (!info.isFile()) throw new Error("Not a file.");
+        if (info.size > 1024 * 1024) throw new Error("File is too large to preview.");
+        const text = await readFile(filePath, "utf8");
+        sendJson(res, 200, {
+          ok: true,
+          workspaceRoot,
+          path: filePath,
+          size: Number(info.size || 0),
+          text,
         });
       } catch (e) {
         sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -245,6 +337,8 @@ export function createSwarmApiHandler(deps) {
           modelProvider: String(run?.model_provider || swarmState.modelProvider || ""),
           modelId: String(run?.model_id || swarmState.modelId || ""),
           mcpServers: Array.isArray(swarmState.mcpServers) ? swarmState.mcpServers : [],
+          verificationMode: String(body?.verificationMode || swarmState.verificationMode || "strict"),
+          allowLocalPlannerFallback: body?.allowLocalPlannerFallback === true,
         });
         sendJson(res, 200, { ok: true, runId: revisedRunId, previousRunId: runId });
       } catch (e) {
@@ -383,8 +477,25 @@ export function createSwarmApiHandler(deps) {
         const stepId = String(body?.stepId || "").trim();
         if (!runId || !stepId) throw new Error("Missing runId or stepId");
         await transitionBlackboardTask(session, runId, { id: stepId }, { status: "runnable" }).catch(() => null);
-        await appendContextRunEvent(session, runId, "task_retry_requested", "running", {}, stepId);
-        sendJson(res, 200, { ok: true, runId, stepId });
+        await appendContextRunEvent(session, runId, "task_retry_requested", "running", {
+          why_next_step: `manual retry requested for ${stepId}`,
+        }, stepId);
+        const mode = await detectExecutorMode(session, runId);
+        const started = await startRunExecutor(session, runId, {
+          mode,
+          maxAgents: swarmState.maxAgents,
+          workflowId: swarmState.workflowId,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          runId,
+          stepId,
+          started,
+          sessionDispatchOutcome: started ? "started" : "already_running",
+          executorMode: swarmState.executorMode || mode,
+          executorState: swarmState.executorState || "idle",
+          executorReason: swarmState.executorReason || null,
+        });
       } catch (e) {
         sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
       }

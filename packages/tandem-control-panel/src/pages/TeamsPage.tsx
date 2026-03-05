@@ -79,12 +79,14 @@ export function TeamsPage({ client, toast }: AppPageProps) {
                       className="tcp-btn h-7 px-2 text-xs"
                       onClick={() => replyMutation.mutate({ requestId, decision: "approve" })}
                     >
+                      <i data-lucide="badge-check"></i>
                       Approve
                     </button>
                     <button
                       className="tcp-btn-danger h-7 px-2 text-xs"
                       onClick={() => replyMutation.mutate({ requestId, decision: "deny" })}
                     >
+                      <i data-lucide="x"></i>
                       Deny
                     </button>
                   </div>

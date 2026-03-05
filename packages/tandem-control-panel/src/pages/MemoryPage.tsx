@@ -63,6 +63,7 @@ export function MemoryPage({ client, toast }: AppPageProps) {
             placeholder="Search memory"
           />
           <button className="tcp-btn" onClick={() => memoryQuery.refetch()}>
+            <i data-lucide="search"></i>
             Search
           </button>
         </div>
@@ -91,6 +92,7 @@ export function MemoryPage({ client, toast }: AppPageProps) {
                           deleteMutation.mutate(item.id);
                         }}
                       >
+                        <i data-lucide="trash-2"></i>
                         Delete
                       </button>
                     </div>

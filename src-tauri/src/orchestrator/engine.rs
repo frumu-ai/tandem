@@ -2217,8 +2217,16 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
         };
 
         // Then send message to sidecar
+        let tool_allowlist = Self::role_tool_allowlist(role)
+            .into_iter()
+            .map(|tool| tool.to_string())
+            .collect::<Vec<_>>();
         let mut request = SendMessageRequest::text(prompt.to_string());
         request.model = model_spec.clone();
+        request.tool_allowlist = Some(tool_allowlist.clone());
+        if matches!(role, AgentRole::Worker | AgentRole::Builder) {
+            request.tool_mode = Some("required".to_string());
+        }
         {
             let mut tracker = self.budget_tracker.write().await;
             tracker.record_subagent_run();
@@ -2238,6 +2246,10 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
                 active_session_id = self.recreate_base_run_session().await?;
                 let mut retry_request = SendMessageRequest::text(prompt.to_string());
                 retry_request.model = model_spec;
+                retry_request.tool_allowlist = Some(tool_allowlist);
+                if matches!(role, AgentRole::Worker | AgentRole::Builder) {
+                    retry_request.tool_mode = Some("required".to_string());
+                }
                 {
                     let mut tracker = self.budget_tracker.write().await;
                     tracker.record_subagent_run();

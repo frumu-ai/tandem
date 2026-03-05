@@ -250,10 +250,7 @@ function AppBody() {
     toast("info", "Logged out.");
   }, [queryClient, toast]);
 
-  const lockedRoutes = useMemo(
-    () => new Set(["chat", "agents", "orchestrator", "swarm", "teams"]),
-    []
-  );
+  const lockedRoutes = useMemo(() => new Set(["chat", "agents", "orchestrator", "teams"]), []);
   const needsProviderOnboarding = !!providerQuery.data?.needsOnboarding;
   const providerLocked = authed && needsProviderOnboarding;
 
@@ -358,10 +355,10 @@ function AppBody() {
         onSelect: () => navigate("settings"),
       },
       {
-        id: "action:open-swarm",
-        label: "Open swarm runs",
+        id: "action:open-orchestrator",
+        label: "Open orchestrator",
         group: "Actions",
-        onSelect: () => navigate("swarm"),
+        onSelect: () => navigate("orchestrator"),
       },
     ];
 

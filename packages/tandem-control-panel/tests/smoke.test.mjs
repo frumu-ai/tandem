@@ -32,12 +32,25 @@ async function waitForReady(url, timeoutMs = 12000) {
   throw new Error(`Timed out waiting for ${url}`);
 }
 
+async function waitForCondition(checkFn, timeoutMs = 12000, intervalMs = 120) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const value = await checkFn();
+    if (value) return value;
+    await delay(intervalMs);
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 async function startFakeEngine() {
   const port = await getFreePort();
   const token = "smoke-token";
   const requests = [];
+  const sessionCreates = [];
+  const promptSyncCalls = [];
   const runs = new Map();
   const runEvents = new Map();
+  const sessions = new Map();
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
@@ -64,7 +77,7 @@ async function startFakeEngine() {
         return;
       }
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ default: "openai", providers: {} }));
+      res.end(JSON.stringify({ default: "openai", providers: { openai: { default_model: "gpt-4o-mini" } } }));
       return;
     }
 
@@ -100,6 +113,40 @@ async function startFakeEngine() {
       return;
     }
 
+    if (url.pathname === "/session" && req.method === "POST") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+      const sessionId = `sess-${Math.random().toString(16).slice(2, 10)}`;
+      sessions.set(sessionId, { id: sessionId, messages: [] });
+      sessionCreates.push({ path: url.pathname, method: req.method, body: input });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: sessionId }));
+      return;
+    }
+
+    if (url.pathname.match(/^\/session\/[^/]+\/prompt_sync$/) && req.method === "POST") {
+      const sessionId = decodeURIComponent(url.pathname.split("/")[2] || "");
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+      promptSyncCalls.push({ sessionId, body: input });
+      const message = { role: "assistant", content: "Attempted execution." };
+      const snapshot = sessions.get(sessionId);
+      if (snapshot) snapshot.messages.push(message);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify([message]));
+      return;
+    }
+
+    if (url.pathname.match(/^\/session\/[^/]+$/) && req.method === "GET") {
+      const sessionId = decodeURIComponent(url.pathname.split("/")[2] || "");
+      const snapshot = sessions.get(sessionId) || { id: sessionId, messages: [] };
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(snapshot));
+      return;
+    }
+
     if (url.pathname === "/context/runs" && req.method === "GET") {
       const workspace = url.searchParams.get("workspace") || "";
       const rows = [...runs.values()].filter((run) => !workspace || run.workspace?.canonical_path === workspace);
@@ -119,6 +166,24 @@ async function startFakeEngine() {
       }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ run }));
+      return;
+    }
+
+    if (url.pathname.match(/^\/context\/runs\/[^/]+$/) && req.method === "PUT") {
+      const runId = decodeURIComponent(url.pathname.split("/").at(-1) || "");
+      const existing = runs.get(runId);
+      if (!existing) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "run not found" }));
+        return;
+      }
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+      const merged = { ...existing, ...input, updated_at_ms: Date.now() };
+      runs.set(runId, merged);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, run: merged }));
       return;
     }
 
@@ -158,6 +223,18 @@ async function startFakeEngine() {
       if (event.type === "plan_approved") {
         run.status = "running";
         if (run.steps[0]) run.steps[0].status = "in_progress";
+      }
+      if (event.type === "step_started" && event.step_id) {
+        const step = run.steps.find((row) => row.step_id === event.step_id);
+        if (step) step.status = "in_progress";
+      }
+      if (event.type === "step_completed" && event.step_id) {
+        const step = run.steps.find((row) => row.step_id === event.step_id);
+        if (step) step.status = "done";
+      }
+      if (event.type === "step_failed" && event.step_id) {
+        const step = run.steps.find((row) => row.step_id === event.step_id);
+        if (step) step.status = "failed";
       }
       if (event.type === "run_cancelled") run.status = "cancelled";
       if (event.type === "task_retry_requested" && event.step_id) {
@@ -204,6 +281,43 @@ async function startFakeEngine() {
       return;
     }
 
+    if (url.pathname.match(/^\/context\/runs\/[^/]+\/driver\/next$/) && req.method === "POST") {
+      const runId = decodeURIComponent(url.pathname.split("/")[3] || "");
+      const run = runs.get(runId);
+      if (!run) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "run not found" }));
+        return;
+      }
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+      const dryRun = input?.dry_run === true;
+      const steps = Array.isArray(run.steps) ? run.steps : [];
+      let selected = steps.find((step) => String(step?.status || "") === "in_progress");
+      if (!selected) {
+        selected = steps.find((step) => String(step?.status || "") === "pending");
+        if (selected && !dryRun) selected.status = "in_progress";
+      }
+      run.updated_at_ms = Date.now();
+      runs.set(runId, run);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          selected_step_id: selected?.step_id || null,
+          why_next_step: selected ? `execute ${selected.step_id}` : "no actionable steps",
+          run,
+        })
+      );
+      return;
+    }
+
+    if (url.pathname.match(/^\/context\/runs\/[^/]+\/tasks$/) && req.method === "POST") {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "tasks endpoint unavailable in fake engine" }));
+      return;
+    }
+
     if (url.pathname.match(/^\/context\/runs\/[^/]+\/(blackboard|replay)$/) && req.method === "GET") {
       const kind = url.pathname.split("/").at(-1);
       res.writeHead(200, { "content-type": "application/json" });
@@ -244,6 +358,8 @@ async function startFakeEngine() {
     port,
     token,
     requests,
+    sessionCreates,
+    promptSyncCalls,
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
 }
@@ -351,10 +467,12 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
       workspaceRoot: process.cwd(),
       objective: "Test objective",
       maxTasks: 2,
+      requireLlmPlan: true,
+      allowLocalPlannerFallback: true,
     },
   });
-  assert.equal(swarmStart.status, 200);
   const swarmStartJson = await swarmStart.json();
+  assert.equal(swarmStart.status, 200, JSON.stringify(swarmStartJson));
   assert.ok(String(swarmStartJson.runId || "").length > 0, "missing run id");
 
   const runsRes = await request(baseUrl, `/api/swarm/runs?workspace=${encodeURIComponent(process.cwd())}`, { cookie });
@@ -367,6 +485,46 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
   const runJson = await runRes.json();
   assert.equal(runJson.run?.run_id, swarmStartJson.runId);
   assert.ok(Array.isArray(runJson.tasks), "missing tasks array");
+
+  const approveRes = await request(baseUrl, "/api/swarm/approve", {
+    method: "POST",
+    cookie,
+    body: { runId: swarmStartJson.runId },
+  });
+  assert.equal(approveRes.status, 200);
+
+  await waitForCondition(
+    () => fake.promptSyncCalls.some((call) => call?.body?.tool_mode === "required"),
+    12000
+  );
+  assert.ok(
+    fake.promptSyncCalls.some((call) => call?.body?.tool_mode === "required"),
+    "expected execution prompt_sync calls to set tool_mode=required"
+  );
+  assert.ok(
+    fake.sessionCreates.some((call) =>
+      Array.isArray(call?.body?.permission) &&
+      call.body.permission.some((rule) => rule.permission === "bash" && rule.action === "deny")
+    ),
+    "expected session permission rules to deny bash"
+  );
+  assert.ok(
+    fake.sessionCreates.some((call) =>
+      Array.isArray(call?.body?.permission) &&
+      call.body.permission.some((rule) => rule.permission === "write" && rule.action === "allow")
+    ),
+    "expected worker session permission rules to allow write"
+  );
+
+  await waitForCondition(async () => {
+    const runState = await request(baseUrl, `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`, {
+      cookie,
+    });
+    if (!runState.ok) return false;
+    const payload = await runState.json();
+    const status = String(payload?.run?.status || "").toLowerCase();
+    return status === "failed";
+  }, 12000);
 
   const proxiedAuthSeen = fake.requests.some((r) => r.path === "/global/health" && r.auth === `Bearer ${fake.token}`);
   assert.ok(proxiedAuthSeen, "proxy did not forward token auth header");

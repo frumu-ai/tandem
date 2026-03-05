@@ -17,6 +17,15 @@ function statusClass(state: TaskState) {
   return "tcp-badge-info";
 }
 
+function statusIcon(state: TaskState) {
+  if (state === "in_progress") {
+    return (
+      <i data-lucide="loader-circle" className="h-3.5 w-3.5 animate-spin" aria-hidden="true"></i>
+    );
+  }
+  return null;
+}
+
 function TaskCard({
   task,
   isCurrent,
@@ -29,7 +38,10 @@ function TaskCard({
   onRetryTask?: (task: OrchestrationTask) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const error = String(task.error_message || "").trim();
+  const error =
+    task.state === "failed" || task.state === "blocked"
+      ? String(task.error_message || "").trim()
+      : "";
   return (
     <div
       className={`rounded-lg border p-2 ${isCurrent ? "border-amber-400/70" : "border-slate-700/60 bg-slate-900/20"}`}
@@ -39,7 +51,10 @@ function TaskCard({
         <div className="text-xs font-medium leading-snug" title={task.title}>
           {task.title}
         </div>
-        <span className={`${statusClass(task.state)} shrink-0`}>{LABELS[task.state]}</span>
+        <span className={`${statusClass(task.state)} inline-flex shrink-0 items-center gap-1`}>
+          {statusIcon(task.state)}
+          <span>{LABELS[task.state]}</span>
+        </span>
       </div>
       {task.description ? (
         <div className="tcp-subtle line-clamp-2 text-xs">{task.description}</div>

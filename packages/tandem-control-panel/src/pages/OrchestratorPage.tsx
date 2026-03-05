@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { renderIcons } from "../app/icons.js";
 import { normalizeMessages } from "../features/chat/messages";
 import { saveStoredSessionId } from "../features/chat/session";
+import { renderMarkdownSafe } from "../lib/markdown";
 import { BudgetMeter } from "../features/orchestration/BudgetMeter";
 import { TaskBoard } from "../features/orchestration/TaskBoard";
 import type { BudgetUsage, OrchestrationTask, TaskState } from "../features/orchestration/types";
@@ -62,43 +63,131 @@ function runTimestamp(run: any) {
   return Number(run?.updated_at_ms || run?.created_at_ms || 0);
 }
 
+function eventTimeLabel(ts: unknown) {
+  const ms = Number(ts || 0);
+  if (!Number.isFinite(ms) || ms <= 0) return "--:--:--";
+  return new Date(ms).toLocaleTimeString();
+}
+
+function formatFileBytes(value: unknown) {
+  const size = Number(value || 0);
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fileExtension(path: string) {
+  const clean = String(path || "").trim();
+  const idx = clean.lastIndexOf(".");
+  if (idx < 0) return "";
+  return clean.slice(idx + 1).toLowerCase();
+}
+
+function normalizeWorkspacePath(path: string) {
+  const value = String(path || "")
+    .trim()
+    .replace(/\\/g, "/");
+  if (!value) return "";
+  if (!value.startsWith("/")) return value;
+  return value.replace(/\/{2,}/g, "/");
+}
+
+function toWorkspaceAbsolutePath(root: string, relativePath: string) {
+  const workspaceRoot = normalizeWorkspacePath(root).replace(/\/+$/, "");
+  const rel = normalizeWorkspacePath(relativePath).replace(/^\/+/, "");
+  if (!workspaceRoot) return rel;
+  if (!rel) return workspaceRoot;
+  return `${workspaceRoot}/${rel}`;
+}
+
+function pathIsInside(root: string, target: string) {
+  const parent = normalizeWorkspacePath(root).replace(/\/+$/, "");
+  const child = normalizeWorkspacePath(target);
+  if (!parent || !child) return false;
+  if (child === parent) return true;
+  return child.startsWith(`${parent}/`);
+}
+
+function extractWorkspacePath(input: any) {
+  const candidates = [
+    input?.workspace?.canonical_path,
+    input?.workspace?.path,
+    input?.workspace?.root,
+    input?.workspace_root,
+    input?.workspacePath,
+    input?.cwd,
+    input?.path,
+  ];
+  for (const value of candidates) {
+    const text = normalizeWorkspacePath(String(value || ""));
+    if (text.startsWith("/")) return text;
+  }
+  return "";
+}
+
+function buildLatestAttemptSeqByTask(events: any[]) {
+  const latest: Record<string, number> = {};
+  for (const evt of events) {
+    const type = String(evt?.type || "")
+      .trim()
+      .toLowerCase();
+    if (!["task_started", "step_started", "task_completed", "step_completed"].includes(type))
+      continue;
+    const taskId = String(evt?.step_id || "").trim();
+    if (!taskId) continue;
+    const seq = Number(evt?.seq || 0);
+    if (!Number.isFinite(seq) || seq <= 0) continue;
+    latest[taskId] = Math.max(Number(latest[taskId] || 0), seq);
+  }
+  return latest;
+}
+
 function normalizeTasks(payload: any): OrchestrationTask[] {
   const blackboardTasks = Array.isArray(payload?.blackboard?.tasks) ? payload.blackboard.tasks : [];
   if (blackboardTasks.length) {
-    return blackboardTasks.map((task: any, index: number) => ({
-      id: String(task?.id || `task-${index}`),
-      title: String(task?.payload?.title || task?.task_type || task?.id || `Task ${index + 1}`),
-      description: String(task?.payload?.description || ""),
-      dependencies: Array.isArray(task?.depends_on_task_ids)
-        ? task.depends_on_task_ids.map((dep: unknown) => String(dep || "")).filter(Boolean)
-        : [],
-      state: normalizeTaskState(String(task?.status || "pending")),
-      retry_count: Number(task?.retry_count || 0),
-      error_message: String(task?.last_error || ""),
-      runtime_status: "",
-      runtime_detail: "",
-      assigned_role: String(task?.assigned_agent || task?.lease_owner || ""),
-      workflow_id: String(task?.workflow_id || ""),
-      session_id: "",
-    }));
+    return blackboardTasks.map((task: any, index: number) => {
+      const state = normalizeTaskState(String(task?.status || "pending"));
+      return {
+        id: String(task?.id || `task-${index}`),
+        title: String(task?.payload?.title || task?.task_type || task?.id || `Task ${index + 1}`),
+        description: String(task?.payload?.description || ""),
+        dependencies: Array.isArray(task?.depends_on_task_ids)
+          ? task.depends_on_task_ids.map((dep: unknown) => String(dep || "")).filter(Boolean)
+          : [],
+        state,
+        retry_count: Number(task?.retry_count || 0),
+        error_message:
+          state === "failed" || state === "blocked" ? String(task?.last_error || "") : "",
+        runtime_status: "",
+        runtime_detail: "",
+        assigned_role: String(task?.assigned_agent || task?.lease_owner || ""),
+        workflow_id: String(task?.workflow_id || ""),
+        session_id: "",
+      };
+    });
   }
   const steps = Array.isArray(payload?.tasks) ? payload.tasks : [];
-  return steps.map((step: any, index: number) => ({
-    id: String(step?.taskId || step?.step_id || `step-${index}`),
-    title: String(step?.title || step?.step_id || `Step ${index + 1}`),
-    description: String(step?.description || ""),
-    dependencies: Array.isArray(step?.dependsOn)
-      ? step.dependsOn.map((dep: unknown) => String(dep || "")).filter(Boolean)
-      : [],
-    state: normalizeTaskState(String(step?.stepStatus || step?.status || "pending")),
-    retry_count: Number(step?.retry_count || 0),
-    error_message: String(step?.error_message || ""),
-    runtime_status: String(step?.runtime_status || ""),
-    runtime_detail: String(step?.runtime_detail || ""),
-    assigned_role: String(step?.assignedAgent || ""),
-    workflow_id: String(step?.workflowId || ""),
-    session_id: String(step?.sessionId || step?.session_id || ""),
-  }));
+  return steps.map((step: any, index: number) => {
+    const state = normalizeTaskState(String(step?.stepStatus || step?.status || "pending"));
+    return {
+      id: String(step?.taskId || step?.step_id || `step-${index}`),
+      title: String(step?.title || step?.step_id || `Step ${index + 1}`),
+      description: String(step?.description || ""),
+      dependencies: Array.isArray(step?.dependsOn)
+        ? step.dependsOn.map((dep: unknown) => String(dep || "")).filter(Boolean)
+        : [],
+      state,
+      retry_count: Number(step?.retry_count || 0),
+      error_message:
+        state === "failed" || state === "blocked" ? String(step?.error_message || "") : "",
+      runtime_status: String(step?.runtime_status || ""),
+      runtime_detail: String(step?.runtime_detail || ""),
+      assigned_role: String(step?.assignedAgent || ""),
+      workflow_id: String(step?.workflowId || ""),
+      session_id: String(step?.sessionId || step?.session_id || ""),
+    };
+  });
 }
 
 export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
@@ -117,6 +206,8 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
   const [maxAgents, setMaxAgents] = useState("3");
   const [workflowId, setWorkflowId] = useState("swarm.blackboard.default");
   const [revisionFeedback, setRevisionFeedback] = useState("");
+  const [runWorkspaceDir, setRunWorkspaceDir] = useState("");
+  const [selectedWorkspaceFile, setSelectedWorkspaceFile] = useState("");
   useEffect(() => {
     setComposeMode(true);
     clearSelectedRunId();
@@ -144,26 +235,23 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
   const advanceCursor = runRegistry.advanceCursor;
   const runId = composeMode ? "" : String(selectedRunId || "").trim();
   const orderedRuns = runRegistry.orderedRuns;
+  const selectedRunEntry = useMemo(() => {
+    if (!runId) return null;
+    for (const row of orderedRuns) {
+      const id = String(row?.run_id || row?.runId || "").trim();
+      if (id === runId) return row;
+    }
+    return null;
+  }, [orderedRuns, runId]);
   const cursorToken = useMemo(
     () => buildCursorToken(runRegistry.cursorsByRunId),
     [runRegistry.cursorsByRunId]
   );
   const streamWorkspace = String(workspaceRoot || statusQuery.data?.workspaceRoot || "").trim();
   const subscriptionRunIds = useMemo(() => {
-    const ids: string[] = [];
-    if (selectedRunId) ids.push(selectedRunId);
-    for (const run of orderedRuns) {
-      const status = String(run?.status || "")
-        .trim()
-        .toLowerCase();
-      if (["completed", "failed", "cancelled"].includes(status)) continue;
-      const id = String(run?.run_id || run?.runId || "").trim();
-      if (!id || ids.includes(id)) continue;
-      ids.push(id);
-      if (ids.length >= 6) break;
-    }
-    return ids;
-  }, [orderedRuns, selectedRunId]);
+    const id = String(runId || "").trim();
+    return id ? [id] : [];
+  }, [runId]);
   const lastInvalidateAt = useRef(0);
   const onStreamEnvelope = useCallback(
     (envelope: any) => {
@@ -171,6 +259,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
         .trim()
         .toLowerCase();
       const eventRunId = String(envelope?.run_id || envelope?.runId || "").trim();
+      if (runId && eventRunId && eventRunId !== runId) return;
       const seq = Number(envelope?.seq || 0);
       if (eventRunId && seq > 0 && (kind === "context_run_event" || kind === "blackboard_patch")) {
         advanceCursor(eventRunId, kind, seq);
@@ -208,12 +297,26 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
   )
     .trim()
     .toLowerCase();
-
   const tasks = useMemo(() => normalizeTasks(runQuery.data), [runQuery.data]);
   const budget = useMemo(
     () => ({ ...DEFAULT_BUDGET, ...(runQuery.data?.budget || {}) }),
     [runQuery.data?.budget]
   );
+  const activeWorkspaceRoot = String(
+    extractWorkspacePath(runQuery.data?.run) ||
+      extractWorkspacePath(selectedRunEntry) ||
+      (!runId ? String(statusQuery.data?.workspaceRoot || workspaceRoot || "") : "")
+  ).trim();
+  useEffect(() => {
+    if (!activeWorkspaceRoot) return;
+    setRunWorkspaceDir((prev) => {
+      if (!prev) return activeWorkspaceRoot;
+      if (!pathIsInside(activeWorkspaceRoot, prev)) return activeWorkspaceRoot;
+      return prev;
+    });
+    setSelectedWorkspaceFile((prev) => (pathIsInside(activeWorkspaceRoot, prev) ? prev : ""));
+  }, [activeWorkspaceRoot]);
+
   const workspaceDirectories = Array.isArray(workspaceBrowserQuery.data?.directories)
     ? workspaceBrowserQuery.data.directories
     : [];
@@ -233,6 +336,65 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
   const workspaceCurrentBrowseDir = String(
     workspaceBrowserQuery.data?.dir || workspaceBrowserDir || ""
   ).trim();
+  const runWorkspaceQuery = useQuery({
+    queryKey: ["swarm", "workspace-files", activeWorkspaceRoot, runWorkspaceDir],
+    enabled: !!activeWorkspaceRoot && !!runWorkspaceDir,
+    queryFn: async () => {
+      const payload = await api(
+        `/api/orchestrator/workspaces/files?workspaceRoot=${encodeURIComponent(activeWorkspaceRoot)}&dir=${encodeURIComponent(runWorkspaceDir)}`
+      ).catch(() => ({
+        directories: [],
+        files: [],
+        parent: null,
+        dir: runWorkspaceDir,
+      }));
+      const directories = Array.isArray(payload?.directories) ? payload.directories : [];
+      const filesRaw = Array.isArray(payload?.files) ? payload.files : [];
+      const files = filesRaw.map((file: any) => {
+        const resolvedPath = String(file?.path || "").trim();
+        return {
+          ...file,
+          name: String(file?.name || resolvedPath || "file"),
+          path:
+            resolvedPath || toWorkspaceAbsolutePath(activeWorkspaceRoot, String(file?.name || "")),
+        };
+      });
+      return {
+        ok: true,
+        dir: String(payload?.dir || runWorkspaceDir),
+        parent: payload?.parent || null,
+        directories,
+        files,
+        fileAccessAllowed: true,
+      };
+    },
+    refetchInterval: 10000,
+  });
+  const runWorkspaceReadQuery = useQuery({
+    queryKey: ["swarm", "workspace-file", activeWorkspaceRoot, selectedWorkspaceFile],
+    enabled: !!activeWorkspaceRoot && !!selectedWorkspaceFile,
+    queryFn: async () => {
+      return api(
+        `/api/orchestrator/workspaces/read?workspaceRoot=${encodeURIComponent(activeWorkspaceRoot)}&path=${encodeURIComponent(selectedWorkspaceFile)}`
+      );
+    },
+  });
+  const runWorkspaceDirectories = Array.isArray(runWorkspaceQuery.data?.directories)
+    ? runWorkspaceQuery.data.directories
+    : [];
+  const runWorkspaceFiles = Array.isArray(runWorkspaceQuery.data?.files)
+    ? runWorkspaceQuery.data.files
+    : [];
+  const runWorkspaceParent = String(runWorkspaceQuery.data?.parent || "").trim();
+  const runWorkspaceFileAccessAllowed = runWorkspaceQuery.data?.fileAccessAllowed !== false;
+  const selectedWorkspaceText = String(runWorkspaceReadQuery.data?.text || "");
+  const selectedWorkspaceExt = fileExtension(selectedWorkspaceFile);
+  const selectedIsMarkdown = ["md", "markdown", "mdx"].includes(selectedWorkspaceExt);
+  const selectedIsHtml = ["html", "htm"].includes(selectedWorkspaceExt);
+  const taskRenderSignature = useMemo(
+    () => tasks.map((task) => `${task.id}:${task.state}:${task.error_message || ""}`).join("|"),
+    [tasks]
+  );
 
   const latestOutput = useMemo(() => {
     const events = Array.isArray(runQuery.data?.events) ? runQuery.data.events : [];
@@ -254,6 +416,78 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
     }
     return latest;
   }, [runQuery.data?.events]);
+  const liveSessionId = useMemo(() => {
+    const events = Array.isArray(runQuery.data?.events) ? runQuery.data.events : [];
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const evt = events[i];
+      const type = String(evt?.type || "")
+        .trim()
+        .toLowerCase();
+      if (!["task_started", "step_started", "task_completed", "step_completed"].includes(type))
+        continue;
+      const payload = evt?.payload && typeof evt.payload === "object" ? evt.payload : {};
+      const sessionId = String(payload?.session_id || "").trim();
+      if (sessionId) return sessionId;
+    }
+    return String(latestOutput?.sessionId || "").trim();
+  }, [latestOutput?.sessionId, runQuery.data?.events]);
+  const activityEvents = useMemo(() => {
+    const events = Array.isArray(runQuery.data?.events) ? runQuery.data.events : [];
+    const latestAttemptSeqByTask = buildLatestAttemptSeqByTask(events);
+    const rows: Array<{
+      id: string;
+      type: string;
+      title: string;
+      detail: string;
+      at: number;
+    }> = [];
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const evt = events[i];
+      const type = String(evt?.type || "")
+        .trim()
+        .toLowerCase();
+      if (
+        ![
+          "task_started",
+          "task_completed",
+          "task_failed",
+          "step_started",
+          "step_completed",
+          "step_failed",
+          "run_resumed",
+          "run_paused",
+          "run_completed",
+          "run_failed",
+        ].includes(type)
+      ) {
+        continue;
+      }
+      const payload = evt?.payload && typeof evt.payload === "object" ? evt.payload : {};
+      const taskId = String(evt?.step_id || "").trim();
+      const seq = Number(evt?.seq || 0);
+      const isFailure = type === "task_failed" || type === "step_failed";
+      if (
+        isFailure &&
+        taskId &&
+        Number.isFinite(seq) &&
+        seq > 0 &&
+        Number(latestAttemptSeqByTask[taskId] || 0) > seq
+      ) {
+        continue;
+      }
+      const title = String(payload?.step_title || evt?.step_id || type).trim();
+      const detail = String(payload?.why_next_step || payload?.error || "").trim();
+      rows.push({
+        id: `${String(evt?.seq || i)}-${type}`,
+        type,
+        title: title || type,
+        detail,
+        at: Number(evt?.ts_ms || 0),
+      });
+      if (rows.length >= 12) break;
+    }
+    return rows;
+  }, [runQuery.data?.events]);
   const planSource = useMemo(() => {
     const events = Array.isArray(runQuery.data?.events) ? runQuery.data.events : [];
     for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -269,11 +503,10 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
   }, [runQuery.data?.events]);
 
   const outputSessionQuery = useQuery({
-    queryKey: ["swarm", "run-output-session", String(latestOutput?.sessionId || "")],
-    queryFn: () =>
-      api(`/api/engine/session/${encodeURIComponent(String(latestOutput?.sessionId || ""))}`),
+    queryKey: ["swarm", "run-output-session", String(liveSessionId || "")],
+    queryFn: () => api(`/api/engine/session/${encodeURIComponent(String(liveSessionId || ""))}`),
     refetchInterval: 6000,
-    enabled: !!latestOutput?.sessionId,
+    enabled: !!liveSessionId,
   });
 
   const latestAssistantOutput = useMemo(() => {
@@ -284,6 +517,86 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
     }
     return "";
   }, [outputSessionQuery.data]);
+  const recentToolActivity = useMemo(() => {
+    const source = Array.isArray(outputSessionQuery.data)
+      ? outputSessionQuery.data
+      : Array.isArray(outputSessionQuery.data?.messages)
+        ? outputSessionQuery.data.messages
+        : [];
+    const rows: string[] = [];
+    for (let i = source.length - 1; i >= 0; i -= 1) {
+      const message = source[i];
+      const parts = Array.isArray(message?.parts) ? message.parts : [];
+      for (let j = parts.length - 1; j >= 0; j -= 1) {
+        const part = parts[j];
+        const type = String(part?.type || part?.part_type || "")
+          .trim()
+          .toLowerCase();
+        if (!type.includes("tool")) continue;
+        const tool = String(part?.tool || part?.name || "").trim();
+        const state = String(part?.state || part?.status || "").trim();
+        const error = String(part?.error || "").trim();
+        const label = [tool || "tool", state || null, error ? `err=${error}` : null]
+          .filter(Boolean)
+          .join(" · ");
+        rows.push(label);
+        if (rows.length >= 10) return rows;
+      }
+    }
+    return rows;
+  }, [outputSessionQuery.data]);
+
+  const verificationEvents = useMemo(() => {
+    const events = Array.isArray(runQuery.data?.events) ? runQuery.data.events : [];
+    const latestAttemptSeqByTask = buildLatestAttemptSeqByTask(events);
+    const rows: Array<{
+      id: string;
+      taskId: string;
+      title: string;
+      type: string;
+      reason: string;
+      mode: string;
+      at: number;
+    }> = [];
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const evt = events[i];
+      const type = String(evt?.type || "")
+        .trim()
+        .toLowerCase();
+      if (!["task_failed", "step_failed", "task_completed", "step_completed"].includes(type))
+        continue;
+      const payload = evt?.payload && typeof evt.payload === "object" ? evt.payload : {};
+      const taskId = String(evt?.step_id || "").trim();
+      const seq = Number(evt?.seq || 0);
+      const isFailure = type === "task_failed" || type === "step_failed";
+      if (
+        isFailure &&
+        taskId &&
+        Number.isFinite(seq) &&
+        seq > 0 &&
+        Number(latestAttemptSeqByTask[taskId] || 0) > seq
+      ) {
+        continue;
+      }
+      const verification =
+        payload?.verification && typeof payload.verification === "object"
+          ? payload.verification
+          : {};
+      const reason = String(verification?.reason || payload?.error || "").trim();
+      const mode = String(verification?.mode || "strict").trim() || "strict";
+      rows.push({
+        id: `${String(evt?.seq || i)}-${type}`,
+        taskId,
+        title: String(payload?.step_title || evt?.step_id || type),
+        type,
+        reason,
+        mode,
+        at: Number(evt?.ts_ms || 0),
+      });
+      if (rows.length >= 8) break;
+    }
+    return rows;
+  }, [runQuery.data?.events]);
 
   const startMutation = useMutation({
     mutationFn: () => {
@@ -300,6 +613,8 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
           maxAgents: Number(maxAgents || 3),
           workflowId: String(workflowId || "swarm.blackboard.default").trim(),
           requireLlmPlan: true,
+          allowLocalPlannerFallback: false,
+          verificationMode: "strict",
         }),
       });
     },
@@ -364,7 +679,19 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
     const root = rootRef.current;
     if (!root) return;
     renderIcons(root);
-  }, [composeMode, historyOpen, orderedRuns, runId, runStatus]);
+  }, [
+    composeMode,
+    historyOpen,
+    orderedRuns,
+    runId,
+    runStatus,
+    runWorkspaceDir,
+    runWorkspaceDirectories.length,
+    runWorkspaceFiles.length,
+    selectedWorkspaceFile,
+    selectedWorkspaceText,
+    taskRenderSignature,
+  ]);
 
   const noRunYet = !runId;
   const isPlanning = runStatus === "planning" || runStatus === "queued";
@@ -493,13 +820,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                   value={prompt}
                   onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
                 />
-                <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-                  <input
-                    className="tcp-input"
-                    readOnly
-                    placeholder="No workspace selected. Use Browse."
-                    value={workspaceRoot}
-                  />
+                <div className="grid gap-2 md:grid-cols-[auto_1fr]">
                   <button
                     className="tcp-btn"
                     onClick={() => {
@@ -511,8 +832,15 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       setWorkspaceBrowserOpen(true);
                     }}
                   >
+                    <i data-lucide="folder-open"></i>
                     Browse
                   </button>
+                  <input
+                    className="tcp-input"
+                    readOnly
+                    placeholder="No workspace selected. Use Browse."
+                    value={workspaceRoot}
+                  />
                 </div>
                 <div className="tcp-subtle text-xs">Selected folder: {workspaceRoot || "none"}</div>
                 {!workspaceRoot ? (
@@ -520,13 +848,24 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     Select a workspace folder before sending.
                   </div>
                 ) : null}
-                <button
-                  className="tcp-btn"
-                  type="button"
-                  onClick={() => setShowAdvanced((prev) => !prev)}
-                >
-                  {showAdvanced ? "Hide Advanced" : "Show Advanced"}
-                </button>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <button
+                    className="tcp-btn-primary"
+                    onClick={() => startMutation.mutate()}
+                    disabled={startMutation.isPending || !canSend}
+                  >
+                    <i data-lucide="send"></i>
+                    Send
+                  </button>
+                  <button
+                    className="tcp-btn"
+                    type="button"
+                    onClick={() => setShowAdvanced((prev) => !prev)}
+                  >
+                    <i data-lucide="sliders-horizontal"></i>
+                    {showAdvanced ? "Hide Advanced" : "Show Advanced"}
+                  </button>
+                </div>
                 {showAdvanced ? (
                   <div className="grid gap-2 rounded-lg border border-slate-700/60 bg-slate-900/20 p-2 md:grid-cols-3">
                     <input
@@ -558,13 +897,6 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     </div>
                   </div>
                 ) : null}
-                <button
-                  className="tcp-btn-primary"
-                  onClick={() => startMutation.mutate()}
-                  disabled={startMutation.isPending || !canSend}
-                >
-                  Send
-                </button>
               </div>
             </PageCard>
           </div>
@@ -583,6 +915,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                   }}
                   disabled={!workspaceParentDir}
                 >
+                  <i data-lucide="arrow-up-circle"></i>
                   Up
                 </button>
                 <button
@@ -595,6 +928,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     toast("ok", `Workspace selected: ${workspaceCurrentBrowseDir}`);
                   }}
                 >
+                  <i data-lucide="badge-check"></i>
                   Select This Folder
                 </button>
                 <button
@@ -604,6 +938,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     setWorkspaceBrowserSearch("");
                   }}
                 >
+                  <i data-lucide="x"></i>
                   Close
                 </button>
               </div>
@@ -623,6 +958,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       className="tcp-list-item mb-1 w-full text-left"
                       onClick={() => setWorkspaceBrowserDir(String(entry?.path || ""))}
                     >
+                      <i data-lucide="folder-open"></i>
                       {String(entry?.name || entry?.path || "")}
                     </button>
                   ))
@@ -724,6 +1060,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         })
                       }
                     >
+                      <i data-lucide="pencil"></i>
                       Rework Plan
                     </button>
                     <button
@@ -735,6 +1072,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         })
                       }
                     >
+                      <i data-lucide="play"></i>
                       Execute Plan
                     </button>
                     <button
@@ -742,6 +1080,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       disabled={discardMutation.isPending}
                       onClick={() => discardMutation.mutate(runId)}
                     >
+                      <i data-lucide="trash-2"></i>
                       Discard Plan
                     </button>
                   </div>
@@ -757,6 +1096,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         actionMutation.mutate({ path: "/api/orchestrator/pause", body: { runId } })
                       }
                     >
+                      <i data-lucide="square"></i>
                       Pause
                     </button>
                   ) : null}
@@ -767,6 +1107,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         actionMutation.mutate({ path: "/api/orchestrator/resume", body: { runId } })
                       }
                     >
+                      <i data-lucide="play"></i>
                       Resume
                     </button>
                   ) : null}
@@ -777,10 +1118,12 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         actionMutation.mutate({ path: "/api/orchestrator/cancel", body: { runId } })
                       }
                     >
+                      <i data-lucide="x"></i>
                       Cancel
                     </button>
                   ) : null}
                   <button className="tcp-btn" onClick={goToStartView}>
+                    <i data-lucide="plus"></i>
                     New Prompt
                   </button>
                 </div>
@@ -791,45 +1134,130 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                 </div>
               ) : null}
 
-              <div className="grid max-h-[260px] min-h-0 gap-2 overflow-auto">
-                {orderedRuns.length ? (
-                  orderedRuns.map((run: any, index: number) => {
-                    const id = String(run?.run_id || run?.runId || `run-${index}`);
-                    const active = id === runId;
+              <div className="mt-3 rounded-xl border border-slate-700/60 bg-slate-900/30 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="font-medium">Workspace Files</div>
+                  <button
+                    type="button"
+                    className="chat-icon-btn h-7 w-7"
+                    title="Refresh"
+                    aria-label="Refresh"
+                    onClick={() => void runWorkspaceQuery.refetch()}
+                    disabled={!activeWorkspaceRoot}
+                  >
+                    <i data-lucide="refresh-cw"></i>
+                  </button>
+                </div>
+                <div className="mb-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="chat-icon-btn h-7 w-7"
+                    title="Up"
+                    aria-label="Up"
+                    disabled={!runWorkspaceParent}
+                    onClick={() => {
+                      if (!runWorkspaceParent) return;
+                      setRunWorkspaceDir(runWorkspaceParent);
+                    }}
+                  >
+                    <i data-lucide="arrow-up-circle"></i>
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-icon-btn h-7 w-7"
+                    title="Root"
+                    aria-label="Root"
+                    disabled={!activeWorkspaceRoot}
+                    onClick={() => {
+                      if (!activeWorkspaceRoot) return;
+                      setRunWorkspaceDir(activeWorkspaceRoot);
+                    }}
+                  >
+                    <i data-lucide="home"></i>
+                  </button>
+                </div>
+                <div className="mb-2 tcp-subtle text-[11px]" style={{ overflowWrap: "anywhere" }}>
+                  {runWorkspaceDir || activeWorkspaceRoot || "No workspace"}
+                </div>
+                {!runWorkspaceFileAccessAllowed ? (
+                  <div className="mb-2 rounded-lg border border-amber-400/40 bg-amber-950/20 p-2 text-xs text-amber-200">
+                    File listing for this workspace is not exposed by the current server scope.
+                    Directory navigation still works.
+                  </div>
+                ) : null}
+                <div className="grid max-h-[220px] min-h-0 gap-1 overflow-auto">
+                  {runWorkspaceDirectories.map((entry: any) => {
+                    const path = String(entry?.path || "");
                     return (
                       <button
-                        key={id}
-                        className={`tcp-list-item text-left ${active ? "border-amber-400/70" : ""}`}
-                        onClick={() => {
-                          setComposeMode(false);
-                          setSelectedRunId(id);
-                        }}
+                        key={`dir-${path}`}
+                        className="tcp-list-item text-left"
+                        onClick={() => setRunWorkspaceDir(path)}
                       >
-                        <div className="mb-1 flex items-center justify-between gap-2">
-                          <span className="inline-flex items-center gap-1 text-sm font-medium">
-                            <i data-lucide="history"></i>
-                            <span>{runLabelFromTimestamp(runTimestamp(run))}</span>
+                        <span className="inline-flex items-center gap-2">
+                          <i data-lucide="folder-open"></i>
+                          <span>{String(entry?.name || path)}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {runWorkspaceFiles.map((entry: any) => {
+                    const path = String(entry?.path || "");
+                    const active = path === selectedWorkspaceFile;
+                    return (
+                      <button
+                        key={`file-${path}`}
+                        className={`tcp-list-item text-left ${active ? "border-amber-400/70" : ""}`}
+                        onClick={() => setSelectedWorkspaceFile(path)}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="inline-flex min-w-0 items-center gap-2">
+                            <i data-lucide="file-up"></i>
+                            <span className="truncate">{String(entry?.name || path)}</span>
                           </span>
-                          <span className={statusBadgeClass(String(run?.status || "unknown"))}>
-                            {String(run?.status || "unknown")}
+                          <span className="tcp-subtle shrink-0 text-[11px]">
+                            {formatFileBytes(entry?.size)}
                           </span>
-                        </div>
-                        <div className="tcp-subtle line-clamp-2 text-xs">
-                          {String(run?.objective || "").trim() || "No objective"}
-                        </div>
-                        <div
-                          className="tcp-subtle mt-1 text-[11px]"
-                          style={{ overflowWrap: "anywhere" }}
-                        >
-                          {id}
                         </div>
                       </button>
                     );
-                  })
-                ) : (
-                  <EmptyState text="No runs yet." />
-                )}
+                  })}
+                  {!runWorkspaceDirectories.length && !runWorkspaceFiles.length ? (
+                    <EmptyState text="No files or folders in this workspace location." />
+                  ) : null}
+                </div>
               </div>
+              {selectedWorkspaceFile ? (
+                <div className="mt-3 rounded-xl border border-slate-700/60 bg-slate-900/30 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="font-medium">File Preview</div>
+                    <span className="tcp-subtle text-[11px]" style={{ overflowWrap: "anywhere" }}>
+                      {selectedWorkspaceFile}
+                    </span>
+                  </div>
+                  {runWorkspaceReadQuery.isLoading ? (
+                    <div className="tcp-subtle text-xs">Loading file...</div>
+                  ) : selectedIsHtml ? (
+                    <iframe
+                      className="h-[260px] w-full rounded-lg border border-slate-700/60 bg-black"
+                      sandbox="allow-scripts allow-forms allow-pointer-lock"
+                      srcDoc={selectedWorkspaceText}
+                      title={selectedWorkspaceFile}
+                    />
+                  ) : selectedIsMarkdown ? (
+                    <div
+                      className="tcp-markdown tcp-markdown-ai max-h-[260px] overflow-auto rounded-lg border border-slate-700/60 bg-slate-950/40 p-3"
+                      dangerouslySetInnerHTML={{
+                        __html: renderMarkdownSafe(selectedWorkspaceText),
+                      }}
+                    />
+                  ) : (
+                    <pre className="tcp-code max-h-[260px] overflow-auto whitespace-pre-wrap break-words">
+                      {selectedWorkspaceText || "No text content."}
+                    </pre>
+                  )}
+                </div>
+              ) : null}
             </PageCard>
 
             <PageCard
@@ -859,12 +1287,69 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
 
               <div className="mt-3 rounded-xl border border-slate-700/60 bg-slate-900/30 p-3">
                 <div className="mb-1 flex items-center justify-between gap-2">
+                  <div className="font-medium">Executor Verification</div>
+                </div>
+                {verificationEvents.length ? (
+                  <div className="grid max-h-40 gap-2 overflow-auto">
+                    {verificationEvents.map((item) => (
+                      <div key={item.id} className="rounded border border-slate-700/60 p-2 text-xs">
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <span
+                            className={statusBadgeClass(
+                              item.type.includes("failed") ? "failed" : "running"
+                            )}
+                          >
+                            {item.type}
+                          </span>
+                          <span className="tcp-subtle">mode: {item.mode}</span>
+                        </div>
+                        <div className="font-medium">{item.title}</div>
+                        <div className="tcp-subtle">{item.reason || "No verification detail."}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="tcp-subtle text-xs">No verification telemetry yet.</div>
+                )}
+              </div>
+
+              <div className="mt-3 rounded-xl border border-slate-700/60 bg-slate-900/30 p-3">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <div className="font-medium">Live Activity</div>
+                  <span className="tcp-subtle text-xs">{eventTimeLabel(Date.now())}</span>
+                </div>
+                {activityEvents.length ? (
+                  <div className="grid max-h-40 gap-2 overflow-auto">
+                    {activityEvents.map((item) => (
+                      <div key={item.id} className="rounded border border-slate-700/60 p-2 text-xs">
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <span
+                            className={statusBadgeClass(
+                              item.type.includes("failed") ? "failed" : "running"
+                            )}
+                          >
+                            {item.type}
+                          </span>
+                          <span className="tcp-subtle">{eventTimeLabel(item.at)}</span>
+                        </div>
+                        <div className="font-medium">{item.title}</div>
+                        <div className="tcp-subtle">{item.detail || "No additional detail."}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="tcp-subtle text-xs">No activity events yet.</div>
+                )}
+              </div>
+
+              <div className="mt-3 rounded-xl border border-slate-700/60 bg-slate-900/30 p-3">
+                <div className="mb-1 flex items-center justify-between gap-2">
                   <div className="font-medium">Latest Output</div>
-                  {latestOutput?.sessionId ? (
+                  {liveSessionId ? (
                     <button
                       className="tcp-btn h-7 px-2 text-xs"
                       onClick={() => {
-                        saveStoredSessionId(String(latestOutput.sessionId));
+                        saveStoredSessionId(String(liveSessionId));
                         navigate("chat");
                       }}
                     >
@@ -872,10 +1357,18 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     </button>
                   ) : null}
                 </div>
-                {latestOutput?.sessionId ? (
-                  <div className="tcp-code max-h-40 overflow-auto whitespace-pre-wrap break-words">
-                    {latestAssistantOutput || "No assistant output text yet."}
-                  </div>
+                {liveSessionId ? (
+                  <>
+                    <div className="tcp-code max-h-28 overflow-auto whitespace-pre-wrap break-words">
+                      {latestAssistantOutput || "No assistant output text yet."}
+                    </div>
+                    <div className="mt-2 tcp-subtle text-xs">Recent tool calls</div>
+                    <div className="tcp-code mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words">
+                      {recentToolActivity.length
+                        ? recentToolActivity.join("\n")
+                        : "No tool call records found in current session yet."}
+                    </div>
+                  </>
                 ) : (
                   <div className="tcp-subtle text-xs">No completed step output session yet.</div>
                 )}
@@ -898,6 +1391,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                 }}
                 disabled={!workspaceParentDir}
               >
+                <i data-lucide="arrow-up-circle"></i>
                 Up
               </button>
               <button
@@ -910,6 +1404,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                   toast("ok", `Workspace selected: ${workspaceCurrentBrowseDir}`);
                 }}
               >
+                <i data-lucide="badge-check"></i>
                 Select This Folder
               </button>
               <button
@@ -919,6 +1414,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                   setWorkspaceBrowserSearch("");
                 }}
               >
+                <i data-lucide="x"></i>
                 Close
               </button>
             </div>
@@ -938,6 +1434,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     className="tcp-list-item mb-1 w-full text-left"
                     onClick={() => setWorkspaceBrowserDir(String(entry?.path || ""))}
                   >
+                    <i data-lucide="folder-open"></i>
                     {String(entry?.name || entry?.path || "")}
                   </button>
                 ))

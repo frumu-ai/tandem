@@ -53,6 +53,7 @@ export function ChannelsPage({ client, toast }: AppPageProps) {
                     className="tcp-btn h-7 px-2 text-xs"
                     onClick={() => reconnectMutation.mutate(name)}
                   >
+                    <i data-lucide="refresh-cw"></i>
                     Reconnect
                   </button>
                 </div>

@@ -1480,6 +1480,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                     resetPackTracking();
                   }}
                 >
+                  <i data-lucide="trash-2"></i>
                   Clear
                 </button>
               </div>
@@ -1511,6 +1512,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                         className="tcp-btn h-6 px-1.5 text-[10px]"
                         onClick={() => navigate("packs-detail")}
                       >
+                        <i data-lucide="package"></i>
                         Packs
                       </button>
                       {event.path ? (
@@ -1532,6 +1534,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                             }
                           }}
                         >
+                          <i data-lucide="download"></i>
                           Install path
                         </button>
                       ) : null}
@@ -1557,6 +1560,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                             }
                           }}
                         >
+                          <i data-lucide="paperclip"></i>
                           Install attach
                         </button>
                       ) : null}
@@ -1577,6 +1581,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                 className="tcp-btn h-7 px-2 text-[11px]"
                 onClick={resetToolTracking}
               >
+                <i data-lucide="trash-2"></i>
                 Clear
               </button>
             </div>
@@ -1618,6 +1623,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
               </p>
               <div className="tcp-confirm-actions">
                 <button type="button" className="tcp-btn" onClick={() => setDeleteConfirm(null)}>
+                  <i data-lucide="x"></i>
                   Cancel
                 </button>
                 <button
@@ -1629,6 +1635,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                     )
                   }
                 >
+                  <i data-lucide="trash-2"></i>
                   Delete session
                 </button>
               </div>

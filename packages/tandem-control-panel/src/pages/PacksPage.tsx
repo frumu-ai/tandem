@@ -67,6 +67,7 @@ export function PacksPage({ client, toast }: AppPageProps) {
             disabled={!path.trim()}
             onClick={() => installMutation.mutate()}
           >
+            <i data-lucide="download"></i>
             Install from path
           </button>
         </div>

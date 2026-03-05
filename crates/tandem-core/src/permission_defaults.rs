@@ -60,6 +60,28 @@ pub fn build_mode_permission_rules(
         });
     }
 
+    if allows_any(allowed_tools, &["write"]) {
+        rules.push(PermissionRuleTemplate {
+            permission: "write".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        });
+    }
+    if allows_any(allowed_tools, &["edit"]) {
+        rules.push(PermissionRuleTemplate {
+            permission: "edit".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        });
+    }
+    if allows_any(allowed_tools, &["apply_patch"]) {
+        rules.push(PermissionRuleTemplate {
+            permission: "apply_patch".to_string(),
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+        });
+    }
+
     if allows_any(
         allowed_tools,
         &["todowrite", "todo_write", "new_task", "update_todo_list"],

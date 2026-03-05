@@ -1033,7 +1033,8 @@ function MyAutomations({ client, toast }: { client: any; toast: any }) {
                     className="tcp-btn h-7 px-2 text-xs"
                     onClick={() => runNowMutation.mutate(id)}
                   >
-                    ▶ Run now
+                    <i data-lucide="play"></i>
+                    Run now
                   </button>
                 </div>
               </div>
@@ -1121,13 +1122,15 @@ function SpawnApprovals({ client, toast }: { client: any; toast: any }) {
                     className="tcp-btn-primary h-7 px-2 text-xs"
                     onClick={() => replyMutation.mutate({ requestId, decision: "approve" })}
                   >
-                    ✓ Approve
+                    <i data-lucide="badge-check"></i>
+                    Approve
                   </button>
                   <button
                     className="tcp-btn-danger h-7 px-2 text-xs"
                     onClick={() => replyMutation.mutate({ requestId, decision: "deny" })}
                   >
-                    ✗ Deny
+                    <i data-lucide="x"></i>
+                    Deny
                   </button>
                 </div>
               </div>
@@ -1178,9 +1181,9 @@ export function AutomationsPage({ client, toast }: AppPageProps) {
   const [tab, setTab] = useState<ActiveTab>("create");
 
   const tabs: { id: ActiveTab; label: string; icon: string }[] = [
-    { id: "create", label: "Create New", icon: "✨" },
-    { id: "list", label: "My Automations", icon: "📋" },
-    { id: "approvals", label: "Teams & Approvals", icon: "👥" },
+    { id: "create", label: "Create New", icon: "sparkles" },
+    { id: "list", label: "My Automations", icon: "clipboard-list" },
+    { id: "approvals", label: "Teams & Approvals", icon: "users" },
   ];
 
   return (
@@ -1197,7 +1200,7 @@ export function AutomationsPage({ client, toast }: AppPageProps) {
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            <span>{t.icon}</span>
+            <i data-lucide={t.icon}></i>
             <span>{t.label}</span>
           </button>
         ))}

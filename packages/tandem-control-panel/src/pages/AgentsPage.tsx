@@ -52,6 +52,7 @@ export function AgentsPage({ client, toast }: AppPageProps) {
                       className="tcp-btn h-7 px-2 text-xs"
                       onClick={() => runNowMutation.mutate(id)}
                     >
+                      <i data-lucide="play"></i>
                       Run now
                     </button>
                   </div>

@@ -43,6 +43,7 @@ export function FilesPage({ api, toast }: AppPageProps) {
             placeholder="uploads"
           />
           <button className="tcp-btn" onClick={() => filesQuery.refetch()}>
+            <i data-lucide="refresh-cw"></i>
             Refresh
           </button>
         </div>
@@ -61,6 +62,7 @@ export function FilesPage({ api, toast }: AppPageProps) {
                       className="tcp-btn-danger h-7 px-2 text-xs"
                       onClick={() => deleteMutation.mutate(path)}
                     >
+                      <i data-lucide="trash-2"></i>
                       Delete
                     </button>
                   </div>

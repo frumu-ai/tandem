@@ -88,6 +88,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
             placeholder="Filter by type or payload"
           />
           <button className="tcp-btn" onClick={() => setEvents([])}>
+            <i data-lucide="trash-2"></i>
             Clear
           </button>
           <div className="flex flex-wrap gap-1">
@@ -95,6 +96,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
               className={`tcp-btn h-7 px-2 text-xs ${group === "all" ? "border-amber-400/60" : ""}`}
               onClick={() => setGroup("all")}
             >
+              <i data-lucide="list"></i>
               All
             </button>
             {groupedTypes.slice(0, 8).map(([type, count]) => (
@@ -103,6 +105,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
                 className={`tcp-btn h-7 px-2 text-xs ${group === type ? "border-amber-400/60" : ""}`}
                 onClick={() => setGroup(type)}
               >
+                <i data-lucide="activity"></i>
                 {type} ({count})
               </button>
             ))}
@@ -133,6 +136,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
                         className="tcp-btn h-7 px-2 text-xs"
                         onClick={() => navigate("packs")}
                       >
+                        <i data-lucide="package"></i>
                         Open Pack Library
                       </button>
                       {path ? (
@@ -140,6 +144,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
                           className="tcp-btn h-7 px-2 text-xs"
                           onClick={() => installFromPath(path)}
                         >
+                          <i data-lucide="download"></i>
                           Install from Path
                         </button>
                       ) : null}
@@ -148,6 +153,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
                           className="tcp-btn h-7 px-2 text-xs"
                           onClick={() => installFromAttachment(x.data)}
                         >
+                          <i data-lucide="paperclip"></i>
                           Install Attachment
                         </button>
                       ) : null}

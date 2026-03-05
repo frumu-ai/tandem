@@ -41,19 +41,36 @@ function runIdFromRecord(run: AnyRun, index = 0) {
   return String(run?.run_id || run?.runId || `run-${index}`).trim();
 }
 
+function runTimestamp(run: AnyRun) {
+  const updated = Number(run?.updated_at_ms || run?.updatedAtMs || 0);
+  const created = Number(run?.created_at_ms || run?.createdAtMs || 0);
+  const value = Number.isFinite(updated) && updated > 0 ? updated : created;
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 function chooseFallbackRunId(runs: AnyRun[], preferredRunId = "") {
   const preferred = String(preferredRunId || "").trim();
+  const ordered = [...(Array.isArray(runs) ? runs : [])].sort(
+    (a, b) => runTimestamp(b) - runTimestamp(a)
+  );
   if (preferred) {
-    const exists = runs.some((run, index) => runIdFromRecord(run, index) === preferred);
-    if (exists) return preferred;
+    const preferredRun = ordered.find((run, index) => runIdFromRecord(run, index) === preferred);
+    if (preferredRun) {
+      const preferredStatus = String(preferredRun?.status || "")
+        .trim()
+        .toLowerCase();
+      if (!["completed", "failed", "cancelled"].includes(preferredStatus)) {
+        return preferred;
+      }
+    }
   }
-  const active = runs.find((run) => {
+  const active = ordered.find((run) => {
     const status = String(run?.status || "")
       .trim()
       .toLowerCase();
     return !["completed", "failed", "cancelled"].includes(status);
   });
-  const fallback = active || runs[0];
+  const fallback = active || ordered[0];
   return fallback ? runIdFromRecord(fallback) : "";
 }
 
@@ -69,7 +86,7 @@ function reduceRunRegistry(state: RunRegistryState, action: RunRegistryAction): 
       ids.push(id);
     }
     let nextSelected = state.selectedRunId;
-    if (!nextSelected || !byId[nextSelected]) {
+    if (!nextSelected) {
       nextSelected = chooseFallbackRunId(action.runs, action.preferredRunId);
     }
     return {

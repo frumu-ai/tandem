@@ -159,6 +159,23 @@ const MAX_UPLOAD_BYTES = Math.max(
 );
 const require = createRequire(import.meta.url);
 const SETUP_ENTRYPOINT = fileURLToPath(import.meta.url);
+const CONTROL_PANEL_PACKAGE = (() => {
+  try {
+    return JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
+  } catch {
+    return {};
+  }
+})();
+const CONTROL_PANEL_VERSION = String(CONTROL_PANEL_PACKAGE?.version || "0.0.0").trim() || "0.0.0";
+const CONTROL_PANEL_BUILD_FINGERPRINT = (() => {
+  try {
+    const source = readFileSync(SETUP_ENTRYPOINT);
+    const digest = createHash("sha1").update(source).digest("hex").slice(0, 8);
+    return `${CONTROL_PANEL_VERSION}-${digest}`;
+  } catch {
+    return `${CONTROL_PANEL_VERSION}-unknown`;
+  }
+})();
 
 const log = (msg) => console.log(`[Tandem Control Panel] ${msg}`);
 const err = (msg) => console.error(`[Tandem Control Panel] ERROR: ${msg}`);
@@ -223,6 +240,9 @@ const swarmState = {
   modelResolutionSource: "none",
   runId: "",
   attachedPid: null,
+  buildVersion: CONTROL_PANEL_VERSION,
+  buildFingerprint: CONTROL_PANEL_BUILD_FINGERPRINT,
+  buildStartedAt: Date.now(),
 };
 const swarmSseClients = new Set();
 
@@ -1545,6 +1565,75 @@ function extractAssistantText(rows) {
   return "";
 }
 
+function normalizePlannerTasks(rawTasks, maxTasks = 8, options = {}) {
+  const normalizedMax = Math.max(1, Number(maxTasks) || 8);
+  const linearFallback = options?.linearFallback === true;
+  const candidates = Array.isArray(rawTasks) ? rawTasks : [];
+  const provisional = candidates
+    .map((row, index) => {
+      if (typeof row === "string") {
+        const title = String(row || "").trim();
+        if (title.length < 6) return null;
+        return {
+          id: `task-${index + 1}`,
+          title,
+          dependsOnTaskIds: [],
+        };
+      }
+      if (!row || typeof row !== "object") return null;
+      const title = String(row?.title || row?.task || row?.content || "").trim();
+      if (title.length < 6) return null;
+      const rawId = String(row?.id || row?.task_id || row?.taskId || `task-${index + 1}`).trim();
+      const id = rawId || `task-${index + 1}`;
+      const dependencySource = Array.isArray(row?.depends_on_task_ids)
+        ? row.depends_on_task_ids
+        : Array.isArray(row?.dependsOnTaskIds)
+          ? row.dependsOnTaskIds
+          : Array.isArray(row?.dependsOn)
+            ? row.dependsOn
+            : Array.isArray(row?.dependencies)
+              ? row.dependencies
+              : [];
+      const dependsOnTaskIds = dependencySource
+        .map((dep) => String(dep || "").trim())
+        .filter(Boolean);
+      return {
+        id,
+        title,
+        dependsOnTaskIds,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, normalizedMax);
+  const withUniqueIds = [];
+  const idCounts = new Map();
+  for (const row of provisional) {
+    const base = String(row?.id || "task").trim() || "task";
+    const count = Number(idCounts.get(base) || 0) + 1;
+    idCounts.set(base, count);
+    const uniqueId = count > 1 ? `${base}-${count}` : base;
+    withUniqueIds.push({
+      id: uniqueId,
+      title: String(row?.title || "").trim(),
+      dependsOnTaskIds: Array.isArray(row?.dependsOnTaskIds) ? row.dependsOnTaskIds : [],
+    });
+  }
+  const knownIds = new Set(withUniqueIds.map((row) => row.id));
+  return withUniqueIds.map((row, index) => {
+    let dependsOnTaskIds = (Array.isArray(row?.dependsOnTaskIds) ? row.dependsOnTaskIds : [])
+      .map((dep) => String(dep || "").trim())
+      .filter((dep) => dep && dep !== row.id && knownIds.has(dep));
+    if (!dependsOnTaskIds.length && linearFallback && index > 0) {
+      dependsOnTaskIds = [withUniqueIds[index - 1].id];
+    }
+    return {
+      id: row.id,
+      title: row.title,
+      dependsOnTaskIds,
+    };
+  });
+}
+
 function parsePlanTasksFromAssistant(assistantText, maxTasks = 8) {
   const normalizedMax = Math.max(1, Number(maxTasks) || 8);
   const fencedJson = String(assistantText || "").match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -1554,23 +1643,22 @@ function parsePlanTasksFromAssistant(assistantText, maxTasks = 8) {
       const payload = JSON.parse(candidateJson);
       if (Array.isArray(payload)) return payload;
       if (Array.isArray(payload?.tasks)) return payload.tasks;
+      if (Array.isArray(payload?.plan)) return payload.plan;
+      if (Array.isArray(payload?.steps)) return payload.steps;
+      if (Array.isArray(payload?.items)) return payload.items;
       return [];
     } catch {
       return [];
     }
   })();
-  const fromJson = parsedTodos
-    .map((row) => {
-      if (typeof row === "string") return row.trim();
-      return String(row?.title || row?.task || row?.content || "").trim();
-    })
-    .filter((row) => row.length >= 6);
-  if (fromJson.length) return fromJson.slice(0, normalizedMax);
-  return String(assistantText || "")
+  const fromJson = normalizePlannerTasks(parsedTodos, normalizedMax, { linearFallback: false });
+  if (fromJson.length) return fromJson;
+  const fromText = String(assistantText || "")
     .split(/\r?\n/)
     .map((line) => line.replace(/^[-*#\d\.\)\[\]\s]+/, "").trim())
     .filter((line) => line.length >= 6)
     .slice(0, normalizedMax);
+  return normalizePlannerTasks(fromText, normalizedMax, { linearFallback: true });
 }
 
 async function generatePlanTodosWithLLM(session, run, maxTasks) {
@@ -1585,7 +1673,9 @@ async function generatePlanTodosWithLLM(session, run, maxTasks) {
     "",
     `Generate ${Math.max(1, Number(maxTasks) || 3)} concise, execution-ready implementation steps.`,
     "Return strict JSON only in this shape:",
-    '{"tasks":[{"title":"..."},{"title":"..."}]}',
+    '{"tasks":[{"id":"task-1","title":"...","depends_on_task_ids":[]},{"id":"task-2","title":"...","depends_on_task_ids":["task-1"]}]}',
+    "Use depends_on_task_ids only when a task requires outputs from another task.",
+    "Independent tasks must have an empty depends_on_task_ids array.",
     "Do not include explanations.",
   ].join("\n");
   const promptResponse = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}/prompt_sync`, {
@@ -1690,6 +1780,28 @@ async function createExecutionSession(session, run) {
       title: `Swarm ${String(run?.run_id || "").trim()}`,
       directory: workspaceRoot,
       workspace_root: workspaceRoot,
+      permission: [
+        { permission: "write", pattern: "*", action: "allow" },
+        { permission: "edit", pattern: "*", action: "allow" },
+        { permission: "apply_patch", pattern: "*", action: "allow" },
+        { permission: "read", pattern: "*", action: "allow" },
+        { permission: "glob", pattern: "*", action: "allow" },
+        { permission: "search", pattern: "*", action: "allow" },
+        { permission: "grep", pattern: "*", action: "allow" },
+        { permission: "codesearch", pattern: "*", action: "allow" },
+        { permission: "ls", pattern: "*", action: "allow" },
+        { permission: "list", pattern: "*", action: "allow" },
+        { permission: "todowrite", pattern: "*", action: "allow" },
+        { permission: "todo_write", pattern: "*", action: "allow" },
+        { permission: "update_todo_list", pattern: "*", action: "allow" },
+        { permission: "websearch", pattern: "*", action: "allow" },
+        { permission: "webfetch", pattern: "*", action: "allow" },
+        { permission: "webfetch_html", pattern: "*", action: "allow" },
+        { permission: "bash", pattern: "*", action: "deny" },
+        { permission: "task", pattern: "*", action: "deny" },
+        { permission: "spawn_agent", pattern: "*", action: "deny" },
+        { permission: "batch", pattern: "*", action: "deny" },
+      ],
       provider: modelProvider || undefined,
       model:
         modelProvider && modelId
@@ -1701,6 +1813,26 @@ async function createExecutionSession(session, run) {
     },
   });
   return String(payload?.id || "").trim();
+}
+
+function workerExecutionToolAllowlist() {
+  return ["ls", "list", "glob", "search", "grep", "codesearch", "read", "write", "edit", "apply_patch"];
+}
+
+function hasToolActivity(rows) {
+  if (!Array.isArray(rows)) return false;
+  return rows.some((row) => {
+    const rowType = String(row?.type || "").trim().toLowerCase();
+    if (rowType.includes("tool")) return true;
+    const rowTool = String(row?.tool || "").trim().toLowerCase();
+    if (rowTool) return true;
+    const parts = Array.isArray(row?.parts) ? row.parts : [];
+    return parts.some((part) => {
+      const partType = String(part?.type || part?.part_type || "").trim().toLowerCase();
+      if (partType.includes("tool")) return true;
+      return String(part?.tool || "").trim().length > 0;
+    });
+  });
 }
 
 let cachedEngineDefaultModel = {
@@ -1766,28 +1898,55 @@ async function runStepWithLLM(session, run, step, stepIndex, totalSteps) {
   const sessionId = await createExecutionSession(session, run);
   if (!sessionId) throw new Error("Failed to create execution session.");
   const prompt = stepPromptText(run, step, stepIndex, totalSteps);
-  const promptResponse = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}/prompt_sync`, {
+  let promptResponse = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}/prompt_sync`, {
     method: "POST",
     timeoutMs: 10 * 60 * 1000,
     body: {
       parts: [{ type: "text", text: prompt }],
+      tool_mode: "required",
+      tool_allowlist: workerExecutionToolAllowlist(),
     },
   });
-  const syncRows = Array.isArray(promptResponse) ? promptResponse : [];
-  const hasAssistant = syncRows.some((row) => String(row?.info?.role || "").toLowerCase() === "assistant");
-  if (!hasAssistant) {
-    const sessionSnapshot = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}`).catch(
-      () => null
+  let syncRows = Array.isArray(promptResponse) ? promptResponse : [];
+  let hasAssistant = syncRows.some((row) => String(row?.info?.role || "").toLowerCase() === "assistant");
+  let hasToolSignal = hasToolActivity(syncRows);
+  if (!hasAssistant || !hasToolSignal) {
+    const retryPrompt = [
+      prompt,
+      "",
+      "Mandatory execution rule:",
+      "- Before final text, execute at least one tool call.",
+      "- Use write/edit/apply_patch to make workspace changes.",
+      "- Do not use bash.",
+    ].join("\n");
+    promptResponse = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}/prompt_sync`, {
+      method: "POST",
+      timeoutMs: 10 * 60 * 1000,
+      body: {
+        parts: [{ type: "text", text: retryPrompt }],
+        tool_mode: "required",
+        tool_allowlist: workerExecutionToolAllowlist(),
+      },
+    }).catch(() => promptResponse);
+    syncRows = Array.isArray(promptResponse) ? promptResponse : syncRows;
+    hasAssistant = hasAssistant || syncRows.some((row) => String(row?.info?.role || "").toLowerCase() === "assistant");
+    hasToolSignal = hasToolSignal || hasToolActivity(syncRows);
+  }
+  const sessionSnapshot = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}`).catch(
+    () => null
+  );
+  const messages = Array.isArray(sessionSnapshot?.messages) ? sessionSnapshot.messages : [];
+  const persistedAssistant = messages.some(
+    (message) => String(message?.info?.role || "").toLowerCase() === "assistant"
+  );
+  hasToolSignal = hasToolSignal || hasToolActivity(messages);
+  if (!hasAssistant && !persistedAssistant) {
+    throw new Error(
+      "PROMPT_DISPATCH_EMPTY_RESPONSE: prompt_sync returned no assistant output. Model route may be unresolved."
     );
-    const messages = Array.isArray(sessionSnapshot?.messages) ? sessionSnapshot.messages : [];
-    const persistedAssistant = messages.some(
-      (message) => String(message?.info?.role || "").toLowerCase() === "assistant"
-    );
-    if (!persistedAssistant) {
-      throw new Error(
-        "PROMPT_DISPATCH_EMPTY_RESPONSE: prompt_sync returned no assistant output. Model route may be unresolved."
-      );
-    }
+  }
+  if (!hasToolSignal) {
+    throw new Error("TASK_NOT_VERIFIED: NO_TOOL_ACTIVITY_NO_WORKSPACE_CHANGE");
   }
   return sessionId;
 }
@@ -1852,28 +2011,55 @@ async function runTaskWithLLM(session, run, task, workerId, workflowId) {
   const sessionId = await createExecutionSession(session, run);
   if (!sessionId) throw new Error("Failed to create execution session.");
   const prompt = taskPromptText(run, task, workerId, workflowId);
-  const promptResponse = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}/prompt_sync`, {
+  let promptResponse = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}/prompt_sync`, {
     method: "POST",
     timeoutMs: 10 * 60 * 1000,
     body: {
       parts: [{ type: "text", text: prompt }],
+      tool_mode: "required",
+      tool_allowlist: workerExecutionToolAllowlist(),
     },
   });
-  const syncRows = Array.isArray(promptResponse) ? promptResponse : [];
-  const hasAssistant = syncRows.some((row) => String(row?.info?.role || "").toLowerCase() === "assistant");
-  if (!hasAssistant) {
-    const sessionSnapshot = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}`).catch(
-      () => null
+  let syncRows = Array.isArray(promptResponse) ? promptResponse : [];
+  let hasAssistant = syncRows.some((row) => String(row?.info?.role || "").toLowerCase() === "assistant");
+  let hasToolSignal = hasToolActivity(syncRows);
+  if (!hasAssistant || !hasToolSignal) {
+    const retryPrompt = [
+      prompt,
+      "",
+      "Mandatory execution rule:",
+      "- Before final text, execute at least one tool call.",
+      "- Use write/edit/apply_patch to make workspace changes.",
+      "- Do not use bash.",
+    ].join("\n");
+    promptResponse = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}/prompt_sync`, {
+      method: "POST",
+      timeoutMs: 10 * 60 * 1000,
+      body: {
+        parts: [{ type: "text", text: retryPrompt }],
+        tool_mode: "required",
+        tool_allowlist: workerExecutionToolAllowlist(),
+      },
+    }).catch(() => promptResponse);
+    syncRows = Array.isArray(promptResponse) ? promptResponse : syncRows;
+    hasAssistant = hasAssistant || syncRows.some((row) => String(row?.info?.role || "").toLowerCase() === "assistant");
+    hasToolSignal = hasToolSignal || hasToolActivity(syncRows);
+  }
+  const sessionSnapshot = await engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}`).catch(
+    () => null
+  );
+  const messages = Array.isArray(sessionSnapshot?.messages) ? sessionSnapshot.messages : [];
+  const persistedAssistant = messages.some(
+    (message) => String(message?.info?.role || "").toLowerCase() === "assistant"
+  );
+  hasToolSignal = hasToolSignal || hasToolActivity(messages);
+  if (!hasAssistant && !persistedAssistant) {
+    throw new Error(
+      "PROMPT_DISPATCH_EMPTY_RESPONSE: prompt_sync returned no assistant output. Model route may be unresolved."
     );
-    const messages = Array.isArray(sessionSnapshot?.messages) ? sessionSnapshot.messages : [];
-    const persistedAssistant = messages.some(
-      (message) => String(message?.info?.role || "").toLowerCase() === "assistant"
-    );
-    if (!persistedAssistant) {
-      throw new Error(
-        "PROMPT_DISPATCH_EMPTY_RESPONSE: prompt_sync returned no assistant output. Model route may be unresolved."
-      );
-    }
+  }
+  if (!hasToolSignal) {
+    throw new Error("TASK_NOT_VERIFIED: NO_TOOL_ACTIVITY_NO_WORKSPACE_CHANGE");
   }
   return sessionId;
 }
@@ -1885,20 +2071,25 @@ async function fetchBlackboardTasks(session, runId) {
   return extractBlackboardTasks(payload);
 }
 
-async function seedBlackboardTasks(session, runId, objective, titles, workflowId) {
-  const prepared = (Array.isArray(titles) ? titles : [])
-    .map((title) => String(title || "").trim())
-    .filter((title) => title.length >= 6)
-    .map((title, idx, list) => ({
+async function seedBlackboardTasks(session, runId, objective, taskRows, workflowId) {
+  const normalizedTasks = normalizePlannerTasks(taskRows, 128, { linearFallback: true });
+  const validTaskIds = new Set(normalizedTasks.map((task) => task.id));
+  const prepared = normalizedTasks
+    .map((task, idx, list) => ({
+      id: String(task?.id || `task-${idx + 1}`).trim(),
       task_type: "implementation",
       workflow_id: workflowId,
+      depends_on_task_ids: (Array.isArray(task?.dependsOnTaskIds) ? task.dependsOnTaskIds : [])
+        .map((dep) => String(dep || "").trim())
+        .filter((dep) => dep && validTaskIds.has(dep)),
       payload: {
-        title,
+        title: String(task?.title || "").trim(),
         objective,
         step_index: idx + 1,
         total_steps: list.length,
       },
-    }));
+    }))
+    .filter((task) => String(task?.payload?.title || "").trim().length >= 6);
   if (!prepared.length) {
     throw new Error("No valid tasks to seed.");
   }
@@ -2351,6 +2542,8 @@ async function startSwarm(session, config = {}) {
   const maxAgents = Math.max(1, Math.min(16, Number.parseInt(String(config.maxAgents || 3), 10) || 3));
   const workflowId = String(config.workflowId || "swarm.blackboard.default").trim() || "swarm.blackboard.default";
   const requireLlmPlan = config?.requireLlmPlan === true || config?.require_llm_plan === true;
+  const allowLocalPlannerFallback =
+    config?.allowLocalPlannerFallback === true || config?.allow_local_planner_fallback === true;
   let modelProvider = String(config.modelProvider || "").trim();
   let modelId = String(config.modelId || "").trim();
   const mcpServers = (Array.isArray(config.mcpServers) ? config.mcpServers : [])
@@ -2397,26 +2590,27 @@ async function startSwarm(session, config = {}) {
     },
   }))();
   await synced;
-  let plannerTitles = [];
+  let plannerTasks = [];
   let planSeedMode = "fallback_local";
   try {
     const llmPlan = await generatePlanTodosWithLLM(session, run, maxTasks);
-    plannerTitles = (Array.isArray(llmPlan.tasks) ? llmPlan.tasks : [])
-      .map((row) => String(row || "").trim())
-      .filter((row) => row.length >= 6)
-      .slice(0, Math.max(1, maxTasks));
-    if (!plannerTitles.length) throw new Error("LLM planner returned no valid tasks.");
-    const seeded = await seedBlackboardTasks(session, runId, objective, plannerTitles, workflowId);
+    plannerTasks = normalizePlannerTasks(llmPlan.tasks, maxTasks, { linearFallback: false });
+    if (!plannerTasks.length) throw new Error("LLM planner returned no valid tasks.");
+    const seeded = await seedBlackboardTasks(session, runId, objective, plannerTasks, workflowId);
     planSeedMode = seeded?.mode === "steps_compat" ? "steps_llm_compat" : "blackboard_llm";
     await appendContextRunEvent(session, runId, "plan_seeded_llm", "planning", {
       source: "llm_objective_planner",
       session_id: llmPlan.sessionId || null,
       task_count: Number(seeded?.count || 0),
+      dependency_edges: plannerTasks.reduce(
+        (sum, task) => sum + (Array.isArray(task?.dependsOnTaskIds) ? task.dependsOnTaskIds.length : 0),
+        0
+      ),
       workflow_id: workflowId,
       planner_target: planSeedMode,
     });
   } catch (planningError) {
-    if (requireLlmPlan) {
+    if (requireLlmPlan && !allowLocalPlannerFallback) {
       await appendContextRunEvent(session, runId, "plan_failed_llm_required", "failed", {
         reason: String(planningError?.message || planningError || "unknown planning failure"),
       }).catch(() => null);
@@ -2424,17 +2618,22 @@ async function startSwarm(session, config = {}) {
         `LLM planning failed and fallback is disabled: ${String(planningError?.message || planningError || "unknown planning failure")}`
       );
     }
-    plannerTitles = parseObjectiveTodos(objective, maxTasks)
-      .map((row) => String(row || "").trim())
-      .filter((row) => row.length >= 6)
-      .slice(0, Math.max(1, maxTasks));
-    if (!plannerTitles.length) plannerTitles = ["Execute requested objective"];
+    plannerTasks = normalizePlannerTasks(parseObjectiveTodos(objective, maxTasks), maxTasks, {
+      linearFallback: true,
+    });
+    if (!plannerTasks.length) plannerTasks = normalizePlannerTasks(["Execute requested objective"], 1, {
+      linearFallback: false,
+    });
     try {
-      const seeded = await seedBlackboardTasks(session, runId, objective, plannerTitles, workflowId);
+      const seeded = await seedBlackboardTasks(session, runId, objective, plannerTasks, workflowId);
       planSeedMode = seeded?.mode === "steps_compat" ? "steps_local_compat" : "blackboard_local";
       await appendContextRunEvent(session, runId, "plan_seeded_local", "planning", {
         source: "local_objective_parser",
         task_count: Number(seeded?.count || 0),
+        dependency_edges: plannerTasks.reduce(
+          (sum, task) => sum + (Array.isArray(task?.dependsOnTaskIds) ? task.dependsOnTaskIds.length : 0),
+          0
+        ),
         workflow_id: workflowId,
         planner_target: planSeedMode,
         note: `Fallback planner used: ${String(planningError?.message || planningError || "unknown planning failure")}`,
@@ -2676,6 +2875,7 @@ async function main() {
     log(`Engine mode:   ${isLocalEngineUrl(ENGINE_URL) ? "local" : "remote"}`);
     log(`Files root:    ${FILES_ROOT}`);
     log(`Files scope:   ${FILES_SCOPE || "(full root)"}`);
+    log(`Build:         ${CONTROL_PANEL_BUILD_FINGERPRINT}`);
     log("=========================================");
   });
 }

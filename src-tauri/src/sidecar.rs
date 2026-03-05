@@ -489,6 +489,10 @@ pub struct SendMessageRequest {
     pub model: Option<ModelSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_allowlist: Option<Vec<String>>,
 }
 
 impl SendMessageRequest {
@@ -501,6 +505,8 @@ impl SendMessageRequest {
             })],
             model: None,
             agent: None,
+            tool_mode: None,
+            tool_allowlist: None,
         }
     }
 
@@ -517,6 +523,8 @@ impl SendMessageRequest {
                 model_id,
             }),
             agent: None,
+            tool_mode: None,
+            tool_allowlist: None,
         }
     }
 
@@ -538,6 +546,8 @@ impl SendMessageRequest {
             parts,
             model: None,
             agent: None,
+            tool_mode: None,
+            tool_allowlist: None,
         }
     }
 

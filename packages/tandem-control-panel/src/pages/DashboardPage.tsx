@@ -69,15 +69,19 @@ export function DashboardPage(props: AppPageProps) {
       <PageCard title="Quick Actions" subtitle="Jump to frequent tasks">
         <div className="grid grid-cols-2 gap-2">
           <button className="tcp-btn" onClick={() => navigate("chat")}>
+            <i data-lucide="message-square"></i>
             Open Chat
           </button>
-          <button className="tcp-btn" onClick={() => navigate("swarm")}>
-            Open Swarm
+          <button className="tcp-btn" onClick={() => navigate("orchestrator")}>
+            <i data-lucide="workflow"></i>
+            Open Orchestrator
           </button>
           <button className="tcp-btn" onClick={() => navigate("agents")}>
+            <i data-lucide="users"></i>
             Automations
           </button>
           <button className="tcp-btn" onClick={() => navigate("settings")}>
+            <i data-lucide="settings"></i>
             Settings
           </button>
         </div>
@@ -92,7 +96,8 @@ export function DashboardPage(props: AppPageProps) {
                 className="tcp-list-item text-left"
                 onClick={() => navigate("chat")}
               >
-                <div className="font-medium">
+                <div className="font-medium inline-flex items-center gap-1.5">
+                  <i data-lucide="messages-square"></i>
                   {String(session.title || session.id || "Session")}
                 </div>
                 <div className="tcp-subtle text-xs">

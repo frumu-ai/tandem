@@ -63,6 +63,7 @@ export function LoginPage({
             type="submit"
             className="tcp-btn-primary w-full"
           >
+            <i data-lucide="key-round"></i>
             Sign In
           </button>
           <button
@@ -79,6 +80,7 @@ export function LoginPage({
               }
             }}
           >
+            <i data-lucide="activity"></i>
             Check Engine Connectivity
           </button>
           <div className={`min-h-[1.2rem] text-sm ${ok ? "text-lime-300" : "text-rose-300"}`}>
