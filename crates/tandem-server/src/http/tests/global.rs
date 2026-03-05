@@ -24,6 +24,28 @@ async fn global_health_route_returns_healthy_shape() {
 }
 
 #[tokio::test]
+async fn browser_status_route_returns_browser_readiness_shape() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("GET")
+        .uri("/browser/status")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert!(payload.get("enabled").and_then(Value::as_bool).is_some());
+    assert!(payload.get("runnable").and_then(Value::as_bool).is_some());
+    assert!(payload.get("sidecar").is_some());
+    assert!(payload.get("browser").is_some());
+    assert!(payload.get("blocking_issues").is_some());
+    assert!(payload.get("recommendations").is_some());
+    assert!(payload.get("install_hints").is_some());
+}
+
+#[tokio::test]
 async fn non_health_routes_are_blocked_until_runtime_ready() {
     let state = AppState::new_starting(Uuid::new_v4().to_string(), false);
     let app = app_router(state);

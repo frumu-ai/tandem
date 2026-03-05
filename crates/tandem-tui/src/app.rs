@@ -6751,6 +6751,8 @@ BASICS:
   /engine restart    Restart the Tandem engine
   /engine token      Show masked engine API token
   /engine token show Show full engine API token
+  /browser status    Show browser readiness from the engine
+  /browser doctor    Show browser diagnostics and install hints
 
 SESSIONS:
   /sessions          List all sessions
@@ -7002,6 +7004,71 @@ MULTI-AGENT KEYS:
                     }
                 }
                 _ => "Usage: /engine status | restart | token [show]".to_string(),
+            },
+
+            "browser" => match args.get(0).map(|s| *s) {
+                Some("status") | Some("doctor") => {
+                    if let Some(client) = &self.client {
+                        match client.get_browser_status().await {
+                            Ok(status) => {
+                                let mut lines = vec![
+                                    "Browser Status:".to_string(),
+                                    format!(
+                                        "  Enabled: {}",
+                                        if status.enabled { "Yes" } else { "No" }
+                                    ),
+                                    format!(
+                                        "  Runnable: {}",
+                                        if status.runnable { "Yes" } else { "No" }
+                                    ),
+                                    format!(
+                                        "  Sidecar: {}",
+                                        status
+                                            .sidecar
+                                            .path
+                                            .clone()
+                                            .unwrap_or_else(|| "<not found>".to_string())
+                                    ),
+                                    format!(
+                                        "  Browser: {}",
+                                        status
+                                            .browser
+                                            .path
+                                            .clone()
+                                            .unwrap_or_else(|| "<not found>".to_string())
+                                    ),
+                                ];
+                                if let Some(version) = status.browser.version.as_deref() {
+                                    lines.push(format!("  Browser version: {}", version));
+                                }
+                                if !status.blocking_issues.is_empty() {
+                                    lines.push("Blocking issues:".to_string());
+                                    for issue in status.blocking_issues {
+                                        lines
+                                            .push(format!("  - {}: {}", issue.code, issue.message));
+                                    }
+                                }
+                                if !status.recommendations.is_empty() {
+                                    lines.push("Recommendations:".to_string());
+                                    for row in status.recommendations {
+                                        lines.push(format!("  - {}", row));
+                                    }
+                                }
+                                if !status.install_hints.is_empty() {
+                                    lines.push("Install hints:".to_string());
+                                    for row in status.install_hints {
+                                        lines.push(format!("  - {}", row));
+                                    }
+                                }
+                                lines.join("\n")
+                            }
+                            Err(e) => format!("Failed to get browser status: {}", e),
+                        }
+                    } else {
+                        "Engine: Not connected".to_string()
+                    }
+                }
+                _ => "Usage: /browser status | doctor".to_string(),
             },
 
             "sessions" => {

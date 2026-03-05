@@ -15,6 +15,7 @@ pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoRes
     let build_id = crate::build_id();
     let binary_path = crate::binary_path_for_health();
     let environment = state.host_runtime_context();
+    let browser = state.browser_health_summary().await;
     Json(json!({
         "healthy": true,
         "ready": state.is_ready(),
@@ -28,8 +29,13 @@ pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoRes
         "binary_path": binary_path,
         "mode": state.mode_label(),
         "leaseCount": lease_count,
-        "environment": environment
+        "environment": environment,
+        "browser": browser
     }))
+}
+
+pub(super) async fn browser_status(State(state): State<AppState>) -> impl IntoResponse {
+    Json(json!(state.browser_status().await))
 }
 
 pub(super) async fn global_lease_acquire(
@@ -315,7 +321,12 @@ fn event_matches_filter(event: &EngineEvent, filter: &EventFilterQuery) -> bool 
 
 pub(super) async fn global_dispose(State(state): State<AppState>) -> Json<Value> {
     let cancelled = state.cancellations.cancel_all().await;
-    Json(json!({"ok": true, "cancelledSessions": cancelled}))
+    let closed_browser_sessions = state.close_all_browser_sessions().await;
+    Json(json!({
+        "ok": true,
+        "cancelledSessions": cancelled,
+        "closedBrowserSessions": closed_browser_sessions,
+    }))
 }
 
 pub(super) async fn tool_ids(State(state): State<AppState>) -> Json<Value> {

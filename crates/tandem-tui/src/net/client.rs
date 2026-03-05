@@ -22,6 +22,45 @@ pub struct EngineStatus {
     pub mode: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct BrowserBlockingIssue {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct BrowserBinaryStatus {
+    pub found: bool,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub channel: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct BrowserStatusResponse {
+    pub enabled: bool,
+    pub runnable: bool,
+    #[serde(default)]
+    pub headless_default: bool,
+    #[serde(default)]
+    pub sidecar: BrowserBinaryStatus,
+    #[serde(default)]
+    pub browser: BrowserBinaryStatus,
+    #[serde(default)]
+    pub blocking_issues: Vec<BrowserBlockingIssue>,
+    #[serde(default)]
+    pub recommendations: Vec<String>,
+    #[serde(default)]
+    pub install_hints: Vec<String>,
+    #[serde(default)]
+    pub last_checked_at_ms: Option<u64>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct SessionTime {
     pub created: Option<u64>,
@@ -990,6 +1029,13 @@ impl EngineClient {
         let url = format!("{}/global/health", self.base_url);
         let resp = self.client.get(&url).send().await?;
         let status = resp.json::<EngineStatus>().await?;
+        Ok(status)
+    }
+
+    pub async fn get_browser_status(&self) -> Result<BrowserStatusResponse> {
+        let url = format!("{}/browser/status", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        let status = resp.json::<BrowserStatusResponse>().await?;
         Ok(status)
     }
 

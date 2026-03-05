@@ -1801,7 +1801,25 @@ async fn evaluate_capability_deny(
         return Some(format!("tool `{tool}` not in agent allowlist"));
     }
 
-    if matches!(tool, "websearch" | "webfetch" | "webfetch_html") {
+    let browser_execution_tool = matches!(
+        tool,
+        "browser_open"
+            | "browser_navigate"
+            | "browser_snapshot"
+            | "browser_click"
+            | "browser_type"
+            | "browser_press"
+            | "browser_wait"
+            | "browser_extract"
+            | "browser_screenshot"
+            | "browser_close"
+    );
+
+    if matches!(
+        tool,
+        "websearch" | "webfetch" | "webfetch_html" | "browser_open" | "browser_navigate"
+    ) || browser_execution_tool
+    {
         if !caps.net_scopes.enabled {
             return Some("network disabled for this agent instance".to_string());
         }

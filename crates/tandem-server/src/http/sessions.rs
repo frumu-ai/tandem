@@ -998,6 +998,7 @@ pub(super) async fn abort_session(
 ) -> Json<Value> {
     let cancelled = state.cancellations.cancel(&id).await;
     let cancelled_run = state.run_registry.finish_active(&id).await;
+    let closed_browser_sessions = state.close_browser_sessions_for_owner(&id).await;
     if let Some(run) = cancelled_run.as_ref() {
         state.event_bus.publish(EngineEvent::new(
             "session.run.finished",
@@ -1011,7 +1012,8 @@ pub(super) async fn abort_session(
     }
     Json(json!({
         "ok": true,
-        "cancelled": cancelled || cancelled_run.is_some()
+        "cancelled": cancelled || cancelled_run.is_some(),
+        "closedBrowserSessions": closed_browser_sessions,
     }))
 }
 
@@ -1024,6 +1026,7 @@ pub(super) async fn cancel_run_by_id(
         if active_run.run_id == run_id {
             let _cancelled = state.cancellations.cancel(&id).await;
             let _ = state.run_registry.finish_if_match(&id, &run_id).await;
+            let closed_browser_sessions = state.close_browser_sessions_for_owner(&id).await;
             state.event_bus.publish(EngineEvent::new(
                 "session.run.finished",
                 json!({
@@ -1033,7 +1036,11 @@ pub(super) async fn cancel_run_by_id(
                     "status": "cancelled",
                 }),
             ));
-            return Json(json!({"ok": true, "cancelled": true}));
+            return Json(json!({
+                "ok": true,
+                "cancelled": true,
+                "closedBrowserSessions": closed_browser_sessions,
+            }));
         }
     }
     Json(json!({"ok": true, "cancelled": false}))

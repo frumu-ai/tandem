@@ -438,6 +438,9 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
                 .await;
             for (session_id, run) in stale {
                 let _ = reaper_state.cancellations.cancel(&session_id).await;
+                let _ = reaper_state
+                    .close_browser_sessions_for_owner(&session_id)
+                    .await;
                 reaper_state.event_bus.publish(EngineEvent::new(
                     "session.run.finished",
                     json!({
@@ -1329,6 +1332,7 @@ async fn routines_run_pause(
     if current.status == RoutineRunStatus::Running {
         for session_id in &current.active_session_ids {
             if state.cancellations.cancel(session_id).await {
+                let _ = state.close_browser_sessions_for_owner(session_id).await;
                 cancelled_sessions.push(session_id.clone());
             }
         }

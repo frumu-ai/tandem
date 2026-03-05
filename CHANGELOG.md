@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Headless-first Chromium browser automation with readiness diagnostics**:
+  - added a new `tandem-browser` Rust sidecar crate for local Chromium automation over stdio with typed browser RPC methods (`browser.open`, `browser.navigate`, `browser.snapshot`, `browser.click`, `browser.type`, `browser.press`, `browser.wait`, `browser.extract`, `browser.screenshot`, `browser.close`)
+  - added browser readiness and install diagnostics with real launch smoke tests, distro-aware Linux install hints, and sidecar/browser detection for headless VPS hosts and desktops
+  - added browser runtime config and env support:
+    - `browser.enabled`
+    - `browser.sidecar_path`
+    - `browser.executable_path`
+    - `browser.headless_default`
+    - `browser.allow_no_sandbox`
+    - `browser.user_data_root`
+    - `browser.max_sessions`
+    - `browser.default_viewport`
+    - `browser.allowed_hosts`
+    - `TANDEM_BROWSER_SIDECAR`
+    - `TANDEM_BROWSER_EXECUTABLE`
+    - `TANDEM_BROWSER_HEADLESS`
+    - `TANDEM_BROWSER_ALLOW_NO_SANDBOX`
+    - `TANDEM_BROWSER_USER_DATA_ROOT`
+    - `TANDEM_BROWSER_ALLOWED_HOSTS`
+  - added typed engine browser tools:
+    - `browser_status`
+    - `browser_open`
+    - `browser_navigate`
+    - `browser_snapshot`
+    - `browser_click`
+    - `browser_type`
+    - `browser_press`
+    - `browser_wait`
+    - `browser_extract`
+    - `browser_screenshot`
+    - `browser_close`
+  - browser tools now register in both server mode and one-shot runtime mode; `browser_status` remains available even when browser execution is not runnable
+  - added browser status surfaces across engine and clients:
+    - `GET /browser/status`
+    - browser summary block on `GET /global/health`
+    - `tandem-engine browser status`
+    - `tandem-engine browser doctor`
+    - `tandem-browser doctor --json`
+    - `tandem-browser serve --stdio`
+    - TUI `/browser status` and `/browser doctor`
+    - control-panel Browser Diagnostics settings card
+  - browser artifacts now persist screenshots and large extracts as files/artifacts instead of returning large base64 payloads to the model
+  - browser navigation/action flows now reuse host-allowlist policy and external-integration gating, and explicit session cancel/dispose paths now clean up tracked browser sessions
+
 - **Orchestrator multi-run event fan-in and run registry (engine + control panel)**:
   - tandem-engine now exposes multiplex context-run SSE fan-in via `GET /context/runs/events/stream`, supporting one stream for many run IDs with cursor resume support.
   - context-run stream payloads now include a normalized envelope (run-scoped event metadata + cursor state) for deterministic client reconciliation.

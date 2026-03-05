@@ -2,6 +2,34 @@
 
 ### Highlights
 
+- **Headless-first Chromium browser automation with readiness diagnostics**:
+  - Added a new `tandem-browser` sidecar for local Chromium automation over stdio, with typed browser actions for open, navigate, snapshot, click, type, press, wait, extract, screenshot, and close.
+  - Browser automation is now explicitly headless-first: it works on a VPS with no GUI as long as the sidecar and a Chromium-based browser are installed on the same host as `tandem-engine`.
+  - Added readiness diagnostics that do real browser launch smoke tests, detect missing Chrome/Chromium/Edge/Brave installs, surface Linux install hints, and explain non-runnable states instead of silently omitting browser capability.
+  - Added operator/browser status surfaces across the stack:
+    - `GET /browser/status`
+    - browser summary on `GET /global/health`
+    - `tandem-engine browser status`
+    - `tandem-engine browser doctor`
+    - `tandem-browser doctor --json`
+    - TUI `/browser status` and `/browser doctor`
+    - control-panel Browser Diagnostics card in Settings
+  - Replaced the generic model-facing browser action shape with typed engine tools:
+    - `browser_status`
+    - `browser_open`
+    - `browser_navigate`
+    - `browser_snapshot`
+    - `browser_click`
+    - `browser_type`
+    - `browser_press`
+    - `browser_wait`
+    - `browser_extract`
+    - `browser_screenshot`
+    - `browser_close`
+  - Browser tool registration now works in both server and one-shot runtime paths, and `browser_status` remains available even when full browser execution is blocked.
+  - Screenshots and oversized extracts now persist as artifacts/files rather than being returned as large inline base64 payloads.
+  - Session cancel, global dispose, stale-run reaping, and routine-pause flows now clean up tracked browser sessions to avoid leaked headless browser state.
+
 - **Blackboard as central coordination layer + control panel parity**:
   - Extended engine blackboard with first-class task state (`blackboard.tasks`) including workflow IDs, task lineage references, lease ownership/token/expiry, retries, and optimistic task revision (`task_rev`).
   - Added append-only task patch operations:

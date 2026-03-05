@@ -43,7 +43,7 @@ tandem-providers = { path = "../crates/tandem-providers", version = "0.4.1" }
 tandem-server = { path = "../crates/tandem-server", version = "0.4.1" }
 tandem-observability = { path = "../crates/tandem-observability", version = "0.4.1" }
 tandem-memory = { path = "../crates/tandem-memory", version = "0.4.1" }
-
+tandem-browser = { path = "../crates/tandem-browser", version = "0.4.1" }
 
 
 

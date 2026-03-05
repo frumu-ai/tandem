@@ -2,6 +2,7 @@
 members = [
     "src-tauri",
     "engine",
+    "crates/tandem-browser",
     "crates/tandem-types",
     "crates/tandem-wire",
     "crates/tandem-core",

@@ -3,6 +3,30 @@ import { useEffect, useRef, useState } from "react";
 import { PageCard, EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 
+type BrowserBlockingIssue = {
+  code?: string;
+  message?: string;
+};
+
+type BrowserBinaryStatus = {
+  found?: boolean;
+  path?: string | null;
+  version?: string | null;
+  channel?: string | null;
+};
+
+type BrowserStatusResponse = {
+  enabled?: boolean;
+  runnable?: boolean;
+  headless_default?: boolean;
+  sidecar?: BrowserBinaryStatus;
+  browser?: BrowserBinaryStatus;
+  blocking_issues?: BrowserBlockingIssue[];
+  recommendations?: string[];
+  install_hints?: string[];
+  last_error?: string | null;
+};
+
 export function SettingsPage({
   client,
   api,
@@ -60,6 +84,11 @@ export function SettingsPage({
   const providersConfig = useQuery({
     queryKey: ["settings", "providers", "config"],
     queryFn: () => client.providers.config().catch(() => ({ default: "", providers: {} })),
+  });
+  const browserStatus = useQuery<BrowserStatusResponse | null>({
+    queryKey: ["settings", "browser", "status"],
+    queryFn: () => api("/api/engine/browser/status", { method: "GET" }).catch(() => null),
+    refetchInterval: 30_000,
   });
   const [selectedProvider, setSelectedProvider] = [
     String(providersConfig.data?.default || ""),
@@ -140,6 +169,15 @@ export function SettingsPage({
   };
 
   const providers = Array.isArray(providersCatalog.data?.all) ? providersCatalog.data.all : [];
+  const browserIssues = Array.isArray(browserStatus.data?.blocking_issues)
+    ? browserStatus.data?.blocking_issues || []
+    : [];
+  const browserRecommendations = Array.isArray(browserStatus.data?.recommendations)
+    ? browserStatus.data?.recommendations || []
+    : [];
+  const browserInstallHints = Array.isArray(browserStatus.data?.install_hints)
+    ? browserStatus.data?.install_hints || []
+    : [];
 
   const applyDefaultModel = (providerId: string, modelId: string) => {
     const next = String(modelId || "").trim();
@@ -363,6 +401,128 @@ export function SettingsPage({
               Default: {String(providersConfig.data?.default || "none")}
             </div>
           </div>
+        </div>
+      </PageCard>
+
+      <PageCard
+        title="Browser Diagnostics"
+        subtitle="Headless Chromium readiness, detected binaries, and install guidance"
+        className="xl:col-span-2"
+      >
+        <div className="grid gap-3">
+          <div className="grid gap-2 md:grid-cols-3">
+            <div className="tcp-list-item">
+              <div className="text-sm font-medium">Status</div>
+              <div className="mt-1 text-sm">
+                {browserStatus.data
+                  ? browserStatus.data.runnable
+                    ? "Ready"
+                    : browserStatus.data.enabled
+                      ? "Blocked"
+                      : "Disabled"
+                  : "Unknown"}
+              </div>
+              <div className="tcp-subtle text-xs">
+                Headless default: {browserStatus.data?.headless_default ? "yes" : "no"}
+              </div>
+            </div>
+            <div className="tcp-list-item">
+              <div className="text-sm font-medium">Sidecar</div>
+              <div className="mt-1 break-all text-sm">
+                {browserStatus.data?.sidecar?.path || "Not found"}
+              </div>
+              <div className="tcp-subtle text-xs">
+                {browserStatus.data?.sidecar?.version || "No version detected"}
+              </div>
+            </div>
+            <div className="tcp-list-item">
+              <div className="text-sm font-medium">Browser</div>
+              <div className="mt-1 break-all text-sm">
+                {browserStatus.data?.browser?.path || "Not found"}
+              </div>
+              <div className="tcp-subtle text-xs">
+                {browserStatus.data?.browser?.version ||
+                  browserStatus.data?.browser?.channel ||
+                  "No version detected"}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button className="tcp-btn" onClick={() => void browserStatus.refetch()}>
+              <i data-lucide="refresh-cw"></i>
+              Refresh Browser Status
+            </button>
+            <button
+              className="tcp-btn"
+              onClick={() =>
+                api("/api/engine/browser/status", { method: "GET" })
+                  .then(() => toast("ok", "Browser diagnostics refreshed."))
+                  .catch((error) =>
+                    toast("err", error instanceof Error ? error.message : String(error))
+                  )
+              }
+            >
+              <i data-lucide="stethoscope"></i>
+              Re-run Diagnostics
+            </button>
+          </div>
+
+          {browserStatus.isLoading ? (
+            <EmptyState text="Loading browser diagnostics..." />
+          ) : browserStatus.data ? (
+            <>
+              {browserIssues.length ? (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                  <div className="mb-2 text-sm font-medium">Blocking issues</div>
+                  <div className="grid gap-2">
+                    {browserIssues.map((issue, index) => (
+                      <div key={`${issue.code || "issue"}-${index}`} className="tcp-list-item">
+                        <div className="text-sm font-medium">{issue.code || "browser_issue"}</div>
+                        <div className="tcp-subtle text-xs">
+                          {issue.message || "Unknown browser issue."}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+                  Browser automation is ready on this machine.
+                </div>
+              )}
+
+              {browserRecommendations.length ? (
+                <div className="grid gap-2">
+                  <div className="text-sm font-medium">Recommendations</div>
+                  {browserRecommendations.map((row, index) => (
+                    <div key={`browser-recommendation-${index}`} className="tcp-list-item text-sm">
+                      {row}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {browserInstallHints.length ? (
+                <div className="grid gap-2">
+                  <div className="text-sm font-medium">Install hints</div>
+                  {browserInstallHints.map((row, index) => (
+                    <div key={`browser-install-hint-${index}`} className="tcp-list-item text-sm">
+                      {row}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {browserStatus.data?.last_error ? (
+                <div className="tcp-subtle rounded-lg border border-slate-700/60 bg-slate-900/20 p-3 text-xs">
+                  Last error: {browserStatus.data.last_error}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <EmptyState text="Browser diagnostics are unavailable." />
+          )}
         </div>
       </PageCard>
     </div>

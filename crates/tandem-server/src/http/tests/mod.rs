@@ -48,7 +48,10 @@ pub(super) async fn test_state() -> AppState {
         .await
         .expect("config");
     let event_bus = EventBus::new();
-    let providers = ProviderRegistry::new(config.get().await.into());
+    let app_config = config.get().await;
+    let browser = crate::BrowserSubsystem::new(app_config.browser.clone());
+    let _ = browser.refresh_status().await;
+    let providers = ProviderRegistry::new(app_config.into());
     let plugins = PluginRegistry::new(".").await.expect("plugins");
     let agents = AgentRegistry::new(".").await.expect("agents");
     let tools = ToolRegistry::new();
@@ -93,6 +96,7 @@ pub(super) async fn test_state() -> AppState {
             cancellations,
             engine_loop,
             host_runtime_context,
+            browser,
         })
         .await
         .expect("runtime ready");

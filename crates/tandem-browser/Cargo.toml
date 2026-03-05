@@ -1,0 +1,28 @@
+[package]
+name = "tandem-browser"
+version = "0.4.1"
+description = "Chromium browser sidecar and diagnostics for Tandem"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/frumu-ai/tandem"
+edition = "2021"
+
+[lib]
+name = "tandem_browser"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tandem-browser"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+headless_chrome = "1"
+html2md = "0.2"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }

@@ -21,7 +21,7 @@ use tandem_observability::{
     canonical_logs_dir_from_root, emit_event, init_process_logging, ObservabilityEvent, ProcessKind,
 };
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
-use tandem_server::{detect_host_runtime_context, serve, AppState, RuntimeState};
+use tandem_server::{detect_host_runtime_context, serve, AppState, BrowserSubsystem, RuntimeState};
 use tandem_tools::ToolRegistry;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -95,6 +95,13 @@ const TOOL_EXAMPLES: &str = r#"Examples:
 
 const TOKEN_EXAMPLES: &str = r#"Examples:
   tandem-engine token generate
+"#;
+
+const BROWSER_EXAMPLES: &str = r#"Examples:
+  tandem-engine browser status
+  tandem-engine browser status --hostname 127.0.0.1 --port 39731
+  tandem-engine browser doctor --json
+  tandem-engine browser doctor --state-dir .tandem-test
 "#;
 
 const DEFAULT_KNOWLEDGE_SOURCE_PREFIX: &str = "guide_docs:";
@@ -265,6 +272,12 @@ enum Command {
         #[command(subcommand)]
         action: TokenCommand,
     },
+    #[command(about = "Browser readiness and diagnostics.")]
+    #[command(after_help = BROWSER_EXAMPLES)]
+    Browser {
+        #[command(subcommand)]
+        action: BrowserCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -272,6 +285,42 @@ enum TokenCommand {
     #[command(about = "Generate a random API token string.")]
     #[command(after_help = TOKEN_EXAMPLES)]
     Generate,
+}
+
+#[derive(Subcommand, Debug)]
+enum BrowserCommand {
+    #[command(about = "Check browser readiness via the running engine (GET /browser/status).")]
+    Status {
+        #[arg(
+            long,
+            env = "TANDEM_ENGINE_HOST",
+            alias = "host",
+            default_value = DEFAULT_ENGINE_HOST,
+            help = "Hostname or IP address to check."
+        )]
+        hostname: String,
+        #[arg(
+            long,
+            env = "TANDEM_ENGINE_PORT",
+            default_value_t = DEFAULT_ENGINE_PORT,
+            help = "Port to check."
+        )]
+        port: u16,
+    },
+    #[command(
+        about = "Run local browser readiness diagnostics using the effective engine config."
+    )]
+    Doctor {
+        #[arg(
+            long,
+            help = "Engine state directory. If omitted, uses TANDEM_STATE_DIR or the shared Tandem path."
+        )]
+        state_dir: Option<String>,
+        #[arg(long, help = "Path to config JSON override.")]
+        config: Option<String>,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -532,6 +581,75 @@ async fn main() -> anyhow::Result<()> {
             TokenCommand::Generate => {
                 let token = format!("tk_{}", Uuid::new_v4().simple());
                 println!("{token}");
+            }
+        },
+        Command::Browser { action } => match action {
+            BrowserCommand::Status { hostname, port } => {
+                let url = format!("http://{hostname}:{port}/browser/status");
+                let resp = reqwest::Client::new().get(&url).send().await?;
+                let status = resp.status();
+                let body = resp.text().await?;
+                if !status.is_success() {
+                    anyhow::bail!("browser status check failed: {} {}", status, body);
+                }
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                } else {
+                    println!("{body}");
+                }
+            }
+            BrowserCommand::Doctor {
+                state_dir,
+                config,
+                json,
+            } => {
+                let state_dir = resolve_state_dir(state_dir);
+                let config_path = config.map(PathBuf::from);
+                let status = browser_doctor_status(&state_dir, config_path).await?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&status)?);
+                } else {
+                    println!("Browser readiness");
+                    println!("  Enabled: {}", status.enabled);
+                    println!("  Runnable: {}", status.runnable);
+                    println!(
+                        "  Sidecar: {}",
+                        status
+                            .sidecar
+                            .path
+                            .clone()
+                            .unwrap_or_else(|| "<not found>".to_string())
+                    );
+                    println!(
+                        "  Browser: {}",
+                        status
+                            .browser
+                            .path
+                            .clone()
+                            .unwrap_or_else(|| "<not found>".to_string())
+                    );
+                    if let Some(version) = status.browser.version.as_deref() {
+                        println!("  Browser version: {}", version);
+                    }
+                    if !status.blocking_issues.is_empty() {
+                        println!("Blocking issues:");
+                        for issue in &status.blocking_issues {
+                            println!("  - {}: {}", issue.code, issue.message);
+                        }
+                    }
+                    if !status.recommendations.is_empty() {
+                        println!("Recommendations:");
+                        for row in &status.recommendations {
+                            println!("  - {}", row);
+                        }
+                    }
+                    if !status.install_hints.is_empty() {
+                        println!("Install hints:");
+                        for row in &status.install_hints {
+                            println!("  - {}", row);
+                        }
+                    }
+                }
             }
         },
     }
@@ -838,11 +956,17 @@ async fn build_runtime(
     }
     let phase_start = Instant::now();
     let event_bus = EventBus::new();
-    let providers = ProviderRegistry::new(config.get().await.into());
+    let app_config = config.get().await;
+    let browser = BrowserSubsystem::new(app_config.browser.clone());
+    let _ = browser.refresh_status().await;
+    let providers = ProviderRegistry::new(app_config.into());
     let plugins = PluginRegistry::new(".").await?;
     let agents = AgentRegistry::new(".").await?;
     let tools = ToolRegistry::new();
     tools.index_all().await;
+    if startup_state.is_none() {
+        browser.register_tools(&tools, None).await?;
+    }
     let permissions = PermissionManager::new(event_bus.clone());
     apply_default_permission_rules(&permissions).await;
     let mcp = McpRegistry::new();
@@ -900,7 +1024,19 @@ async fn build_runtime(
         cancellations,
         engine_loop,
         host_runtime_context,
+        browser,
     })
+}
+
+async fn browser_doctor_status(
+    state_dir: &Path,
+    override_config_path: Option<PathBuf>,
+) -> anyhow::Result<tandem_browser::BrowserStatus> {
+    let config_path = override_config_path.unwrap_or_else(|| state_dir.join("config.json"));
+    let config = ConfigStore::new(config_path, None).await?;
+    let app_config = config.get().await;
+    let browser = BrowserSubsystem::new(app_config.browser);
+    Ok(browser.refresh_status().await)
 }
 
 async fn apply_default_permission_rules(permissions: &PermissionManager) {

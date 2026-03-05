@@ -40,10 +40,10 @@ tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.4.1" }
 tandem-types = { path = "../tandem-types", version = "0.4.1" }
 tandem-wire = { path = "../tandem-wire", version = "0.4.1" }
 tandem-channels = { path = "../tandem-channels", version = "0.4.1" }
+tandem-browser = { path = "../tandem-browser", version = "0.4.1" }
 
 [dev-dependencies]
 tower = "0.5"
-
 
 
 

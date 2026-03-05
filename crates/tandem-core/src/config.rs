@@ -52,6 +52,67 @@ pub struct IdentityConfig {
     pub personality: Option<PersonalityConfig>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserViewportConfig {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for BrowserViewportConfig {
+    fn default() -> Self {
+        Self {
+            width: 1280,
+            height: 800,
+        }
+    }
+}
+
+fn default_browser_headless() -> bool {
+    true
+}
+
+fn default_browser_max_sessions() -> u32 {
+    2
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub sidecar_path: Option<String>,
+    #[serde(default)]
+    pub executable_path: Option<String>,
+    #[serde(default = "default_browser_headless")]
+    pub headless_default: bool,
+    #[serde(default)]
+    pub allow_no_sandbox: bool,
+    #[serde(default)]
+    pub user_data_root: Option<String>,
+    #[serde(default = "default_browser_max_sessions")]
+    pub max_sessions: u32,
+    #[serde(default)]
+    pub default_viewport: BrowserViewportConfig,
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sidecar_path: None,
+            executable_path: None,
+            headless_default: true,
+            allow_no_sandbox: false,
+            user_data_root: None,
+            max_sessions: 2,
+            default_viewport: BrowserViewportConfig::default(),
+            allowed_hosts: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     #[serde(default)]
@@ -59,6 +120,8 @@ pub struct AppConfig {
     pub default_provider: Option<String>,
     #[serde(default)]
     pub identity: IdentityConfig,
+    #[serde(default)]
+    pub browser: BrowserConfig,
     pub bot_name: Option<String>,
     pub persona: Option<String>,
 }
@@ -454,6 +517,54 @@ fn env_layer() -> Value {
     if let Ok(prefix) = std::env::var("TANDEM_WEB_UI_PREFIX") {
         if !prefix.trim().is_empty() {
             deep_merge(&mut root, &json!({ "web_ui": { "path_prefix": prefix } }));
+        }
+    }
+    if let Ok(enabled) = std::env::var("TANDEM_BROWSER_ENABLED") {
+        if let Some(v) = parse_bool_like(&enabled) {
+            deep_merge(&mut root, &json!({ "browser": { "enabled": v } }));
+        }
+    }
+    if let Ok(path) = std::env::var("TANDEM_BROWSER_SIDECAR") {
+        if !path.trim().is_empty() {
+            deep_merge(
+                &mut root,
+                &json!({ "browser": { "sidecar_path": path.trim() } }),
+            );
+        }
+    }
+    if let Ok(path) = std::env::var("TANDEM_BROWSER_EXECUTABLE") {
+        if !path.trim().is_empty() {
+            deep_merge(
+                &mut root,
+                &json!({ "browser": { "executable_path": path.trim() } }),
+            );
+        }
+    }
+    if let Ok(headless) = std::env::var("TANDEM_BROWSER_HEADLESS") {
+        if let Some(v) = parse_bool_like(&headless) {
+            deep_merge(&mut root, &json!({ "browser": { "headless_default": v } }));
+        }
+    }
+    if let Ok(allow_no_sandbox) = std::env::var("TANDEM_BROWSER_ALLOW_NO_SANDBOX") {
+        if let Some(v) = parse_bool_like(&allow_no_sandbox) {
+            deep_merge(&mut root, &json!({ "browser": { "allow_no_sandbox": v } }));
+        }
+    }
+    if let Ok(path) = std::env::var("TANDEM_BROWSER_USER_DATA_ROOT") {
+        if !path.trim().is_empty() {
+            deep_merge(
+                &mut root,
+                &json!({ "browser": { "user_data_root": path.trim() } }),
+            );
+        }
+    }
+    if let Ok(hosts) = std::env::var("TANDEM_BROWSER_ALLOWED_HOSTS") {
+        let parsed = parse_csv(&hosts);
+        if !parsed.is_empty() {
+            deep_merge(
+                &mut root,
+                &json!({ "browser": { "allowed_hosts": parsed } }),
+            );
         }
     }
     if let Ok(token) = std::env::var("TANDEM_TELEGRAM_BOT_TOKEN") {
@@ -933,5 +1044,55 @@ mod tests {
 
         std::env::remove_var("OPENROUTER_API_KEY");
         std::env::remove_var("OPENROUTER_MODEL");
+    }
+
+    #[test]
+    fn browser_env_layer_maps_browser_settings() {
+        std::env::set_var("TANDEM_BROWSER_ENABLED", "true");
+        std::env::set_var("TANDEM_BROWSER_SIDECAR", "/tmp/tandem-browser");
+        std::env::set_var("TANDEM_BROWSER_EXECUTABLE", "/tmp/chromium");
+        std::env::set_var("TANDEM_BROWSER_HEADLESS", "false");
+        std::env::set_var("TANDEM_BROWSER_ALLOW_NO_SANDBOX", "true");
+        std::env::set_var("TANDEM_BROWSER_USER_DATA_ROOT", "/tmp/tandem-browser-data");
+        std::env::set_var("TANDEM_BROWSER_ALLOWED_HOSTS", "example.com,internal.local");
+
+        let env_layer: Value = env_layer();
+        let browser = env_layer.get("browser").expect("browser block");
+        assert_eq!(browser.get("enabled").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            browser.get("sidecar_path").and_then(Value::as_str),
+            Some("/tmp/tandem-browser")
+        );
+        assert_eq!(
+            browser.get("executable_path").and_then(Value::as_str),
+            Some("/tmp/chromium")
+        );
+        assert_eq!(
+            browser.get("headless_default").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            browser.get("allow_no_sandbox").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            browser.get("user_data_root").and_then(Value::as_str),
+            Some("/tmp/tandem-browser-data")
+        );
+        assert_eq!(
+            browser
+                .get("allowed_hosts")
+                .and_then(Value::as_array)
+                .map(|rows| rows.len()),
+            Some(2)
+        );
+
+        std::env::remove_var("TANDEM_BROWSER_ENABLED");
+        std::env::remove_var("TANDEM_BROWSER_SIDECAR");
+        std::env::remove_var("TANDEM_BROWSER_EXECUTABLE");
+        std::env::remove_var("TANDEM_BROWSER_HEADLESS");
+        std::env::remove_var("TANDEM_BROWSER_ALLOW_NO_SANDBOX");
+        std::env::remove_var("TANDEM_BROWSER_USER_DATA_ROOT");
+        std::env::remove_var("TANDEM_BROWSER_ALLOWED_HOSTS");
     }
 }

@@ -37,6 +37,7 @@ use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::ToolRegistry;
 
 mod agent_teams;
+mod browser;
 mod capability_resolver;
 mod http;
 mod mcp_catalog;
@@ -48,6 +49,7 @@ mod preset_summary;
 pub mod webui;
 
 pub use agent_teams::AgentTeamRuntime;
+pub use browser::{BrowserHealthSummary, BrowserSubsystem};
 pub use capability_resolver::CapabilityResolver;
 pub use http::serve;
 pub use pack_manager::PackManager;
@@ -116,6 +118,8 @@ struct EffectiveAppConfig {
     pub channels: ChannelsConfigFile,
     #[serde(default)]
     pub web_ui: WebUiConfig,
+    #[serde(default)]
+    pub browser: tandem_core::BrowserConfig,
     #[serde(default)]
     pub memory_consolidation: tandem_providers::MemoryConsolidationConfig,
 }
@@ -318,6 +322,7 @@ pub struct RuntimeState {
     pub cancellations: CancellationRegistry,
     pub engine_loop: EngineLoop,
     pub host_runtime_context: HostRuntimeContext,
+    pub browser: BrowserSubsystem,
 }
 
 #[derive(Debug, Clone)]
@@ -917,6 +922,7 @@ impl AppState {
         self.runtime
             .set(runtime)
             .map_err(|_| anyhow::anyhow!("runtime already initialized"))?;
+        self.register_browser_tools().await?;
         self.tools
             .register_tool(
                 "pack_builder".to_string(),

@@ -13,6 +13,7 @@ flowchart TD
   ROOT --> PAR[parallel]
   ROOT --> TOOL[tool]
   ROOT --> TOKEN[token]
+  ROOT --> BROWSER[browser]
   ROOT --> PROV[providers]
   ROOT --> CHAT[chat placeholder]
 
@@ -21,6 +22,7 @@ flowchart TD
   PAR --> MANY[Concurrent prompt batch]
   TOOL --> DIRECT[Direct tool execution]
   TOKEN --> AUTH[API token utilities]
+  BROWSER --> DIAG[Browser diagnostics]
 ```
 
 ## `serve`
@@ -57,6 +59,47 @@ tandem-engine status [OPTIONS]
 
 - `--hostname <HOSTNAME>` / `--host <HOSTNAME>`: Hostname or IP to check (default: `127.0.0.1`, env: `TANDEM_ENGINE_HOST`).
 - `--port <PORT>`: Port to check (default: `39731`, env: `TANDEM_ENGINE_PORT`).
+
+## `browser`
+
+Browser readiness and diagnostics. This is the operator-facing entrypoint for headless browser setup on desktops and VPS hosts.
+
+```bash
+tandem-engine browser <status|doctor> [OPTIONS]
+```
+
+### `browser status`
+
+Check browser readiness through a running engine (`GET /browser/status`).
+
+```bash
+tandem-engine browser status [OPTIONS]
+```
+
+- `--hostname <HOSTNAME>` / `--host <HOSTNAME>`: Hostname or IP to check (default: `127.0.0.1`, env: `TANDEM_ENGINE_HOST`).
+- `--port <PORT>`: Port to check (default: `39731`, env: `TANDEM_ENGINE_PORT`).
+
+### `browser doctor`
+
+Run local browser readiness diagnostics using the same effective engine config the server would use.
+
+```bash
+tandem-engine browser doctor [OPTIONS]
+```
+
+- `--state-dir <DIR>`: Engine state directory used to resolve the config file.
+- `--config <PATH>`: Override config file path.
+- `--json`: Print the full readiness payload as JSON.
+
+### Headless Hosts
+
+Browser automation does not require a visible desktop session. On Linux VPS hosts the engine only needs:
+
+- `tandem-browser` installed on the same host as `tandem-engine`
+- a Chromium-based browser executable such as Chrome, Chromium, or Edge
+- the required Linux shared libraries for Chromium
+
+If the browser executable is not on `PATH`, set `TANDEM_BROWSER_EXECUTABLE` or `browser.executable_path`.
 
 ## `run`
 
