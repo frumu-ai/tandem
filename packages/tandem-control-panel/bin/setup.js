@@ -2302,17 +2302,66 @@ function emptyToolActivityAudit(source = "") {
     source: source || "",
     totalToolCalls: 0,
     writeToolCalls: 0,
+    rejectedToolCalls: 0,
+    rejectedWriteToolCalls: 0,
     toolNames: [],
+    rejectedToolNames: [],
+    rejectionReasons: [],
   };
+}
+
+function extractToolFailureSignalsFromText(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  const failures = [];
+  const knownReasons = [
+    "FILE_PATH_MISSING",
+    "WRITE_CONTENT_MISSING",
+    "WEBFETCH_URL_MISSING",
+    "WEBSEARCH_QUERY_MISSING",
+    "BASH_COMMAND_MISSING",
+    "PACK_BUILDER_PLAN_ID_MISSING",
+    "PACK_BUILDER_GOAL_MISSING",
+    "TOOL_ARGUMENTS_MISSING",
+  ];
+  for (const reason of knownReasons) {
+    if (raw.includes(reason)) failures.push({ tool: "", reason });
+  }
+  for (const match of raw.matchAll(/Permission denied for tool `([^`]+)`/g)) {
+    failures.push({ tool: match[1], reason: "PERMISSION_DENIED" });
+  }
+  for (const match of raw.matchAll(/Tool `([^`]+)` is not allowed/g)) {
+    failures.push({ tool: match[1], reason: "TOOL_NOT_ALLOWED" });
+  }
+  for (const tool of ["read", "write", "edit", "apply_patch", "glob", "list", "ls"]) {
+    const failedPattern = new RegExp(`(?:\`|\\b)${tool}(?:\`|\\b)[^\\n.]{0,120}\\bfailed\\b`, "i");
+    if (failedPattern.test(raw)) {
+      failures.push({ tool, reason: "TOOL_CALL_FAILED" });
+    }
+  }
+  return failures;
 }
 
 function collectToolActivity(rows, source = "") {
   if (!Array.isArray(rows)) return emptyToolActivityAudit(source);
   const toolNames = new Set();
+  const rejectedToolNames = new Set();
+  const rejectionReasons = new Set();
   let totalToolCalls = 0;
   let writeToolCalls = 0;
-  const recordTool = (tool) => {
+  let rejectedToolCalls = 0;
+  let rejectedWriteToolCalls = 0;
+  const recordTool = (tool, options = {}) => {
     const normalized = normalizeToolName(tool) || "tool";
+    const rejected = options?.rejected === true;
+    const reason = String(options?.reason || "").trim();
+    if (rejected) {
+      rejectedToolCalls += 1;
+      rejectedToolNames.add(normalized);
+      if (isWriteToolName(normalized)) rejectedWriteToolCalls += 1;
+      if (reason) rejectionReasons.add(reason);
+      return;
+    }
     totalToolCalls += 1;
     toolNames.add(normalized);
     if (isWriteToolName(normalized)) writeToolCalls += 1;
@@ -2326,45 +2375,101 @@ function collectToolActivity(rows, source = "") {
         .toLowerCase();
       const partTool = String(part?.tool || part?.name || "").trim();
       if (!partType.includes("tool") && !partTool) continue;
-      recordTool(partTool);
+      const rejected =
+        String(part?.state || "")
+          .trim()
+          .toLowerCase() === "failed" || !!String(part?.error || "").trim();
+      recordTool(partTool, {
+        rejected,
+        reason: String(part?.error || "").trim(),
+      });
       rowRecorded = true;
     }
+    if (!rowRecorded) {
+      const rowType = String(row?.type || "")
+        .trim()
+        .toLowerCase();
+      const rowTool = String(row?.tool || row?.name || "").trim();
+      if (rowType.includes("tool") || rowTool) {
+        const rejected =
+          String(row?.state || "")
+            .trim()
+            .toLowerCase() === "failed" || !!String(row?.error || "").trim();
+        recordTool(rowTool, {
+          rejected,
+          reason: String(row?.error || "").trim(),
+        });
+        rowRecorded = true;
+      }
+    }
     if (rowRecorded) continue;
-    const rowType = String(row?.type || "")
-      .trim()
-      .toLowerCase();
-    const rowTool = String(row?.tool || row?.name || "").trim();
-    if (rowType.includes("tool") || rowTool) recordTool(rowTool);
+    for (const failure of extractToolFailureSignalsFromText(textOfMessage(row))) {
+      recordTool(failure.tool, {
+        rejected: true,
+        reason: failure.reason,
+      });
+    }
   }
   return {
     source: source || "",
     totalToolCalls,
     writeToolCalls,
+    rejectedToolCalls,
+    rejectedWriteToolCalls,
     toolNames: Array.from(toolNames).sort((a, b) => a.localeCompare(b)),
+    rejectedToolNames: Array.from(rejectedToolNames).sort((a, b) => a.localeCompare(b)),
+    rejectionReasons: Array.from(rejectionReasons).sort((a, b) => a.localeCompare(b)),
   };
 }
 
 function mergeToolActivityAudits(...audits) {
   const valid = audits.filter((audit) => audit && typeof audit === "object");
   const toolNames = new Set();
+  const rejectedToolNames = new Set();
+  const rejectionReasons = new Set();
   const sources = [];
   let totalToolCalls = 0;
   let writeToolCalls = 0;
+  let rejectedToolCalls = 0;
+  let rejectedWriteToolCalls = 0;
   for (const audit of valid) {
     totalToolCalls = Math.max(totalToolCalls, Number(audit?.totalToolCalls || 0));
     writeToolCalls = Math.max(writeToolCalls, Number(audit?.writeToolCalls || 0));
-    if (audit?.source && (audit.totalToolCalls || audit.writeToolCalls)) {
+    rejectedToolCalls = Math.max(rejectedToolCalls, Number(audit?.rejectedToolCalls || 0));
+    rejectedWriteToolCalls = Math.max(
+      rejectedWriteToolCalls,
+      Number(audit?.rejectedWriteToolCalls || 0)
+    );
+    if (
+      audit?.source &&
+      (audit.totalToolCalls ||
+        audit.writeToolCalls ||
+        audit.rejectedToolCalls ||
+        audit.rejectedWriteToolCalls)
+    ) {
       sources.push(String(audit.source));
     }
     for (const tool of Array.isArray(audit?.toolNames) ? audit.toolNames : []) {
       const normalized = normalizeToolName(tool);
       if (normalized) toolNames.add(normalized);
     }
+    for (const tool of Array.isArray(audit?.rejectedToolNames) ? audit.rejectedToolNames : []) {
+      const normalized = normalizeToolName(tool);
+      if (normalized) rejectedToolNames.add(normalized);
+    }
+    for (const reason of Array.isArray(audit?.rejectionReasons) ? audit.rejectionReasons : []) {
+      const normalized = String(reason || "").trim();
+      if (normalized) rejectionReasons.add(normalized);
+    }
   }
   return {
     totalToolCalls,
     writeToolCalls,
+    rejectedToolCalls,
+    rejectedWriteToolCalls,
     toolNames: Array.from(toolNames).sort((a, b) => a.localeCompare(b)),
+    rejectedToolNames: Array.from(rejectedToolNames).sort((a, b) => a.localeCompare(b)),
+    rejectionReasons: Array.from(rejectionReasons).sort((a, b) => a.localeCompare(b)),
     sources: Array.from(new Set(sources)),
   };
 }
@@ -2389,6 +2494,7 @@ function summarizeExecutionRows(rows, limit = 12) {
       role,
       type: type || null,
       tools: Array.from(new Set(tools)).slice(0, 8),
+      error: String(row?.error || "").trim() || null,
       excerpt: text.slice(0, 240),
     });
   }
@@ -2410,9 +2516,14 @@ function buildAttemptTelemetry(name, request, rows, messages, startedAtMs, error
       .slice(0, 600),
     assistant_present: !!assistantText.trim(),
     assistant_excerpt: assistantText.trim().slice(0, 400),
+    any_tool_attempts: merged.totalToolCalls > 0 || merged.rejectedToolCalls > 0,
     total_tool_calls: merged.totalToolCalls,
     write_tool_calls: merged.writeToolCalls,
+    rejected_tool_calls: merged.rejectedToolCalls,
+    rejected_write_tool_calls: merged.rejectedWriteToolCalls,
     tool_names: merged.toolNames,
+    rejected_tool_names: merged.rejectedToolNames,
+    rejection_reasons: merged.rejectionReasons,
     detection_sources: merged.sources,
     sync_row_count: Array.isArray(rows) ? rows.length : 0,
     session_message_count: Array.isArray(messages) ? messages.length : 0,
@@ -2437,6 +2548,10 @@ function buildVerificationSummary(syncRows, messages, workspaceChanges, sessionI
   let reason = "VERIFIED";
   if (!passed) {
     if (requiredToolModeUnsatisfied) reason = REQUIRED_TOOL_MODE_REASON;
+    else if (toolAudit.rejectedWriteToolCalls > 0)
+      reason = "WRITE_TOOL_ATTEMPT_REJECTED_NO_WORKSPACE_CHANGE";
+    else if (toolAudit.rejectedToolCalls > 0)
+      reason = "TOOL_ATTEMPT_REJECTED_NO_WORKSPACE_CHANGE";
     else if (strictMode && toolAudit.totalToolCalls > 0)
       reason = "NO_WRITE_ACTIVITY_NO_WORKSPACE_CHANGE";
     else reason = "NO_TOOL_ACTIVITY_NO_WORKSPACE_CHANGE";
@@ -2448,10 +2563,15 @@ function buildVerificationSummary(syncRows, messages, workspaceChanges, sessionI
     session_id: String(sessionId || "").trim() || null,
     assistant_present: !!assistantText.trim(),
     assistant_excerpt: assistantText.trim().slice(0, 280),
+    any_tool_attempts: toolAudit.totalToolCalls > 0 || toolAudit.rejectedToolCalls > 0,
     any_tool_calls: toolAudit.totalToolCalls > 0,
     total_tool_calls: toolAudit.totalToolCalls,
     write_tool_calls: toolAudit.writeToolCalls,
     tool_names: toolAudit.toolNames,
+    rejected_tool_calls: toolAudit.rejectedToolCalls,
+    rejected_write_tool_calls: toolAudit.rejectedWriteToolCalls,
+    rejected_tool_names: toolAudit.rejectedToolNames,
+    rejection_reasons: toolAudit.rejectionReasons,
     detection_sources: toolAudit.sources,
     workspace_changed: workspaceChanged,
     workspace_change_mode: String(workspaceChanges?.mode || "unknown"),
