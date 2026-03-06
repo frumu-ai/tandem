@@ -2,6 +2,13 @@
 
 ### Highlights
 
+- **Scoped channel sessions and trigger-aware adapter metadata**:
+  - Channel adapters now emit structured trigger metadata (`direct_message`, `mention`, `reply_to_bot`, `ambient`) plus stable conversation scope metadata (`direct`, `room`, `thread`, `topic`) instead of relying only on pre-stripped message text.
+  - Channel session routing now scopes by conversation as well as sender, preventing the same user from sharing one active session across unrelated Discord channels/threads, Slack threads, and Telegram private/topic contexts.
+  - Channel slash-command/session resolution now follows the scoped conversation key and transparently migrates legacy `{channel}:{sender}` mappings on first use.
+  - Slack now supports `mention_only` across environment config, persisted channel config, and `/channels/config`, bringing it into parity with the existing Telegram/Discord gating model.
+  - Added targeted regression coverage for scoped key generation, legacy channel-session migration, Slack mention parsing, and the server channel-config surface.
+
 - **Strict swarm write reliability and cross-client engine retries**:
   - Fixed streamed OpenAI/OpenRouter tool-call parsing so multi-chunk `write` calls keep the correct tool-call identity and no longer lose follow-up argument chunks when later deltas omit the tool name.
   - Hardened write-argument recovery so truncated/malformed JSON can still recover `content` even when `path` is omitted, and raised the default provider output budget from `2048` to `16384` to reduce clipped single-file artifact responses.

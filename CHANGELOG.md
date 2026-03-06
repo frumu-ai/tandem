@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Scoped channel sessions and trigger-aware channel routing foundations**:
+  - `tandem-channels` now attaches structured trigger metadata (`direct_message`, `mention`, `reply_to_bot`, `ambient`) and stable conversation scope metadata (`direct`, `room`, `thread`, `topic`) to incoming channel messages
+  - channel session identity now scopes by conversation, not just sender, so the same user no longer shares one active session across unrelated Discord channels/threads, Slack threads, and Telegram private/topic contexts
+  - dispatcher slash-command/session resolution now uses the scoped conversation key and migrates legacy `{channel}:{sender}` channel-session records forward on first access
+  - Slack now supports `mention_only` end-to-end across runtime env config, persisted server config, and `/channels/config`
+  - adapter normalization/gating was tightened so Telegram, Discord, and Slack all make mention-only decisions from explicit trigger context rather than adapter-local string stripping
+  - added regression coverage for scoped key generation, legacy session-map migration, Slack mention normalization, and channel config surface behavior
+
 - **Strict swarm write recovery and engine-client retry hardening**:
   - fixed OpenAI/OpenRouter streamed tool-call parsing so multi-chunk write args keep the real tool-call ID and no longer drop follow-up argument deltas when later chunks omit the tool name
   - hardened write-arg recovery in the engine loop so truncated/malformed JSON can still recover `content` even when `path` is absent, and raised the default provider output budget from `2048` to `16384` to avoid clipping large single-file artifacts
