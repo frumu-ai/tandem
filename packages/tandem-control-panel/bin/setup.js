@@ -2847,25 +2847,52 @@ function taskTitleFromRecord(task) {
   return String(payload?.title || task?.title || task?.task_type || task?.id || "task").trim();
 }
 
+function summarizeBlackboardTasksForPrompt(tasks, currentTaskId, limit = 16) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  return list
+    .slice(0, Math.max(1, Number(limit) || 16))
+    .map((task, index) => {
+      const taskId = String(task?.id || `task-${index + 1}`).trim();
+      const title = taskTitleFromRecord(task);
+      const status = String(task?.status || "unknown").trim().toLowerCase();
+      const marker = taskId === currentTaskId ? "*" : "-";
+      return `${marker} ${taskId} [${status}]: ${title}`;
+    })
+    .join("\n")
+    .trim();
+}
+
 function taskPromptText(run, task, workerId, workflowId) {
+  const taskId = String(task?.id || "").trim();
+  const taskTitle = taskTitleFromRecord(task);
+  const taskDetails =
+    task && typeof task === "object" ? JSON.stringify(task, null, 2).trim() : "";
+  const taskList = summarizeBlackboardTasksForPrompt(run?.tasks, taskId);
   return [
     "Execute this swarm blackboard task.",
     "",
-    `Task: ${taskTitleFromRecord(task)}`,
-    `Task ID: ${String(task?.id || "").trim()}`,
+    `Task: ${taskTitle}`,
+    `Task ID: ${taskId}`,
     `Workflow: ${String(workflowId || task?.workflow_id || "swarm.blackboard.default").trim()}`,
     `Agent: ${workerId}`,
     `Workspace: ${String(run?.workspace?.canonical_path || "").trim()}`,
     "",
     "This task is already planned and assigned.",
-    "Treat the original objective below as background context only.",
-    "Ignore any orchestration, delegation, planning, or task-graph instructions in that objective.",
-    "Do not create a plan, do not restate the task graph, and do not describe future work.",
+    "Treat the current assigned task as the authority for what to implement.",
+    "Use the original objective and task list only to clarify the assigned task, not to re-plan the run.",
+    "Do not create a new plan, do not restate the task graph, and do not describe future work.",
     "Use workspace tools to implement this task now.",
+    "",
+    "Current assigned task payload:",
+    taskDetails || "{}",
+    "",
+    "Run blackboard task list:",
+    taskList || "(no task list available)",
     "",
     `Original objective: ${String(run?.objective || "").trim()}`,
     "",
     "Requirements:",
+    "- First inspect the relevant workspace files with read/glob/list/search if needed.",
     "- Implement this task in the workspace right now.",
     "- Create or edit files as needed for this task only.",
     "- Use write/edit/apply_patch instead of a prose-only response.",
