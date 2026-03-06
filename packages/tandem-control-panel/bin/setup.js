@@ -1807,8 +1807,9 @@ function normalizePlannerTasks(rawTasks, maxTasks = 8, options = {}) {
   });
 }
 
-function parsePlanTasksFromAssistant(assistantText, maxTasks = 8) {
+function parsePlanTasksFromAssistant(assistantText, maxTasks = 8, options = {}) {
   const normalizedMax = Math.max(1, Number(maxTasks) || 8);
+  const allowTextFallback = options?.allowTextFallback !== false;
   const fencedJson = String(assistantText || "").match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidateJson = (fencedJson?.[1] || String(assistantText || "")).trim();
   const parsedTodos = (() => {
@@ -1826,6 +1827,7 @@ function parsePlanTasksFromAssistant(assistantText, maxTasks = 8) {
   })();
   const fromJson = normalizePlannerTasks(parsedTodos, normalizedMax, { linearFallback: false });
   if (fromJson.length) return fromJson;
+  if (!allowTextFallback) return [];
   const fromText = String(assistantText || "")
     .split(/\r?\n/)
     .map((line) => line.replace(/^[-*#\d\.\)\[\]\s]+/, "").trim())
@@ -1867,7 +1869,7 @@ async function generatePlanTodosWithLLM(session, run, maxTasks) {
   if (fromSync) {
     return {
       sessionId,
-      tasks: parsePlanTasksFromAssistant(fromSync, maxTasks),
+      tasks: parsePlanTasksFromAssistant(fromSync, maxTasks, { allowTextFallback: false }),
       assistantText: fromSync,
     };
   }
@@ -1879,7 +1881,7 @@ async function generatePlanTodosWithLLM(session, run, maxTasks) {
   const fromSnapshot = extractAssistantText(messages);
   return {
     sessionId,
-    tasks: parsePlanTasksFromAssistant(fromSnapshot, maxTasks),
+    tasks: parsePlanTasksFromAssistant(fromSnapshot, maxTasks, { allowTextFallback: false }),
     assistantText: fromSnapshot,
   };
 }
