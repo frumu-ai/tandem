@@ -10,6 +10,18 @@ function eventTypeOf(data: any) {
   return data?.type || data?.event || "event";
 }
 
+function isNoisyEventType(type: string) {
+  const normalized = String(type || "")
+    .trim()
+    .toLowerCase();
+  return [
+    "server.connected",
+    "engine.lifecycle.ready",
+    "engine.heartbeat",
+    "engine.lifecycle.heartbeat",
+  ].includes(normalized);
+}
+
 function isWorkflowContextStreamEvent(data: any) {
   return (
     String(data?.type || data?.event || "").trim() === "context.run.stream" &&
@@ -23,6 +35,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
   const [events, setEvents] = useState<Array<{ at: number; data: any }>>([]);
   const [filter, setFilter] = useState("");
   const [group, setGroup] = useState("all");
+  const [hideNoise, setHideNoise] = useState(true);
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
   const selectedWorkflowContextRunId = useMemo(() => {
     if (!selectedEvent || !isWorkflowContextStreamEvent(selectedEvent.data)) return "";
@@ -64,23 +77,25 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
     const counts = new Map<string, number>();
     for (const item of events) {
       const key = eventTypeOf(item.data);
+      if (hideNoise && isNoisyEventType(key)) continue;
       counts.set(key, (counts.get(key) || 0) + 1);
     }
     return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  }, [events]);
+  }, [events, hideNoise]);
 
   const filtered = useMemo(() => {
     const term = filter.trim().toLowerCase();
     return events
       .filter((item) => {
         const type = eventTypeOf(item.data);
+        if (hideNoise && isNoisyEventType(type)) return false;
         if (group !== "all" && type !== group) return false;
         if (!term) return true;
         return `${type} ${JSON.stringify(item.data || {})}`.toLowerCase().includes(term);
       })
       .slice(-240)
       .reverse();
-  }, [events, filter, group]);
+  }, [events, filter, group, hideNoise]);
 
   async function installFromPath(path: string) {
     try {
@@ -126,6 +141,9 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
             <span className="tcp-badge tcp-badge-ghost">
               {group === "all" ? "All event types" : group}
             </span>
+            <span className={hideNoise ? "tcp-badge-ok" : "tcp-badge-info"}>
+              {hideNoise ? "noise hidden" : "noise visible"}
+            </span>
             <button className="tcp-btn" onClick={() => setEvents([])}>
               <i data-lucide="trash-2"></i>
               Clear feed
@@ -147,6 +165,10 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
           <FilterChip active={group === "all"} onClick={() => setGroup("all")}>
             <i data-lucide="list"></i>
             All
+          </FilterChip>
+          <FilterChip active={hideNoise} onClick={() => setHideNoise((prev) => !prev)}>
+            <i data-lucide={hideNoise ? "filter" : "filter-x"}></i>
+            {hideNoise ? "Hide noise" : "Show noise"}
           </FilterChip>
           {groupedTypes.slice(0, 8).map(([type, count]) => (
             <FilterChip key={type} active={group === type} onClick={() => setGroup(type)}>

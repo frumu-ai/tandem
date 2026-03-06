@@ -32,6 +32,12 @@ pub struct OrchestratorConfig {
     /// Automatic timeout retries per task attempt (session recreation + one retry)
     #[serde(default = "default_max_timeout_retries_per_task_attempt")]
     pub max_timeout_retries_per_task_attempt: u32,
+    /// Enable bounded automatic retries for strict write-required task failures.
+    #[serde(default = "default_strict_write_retry_enabled")]
+    pub strict_write_retry_enabled: bool,
+    /// Maximum total attempts for strict write-required task execution.
+    #[serde(default = "default_strict_write_retry_max_attempts")]
+    pub strict_write_retry_max_attempts: u32,
     /// Require approval before writing files
     pub require_write_approval: bool,
     /// Enable research/web agent
@@ -92,6 +98,14 @@ fn default_max_timeout_retries_per_task_attempt() -> u32 {
     1
 }
 
+fn default_strict_write_retry_enabled() -> bool {
+    true
+}
+
+fn default_strict_write_retry_max_attempts() -> u32 {
+    3
+}
+
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
@@ -109,6 +123,8 @@ impl Default for OrchestratorConfig {
             max_task_retries: 3,
             max_agent_call_secs: default_max_agent_call_secs(),
             max_timeout_retries_per_task_attempt: default_max_timeout_retries_per_task_attempt(),
+            strict_write_retry_enabled: default_strict_write_retry_enabled(),
+            strict_write_retry_max_attempts: default_strict_write_retry_max_attempts(),
             require_write_approval: true,
             enable_research: false,
             allow_dangerous_actions: false,
@@ -420,6 +436,32 @@ pub enum TaskState {
     Failed,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutputTarget {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    Implementation,
+    Inspection,
+    Research,
+    Validation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskExecutionMode {
+    StrictWrite,
+    StrictNonwriting,
+    BestEffort,
+}
+
 /// A single task in the orchestration DAG
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
@@ -442,6 +484,15 @@ pub struct Task {
     /// Optional gate stage for this task
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<TaskGate>,
+    /// Optional concrete file or artifact target for implementation tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_target: Option<OutputTarget>,
+    /// Canonical task kind provided by the backend contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_kind: Option<TaskKind>,
+    /// Canonical execution mode provided by the backend contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<TaskExecutionMode>,
     /// Current task state
     pub state: TaskState,
     /// Number of retry attempts
@@ -467,6 +518,9 @@ impl Task {
             assigned_role: default_task_role(),
             template_id: None,
             gate: None,
+            output_target: None,
+            task_kind: None,
+            execution_mode: None,
             state: TaskState::Pending,
             retry_count: 0,
             artifacts: Vec::new(),

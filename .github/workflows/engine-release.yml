@@ -86,6 +86,7 @@ jobs:
         run: |
           cargo build --release -p tandem-ai --target ${{ matrix.target }}
           cargo build --release -p tandem-tui --target ${{ matrix.target }}
+          cargo build --release -p tandem-browser --target ${{ matrix.target }}
 
       - name: Package zip (Windows)
         if: matrix.archive == 'zip' && startsWith(matrix.target, 'x86_64-pc-windows')
@@ -94,6 +95,7 @@ jobs:
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "dist/tandem-engine.exe" -Force
           Copy-Item "target/${{ matrix.target }}/release/tandem-tui.exe" "dist/tandem-tui.exe" -Force
+          Copy-Item "target/${{ matrix.target }}/release/tandem-browser.exe" "dist/tandem-browser.exe" -Force
           # Create separate zips for engine and tui to match downloader expectation: artifact-os-arch.zip
           Compress-Archive -Path "dist/tandem-engine.exe" -DestinationPath "${{ matrix.artifact }}.zip" -Force
           Compress-Archive -Path "dist/tandem-tui.exe" -DestinationPath "tandem-tui-${{ matrix.os == 'windows-latest' && 'windows' || 'win32' }}-x64.zip" -Force
@@ -101,6 +103,8 @@ jobs:
           # We want 'tandem-tui-windows-x64.zip'.
           $TuiArtifact = "${{ matrix.artifact }}".Replace("engine", "tui")
           Compress-Archive -Path "dist/tandem-tui.exe" -DestinationPath "$TuiArtifact.zip" -Force
+          $BrowserArtifact = "${{ matrix.artifact }}".Replace("engine", "browser")
+          Compress-Archive -Path "dist/tandem-browser.exe" -DestinationPath "$BrowserArtifact.zip" -Force
 
       - name: Package zip (macOS)
         if: matrix.archive == 'zip' && !startsWith(matrix.target, 'x86_64-pc-windows')
@@ -109,6 +113,7 @@ jobs:
           mkdir -p dist
            cp "target/${{ matrix.target }}/release/tandem-engine" dist/
            cp "target/${{ matrix.target }}/release/tandem-tui" dist/
+           cp "target/${{ matrix.target }}/release/tandem-browser" dist/
            cd dist
            # Zip individual binaries?
            # Downloader expects: tandem-engine-darwin-x64.zip
@@ -117,6 +122,8 @@ jobs:
            # Tui artifact name construction
            TUI_ARTIFACT=$(echo "${{ matrix.artifact }}" | sed 's/engine/tui/')
            zip -j "../$TUI_ARTIFACT.zip" tandem-tui
+           BROWSER_ARTIFACT=$(echo "${{ matrix.artifact }}" | sed 's/engine/browser/')
+           zip -j "../$BROWSER_ARTIFACT.zip" tandem-browser
 
       - name: Package tar.gz (Linux)
         if: matrix.archive == 'tar.gz'
@@ -125,11 +132,14 @@ jobs:
           mkdir -p dist
            cp "target/${{ matrix.target }}/release/tandem-engine" dist/
            cp "target/${{ matrix.target }}/release/tandem-tui" dist/
+           cp "target/${{ matrix.target }}/release/tandem-browser" dist/
            
            tar -czf "${{ matrix.artifact }}.tar.gz" -C dist tandem-engine
            
            TUI_ARTIFACT=$(echo "${{ matrix.artifact }}" | sed 's/engine/tui/')
            tar -czf "$TUI_ARTIFACT.tar.gz" -C dist tandem-tui
+           BROWSER_ARTIFACT=$(echo "${{ matrix.artifact }}" | sed 's/engine/browser/')
+           tar -czf "$BROWSER_ARTIFACT.tar.gz" -C dist tandem-browser
 
       - name: Upload release zip asset
         if: matrix.archive == 'zip'
@@ -138,6 +148,7 @@ jobs:
           files: |
             ${{ matrix.artifact }}.zip
             tandem-tui-*.zip
+            tandem-browser-*.zip
 
       - name: Upload release tarball asset
         if: matrix.archive == 'tar.gz'
@@ -146,3 +157,4 @@ jobs:
           files: |
             ${{ matrix.artifact }}.tar.gz
             tandem-tui-*.tar.gz
+            tandem-browser-*.tar.gz

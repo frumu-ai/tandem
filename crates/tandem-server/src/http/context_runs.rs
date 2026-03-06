@@ -50,6 +50,125 @@ impl ContextRunEngine {
     }
 }
 
+fn parse_context_task_kind(value: Option<&str>) -> Option<ContextTaskKind> {
+    match value.map(str::trim).filter(|row| !row.is_empty())? {
+        "implementation" => Some(ContextTaskKind::Implementation),
+        "inspection" => Some(ContextTaskKind::Inspection),
+        "research" => Some(ContextTaskKind::Research),
+        "validation" => Some(ContextTaskKind::Validation),
+        _ => None,
+    }
+}
+
+fn context_task_kind_str(kind: &ContextTaskKind) -> &'static str {
+    match kind {
+        ContextTaskKind::Implementation => "implementation",
+        ContextTaskKind::Inspection => "inspection",
+        ContextTaskKind::Research => "research",
+        ContextTaskKind::Validation => "validation",
+    }
+}
+
+fn context_task_execution_mode_str(mode: &ContextTaskExecutionMode) -> &'static str {
+    match mode {
+        ContextTaskExecutionMode::StrictWrite => "strict_write",
+        ContextTaskExecutionMode::StrictNonwriting => "strict_nonwriting",
+        ContextTaskExecutionMode::BestEffort => "best_effort",
+    }
+}
+
+fn normalize_context_task_output_target(value: Option<&Value>) -> Option<ContextTaskOutputTarget> {
+    let Value::Object(map) = value?.clone() else {
+        return None;
+    };
+    let path = map
+        .get("path")
+        .or_else(|| map.get("file"))
+        .or_else(|| map.get("file_path"))
+        .or_else(|| map.get("target"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|row| !row.is_empty())?
+        .to_string();
+    let kind = map
+        .get("kind")
+        .or_else(|| map.get("type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|row| !row.is_empty())
+        .map(ToString::to_string);
+    let operation = map
+        .get("operation")
+        .or_else(|| map.get("mode"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|row| !row.is_empty())
+        .map(ToString::to_string);
+    Some(ContextTaskOutputTarget {
+        path,
+        kind,
+        operation,
+    })
+}
+
+fn normalize_context_task_payload(
+    task_type: &str,
+    payload: &Value,
+) -> Result<Option<(String, Value)>, (String, String)> {
+    let mut map = match payload {
+        Value::Object(existing) => existing.clone(),
+        Value::Null => serde_json::Map::new(),
+        _ => {
+            return Err((
+                "TASK_CONTRACT_INVALID".to_string(),
+                "task payload must be a JSON object for strict blackboard tasks".to_string(),
+            ))
+        }
+    };
+    let payload_kind = map.get("task_kind").and_then(Value::as_str);
+    let inferred_kind =
+        parse_context_task_kind(payload_kind).or_else(|| parse_context_task_kind(Some(task_type)));
+    let Some(task_kind) = inferred_kind else {
+        return Ok(None);
+    };
+    let execution_mode = match task_kind {
+        ContextTaskKind::Implementation => ContextTaskExecutionMode::StrictWrite,
+        ContextTaskKind::Inspection | ContextTaskKind::Research | ContextTaskKind::Validation => {
+            ContextTaskExecutionMode::StrictNonwriting
+        }
+    };
+    let normalized_task_type = context_task_kind_str(&task_kind).to_string();
+    map.insert("task_kind".to_string(), json!(normalized_task_type));
+    map.insert(
+        "execution_mode".to_string(),
+        json!(context_task_execution_mode_str(&execution_mode)),
+    );
+    match task_kind {
+        ContextTaskKind::Implementation => {
+            let output_target = normalize_context_task_output_target(map.get("output_target"));
+            let Some(output_target) = output_target else {
+                return Err((
+                    "TASK_OUTPUT_TARGET_REQUIRED".to_string(),
+                    "implementation tasks must include payload.output_target.path".to_string(),
+                ));
+            };
+            map.insert(
+                "output_target".to_string(),
+                serde_json::to_value(output_target).map_err(|_| {
+                    (
+                        "TASK_CONTRACT_INVALID".to_string(),
+                        "invalid output target".to_string(),
+                    )
+                })?,
+            );
+        }
+        ContextTaskKind::Inspection | ContextTaskKind::Research | ContextTaskKind::Validation => {
+            map.remove("write_required");
+        }
+    }
+    Ok(Some((normalized_task_type, Value::Object(map))))
+}
+
 pub(super) fn context_runs_root(state: &AppState) -> PathBuf {
     state
         .shared_resources_path
@@ -2020,14 +2139,28 @@ pub(super) async fn context_run_tasks_create(
             }
         }
         let now = crate::now_ms();
+        let normalized_contract = match normalize_context_task_payload(&row.task_type, &row.payload)
+        {
+            Ok(value) => value,
+            Err((code, error)) => {
+                return Ok(Json(json!({
+                    "ok": false,
+                    "code": code,
+                    "error": error,
+                    "task_id": row.id.clone().unwrap_or_default(),
+                })));
+            }
+        };
+        let (task_type, payload) = normalized_contract
+            .unwrap_or_else(|| (row.task_type.trim().to_string(), row.payload.clone()));
         let task = ContextBlackboardTask {
             id: row
                 .id
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| format!("task-{}", Uuid::new_v4())),
-            task_type: row.task_type.trim().to_string(),
-            payload: row.payload,
+            task_type,
+            payload,
             status: row.status.unwrap_or(ContextBlackboardTaskStatus::Pending),
             workflow_id: row
                 .workflow_id

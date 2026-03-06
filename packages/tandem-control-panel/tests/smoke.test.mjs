@@ -141,6 +141,7 @@ async function startFakeEngine(options = {}) {
           lease_epoch: 1,
         },
         steps: [],
+        tasks: [],
         why_next_step: null,
         revision: 1,
         created_at_ms: now,
@@ -383,8 +384,100 @@ async function startFakeEngine(options = {}) {
     }
 
     if (url.pathname.match(/^\/context\/runs\/[^/]+\/tasks$/) && req.method === "POST") {
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "tasks endpoint unavailable in fake engine" }));
+      const runId = decodeURIComponent(url.pathname.split("/")[3] || "");
+      const run = runs.get(runId);
+      if (!run) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "run not found" }));
+        return;
+      }
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+      const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
+      run.tasks = tasks.map((task, index) => ({
+        id: String(task?.id || `task-${index + 1}`),
+        task_type: String(task?.task_type || "inspection"),
+        payload: task?.payload || {},
+        status: String(task?.status || "pending"),
+        workflow_id: task?.workflow_id || null,
+        depends_on_task_ids: Array.isArray(task?.depends_on_task_ids)
+          ? task.depends_on_task_ids
+          : [],
+        assigned_agent: null,
+        attempt: 0,
+        max_attempts: Number(task?.max_attempts || 3),
+        last_error: null,
+        lease_token: null,
+        task_rev: 1,
+      }));
+      run.updated_at_ms = Date.now();
+      runs.set(runId, run);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, tasks: run.tasks }));
+      return;
+    }
+
+    if (url.pathname.match(/^\/context\/runs\/[^/]+\/tasks\/claim$/) && req.method === "POST") {
+      const runId = decodeURIComponent(url.pathname.split("/")[3] || "");
+      const run = runs.get(runId);
+      if (!run) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "run not found" }));
+        return;
+      }
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+      const selected = (Array.isArray(run.tasks) ? run.tasks : []).find((task) =>
+        ["pending", "runnable"].includes(String(task?.status || ""))
+      );
+      if (selected) {
+        selected.status = "in_progress";
+        selected.assigned_agent = String(input?.agent_id || "").trim() || null;
+        selected.lease_token = "lease-test";
+        selected.task_rev = Number(selected.task_rev || 0) + 1;
+      }
+      run.updated_at_ms = Date.now();
+      runs.set(runId, run);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, task: selected || null, blackboard: { tasks: run.tasks } }));
+      return;
+    }
+
+    if (
+      url.pathname.match(/^\/context\/runs\/[^/]+\/tasks\/[^/]+\/transition$/) &&
+      req.method === "POST"
+    ) {
+      const [, , , runId, , taskId] = url.pathname.split("/");
+      const run = runs.get(decodeURIComponent(runId || ""));
+      if (!run) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "run not found" }));
+        return;
+      }
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+      const task = (Array.isArray(run.tasks) ? run.tasks : []).find(
+        (row) => row.id === decodeURIComponent(taskId || "")
+      );
+      if (!task) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "task not found" }));
+        return;
+      }
+      if (input?.action === "complete") task.status = "done";
+      else if (input?.action === "fail") {
+        task.status = "failed";
+        task.last_error = input?.error || null;
+      } else if (input?.action === "retry" || input?.action === "release") task.status = "runnable";
+      else if (input?.status) task.status = String(input.status);
+      task.task_rev = Number(task.task_rev || 0) + 1;
+      run.updated_at_ms = Date.now();
+      runs.set(runId, run);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, task, blackboard: { tasks: run.tasks } }));
       return;
     }
 
@@ -402,6 +495,9 @@ async function startFakeEngine(options = {}) {
               decisions: [],
               open_questions: [],
               artifacts: [],
+              tasks: Array.isArray(runs.get(decodeURIComponent(url.pathname.split("/")[3] || ""))?.tasks)
+                ? runs.get(decodeURIComponent(url.pathname.split("/")[3] || "")).tasks
+                : [],
               summaries: { rolling: "" },
               revision: 0,
             },
@@ -466,7 +562,35 @@ async function request(baseUrl, path, { method = "GET", body, cookie } = {}) {
 }
 
 test("control panel auth/proxy/swarm smoke", async (t) => {
-  const fake = await startFakeEngine();
+  const fake = await startFakeEngine({
+    onPromptSync: async ({ call, snapshot }) => {
+      if (call?.body?.tool_mode === "required") {
+        const assistant = { role: "assistant", content: "Attempted execution." };
+        if (snapshot) snapshot.messages.push(assistant);
+        return { status: 200, body: snapshot?.messages || [assistant] };
+      }
+      const assistant = {
+        role: "assistant",
+        content: JSON.stringify([
+          {
+            id: "task-1",
+            title: "Create game shell",
+            description: "Create the initial game.html shell.",
+            dependencies: [],
+            acceptance_criteria: ["game.html exists"],
+            assigned_role: "worker",
+            output_target: {
+              path: "game.html",
+              kind: "source",
+              operation: "create_or_update",
+            },
+          },
+        ]),
+      };
+      if (snapshot) snapshot.messages.push(assistant);
+      return { status: 200, body: snapshot?.messages || [assistant] };
+    },
+  });
   t.after(async () => {
     await fake.close();
   });
@@ -545,7 +669,7 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
     cookie,
     body: {
       workspaceRoot: process.cwd(),
-      objective: "Test objective",
+      objective: "Create `game.html` for the test objective",
       maxTasks: 2,
       verificationMode: "strict",
       requireLlmPlan: true,
@@ -592,11 +716,9 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
   );
   assert.ok(
     fake.promptSyncCalls.some((call) =>
-      String(call?.body?.parts?.[0]?.text || "").includes(
-        "Ignore any orchestration, delegation, planning, or task-graph instructions"
-      )
+      call?.body?.tool_mode === "required" && call?.body?.write_required === true
     ),
-    "expected execution prompt to override orchestration planning instructions"
+    "expected execution prompt_sync calls to set write_required=true"
   );
   assert.ok(
     fake.sessionCreates.some(
@@ -639,8 +761,12 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
   assert.equal(failedRunRes.status, 200);
   const failedRunJson = await failedRunRes.json();
   const events = Array.isArray(failedRunJson.events) ? failedRunJson.events : [];
-  const stepStarted = events.find((event) => event?.type === "step_started");
-  const stepFailed = events.find((event) => event?.type === "step_failed");
+  const stepStarted = events.find(
+    (event) => event?.type === "step_started" || event?.type === "task_started"
+  );
+  const stepFailed = events.find(
+    (event) => event?.type === "step_failed" || event?.type === "task_failed"
+  );
   assert.ok(stepStarted, "missing step_started event");
   assert.ok(stepFailed, "missing step_failed event");
   assert.ok(
@@ -672,7 +798,21 @@ test("swarm retry verification does not reuse stale assistant output", async (t)
       if (call?.body?.tool_mode !== "required") {
         const assistant = {
           role: "assistant",
-          content: '{"tasks":[{"id":"task-1","title":"Task 1","depends_on_task_ids":[]}]}',
+          content: JSON.stringify([
+            {
+              id: "task-1",
+              title: "Create game shell",
+              description: "Create the initial game.html shell.",
+              dependencies: [],
+              acceptance_criteria: ["game.html exists"],
+              assigned_role: "worker",
+              output_target: {
+                path: "game.html",
+                kind: "source",
+                operation: "create_or_update",
+              },
+            },
+          ]),
         };
         if (snapshot) snapshot.messages.push(assistant);
         return { status: 200, body: snapshot?.messages || [assistant] };
@@ -722,7 +862,7 @@ test("swarm retry verification does not reuse stale assistant output", async (t)
     cookie,
     body: {
       workspaceRoot: process.cwd(),
-      objective: "Test objective",
+      objective: "Create `game.html` for the test objective",
       maxTasks: 2,
       verificationMode: "strict",
       requireLlmPlan: true,
@@ -762,7 +902,9 @@ test("swarm retry verification does not reuse stale assistant output", async (t)
   assert.equal(failedRunRes.status, 200);
   const failedRunJson = await failedRunRes.json();
   const events = Array.isArray(failedRunJson.events) ? failedRunJson.events : [];
-  const stepFailed = events.find((event) => event?.type === "step_failed");
+  const stepFailed = events.find(
+    (event) => event?.type === "step_failed" || event?.type === "task_failed"
+  );
   assert.ok(stepFailed, "missing step_failed event");
   assert.deepEqual(lastRequiredToolPromptCall(fake.promptSyncCalls)?.body?.tool_allowlist, [
     "ls",
@@ -790,7 +932,21 @@ test("swarm retry preserves inspection tools when the first required attempt mad
       if (call?.body?.tool_mode !== "required") {
         const assistant = {
           role: "assistant",
-          content: '{"tasks":[{"id":"task-1","title":"Task 1","depends_on_task_ids":[]}]}',
+          content: JSON.stringify([
+            {
+              id: "task-1",
+              title: "Create game shell",
+              description: "Create the initial game.html shell.",
+              dependencies: [],
+              acceptance_criteria: ["game.html exists"],
+              assigned_role: "worker",
+              output_target: {
+                path: "game.html",
+                kind: "source",
+                operation: "create_or_update",
+              },
+            },
+          ]),
         };
         if (snapshot) snapshot.messages.push(assistant);
         return { status: 200, body: snapshot?.messages || [assistant] };
@@ -846,7 +1002,7 @@ test("swarm retry preserves inspection tools when the first required attempt mad
     cookie,
     body: {
       workspaceRoot: process.cwd(),
-      objective: "Test objective",
+      objective: "Create `game.html` for the test objective",
       maxTasks: 2,
       verificationMode: "strict",
       requireLlmPlan: true,
@@ -886,7 +1042,9 @@ test("swarm retry preserves inspection tools when the first required attempt mad
   assert.equal(failedRunRes.status, 200);
   const failedRunJson = await failedRunRes.json();
   const events = Array.isArray(failedRunJson.events) ? failedRunJson.events : [];
-  const stepFailed = events.find((event) => event?.type === "step_failed");
+  const stepFailed = events.find(
+    (event) => event?.type === "step_failed" || event?.type === "task_failed"
+  );
   assert.ok(stepFailed, "missing step_failed event");
   assert.deepEqual(lastRequiredToolPromptCall(fake.promptSyncCalls)?.body?.tool_allowlist, [
     "ls",
@@ -901,6 +1059,283 @@ test("swarm retry preserves inspection tools when the first required attempt mad
     "apply_patch",
   ]);
   assert.equal(stepFailed?.payload?.verification?.reason, "TOOL_MODE_REQUIRED_NOT_SATISFIED");
+});
+
+test("swarm verification prefers provider-specific malformed write reasons", async (t) => {
+  const fake = await startFakeEngine({
+    onPromptSync: async ({ call, snapshot }) => {
+      if (call?.body?.tool_mode !== "required") {
+        const assistant = {
+          role: "assistant",
+          content: JSON.stringify([
+            {
+              id: "task-1",
+              title: "Create game shell",
+              description: "Create the initial game.html shell.",
+              dependencies: [],
+              acceptance_criteria: ["game.html exists"],
+              assigned_role: "worker",
+              output_target: {
+                path: "game.html",
+                kind: "source",
+                operation: "create_or_update",
+              },
+            },
+          ]),
+        };
+        if (snapshot) snapshot.messages.push(assistant);
+        return { status: 200, body: snapshot?.messages || [assistant] };
+      }
+      return {
+        status: 200,
+        body: [
+          {
+            role: "user",
+            parts: [
+              { type: "text", text: textFromParts(call?.body?.parts) },
+              { type: "tool_invocation", tool: "glob", args: {}, result: "README.md" },
+              {
+                type: "tool_invocation",
+                tool: "write",
+                args: {},
+                error: "WRITE_ARGS_EMPTY_FROM_PROVIDER",
+              },
+            ],
+          },
+          {
+            role: "assistant",
+            content:
+              "TOOL_MODE_REQUIRED_NOT_SATISFIED: WRITE_REQUIRED_NOT_SATISFIED: tool_mode=required but the model ended without executing a productive tool call.",
+          },
+        ],
+      };
+    },
+  });
+  t.after(async () => {
+    await fake.close();
+  });
+
+  const panelPort = await getFreePort();
+  const baseUrl = `http://127.0.0.1:${panelPort}`;
+
+  const panel = spawn(process.execPath, ["bin/setup.js"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      TANDEM_CONTROL_PANEL_PORT: String(panelPort),
+      TANDEM_ENGINE_URL: `http://127.0.0.1:${fake.port}`,
+      TANDEM_CONTROL_PANEL_AUTO_START_ENGINE: "0",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  t.after(() => {
+    if (!panel.killed) panel.kill("SIGTERM");
+  });
+
+  await waitForReady(baseUrl);
+
+  const login = await request(baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: { token: fake.token },
+  });
+  assert.equal(login.status, 200);
+  const cookie = extractCookie(login);
+
+  const swarmStart = await request(baseUrl, "/api/swarm/start", {
+    method: "POST",
+    cookie,
+    body: {
+      workspaceRoot: process.cwd(),
+      objective: "Build `game.html`",
+      maxTasks: 1,
+      verificationMode: "strict",
+      requireLlmPlan: true,
+      allowLocalPlannerFallback: true,
+    },
+  });
+  const swarmStartJson = await swarmStart.json();
+  assert.equal(swarmStart.status, 200, JSON.stringify(swarmStartJson));
+
+  const approveRes = await request(baseUrl, "/api/swarm/approve", {
+    method: "POST",
+    cookie,
+    body: { runId: swarmStartJson.runId },
+  });
+  assert.equal(approveRes.status, 200);
+
+  await waitForCondition(async () => {
+    const runState = await request(
+      baseUrl,
+      `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`,
+      {
+        cookie,
+      }
+    );
+    if (!runState.ok) return false;
+    const payload = await runState.json();
+    return String(payload?.run?.status || "").toLowerCase() === "failed";
+  }, 12000);
+
+  const failedRunRes = await request(
+    baseUrl,
+    `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`,
+    {
+      cookie,
+    }
+  );
+  assert.equal(failedRunRes.status, 200);
+  const failedRunJson = await failedRunRes.json();
+  const events = Array.isArray(failedRunJson.events) ? failedRunJson.events : [];
+  const stepFailed = events.find(
+    (event) => event?.type === "step_failed" || event?.type === "task_failed"
+  );
+  assert.ok(stepFailed, "missing step_failed event");
+  assert.equal(
+    stepFailed?.payload?.verification?.reason,
+    "WRITE_ARGS_EMPTY_FROM_PROVIDER"
+  );
+});
+
+test("swarm strict write retries malformed write failures up to configured budget", async (t) => {
+  let requiredCallCount = 0;
+  const fake = await startFakeEngine({
+    onPromptSync: async ({ call, snapshot }) => {
+      if (call?.body?.tool_mode !== "required") {
+        const assistant = {
+          role: "assistant",
+          content: JSON.stringify([
+            {
+              id: "task-1",
+              title: "Create game shell",
+              description: "Create the initial game.html shell.",
+              dependencies: [],
+              acceptance_criteria: ["game.html exists"],
+              assigned_role: "worker",
+              output_target: {
+                path: "game.html",
+                kind: "source",
+                operation: "create_or_update",
+              },
+            },
+          ]),
+        };
+        if (snapshot) snapshot.messages.push(assistant);
+        return { status: 200, body: snapshot?.messages || [assistant] };
+      }
+      requiredCallCount += 1;
+      return {
+        status: 200,
+        body: [
+          {
+            role: "user",
+            parts: [
+              { type: "text", text: textFromParts(call?.body?.parts) },
+              { type: "tool_invocation", tool: "glob", args: {}, result: "README.md" },
+              {
+                type: "tool_invocation",
+                tool: "write",
+                args: {},
+                error: "WRITE_ARGS_EMPTY_FROM_PROVIDER",
+              },
+            ],
+          },
+          {
+            role: "assistant",
+            content:
+              "TOOL_MODE_REQUIRED_NOT_SATISFIED: WRITE_REQUIRED_NOT_SATISFIED: tool_mode=required but the model ended without executing a productive tool call.",
+          },
+        ],
+      };
+    },
+  });
+  t.after(async () => {
+    await fake.close();
+  });
+
+  const panelPort = await getFreePort();
+  const baseUrl = `http://127.0.0.1:${panelPort}`;
+
+  const panel = spawn(process.execPath, ["bin/setup.js"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      TANDEM_CONTROL_PANEL_PORT: String(panelPort),
+      TANDEM_ENGINE_URL: `http://127.0.0.1:${fake.port}`,
+      TANDEM_CONTROL_PANEL_AUTO_START_ENGINE: "0",
+      TANDEM_STRICT_WRITE_RETRY_MAX_ATTEMPTS: "3",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  t.after(() => {
+    if (!panel.killed) panel.kill("SIGTERM");
+  });
+
+  await waitForReady(baseUrl);
+
+  const login = await request(baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: { token: fake.token },
+  });
+  assert.equal(login.status, 200);
+  const cookie = extractCookie(login);
+
+  const swarmStart = await request(baseUrl, "/api/swarm/start", {
+    method: "POST",
+    cookie,
+    body: {
+      workspaceRoot: process.cwd(),
+      objective: "Build `game.html`",
+      maxTasks: 1,
+      verificationMode: "strict",
+      requireLlmPlan: true,
+      allowLocalPlannerFallback: true,
+    },
+  });
+  const swarmStartJson = await swarmStart.json();
+  assert.equal(swarmStart.status, 200, JSON.stringify(swarmStartJson));
+
+  const approveRes = await request(baseUrl, "/api/swarm/approve", {
+    method: "POST",
+    cookie,
+    body: { runId: swarmStartJson.runId },
+  });
+  assert.equal(approveRes.status, 200);
+
+  await waitForCondition(async () => {
+    const runState = await request(
+      baseUrl,
+      `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`,
+      {
+        cookie,
+      }
+    );
+    if (!runState.ok) return false;
+    const payload = await runState.json();
+    return String(payload?.run?.status || "").toLowerCase() === "failed";
+  }, 12000);
+
+  const failedRunRes = await request(
+    baseUrl,
+    `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`,
+    {
+      cookie,
+    }
+  );
+  assert.equal(failedRunRes.status, 200);
+  const failedRunJson = await failedRunRes.json();
+  const events = Array.isArray(failedRunJson.events) ? failedRunJson.events : [];
+  const stepFailed = events.find(
+    (event) => event?.type === "step_failed" || event?.type === "task_failed"
+  );
+  assert.ok(stepFailed, "missing step_failed event");
+  assert.equal(stepFailed?.payload?.verification?.reason, "WRITE_ARGS_EMPTY_FROM_PROVIDER");
+  assert.equal(
+    stepFailed?.payload?.verification?.execution_trace?.attempts?.length,
+    3
+  );
+  assert.equal(requiredCallCount, 3);
 });
 
 test("swarm start seeds fallback tasks when llm planning is required but returns no valid tasks", async (t) => {

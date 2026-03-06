@@ -2,7 +2,9 @@
 // Defines prompts for Planner, Builder, Validator, and Researcher agents
 // See: docs/orchestration_plan.md
 
-use crate::orchestrator::types::{normalize_role_key, Task, TaskGate, ValidationResult};
+use crate::orchestrator::types::{
+    normalize_role_key, OutputTarget, Task, TaskGate, ValidationResult,
+};
 use std::collections::HashSet;
 
 // ============================================================================
@@ -52,6 +54,7 @@ You MUST output a valid JSON array of tasks. Each task must have:
 - "assigned_role": orchestrator/delegator/worker/watcher/reviewer/tester (default worker)
 - Optional "template_id": role template hint
 - Optional "gate": "review" or "test"
+- Optional "output_target": {{"path":"relative/path.ext","kind":"source|spec|config|document|test|asset","operation":"create|update|create_or_update"}}
 
 Example:
 ```json
@@ -70,7 +73,8 @@ Example:
     "description": "Add the new feature based on analysis",
     "dependencies": ["task_1"],
     "acceptance_criteria": ["Feature works as specified", "No regressions"],
-    "assigned_role": "worker"
+    "assigned_role": "worker",
+    "output_target": {{"path":"src/feature_x.rs","kind":"source","operation":"update"}}
   }}
 ]
 ```
@@ -148,6 +152,16 @@ Rules:
         let previous_section = previous_output
             .map(|o| format!("\n## Previous Attempt Output\n{}\n", o))
             .unwrap_or_default();
+        let output_target_section = task
+            .output_target
+            .as_ref()
+            .map(|target| {
+                serde_json::to_string_pretty(target)
+                    .ok()
+                    .map(|json| format!("\n## Required Output Target\n{}\n", json))
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
 
         format!(
             r#"You are a Builder Agent for a multi-agent orchestration system.
@@ -164,6 +178,7 @@ Rules:
 {file_context}
 {context_pack_section}
 {previous_section}
+{output_target_section}
 ## Output Requirements
 1. Make the necessary code changes to complete this task
 2. Write a brief note explaining what you did
@@ -185,6 +200,7 @@ Rules:
 - For `read`/`write`, always include a non-empty string `path` field.
 - For `write`, always include a non-empty string `content` field.
 - If your tool call arguments are malformed, the task will fail immediately.
+- When a required output target is provided, treat its `path` as the authoritative file to create or update.
 
 Complete this task now."#,
             title = task.title,
@@ -198,6 +214,7 @@ Complete this task now."#,
             file_context = file_context,
             context_pack_section = context_pack_section,
             previous_section = previous_section,
+            output_target_section = output_target_section,
         )
     }
 
@@ -613,6 +630,7 @@ fn parse_tasks_from_markdown(output: &str) -> Vec<ParsedTask> {
             assigned_role: Some("worker".to_string()),
             template_id: None,
             gate: None,
+            output_target: None,
         });
     }
 
@@ -736,6 +754,8 @@ pub struct ParsedTask {
     pub template_id: Option<String>,
     #[serde(default)]
     pub gate: Option<String>,
+    #[serde(default)]
+    pub output_target: Option<OutputTarget>,
 }
 
 impl From<ParsedTask> for Task {
@@ -759,6 +779,9 @@ impl From<ParsedTask> for Task {
             assigned_role,
             template_id: parsed.template_id.filter(|v| !v.trim().is_empty()),
             gate,
+            output_target: parsed.output_target,
+            task_kind: None,
+            execution_mode: None,
             state: crate::orchestrator::types::TaskState::Pending,
             retry_count: 0,
             artifacts: Vec::new(),
@@ -809,7 +832,7 @@ Here is my evaluation:
         let output = r#"
 Here is the plan:
 [
-  {"id": "1", "title": "Task 1", "description": "Do thing 1", "dependencies": [], "acceptance_criteria": ["Done"]},
+  {"id": "1", "title": "Task 1", "description": "Do thing 1", "dependencies": [], "acceptance_criteria": ["Done"], "output_target": {"path": "game.html", "kind": "source", "operation": "create_or_update"}},
   {"id": "2", "title": "Task 2", "description": "Do thing 2", "dependencies": ["1"], "acceptance_criteria": ["Done"]}
 ]
 "#;
@@ -818,6 +841,13 @@ Here is the plan:
         let tasks = tasks.unwrap();
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[1].dependencies, vec!["1"]);
+        assert_eq!(
+            tasks[0]
+                .output_target
+                .as_ref()
+                .map(|target| target.path.as_str()),
+            Some("game.html")
+        );
     }
 
     #[test]
@@ -896,5 +926,22 @@ Here is the plan:
         let output = "Looks good overall, passed.";
         let parsed = AgentPrompts::parse_validation_result_strict(output);
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn test_build_builder_prompt_includes_required_output_target() {
+        let mut task = Task::new(
+            "task_1".to_string(),
+            "Build game shell".to_string(),
+            "".to_string(),
+        );
+        task.output_target = Some(OutputTarget {
+            path: "game.html".to_string(),
+            kind: Some("source".to_string()),
+            operation: Some("create_or_update".to_string()),
+        });
+        let prompt = AgentPrompts::build_builder_prompt(&task, "game.html", None, None);
+        assert!(prompt.contains("Required Output Target"));
+        assert!(prompt.contains("\"path\": \"game.html\""));
     }
 }

@@ -16,7 +16,8 @@ use crate::orchestrator::{
     store::OrchestratorStore,
     types::{
         AgentModelRouting, Blackboard, BlackboardPatchRecord, Budget, ModelSelection,
-        OrchestratorConfig, Run, RunSnapshot, RunSource, RunStatus, RunSummary, Task, TaskState,
+        OrchestratorConfig, OutputTarget, Run, RunSnapshot, RunSource, RunStatus, RunSummary, Task,
+        TaskExecutionMode, TaskKind, TaskState,
     },
 };
 use crate::python_env;
@@ -8795,31 +8796,118 @@ fn context_step_status_to_task_state(status: ContextStepStatus) -> TaskState {
     }
 }
 
+fn context_task_kind_from_record(task_type: &str, payload: &serde_json::Value) -> Option<TaskKind> {
+    let raw = payload
+        .get("task_kind")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            let trimmed = task_type.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })?
+        .trim()
+        .to_ascii_lowercase();
+    match raw.as_str() {
+        "implementation" => Some(TaskKind::Implementation),
+        "inspection" => Some(TaskKind::Inspection),
+        "research" => Some(TaskKind::Research),
+        "validation" => Some(TaskKind::Validation),
+        _ => None,
+    }
+}
+
+fn context_execution_mode_from_payload(payload: &serde_json::Value) -> Option<TaskExecutionMode> {
+    match payload
+        .get("execution_mode")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|row| !row.is_empty())?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "strict_write" => Some(TaskExecutionMode::StrictWrite),
+        "strict_nonwriting" => Some(TaskExecutionMode::StrictNonwriting),
+        "best_effort" => Some(TaskExecutionMode::BestEffort),
+        _ => None,
+    }
+}
+
+fn context_output_target_from_payload(payload: &serde_json::Value) -> Option<OutputTarget> {
+    let target = payload.get("output_target")?;
+    let path = target
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|row| !row.is_empty())?
+        .to_string();
+    Some(OutputTarget {
+        path,
+        kind: target
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|row| !row.is_empty())
+            .map(ToString::to_string),
+        operation: target
+            .get("operation")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|row| !row.is_empty())
+            .map(ToString::to_string),
+    })
+}
+
 fn ms_to_datetime(ms: u64) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::from_timestamp_millis(ms as i64).unwrap_or_else(chrono::Utc::now)
 }
 
 fn context_run_to_snapshot(run: &ContextRunState) -> RunSnapshot {
-    let tasks_completed = run
-        .steps
-        .iter()
-        .filter(|step| step.status == ContextStepStatus::Done)
-        .count();
-    let tasks_failed = run
-        .steps
-        .iter()
-        .filter(|step| step.status == ContextStepStatus::Failed)
-        .count();
-    let current_task_id = run
-        .steps
-        .iter()
-        .find(|step| step.status == ContextStepStatus::InProgress)
-        .map(|step| step.step_id.clone());
+    let has_backend_tasks = !run.tasks.is_empty();
+    let tasks_completed = if has_backend_tasks {
+        run.tasks
+            .iter()
+            .filter(|task| task.status == ContextStepStatus::Done)
+            .count()
+    } else {
+        run.steps
+            .iter()
+            .filter(|step| step.status == ContextStepStatus::Done)
+            .count()
+    };
+    let tasks_failed = if has_backend_tasks {
+        run.tasks
+            .iter()
+            .filter(|task| task.status == ContextStepStatus::Failed)
+            .count()
+    } else {
+        run.steps
+            .iter()
+            .filter(|step| step.status == ContextStepStatus::Failed)
+            .count()
+    };
+    let current_task_id = if has_backend_tasks {
+        run.tasks
+            .iter()
+            .find(|task| task.status == ContextStepStatus::InProgress)
+            .map(|task| task.id.clone())
+    } else {
+        run.steps
+            .iter()
+            .find(|step| step.status == ContextStepStatus::InProgress)
+            .map(|step| step.step_id.clone())
+    };
     RunSnapshot {
         run_id: run.run_id.clone(),
         status: context_status_to_run_status(run.status.clone()),
         objective: run.objective.clone(),
-        task_count: run.steps.len(),
+        task_count: if has_backend_tasks {
+            run.tasks.len()
+        } else {
+            run.steps.len()
+        },
         tasks_completed,
         tasks_failed,
         budget: Budget::from_config(&OrchestratorConfig::default()),
@@ -8831,6 +8919,38 @@ fn context_run_to_snapshot(run: &ContextRunState) -> RunSnapshot {
 }
 
 fn context_run_to_tasks(run: &ContextRunState) -> Vec<Task> {
+    if !run.tasks.is_empty() {
+        return run
+            .tasks
+            .iter()
+            .map(|row| {
+                let payload = &row.payload;
+                let title = payload
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| row.task_type.trim());
+                let description = payload
+                    .get("summary")
+                    .or_else(|| payload.get("description"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| format!("Backend blackboard task {}", row.id));
+                let mut task = Task::new(row.id.clone(), title.to_string(), description);
+                task.state = context_step_status_to_task_state(row.status.clone());
+                task.dependencies = row.depends_on_task_ids.clone();
+                task.retry_count = row.attempt;
+                task.error_message = row.last_error.clone();
+                task.output_target = context_output_target_from_payload(payload);
+                task.task_kind = context_task_kind_from_record(&row.task_type, payload);
+                task.execution_mode = context_execution_mode_from_payload(payload);
+                task
+            })
+            .collect();
+    }
     run.steps
         .iter()
         .map(|step| {

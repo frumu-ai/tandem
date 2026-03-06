@@ -61,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Headless-first Chromium browser automation with readiness diagnostics**:
   - added a new `tandem-browser` Rust sidecar crate for local Chromium automation over stdio with typed browser RPC methods (`browser.open`, `browser.navigate`, `browser.snapshot`, `browser.click`, `browser.type`, `browser.press`, `browser.wait`, `browser.extract`, `browser.screenshot`, `browser.close`)
   - added browser readiness and install diagnostics with real launch smoke tests, distro-aware Linux install hints, and sidecar/browser detection for headless VPS hosts and desktops
+  - added engine-managed sidecar install and discovery:
+    - `tandem-engine browser install`
+    - `POST /browser/install`
+    - managed sidecar resolution from Tandem shared `binaries/` storage so normal installs do not require `TANDEM_BROWSER_SIDECAR`
+    - release packaging/upload for standalone `tandem-browser-*` GitHub release assets
   - added browser runtime config and env support:
     - `browser.enabled`
     - `browser.sidecar_path`
@@ -95,12 +100,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - browser summary block on `GET /global/health`
     - `tandem-engine browser status`
     - `tandem-engine browser doctor`
+    - `POST /browser/smoke-test`
     - `tandem-browser doctor --json`
     - `tandem-browser serve --stdio`
     - TUI `/browser status` and `/browser doctor`
-    - control-panel Browser Diagnostics settings card
+    - control-panel Browser Diagnostics settings card with install + smoke-test actions
   - browser artifacts now persist screenshots and large extracts as files/artifacts instead of returning large base64 payloads to the model
   - browser navigation/action flows now reuse host-allowlist policy and external-integration gating, and explicit session cancel/dispose paths now clean up tracked browser sessions
+  - browser smoke testing now supports an engine-owned `example.com` validation flow that opens, snapshots, extracts visible text, and closes through the live sidecar path
+  - browser sidecar transport failures now preserve stderr context and retry once after a dropped stdio connection before surfacing an error to clients
 
 - **Orchestrator multi-run event fan-in and run registry (engine + control panel)**:
   - tandem-engine now exposes multiplex context-run SSE fan-in via `GET /context/runs/events/stream`, supporting one stream for many run IDs with cursor resume support.

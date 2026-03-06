@@ -1,8 +1,15 @@
+use serde::Deserialize;
 use serde_json::Value;
 use std::time::{Duration, UNIX_EPOCH};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 
 use super::*;
+
+#[derive(Debug, Deserialize)]
+pub(super) struct BrowserSmokeTestInput {
+    #[serde(default)]
+    url: Option<String>,
+}
 
 pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoResponse {
     let now = crate::now_ms();
@@ -36,6 +43,42 @@ pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoRes
 
 pub(super) async fn browser_status(State(state): State<AppState>) -> impl IntoResponse {
     Json(json!(state.browser_status().await))
+}
+
+pub(super) async fn browser_install(State(state): State<AppState>) -> impl IntoResponse {
+    match state.install_browser_sidecar().await {
+        Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "ok": false,
+                "code": "browser_install_failed",
+                "error": err.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn browser_smoke_test(
+    State(state): State<AppState>,
+    payload: Option<Json<BrowserSmokeTestInput>>,
+) -> impl IntoResponse {
+    let input = payload
+        .map(|Json(value)| value)
+        .unwrap_or(BrowserSmokeTestInput { url: None });
+    match state.browser_smoke_test(input.url).await {
+        Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "ok": false,
+                "code": "browser_smoke_test_failed",
+                "error": err.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 pub(super) async fn global_lease_acquire(

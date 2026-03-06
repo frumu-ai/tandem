@@ -7338,6 +7338,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "tandem-core",
  "tempfile",
  "uuid",
 ]
@@ -7492,6 +7493,7 @@ dependencies = [
  "chrono-tz",
  "cron",
  "dirs 6.0.0",
+ "flate2",
  "futures",
  "ignore",
  "image",
@@ -7513,6 +7515,7 @@ dependencies = [
  "tandem-types",
  "tandem-wire",
  "tandem-workflows",
+ "tar",
  "tokio",
  "tokio-stream",
  "tower",

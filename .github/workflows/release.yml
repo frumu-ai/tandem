@@ -198,24 +198,28 @@ jobs:
             target: x86_64-unknown-linux-gnu
             engine_asset: tandem-engine-linux-x64.tar.gz
             tui_asset: tandem-tui-linux-x64.tar.gz
+            browser_asset: tandem-browser-linux-x64.tar.gz
             standalone_archive: tar.gz
             upload_updater_json: false
           - platform: macos-latest
             target: x86_64-apple-darwin
             engine_asset: tandem-engine-darwin-x64.zip
             tui_asset: tandem-tui-darwin-x64.zip
+            browser_asset: tandem-browser-darwin-x64.zip
             standalone_archive: zip
             upload_updater_json: false
           - platform: macos-latest
             target: aarch64-apple-darwin
             engine_asset: tandem-engine-darwin-arm64.zip
             tui_asset: tandem-tui-darwin-arm64.zip
+            browser_asset: tandem-browser-darwin-arm64.zip
             standalone_archive: zip
             upload_updater_json: false
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             engine_asset: tandem-engine-windows-x64.zip
             tui_asset: tandem-tui-windows-x64.zip
+            browser_asset: tandem-browser-windows-x64.zip
             standalone_archive: zip
             upload_updater_json: true
 
@@ -269,6 +273,7 @@ jobs:
           set -euo pipefail
           cargo build --release -p tandem-ai --target ${{ matrix.target }}
           cargo build --release -p tandem-tui --target ${{ matrix.target }}
+          cargo build --release -p tandem-browser --target ${{ matrix.target }}
           mkdir -p src-tauri/resources/binaries
           cp "target/${{ matrix.target }}/release/tandem-engine" "src-tauri/resources/binaries/tandem-engine"
           chmod +x "src-tauri/resources/binaries/tandem-engine"
@@ -279,6 +284,7 @@ jobs:
         run: |
           cargo build --release -p tandem-ai --target ${{ matrix.target }}
           cargo build --release -p tandem-tui --target ${{ matrix.target }}
+          cargo build --release -p tandem-browser --target ${{ matrix.target }}
           New-Item -ItemType Directory -Path "src-tauri/resources/binaries" -Force | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "src-tauri/resources/binaries/tandem-engine.exe" -Force
 
@@ -437,17 +443,19 @@ jobs:
           updaterJsonPreferNsis: true
           uploadUpdaterJson: ${{ matrix.upload_updater_json }}
 
-      - name: Package standalone engine/tui assets (Windows)
+      - name: Package standalone engine/tui/browser assets (Windows)
         if: ${{ matrix.platform == 'windows-latest' }}
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "dist/tandem-engine.exe" -Force
           Copy-Item "target/${{ matrix.target }}/release/tandem-tui.exe" "dist/tandem-tui.exe" -Force
+          Copy-Item "target/${{ matrix.target }}/release/tandem-browser.exe" "dist/tandem-browser.exe" -Force
           Compress-Archive -Path "dist/tandem-engine.exe" -DestinationPath "dist/${{ matrix.engine_asset }}" -Force
           Compress-Archive -Path "dist/tandem-tui.exe" -DestinationPath "dist/${{ matrix.tui_asset }}" -Force
+          Compress-Archive -Path "dist/tandem-browser.exe" -DestinationPath "dist/${{ matrix.browser_asset }}" -Force
 
-      - name: Package standalone engine/tui assets (Unix)
+      - name: Package standalone engine/tui/browser assets (Unix)
         if: ${{ matrix.platform != 'windows-latest' }}
         shell: bash
         run: |
@@ -455,22 +463,26 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/tandem-engine" dist/tandem-engine
           cp "target/${{ matrix.target }}/release/tandem-tui" dist/tandem-tui
-          chmod +x dist/tandem-engine dist/tandem-tui
+          cp "target/${{ matrix.target }}/release/tandem-browser" dist/tandem-browser
+          chmod +x dist/tandem-engine dist/tandem-tui dist/tandem-browser
 
           if [ "${{ matrix.standalone_archive }}" = "zip" ]; then
             zip -j "dist/${{ matrix.engine_asset }}" dist/tandem-engine
             zip -j "dist/${{ matrix.tui_asset }}" dist/tandem-tui
+            zip -j "dist/${{ matrix.browser_asset }}" dist/tandem-browser
           else
             tar -czf "dist/${{ matrix.engine_asset }}" -C dist tandem-engine
             tar -czf "dist/${{ matrix.tui_asset }}" -C dist tandem-tui
+            tar -czf "dist/${{ matrix.browser_asset }}" -C dist tandem-browser
           fi
 
-      - name: Upload standalone engine/tui assets to release
+      - name: Upload standalone engine/tui/browser assets to release
         uses: actions/github-script@v7
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
           ENGINE_ASSET: ${{ matrix.engine_asset }}
           TUI_ASSET: ${{ matrix.tui_asset }}
+          BROWSER_ASSET: ${{ matrix.browser_asset }}
         with:
           script: |
             const fs = require('fs');
@@ -480,6 +492,7 @@ jobs:
             const assets = [
               process.env.ENGINE_ASSET,
               process.env.TUI_ASSET,
+              process.env.BROWSER_ASSET,
             ].filter(Boolean);
 
             const existing = await github.rest.repos.listReleaseAssets({

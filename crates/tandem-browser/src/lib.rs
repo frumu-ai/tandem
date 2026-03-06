@@ -16,6 +16,7 @@ use html2md::parse_html;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tandem_core::resolve_shared_paths;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -511,6 +512,14 @@ pub fn detect_sidecar_binary_path(explicit: Option<&str>) -> Option<PathBuf> {
         if !trimmed.is_empty() {
             candidates.push(PathBuf::from(trimmed));
         }
+    }
+    if let Ok(paths) = resolve_shared_paths() {
+        candidates.push(
+            paths
+                .canonical_root
+                .join("binaries")
+                .join(sidecar_binary_name()),
+        );
     }
     if let Ok(exe) = env::current_exe() {
         if let Some(parent) = exe.parent() {

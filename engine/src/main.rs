@@ -21,7 +21,10 @@ use tandem_observability::{
     canonical_logs_dir_from_root, emit_event, init_process_logging, ObservabilityEvent, ProcessKind,
 };
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
-use tandem_server::{detect_host_runtime_context, serve, AppState, BrowserSubsystem, RuntimeState};
+use tandem_server::{
+    detect_host_runtime_context, install_browser_sidecar, serve, AppState,
+    BrowserSidecarInstallResult, BrowserSubsystem, RuntimeState,
+};
 use tandem_tools::ToolRegistry;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -101,6 +104,7 @@ const BROWSER_EXAMPLES: &str = r#"Examples:
   tandem-engine browser status
   tandem-engine browser status --hostname 127.0.0.1 --port 39731
   tandem-engine browser doctor --json
+  tandem-engine browser install
   tandem-engine browser doctor --state-dir .tandem-test
 "#;
 
@@ -311,6 +315,18 @@ enum BrowserCommand {
         about = "Run local browser readiness diagnostics using the effective engine config."
     )]
     Doctor {
+        #[arg(
+            long,
+            help = "Engine state directory. If omitted, uses TANDEM_STATE_DIR or the shared Tandem path."
+        )]
+        state_dir: Option<String>,
+        #[arg(long, help = "Path to config JSON override.")]
+        config: Option<String>,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    #[command(about = "Install the matching tandem-browser sidecar on this engine host.")]
+    Install {
         #[arg(
             long,
             help = "Engine state directory. If omitted, uses TANDEM_STATE_DIR or the shared Tandem path."
@@ -647,6 +663,31 @@ async fn main() -> anyhow::Result<()> {
                         println!("Install hints:");
                         for row in &status.install_hints {
                             println!("  - {}", row);
+                        }
+                    }
+                }
+            }
+            BrowserCommand::Install {
+                state_dir,
+                config,
+                json,
+            } => {
+                let state_dir = resolve_state_dir(state_dir);
+                let config_path = config.map(PathBuf::from);
+                let result = browser_install_result(&state_dir, config_path).await?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                } else {
+                    println!("Installed tandem-browser");
+                    println!("  Version: {}", result.version);
+                    println!("  Asset: {}", result.asset_name);
+                    println!("  Path: {}", result.installed_path);
+                    println!("  Downloaded bytes: {}", result.downloaded_bytes);
+                    println!("  Runnable: {}", result.status.runnable);
+                    if !result.status.blocking_issues.is_empty() {
+                        println!("Blocking issues:");
+                        for issue in &result.status.blocking_issues {
+                            println!("  - {}: {}", issue.code, issue.message);
                         }
                     }
                 }
@@ -1037,6 +1078,16 @@ async fn browser_doctor_status(
     let app_config = config.get().await;
     let browser = BrowserSubsystem::new(app_config.browser);
     Ok(browser.refresh_status().await)
+}
+
+async fn browser_install_result(
+    state_dir: &Path,
+    override_config_path: Option<PathBuf>,
+) -> anyhow::Result<BrowserSidecarInstallResult> {
+    let config_path = override_config_path.unwrap_or_else(|| state_dir.join("config.json"));
+    let config = ConfigStore::new(config_path, None).await?;
+    let app_config = config.get().await;
+    install_browser_sidecar(&app_config.browser).await
 }
 
 async fn apply_default_permission_rules(permissions: &PermissionManager) {

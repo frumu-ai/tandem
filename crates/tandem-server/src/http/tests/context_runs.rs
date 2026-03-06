@@ -1534,6 +1534,141 @@ async fn context_task_transition_rejects_task_revision_mismatch() {
 }
 
 #[tokio::test]
+async fn context_task_create_rejects_implementation_without_output_target() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create_run_req = Request::builder()
+        .method("POST")
+        .uri("/context/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "ctx-run-task-contract-invalid",
+                "objective": "contract validation"
+            })
+            .to_string(),
+        ))
+        .expect("create run request");
+    let create_run_resp = app
+        .clone()
+        .oneshot(create_run_req)
+        .await
+        .expect("create run response");
+    assert_eq!(create_run_resp.status(), StatusCode::OK);
+
+    let create_task_req = Request::builder()
+        .method("POST")
+        .uri("/context/runs/ctx-run-task-contract-invalid/tasks")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "tasks": [
+                    {
+                        "id": "task-1",
+                        "task_type": "implementation",
+                        "status": "runnable",
+                        "payload": {
+                            "title": "Create the scaffold",
+                            "task_kind": "implementation"
+                        }
+                    }
+                ]
+            })
+            .to_string(),
+        ))
+        .expect("create task request");
+    let create_task_resp = app
+        .clone()
+        .oneshot(create_task_req)
+        .await
+        .expect("create task response");
+    assert_eq!(create_task_resp.status(), StatusCode::OK);
+    let body = to_bytes(create_task_resp.into_body(), usize::MAX)
+        .await
+        .expect("create task body");
+    let payload: Value = serde_json::from_slice(&body).expect("create task json");
+    assert_eq!(payload.get("ok").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("TASK_OUTPUT_TARGET_REQUIRED")
+    );
+}
+
+#[tokio::test]
+async fn context_task_create_normalizes_nonwriting_contract_fields() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let create_run_req = Request::builder()
+        .method("POST")
+        .uri("/context/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "ctx-run-task-contract-normalized",
+                "objective": "contract normalization"
+            })
+            .to_string(),
+        ))
+        .expect("create run request");
+    let create_run_resp = app
+        .clone()
+        .oneshot(create_run_req)
+        .await
+        .expect("create run response");
+    assert_eq!(create_run_resp.status(), StatusCode::OK);
+
+    let create_task_req = Request::builder()
+        .method("POST")
+        .uri("/context/runs/ctx-run-task-contract-normalized/tasks")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "tasks": [
+                    {
+                        "id": "task-1",
+                        "task_type": "inspection",
+                        "status": "runnable",
+                        "payload": {
+                            "title": "Inspect workspace and choose artifact path",
+                            "task_kind": "inspection"
+                        }
+                    }
+                ]
+            })
+            .to_string(),
+        ))
+        .expect("create task request");
+    let create_task_resp = app
+        .clone()
+        .oneshot(create_task_req)
+        .await
+        .expect("create task response");
+    assert_eq!(create_task_resp.status(), StatusCode::OK);
+    let body = to_bytes(create_task_resp.into_body(), usize::MAX)
+        .await
+        .expect("create task body");
+    let payload: Value = serde_json::from_slice(&body).expect("create task json");
+    assert_eq!(payload.get("ok").and_then(Value::as_bool), Some(true));
+    let task = payload
+        .get("tasks")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .expect("task");
+    assert_eq!(
+        task.get("task_type").and_then(Value::as_str),
+        Some("inspection")
+    );
+    assert_eq!(
+        task.get("payload")
+            .and_then(|row| row.get("execution_mode"))
+            .and_then(Value::as_str),
+        Some("strict_nonwriting")
+    );
+}
+
+#[tokio::test]
 async fn context_blackboard_patches_endpoint_includes_task_patch() {
     let state = test_state().await;
     let app = app_router(state.clone());

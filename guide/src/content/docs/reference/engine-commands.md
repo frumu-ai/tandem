@@ -65,7 +65,7 @@ tandem-engine status [OPTIONS]
 Browser readiness and diagnostics. This is the operator-facing entrypoint for headless browser setup on desktops and VPS hosts.
 
 ```bash
-tandem-engine browser <status|doctor> [OPTIONS]
+tandem-engine browser <status|doctor|install> [OPTIONS]
 ```
 
 ### `browser status`
@@ -91,6 +91,18 @@ tandem-engine browser doctor [OPTIONS]
 - `--config <PATH>`: Override config file path.
 - `--json`: Print the full readiness payload as JSON.
 
+### `browser install`
+
+Install the matching `tandem-browser` sidecar onto the engine host from GitHub Releases.
+
+```bash
+tandem-engine browser install [OPTIONS]
+```
+
+- `--state-dir <DIR>`: Engine state directory used to resolve the config file.
+- `--config <PATH>`: Override config file path.
+- `--json`: Print the install result as JSON.
+
 ### Headless Hosts
 
 Browser automation does not require a visible desktop session. On Linux VPS hosts the engine only needs:
@@ -100,6 +112,8 @@ Browser automation does not require a visible desktop session. On Linux VPS host
 - the required Linux shared libraries for Chromium
 
 If the browser executable is not on `PATH`, set `TANDEM_BROWSER_EXECUTABLE` or `browser.executable_path`.
+
+For a full setup and test flow, see [Browser Setup and Testing](../browser-setup-and-testing/).
 
 ## `run`
 

@@ -63,14 +63,20 @@
   - Added a new `tandem-browser` sidecar for local Chromium automation over stdio, with typed browser actions for open, navigate, snapshot, click, type, press, wait, extract, screenshot, and close.
   - Browser automation is now explicitly headless-first: it works on a VPS with no GUI as long as the sidecar and a Chromium-based browser are installed on the same host as `tandem-engine`.
   - Added readiness diagnostics that do real browser launch smoke tests, detect missing Chrome/Chromium/Edge/Brave installs, surface Linux install hints, and explain non-runnable states instead of silently omitting browser capability.
+  - Added engine-managed sidecar install/distribution:
+    - `tandem-engine browser install`
+    - `POST /browser/install`
+    - managed sidecar discovery from Tandem shared `binaries/` storage so standard installs do not need `TANDEM_BROWSER_SIDECAR`
+    - standalone `tandem-browser-*` assets in the release workflows
   - Added operator/browser status surfaces across the stack:
     - `GET /browser/status`
     - browser summary on `GET /global/health`
     - `tandem-engine browser status`
     - `tandem-engine browser doctor`
+    - `POST /browser/smoke-test`
     - `tandem-browser doctor --json`
     - TUI `/browser status` and `/browser doctor`
-    - control-panel Browser Diagnostics card in Settings
+    - control-panel Browser Diagnostics card in Settings with sidecar install and smoke-test actions
   - Replaced the generic model-facing browser action shape with typed engine tools:
     - `browser_status`
     - `browser_open`
@@ -86,6 +92,8 @@
   - Browser tool registration now works in both server and one-shot runtime paths, and `browser_status` remains available even when full browser execution is blocked.
   - Screenshots and oversized extracts now persist as artifacts/files rather than being returned as large inline base64 payloads.
   - Session cancel, global dispose, stale-run reaping, and routine-pause flows now clean up tracked browser sessions to avoid leaked headless browser state.
+  - Added an engine-owned smoke test that opens `https://example.com`, snapshots it, extracts visible text, and closes the browser session so operators can validate the full runtime path from the control panel or direct API calls.
+  - Sidecar stdio failures now preserve sidecar stderr and retry once after an unexpected disconnect before returning an error.
 
 - **Blackboard as central coordination layer + control panel parity**:
   - Extended engine blackboard with first-class task state (`blackboard.tasks`) including workflow IDs, task lineage references, lease ownership/token/expiry, retries, and optimistic task revision (`task_rev`).

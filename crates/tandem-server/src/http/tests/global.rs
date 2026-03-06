@@ -46,6 +46,55 @@ async fn browser_status_route_returns_browser_readiness_shape() {
 }
 
 #[tokio::test]
+async fn browser_install_route_is_registered() {
+    std::env::set_var(
+        "TANDEM_BROWSER_RELEASES_URL",
+        "http://127.0.0.1:9/releases/tags",
+    );
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/browser/install")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("browser_install_failed")
+    );
+
+    std::env::remove_var("TANDEM_BROWSER_RELEASES_URL");
+}
+
+#[tokio::test]
+async fn browser_smoke_test_route_is_registered() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/browser/smoke-test")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"url":"https://example.com"}"#))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("browser_smoke_test_failed")
+    );
+}
+
+#[tokio::test]
 async fn non_health_routes_are_blocked_until_runtime_ready() {
     let state = AppState::new_starting(Uuid::new_v4().to_string(), false);
     let app = app_router(state);

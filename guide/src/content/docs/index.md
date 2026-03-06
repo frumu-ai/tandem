@@ -40,6 +40,7 @@ _You want to build custom clients, connect external tools via MCP, or programmat
 
 - **[Building Automated Agents](./mcp-automated-agents/)** — Trigger agent pipelines automatically.
 - **[WebMCP for Agents](./webmcp-for-agents/)** — Expose local HTTP APIs to your agents.
+- **[Browser Setup and Testing](./browser-setup-and-testing/)** — Build, install, validate, and incorporate `tandem-browser`.
 - **SDKs:** Integrate Tandem into your own codebases using our official libraries.
   - 📘 **[TypeScript SDK](./sdk/typescript/)**
   - 🐍 **[Python SDK](./sdk/python/)**

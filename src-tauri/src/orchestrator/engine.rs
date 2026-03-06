@@ -98,6 +98,23 @@ struct SessionWriteSummary {
     paths: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrictWriteRetryFailureClass {
+    NoToolActivity,
+    ReadOnlyCompletion,
+    NoWorkspaceChange,
+}
+
+impl StrictWriteRetryFailureClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NoToolActivity => "no_tool_activity",
+            Self::ReadOnlyCompletion => "read_only_completion",
+            Self::NoWorkspaceChange => "no_workspace_change",
+        }
+    }
+}
+
 // ============================================================================
 // Orchestrator Engine
 // ============================================================================
@@ -1403,93 +1420,40 @@ impl OrchestratorEngine {
                 tracker.record_iteration();
             }
 
-            let mut builder_call = self
-                .call_agent_for_task_with_recovery(&task, &mut session_id, &prompt, execution_role)
-                .await?;
-            let mut builder_response = builder_call.content.clone();
-            let mut builder_used_tools = builder_call.used_tools;
-            let mut builder_used_write_tools = builder_call.used_write_tools;
+            let strict_write_retry_enabled = self.strict_write_retry_enabled().await;
+            let strict_write_max_attempts = self.strict_write_retry_max_attempts().await;
+            let requires_workspace_changes = self.task_requires_workspace_changes(&task);
+            let target_hint = if hinted_targets.is_empty() {
+                "the expected artifact file".to_string()
+            } else {
+                hinted_targets.join(", ")
+            };
+            let mut attempt_index = 1u32;
+            let mut current_prompt = prompt.clone();
+            let mut builder_response = String::new();
+            let mut builder_used_tools = false;
+            let mut builder_used_write_tools = false;
+            let mut workspace_changes = WorkspaceChangeSummary::default();
+            let mut session_write_summary = SessionWriteSummary::default();
 
-            // Record tokens
-            {
-                let mut tracker = self.budget_tracker.write().await;
-                tracker.record_tokens(
-                    None,
-                    Some(prompt.len().saturating_add(builder_response.len())),
-                );
-            }
-
-            // Get per-task workspace changes for validation.
-            let mut workspace_changes = self
-                .get_recent_changes_since(&workspace_before)
-                .await?;
-            let mut session_write_summary =
-                self.summarize_session_write_activity(&session_id).await;
-            let hinted_changes = self
-                .summarize_target_file_changes(&hinted_before, &hinted_targets)
-                .await?;
-            if !hinted_changes.is_empty() {
-                workspace_changes.has_changes = true;
-                if !workspace_changes.diff_text.is_empty() {
-                    workspace_changes.diff_text.push('\n');
-                }
-                workspace_changes.diff_text.push_str("Hint-target file changes:");
-                for line in hinted_changes.iter().take(20) {
-                    workspace_changes.diff_text.push('\n');
-                    workspace_changes.diff_text.push_str(line);
-                }
-            }
-            // Sidecar/session-history reconciliation can occasionally lag or miss a terminal write
-            // while we still observed write-tool usage in the active builder stream. Treat
-            // builder-observed write usage as fallback evidence when disk changes are present.
-            let mut task_scoped_changes_detected = workspace_changes.has_changes
-                && (session_write_summary.successful_write_calls > 0 || builder_used_write_tools);
-            if self.task_requires_workspace_changes(&task) && !task_scoped_changes_detected {
-                // One targeted recovery pass: force explicit file-tool usage with concrete paths.
-                self.emit_task_trace(
-                    &task.id,
-                    Some(session_id.as_str()),
-                    "NO_CHANGES_RECOVERY_RETRY",
-                    Some("retry=1/1 reason=no_workspace_changes_captured".to_string()),
-                );
-                let target_hint = if hinted_targets.is_empty() {
-                    "the expected artifact file".to_string()
-                } else {
-                    hinted_targets.join(", ")
-                };
-                let recovery_prompt = format!(
-                    "{}\n\n[Critical Recovery]\n\
-Your previous attempt did not persist any workspace file changes.\n\
-You MUST perform concrete file edits now.\n\
-- Use `write`, `edit`, or `apply_patch` with explicit JSON args.\n\
-- For file tools, include a non-empty `path` string.\n\
-- Prefer these target files when relevant: {}\n\
-- Do not finish until at least one target file has actually changed on disk.",
-                    AgentPrompts::build_builder_prompt(
-                        &task,
-                        &file_context,
-                        context_pack_summary.as_deref(),
-                        Some(builder_response.as_str())
-                    ),
-                    target_hint
-                );
-                builder_call = self
+            loop {
+                let builder_call = self
                     .call_agent_for_task_with_recovery(
                         &task,
                         &mut session_id,
-                        &recovery_prompt,
+                        &current_prompt,
                         execution_role,
                     )
                     .await?;
                 builder_response = builder_call.content.clone();
-                builder_used_tools = builder_used_tools || builder_call.used_tools;
-                builder_used_write_tools =
-                    builder_used_write_tools || builder_call.used_write_tools;
+                builder_used_tools = builder_call.used_tools;
+                builder_used_write_tools = builder_call.used_write_tools;
+
                 {
                     let mut tracker = self.budget_tracker.write().await;
                     tracker.record_tokens(
                         None,
-                        Some(recovery_prompt.len().saturating_add(builder_response.len())),
+                        Some(current_prompt.len().saturating_add(builder_response.len())),
                     );
                 }
 
@@ -1511,42 +1475,88 @@ You MUST perform concrete file edits now.\n\
                         workspace_changes.diff_text.push_str(line);
                     }
                 }
-                task_scoped_changes_detected = workspace_changes.has_changes
-                    && (session_write_summary.successful_write_calls > 0
-                        || builder_used_write_tools);
 
-                if !task_scoped_changes_detected {
-                    if !builder_used_tools {
+                let strict_failure = if requires_workspace_changes {
+                    self.classify_strict_write_failure(
+                        builder_used_tools,
+                        builder_used_write_tools,
+                        &session_write_summary,
+                        &workspace_changes,
+                    )
+                } else {
+                    None
+                };
+
+                if let Some(failure) = strict_failure {
+                    let retries_remaining = strict_write_max_attempts.saturating_sub(attempt_index);
+                    if strict_write_retry_enabled && retries_remaining > 0 {
                         self.emit_task_trace(
                             &task.id,
                             Some(session_id.as_str()),
-                            "NO_TOOL_CALLS_DETECTED",
-                            Some("builder did not invoke tools after recovery prompt".to_string()),
-                        );
-                        return Err(TandemError::Orchestrator(
-                            "Task requires file changes, but builder invoked no tools. Use read/glob to inspect inputs and write/edit/apply_patch to create or modify files before finishing.".to_string(),
-                        ));
-                    }
-                    if !builder_used_write_tools && session_write_summary.total_write_calls == 0 {
-                        self.emit_task_trace(
-                            &task.id,
-                            Some(session_id.as_str()),
-                            "NO_WRITE_TOOL_CALLS_DETECTED",
+                            "STRICT_WRITE_RETRY_SCHEDULED",
                             Some(format!(
-                                "builder write evidence missing (total_write_calls={}, successful_write_calls={})",
-                                session_write_summary.total_write_calls,
-                                session_write_summary.successful_write_calls
+                                "attempt={}/{} failure_class={} target_hint={}",
+                                attempt_index,
+                                strict_write_max_attempts,
+                                failure.as_str(),
+                                target_hint
                             )),
                         );
-                        return Err(TandemError::Orchestrator(
-                            "Task requires file changes, but builder only invoked read-only tools. Use write/edit/apply_patch with a concrete path to produce the required artifact.".to_string(),
-                        ));
+                        attempt_index += 1;
+                        current_prompt = self.build_strict_write_retry_prompt(
+                            &task,
+                            &file_context,
+                            context_pack_summary.as_deref(),
+                            builder_response.as_str(),
+                            &target_hint,
+                            failure,
+                            attempt_index,
+                            strict_write_max_attempts,
+                        );
+                        continue;
                     }
-                    return Err(TandemError::Orchestrator(format!(
-                        "Task requires file changes but none were captured. Use write/edit/apply_patch to update {} before completing.",
-                        target_hint
-                    )));
+
+                    match failure {
+                        StrictWriteRetryFailureClass::NoToolActivity => {
+                            self.emit_task_trace(
+                                &task.id,
+                                Some(session_id.as_str()),
+                                "NO_TOOL_CALLS_DETECTED",
+                                Some(format!(
+                                    "attempt={}/{} builder did not invoke tools",
+                                    attempt_index, strict_write_max_attempts
+                                )),
+                            );
+                            return Err(TandemError::Orchestrator(
+                                "Task requires file changes, but builder invoked no tools. Use read/glob to inspect inputs and write/edit/apply_patch to create or modify files before finishing.".to_string(),
+                            ));
+                        }
+                        StrictWriteRetryFailureClass::ReadOnlyCompletion => {
+                            self.emit_task_trace(
+                                &task.id,
+                                Some(session_id.as_str()),
+                                "NO_WRITE_TOOL_CALLS_DETECTED",
+                                Some(format!(
+                                    "attempt={}/{} builder write evidence missing (total_write_calls={}, successful_write_calls={})",
+                                    attempt_index,
+                                    strict_write_max_attempts,
+                                    session_write_summary.total_write_calls,
+                                    session_write_summary.successful_write_calls
+                                )),
+                            );
+                            return Err(TandemError::Orchestrator(
+                                "Task requires file changes, but builder only invoked read-only tools. Use write/edit/apply_patch with a concrete path to produce the required artifact.".to_string(),
+                            ));
+                        }
+                        StrictWriteRetryFailureClass::NoWorkspaceChange => {
+                            return Err(TandemError::Orchestrator(format!(
+                                "Task requires file changes but none were captured. Use write/edit/apply_patch to update {} before completing.",
+                                target_hint
+                            )));
+                        }
+                    }
                 }
+                break;
             }
             let mut changes_diff = workspace_changes.diff_text.clone();
             if !session_write_summary.paths.is_empty() {
@@ -2221,11 +2231,23 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
             .into_iter()
             .map(|tool| tool.to_string())
             .collect::<Vec<_>>();
+        let write_required = if matches!(role, AgentRole::Worker | AgentRole::Builder) {
+            let run = self.run.read().await;
+            task_id
+                .and_then(|id| run.tasks.iter().find(|task| task.id == id))
+                .map(|task| self.task_requires_workspace_changes(task))
+                .unwrap_or(false)
+        } else {
+            false
+        };
         let mut request = SendMessageRequest::text(prompt.to_string());
         request.model = model_spec.clone();
         request.tool_allowlist = Some(tool_allowlist.clone());
         if matches!(role, AgentRole::Worker | AgentRole::Builder) {
             request.tool_mode = Some("required".to_string());
+            if write_required {
+                request.write_required = Some(true);
+            }
         }
         {
             let mut tracker = self.budget_tracker.write().await;
@@ -2249,6 +2271,9 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
                 retry_request.tool_allowlist = Some(tool_allowlist);
                 if matches!(role, AgentRole::Worker | AgentRole::Builder) {
                     retry_request.tool_mode = Some("required".to_string());
+                    if write_required {
+                        retry_request.write_required = Some(true);
+                    }
                 }
                 {
                     let mut tracker = self.budget_tracker.write().await;
@@ -3013,7 +3038,116 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
         Ok(Self::summarize_workspace_changes(before, &after))
     }
 
+    async fn strict_write_retry_max_attempts(&self) -> u32 {
+        self.run
+            .read()
+            .await
+            .config
+            .strict_write_retry_max_attempts
+            .max(1)
+    }
+
+    async fn strict_write_retry_enabled(&self) -> bool {
+        self.run.read().await.config.strict_write_retry_enabled
+    }
+
+    fn classify_strict_write_failure(
+        &self,
+        builder_used_tools: bool,
+        builder_used_write_tools: bool,
+        session_write_summary: &SessionWriteSummary,
+        workspace_changes: &WorkspaceChangeSummary,
+    ) -> Option<StrictWriteRetryFailureClass> {
+        if workspace_changes.has_changes
+            && (session_write_summary.successful_write_calls > 0 || builder_used_write_tools)
+        {
+            return None;
+        }
+        if !builder_used_tools {
+            return Some(StrictWriteRetryFailureClass::NoToolActivity);
+        }
+        if !builder_used_write_tools && session_write_summary.total_write_calls == 0 {
+            return Some(StrictWriteRetryFailureClass::ReadOnlyCompletion);
+        }
+        Some(StrictWriteRetryFailureClass::NoWorkspaceChange)
+    }
+
+    fn build_strict_write_retry_prompt(
+        &self,
+        task: &Task,
+        file_context: &str,
+        context_pack_summary: Option<&str>,
+        previous_output: &str,
+        target_hint: &str,
+        failure: StrictWriteRetryFailureClass,
+        attempt: u32,
+        max_attempts: u32,
+    ) -> String {
+        let guidance = match failure {
+            StrictWriteRetryFailureClass::NoToolActivity => format!(
+                "[Strict Write Recovery]\n\
+Attempt {attempt}/{max_attempts} failed because no tools were used.\n\
+- You must execute tools on this retry.\n\
+- Inspect only as much as needed with `glob`/`list`/`read`.\n\
+- Then create or modify {target_hint} in the same turn with `write`, `edit`, or `apply_patch`.\n\
+- For `write`, args must be a JSON object with both `path` and full `content`."
+            ),
+            StrictWriteRetryFailureClass::ReadOnlyCompletion => format!(
+                "[Strict Write Recovery]\n\
+Attempt {attempt}/{max_attempts} used only read-only tools.\n\
+- Do not inspect further unless you need one final concrete file read.\n\
+- You must now create or modify {target_hint} directly.\n\
+- Use only `write`, `edit`, or `apply_patch`.\n\
+- For `write`, args must be a JSON object with both `path` and full `content`."
+            ),
+            StrictWriteRetryFailureClass::NoWorkspaceChange => format!(
+                "[Strict Write Recovery]\n\
+Attempt {attempt}/{max_attempts} did not persist workspace changes.\n\
+- You must make a concrete file change on disk now.\n\
+- Prefer these target files when relevant: {target_hint}\n\
+- Use `write`, `edit`, or `apply_patch` with explicit JSON args.\n\
+- Do not finish until at least one target file has actually changed on disk."
+            ),
+        };
+        format!(
+            "{}\n\n{}",
+            AgentPrompts::build_builder_prompt(
+                task,
+                file_context,
+                context_pack_summary,
+                Some(previous_output)
+            ),
+            guidance
+        )
+    }
+
     fn task_requires_workspace_changes(&self, task: &Task) -> bool {
+        if matches!(task.execution_mode, Some(TaskExecutionMode::StrictWrite)) {
+            return true;
+        }
+        if matches!(
+            task.execution_mode,
+            Some(TaskExecutionMode::StrictNonwriting)
+        ) {
+            return false;
+        }
+        if matches!(task.task_kind, Some(TaskKind::Implementation)) {
+            return true;
+        }
+        if matches!(
+            task.task_kind,
+            Some(TaskKind::Inspection | TaskKind::Research | TaskKind::Validation)
+        ) {
+            return false;
+        }
+        if task
+            .output_target
+            .as_ref()
+            .map(|target| !target.path.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return true;
+        }
         let mut text = format!("{} {}", task.title, task.description);
         if !task.acceptance_criteria.is_empty() {
             text.push(' ');
@@ -3114,6 +3248,14 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
     }
 
     fn extract_target_file_hints(task: &Task) -> Vec<String> {
+        if let Some(path) = task
+            .output_target
+            .as_ref()
+            .map(|target| target.path.trim())
+            .filter(|path| !path.is_empty())
+        {
+            return vec![path.to_string()];
+        }
         let mut tokens = Vec::new();
         tokens.extend(task.title.split_whitespace().map(|s| s.to_string()));
         tokens.extend(task.description.split_whitespace().map(|s| s.to_string()));
@@ -3137,6 +3279,12 @@ When calling `read`/`write`/`edit`, ALWAYS include a non-empty `path` string.\n\
                 .to_string();
             if token.contains('/')
                 || token.contains('\\')
+                || token.contains(".html")
+                || token.contains(".htm")
+                || token.contains(".css")
+                || token.contains(".scss")
+                || token.contains(".sass")
+                || token.contains(".svg")
                 || token.contains(".md")
                 || token.contains(".ts")
                 || token.contains(".tsx")

@@ -192,6 +192,32 @@ pub(super) enum ContextBlackboardTaskStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ContextTaskKind {
+    Implementation,
+    Inspection,
+    Research,
+    Validation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ContextTaskExecutionMode {
+    StrictWrite,
+    StrictNonwriting,
+    BestEffort,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(super) struct ContextTaskOutputTarget {
+    pub(super) path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) operation: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ContextBlackboardTask {
     pub(super) id: String,

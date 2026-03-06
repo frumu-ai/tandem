@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use base64::Engine;
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_browser::{
@@ -23,8 +24,8 @@ use tandem_core::{resolve_shared_paths, BrowserConfig};
 use tandem_tools::{Tool, ToolRegistry};
 use tandem_types::{EngineEvent, ToolResult, ToolSchema};
 use tokio::fs;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
@@ -33,12 +34,16 @@ use crate::{now_ms, AppState, RoutineRunArtifact, RuntimeState};
 const STATUS_CACHE_MAX_AGE_MS: u64 = 30_000;
 const INLINE_EXTRACT_LIMIT_BYTES: usize = 24_000;
 const SNAPSHOT_SCREENSHOT_LABEL: &str = "browser snapshot";
+const RELEASE_REPO: &str = "frumu-ai/tandem";
+const RELEASES_URL_ENV: &str = "TANDEM_BROWSER_RELEASES_URL";
+const BROWSER_INSTALL_USER_AGENT: &str = "tandem-browser-installer";
 
 #[derive(Debug)]
 struct BrowserSidecarClient {
     _child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    stderr: BufReader<ChildStderr>,
     next_id: u64,
 }
 
@@ -63,6 +68,42 @@ pub struct BrowserHealthSummary {
     pub last_checked_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserSidecarInstallResult {
+    pub version: String,
+    pub asset_name: String,
+    pub installed_path: String,
+    pub downloaded_bytes: u64,
+    pub status: BrowserStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserSmokeTestResult {
+    pub ok: bool,
+    pub status: BrowserStatus,
+    pub url: String,
+    pub final_url: String,
+    pub title: String,
+    pub load_state: String,
+    pub element_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excerpt: Option<String>,
+    pub closed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
 }
 
 #[derive(Clone)]
@@ -132,7 +173,7 @@ impl BrowserSidecarClient {
             .arg("stdio")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         if let Some(path) = config
             .executable_path
             .as_deref()
@@ -170,10 +211,15 @@ impl BrowserSidecarClient {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("browser sidecar stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("browser sidecar stderr unavailable"))?;
         let mut client = Self {
             _child: child,
             stdin,
             stdout: BufReader::new(stdout),
+            stderr: BufReader::new(stderr),
             next_id: 1,
         };
         let version: Value = client.call_raw("browser.version", json!({})).await?;
@@ -208,7 +254,16 @@ impl BrowserSidecarClient {
         let mut line = String::new();
         let read = self.stdout.read_line(&mut line).await?;
         if read == 0 {
-            anyhow::bail!("browser sidecar closed the stdio connection");
+            let mut stderr = String::new();
+            let _ = self.stderr.read_to_string(&mut stderr).await;
+            let stderr = stderr.trim();
+            if stderr.is_empty() {
+                anyhow::bail!("browser sidecar closed the stdio connection");
+            }
+            anyhow::bail!(
+                "browser sidecar closed the stdio connection: {}",
+                smoke_excerpt(stderr, 600)
+            );
         }
         let response: BrowserRpcResponse =
             serde_json::from_str(line.trim()).context("invalid browser sidecar response")?;
@@ -226,6 +281,15 @@ impl BrowserSidecarClient {
         params: T,
     ) -> anyhow::Result<R> {
         let value = self.call_raw(method, serde_json::to_value(params)?).await?;
+        serde_json::from_value(value).context("invalid browser sidecar payload")
+    }
+
+    async fn call_value<R: for<'de> Deserialize<'de>>(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> anyhow::Result<R> {
+        let value = self.call_raw(method, params).await?;
         serde_json::from_value(value).context("invalid browser sidecar payload")
     }
 }
@@ -247,6 +311,94 @@ impl BrowserSubsystem {
 
     pub fn config(&self) -> &BrowserConfig {
         &self.config
+    }
+
+    pub async fn install_sidecar(&self) -> anyhow::Result<BrowserSidecarInstallResult> {
+        let mut result = install_browser_sidecar(&self.config).await?;
+        result.status = self.refresh_status().await;
+        Ok(result)
+    }
+
+    pub async fn smoke_test(&self, url: Option<String>) -> anyhow::Result<BrowserSmokeTestResult> {
+        let status = self.status_snapshot().await;
+        if !status.runnable {
+            anyhow::bail!(
+                "browser_not_runnable: run browser doctor first; current status is not runnable"
+            );
+        }
+
+        let target_url = url
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "https://example.com".to_string());
+        let request = BrowserOpenRequest {
+            url: target_url.clone(),
+            profile_id: None,
+            headless: Some(self.config.headless_default),
+            viewport: Some(BrowserViewport {
+                width: self.config.default_viewport.width,
+                height: self.config.default_viewport.height,
+            }),
+            wait_until: Some("navigation".to_string()),
+            executable_path: self.config.executable_path.clone(),
+            user_data_root: self.config.user_data_root.clone(),
+            allow_no_sandbox: self.config.allow_no_sandbox,
+            headless_default: self.config.headless_default,
+        };
+        let opened: BrowserOpenResult = self.call_sidecar("browser.open", request).await?;
+        let session_id = opened.session_id.clone();
+
+        let result = async {
+            let snapshot: BrowserSnapshotResult = self
+                .call_sidecar(
+                    "browser.snapshot",
+                    BrowserSnapshotParams {
+                        session_id: session_id.clone(),
+                        max_elements: Some(25),
+                        include_screenshot: false,
+                    },
+                )
+                .await?;
+            let extract: BrowserExtractResult = self
+                .call_sidecar(
+                    "browser.extract",
+                    BrowserExtractParams {
+                        session_id: session_id.clone(),
+                        format: "visible_text".to_string(),
+                        max_bytes: Some(4_000),
+                    },
+                )
+                .await?;
+            Ok::<BrowserSmokeTestResult, anyhow::Error>(BrowserSmokeTestResult {
+                ok: true,
+                status,
+                url: target_url,
+                final_url: snapshot.url,
+                title: snapshot.title,
+                load_state: snapshot.load_state,
+                element_count: snapshot.elements.len(),
+                excerpt: Some(smoke_excerpt(&extract.content, 400)),
+                closed: false,
+            })
+        }
+        .await;
+
+        let close_result: BrowserCloseResult = self
+            .call_sidecar(
+                "browser.close",
+                BrowserCloseParams {
+                    session_id: session_id.clone(),
+                },
+            )
+            .await
+            .unwrap_or(BrowserCloseResult {
+                session_id,
+                closed: false,
+            });
+
+        let mut smoke = result?;
+        smoke.closed = close_result.closed;
+        Ok(smoke)
     }
 
     pub async fn refresh_status(&self) -> BrowserStatus {
@@ -361,6 +513,7 @@ impl BrowserSubsystem {
         method: &str,
         params: T,
     ) -> anyhow::Result<R> {
+        let params = serde_json::to_value(params)?;
         let mut guard = self.client.lock().await;
         if guard.is_none() {
             *guard = Some(BrowserSidecarClient::spawn(&self.config).await?);
@@ -368,11 +521,22 @@ impl BrowserSubsystem {
         let result = guard
             .as_mut()
             .expect("browser sidecar client initialized")
-            .call(method, params)
+            .call_value(method, params.clone())
             .await;
         if let Err(err) = &result {
             *guard = None;
             self.update_last_error(err.to_string()).await;
+            if err
+                .to_string()
+                .contains("browser sidecar closed the stdio connection")
+            {
+                *guard = Some(BrowserSidecarClient::spawn(&self.config).await?);
+                return guard
+                    .as_mut()
+                    .expect("browser sidecar client reinitialized")
+                    .call_value(method, params)
+                    .await;
+            }
         }
         result
     }
@@ -1104,6 +1268,17 @@ impl RuntimeState {
         self.browser.status_snapshot().await
     }
 
+    pub async fn browser_smoke_test(
+        &self,
+        url: Option<String>,
+    ) -> anyhow::Result<BrowserSmokeTestResult> {
+        self.browser.smoke_test(url).await
+    }
+
+    pub async fn install_browser_sidecar(&self) -> anyhow::Result<BrowserSidecarInstallResult> {
+        self.browser.install_sidecar().await
+    }
+
     pub async fn browser_health_summary(&self) -> BrowserHealthSummary {
         self.browser.health_summary().await
     }
@@ -1125,6 +1300,23 @@ impl AppState {
             Some(runtime) => runtime.browser.status_snapshot().await,
             None => BrowserStatus::default(),
         }
+    }
+
+    pub async fn browser_smoke_test(
+        &self,
+        url: Option<String>,
+    ) -> anyhow::Result<BrowserSmokeTestResult> {
+        let Some(runtime) = self.runtime.get() else {
+            anyhow::bail!("runtime not ready");
+        };
+        runtime.browser_smoke_test(url).await
+    }
+
+    pub async fn install_browser_sidecar(&self) -> anyhow::Result<BrowserSidecarInstallResult> {
+        let Some(runtime) = self.runtime.get() else {
+            anyhow::bail!("runtime not ready");
+        };
+        runtime.install_browser_sidecar().await
     }
 
     pub async fn browser_health_summary(&self) -> BrowserHealthSummary {
@@ -1220,6 +1412,219 @@ fn probe_binary_version(path: &Path) -> anyhow::Result<String> {
     Ok(stdout)
 }
 
+pub async fn install_browser_sidecar(
+    config: &BrowserConfig,
+) -> anyhow::Result<BrowserSidecarInstallResult> {
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let release = fetch_release_for_version(&version).await?;
+    let asset_name = browser_release_asset_name()?;
+    let asset = release
+        .assets
+        .iter()
+        .find(|candidate| candidate.name == asset_name)
+        .ok_or_else(|| {
+            anyhow!(
+                "release_missing_asset: `{}` not found in {}",
+                asset_name,
+                release.tag_name
+            )
+        })?;
+    let install_path = sidecar_install_path(config)?;
+    let parent = install_path
+        .parent()
+        .ok_or_else(|| anyhow!("invalid install path `{}`", install_path.display()))?;
+    fs::create_dir_all(parent)
+        .await
+        .with_context(|| format!("failed to create `{}`", parent.display()))?;
+
+    let archive_bytes = download_release_asset(asset).await?;
+    let downloaded_bytes = archive_bytes.len() as u64;
+    let install_path_for_unpack = install_path.clone();
+    let asset_name_for_unpack = asset.name.clone();
+    let unpacked = tokio::task::spawn_blocking(move || {
+        unpack_sidecar_archive(
+            &asset_name_for_unpack,
+            &archive_bytes,
+            &install_path_for_unpack,
+        )
+    })
+    .await
+    .context("browser sidecar install task failed")??;
+
+    let status = evaluate_browser_status(config.clone());
+    Ok(BrowserSidecarInstallResult {
+        version,
+        asset_name: asset.name.clone(),
+        installed_path: unpacked.to_string_lossy().to_string(),
+        downloaded_bytes: asset.size.max(downloaded_bytes),
+        status,
+    })
+}
+
+async fn fetch_release_for_version(version: &str) -> anyhow::Result<GitHubRelease> {
+    let base = std::env::var(RELEASES_URL_ENV)
+        .unwrap_or_else(|_| format!("https://api.github.com/repos/{RELEASE_REPO}/releases/tags"));
+    let url = format!("{}/v{}", base.trim_end_matches('/'), version);
+    let response = reqwest::Client::new()
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, BROWSER_INSTALL_USER_AGENT)
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch release metadata from `{url}`"))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("release_lookup_failed: {} {}", status, body.trim());
+    }
+    serde_json::from_str::<GitHubRelease>(&body).context("invalid release metadata payload")
+}
+
+async fn download_release_asset(asset: &GitHubAsset) -> anyhow::Result<Vec<u8>> {
+    let response = reqwest::Client::new()
+        .get(&asset.browser_download_url)
+        .header(reqwest::header::USER_AGENT, BROWSER_INSTALL_USER_AGENT)
+        .send()
+        .await
+        .with_context(|| format!("failed to download `{}`", asset.browser_download_url))?;
+    let status = response.status();
+    if !status.is_success() {
+        anyhow::bail!(
+            "asset_download_failed: {} {}",
+            status,
+            asset.browser_download_url
+        );
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .context("failed to read asset bytes")?;
+    Ok(bytes.to_vec())
+}
+
+fn sidecar_install_path(config: &BrowserConfig) -> anyhow::Result<PathBuf> {
+    if let Some(explicit) = config
+        .sidecar_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(PathBuf::from(explicit));
+    }
+    managed_sidecar_install_path()
+}
+
+fn managed_sidecar_install_path() -> anyhow::Result<PathBuf> {
+    let root = resolve_shared_paths()
+        .map(|paths| paths.canonical_root)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .map(|home| home.join(".tandem"))
+                .unwrap_or_else(|| PathBuf::from(".tandem"))
+        });
+    Ok(root.join("binaries").join(sidecar_binary_name()))
+}
+
+fn browser_release_asset_name() -> anyhow::Result<String> {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        anyhow::bail!("unsupported_os: {}", std::env::consts::OS);
+    };
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        anyhow::bail!("unsupported_arch: {}", std::env::consts::ARCH);
+    };
+    let ext = if cfg!(target_os = "windows") || cfg!(target_os = "macos") {
+        "zip"
+    } else {
+        "tar.gz"
+    };
+    Ok(format!("tandem-browser-{os}-{arch}.{ext}"))
+}
+
+fn sidecar_binary_name() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "tandem-browser.exe"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "tandem-browser"
+    }
+}
+
+fn unpack_sidecar_archive(
+    asset_name: &str,
+    archive_bytes: &[u8],
+    install_path: &Path,
+) -> anyhow::Result<PathBuf> {
+    if asset_name.ends_with(".zip") {
+        let cursor = std::io::Cursor::new(archive_bytes);
+        let mut archive = zip::ZipArchive::new(cursor).context("invalid zip archive")?;
+        let binary_present = archive
+            .file_names()
+            .any(|name| name == sidecar_binary_name());
+        let mut file = if binary_present {
+            archive
+                .by_name(sidecar_binary_name())
+                .context("browser binary missing from zip archive")?
+        } else {
+            archive
+                .by_index(0)
+                .context("browser binary missing from zip archive")?
+        };
+        let mut output = std::fs::File::create(install_path)
+            .with_context(|| format!("failed to create `{}`", install_path.display()))?;
+        std::io::copy(&mut file, &mut output).context("failed to unpack zip asset")?;
+    } else if asset_name.ends_with(".tar.gz") {
+        let cursor = std::io::Cursor::new(archive_bytes);
+        let decoder = GzDecoder::new(cursor);
+        let mut archive = tar::Archive::new(decoder);
+        let mut found = false;
+        for entry in archive.entries().context("invalid tar archive")? {
+            let mut entry = entry.context("invalid tar entry")?;
+            let path = entry.path().context("invalid tar entry path")?;
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == sidecar_binary_name())
+            {
+                entry
+                    .unpack(install_path)
+                    .with_context(|| format!("failed to unpack `{}`", install_path.display()))?;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            anyhow::bail!("browser binary missing from tar archive");
+        }
+    } else {
+        anyhow::bail!("unsupported archive format `{asset_name}`");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = std::fs::metadata(install_path)
+            .with_context(|| format!("failed to read `{}` metadata", install_path.display()))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(install_path, perms)
+            .with_context(|| format!("failed to chmod `{}`", install_path.display()))?;
+    }
+
+    Ok(install_path.to_path_buf())
+}
+
 fn parse_tool_context(args: &Value) -> BrowserToolContext {
     serde_json::from_value(args.clone()).unwrap_or(BrowserToolContext {
         model_session_id: None,
@@ -1259,6 +1664,17 @@ fn split_error_code(message: &str) -> (&str, &str) {
         return ("browser_error", message);
     }
     (code, detail.trim())
+}
+
+fn smoke_excerpt(content: &str, max_chars: usize) -> String {
+    let mut excerpt = String::new();
+    for ch in content.chars().take(max_chars) {
+        excerpt.push(ch);
+    }
+    if content.chars().count() > max_chars {
+        excerpt.push_str("...");
+    }
+    excerpt
 }
 
 fn browser_not_runnable_result(status: &BrowserStatus) -> anyhow::Result<ToolResult> {
@@ -1576,6 +1992,39 @@ mod tests {
         let err =
             ensure_allowed_browser_url("https://example.org/path", &allow_hosts).expect_err("deny");
         assert!(err.to_string().contains("allowlist"));
+    }
+
+    #[test]
+    fn browser_release_asset_name_matches_platform() {
+        let asset = browser_release_asset_name().expect("asset name");
+        assert!(asset.starts_with("tandem-browser-"));
+        if cfg!(target_os = "windows") {
+            assert!(asset.ends_with(".zip"));
+            assert!(asset.contains("-windows-"));
+        } else if cfg!(target_os = "macos") {
+            assert!(asset.ends_with(".zip"));
+            assert!(asset.contains("-darwin-"));
+        } else if cfg!(target_os = "linux") {
+            assert!(asset.ends_with(".tar.gz"));
+            assert!(asset.contains("-linux-"));
+        }
+    }
+
+    #[test]
+    fn managed_sidecar_path_uses_shared_binaries_dir() {
+        let temp_root =
+            std::env::temp_dir().join(format!("tandem-browser-test-{}", Uuid::new_v4()));
+        std::env::set_var("TANDEM_HOME", &temp_root);
+
+        let path = managed_sidecar_install_path().expect("managed path");
+
+        assert!(path.starts_with(temp_root.join("binaries")));
+        assert_eq!(
+            path.file_name().and_then(|value| value.to_str()),
+            Some(sidecar_binary_name())
+        );
+
+        std::env::remove_var("TANDEM_HOME");
     }
 
     #[tokio::test]

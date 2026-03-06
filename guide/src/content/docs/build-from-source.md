@@ -33,6 +33,12 @@ cargo build -p tandem-ai
 
 This produces the `tandem-engine` binary from the `tandem-ai` package.
 
+If you need browser automation from source as well:
+
+```bash
+cargo build -p tandem-browser
+```
+
 ## 4. Run
 
 ```bash

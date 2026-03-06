@@ -2,7 +2,6 @@ import { DashboardPage } from "../pages/DashboardPage";
 import { ChatPage } from "../pages/ChatPage";
 import { AutomationsPage } from "../pages/AutomationsPage";
 import { ChannelsPage } from "../pages/ChannelsPage";
-import { McpPage } from "../pages/McpPage";
 import { PacksPage } from "../pages/PacksPage";
 import { OrchestratorPage } from "../pages/OrchestratorPage";
 import { FilesPage } from "../pages/FilesPage";
@@ -26,7 +25,7 @@ export function HashRouteOutlet({ routeId, pageProps }: { routeId: string; pageP
     case "channels":
       return <ChannelsPage {...pageProps} />;
     case "mcp":
-      return <McpPage {...pageProps} />;
+      return <SettingsPage {...pageProps} />;
     case "packs-detail":
       return <PacksPage {...pageProps} />;
     case "orchestrator":
