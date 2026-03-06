@@ -765,6 +765,13 @@ test("swarm retry verification does not reuse stale assistant output", async (t)
   const stepFailed = events.find((event) => event?.type === "step_failed");
   assert.ok(stepFailed, "missing step_failed event");
   assert.deepEqual(lastRequiredToolPromptCall(fake.promptSyncCalls)?.body?.tool_allowlist, [
+    "ls",
+    "list",
+    "glob",
+    "search",
+    "grep",
+    "codesearch",
+    "read",
     "write",
     "edit",
     "apply_patch",
@@ -894,4 +901,95 @@ test("swarm retry preserves inspection tools when the first required attempt mad
     "apply_patch",
   ]);
   assert.equal(stepFailed?.payload?.verification?.reason, "TOOL_MODE_REQUIRED_NOT_SATISFIED");
+});
+
+test("swarm start seeds fallback tasks when llm planning is required but returns no valid tasks", async (t) => {
+  const fake = await startFakeEngine({
+    onPromptSync: async ({ call, snapshot }) => {
+      if (call?.body?.tool_mode === "required") {
+        const assistant = {
+          role: "assistant",
+          content:
+            "TOOL_MODE_REQUIRED_NOT_SATISFIED: tool_mode=required but the model ended without executing any tool calls.",
+        };
+        if (snapshot) snapshot.messages.push(assistant);
+        return { status: 200, body: snapshot?.messages || [assistant] };
+      }
+      const assistant = {
+        role: "assistant",
+        content: "Planner summary only. No valid JSON task payload returned.",
+      };
+      if (snapshot) snapshot.messages.push(assistant);
+      return { status: 200, body: snapshot?.messages || [assistant] };
+    },
+  });
+  t.after(async () => {
+    await fake.close();
+  });
+
+  const panelPort = await getFreePort();
+  const baseUrl = `http://127.0.0.1:${panelPort}`;
+
+  const panel = spawn(process.execPath, ["bin/setup.js"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      TANDEM_CONTROL_PANEL_PORT: String(panelPort),
+      TANDEM_ENGINE_URL: `http://127.0.0.1:${fake.port}`,
+      TANDEM_CONTROL_PANEL_AUTO_START_ENGINE: "0",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  t.after(() => {
+    if (!panel.killed) panel.kill("SIGTERM");
+  });
+
+  await waitForReady(baseUrl);
+
+  const login = await request(baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: { token: fake.token },
+  });
+  assert.equal(login.status, 200);
+  const cookie = extractCookie(login);
+
+  const swarmStart = await request(baseUrl, "/api/swarm/start", {
+    method: "POST",
+    cookie,
+    body: {
+      workspaceRoot: process.cwd(),
+      objective: "Build a neon arcade browser game with HTML, CSS, and JS",
+      maxTasks: 3,
+      verificationMode: "strict",
+      requireLlmPlan: true,
+      allowLocalPlannerFallback: false,
+    },
+  });
+  const swarmStartJson = await swarmStart.json();
+  assert.equal(swarmStart.status, 200, JSON.stringify(swarmStartJson));
+  assert.ok(String(swarmStartJson.runId || "").length > 0, "missing run id");
+
+  const runRes = await request(
+    baseUrl,
+    `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`,
+    { cookie }
+  );
+  assert.equal(runRes.status, 200);
+  const runJson = await runRes.json();
+  assert.ok(Array.isArray(runJson.tasks) && runJson.tasks.length > 0, "missing fallback tasks");
+  assert.match(
+    String(runJson.tasks[0]?.title || ""),
+    /neon arcade browser game|execute requested objective/i
+  );
+
+  const events = Array.isArray(runJson.events) ? runJson.events : [];
+  assert.ok(
+    events.some((event) => event?.type === "plan_failed_llm_required"),
+    "missing llm planner failure event"
+  );
+  assert.ok(
+    events.some((event) => event?.type === "plan_seeded_local"),
+    "missing local recovery plan event"
+  );
 });

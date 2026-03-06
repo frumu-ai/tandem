@@ -107,6 +107,69 @@ pub struct LegacyRepairRunReport {
     pub imported_counts: LegacyImportedCounts,
 }
 
+fn snapshot_session_messages(
+    session_id: &str,
+    session: &Session,
+    metadata: &mut HashMap<String, SessionMeta>,
+) {
+    let meta = metadata
+        .entry(session_id.to_string())
+        .or_insert_with(SessionMeta::default);
+    meta.snapshots.push(session.messages.clone());
+    if meta.snapshots.len() > 25 {
+        let _ = meta.snapshots.remove(0);
+    }
+}
+
+fn merge_message_part(message: &mut Message, part: MessagePart) {
+    match part {
+        MessagePart::ToolInvocation {
+            tool,
+            args,
+            result,
+            error,
+        } => {
+            if result.is_some() || error.is_some() {
+                if let Some(existing) = message.parts.iter_mut().rev().find(|existing| {
+                    matches!(
+                        existing,
+                        MessagePart::ToolInvocation {
+                            tool: existing_tool,
+                            result: None,
+                            error: None,
+                            ..
+                        } if existing_tool == &tool
+                    )
+                }) {
+                    if let MessagePart::ToolInvocation {
+                        args: existing_args,
+                        result: existing_result,
+                        error: existing_error,
+                        ..
+                    } = existing
+                    {
+                        if existing_args.is_null()
+                            || existing_args.as_object().is_some_and(|o| o.is_empty())
+                        {
+                            *existing_args = args.clone();
+                        }
+                        *existing_result = result;
+                        *existing_error = error;
+                        return;
+                    }
+                }
+            }
+            message.parts.push(MessagePart::ToolInvocation {
+                tool,
+                args,
+                result,
+                error,
+            });
+        }
+        other => message.parts.push(other),
+    }
+}
+
 impl Storage {
     pub async fn new(base: impl AsRef<Path>) -> anyhow::Result<Self> {
         let base = base.as_ref().to_path_buf();
@@ -356,14 +419,32 @@ impl Storage {
             .get_mut(session_id)
             .context("session not found for append_message")?;
         let mut meta_guard = self.metadata.write().await;
-        let meta = meta_guard
-            .entry(session_id.to_string())
-            .or_insert_with(SessionMeta::default);
-        meta.snapshots.push(session.messages.clone());
-        if meta.snapshots.len() > 25 {
-            let _ = meta.snapshots.remove(0);
-        }
+        snapshot_session_messages(session_id, session, &mut meta_guard);
         session.messages.push(msg);
+        session.time.updated = Utc::now();
+        drop(sessions);
+        drop(meta_guard);
+        self.flush().await
+    }
+
+    pub async fn append_message_part(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        part: MessagePart,
+    ) -> anyhow::Result<()> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions
+            .get_mut(session_id)
+            .context("session not found for append_message_part")?;
+        let mut meta_guard = self.metadata.write().await;
+        snapshot_session_messages(session_id, session, &mut meta_guard);
+        let message = session
+            .messages
+            .iter_mut()
+            .find(|message| message.id == message_id)
+            .context("message not found for append_message_part")?;
+        merge_message_part(message, part);
         session.time.updated = Utc::now();
         drop(sessions);
         drop(meta_guard);
@@ -1423,6 +1504,136 @@ mod tests {
         );
         assert_eq!(updated.attach_reason.as_deref(), Some("manual"));
         assert!(updated.attach_timestamp_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn append_message_part_persists_tool_invocation_and_result() {
+        let base = std::env::temp_dir().join(format!("tandem-core-tool-parts-{}", Uuid::new_v4()));
+        let storage = Storage::new(&base).await.expect("storage");
+        let session = Session::new(Some("tool parts".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        storage.save_session(session).await.expect("save session");
+
+        let user = Message::new(
+            MessageRole::User,
+            vec![MessagePart::Text {
+                text: "build ui".to_string(),
+            }],
+        );
+        let message_id = user.id.clone();
+        storage
+            .append_message(&session_id, user)
+            .await
+            .expect("append user");
+
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"game.html","content":"<html></html>"}),
+                    result: None,
+                    error: None,
+                },
+            )
+            .await
+            .expect("append invocation");
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({}),
+                    result: Some(json!("ok")),
+                    error: None,
+                },
+            )
+            .await
+            .expect("append result");
+
+        let session = storage.get_session(&session_id).await.expect("session");
+        let message = session
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("message");
+        assert_eq!(message.parts.len(), 2);
+        match &message.parts[1] {
+            MessagePart::ToolInvocation {
+                tool,
+                result,
+                error,
+                ..
+            } => {
+                assert_eq!(tool, "write");
+                assert_eq!(result.as_ref(), Some(&json!("ok")));
+                assert_eq!(error.as_deref(), None);
+            }
+            other => panic!("expected tool part, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn append_message_part_retains_failed_tool_error() {
+        let base = std::env::temp_dir().join(format!("tandem-core-tool-error-{}", Uuid::new_v4()));
+        let storage = Storage::new(&base).await.expect("storage");
+        let session = Session::new(Some("tool errors".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        storage.save_session(session).await.expect("save session");
+
+        let user = Message::new(
+            MessageRole::User,
+            vec![MessagePart::Text {
+                text: "write file".to_string(),
+            }],
+        );
+        let message_id = user.id.clone();
+        storage
+            .append_message(&session_id, user)
+            .await
+            .expect("append user");
+
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"game.html"}),
+                    result: None,
+                    error: None,
+                },
+            )
+            .await
+            .expect("append invocation");
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({}),
+                    result: None,
+                    error: Some("WRITE_CONTENT_MISSING".to_string()),
+                },
+            )
+            .await
+            .expect("append error");
+
+        let session = storage.get_session(&session_id).await.expect("session");
+        let message = session
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("message");
+        match &message.parts[1] {
+            MessagePart::ToolInvocation { error, .. } => {
+                assert_eq!(error.as_deref(), Some("WRITE_CONTENT_MISSING"));
+            }
+            other => panic!("expected tool part, got {other:?}"),
+        }
     }
 
     #[tokio::test]

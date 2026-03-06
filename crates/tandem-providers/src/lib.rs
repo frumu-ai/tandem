@@ -163,6 +163,180 @@ fn openai_tool_choice(tool_mode: &ToolMode) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone)]
+struct OpenAiToolCallChunk {
+    id: String,
+    name: String,
+    args_delta: String,
+}
+
+fn canonical_openai_tool_name(
+    raw_name: &str,
+    alias_to_original: &HashMap<String, String>,
+) -> String {
+    alias_to_original
+        .get(raw_name)
+        .cloned()
+        .unwrap_or_else(|| raw_name.to_string())
+}
+
+fn push_openai_text_fragments(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) => {
+            if !text.is_empty() {
+                out.push(text.to_string());
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                push_openai_text_fragments(item, out);
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+                if !text.is_empty() {
+                    out.push(text.to_string());
+                }
+            }
+            if let Some(text) = obj
+                .get("text")
+                .and_then(|v| v.as_object())
+                .and_then(|nested| nested.get("value"))
+                .and_then(|v| v.as_str())
+            {
+                if !text.is_empty() {
+                    out.push(text.to_string());
+                }
+            }
+            if let Some(text) = obj.get("content").and_then(|v| v.as_str()) {
+                if !text.is_empty() {
+                    out.push(text.to_string());
+                }
+            }
+            if let Some(text) = obj.get("input_text").and_then(|v| v.as_str()) {
+                if !text.is_empty() {
+                    out.push(text.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_openai_tool_call_chunk(
+    call: &serde_json::Value,
+    alias_to_original: &HashMap<String, String>,
+    fallback_id: String,
+) -> Option<OpenAiToolCallChunk> {
+    let obj = call.as_object()?;
+    let function = obj.get("function").cloned().unwrap_or_default();
+    let raw_name = obj
+        .get("name")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("tool_name").and_then(|v| v.as_str()))
+        .or_else(|| function.get("name").and_then(|v| v.as_str()))
+        .or_else(|| {
+            obj.get("call")
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if raw_name.is_empty() {
+        return None;
+    }
+    let canonical_name = canonical_openai_tool_name(&raw_name, alias_to_original);
+    let args_delta = obj
+        .get("arguments")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+        .or_else(|| {
+            obj.get("args")
+                .and_then(|v| (!v.is_null()).then(|| v.to_string()))
+        })
+        .or_else(|| {
+            obj.get("input")
+                .and_then(|v| (!v.is_null()).then(|| v.to_string()))
+        })
+        .or_else(|| {
+            function
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            function
+                .get("arguments")
+                .and_then(|v| (!v.is_null()).then(|| v.to_string()))
+        })
+        .unwrap_or_default();
+    let id = obj
+        .get("id")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("tool_call_id").and_then(|v| v.as_str()))
+        .map(ToString::to_string)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_id);
+    Some(OpenAiToolCallChunk {
+        id,
+        name: canonical_name,
+        args_delta,
+    })
+}
+
+fn extract_openai_tool_call_chunks(
+    choice: &serde_json::Value,
+    alias_to_original: &HashMap<String, String>,
+) -> Vec<OpenAiToolCallChunk> {
+    let delta = choice.get("delta").cloned().unwrap_or_default();
+    let message = choice.get("message").cloned().unwrap_or_default();
+    let mut calls = Vec::new();
+    let direct_lists = [
+        delta.get("tool_calls").and_then(|v| v.as_array()),
+        message.get("tool_calls").and_then(|v| v.as_array()),
+        choice.get("tool_calls").and_then(|v| v.as_array()),
+    ];
+    for list in direct_lists.into_iter().flatten() {
+        for (idx, call) in list.iter().enumerate() {
+            if let Some(chunk) =
+                extract_openai_tool_call_chunk(call, alias_to_original, format!("tool_call_{idx}"))
+            {
+                calls.push(chunk);
+            }
+        }
+    }
+    for content in [
+        delta.get("content"),
+        message.get("content"),
+        choice.get("content"),
+    ] {
+        let Some(items) = content.and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for (idx, item) in items.iter().enumerate() {
+            let item_type = item
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if matches!(
+                item_type.as_str(),
+                "tool_call" | "function_call" | "tool_use" | "output_tool_call"
+            ) {
+                if let Some(chunk) = extract_openai_tool_call_chunk(
+                    item,
+                    alias_to_original,
+                    format!("content_tool_call_{idx}"),
+                ) {
+                    calls.push(chunk);
+                }
+            }
+        }
+    }
+    calls
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfig {
     pub api_key: Option<String>,
@@ -1041,82 +1215,41 @@ impl Provider for OpenAICompatibleProvider {
                             let message = choice.get("message").cloned().unwrap_or_default();
 
                             let mut emitted_text = false;
-                            if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
+                            let mut text_fragments = Vec::new();
+                            push_openai_text_fragments(&delta.get("content").cloned().unwrap_or_default(), &mut text_fragments);
+                            if text_fragments.is_empty() {
+                                push_openai_text_fragments(&message.get("content").cloned().unwrap_or_default(), &mut text_fragments);
+                            }
+                            for text in text_fragments {
                                 if !text.is_empty() {
                                     emitted_text = true;
-                                    yield StreamChunk::TextDelta(text.to_string());
+                                    yield StreamChunk::TextDelta(text);
                                 }
                             }
+
                             if !emitted_text {
                                 if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
                                     if !text.is_empty() {
                                         yield StreamChunk::TextDelta(text.to_string());
                                     }
-                                } else if let Some(parts) =
-                                    message.get("content").and_then(|v| v.as_array())
-                                {
-                                    for part in parts {
-                                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                                            if !text.is_empty() {
-                                                yield StreamChunk::TextDelta(text.to_string());
-                                            }
-                                        }
-                                    }
                                 }
                             }
 
-                            let tool_calls = delta
-                                .get("tool_calls")
-                                .and_then(|v| v.as_array())
-                                .or_else(|| message.get("tool_calls").and_then(|v| v.as_array()));
-
-                            if let Some(tool_calls) = tool_calls {
-                                for (idx, call) in tool_calls.iter().enumerate() {
-                                    let mut id = call
-                                        .get("id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or_default()
-                                        .to_string();
-                                    let function = call.get("function").cloned().unwrap_or_default();
-                                    let name = function
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or_default()
-                                        .to_string();
-                                    let canonical_name = alias_to_original
-                                        .get(&name)
-                                        .cloned()
-                                        .unwrap_or(name.clone());
-                                    let args_delta = function
-                                        .get("arguments")
-                                        .and_then(|v| v.as_str())
-                                        .map(ToString::to_string)
-                                        .or_else(|| {
-                                            function
-                                                .get("arguments")
-                                                .and_then(|v| (!v.is_null()).then(|| v.to_string()))
-                                        })
-                                        .unwrap_or_default();
-
-                                    if id.is_empty() && !canonical_name.is_empty() {
-                                        id = format!("tool_call_{}_{}", idx, canonical_name);
-                                    }
-
-                                    if !id.is_empty() && !canonical_name.is_empty() {
-                                        yield StreamChunk::ToolCallStart {
-                                            id: id.clone(),
-                                            name: canonical_name,
-                                        };
-                                    }
-                                    if !id.is_empty() && !args_delta.is_empty() {
-                                        yield StreamChunk::ToolCallDelta {
-                                            id: id.clone(),
-                                            args_delta,
-                                        };
-                                    }
-                                    if !id.is_empty() {
-                                        yield StreamChunk::ToolCallEnd { id };
-                                    }
+                            for call in extract_openai_tool_call_chunks(&choice, &alias_to_original) {
+                                if !call.id.is_empty() && !call.name.is_empty() {
+                                    yield StreamChunk::ToolCallStart {
+                                        id: call.id.clone(),
+                                        name: call.name.clone(),
+                                    };
+                                }
+                                if !call.id.is_empty() && !call.args_delta.is_empty() {
+                                    yield StreamChunk::ToolCallDelta {
+                                        id: call.id.clone(),
+                                        args_delta: call.args_delta,
+                                    };
+                                }
+                                if !call.id.is_empty() {
+                                    yield StreamChunk::ToolCallEnd { id: call.id };
                                 }
                             }
 
@@ -1673,6 +1806,43 @@ mod tests {
             reverse.get(alias_b).map(String::as_str),
             Some("mcp_arcade_gmail_send")
         );
+    }
+
+    #[test]
+    fn extract_openai_tool_call_chunks_supports_content_array_tool_calls() {
+        let mut alias_to_original = HashMap::new();
+        alias_to_original.insert("write_alias".to_string(), "write".to_string());
+        let choice = json!({
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-1",
+                        "function": {
+                            "name": "write_alias",
+                            "arguments": "{\"path\":\"README.md\",\"content\":\"hi\"}"
+                        }
+                    }
+                ]
+            }
+        });
+        let calls = extract_openai_tool_call_chunks(&choice, &alias_to_original);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call-1");
+        assert_eq!(calls[0].name, "write");
+        assert!(calls[0].args_delta.contains("\"README.md\""));
+    }
+
+    #[test]
+    fn push_openai_text_fragments_reads_nested_text_parts() {
+        let value = json!([
+            {"type":"text","text":"first"},
+            {"type":"output_text","text":{"value":"second"}},
+            {"type":"text","content":"third"}
+        ]);
+        let mut fragments = Vec::new();
+        push_openai_text_fragments(&value, &mut fragments);
+        assert_eq!(fragments, vec!["first", "second", "third"]);
     }
 
     #[test]

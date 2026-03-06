@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Orchestration planner/runtime diagnostics hardened**:
+  - strict swarm planning now surfaces upstream provider failures directly in orchestration start instead of collapsing them into `LLM planner returned no valid tasks`
+  - backend session dispatch now persists explicit assistant-visible engine error markers such as `ENGINE_ERROR: AUTHENTICATION_ERROR: ...` so planner/session consumers can show the real provider failure reason
+  - control-panel planner detection now recognizes provider quota/auth failures (for example OpenRouter `403 Key limit exceeded`) and reports them clearly when LLM planning is required
+  - session tool-history persistence now recognizes the real runtime `WireMessagePart` shape used by backend tool invocation/result events, fixing false `NO_TOOL_ACTIVITY_NO_WORKSPACE_CHANGE` swarm task failures when tools actually ran
+  - added regression coverage for runtime-shaped tool-part persistence in session history so verifier/session snapshots stay aligned with backend execution
+
 - **Provider catalog honesty in Settings and `/provider`**:
   - `GET /provider` now returns explicit provider catalog metadata (`catalog_source`, `catalog_status`, `catalog_message`) so clients can distinguish live remote catalogs from config-defined or unavailable catalogs
   - removed synthetic single-model fallback catalog entries for built-in providers from the provider catalog response

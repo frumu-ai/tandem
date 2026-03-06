@@ -38,6 +38,189 @@ async fn session_todo_route_returns_normalized_items() {
 }
 
 #[tokio::test]
+async fn session_part_persister_stores_tool_parts_in_session_history() {
+    let state = test_state().await;
+    let task = tokio::spawn(crate::run_session_part_persister(state.clone()));
+    let session = Session::new(
+        Some("persist tool parts".to_string()),
+        Some(".".to_string()),
+    );
+    let session_id = session.id.clone();
+    state.storage.save_session(session).await.expect("save");
+    let message = Message::new(
+        MessageRole::User,
+        vec![MessagePart::Text {
+            text: "build ui".to_string(),
+        }],
+    );
+    let message_id = message.id.clone();
+    state
+        .storage
+        .append_message(&session_id, message)
+        .await
+        .expect("append");
+
+    state.event_bus.publish(EngineEvent::new(
+        "message.part.updated",
+        json!({
+            "sessionID": session_id,
+            "part": {
+                "type": "tool",
+                "messageID": message_id,
+                "tool": "write",
+                "args": { "path": "game.html", "content": "<html></html>" },
+                "state": "running"
+            }
+        }),
+    ));
+    state.event_bus.publish(EngineEvent::new(
+        "message.part.updated",
+        json!({
+            "sessionID": session_id,
+            "part": {
+                "type": "tool",
+                "messageID": message_id,
+                "tool": "write",
+                "result": "ok",
+                "state": "completed"
+            }
+        }),
+    ));
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let session = state
+                .storage
+                .get_session(&session_id)
+                .await
+                .expect("session");
+            let message = session
+                .messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .expect("message");
+            if message.parts.len() > 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("tool part persisted");
+
+    let session = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .expect("session");
+    let message = session
+        .messages
+        .iter()
+        .find(|message| message.id == message_id)
+        .expect("message");
+    match &message.parts[1] {
+        MessagePart::ToolInvocation { tool, result, .. } => {
+            assert_eq!(tool, "write");
+            assert_eq!(result.as_ref(), Some(&json!("ok")));
+        }
+        other => panic!("expected tool invocation, got {other:?}"),
+    }
+
+    task.abort();
+}
+
+#[tokio::test]
+async fn session_part_persister_stores_runtime_wire_tool_parts_in_session_history() {
+    let state = test_state().await;
+    let task = tokio::spawn(crate::run_session_part_persister(state.clone()));
+    let session = Session::new(
+        Some("persist runtime wire tool parts".to_string()),
+        Some(".".to_string()),
+    );
+    let session_id = session.id.clone();
+    state.storage.save_session(session).await.expect("save");
+    let message = Message::new(
+        MessageRole::User,
+        vec![MessagePart::Text {
+            text: "inspect workspace".to_string(),
+        }],
+    );
+    let message_id = message.id.clone();
+    state
+        .storage
+        .append_message(&session_id, message)
+        .await
+        .expect("append");
+
+    let invoke = tandem_wire::WireMessagePart::tool_invocation(
+        &session_id,
+        &message_id,
+        "glob",
+        json!({ "pattern": "*" }),
+    );
+    let result = tandem_wire::WireMessagePart::tool_result(
+        &session_id,
+        &message_id,
+        "glob",
+        json!(["README.md"]),
+    );
+
+    state.event_bus.publish(EngineEvent::new(
+        "message.part.updated",
+        json!({
+            "part": invoke
+        }),
+    ));
+    state.event_bus.publish(EngineEvent::new(
+        "message.part.updated",
+        json!({
+            "part": result
+        }),
+    ));
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let session = state
+                .storage
+                .get_session(&session_id)
+                .await
+                .expect("session");
+            let message = session
+                .messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .expect("message");
+            if message.parts.len() > 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("runtime tool part persisted");
+
+    let session = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .expect("session");
+    let message = session
+        .messages
+        .iter()
+        .find(|message| message.id == message_id)
+        .expect("message");
+    match &message.parts[1] {
+        MessagePart::ToolInvocation { tool, result, .. } => {
+            assert_eq!(tool, "glob");
+            assert_eq!(result.as_ref(), Some(&json!(["README.md"])));
+        }
+        other => panic!("expected tool invocation, got {other:?}"),
+    }
+
+    task.abort();
+}
+
+#[tokio::test]
 async fn answer_question_alias_route_returns_ok() {
     let state = test_state().await;
     let session = Session::new(Some("q".to_string()), Some(".".to_string()));

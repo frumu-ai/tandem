@@ -557,6 +557,8 @@ pub(super) async fn execute_run(
             }
             _ = &mut timeout => {
                 let _ = state.cancellations.cancel(&session_id).await;
+                let timeout_text = "ENGINE_ERROR: ENGINE_TIMEOUT: prompt_async timed out";
+                let _ = persist_session_error_message(&state, &session_id, timeout_text).await;
                 state.event_bus.publish(EngineEvent::new(
                     "session.error",
                     json!({
@@ -583,6 +585,9 @@ pub(super) async fn execute_run(
                     Err(err) => {
                         let error_message = err.to_string();
                         let error_code = dispatch_error_code(&error_message);
+                        let session_error_text =
+                            format!("ENGINE_ERROR: {error_code}: {}", truncate_text(&error_message, 500));
+                        let _ = persist_session_error_message(&state, &session_id, &session_error_text).await;
                         state.event_bus.publish(EngineEvent::new(
                             "session.error",
                             json!({
@@ -655,6 +660,23 @@ pub(super) async fn execute_run(
     }
 
     Ok(())
+}
+
+async fn persist_session_error_message(
+    state: &AppState,
+    session_id: &str,
+    text: &str,
+) -> anyhow::Result<()> {
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    let msg = Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::Text {
+            text: text.trim().to_string(),
+        }],
+    );
+    state.storage.append_message(session_id, msg).await
 }
 
 pub(super) fn sse_run_stream(
@@ -807,6 +829,23 @@ pub(super) fn dispatch_error_code(message: &str) -> &'static str {
     let lower = message.to_ascii_lowercase();
     if is_os_mismatch_error(message) {
         return "OS_MISMATCH";
+    }
+    if lower.contains("rate limit") || lower.contains("too many requests") || lower.contains("429")
+    {
+        return "RATE_LIMIT_EXCEEDED";
+    }
+    if lower.contains("context length")
+        || lower.contains("max tokens")
+        || lower.contains("token limit")
+    {
+        return "CONTEXT_LENGTH_EXCEEDED";
+    }
+    if lower.contains("unauthorized")
+        || lower.contains("authentication")
+        || lower.contains("401")
+        || lower.contains("403")
+    {
+        return "AUTHENTICATION_ERROR";
     }
     if lower.contains("provider_server_error")
         || lower.contains("internal server error")

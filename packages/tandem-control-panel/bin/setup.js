@@ -1836,6 +1836,57 @@ function parsePlanTasksFromAssistant(assistantText, maxTasks = 8, options = {}) 
   return normalizePlannerTasks(fromText, normalizedMax, { linearFallback: true });
 }
 
+function extractPlannerFailureText(text) {
+  const value = String(text || "").trim();
+  if (!value) return "";
+  const firstLine = value.split(/\r?\n/, 1)[0] || "";
+  const normalized = firstLine.toUpperCase();
+  if (normalized.startsWith("ENGINE_ERROR:")) return value;
+  if (
+    normalized.includes("AUTHENTICATION_ERROR") ||
+    normalized.includes("RATE_LIMIT_EXCEEDED") ||
+    normalized.includes("CONTEXT_LENGTH_EXCEEDED") ||
+    normalized.includes("PROVIDER_SERVER_ERROR") ||
+    normalized.includes("PROVIDER_REQUEST_FAILED")
+  ) {
+    return value;
+  }
+  if (/key limit exceeded|403 forbidden|monthly limit|rate limit/i.test(value)) {
+    return value;
+  }
+  return "";
+}
+
+function fallbackPlannerTasks(objective, maxTasks = 8, assistantText = "") {
+  const fromAssistantText = parsePlanTasksFromAssistant(assistantText, maxTasks, {
+    allowTextFallback: true,
+  });
+  if (fromAssistantText.length) {
+    return {
+      source: "llm_text_recovery",
+      note: "Recovered planner tasks from non-JSON assistant text.",
+      tasks: fromAssistantText,
+    };
+  }
+  const fromObjective = normalizePlannerTasks(parseObjectiveTodos(objective, maxTasks), maxTasks, {
+    linearFallback: true,
+  });
+  if (fromObjective.length) {
+    return {
+      source: "local_objective_parser",
+      note: "Synthesized planner tasks from the objective after planner failure.",
+      tasks: fromObjective,
+    };
+  }
+  return {
+    source: "local_single_task_fallback",
+    note: "Synthesized a single fallback task after planner failure.",
+    tasks: normalizePlannerTasks(["Execute requested objective"], 1, {
+      linearFallback: false,
+    }),
+  };
+}
+
 async function generatePlanTodosWithLLM(session, run, maxTasks) {
   const runId = String(run?.run_id || "").trim();
   if (!runId) throw new Error("Missing run id for plan generation.");
@@ -1866,6 +1917,12 @@ async function generatePlanTodosWithLLM(session, run, maxTasks) {
   );
   const syncRows = Array.isArray(promptResponse) ? promptResponse : [];
   const fromSync = extractAssistantText(syncRows);
+  const syncFailure = extractPlannerFailureText(fromSync);
+  if (syncFailure) {
+    const error = new Error(syncFailure);
+    error.sessionId = sessionId;
+    throw error;
+  }
   if (fromSync) {
     return {
       sessionId,
@@ -1879,6 +1936,12 @@ async function generatePlanTodosWithLLM(session, run, maxTasks) {
   ).catch(() => null);
   const messages = Array.isArray(sessionSnapshot?.messages) ? sessionSnapshot.messages : [];
   const fromSnapshot = extractAssistantText(messages);
+  const snapshotFailure = extractPlannerFailureText(fromSnapshot);
+  if (snapshotFailure) {
+    const error = new Error(snapshotFailure);
+    error.sessionId = sessionId;
+    throw error;
+  }
   return {
     sessionId,
     tasks: parsePlanTasksFromAssistant(fromSnapshot, maxTasks, { allowTextFallback: false }),
@@ -2028,6 +2091,9 @@ function workerWriteRetryToolAllowlist() {
 
 const WRITE_TOOL_NAMES = new Set(["write", "edit", "apply_patch"]);
 const REQUIRED_TOOL_MODE_REASON = "TOOL_MODE_REQUIRED_NOT_SATISFIED";
+const REQUIRED_TOOL_REASON_PATTERN = new RegExp(
+  `${REQUIRED_TOOL_MODE_REASON}:\\s*([A-Z_]+)\\b`
+);
 
 function normalizeVerificationMode(mode) {
   return String(mode || "")
@@ -2067,49 +2133,11 @@ function normalizeWorkspaceRelativePath(pathname) {
     .trim();
 }
 
-function extractClaimedWorkspaceDocPath(text, workspaceRoot = "") {
+function extractRequiredToolFailureReason(text) {
   const raw = String(text || "").trim();
   if (!raw) return "";
-  const root = String(workspaceRoot || "").trim();
-  for (const match of raw.matchAll(/`([^`]+(?:README\.md|[\w./-]+\.md))`/gi)) {
-    const candidate = String(match[1] || "").trim();
-    if (!candidate) continue;
-    if (root && candidate.startsWith(root)) {
-      const relative = normalizeWorkspaceRelativePath(candidate.slice(root.length));
-      if (relative.toLowerCase().endsWith(".md")) return relative;
-      continue;
-    }
-    const normalized = normalizeWorkspaceRelativePath(candidate);
-    if (normalized.toLowerCase().endsWith(".md")) return normalized;
-  }
-  return "";
-}
-
-async function persistClaimedWorkspaceDocArtifact(
-  session,
-  sessionId,
-  workspaceRoot,
-  assistantText,
-  originalPrompt
-) {
-  const path = extractClaimedWorkspaceDocPath(assistantText, workspaceRoot);
-  const content = String(assistantText || "").trim();
-  if (!sessionId || !path || content.length < 32) return null;
-  const writeCommand = `/tool write ${JSON.stringify({ path, content })}`;
-  return engineRequestJson(session, `/session/${encodeURIComponent(sessionId)}/prompt_sync`, {
-    method: "POST",
-    timeoutMs: 2 * 60 * 1000,
-    body: {
-      parts: [
-        {
-          type: "text",
-          text: writeCommand,
-        },
-      ],
-      tool_mode: "required",
-      tool_allowlist: ["write"],
-    },
-  }).catch(() => null);
+  const match = raw.match(REQUIRED_TOOL_REASON_PATTERN);
+  return String(match?.[1] || "").trim().toUpperCase();
 }
 
 function shouldTrackWorkspacePath(pathname) {
@@ -2585,6 +2613,7 @@ function buildVerificationSummary(syncRows, messages, workspaceChanges, sessionI
   const assistantText = extractAssistantText(syncRows) || extractAssistantText(messages);
   const mode = normalizeVerificationMode(options.verificationMode || swarmState.verificationMode);
   const requiredToolModeUnsatisfied = assistantText.includes(REQUIRED_TOOL_MODE_REASON);
+  const requiredToolFailureReason = extractRequiredToolFailureReason(assistantText);
   const workspaceChanged = workspaceChanges?.hasChanges === true;
   const strictMode = mode === "strict";
   const passed = strictMode
@@ -2592,7 +2621,8 @@ function buildVerificationSummary(syncRows, messages, workspaceChanges, sessionI
     : workspaceChanged || toolAudit.totalToolCalls > 0;
   let reason = "VERIFIED";
   if (!passed) {
-    if (requiredToolModeUnsatisfied) reason = REQUIRED_TOOL_MODE_REASON;
+    if (requiredToolFailureReason) reason = requiredToolFailureReason;
+    else if (requiredToolModeUnsatisfied) reason = REQUIRED_TOOL_MODE_REASON;
     else if (toolAudit.rejectedWriteToolCalls > 0)
       reason = "WRITE_TOOL_ATTEMPT_REJECTED_NO_WORKSPACE_CHANGE";
     else if (toolAudit.rejectedToolCalls > 0)
@@ -2817,20 +2847,6 @@ async function runExecutionPromptWithVerification(session, run, prompt, sessionI
     }
   );
   let syncRows = Array.isArray(promptResponse) ? promptResponse : [];
-  if (!hasToolActivity(syncRows)) {
-    const assistantDraft = extractAssistantText(syncRows);
-    const persisted = await persistClaimedWorkspaceDocArtifact(
-      session,
-      activeSessionId,
-      workspaceRoot,
-      assistantDraft,
-      prompt
-    );
-    if (Array.isArray(persisted) && hasToolActivity(persisted)) {
-      promptResponse = persisted;
-      syncRows = persisted;
-    }
-  }
   initialAttemptRows = syncRows.slice();
   let verificationStartIndex = 0;
   let retryError = null;
@@ -3775,12 +3791,19 @@ async function startSwarm(session, config = {}) {
   let planSeedMode = "fallback_local";
   try {
     const llmPlan = await generatePlanTodosWithLLM(session, run, maxTasks);
+    let plannerSource = "llm_objective_planner";
+    let plannerNote = "";
     plannerTasks = normalizePlannerTasks(llmPlan.tasks, maxTasks, { linearFallback: false });
-    if (!plannerTasks.length) throw new Error("LLM planner returned no valid tasks.");
+    if (!plannerTasks.length) {
+      const recovered = fallbackPlannerTasks(objective, maxTasks, llmPlan?.assistantText || "");
+      plannerTasks = recovered.tasks;
+      plannerSource = recovered.source;
+      plannerNote = recovered.note;
+    }
     const seeded = await seedBlackboardTasks(session, runId, objective, plannerTasks, workflowId);
     planSeedMode = seeded?.mode === "steps_compat" ? "steps_llm_compat" : "blackboard_llm";
     await appendContextRunEvent(session, runId, "plan_seeded_llm", "planning", {
-      source: "llm_objective_planner",
+      source: plannerSource,
       session_id: llmPlan.sessionId || null,
       task_count: Number(seeded?.count || 0),
       dependency_edges: plannerTasks.reduce(
@@ -3790,28 +3813,28 @@ async function startSwarm(session, config = {}) {
       ),
       workflow_id: workflowId,
       planner_target: planSeedMode,
+      note: plannerNote || undefined,
     });
   } catch (planningError) {
-    if (requireLlmPlan && !allowLocalPlannerFallback) {
-      await appendContextRunEvent(session, runId, "plan_failed_llm_required", "failed", {
-        reason: String(planningError?.message || planningError || "unknown planning failure"),
+    const plannerFailureReason = String(
+      planningError?.message || planningError || "unknown planning failure"
+    );
+    const recovered = fallbackPlannerTasks(objective, maxTasks, planningError?.assistantText || "");
+    plannerTasks = recovered.tasks;
+    const forcedFallback = requireLlmPlan && !allowLocalPlannerFallback;
+    if (forcedFallback) {
+      await appendContextRunEvent(session, runId, "plan_failed_llm_required", "planning", {
+        reason: plannerFailureReason,
+        recovered: false,
+        recovery_source: recovered.source,
       }).catch(() => null);
-      throw new Error(
-        `LLM planning failed and fallback is disabled: ${String(planningError?.message || planningError || "unknown planning failure")}`
-      );
+      throw new Error(`LLM planning failed and fallback is disabled: ${plannerFailureReason}`);
     }
-    plannerTasks = normalizePlannerTasks(parseObjectiveTodos(objective, maxTasks), maxTasks, {
-      linearFallback: true,
-    });
-    if (!plannerTasks.length)
-      plannerTasks = normalizePlannerTasks(["Execute requested objective"], 1, {
-        linearFallback: false,
-      });
     try {
       const seeded = await seedBlackboardTasks(session, runId, objective, plannerTasks, workflowId);
       planSeedMode = seeded?.mode === "steps_compat" ? "steps_local_compat" : "blackboard_local";
       await appendContextRunEvent(session, runId, "plan_seeded_local", "planning", {
-        source: "local_objective_parser",
+        source: recovered.source,
         task_count: Number(seeded?.count || 0),
         dependency_edges: plannerTasks.reduce(
           (sum, task) =>
@@ -3820,14 +3843,18 @@ async function startSwarm(session, config = {}) {
         ),
         workflow_id: workflowId,
         planner_target: planSeedMode,
-        note: `Fallback planner used: ${String(planningError?.message || planningError || "unknown planning failure")}`,
+        note: `${recovered.note} Planner fallback used: ${plannerFailureReason}`,
       });
     } catch (blackboardError) {
-      await seedContextRunSteps(session, runId, objective);
+      await seedContextRunStepsFromTitles(
+        session,
+        runId,
+        plannerTasks.map((task) => String(task?.title || "").trim()).filter(Boolean)
+      );
       planSeedMode = "steps_fallback";
       await appendContextRunEvent(session, runId, "plan_seeded_local", "planning", {
-        source: "local_objective_parser",
-        note: `Fallback planner used: ${String(blackboardError?.message || blackboardError || "unknown planning failure")}`,
+        source: recovered.source,
+        note: `${recovered.note} Step fallback used: ${String(blackboardError?.message || blackboardError || "unknown planning failure")}`,
       });
     }
   }

@@ -356,6 +356,7 @@ impl EngineLoop {
             let mut productive_tool_calls_total = 0usize;
             let mut required_tool_retry_used = false;
             let mut required_tool_unsatisfied_emitted = false;
+            let mut latest_required_tool_failure_kind = RequiredToolFailureKind::NoToolCallEmitted;
             let email_delivery_requested = requires_email_delivery_prompt(&text);
             let web_research_requested = requires_web_research_prompt(&text);
             let mut email_action_executed = false;
@@ -876,6 +877,10 @@ impl EngineLoop {
                     }
                 }
 
+                let streamed_tool_call_count = streamed_tool_calls.len();
+                let streamed_tool_call_parse_failed = streamed_tool_calls
+                    .values()
+                    .any(|call| !call.args.trim().is_empty() && call.name.trim().is_empty());
                 let mut tool_calls = streamed_tool_calls
                     .into_values()
                     .filter_map(|call| {
@@ -889,6 +894,17 @@ impl EngineLoop {
                     .collect::<Vec<_>>();
                 if tool_calls.is_empty() {
                     tool_calls = parse_tool_invocations_from_response(&completion);
+                }
+                let provider_tool_parse_failed = tool_calls.is_empty()
+                    && (streamed_tool_call_parse_failed
+                        || (streamed_tool_call_count > 0
+                            && looks_like_unparsed_tool_payload(&completion))
+                        || looks_like_unparsed_tool_payload(&completion));
+                if provider_tool_parse_failed {
+                    latest_required_tool_failure_kind =
+                        RequiredToolFailureKind::ToolCallParseFailed;
+                } else if tool_calls.is_empty() {
+                    latest_required_tool_failure_kind = RequiredToolFailureKind::NoToolCallEmitted;
                 }
                 if router_enabled
                     && matches!(requested_tool_mode, ToolMode::Auto)
@@ -923,17 +939,21 @@ impl EngineLoop {
                     tool_calls = vec![("glob".to_string(), json!({ "pattern": "*" }))];
                 }
                 if !tool_calls.is_empty() {
+                    let saw_tool_call_candidate = true;
                     let mut outputs = Vec::new();
                     let mut executed_productive_tool = false;
                     let mut auth_required_hit_in_cycle = false;
                     let mut guard_budget_hit_in_cycle = false;
                     let mut duplicate_signature_hit_in_cycle = false;
+                    let mut rejected_tool_call_in_cycle = false;
                     for (tool, args) in tool_calls {
                         if !agent_can_use_tool(&active_agent, &tool) {
+                            rejected_tool_call_in_cycle = true;
                             continue;
                         }
                         let tool_key = normalize_tool_name(&tool);
                         if !allowed_tool_names.contains(&tool_key) {
+                            rejected_tool_call_in_cycle = true;
                             let note = if offered_tool_preview.is_empty() {
                                 format!(
                                     "Tool `{}` call skipped: it is not available in this turn.",
@@ -963,6 +983,7 @@ impl EngineLoop {
                         }
                         if let Some(server) = mcp_server_from_tool_name(&tool_key) {
                             if blocked_mcp_servers.contains(server) {
+                                rejected_tool_call_in_cycle = true;
                                 outputs.push(format!(
                                     "Tool `{}` call skipped: authorization is still pending for MCP server `{}`.",
                                     tool_key, server
@@ -974,6 +995,7 @@ impl EngineLoop {
                             question_tool_used = true;
                         }
                         if tool_key == "pack_builder" && pack_builder_executed {
+                            rejected_tool_call_in_cycle = true;
                             outputs.push(
                                 "Tool `pack_builder` call skipped: already executed in this run. Provide a final response or ask any required follow-up question."
                                     .to_string(),
@@ -981,6 +1003,7 @@ impl EngineLoop {
                             continue;
                         }
                         if websearch_query_blocked && tool_key == "websearch" {
+                            rejected_tool_call_in_cycle = true;
                             outputs.push(
                                 "Tool `websearch` call skipped: WEBSEARCH_QUERY_MISSING"
                                     .to_string(),
@@ -991,6 +1014,7 @@ impl EngineLoop {
                         if tool_key == "todo_write" {
                             effective_args = normalize_todo_write_args(effective_args, &completion);
                             if is_empty_todo_write_args(&effective_args) {
+                                rejected_tool_call_in_cycle = true;
                                 outputs.push(
                                     "Tool `todo_write` call skipped: empty todo payload."
                                         .to_string(),
@@ -1007,6 +1031,7 @@ impl EngineLoop {
                         if is_shell_tool_name(&tool_key)
                             && shell_mismatch_signatures.contains(&signature)
                         {
+                            rejected_tool_call_in_cycle = true;
                             outputs.push(
                                 "Tool `bash` call skipped: previous invocation hit an OS/path mismatch. Use `read`, `glob`, or `grep`."
                                     .to_string(),
@@ -1025,6 +1050,7 @@ impl EngineLoop {
                             if tool_key == "websearch" {
                                 if let Some(limit) = websearch_duplicate_signature_limit {
                                     if *count > limit {
+                                        rejected_tool_call_in_cycle = true;
                                         self.event_bus.publish(EngineEvent::new(
                                             "tool.loop_guard.triggered",
                                             json!({
@@ -1046,6 +1072,7 @@ impl EngineLoop {
                                 }
                             }
                             if tool_key != "websearch" && *count > 1 {
+                                rejected_tool_call_in_cycle = true;
                                 if let Some(cached) = readonly_tool_cache.get(&signature) {
                                     outputs.push(cached.clone());
                                 } else {
@@ -1066,6 +1093,7 @@ impl EngineLoop {
                                 .and_modify(|v| *v = v.saturating_add(1))
                                 .or_insert(1);
                             if *seen > duplicate_limit {
+                                rejected_tool_call_in_cycle = true;
                                 self.event_bus.publish(EngineEvent::new(
                                     "tool.loop_guard.triggered",
                                     json!({
@@ -1089,6 +1117,7 @@ impl EngineLoop {
                         let budget = tool_budget_for(&tool_key);
                         let entry = tool_call_counts.entry(tool_key.clone()).or_insert(0);
                         if *entry >= budget {
+                            rejected_tool_call_in_cycle = true;
                             outputs.push(format!(
                                 "Tool `{}` call skipped: per-run guard budget exceeded ({}).",
                                 tool_key, budget
@@ -1162,10 +1191,19 @@ impl EngineLoop {
                         if matches!(requested_tool_mode, ToolMode::Required)
                             && productive_tool_calls_total == 0
                         {
+                            latest_required_tool_failure_kind = classify_required_tool_failure(
+                                &outputs,
+                                saw_tool_call_candidate,
+                                accepted_tool_calls_in_cycle,
+                                provider_tool_parse_failed,
+                                rejected_tool_call_in_cycle,
+                            );
                             if !required_tool_retry_used {
                                 required_tool_retry_used = true;
-                                followup_context =
-                                    Some(build_required_tool_retry_context(&offered_tool_preview));
+                                followup_context = Some(build_required_tool_retry_context(
+                                    &offered_tool_preview,
+                                    latest_required_tool_failure_kind,
+                                ));
                                 self.event_bus.publish(EngineEvent::new(
                                     "provider.call.iteration.finish",
                                     json!({
@@ -1175,11 +1213,14 @@ impl EngineLoop {
                                         "finishReason": "required_tool_retry",
                                         "acceptedToolCalls": accepted_tool_calls_in_cycle,
                                         "rejectedToolCalls": 0,
+                                        "requiredToolFailureReason": latest_required_tool_failure_kind.code(),
                                     }),
                                 ));
                                 continue;
                             }
-                            completion = required_tool_mode_unsatisfied_completion();
+                            completion = required_tool_mode_unsatisfied_completion(
+                                latest_required_tool_failure_kind,
+                            );
                             if !required_tool_unsatisfied_emitted {
                                 required_tool_unsatisfied_emitted = true;
                                 self.event_bus.publish(EngineEvent::new(
@@ -1190,6 +1231,7 @@ impl EngineLoop {
                                         "iteration": iteration,
                                         "selectedToolCount": allowed_tool_names.len(),
                                         "offeredToolsPreview": offered_tool_preview,
+                                        "reason": latest_required_tool_failure_kind.code(),
                                     }),
                                 ));
                             }
@@ -1202,6 +1244,7 @@ impl EngineLoop {
                                     "finishReason": "required_tool_unsatisfied",
                                     "acceptedToolCalls": accepted_tool_calls_in_cycle,
                                     "rejectedToolCalls": 0,
+                                    "requiredToolFailureReason": latest_required_tool_failure_kind.code(),
                                 }),
                             ));
                             break;
@@ -1253,6 +1296,14 @@ impl EngineLoop {
                             }),
                         ));
                         break;
+                    } else if matches!(requested_tool_mode, ToolMode::Required) {
+                        latest_required_tool_failure_kind = classify_required_tool_failure(
+                            &outputs,
+                            saw_tool_call_candidate,
+                            accepted_tool_calls_in_cycle,
+                            provider_tool_parse_failed,
+                            rejected_tool_call_in_cycle,
+                        );
                     }
                 }
 
@@ -1274,11 +1325,15 @@ impl EngineLoop {
                 {
                     if !required_tool_retry_used {
                         required_tool_retry_used = true;
-                        followup_context =
-                            Some(build_required_tool_retry_context(&offered_tool_preview));
+                        followup_context = Some(build_required_tool_retry_context(
+                            &offered_tool_preview,
+                            latest_required_tool_failure_kind,
+                        ));
                         continue;
                     }
-                    completion = required_tool_mode_unsatisfied_completion();
+                    completion = required_tool_mode_unsatisfied_completion(
+                        latest_required_tool_failure_kind,
+                    );
                     if !required_tool_unsatisfied_emitted {
                         required_tool_unsatisfied_emitted = true;
                         self.event_bus.publish(EngineEvent::new(
@@ -1289,6 +1344,7 @@ impl EngineLoop {
                                 "iteration": iteration,
                                 "selectedToolCount": allowed_tool_names.len(),
                                 "offeredToolsPreview": offered_tool_preview,
+                                "reason": latest_required_tool_failure_kind.code(),
                             }),
                         ));
                     }
@@ -1301,6 +1357,7 @@ impl EngineLoop {
                             "finishReason": "required_tool_unsatisfied",
                             "acceptedToolCalls": accepted_tool_calls_in_cycle,
                             "rejectedToolCalls": 0,
+                            "requiredToolFailureReason": latest_required_tool_failure_kind.code(),
                         }),
                     ));
                 } else {
@@ -1320,7 +1377,8 @@ impl EngineLoop {
             }
             if matches!(requested_tool_mode, ToolMode::Required) && productive_tool_calls_total == 0
             {
-                completion = required_tool_mode_unsatisfied_completion();
+                completion =
+                    required_tool_mode_unsatisfied_completion(latest_required_tool_failure_kind);
                 if !required_tool_unsatisfied_emitted {
                     self.event_bus.publish(EngineEvent::new(
                         "tool.mode.required.unsatisfied",
@@ -1328,6 +1386,7 @@ impl EngineLoop {
                             "sessionID": session_id,
                             "messageID": user_message_id,
                             "selectedToolCount": tool_call_counts.len(),
+                            "reason": latest_required_tool_failure_kind.code(),
                         }),
                     ));
                 }
@@ -2793,13 +2852,38 @@ fn summarize_duplicate_signature_outputs(outputs: &[String]) -> Option<String> {
 
 const REQUIRED_TOOL_MODE_UNSATISFIED_REASON: &str = "TOOL_MODE_REQUIRED_NOT_SATISFIED";
 
-fn required_tool_mode_unsatisfied_completion() -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequiredToolFailureKind {
+    NoToolCallEmitted,
+    ToolCallParseFailed,
+    ToolCallInvalidArgs,
+    ToolCallRejectedByPolicy,
+    ToolCallExecutedNonProductive,
+}
+
+impl RequiredToolFailureKind {
+    fn code(self) -> &'static str {
+        match self {
+            Self::NoToolCallEmitted => "NO_TOOL_CALL_EMITTED",
+            Self::ToolCallParseFailed => "TOOL_CALL_PARSE_FAILED",
+            Self::ToolCallInvalidArgs => "TOOL_CALL_INVALID_ARGS",
+            Self::ToolCallRejectedByPolicy => "TOOL_CALL_REJECTED_BY_POLICY",
+            Self::ToolCallExecutedNonProductive => "TOOL_CALL_EXECUTED_NON_PRODUCTIVE",
+        }
+    }
+}
+
+fn required_tool_mode_unsatisfied_completion(reason: RequiredToolFailureKind) -> String {
     format!(
-        "{REQUIRED_TOOL_MODE_UNSATISFIED_REASON}: tool_mode=required but the model ended without executing any tool calls."
+        "{REQUIRED_TOOL_MODE_UNSATISFIED_REASON}: {}: tool_mode=required but the model ended without executing a productive tool call.",
+        reason.code()
     )
 }
 
-fn build_required_tool_retry_context(offered_tool_preview: &str) -> String {
+fn build_required_tool_retry_context(
+    offered_tool_preview: &str,
+    previous_reason: RequiredToolFailureKind,
+) -> String {
     let offered = offered_tool_preview.trim();
     let available_tools = if offered.is_empty() {
         "Use one of the tools offered in this turn before you produce final text.".to_string()
@@ -2807,8 +2891,62 @@ fn build_required_tool_retry_context(offered_tool_preview: &str) -> String {
         format!("Use one of these offered tools before you produce final text: {offered}.")
     };
     format!(
-        "Tool access is mandatory for this request. Execute at least one offered tool call before any final text. {available_tools}"
+        "Tool access is mandatory for this request. Previous attempt failed with {}. Execute at least one valid offered tool call before any final text. {available_tools}",
+        previous_reason.code()
     )
+}
+
+fn looks_like_unparsed_tool_payload(output: &str) -> bool {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.contains("\"tool_calls\"")
+        || lower.contains("\"function_call\"")
+        || lower.contains("\"function\":{")
+        || lower.contains("\"type\":\"tool_call\"")
+        || lower.contains("\"type\":\"function_call\"")
+        || lower.contains("\"type\":\"tool_use\"")
+}
+
+fn is_policy_rejection_output(output: &str) -> bool {
+    let lower = output.trim().to_ascii_lowercase();
+    lower.contains("call skipped")
+        || lower.contains("authorization required")
+        || lower.contains("not allowed")
+        || lower.contains("permission denied")
+}
+
+fn classify_required_tool_failure(
+    outputs: &[String],
+    saw_tool_call_candidate: bool,
+    accepted_tool_calls: usize,
+    parse_failed: bool,
+    rejected_by_policy: bool,
+) -> RequiredToolFailureKind {
+    if parse_failed {
+        return RequiredToolFailureKind::ToolCallParseFailed;
+    }
+    if !saw_tool_call_candidate {
+        return RequiredToolFailureKind::NoToolCallEmitted;
+    }
+    if accepted_tool_calls == 0 || rejected_by_policy {
+        return RequiredToolFailureKind::ToolCallRejectedByPolicy;
+    }
+    if outputs
+        .iter()
+        .any(|output| is_terminal_tool_error_reason(output))
+    {
+        return RequiredToolFailureKind::ToolCallInvalidArgs;
+    }
+    if outputs
+        .iter()
+        .any(|output| is_policy_rejection_output(output))
+    {
+        return RequiredToolFailureKind::ToolCallRejectedByPolicy;
+    }
+    RequiredToolFailureKind::ToolCallExecutedNonProductive
 }
 
 fn find_first_url(text: &str) -> Option<String> {
@@ -6344,16 +6482,42 @@ Call: todowrite(task_id=3, status="in_progress")
 
     #[test]
     fn required_tool_mode_unsatisfied_completion_includes_marker() {
-        let message = required_tool_mode_unsatisfied_completion();
+        let message =
+            required_tool_mode_unsatisfied_completion(RequiredToolFailureKind::NoToolCallEmitted);
         assert!(message.contains(REQUIRED_TOOL_MODE_UNSATISFIED_REASON));
+        assert!(message.contains("NO_TOOL_CALL_EMITTED"));
         assert!(message.contains("tool_mode=required"));
     }
 
     #[test]
     fn required_tool_retry_context_mentions_offered_tools() {
-        let prompt = build_required_tool_retry_context("read, write, apply_patch");
+        let prompt = build_required_tool_retry_context(
+            "read, write, apply_patch",
+            RequiredToolFailureKind::ToolCallInvalidArgs,
+        );
         assert!(prompt.contains("Execute at least one offered tool call"));
+        assert!(prompt.contains("TOOL_CALL_INVALID_ARGS"));
         assert!(prompt.contains("read, write, apply_patch"));
+    }
+
+    #[test]
+    fn classify_required_tool_failure_detects_invalid_args() {
+        let reason = classify_required_tool_failure(
+            &[String::from("WRITE_CONTENT_MISSING")],
+            true,
+            1,
+            false,
+            false,
+        );
+        assert_eq!(reason, RequiredToolFailureKind::ToolCallInvalidArgs);
+    }
+
+    #[test]
+    fn looks_like_unparsed_tool_payload_detects_tool_call_json() {
+        assert!(looks_like_unparsed_tool_payload(
+            r#"{"content":[{"type":"tool_call","name":"write"}]}"#
+        ));
+        assert!(!looks_like_unparsed_tool_payload("Updated README.md"));
     }
 
     #[test]

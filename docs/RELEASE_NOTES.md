@@ -2,6 +2,13 @@
 
 ### Highlights
 
+- **Orchestration now reports real planner/provider failures and persists real tool history**:
+  - Swarm planning now surfaces upstream provider failures directly when LLM planning is required, instead of reducing quota/auth problems to vague `no valid tasks` planner errors.
+  - Backend session dispatch now writes explicit engine error markers like `ENGINE_ERROR: AUTHENTICATION_ERROR: ...` into session history so control-panel orchestration can present the actual cause to the user.
+  - Control-panel planner startup now detects and bubbles provider quota/auth failures such as OpenRouter `403 Key limit exceeded (monthly limit)`.
+  - Runtime tool invocation/result events now persist correctly into session history using the actual `WireMessagePart` event shape emitted by `tandem-engine`.
+  - This fixes a major false-negative verifier path where swarm tasks were marked `NO_TOOL_ACTIVITY_NO_WORKSPACE_CHANGE` even though backend tools like `glob` and `read` had executed.
+
 - **Provider catalog honesty in Settings and `/provider`**:
   - `GET /provider` now returns explicit catalog metadata (`catalog_source`, `catalog_status`, `catalog_message`) so clients can tell the difference between live remote catalogs, config-defined catalogs, and manual-entry-only providers.
   - Removed synthetic single-model fallback catalog entries for built-in providers, which previously made most non-OpenRouter providers look like they had exactly one available model.

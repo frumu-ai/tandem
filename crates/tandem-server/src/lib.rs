@@ -19,7 +19,7 @@ use tandem_memory::types::MemoryTier;
 use tandem_memory::{GovernedMemoryTier, MemoryClassification, MemoryContentKind, MemoryPartition};
 use tandem_orchestrator::MissionState;
 use tandem_types::{
-    EngineEvent, HostOs, HostRuntimeContext, MessagePartInput, ModelSpec, PathStyle,
+    EngineEvent, HostOs, HostRuntimeContext, MessagePart, MessagePartInput, ModelSpec, PathStyle,
     SendMessageRequest, Session, ShellFamily,
 };
 use tokio::fs;
@@ -35,6 +35,12 @@ use tandem_providers::ChatMessage;
 use tandem_providers::ProviderRegistry;
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::ToolRegistry;
+use tandem_workflows::{
+    load_registry as load_workflow_registry, validate_registry as validate_workflow_registry,
+    WorkflowHookBinding, WorkflowLoadSource, WorkflowRegistry, WorkflowRunRecord,
+    WorkflowRunStatus, WorkflowSourceKind, WorkflowSourceRef, WorkflowSpec,
+    WorkflowValidationMessage,
+};
 
 mod agent_teams;
 mod browser;
@@ -47,6 +53,7 @@ mod preset_composer;
 mod preset_registry;
 mod preset_summary;
 pub mod webui;
+mod workflows;
 
 pub use agent_teams::AgentTeamRuntime;
 pub use browser::{BrowserHealthSummary, BrowserSubsystem};
@@ -55,6 +62,10 @@ pub use http::serve;
 pub use pack_manager::PackManager;
 pub use preset_composer::PromptComposeInput;
 pub use preset_registry::PresetRegistry;
+pub use workflows::{
+    canonical_workflow_event_names, dispatch_workflow_event, execute_hook_binding,
+    execute_workflow, parse_workflow_action, run_workflow_dispatcher, simulate_workflow_event,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChannelStatus {
@@ -748,6 +759,10 @@ pub struct AppState {
     pub routine_runs: Arc<RwLock<std::collections::HashMap<String, RoutineRunRecord>>>,
     pub automations_v2: Arc<RwLock<std::collections::HashMap<String, AutomationV2Spec>>>,
     pub automation_v2_runs: Arc<RwLock<std::collections::HashMap<String, AutomationV2RunRecord>>>,
+    pub workflows: Arc<RwLock<WorkflowRegistry>>,
+    pub workflow_runs: Arc<RwLock<std::collections::HashMap<String, WorkflowRunRecord>>>,
+    pub workflow_hook_overrides: Arc<RwLock<std::collections::HashMap<String, bool>>>,
+    pub workflow_dispatch_seen: Arc<RwLock<std::collections::HashMap<String, u64>>>,
     pub routine_session_policies:
         Arc<RwLock<std::collections::HashMap<String, RoutineSessionPolicy>>>,
     pub automation_v2_session_runs: Arc<RwLock<std::collections::HashMap<String, String>>>,
@@ -757,6 +772,8 @@ pub struct AppState {
     pub routine_runs_path: PathBuf,
     pub automations_v2_path: PathBuf,
     pub automation_v2_runs_path: PathBuf,
+    pub workflow_runs_path: PathBuf,
+    pub workflow_hook_overrides_path: PathBuf,
     pub agent_teams: AgentTeamRuntime,
     pub web_ui_enabled: Arc<AtomicBool>,
     pub web_ui_prefix: Arc<std::sync::RwLock<String>>,
@@ -800,6 +817,10 @@ impl AppState {
             routine_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automations_v2: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automation_v2_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            workflows: Arc::new(RwLock::new(WorkflowRegistry::default())),
+            workflow_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            workflow_hook_overrides: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            workflow_dispatch_seen: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_session_policies: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automation_v2_session_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routines_path: resolve_routines_path(),
@@ -807,6 +828,8 @@ impl AppState {
             routine_runs_path: resolve_routine_runs_path(),
             automations_v2_path: resolve_automations_v2_path(),
             automation_v2_runs_path: resolve_automation_v2_runs_path(),
+            workflow_runs_path: resolve_workflow_runs_path(),
+            workflow_hook_overrides_path: resolve_workflow_hook_overrides_path(),
             agent_teams: AgentTeamRuntime::new(resolve_agent_team_audit_path()),
             web_ui_enabled: Arc::new(AtomicBool::new(false)),
             web_ui_prefix: Arc::new(std::sync::RwLock::new("/admin".to_string())),
@@ -950,6 +973,9 @@ impl AppState {
         let _ = self.load_routine_runs().await;
         let _ = self.load_automations_v2().await;
         let _ = self.load_automation_v2_runs().await;
+        let _ = self.load_workflow_runs().await;
+        let _ = self.load_workflow_hook_overrides().await;
+        let _ = self.reload_workflows().await;
         let workspace_root = self.workspace_index.snapshot().await.root;
         let _ = self
             .agent_teams
@@ -1726,6 +1752,210 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn load_workflow_runs(&self) -> anyhow::Result<()> {
+        if !self.workflow_runs_path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&self.workflow_runs_path).await?;
+        let parsed =
+            serde_json::from_str::<std::collections::HashMap<String, WorkflowRunRecord>>(&raw)
+                .unwrap_or_default();
+        *self.workflow_runs.write().await = parsed;
+        Ok(())
+    }
+
+    pub async fn persist_workflow_runs(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.workflow_runs_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.workflow_runs.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.workflow_runs_path, payload).await?;
+        Ok(())
+    }
+
+    pub async fn load_workflow_hook_overrides(&self) -> anyhow::Result<()> {
+        if !self.workflow_hook_overrides_path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&self.workflow_hook_overrides_path).await?;
+        let parsed = serde_json::from_str::<std::collections::HashMap<String, bool>>(&raw)
+            .unwrap_or_default();
+        *self.workflow_hook_overrides.write().await = parsed;
+        Ok(())
+    }
+
+    pub async fn persist_workflow_hook_overrides(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.workflow_hook_overrides_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.workflow_hook_overrides.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.workflow_hook_overrides_path, payload).await?;
+        Ok(())
+    }
+
+    pub async fn reload_workflows(&self) -> anyhow::Result<Vec<WorkflowValidationMessage>> {
+        let mut sources = Vec::new();
+        sources.push(WorkflowLoadSource {
+            root: resolve_builtin_workflows_dir(),
+            kind: WorkflowSourceKind::BuiltIn,
+            pack_id: None,
+        });
+
+        let workspace_root = self.workspace_index.snapshot().await.root;
+        sources.push(WorkflowLoadSource {
+            root: PathBuf::from(workspace_root).join(".tandem"),
+            kind: WorkflowSourceKind::Workspace,
+            pack_id: None,
+        });
+
+        if let Ok(packs) = self.pack_manager.list().await {
+            for pack in packs {
+                sources.push(WorkflowLoadSource {
+                    root: PathBuf::from(pack.install_path),
+                    kind: WorkflowSourceKind::Pack,
+                    pack_id: Some(pack.pack_id),
+                });
+            }
+        }
+
+        let mut registry = load_workflow_registry(&sources)?;
+        let overrides = self.workflow_hook_overrides.read().await.clone();
+        for hook in &mut registry.hooks {
+            if let Some(enabled) = overrides.get(&hook.binding_id) {
+                hook.enabled = *enabled;
+            }
+        }
+        for workflow in registry.workflows.values_mut() {
+            workflow.hooks = registry
+                .hooks
+                .iter()
+                .filter(|hook| hook.workflow_id == workflow.workflow_id)
+                .cloned()
+                .collect();
+        }
+        let messages = validate_workflow_registry(&registry);
+        *self.workflows.write().await = registry;
+        Ok(messages)
+    }
+
+    pub async fn workflow_registry(&self) -> WorkflowRegistry {
+        self.workflows.read().await.clone()
+    }
+
+    pub async fn list_workflows(&self) -> Vec<WorkflowSpec> {
+        let mut rows = self
+            .workflows
+            .read()
+            .await
+            .workflows
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| a.workflow_id.cmp(&b.workflow_id));
+        rows
+    }
+
+    pub async fn get_workflow(&self, workflow_id: &str) -> Option<WorkflowSpec> {
+        self.workflows
+            .read()
+            .await
+            .workflows
+            .get(workflow_id)
+            .cloned()
+    }
+
+    pub async fn list_workflow_hooks(&self, workflow_id: Option<&str>) -> Vec<WorkflowHookBinding> {
+        let mut rows = self
+            .workflows
+            .read()
+            .await
+            .hooks
+            .iter()
+            .filter(|hook| workflow_id.map(|id| hook.workflow_id == id).unwrap_or(true))
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| a.binding_id.cmp(&b.binding_id));
+        rows
+    }
+
+    pub async fn set_workflow_hook_enabled(
+        &self,
+        binding_id: &str,
+        enabled: bool,
+    ) -> anyhow::Result<Option<WorkflowHookBinding>> {
+        self.workflow_hook_overrides
+            .write()
+            .await
+            .insert(binding_id.to_string(), enabled);
+        self.persist_workflow_hook_overrides().await?;
+        let _ = self.reload_workflows().await?;
+        Ok(self
+            .workflows
+            .read()
+            .await
+            .hooks
+            .iter()
+            .find(|hook| hook.binding_id == binding_id)
+            .cloned())
+    }
+
+    pub async fn put_workflow_run(&self, run: WorkflowRunRecord) -> anyhow::Result<()> {
+        self.workflow_runs
+            .write()
+            .await
+            .insert(run.run_id.clone(), run);
+        self.persist_workflow_runs().await
+    }
+
+    pub async fn update_workflow_run(
+        &self,
+        run_id: &str,
+        update: impl FnOnce(&mut WorkflowRunRecord),
+    ) -> Option<WorkflowRunRecord> {
+        let mut guard = self.workflow_runs.write().await;
+        let row = guard.get_mut(run_id)?;
+        update(row);
+        row.updated_at_ms = now_ms();
+        if matches!(
+            row.status,
+            WorkflowRunStatus::Completed | WorkflowRunStatus::Failed
+        ) {
+            row.finished_at_ms.get_or_insert_with(now_ms);
+        }
+        let out = row.clone();
+        drop(guard);
+        let _ = self.persist_workflow_runs().await;
+        Some(out)
+    }
+
+    pub async fn list_workflow_runs(
+        &self,
+        workflow_id: Option<&str>,
+        limit: usize,
+    ) -> Vec<WorkflowRunRecord> {
+        let mut rows = self
+            .workflow_runs
+            .read()
+            .await
+            .values()
+            .filter(|row| workflow_id.map(|id| row.workflow_id == id).unwrap_or(true))
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        rows.truncate(limit.clamp(1, 500));
+        rows
+    }
+
+    pub async fn get_workflow_run(&self, run_id: &str) -> Option<WorkflowRunRecord> {
+        self.workflow_runs.read().await.get(run_id).cloned()
+    }
+
     pub async fn put_automation_v2(
         &self,
         mut automation: AutomationV2Spec,
@@ -2161,6 +2391,36 @@ fn resolve_automation_v2_runs_path() -> PathBuf {
         }
     }
     default_state_dir().join("automation_v2_runs.json")
+}
+
+fn resolve_workflow_runs_path() -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("workflow_runs.json");
+        }
+    }
+    default_state_dir().join("workflow_runs.json")
+}
+
+fn resolve_workflow_hook_overrides_path() -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("workflow_hook_overrides.json");
+        }
+    }
+    default_state_dir().join("workflow_hook_overrides.json")
+}
+
+fn resolve_builtin_workflows_dir() -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_BUILTIN_WORKFLOW_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    default_state_dir().join("builtin_workflows")
 }
 
 fn resolve_agent_team_audit_path() -> PathBuf {
@@ -2809,6 +3069,16 @@ fn extract_event_session_id(properties: &Value) -> Option<String> {
         .get("sessionID")
         .or_else(|| properties.get("sessionId"))
         .or_else(|| properties.get("id"))
+        .or_else(|| {
+            properties
+                .get("part")
+                .and_then(|part| part.get("sessionID"))
+        })
+        .or_else(|| {
+            properties
+                .get("part")
+                .and_then(|part| part.get("sessionId"))
+        })
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
 }
@@ -2817,8 +3087,43 @@ fn extract_event_run_id(properties: &Value) -> Option<String> {
     properties
         .get("runID")
         .or_else(|| properties.get("run_id"))
+        .or_else(|| properties.get("part").and_then(|part| part.get("runID")))
+        .or_else(|| properties.get("part").and_then(|part| part.get("run_id")))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+}
+
+fn extract_persistable_tool_part(properties: &Value) -> Option<(String, MessagePart)> {
+    let part = properties.get("part")?;
+    let part_type = part
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if part_type != "tool" && part_type != "tool-invocation" && part_type != "tool-result" {
+        return None;
+    }
+    let tool = part.get("tool").and_then(|v| v.as_str())?.to_string();
+    let message_id = part
+        .get("messageID")
+        .or_else(|| part.get("message_id"))
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let args = part.get("args").cloned().unwrap_or_else(|| json!({}));
+    let result = part.get("result").cloned().filter(|value| !value.is_null());
+    let error = part
+        .get("error")
+        .and_then(|v| v.as_str())
+        .map(|value| value.to_string());
+    Some((
+        message_id,
+        MessagePart::ToolInvocation {
+            tool,
+            args,
+            result,
+            error,
+        },
+    ))
 }
 
 fn derive_status_index_update(event: &EngineEvent) -> Option<StatusIndexUpdate> {
@@ -2866,9 +3171,15 @@ fn derive_status_index_update(event: &EngineEvent) -> Option<StatusIndexUpdate> 
                 .get("part")
                 .and_then(|v| v.get("type"))
                 .and_then(|v| v.as_str())?;
-            let (phase, tool_active) = match part_type {
-                "tool-invocation" => ("tool", true),
-                "tool-result" => ("run", false),
+            let part_state = event
+                .properties
+                .get("part")
+                .and_then(|v| v.get("state"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let (phase, tool_active) = match (part_type, part_state) {
+                ("tool-invocation", _) | ("tool", "running") | ("tool", "") => ("tool", true),
+                ("tool-result", _) | ("tool", "completed") | ("tool", "failed") => ("run", false),
                 _ => return None,
             };
             base.insert("state".to_string(), Value::String("running".to_string()));
@@ -2892,6 +3203,43 @@ fn derive_status_index_update(event: &EngineEvent) -> Option<StatusIndexUpdate> 
             })
         }
         _ => None,
+    }
+}
+
+pub async fn run_session_part_persister(state: AppState) {
+    if !state.wait_until_ready_or_failed(120, 250).await {
+        tracing::warn!("session part persister: skipped because runtime did not become ready");
+        return;
+    }
+    let mut rx = state.event_bus.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                if event.event_type != "message.part.updated" {
+                    continue;
+                }
+                let Some(session_id) = extract_event_session_id(&event.properties) else {
+                    continue;
+                };
+                let Some((message_id, part)) = extract_persistable_tool_part(&event.properties)
+                else {
+                    continue;
+                };
+                if let Err(error) = state
+                    .storage
+                    .append_message_part(&session_id, &message_id, part)
+                    .await
+                {
+                    tracing::warn!(
+                        "session part persister failed for session={} message={}: {error:#}",
+                        session_id,
+                        message_id
+                    );
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+        }
     }
 }
 
