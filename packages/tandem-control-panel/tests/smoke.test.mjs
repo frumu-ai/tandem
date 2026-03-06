@@ -42,7 +42,27 @@ async function waitForCondition(checkFn, timeoutMs = 12000, intervalMs = 120) {
   throw new Error("Timed out waiting for condition");
 }
 
-async function startFakeEngine() {
+function textFromParts(parts) {
+  return (Array.isArray(parts) ? parts : [])
+    .map((part) => {
+      if (!part) return "";
+      if (typeof part === "string") return part;
+      if (typeof part.text === "string") return part.text;
+      if (typeof part.content === "string") return part.content;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function lastRequiredToolPromptCall(promptSyncCalls) {
+  return [...(Array.isArray(promptSyncCalls) ? promptSyncCalls : [])]
+    .reverse()
+    .find((call) => call?.body?.tool_mode === "required");
+}
+
+async function startFakeEngine(options = {}) {
   const port = await getFreePort();
   const token = "smoke-token";
   const requests = [];
@@ -153,12 +173,37 @@ async function startFakeEngine() {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
-      promptSyncCalls.push({ sessionId, body: input });
-      const message = { role: "assistant", content: "Attempted execution." };
       const snapshot = sessions.get(sessionId);
+      const call = {
+        sessionId,
+        body: input,
+        callIndex: promptSyncCalls.length + 1,
+      };
+      promptSyncCalls.push(call);
+      if (snapshot) {
+        snapshot.messages.push({
+          role: "user",
+          content: textFromParts(input?.parts),
+        });
+      }
+
+      if (typeof options.onPromptSync === "function") {
+        const response = await options.onPromptSync({ call, snapshot });
+        const status = Number(response?.status || 200);
+        const payload =
+          response && Object.prototype.hasOwnProperty.call(response, "body") ? response.body : {};
+        if (snapshot && Array.isArray(response?.appendMessages)) {
+          snapshot.messages.push(...response.appendMessages);
+        }
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify(payload));
+        return;
+      }
+
+      const message = { role: "assistant", content: "Attempted execution." };
       if (snapshot) snapshot.messages.push(message);
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify([message]));
+      res.end(JSON.stringify(snapshot?.messages || [message]));
       return;
     }
 
@@ -546,6 +591,14 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
     "expected execution prompt_sync calls to set tool_mode=required"
   );
   assert.ok(
+    fake.promptSyncCalls.some((call) =>
+      String(call?.body?.parts?.[0]?.text || "").includes(
+        "Ignore any orchestration, delegation, planning, or task-graph instructions"
+      )
+    ),
+    "expected execution prompt to override orchestration planning instructions"
+  );
+  assert.ok(
     fake.sessionCreates.some(
       (call) =>
         Array.isArray(call?.body?.permission) &&
@@ -610,4 +663,235 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
     (r) => r.path === "/global/health" && r.auth === `Bearer ${fake.token}`
   );
   assert.ok(proxiedAuthSeen, "proxy did not forward token auth header");
+});
+
+test("swarm retry verification does not reuse stale assistant output", async (t) => {
+  let requiredCallCount = 0;
+  const fake = await startFakeEngine({
+    onPromptSync: async ({ call, snapshot }) => {
+      if (call?.body?.tool_mode !== "required") {
+        const assistant = {
+          role: "assistant",
+          content: '{"tasks":[{"id":"task-1","title":"Task 1","depends_on_task_ids":[]}]}',
+        };
+        if (snapshot) snapshot.messages.push(assistant);
+        return { status: 200, body: snapshot?.messages || [assistant] };
+      }
+      requiredCallCount += 1;
+      if (requiredCallCount === 1) {
+        const assistant = { role: "assistant", content: "Planned only. No files changed." };
+        if (snapshot) snapshot.messages.push(assistant);
+        return { status: 200, body: snapshot?.messages || [assistant] };
+      }
+      return { status: 500, body: { error: "retry dispatch failed" } };
+    },
+  });
+  t.after(async () => {
+    await fake.close();
+  });
+
+  const panelPort = await getFreePort();
+  const baseUrl = `http://127.0.0.1:${panelPort}`;
+
+  const panel = spawn(process.execPath, ["bin/setup.js"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      TANDEM_CONTROL_PANEL_PORT: String(panelPort),
+      TANDEM_ENGINE_URL: `http://127.0.0.1:${fake.port}`,
+      TANDEM_CONTROL_PANEL_AUTO_START_ENGINE: "0",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  t.after(() => {
+    if (!panel.killed) panel.kill("SIGTERM");
+  });
+
+  await waitForReady(baseUrl);
+
+  const login = await request(baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: { token: fake.token },
+  });
+  assert.equal(login.status, 200);
+  const cookie = extractCookie(login);
+
+  const swarmStart = await request(baseUrl, "/api/swarm/start", {
+    method: "POST",
+    cookie,
+    body: {
+      workspaceRoot: process.cwd(),
+      objective: "Test objective",
+      maxTasks: 2,
+      verificationMode: "strict",
+      requireLlmPlan: true,
+      allowLocalPlannerFallback: true,
+    },
+  });
+  const swarmStartJson = await swarmStart.json();
+  assert.equal(swarmStart.status, 200, JSON.stringify(swarmStartJson));
+
+  const approveRes = await request(baseUrl, "/api/swarm/approve", {
+    method: "POST",
+    cookie,
+    body: { runId: swarmStartJson.runId },
+  });
+  assert.equal(approveRes.status, 200);
+
+  await waitForCondition(async () => {
+    const runState = await request(
+      baseUrl,
+      `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`,
+      {
+        cookie,
+      }
+    );
+    if (!runState.ok) return false;
+    const payload = await runState.json();
+    return String(payload?.run?.status || "").toLowerCase() === "failed";
+  }, 12000);
+
+  const failedRunRes = await request(
+    baseUrl,
+    `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`,
+    {
+      cookie,
+    }
+  );
+  assert.equal(failedRunRes.status, 200);
+  const failedRunJson = await failedRunRes.json();
+  const events = Array.isArray(failedRunJson.events) ? failedRunJson.events : [];
+  const stepFailed = events.find((event) => event?.type === "step_failed");
+  assert.ok(stepFailed, "missing step_failed event");
+  assert.deepEqual(lastRequiredToolPromptCall(fake.promptSyncCalls)?.body?.tool_allowlist, [
+    "write",
+    "edit",
+    "apply_patch",
+  ]);
+  assert.match(String(stepFailed?.payload?.error || ""), /retry dispatch failed/i);
+  assert.doesNotMatch(
+    String(stepFailed?.payload?.error || ""),
+    /NO_TOOL_ACTIVITY_NO_WORKSPACE_CHANGE/
+  );
+});
+
+test("swarm retry preserves inspection tools when the first required attempt made no tool calls", async (t) => {
+  let requiredCallCount = 0;
+  const fake = await startFakeEngine({
+    onPromptSync: async ({ call, snapshot }) => {
+      if (call?.body?.tool_mode !== "required") {
+        const assistant = {
+          role: "assistant",
+          content: '{"tasks":[{"id":"task-1","title":"Task 1","depends_on_task_ids":[]}]}',
+        };
+        if (snapshot) snapshot.messages.push(assistant);
+        return { status: 200, body: snapshot?.messages || [assistant] };
+      }
+      requiredCallCount += 1;
+      if (requiredCallCount === 1) {
+        const assistant = { role: "assistant", content: "Inspected the workspace only." };
+        if (snapshot) snapshot.messages.push(assistant);
+        return { status: 200, body: snapshot?.messages || [assistant] };
+      }
+      const assistant = {
+        role: "assistant",
+        content:
+          "TOOL_MODE_REQUIRED_NOT_SATISFIED: tool_mode=required but the model ended without executing any tool calls.",
+      };
+      if (snapshot) snapshot.messages.push(assistant);
+      return { status: 200, body: snapshot?.messages || [assistant] };
+    },
+  });
+  t.after(async () => {
+    await fake.close();
+  });
+
+  const panelPort = await getFreePort();
+  const baseUrl = `http://127.0.0.1:${panelPort}`;
+
+  const panel = spawn(process.execPath, ["bin/setup.js"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      TANDEM_CONTROL_PANEL_PORT: String(panelPort),
+      TANDEM_ENGINE_URL: `http://127.0.0.1:${fake.port}`,
+      TANDEM_CONTROL_PANEL_AUTO_START_ENGINE: "0",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  t.after(() => {
+    if (!panel.killed) panel.kill("SIGTERM");
+  });
+
+  await waitForReady(baseUrl);
+
+  const login = await request(baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: { token: fake.token },
+  });
+  assert.equal(login.status, 200);
+  const cookie = extractCookie(login);
+
+  const swarmStart = await request(baseUrl, "/api/swarm/start", {
+    method: "POST",
+    cookie,
+    body: {
+      workspaceRoot: process.cwd(),
+      objective: "Test objective",
+      maxTasks: 2,
+      verificationMode: "strict",
+      requireLlmPlan: true,
+      allowLocalPlannerFallback: true,
+    },
+  });
+  const swarmStartJson = await swarmStart.json();
+  assert.equal(swarmStart.status, 200, JSON.stringify(swarmStartJson));
+
+  const approveRes = await request(baseUrl, "/api/swarm/approve", {
+    method: "POST",
+    cookie,
+    body: { runId: swarmStartJson.runId },
+  });
+  assert.equal(approveRes.status, 200);
+
+  await waitForCondition(async () => {
+    const runState = await request(
+      baseUrl,
+      `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`,
+      {
+        cookie,
+      }
+    );
+    if (!runState.ok) return false;
+    const payload = await runState.json();
+    return String(payload?.run?.status || "").toLowerCase() === "failed";
+  }, 12000);
+
+  const failedRunRes = await request(
+    baseUrl,
+    `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`,
+    {
+      cookie,
+    }
+  );
+  assert.equal(failedRunRes.status, 200);
+  const failedRunJson = await failedRunRes.json();
+  const events = Array.isArray(failedRunJson.events) ? failedRunJson.events : [];
+  const stepFailed = events.find((event) => event?.type === "step_failed");
+  assert.ok(stepFailed, "missing step_failed event");
+  assert.deepEqual(lastRequiredToolPromptCall(fake.promptSyncCalls)?.body?.tool_allowlist, [
+    "ls",
+    "list",
+    "glob",
+    "search",
+    "grep",
+    "codesearch",
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+  ]);
+  assert.equal(stepFailed?.payload?.verification?.reason, "TOOL_MODE_REQUIRED_NOT_SATISFIED");
 });

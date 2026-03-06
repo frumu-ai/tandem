@@ -2626,20 +2626,35 @@ async function runExecutionPromptWithVerification(session, run, prompt, sessionI
   let hasToolSignal = hasToolActivity(syncRows);
   if (!hasAssistant || !hasToolSignal) {
     verificationStartIndex = syncRows.length;
-    const retryPrompt = [
-      prompt,
-      "",
-      "Mandatory execution rule:",
-      "- Before final text, execute at least one tool call.",
-      "- Use write/edit/apply_patch to make workspace changes.",
-      "- On this retry, do not inspect further with read/search/glob/ls/list.",
-      "- Create or modify the target file directly with write/edit/apply_patch.",
-      "- Do not use bash.",
-    ].join("\n");
+    const retryNeedsInitialInspection = !hasToolSignal;
+    const retryPrompt = retryNeedsInitialInspection
+      ? [
+          prompt,
+          "",
+          "Mandatory execution rule:",
+          "- Before final text, execute at least one tool call.",
+          "- You have not used any tools yet in this step.",
+          "- Inspect the workspace first with ls/list/glob/search/read if needed.",
+          "- Then make the required file changes in the same turn with write/edit/apply_patch.",
+          "- Do not end with prose only.",
+          "- Do not use bash.",
+        ].join("\n")
+      : [
+          prompt,
+          "",
+          "Mandatory execution rule:",
+          "- Before final text, execute at least one tool call.",
+          "- Use write/edit/apply_patch to make workspace changes.",
+          "- On this retry, do not inspect further with read/search/glob/ls/list.",
+          "- Create or modify the target file directly with write/edit/apply_patch.",
+          "- Do not use bash.",
+        ].join("\n");
     retryRequestBody = {
       parts: [{ type: "text", text: retryPrompt }],
       tool_mode: "required",
-      tool_allowlist: workerWriteRetryToolAllowlist(),
+      tool_allowlist: retryNeedsInitialInspection
+        ? workerExecutionToolAllowlist()
+        : workerWriteRetryToolAllowlist(),
     };
     promptResponse = await engineRequestJson(
       session,
