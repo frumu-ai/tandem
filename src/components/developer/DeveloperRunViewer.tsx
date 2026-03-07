@@ -1000,6 +1000,20 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     setRunSortMode("updated");
   }, []);
 
+  const resetTimelineFilters = useCallback(() => {
+    setEventQuery("");
+    setEventTypeFilter("all");
+  }, []);
+
+  const resetArtifactFilters = useCallback(() => {
+    setArtifactQuery("");
+  }, []);
+
+  const resetMemoryFilters = useCallback(() => {
+    setMemoryHitFilter("all");
+    setMemoryCandidateFilter("all");
+  }, []);
+
   const openArtifactRecordContext = useCallback(
     (artifact: CoderArtifactRecord, target: "task" | "event") => {
       if (target === "task") {
@@ -2111,9 +2125,14 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                             </select>
                           </div>
                           {filteredEventTimeline.length === 0 ? (
-                            <p className="text-sm text-text-muted">
-                              No run events match the current filters.
-                            </p>
+                            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-dashed border-border bg-surface-elevated/30 p-3">
+                              <p className="text-sm text-text-muted">
+                                No run events match the current filters.
+                              </p>
+                              <Button variant="secondary" size="sm" onClick={resetTimelineFilters}>
+                                Reset filters
+                              </Button>
+                            </div>
                           ) : (
                             filteredEventTimeline.map((event, index) => {
                               const eventType = runEventType(event);
@@ -2369,9 +2388,18 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
 
                           <div className="space-y-4">
                             {artifactGroups.length === 0 ? (
-                              <p className="text-sm text-text-muted">
-                                No artifacts match the current filter.
-                              </p>
+                              <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-dashed border-border bg-surface-elevated/30 p-3">
+                                <p className="text-sm text-text-muted">
+                                  No artifacts match the current filter.
+                                </p>
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={resetArtifactFilters}
+                                >
+                                  Reset filters
+                                </Button>
+                              </div>
                             ) : null}
                             {(artifactGroups.length > 0 ? artifactGroups : []).map((group) => (
                               <div
@@ -3037,9 +3065,14 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                             ))}
                           </div>
                           {filteredMemoryHits.length === 0 ? (
-                            <p className="text-sm text-text-muted">
-                              No memory hits match the current filter.
-                            </p>
+                            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-dashed border-border bg-surface-elevated/30 p-3">
+                              <p className="text-sm text-text-muted">
+                                No memory hits match the current filter.
+                              </p>
+                              <Button variant="secondary" size="sm" onClick={resetMemoryFilters}>
+                                Reset filters
+                              </Button>
+                            </div>
                           ) : null}
                           {filteredMemoryHits.map((hit, index) => {
                             const hitId =
@@ -3194,9 +3227,14 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                             ))}
                           </div>
                           {filteredMemoryCandidates.length === 0 ? (
-                            <p className="text-sm text-text-muted">
-                              No memory candidates match the current filter.
-                            </p>
+                            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-dashed border-border bg-surface-elevated/30 p-3">
+                              <p className="text-sm text-text-muted">
+                                No memory candidates match the current filter.
+                              </p>
+                              <Button variant="secondary" size="sm" onClick={resetMemoryFilters}>
+                                Reset filters
+                              </Button>
+                            </div>
                           ) : null}
                           {filteredMemoryCandidates.map((candidate) => (
                             <div
