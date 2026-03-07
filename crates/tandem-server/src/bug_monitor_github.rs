@@ -134,6 +134,39 @@ pub async fn publish_draft(
     };
     let evidence_digest = compute_evidence_digest(&draft, incident.as_ref());
     draft.evidence_digest = Some(evidence_digest.clone());
+    let issue_draft = if mode == PublishMode::RecheckOnly {
+        None
+    } else if draft.triage_run_id.is_none() {
+        if mode == PublishMode::ManualPublish {
+            anyhow::bail!("Bug Monitor draft needs a triage run before GitHub publish");
+        }
+        None
+    } else if mode == PublishMode::ManualPublish {
+        Some(
+            crate::http::bug_monitor::ensure_bug_monitor_issue_draft(
+                state.clone(),
+                &draft.draft_id,
+                false,
+            )
+            .await
+            .context("generate Bug Monitor issue draft")?,
+        )
+    } else {
+        crate::http::bug_monitor::load_bug_monitor_issue_draft_artifact(
+            state,
+            draft.triage_run_id.as_deref().unwrap_or_default(),
+        )
+        .await
+    };
+    if issue_draft.is_none() && draft.triage_run_id.is_some() && mode == PublishMode::Auto {
+        draft.github_status = Some("triage_pending".to_string());
+        let draft = state.put_bug_monitor_draft(draft).await?;
+        return Ok(PublishOutcome {
+            action: "triage_pending".to_string(),
+            draft,
+            post: None,
+        });
+    }
 
     let owner_repo = split_owner_repo(&draft.repo)?;
     let matched_issue = find_matching_issue(state, &tools, &owner_repo, &draft)
@@ -181,8 +214,13 @@ pub async fn publish_draft(
                     post: Some(existing),
                 });
             }
-            let body =
-                build_comment_body(&draft, incident.as_ref(), issue.number, &evidence_digest);
+            let body = build_comment_body(
+                &draft,
+                incident.as_ref(),
+                issue.number,
+                &evidence_digest,
+                issue_draft.as_ref(),
+            );
             let result = call_add_issue_comment(state, &tools, &owner_repo, issue.number, &body)
                 .await
                 .context("post Bug Monitor comment to GitHub")?;
@@ -252,6 +290,7 @@ pub async fn publish_draft(
                 incident.as_ref(),
                 Some(&issue),
                 &evidence_digest,
+                issue_draft.as_ref(),
             )
             .await
         }
@@ -272,6 +311,7 @@ pub async fn publish_draft(
                 incident.as_ref(),
                 None,
                 &evidence_digest,
+                issue_draft.as_ref(),
             )
             .await
         }
@@ -286,6 +326,7 @@ async fn create_issue_from_draft(
     incident: Option<&crate::BugMonitorIncidentRecord>,
     matched_closed_issue: Option<&GithubIssue>,
     evidence_digest: &str,
+    issue_draft: Option<&Value>,
 ) -> anyhow::Result<PublishOutcome> {
     if config.require_approval_for_new_issues && !draft.status.eq_ignore_ascii_case("draft_ready") {
         draft.status = "approval_required".to_string();
@@ -327,16 +368,22 @@ async fn create_issue_from_draft(
     }
 
     let owner_repo = split_owner_repo(&draft.repo)?;
-    let body = build_issue_body(&draft, incident, matched_closed_issue, evidence_digest);
-    let created = call_create_issue(
-        state,
-        tools,
-        &owner_repo,
-        draft.title.as_deref().unwrap_or("Bug Monitor issue"),
-        &body,
-    )
-    .await
-    .context("create Bug Monitor issue on GitHub")?;
+    let title = issue_draft
+        .and_then(|row| row.get("suggested_title"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| draft.title.as_deref().unwrap_or("Bug Monitor issue"));
+    let body = issue_draft
+        .and_then(|row| row.get("rendered_body"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            build_issue_body(&draft, incident, matched_closed_issue, evidence_digest)
+        });
+    let created = call_create_issue(state, tools, &owner_repo, title, &body)
+        .await
+        .context("create Bug Monitor issue on GitHub")?;
     let post = BugMonitorPostRecord {
         post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
         draft_id: draft.draft_id.clone(),
@@ -574,13 +621,32 @@ fn build_comment_body(
     incident: Option<&crate::BugMonitorIncidentRecord>,
     issue_number: u64,
     evidence_digest: &str,
+    issue_draft: Option<&Value>,
 ) -> String {
     let mut lines = vec![format!(
         "New Bug Monitor evidence detected for #{issue_number}."
     )];
-    if let Some(detail) = draft.detail.as_deref() {
+    if let Some(summary) = issue_draft
+        .and_then(|row| row.get("what_happened"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(String::new());
+        lines.push(truncate_text(summary, 1_500));
+    } else if let Some(detail) = draft.detail.as_deref() {
         lines.push(String::new());
         lines.push(truncate_text(detail, 1_500));
+    }
+    if let Some(logs) = issue_draft
+        .and_then(|row| row.get("logs"))
+        .and_then(Value::as_array)
+        .filter(|rows| !rows.is_empty())
+    {
+        lines.push(String::new());
+        lines.push("logs:".to_string());
+        for line in logs.iter().filter_map(Value::as_str).take(6) {
+            lines.push(format!("  {line}"));
+        }
     }
     if let Some(incident) = incident {
         lines.push(String::new());

@@ -80,6 +80,14 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             post(create_bug_monitor_triage_run),
         )
         .route(
+            "/bug-monitor/drafts/{id}/issue-draft",
+            post(draft_bug_monitor_issue),
+        )
+        .route(
+            "/failure-reporter/drafts/{id}/issue-draft",
+            post(draft_bug_monitor_issue),
+        )
+        .route(
             "/bug-monitor/drafts/{id}/publish",
             post(publish_bug_monitor_draft),
         )

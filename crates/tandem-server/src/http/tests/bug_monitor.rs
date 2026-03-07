@@ -166,6 +166,7 @@ async fn bug_monitor_report_creates_and_dedupes_draft() {
         .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
+            require_approval_for_new_issues: true,
             ..Default::default()
         })
         .await
@@ -383,6 +384,7 @@ async fn bug_monitor_draft_can_be_approved_and_denied() {
         .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
+            require_approval_for_new_issues: true,
             ..Default::default()
         })
         .await
@@ -499,6 +501,93 @@ async fn bug_monitor_draft_can_be_approved_and_denied() {
             .and_then(Value::as_str),
         Some("denied")
     );
+}
+
+#[tokio::test]
+async fn bug_monitor_issue_draft_renders_repo_template() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "desktop_logs",
+                    "title": "Build failure in CI",
+                    "detail": "event: orchestrator.run_failed\nprocess: tandem-engine\ncomponent: orchestrator",
+                    "excerpt": ["boom", "stack trace"],
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let create_resp = app.clone().oneshot(create_req).await.expect("response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let draft_id = create_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
+
+    let triage_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-run"))
+        .body(Body::empty())
+        .expect("triage request");
+    let triage_resp = app
+        .clone()
+        .oneshot(triage_req)
+        .await
+        .expect("triage response");
+    assert_eq!(triage_resp.status(), StatusCode::OK);
+
+    let draft_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/issue-draft"))
+        .body(Body::empty())
+        .expect("issue draft request");
+    let draft_resp = app
+        .clone()
+        .oneshot(draft_req)
+        .await
+        .expect("issue draft response");
+    assert_eq!(draft_resp.status(), StatusCode::OK);
+    let issue_draft_payload: Value = serde_json::from_slice(
+        &to_bytes(draft_resp.into_body(), usize::MAX)
+            .await
+            .expect("issue draft body"),
+    )
+    .expect("issue draft json");
+    let rendered_body = issue_draft_payload
+        .get("issue_draft")
+        .and_then(|row| row.get("rendered_body"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(rendered_body.contains("## What happened?"));
+    assert!(rendered_body.contains("## What did you expect to happen?"));
+    assert!(rendered_body.contains("## Steps to reproduce"));
+    assert!(rendered_body.contains("## Environment"));
+    assert!(rendered_body.contains("## Logs / screenshots"));
+    assert!(rendered_body.contains("<!-- tandem:fingerprint:v1:"));
 }
 
 #[tokio::test]

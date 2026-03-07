@@ -2595,7 +2595,12 @@ impl AppState {
             .filter(|row| {
                 matches!(
                     row.status.as_str(),
-                    "queued" | "draft_created" | "triage_queued" | "analysis_queued"
+                    "queued"
+                        | "draft_created"
+                        | "triage_queued"
+                        | "analysis_queued"
+                        | "triage_pending"
+                        | "issue_draft_pending"
                 )
             })
             .count();
@@ -4802,9 +4807,31 @@ async fn process_bug_monitor_event(
     };
     state.put_bug_monitor_incident(incident.clone()).await?;
 
-    let draft = state.submit_bug_monitor_draft(submission).await?;
+    let draft = match state.submit_bug_monitor_draft(submission).await {
+        Ok(draft) => draft,
+        Err(error) => {
+            incident.status = "draft_failed".to_string();
+            incident.last_error = Some(truncate_text(&error.to_string(), 500));
+            incident.updated_at_ms = now_ms();
+            state.put_bug_monitor_incident(incident.clone()).await?;
+            state.event_bus.publish(EngineEvent::new(
+                "bug_monitor.incident.detected",
+                serde_json::json!({
+                    "incident_id": incident.incident_id,
+                    "fingerprint": incident.fingerprint,
+                    "eventType": incident.event_type,
+                    "draft_id": incident.draft_id,
+                    "triage_run_id": incident.triage_run_id,
+                    "status": incident.status,
+                    "detail": incident.last_error,
+                }),
+            ));
+            return Ok(incident);
+        }
+    };
     incident.draft_id = Some(draft.draft_id.clone());
     incident.status = "draft_created".to_string();
+    state.put_bug_monitor_incident(incident.clone()).await?;
 
     match crate::http::bug_monitor::ensure_bug_monitor_triage_run(
         state.clone(),

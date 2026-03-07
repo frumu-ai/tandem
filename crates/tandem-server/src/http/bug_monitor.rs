@@ -8,7 +8,8 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
+use std::path::{Path as FsPath, PathBuf};
 use uuid::Uuid;
 
 use super::context_runs::{
@@ -19,6 +20,9 @@ use super::context_types::{
     ContextBlackboardArtifact, ContextBlackboardTaskStatus, ContextRunCreateInput, ContextRunState,
     ContextRunStatus, ContextTaskCreateBatchInput, ContextTaskCreateInput, ContextWorkspaceLease,
 };
+
+const DEFAULT_BUG_MONITOR_TEMPLATE: &str =
+    include_str!("../../../../.github/ISSUE_TEMPLATE/bug_report.md");
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct BugMonitorConfigInput {
@@ -90,6 +94,345 @@ async fn write_bug_monitor_artifact(
         )
         .await?;
     Ok(())
+}
+
+fn split_template_frontmatter(template: &str) -> (&str, &str) {
+    let trimmed = template.trim();
+    if !trimmed.starts_with("---\n") {
+        return ("", trimmed);
+    }
+    let rest = &trimmed[4..];
+    if let Some(index) = rest.find("\n---") {
+        let end = index + 8;
+        return (&trimmed[..end], trimmed[end..].trim_start());
+    }
+    ("", trimmed)
+}
+
+fn normalize_issue_draft_line(value: impl AsRef<str>) -> Option<String> {
+    let line = value.as_ref().trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+fn parse_existing_list(detail: Option<&str>, prefix: &str) -> Vec<String> {
+    detail
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix(prefix)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
+        .collect()
+}
+
+fn derive_expected_behavior(
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
+) -> String {
+    if let Some(event_type) = incident.map(|row| row.event_type.as_str()) {
+        return format!("The affected flow should complete without triggering `{event_type}`.");
+    }
+    if let Some(title) = draft.title.as_deref().and_then(normalize_issue_draft_line) {
+        return format!("The system should complete this flow without reproducing: {title}");
+    }
+    "The affected flow should complete without an error.".to_string()
+}
+
+fn derive_steps_to_reproduce(
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
+) -> Vec<String> {
+    let mut steps = parse_existing_list(draft.detail.as_deref(), "step:");
+    if steps.is_empty() {
+        if let Some(workspace_root) = incident
+            .map(|row| row.workspace_root.trim())
+            .filter(|value| !value.is_empty())
+        {
+            steps.push(format!("Open the workspace at `{workspace_root}`."));
+        } else {
+            steps.push("Open the affected Tandem workspace.".to_string());
+        }
+        if let Some(run_id) = incident
+            .and_then(|row| row.run_id.as_deref())
+            .and_then(normalize_issue_draft_line)
+        {
+            steps.push(format!(
+                "Trigger the failing flow associated with run `{run_id}`."
+            ));
+        } else if let Some(event_type) = incident
+            .map(|row| row.event_type.as_str())
+            .and_then(normalize_issue_draft_line)
+        {
+            steps.push(format!("Trigger the flow that emits `{event_type}`."));
+        } else {
+            steps.push("Trigger the behavior described in the failure report.".to_string());
+        }
+        steps.push("Observe the error in the logs or Bug Monitor incident feed.".to_string());
+    }
+    steps.truncate(6);
+    steps
+}
+
+fn derive_environment_lines(
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!("Repo: {}", draft.repo));
+    if let Some(workspace_root) = incident
+        .map(|row| row.workspace_root.trim())
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("Workspace: {workspace_root}"));
+    }
+    if let Some(process) = draft
+        .detail
+        .as_deref()
+        .and_then(|detail| {
+            detail
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("process:").map(str::trim))
+        })
+        .and_then(normalize_issue_draft_line)
+    {
+        lines.push(format!("Process: {process}"));
+    } else {
+        lines.push("Process: tandem-engine".to_string());
+    }
+    if let Some(component) = incident
+        .and_then(|row| row.component.as_deref())
+        .and_then(normalize_issue_draft_line)
+    {
+        lines.push(format!("Component: {component}"));
+    }
+    if let Some(run_id) = incident
+        .and_then(|row| row.run_id.as_deref())
+        .and_then(normalize_issue_draft_line)
+    {
+        lines.push(format!("Run ID: {run_id}"));
+    }
+    if let Some(session_id) = incident
+        .and_then(|row| row.session_id.as_deref())
+        .and_then(normalize_issue_draft_line)
+    {
+        lines.push(format!("Session ID: {session_id}"));
+    }
+    lines
+}
+
+fn derive_log_lines(
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
+) -> Vec<String> {
+    let mut lines = incident
+        .map(|row| row.excerpt.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(normalize_issue_draft_line)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.extend(
+            draft
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .filter_map(normalize_issue_draft_line)
+                .take(12),
+        );
+    }
+    lines.truncate(12);
+    lines
+}
+
+async fn load_bug_monitor_issue_template(config: &BugMonitorConfig) -> (String, Option<String>) {
+    let mut candidates = Vec::<PathBuf>::new();
+    if let Some(root) = config
+        .workspace_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        candidates.push(FsPath::new(root).join(".github/ISSUE_TEMPLATE/bug_report.md"));
+        candidates.push(FsPath::new(root).join(".github/ISSUE_TEMPLATE/bug-report.md"));
+    }
+    for candidate in candidates {
+        if let Ok(raw) = tokio::fs::read_to_string(&candidate).await {
+            if !raw.trim().is_empty() {
+                return (raw, Some(candidate.to_string_lossy().to_string()));
+            }
+        }
+    }
+    (
+        DEFAULT_BUG_MONITOR_TEMPLATE.to_string(),
+        Some("builtin:.github/ISSUE_TEMPLATE/bug_report.md".to_string()),
+    )
+}
+
+fn render_bug_monitor_template(
+    template: &str,
+    what_happened: &str,
+    expected_behavior: &str,
+    steps_to_reproduce: &[String],
+    environment_lines: &[String],
+    log_lines: &[String],
+    hidden_markers: &[String],
+) -> String {
+    let (frontmatter, _) = split_template_frontmatter(template);
+    let mut body = String::new();
+    if !frontmatter.trim().is_empty() {
+        body.push_str(frontmatter.trim());
+        body.push_str("\n\n");
+    }
+    body.push_str("## What happened?\n\n");
+    body.push_str(what_happened.trim());
+    body.push_str("\n\n## What did you expect to happen?\n\n");
+    body.push_str(expected_behavior.trim());
+    body.push_str("\n\n## Steps to reproduce\n\n");
+    for (index, step) in steps_to_reproduce.iter().enumerate() {
+        body.push_str(&format!("{}. {}\n", index + 1, step.trim()));
+    }
+    body.push_str("\n## Environment\n\n");
+    for line in environment_lines {
+        body.push_str("- ");
+        body.push_str(line.trim());
+        body.push('\n');
+    }
+    body.push_str("\n## Logs / screenshots\n\n");
+    if log_lines.is_empty() {
+        body.push_str("Attach any relevant logs from `logs/` or screenshots.\n");
+    } else {
+        body.push_str("```text\n");
+        for line in log_lines {
+            body.push_str(line);
+            body.push('\n');
+        }
+        body.push_str("```\n");
+    }
+    if !hidden_markers.is_empty() {
+        body.push('\n');
+        for marker in hidden_markers {
+            body.push_str(marker.trim());
+            body.push('\n');
+        }
+    }
+    body.trim().to_string()
+}
+
+async fn latest_bug_monitor_incident_for_draft(
+    state: &AppState,
+    draft_id: &str,
+) -> Option<crate::BugMonitorIncidentRecord> {
+    state
+        .bug_monitor_incidents
+        .read()
+        .await
+        .values()
+        .filter(|row| row.draft_id.as_deref() == Some(draft_id))
+        .max_by_key(|row| row.updated_at_ms)
+        .cloned()
+}
+
+pub(crate) async fn load_bug_monitor_issue_draft_artifact(
+    state: &AppState,
+    triage_run_id: &str,
+) -> Option<Value> {
+    let blackboard = super::context_runs::load_context_blackboard(state, triage_run_id);
+    let artifact = blackboard
+        .artifacts
+        .iter()
+        .rev()
+        .find(|row| row.artifact_type == "bug_monitor_issue_draft")?;
+    let raw = tokio::fs::read_to_string(&artifact.path).await.ok()?;
+    serde_json::from_str::<Value>(&raw).ok()
+}
+
+pub(crate) async fn ensure_bug_monitor_issue_draft(
+    state: AppState,
+    draft_id: &str,
+    force: bool,
+) -> anyhow::Result<Value> {
+    let config = state.bug_monitor_config().await;
+    let mut draft = state
+        .get_bug_monitor_draft(draft_id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Bug Monitor draft not found"))?;
+    let triage_run_id = draft.triage_run_id.clone().ok_or_else(|| {
+        anyhow::anyhow!("Bug Monitor draft needs a triage run before issue drafting")
+    })?;
+    if !force {
+        if let Some(existing) = load_bug_monitor_issue_draft_artifact(&state, &triage_run_id).await
+        {
+            return Ok(existing);
+        }
+    }
+
+    let incident = latest_bug_monitor_incident_for_draft(&state, draft_id).await;
+    let (template, template_source) = load_bug_monitor_issue_template(&config).await;
+    let what_happened = draft
+        .detail
+        .as_deref()
+        .and_then(normalize_issue_draft_line)
+        .or_else(|| {
+            incident
+                .as_ref()
+                .and_then(|row| normalize_issue_draft_line(&row.title))
+        })
+        .or_else(|| draft.title.as_deref().and_then(normalize_issue_draft_line))
+        .unwrap_or_else(|| "Bug Monitor detected a failure that needs triage.".to_string());
+    let expected_behavior = derive_expected_behavior(&draft, incident.as_ref());
+    let steps_to_reproduce = derive_steps_to_reproduce(&draft, incident.as_ref());
+    let environment_lines = derive_environment_lines(&draft, incident.as_ref());
+    let log_lines = derive_log_lines(&draft, incident.as_ref());
+    let hidden_markers = vec![
+        format!("<!-- tandem:fingerprint:v1:{} -->", draft.fingerprint),
+        format!("<!-- tandem:triage_run_id:v1:{} -->", triage_run_id),
+    ];
+    let rendered_body = render_bug_monitor_template(
+        &template,
+        &what_happened,
+        &expected_behavior,
+        &steps_to_reproduce,
+        &environment_lines,
+        &log_lines,
+        &hidden_markers,
+    );
+    let payload = json!({
+        "draft_id": draft.draft_id,
+        "repo": draft.repo,
+        "triage_run_id": triage_run_id,
+        "template_source": template_source,
+        "suggested_title": draft.title.clone().unwrap_or_else(|| "Bug Monitor issue".to_string()),
+        "what_happened": what_happened,
+        "expected_behavior": expected_behavior,
+        "steps_to_reproduce": steps_to_reproduce,
+        "environment": environment_lines,
+        "logs": log_lines,
+        "rendered_body": rendered_body,
+        "created_at_ms": crate::now_ms(),
+    });
+    let artifact_id = format!("bug-monitor-issue-draft-{}", Uuid::new_v4().simple());
+    write_bug_monitor_artifact(
+        &state,
+        &triage_run_id,
+        &artifact_id,
+        "bug_monitor_issue_draft",
+        "artifacts/bug_monitor.issue_draft.json",
+        &payload,
+    )
+    .await
+    .map_err(|status| anyhow::anyhow!("Failed to write issue draft artifact: HTTP {status}"))?;
+
+    draft.github_status = Some("issue_draft_ready".to_string());
+    if draft.status.eq_ignore_ascii_case("triage_queued") {
+        draft.status = "draft_ready".to_string();
+    }
+    let _ = state.put_bug_monitor_draft(draft).await?;
+    Ok(payload)
 }
 
 pub(super) async fn get_bug_monitor_config(
@@ -423,33 +766,71 @@ pub(super) async fn approve_bug_monitor_draft(
         .update_bug_monitor_draft_status(&id, "draft_ready", input.reason.as_deref())
         .await
     {
-        Ok(draft) => match bug_monitor_github::publish_draft(
-            &state,
-            &draft.draft_id,
-            None,
-            bug_monitor_github::PublishMode::Auto,
-        )
-        .await
-        {
-            Ok(outcome) => Json(json!({
-                "ok": true,
-                "draft": outcome.draft,
-                "action": outcome.action,
-                "post": outcome.post,
-            }))
-            .into_response(),
-            Err(error) => (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": "Draft approved but GitHub publish failed",
-                    "code": "BUG_MONITOR_DRAFT_PUBLISH_FAILED",
-                    "draft_id": draft.draft_id,
-                    "detail": error.to_string(),
-                })),
+        Ok(draft) => {
+            let approved_draft = draft.clone();
+            match bug_monitor_github::publish_draft(
+                &state,
+                &draft.draft_id,
+                None,
+                bug_monitor_github::PublishMode::Auto,
             )
+            .await
+            {
+                Ok(outcome) => Json(json!({
+                    "ok": true,
+                    "draft": outcome.draft,
+                    "action": outcome.action,
+                    "post": outcome.post,
+                }))
                 .into_response(),
-        },
+                Err(error) => {
+                    let detail = error.to_string();
+                    let mut updated_draft = state
+                        .get_bug_monitor_draft(&approved_draft.draft_id)
+                        .await
+                        .unwrap_or(approved_draft);
+                    updated_draft.last_post_error = Some(detail.clone());
+                    updated_draft
+                        .github_status
+                        .get_or_insert_with(|| "publish_blocked".to_string());
+                    let updated_draft = state
+                        .put_bug_monitor_draft(updated_draft.clone())
+                        .await
+                        .unwrap_or(updated_draft);
+                    Json(json!({
+                        "ok": true,
+                        "draft": updated_draft,
+                        "action": "approved",
+                        "publish_error": detail,
+                    }))
+                    .into_response()
+                }
+            }
+        }
         Err(error) => map_bug_monitor_draft_update_error(id, error).into_response(),
+    }
+}
+
+pub(super) async fn draft_bug_monitor_issue(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    match ensure_bug_monitor_issue_draft(state.clone(), &id, true).await {
+        Ok(issue_draft) => Json(json!({
+            "ok": true,
+            "issue_draft": issue_draft,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to generate Bug Monitor issue draft",
+                "code": "BUG_MONITOR_ISSUE_DRAFT_FAILED",
+                "draft_id": id,
+                "detail": error.to_string(),
+            })),
+        )
+            .into_response(),
     }
 }
 

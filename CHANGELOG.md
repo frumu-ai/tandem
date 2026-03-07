@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - triage-run creation now seeds a minimal `bug_monitor_triage` context run with inspection and validation blackboard tasks, plus draft-to-run dedupe through `triage_run_id`
   - desktop and control-panel Settings can now promote approved Bug Monitor drafts into triage context runs without frontend-owned run orchestration
   - control-panel Dashboard context-run visibility now includes `bug_monitor_triage` runs in the existing context-run drawer so the handoff can be inspected without a new page
+  - added `POST /bug-monitor/drafts/{id}/issue-draft`, which renders a template-aware Bug Monitor issue draft artifact from the repo bug template before GitHub publish
+  - Bug Monitor GitHub publish now uses that rendered issue-draft artifact instead of dumping raw `draft.detail` into new issues
+  - auto-publish now defers with `triage_pending` until a triage-backed issue draft exists, preventing premature low-signal issue creation
+  - fixed Bug Monitor incident persistence so draft-creation failures record a visible incident error instead of leaving a half-created incident with no draft or explanation
+  - approving a Bug Monitor draft no longer fails the operator action just because the follow-up GitHub publish step is blocked
 
 - **Initial Tandem Coder engine API foundation**:
   - added a first engine-owned coder API surface:

@@ -27,6 +27,11 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Added `POST /bug-monitor/drafts/{id}/triage-run`, which promotes an approved draft into a minimal engine-owned `bug_monitor_triage` context run with seeded inspection and validation tasks.
   - Desktop and control-panel Settings can now create those triage runs directly from approved Bug Monitor drafts.
   - Control-panel Dashboard now includes those `bug_monitor_triage` context runs in the existing context-run visibility drawer.
+  - Added `POST /bug-monitor/drafts/{id}/issue-draft`, which renders a template-aware issue draft artifact from the repo bug template before GitHub publish.
+  - Bug Monitor GitHub publish now uses that rendered issue-draft artifact instead of opening issues directly from raw incident details.
+  - Auto-publish now defers with `triage_pending` until a triage-backed issue draft exists, preventing premature low-signal issue creation.
+  - Fixed Bug Monitor incident persistence so draft-creation failures leave a visible incident error instead of a half-created tracker row.
+  - Approving a Bug Monitor draft no longer fails the operator action just because the follow-up GitHub publish step is blocked.
 
 - Initial Tandem Coder engine API foundation
   - Added the first engine-owned coder endpoints:
