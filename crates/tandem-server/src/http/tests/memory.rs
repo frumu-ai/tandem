@@ -839,6 +839,7 @@ async fn memory_demote_hides_item_from_search_results() {
 async fn memory_search_returns_empty_when_all_requested_scopes_are_blocked() {
     let state = test_state().await;
     let app = app_router(state.clone());
+    let mut rx = state.event_bus.subscribe();
 
     let put_req = Request::builder()
         .method("POST")
@@ -931,4 +932,79 @@ async fn memory_search_returns_empty_when_all_requested_scopes_are_blocked() {
             .map(|rows| rows.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
         Some(vec!["team"])
     );
+    let search_audit_id = search_payload
+        .get("audit_id")
+        .and_then(Value::as_str)
+        .expect("search audit id");
+    let search_event = next_event_of_type(&mut rx, "memory.search").await;
+    assert_eq!(
+        search_event
+            .properties
+            .get("status")
+            .and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert_eq!(
+        search_event
+            .properties
+            .get("requestedScopes")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
+        Some(vec!["team"])
+    );
+    assert_eq!(
+        search_event
+            .properties
+            .get("scopesUsed")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(0)
+    );
+    assert_eq!(
+        search_event
+            .properties
+            .get("blockedScopes")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
+        Some(vec!["team"])
+    );
+    assert_eq!(
+        search_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        Some(search_audit_id)
+    );
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit?run_id=run-6")
+        .body(Body::empty())
+        .expect("audit request");
+    let audit_resp = app
+        .clone()
+        .oneshot(audit_req)
+        .await
+        .expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    let blocked_search_exists = audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                row.get("action").and_then(Value::as_str) == Some("memory_search")
+                    && row.get("status").and_then(Value::as_str) == Some("blocked")
+                    && row.get("audit_id").and_then(Value::as_str) == Some(search_audit_id)
+                    && row
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .is_some_and(|detail| detail.contains("blocked_scopes=team"))
+            })
+        })
+        .unwrap_or(false);
+    assert!(blocked_search_exists);
 }

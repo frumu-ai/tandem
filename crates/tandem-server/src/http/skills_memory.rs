@@ -1949,6 +1949,11 @@ pub(super) async fn memory_search(
         .collect::<Vec<_>>();
     let audit_id = Uuid::new_v4().to_string();
     let now = crate::now_ms();
+    let search_status = if scopes_used.is_empty() && !blocked_scopes.is_empty() {
+        "blocked"
+    } else {
+        "ok"
+    };
     append_memory_audit(
         &state,
         crate::MemoryAuditEvent {
@@ -1960,8 +1965,23 @@ pub(super) async fn memory_search(
             to_tier: None,
             partition_key: request.partition.key(),
             actor: capability.subject,
-            status: "ok".to_string(),
-            detail: None,
+            status: search_status.to_string(),
+            detail: (!blocked_scopes.is_empty()).then(|| {
+                format!(
+                    "requested_scopes={} blocked_scopes={}",
+                    request
+                        .read_scopes
+                        .iter()
+                        .map(|scope| scope.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    blocked_scopes
+                        .iter()
+                        .map(|scope| scope.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            }),
             created_at_ms: now,
         },
     )
@@ -1972,7 +1992,10 @@ pub(super) async fn memory_search(
             "runID": request.run_id,
             "partitionKey": request.partition.key(),
             "resultCount": results.len(),
-            "blockedScopes": blocked_scopes,
+            "requestedScopes": request.read_scopes.clone(),
+            "scopesUsed": scopes_used.clone(),
+            "blockedScopes": blocked_scopes.clone(),
+            "status": search_status,
             "auditID": audit_id,
         }),
     ));
