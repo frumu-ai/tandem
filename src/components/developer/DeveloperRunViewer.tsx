@@ -916,6 +916,60 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     };
   }, [selectedArtifactRecord]);
 
+  const selectedArtifactSiblings = useMemo(() => {
+    if (!selectedArtifactRecord) {
+      return {
+        olderInCategory: null as CoderArtifactRecord | null,
+        newerInCategory: null as CoderArtifactRecord | null,
+        sameStepLatest: null as CoderArtifactRecord | null,
+        sameEventLatest: null as CoderArtifactRecord | null,
+        sameStepCount: 0,
+        sameEventCount: 0,
+      };
+    }
+    const category = artifactCategory(selectedArtifactRecord);
+    const inCategory = [...artifacts]
+      .filter(
+        (artifact) =>
+          artifact.path !== selectedArtifactRecord.path && artifactCategory(artifact) === category
+      )
+      .sort((left, right) => right.ts_ms - left.ts_ms);
+    const olderInCategory =
+      [...inCategory]
+        .filter((artifact) => artifact.ts_ms < selectedArtifactRecord.ts_ms)
+        .sort((left, right) => right.ts_ms - left.ts_ms)[0] ?? null;
+    const newerInCategory =
+      [...inCategory]
+        .filter((artifact) => artifact.ts_ms > selectedArtifactRecord.ts_ms)
+        .sort((left, right) => left.ts_ms - right.ts_ms)[0] ?? null;
+    const sameStepArtifacts = selectedArtifactRecord.step_id
+      ? artifacts
+          .filter(
+            (artifact) =>
+              artifact.path !== selectedArtifactRecord.path &&
+              artifact.step_id === selectedArtifactRecord.step_id
+          )
+          .sort((left, right) => right.ts_ms - left.ts_ms)
+      : [];
+    const sameEventArtifacts = selectedArtifactRecord.source_event_id
+      ? artifacts
+          .filter(
+            (artifact) =>
+              artifact.path !== selectedArtifactRecord.path &&
+              artifact.source_event_id === selectedArtifactRecord.source_event_id
+          )
+          .sort((left, right) => right.ts_ms - left.ts_ms)
+      : [];
+    return {
+      olderInCategory,
+      newerInCategory,
+      sameStepLatest: sameStepArtifacts[0] ?? null,
+      sameEventLatest: sameEventArtifacts[0] ?? null,
+      sameStepCount: sameStepArtifacts.length,
+      sameEventCount: sameEventArtifacts.length,
+    };
+  }, [artifacts, selectedArtifactRecord]);
+
   const relatedBlackboardRows = useMemo(() => {
     if (!selectedArtifactContext) return [];
     const rows = [...decisions, ...openQuestions];
@@ -2991,6 +3045,72 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                     className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
                                   >
                                     Event {selectedArtifactRecord.source_event_id}
+                                  </button>
+                                ) : null}
+                              </div>
+                            ) : null}
+                            {selectedArtifactRecord ? (
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {selectedArtifactSiblings.olderInCategory ? (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSelectedArtifactPath(
+                                        selectedArtifactSiblings.olderInCategory?.path ?? null
+                                      );
+                                    }}
+                                    className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                  >
+                                    Older
+                                  </button>
+                                ) : null}
+                                {selectedArtifactSiblings.newerInCategory ? (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSelectedArtifactPath(
+                                        selectedArtifactSiblings.newerInCategory?.path ?? null
+                                      );
+                                    }}
+                                    className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                  >
+                                    Newer
+                                  </button>
+                                ) : null}
+                                {selectedArtifactSiblings.sameStepLatest ? (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSelectedArtifactPath(
+                                        selectedArtifactSiblings.sameStepLatest?.path ?? null
+                                      );
+                                    }}
+                                    className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                  >
+                                    Same step{" "}
+                                    {selectedArtifactSiblings.sameStepCount > 1
+                                      ? `· ${selectedArtifactSiblings.sameStepCount}`
+                                      : ""}
+                                  </button>
+                                ) : null}
+                                {selectedArtifactSiblings.sameEventLatest ? (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSelectedArtifactPath(
+                                        selectedArtifactSiblings.sameEventLatest?.path ?? null
+                                      );
+                                    }}
+                                    className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                  >
+                                    Same event{" "}
+                                    {selectedArtifactSiblings.sameEventCount > 1
+                                      ? `· ${selectedArtifactSiblings.sameEventCount}`
+                                      : ""}
                                   </button>
                                 ) : null}
                               </div>
