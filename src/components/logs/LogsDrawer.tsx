@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import {
   listAppLogFiles,
   onLogStreamEvent,
+  reportFailureReporterIssue,
   startLogStream,
   stopLogStream,
   type LogFileInfo,
@@ -257,6 +258,7 @@ export function LogsDrawer({
   const [selectedLine, setSelectedLine] = useState<LineItem | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [reporting, setReporting] = useState(false);
 
   const streamIdRef = useRef<string | null>(null);
   const nextLineIdRef = useRef(1);
@@ -595,6 +597,43 @@ export function LogsDrawer({
     },
     [showToast]
   );
+
+  const handleReportSelectedLine = useCallback(async () => {
+    if (!selectedLine) return;
+    setReporting(true);
+    try {
+      const excerpt = selectedLine.parsed.correlation_id
+        ? lines
+            .filter((line) => line.parsed.correlation_id === selectedLine.parsed.correlation_id)
+            .slice(-20)
+            .map((line) => line.raw.replace(/\r?\n$/, ""))
+        : [selectedLine.raw.replace(/\r?\n$/, "")];
+      const title = selectedLine.parsed.event?.trim()
+        ? `Failure detected in ${selectedLine.parsed.event}`
+        : selectedLine.parsed.component?.trim()
+          ? `Failure detected in ${selectedLine.parsed.component}`
+          : selectedLine.parsed.process?.trim()
+            ? `Failure detected in ${selectedLine.parsed.process}`
+            : "Failure report from desktop logs";
+      const response = await reportFailureReporterIssue({
+        title,
+        source: "desktop_logs",
+        file_name: selectedFile,
+        process: selectedLine.parsed.process ?? null,
+        component: selectedLine.parsed.component ?? null,
+        event: selectedLine.parsed.event ?? null,
+        level: selectedLine.parsed.level,
+        correlation_id: selectedLine.parsed.correlation_id ?? null,
+        session_id: selectedLine.parsed.session_id ?? null,
+        excerpt,
+      });
+      showToast(`Failure draft ready: ${response.draft.draft_id}`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Failed to create failure draft");
+    } finally {
+      setReporting(false);
+    }
+  }, [lines, selectedFile, selectedLine, showToast]);
 
   return (
     <div
@@ -991,6 +1030,17 @@ export function LogsDrawer({
                         {t("logs.copyCorrelationTrace")}
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleReportSelectedLine();
+                      }}
+                      disabled={reporting}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-xs text-text-subtle transition hover:bg-surface-elevated hover:text-text disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <ScrollText className="h-3 w-3" />
+                      {reporting ? "Reporting..." : "Report failure"}
+                    </button>
                     <button
                       type="button"
                       onClick={() => setSelectedLine(null)}

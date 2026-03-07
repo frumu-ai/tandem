@@ -5749,6 +5749,48 @@ pub async fn capability_readiness(
 }
 
 #[tauri::command]
+pub async fn failure_reporter_get_config(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    state.sidecar.failure_reporter_get_config().await
+}
+
+#[tauri::command]
+pub async fn failure_reporter_patch_config(
+    state: State<'_, AppState>,
+    config: serde_json::Value,
+) -> Result<serde_json::Value> {
+    state.sidecar.failure_reporter_patch_config(config).await
+}
+
+#[tauri::command]
+pub async fn failure_reporter_get_status(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    state.sidecar.failure_reporter_get_status().await
+}
+
+#[tauri::command]
+pub async fn failure_reporter_list_drafts(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value> {
+    state.sidecar.failure_reporter_list_drafts(limit).await
+}
+
+#[tauri::command]
+pub async fn failure_reporter_get_draft(
+    state: State<'_, AppState>,
+    draft_id: String,
+) -> Result<serde_json::Value> {
+    state.sidecar.failure_reporter_get_draft(&draft_id).await
+}
+
+#[tauri::command]
+pub async fn failure_reporter_report(
+    state: State<'_, AppState>,
+    report: serde_json::Value,
+) -> Result<serde_json::Value> {
+    state.sidecar.failure_reporter_report(report).await
+}
+
+#[tauri::command]
 pub async fn pack_builder_preview(
     state: State<'_, AppState>,
     request: serde_json::Value,

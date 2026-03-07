@@ -21,7 +21,12 @@ import { BlackboardPanel } from "./BlackboardPanel";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { AgentModelRoutingPanel } from "./AgentModelRoutingPanel";
 import { LogsDrawer } from "@/components/logs";
-import { getProvidersConfig, getSessionMessages, type SessionMessage } from "@/lib/tauri";
+import {
+  getProvidersConfig,
+  getSessionMessages,
+  reportFailureReporterIssue,
+  type SessionMessage,
+} from "@/lib/tauri";
 import { DEFAULT_ORCHESTRATOR_CONFIG } from "./types";
 import {
   computeDebounceDelayMs,
@@ -109,6 +114,8 @@ export function OrchestratorPanel({
   const [runModel, setRunModel] = useState<string | undefined>(undefined);
   const [runProvider, setRunProvider] = useState<string | undefined>(undefined);
   const [modelRouting, setModelRouting] = useState<OrchestratorModelRouting>({});
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [reportingFailure, setReportingFailure] = useState(false);
 
   // Revision feedback
   const [showRevisionInput, setShowRevisionInput] = useState(false);
@@ -544,6 +551,12 @@ export function OrchestratorPanel({
     }
   }, [snapshot?.status, snapshot?.error_message]);
 
+  useEffect(() => {
+    if (snapshot?.status !== "failed") {
+      setActionNotice(null);
+    }
+  }, [snapshot?.status]);
+
   // Listen for orchestrator events
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -839,10 +852,43 @@ export function OrchestratorPanel({
     setRunModel(undefined);
     setRunProvider(undefined);
     setError(null);
+    setActionNotice(null);
     setRunEvents([]);
     setBlackboard(null);
     setLastEventSeq(0);
     lastEventSeqRef.current = 0;
+  };
+
+  const handleReportFailure = async () => {
+    if (!snapshot) return;
+    setReportingFailure(true);
+    setActionNotice(null);
+    try {
+      const failedTasks = tasks
+        .filter((task) => task.state === "failed")
+        .slice(0, 10)
+        .map((task) => `${task.title}${task.error_message ? `: ${task.error_message}` : ""}`);
+      const excerpt = [
+        `objective: ${snapshot.objective}`,
+        `status: ${snapshot.status}`,
+        ...(snapshot.error_message ? [`error: ${snapshot.error_message}`] : []),
+        ...failedTasks,
+      ];
+      const response = await reportFailureReporterIssue({
+        title: `Orchestrator run failed: ${snapshot.objective}`,
+        detail: snapshot.error_message ?? null,
+        source: "orchestrator_run",
+        run_id: snapshot.run_id,
+        session_id: runSessionId,
+        event: "orchestrator.run_failed",
+        excerpt,
+      });
+      setActionNotice(`Failure draft ready: ${response.draft.draft_id}`);
+    } catch (e) {
+      setError(`Failed to report failure: ${e}`);
+    } finally {
+      setReportingFailure(false);
+    }
   };
 
   const runStatus = snapshot?.status;
@@ -961,6 +1007,16 @@ export function OrchestratorPanel({
             >
               <ScrollText className="h-4 w-4" />
             </button>
+            {snapshot?.status === "failed" && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={handleReportFailure}
+                disabled={reportingFailure}
+              >
+                {reportingFailure ? "Reporting..." : "Report failure"}
+              </Button>
+            )}
             <button
               onClick={onClose}
               className="rounded p-1 text-text-subtle hover:bg-surface-elevated hover:text-text"
@@ -1266,6 +1322,9 @@ export function OrchestratorPanel({
                     </div>
                     {snapshot.error_message && (
                       <p className="mt-1 text-xs text-red-200/80">{snapshot.error_message}</p>
+                    )}
+                    {actionNotice && (
+                      <p className="mt-2 text-xs text-emerald-200/90">{actionNotice}</p>
                     )}
                   </div>
                 )}

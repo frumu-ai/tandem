@@ -718,6 +718,8 @@ pub struct FailureReporterConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_server: Option<String>,
@@ -737,6 +739,7 @@ impl Default for FailureReporterConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            workspace_root: None,
             repo: None,
             mcp_server: None,
             provider_preference: FailureReporterProviderPreference::Auto,
@@ -764,6 +767,38 @@ pub struct FailureReporterDraftRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FailureReporterSubmission {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub excerpt: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FailureReporterCapabilityReadiness {
     #[serde(default)]
     pub github_list_issues: bool,
@@ -773,6 +808,24 @@ pub struct FailureReporterCapabilityReadiness {
     pub github_create_issue: bool,
     #[serde(default)]
     pub github_comment_on_issue: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FailureReporterCapabilityMatch {
+    pub capability_id: String,
+    pub provider: String,
+    pub tool_name: String,
+    pub binding_index: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FailureReporterBindingCandidate {
+    pub capability_id: String,
+    pub binding_tool_name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub matched: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -800,6 +853,18 @@ pub struct FailureReporterStatus {
     pub config: FailureReporterConfig,
     pub readiness: FailureReporterReadiness,
     pub required_capabilities: FailureReporterCapabilityReadiness,
+    #[serde(default)]
+    pub missing_required_capabilities: Vec<String>,
+    #[serde(default)]
+    pub resolved_capabilities: Vec<FailureReporterCapabilityMatch>,
+    #[serde(default)]
+    pub discovered_mcp_tools: Vec<String>,
+    #[serde(default)]
+    pub selected_server_binding_candidates: Vec<FailureReporterBindingCandidate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_source_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bindings_last_merged_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_model: Option<ModelSpec>,
     #[serde(default)]
@@ -1936,6 +2001,11 @@ impl AppState {
         &self,
         mut config: FailureReporterConfig,
     ) -> anyhow::Result<FailureReporterConfig> {
+        config.workspace_root = config
+            .workspace_root
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         if let Some(repo) = config.repo.as_ref() {
             if !repo.is_empty() && !is_valid_owner_repo_slug(repo) {
                 anyhow::bail!("repo must be in owner/repo format");
@@ -1998,7 +2068,164 @@ impl AppState {
         rows
     }
 
+    pub async fn submit_failure_reporter_draft(
+        &self,
+        mut submission: FailureReporterSubmission,
+    ) -> anyhow::Result<FailureReporterDraftRecord> {
+        fn normalize_optional(value: Option<String>) -> Option<String> {
+            value
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        }
+
+        fn compute_fingerprint(parts: &[&str]) -> String {
+            use std::hash::{Hash, Hasher};
+
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for part in parts {
+                part.hash(&mut hasher);
+            }
+            format!("{:016x}", hasher.finish())
+        }
+
+        submission.repo = normalize_optional(submission.repo);
+        submission.title = normalize_optional(submission.title);
+        submission.detail = normalize_optional(submission.detail);
+        submission.source = normalize_optional(submission.source);
+        submission.run_id = normalize_optional(submission.run_id);
+        submission.session_id = normalize_optional(submission.session_id);
+        submission.correlation_id = normalize_optional(submission.correlation_id);
+        submission.file_name = normalize_optional(submission.file_name);
+        submission.process = normalize_optional(submission.process);
+        submission.component = normalize_optional(submission.component);
+        submission.event = normalize_optional(submission.event);
+        submission.level = normalize_optional(submission.level);
+        submission.fingerprint = normalize_optional(submission.fingerprint);
+        submission.excerpt = submission
+            .excerpt
+            .into_iter()
+            .map(|line| line.trim_end().to_string())
+            .filter(|line| !line.is_empty())
+            .take(50)
+            .collect();
+
+        let config = self.failure_reporter_config().await;
+        let repo = submission
+            .repo
+            .clone()
+            .or(config.repo.clone())
+            .ok_or_else(|| anyhow::anyhow!("Failure Reporter repo is not configured"))?;
+        if !is_valid_owner_repo_slug(&repo) {
+            anyhow::bail!("Failure Reporter repo must be in owner/repo format");
+        }
+
+        let title = submission.title.clone().unwrap_or_else(|| {
+            if let Some(event) = submission.event.as_ref() {
+                format!("Failure detected in {event}")
+            } else if let Some(component) = submission.component.as_ref() {
+                format!("Failure detected in {component}")
+            } else if let Some(process) = submission.process.as_ref() {
+                format!("Failure detected in {process}")
+            } else if let Some(source) = submission.source.as_ref() {
+                format!("Failure report from {source}")
+            } else {
+                "Failure report".to_string()
+            }
+        });
+
+        let mut detail_lines = Vec::new();
+        if let Some(source) = submission.source.as_ref() {
+            detail_lines.push(format!("source: {source}"));
+        }
+        if let Some(file_name) = submission.file_name.as_ref() {
+            detail_lines.push(format!("file: {file_name}"));
+        }
+        if let Some(level) = submission.level.as_ref() {
+            detail_lines.push(format!("level: {level}"));
+        }
+        if let Some(process) = submission.process.as_ref() {
+            detail_lines.push(format!("process: {process}"));
+        }
+        if let Some(component) = submission.component.as_ref() {
+            detail_lines.push(format!("component: {component}"));
+        }
+        if let Some(event) = submission.event.as_ref() {
+            detail_lines.push(format!("event: {event}"));
+        }
+        if let Some(run_id) = submission.run_id.as_ref() {
+            detail_lines.push(format!("run_id: {run_id}"));
+        }
+        if let Some(session_id) = submission.session_id.as_ref() {
+            detail_lines.push(format!("session_id: {session_id}"));
+        }
+        if let Some(correlation_id) = submission.correlation_id.as_ref() {
+            detail_lines.push(format!("correlation_id: {correlation_id}"));
+        }
+        if let Some(detail) = submission.detail.as_ref() {
+            detail_lines.push(String::new());
+            detail_lines.push(detail.clone());
+        }
+        if !submission.excerpt.is_empty() {
+            if !detail_lines.is_empty() {
+                detail_lines.push(String::new());
+            }
+            detail_lines.push("excerpt:".to_string());
+            detail_lines.extend(submission.excerpt.iter().map(|line| format!("  {line}")));
+        }
+        let detail = if detail_lines.is_empty() {
+            None
+        } else {
+            Some(detail_lines.join("\n"))
+        };
+
+        let fingerprint = submission.fingerprint.clone().unwrap_or_else(|| {
+            compute_fingerprint(&[
+                repo.as_str(),
+                title.as_str(),
+                detail.as_deref().unwrap_or(""),
+                submission.source.as_deref().unwrap_or(""),
+                submission.run_id.as_deref().unwrap_or(""),
+                submission.session_id.as_deref().unwrap_or(""),
+                submission.correlation_id.as_deref().unwrap_or(""),
+            ])
+        });
+
+        let mut drafts = self.failure_reporter_drafts.write().await;
+        if let Some(existing) = drafts
+            .values()
+            .find(|row| row.repo == repo && row.fingerprint == fingerprint)
+            .cloned()
+        {
+            return Ok(existing);
+        }
+
+        let draft = FailureReporterDraftRecord {
+            draft_id: format!("failure-draft-{}", uuid::Uuid::new_v4().simple()),
+            fingerprint,
+            repo,
+            status: if config.require_approval_for_new_issues {
+                "approval_required".to_string()
+            } else {
+                "draft_ready".to_string()
+            },
+            created_at_ms: now_ms(),
+            issue_number: None,
+            title: Some(title),
+            detail,
+        };
+        drafts.insert(draft.draft_id.clone(), draft.clone());
+        drop(drafts);
+        self.persist_failure_reporter_drafts().await?;
+        Ok(draft)
+    }
+
     pub async fn failure_reporter_status(&self) -> FailureReporterStatus {
+        let required_capabilities = vec![
+            "github.list_issues".to_string(),
+            "github.get_issue".to_string(),
+            "github.create_issue".to_string(),
+            "github.comment_on_issue".to_string(),
+        ];
         let config = self.failure_reporter_config().await;
         let drafts = self.failure_reporter_drafts.read().await;
         let pending_drafts = drafts
@@ -2044,6 +2271,14 @@ impl AppState {
             .capability_resolver
             .discover_from_runtime(selected_server_tools, Vec::new())
             .await;
+        status.discovered_mcp_tools = discovered_tools
+            .iter()
+            .map(|row| row.tool_name.clone())
+            .collect();
+        let discovered_providers = discovered_tools
+            .iter()
+            .map(|row| row.provider.to_ascii_lowercase())
+            .collect::<std::collections::HashSet<_>>();
         let provider_preference = match config.provider_preference {
             FailureReporterProviderPreference::OfficialGithub => {
                 vec![
@@ -2079,12 +2314,7 @@ impl AppState {
             .resolve(
                 crate::capability_resolver::CapabilityResolveInput {
                     workflow_id: Some("failure_reporter".to_string()),
-                    required_capabilities: vec![
-                        "github.list_issues".to_string(),
-                        "github.get_issue".to_string(),
-                        "github.create_issue".to_string(),
-                        "github.comment_on_issue".to_string(),
-                    ],
+                    required_capabilities: required_capabilities.clone(),
                     optional_capabilities: Vec::new(),
                     provider_preference,
                     available_tools: discovered_tools,
@@ -2093,6 +2323,51 @@ impl AppState {
             )
             .await
             .ok();
+        let bindings_file = self.capability_resolver.list_bindings().await.ok();
+        if let Some(bindings) = bindings_file.as_ref() {
+            status.binding_source_version = bindings.builtin_version.clone();
+            status.bindings_last_merged_at_ms = bindings.last_merged_at_ms;
+            status.selected_server_binding_candidates = bindings
+                .bindings
+                .iter()
+                .filter(|binding| required_capabilities.contains(&binding.capability_id))
+                .filter(|binding| {
+                    discovered_providers.is_empty()
+                        || discovered_providers.contains(&binding.provider.to_ascii_lowercase())
+                })
+                .map(|binding| {
+                    let binding_key = format!(
+                        "{}::{}",
+                        binding.capability_id,
+                        binding.tool_name.to_ascii_lowercase()
+                    );
+                    let matched = capability_resolution
+                        .as_ref()
+                        .map(|resolution| {
+                            resolution.resolved.iter().any(|row| {
+                                row.capability_id == binding.capability_id
+                                    && format!(
+                                        "{}::{}",
+                                        row.capability_id,
+                                        row.tool_name.to_ascii_lowercase()
+                                    ) == binding_key
+                            })
+                        })
+                        .unwrap_or(false);
+                    FailureReporterBindingCandidate {
+                        capability_id: binding.capability_id.clone(),
+                        binding_tool_name: binding.tool_name.clone(),
+                        aliases: binding.tool_name_aliases.clone(),
+                        matched,
+                    }
+                })
+                .collect();
+            status.selected_server_binding_candidates.sort_by(|a, b| {
+                a.capability_id
+                    .cmp(&b.capability_id)
+                    .then_with(|| a.binding_tool_name.cmp(&b.binding_tool_name))
+            });
+        }
         let capability_ready = |capability_id: &str| -> bool {
             capability_resolution
                 .as_ref()
@@ -2104,6 +2379,21 @@ impl AppState {
                 })
                 .unwrap_or(false)
         };
+        if let Some(resolution) = capability_resolution.as_ref() {
+            status.missing_required_capabilities = resolution.missing_required.clone();
+            status.resolved_capabilities = resolution
+                .resolved
+                .iter()
+                .map(|row| FailureReporterCapabilityMatch {
+                    capability_id: row.capability_id.clone(),
+                    provider: row.provider.clone(),
+                    tool_name: row.tool_name.clone(),
+                    binding_index: row.binding_index,
+                })
+                .collect();
+        } else {
+            status.missing_required_capabilities = required_capabilities.clone();
+        }
         status.required_capabilities = FailureReporterCapabilityReadiness {
             github_list_issues: capability_ready("github.list_issues"),
             github_get_issue: capability_ready("github.get_issue"),
@@ -2155,10 +2445,14 @@ impl AppState {
                         .to_string(),
                 );
             } else if !status.readiness.github_read_ready || !status.readiness.github_write_ready {
-                status.last_error = Some(
-                    "Selected MCP server is missing one or more required GitHub capabilities."
-                        .to_string(),
-                );
+                let missing = if status.missing_required_capabilities.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    status.missing_required_capabilities.join(", ")
+                };
+                status.last_error = Some(format!(
+                    "Selected MCP server is missing required GitHub capabilities: {missing}"
+                ));
             }
         }
         status
@@ -2796,6 +3090,10 @@ fn resolve_failure_reporter_env_config() -> FailureReporterConfig {
     };
     FailureReporterConfig {
         enabled: parse_bool_env("TANDEM_FAILURE_REPORTER_ENABLED", false),
+        workspace_root: std::env::var("TANDEM_FAILURE_REPORTER_WORKSPACE_ROOT")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty()),
         repo: std::env::var("TANDEM_FAILURE_REPORTER_REPO")
             .ok()
             .map(|v| v.trim().to_string())

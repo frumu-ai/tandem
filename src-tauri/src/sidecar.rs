@@ -4465,6 +4465,95 @@ impl SidecarManager {
         self.handle_response(response).await
     }
 
+    pub async fn failure_reporter_get_config(&self) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/config/failure-reporter", self.base_url().await?);
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to load Failure Reporter config: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn failure_reporter_patch_config(
+        &self,
+        config: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/config/failure-reporter", self.base_url().await?);
+        let body = serde_json::json!({
+            "failure_reporter": config,
+        });
+        let response = self
+            .http_client
+            .patch(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to save Failure Reporter config: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn failure_reporter_get_status(&self) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/failure-reporter/status", self.base_url().await?);
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to load Failure Reporter status: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn failure_reporter_list_drafts(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/failure-reporter/drafts", self.base_url().await?);
+        let mut request = self.http_client.get(&url);
+        if let Some(limit) = limit {
+            request = request.query(&[("limit", limit)]);
+        }
+        let response = request.send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to load Failure Reporter drafts: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn failure_reporter_get_draft(&self, draft_id: &str) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/failure-reporter/drafts/{}",
+            self.base_url().await?,
+            draft_id
+        );
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to load Failure Reporter draft: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn failure_reporter_report(
+        &self,
+        report: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/failure-reporter/report", self.base_url().await?);
+        let body = serde_json::json!({
+            "report": report,
+        });
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to submit Failure Reporter draft: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
     pub async fn pack_builder_preview(
         &self,
         request: serde_json::Value,

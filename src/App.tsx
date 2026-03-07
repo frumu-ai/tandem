@@ -1790,6 +1790,10 @@ function App() {
                 onClose={handleSettingsClose}
                 onProjectChange={loadUserProjects}
                 onProviderChange={refreshAppState}
+                onOpenMcpSettings={() => {
+                  setExtensionsInitialTab("mcp");
+                  setView("extensions");
+                }}
                 initialSection={settingsInitialSection ?? undefined}
                 onInitialSectionConsumed={() => setSettingsInitialSection(null)}
               />

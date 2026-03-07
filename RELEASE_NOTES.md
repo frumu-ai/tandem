@@ -18,6 +18,10 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
     - `GET /failure-reporter/drafts/{id}`
   - Control-panel Settings now has a dedicated `Failure Reporter` tab with repo/MCP/provider/model selection, readiness indicators, and recent draft visibility.
   - Added `#/failure-reporter` route alias for direct access to the reporter settings surface.
+  - Desktop Settings now has a matching engine-backed `Failure Reporter` card with MCP deep-linking and recent draft visibility.
+  - Added a Tauri bridge for reporter config, status, draft listing, draft lookup, and manual draft submission.
+  - Added `POST /failure-reporter/report` so desktop logs and failed orchestrator runs can create deduped local issue drafts through the engine.
+  - Fixed the desktop sidecar reporter config path to use the canonical `GET/PATCH /config/failure-reporter` route.
 
 ## v0.4.1 (2026-03-07)
 

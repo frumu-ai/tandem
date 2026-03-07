@@ -35,6 +35,7 @@ import { MemoryStats } from "./MemoryStats";
 import { LogsDrawer } from "@/components/logs";
 import { LanguageSettings } from "./LanguageSettings";
 import { ConnectionsSettings } from "./ConnectionsSettings";
+import { FailureReporterSettings } from "./FailureReporterSettings";
 
 import { useUpdater } from "@/hooks/useUpdater";
 import {
@@ -80,6 +81,7 @@ interface SettingsProps {
   onClose?: () => void;
   onProjectChange?: () => void;
   onProviderChange?: () => void; // Called when API keys are added/removed
+  onOpenMcpSettings?: () => void;
   initialSection?: "providers" | "projects" | "identity";
   onInitialSectionConsumed?: () => void;
 }
@@ -110,6 +112,7 @@ export function Settings({
   onClose,
   onProjectChange,
   onProviderChange,
+  onOpenMcpSettings,
   initialSection,
   onInitialSectionConsumed,
 }: SettingsProps) {
@@ -1976,6 +1979,11 @@ export function Settings({
 
         {/* Memory Stats */}
         <MemoryStats />
+
+        <FailureReporterSettings
+          providerCatalogModels={providerCatalogModels}
+          onOpenMcpSettings={onOpenMcpSettings}
+        />
 
         {/* Security Info */}
         <Card variant="glass">

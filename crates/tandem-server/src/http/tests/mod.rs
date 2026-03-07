@@ -4,6 +4,7 @@ pub(super) mod agent_teams;
 pub(super) mod capabilities;
 pub(super) mod channels;
 pub(super) mod context_runs;
+pub(super) mod failure_reporter;
 pub(super) mod global;
 pub(super) mod memory;
 pub(super) mod missions;

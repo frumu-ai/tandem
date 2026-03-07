@@ -992,6 +992,131 @@ export async function capabilityReadiness(
   return invoke("capability_readiness", { request });
 }
 
+export type FailureReporterProviderPreference = "auto" | "official_github" | "composio" | "arcade";
+
+export interface FailureReporterModelPolicy {
+  default_model?: {
+    provider_id?: string;
+    model_id?: string;
+  };
+}
+
+export interface FailureReporterConfig {
+  enabled: boolean;
+  repo?: string | null;
+  mcp_server?: string | null;
+  provider_preference: FailureReporterProviderPreference | string;
+  model_policy?: FailureReporterModelPolicy | null;
+  require_approval_for_new_issues?: boolean;
+  auto_comment_on_matched_open_issues?: boolean;
+  updated_at_ms?: number;
+}
+
+export interface FailureReporterCapabilityReadiness {
+  github_list_issues?: boolean;
+  github_get_issue?: boolean;
+  github_create_issue?: boolean;
+  github_comment_on_issue?: boolean;
+}
+
+export interface FailureReporterCapabilityMatch {
+  capability_id: string;
+  provider: string;
+  tool_name: string;
+}
+
+export interface FailureReporterReadiness {
+  config_valid?: boolean;
+  repo_valid?: boolean;
+  mcp_server_present?: boolean;
+  mcp_connected?: boolean;
+  github_read_ready?: boolean;
+  github_write_ready?: boolean;
+  selected_model_ready?: boolean;
+  runtime_ready?: boolean;
+}
+
+export interface FailureReporterSelectedModel {
+  provider_id?: string;
+  model_id?: string;
+}
+
+export interface FailureReporterStatus {
+  config: FailureReporterConfig;
+  readiness?: FailureReporterReadiness;
+  required_capabilities?: FailureReporterCapabilityReadiness;
+  missing_required_capabilities?: string[];
+  resolved_capabilities?: FailureReporterCapabilityMatch[];
+  discovered_mcp_tools?: string[];
+  selected_model?: FailureReporterSelectedModel | null;
+  pending_drafts?: number;
+  last_activity_at_ms?: number | null;
+  last_error?: string | null;
+}
+
+export interface FailureReporterDraftRecord {
+  draft_id: string;
+  fingerprint: string;
+  repo: string;
+  status: string;
+  created_at_ms: number;
+  issue_number?: number | null;
+  title?: string | null;
+  detail?: string | null;
+}
+
+export interface FailureReporterSubmission {
+  repo?: string | null;
+  title?: string | null;
+  detail?: string | null;
+  source?: string | null;
+  run_id?: string | null;
+  session_id?: string | null;
+  correlation_id?: string | null;
+  file_name?: string | null;
+  process?: string | null;
+  component?: string | null;
+  event?: string | null;
+  level?: string | null;
+  excerpt?: string[];
+  fingerprint?: string | null;
+}
+
+export async function getFailureReporterConfig(): Promise<{
+  failure_reporter: FailureReporterConfig;
+}> {
+  return invoke("failure_reporter_get_config");
+}
+
+export async function patchFailureReporterConfig(
+  config: Record<string, unknown>
+): Promise<{ failure_reporter: FailureReporterConfig }> {
+  return invoke("failure_reporter_patch_config", { config });
+}
+
+export async function getFailureReporterStatus(): Promise<{ status: FailureReporterStatus }> {
+  return invoke("failure_reporter_get_status");
+}
+
+export async function listFailureReporterDrafts(limit?: number): Promise<{
+  drafts: FailureReporterDraftRecord[];
+  count: number;
+}> {
+  return invoke("failure_reporter_list_drafts", { limit });
+}
+
+export async function getFailureReporterDraft(draftId: string): Promise<{
+  draft: FailureReporterDraftRecord;
+}> {
+  return invoke("failure_reporter_get_draft", { draftId });
+}
+
+export async function reportFailureReporterIssue(
+  report: FailureReporterSubmission
+): Promise<{ draft: FailureReporterDraftRecord }> {
+  return invoke("failure_reporter_report", { report });
+}
+
 export type PackBuilderStatus =
   | "preview_pending"
   | "apply_blocked_missing_secrets"

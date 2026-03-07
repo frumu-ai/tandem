@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - dedicated provider/model selection for a cheap/fast reporter route
     - readiness, capability coverage, and draft summary cards
   - added a direct `#/failure-reporter` control-panel route alias that opens the Settings reporter tab
+  - desktop Settings now includes an engine-backed `Failure Reporter` surface with:
+    - repo, MCP server, provider, and model route configuration
+    - runtime readiness and capability visibility
+    - recent draft visibility
+    - deep-link into `Extensions -> MCP`
+  - added a Tauri bridge for Failure Reporter config, status, draft listing, draft lookup, and manual report submission
+  - fixed the desktop sidecar Failure Reporter config path to use the engine’s canonical `GET/PATCH /config/failure-reporter` route instead of a non-existent `/failure-reporter/config` path
+  - added `POST /failure-reporter/report` so desktop and future clients can submit structured failure context through the engine and receive a deduped local draft record
+  - desktop logs and failed orchestrator runs can now create Failure Reporter drafts directly without implementing issue logic in the frontend
 
 - **Setup-understanding across channels and chat surfaces**:
   - added a shared deterministic setup-intent resolver at `POST /setup/understand` in `tandem-server`
