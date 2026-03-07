@@ -592,6 +592,153 @@ async fn coder_issue_fix_summary_create_writes_artifact() {
 }
 
 #[tokio::test]
+async fn coder_issue_triage_prefers_failure_patterns_in_memory_hits() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_first_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-issue-triage-a",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 65
+                }
+            })
+            .to_string(),
+        ))
+        .expect("first create request");
+    let create_first_resp = app
+        .clone()
+        .oneshot(create_first_req)
+        .await
+        .expect("first create response");
+    assert_eq!(create_first_resp.status(), StatusCode::OK);
+
+    let triage_summary_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-issue-triage-a/triage-summary")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "summary": "Crash loop traces point at startup recovery.",
+                "confidence": "medium"
+            })
+            .to_string(),
+        ))
+        .expect("triage summary request");
+    let triage_summary_resp = app
+        .clone()
+        .oneshot(triage_summary_req)
+        .await
+        .expect("triage summary response");
+    assert_eq!(triage_summary_resp.status(), StatusCode::OK);
+
+    let failure_pattern_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-issue-triage-a/memory-candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "kind": "failure_pattern",
+                "task_id": "attempt_reproduction",
+                "summary": "Crash loop consistently starts in startup recovery.",
+                "payload": {
+                    "workflow_mode": "issue_triage",
+                    "summary": "Crash loop consistently starts in startup recovery.",
+                    "fingerprint": "triage-startup-recovery-loop",
+                    "canonical_markers": ["startup recovery", "crash loop"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("failure pattern request");
+    let failure_pattern_resp = app
+        .clone()
+        .oneshot(failure_pattern_req)
+        .await
+        .expect("failure pattern response");
+    assert_eq!(failure_pattern_resp.status(), StatusCode::OK);
+
+    let create_second_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-issue-triage-b",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 65
+                }
+            })
+            .to_string(),
+        ))
+        .expect("second create request");
+    let create_second_resp = app
+        .clone()
+        .oneshot(create_second_req)
+        .await
+        .expect("second create response");
+    assert_eq!(create_second_resp.status(), StatusCode::OK);
+
+    let hits_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-issue-triage-b/memory-hits")
+        .body(Body::empty())
+        .expect("hits request");
+    let hits_resp = app.clone().oneshot(hits_req).await.expect("hits response");
+    assert_eq!(hits_resp.status(), StatusCode::OK);
+    let hits_payload: Value = serde_json::from_slice(
+        &to_bytes(hits_resp.into_body(), usize::MAX)
+            .await
+            .expect("hits body"),
+    )
+    .expect("hits json");
+    assert_eq!(
+        hits_payload
+            .get("hits")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("failure_pattern")
+    );
+    assert!(hits_payload
+        .get("hits")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().any(|row| {
+            row.get("kind").and_then(Value::as_str) == Some("triage_memory")
+                && (row.get("source_coder_run_id").and_then(Value::as_str)
+                    == Some("coder-issue-triage-a")
+                    || row.get("run_id").and_then(Value::as_str) == Some("coder-issue-triage-a"))
+        }))
+        .unwrap_or(false));
+}
+
+#[tokio::test]
 async fn coder_issue_fix_reuses_prior_fix_pattern_memory_hits() {
     let state = test_state().await;
     state

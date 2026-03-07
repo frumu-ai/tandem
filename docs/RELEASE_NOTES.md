@@ -117,6 +117,7 @@
   - `merge_recommendation` ranking now also prefers policy-rich same-PR memories that carry blockers, required checks, or required approvals over generic merge summaries, so readiness-specific history surfaces first
   - `pr_review` memory retrieval now ranks same-PR `review_memory`, `regression_signal`, and PR review outcomes ahead of generic triage memory so review runs surface prior review guidance first
   - `pr_review` ranking now also prefers richer same-PR review memories that carry blockers, requested changes, or regression signals over generic review summaries, so actionable review history surfaces first
+  - `issue_triage` memory retrieval now ranks same-issue `failure_pattern`, triage-memory, and triage run outcomes ahead of generic hits so duplicate/root-cause history surfaces first during new triage runs
   - `issue_fix` summary writes now also emit a dedicated `coder_validation_report` artifact when validation steps or results are provided, so validation evidence is consumable without parsing the fix summary
   - `issue_fix` summary writes now also emit reusable `validation_memory` candidates, and same-issue fix retrieval ranks that validation-specific memory ahead of generic triage memory so later fix runs can reuse prior validation evidence directly
   - repo-scoped coder memory retrieval is now GitHub-ref-aware, so `pr_review` and `merge_recommendation` get a true same-PR boost instead of only issue-number or recency bias

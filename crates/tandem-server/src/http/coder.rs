@@ -934,6 +934,20 @@ fn compare_coder_memory_hits(record: &CoderRunRecord, a: &Value, b: &Value) -> s
         .cmp(&a_same_ref)
         .then_with(|| b_same_issue.cmp(&a_same_issue));
     let kind_weight = |hit: &Value| match memory_hit_kind(hit).as_deref() {
+        Some("failure_pattern")
+            if matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) =>
+        {
+            4_u8
+        }
+        Some("triage_memory") if matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) => {
+            3_u8
+        }
+        Some("run_outcome")
+            if matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage)
+                && memory_hit_workflow_mode(hit).as_deref() == Some("issue_triage") =>
+        {
+            2_u8
+        }
         Some("fix_pattern") if matches!(record.workflow_mode, CoderWorkflowMode::IssueFix) => 4_u8,
         Some("validation_memory")
             if matches!(record.workflow_mode, CoderWorkflowMode::IssueFix) =>
