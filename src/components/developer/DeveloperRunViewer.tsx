@@ -962,6 +962,14 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     [openArtifactRecordContext, selectedArtifactRecord]
   );
 
+  const openDuplicateArtifactContext = useCallback(() => {
+    const duplicateArtifact = latestArtifactByCategory.get("duplicate");
+    if (duplicateArtifact) {
+      setSelectedArtifactPath(duplicateArtifact.path);
+    }
+    setDetailTab("artifacts");
+  }, [latestArtifactByCategory]);
+
   const openBlackboardContext = useCallback(
     (target: "task" | "event", stepId?: string | null, sourceEventId?: string | null) => {
       if (target === "task") {
@@ -2453,7 +2461,7 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                             {selectedDuplicateMatches.length > 0 ? (
                               <button
                                 type="button"
-                                onClick={() => setDetailTab("artifacts")}
+                                onClick={openDuplicateArtifactContext}
                                 className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-amber-100 transition-colors hover:bg-amber-500/15"
                               >
                                 {selectedDuplicateMatches.length} duplicate matches
@@ -2488,15 +2496,21 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                     Parsed directly from the selected artifact payload.
                                   </p>
                                 </div>
-                                <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-amber-100">
+                                <button
+                                  type="button"
+                                  onClick={openDuplicateArtifactContext}
+                                  className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-amber-100 transition-colors hover:bg-amber-500/15"
+                                >
                                   {selectedDuplicateMatches.length} matches
-                                </span>
+                                </button>
                               </div>
                               <div className="mt-3 space-y-2">
                                 {selectedDuplicateMatches.slice(0, 5).map((match, index) => (
-                                  <div
+                                  <button
                                     key={String(match.id ?? match.candidate_id ?? index)}
-                                    className="rounded-2xl border border-amber-500/20 bg-surface p-3"
+                                    type="button"
+                                    onClick={openDuplicateArtifactContext}
+                                    className="w-full rounded-2xl border border-amber-500/20 bg-surface p-3 text-left transition-colors hover:bg-surface-elevated"
                                   >
                                     <p className="text-sm font-medium text-text">
                                       {duplicateMatchLabel(match)}
@@ -2511,7 +2525,7 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                         </span>
                                       ))}
                                     </div>
-                                  </div>
+                                  </button>
                                 ))}
                               </div>
                             </div>
