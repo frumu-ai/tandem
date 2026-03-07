@@ -939,20 +939,27 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     []
   );
 
-  const openArtifactContext = useCallback(
-    (target: "task" | "event") => {
-      if (!selectedArtifactRecord) return;
+  const openArtifactRecordContext = useCallback(
+    (artifact: CoderArtifactRecord, target: "task" | "event") => {
       if (target === "task") {
-        if (!selectedArtifactRecord.step_id) return;
+        if (!artifact.step_id) return;
         focusOverviewSection("kanban");
         return;
       }
-      if (!selectedArtifactRecord.source_event_id) return;
+      if (!artifact.source_event_id) return;
       setEventTypeFilter("all");
-      setEventQuery(selectedArtifactRecord.source_event_id);
+      setEventQuery(artifact.source_event_id);
       focusOverviewSection("timeline");
     },
-    [focusOverviewSection, selectedArtifactRecord]
+    [focusOverviewSection]
+  );
+
+  const openArtifactContext = useCallback(
+    (target: "task" | "event") => {
+      if (!selectedArtifactRecord) return;
+      openArtifactRecordContext(selectedArtifactRecord, target);
+    },
+    [openArtifactRecordContext, selectedArtifactRecord]
   );
 
   return (
@@ -1664,14 +1671,27 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                   </div>
                                   <div className="mt-3 flex flex-wrap gap-2">
                                     {blackboardRowStepId(latestDecision) ? (
-                                      <span className="rounded-full border border-primary/20 bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.2em] text-text-muted">
+                                      <button
+                                        type="button"
+                                        onClick={() => focusOverviewSection("kanban")}
+                                        className="rounded-full border border-primary/20 bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.2em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                      >
                                         Step {blackboardRowStepId(latestDecision)}
-                                      </span>
+                                      </button>
                                     ) : null}
                                     {blackboardRowSourceEventId(latestDecision) ? (
-                                      <span className="rounded-full border border-primary/20 bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.2em] text-text-muted">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEventQuery(
+                                            blackboardRowSourceEventId(latestDecision) ?? ""
+                                          );
+                                          focusOverviewSection("timeline");
+                                        }}
+                                        className="rounded-full border border-primary/20 bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.2em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                      >
                                         Event {blackboardRowSourceEventId(latestDecision)}
-                                      </span>
+                                      </button>
                                     ) : null}
                                     {relatedArtifactsForBlackboardRow(artifacts, latestDecision)
                                       .slice(0, 3)
@@ -2233,14 +2253,28 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                       </div>
                                       <div className="mt-2 flex flex-wrap gap-2">
                                         {artifact.step_id ? (
-                                          <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-text-muted">
+                                          <button
+                                            type="button"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              openArtifactRecordContext(artifact, "task");
+                                            }}
+                                            className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                          >
                                             Step {artifact.step_id}
-                                          </span>
+                                          </button>
                                         ) : null}
                                         {artifact.source_event_id ? (
-                                          <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-text-muted">
+                                          <button
+                                            type="button"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              openArtifactRecordContext(artifact, "event");
+                                            }}
+                                            className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                          >
                                             Event {artifact.source_event_id}
-                                          </span>
+                                          </button>
                                         ) : null}
                                       </div>
                                       <p className="mt-2 break-all font-mono text-[11px] text-text-muted">
@@ -2582,14 +2616,28 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                               </div>
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {artifact.step_id ? (
-                                  <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-text-muted">
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      openArtifactRecordContext(artifact, "task");
+                                    }}
+                                    className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                  >
                                     Step {artifact.step_id}
-                                  </span>
+                                  </button>
                                 ) : null}
                                 {artifact.source_event_id ? (
-                                  <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-text-muted">
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      openArtifactRecordContext(artifact, "event");
+                                    }}
+                                    className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                  >
                                     Event {artifact.source_event_id}
-                                  </span>
+                                  </button>
                                 ) : null}
                               </div>
                               <p className="mt-2 break-all font-mono text-[11px] text-text-muted">
