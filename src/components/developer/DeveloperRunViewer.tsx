@@ -2085,9 +2085,19 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                   </div>
                                   <div className="min-w-0 flex-1 rounded-2xl border border-border bg-surface p-3">
                                     <div className="flex flex-wrap items-center gap-2">
-                                      <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-sky-200">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEventQuery("");
+                                          setEventTypeFilter((current) =>
+                                            current === eventType ? "all" : eventType
+                                          );
+                                          focusOverviewSection("timeline");
+                                        }}
+                                        className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-sky-200 transition-colors hover:bg-sky-500/15"
+                                      >
                                         {eventType.replace(/_/g, " ")}
-                                      </span>
+                                      </button>
                                       <span className="text-[11px] text-text-muted">
                                         {formatTimestamp(runEventTimestamp(event))}
                                       </span>
