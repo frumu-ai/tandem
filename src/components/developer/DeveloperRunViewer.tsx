@@ -1688,7 +1688,13 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                     {blackboardRowStepId(latestDecision) ? (
                                       <button
                                         type="button"
-                                        onClick={() => focusOverviewSection("kanban")}
+                                        onClick={() =>
+                                          openBlackboardContext(
+                                            "task",
+                                            blackboardRowStepId(latestDecision),
+                                            blackboardRowSourceEventId(latestDecision)
+                                          )
+                                        }
                                         className="rounded-full border border-primary/20 bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.2em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
                                       >
                                         Step {blackboardRowStepId(latestDecision)}
@@ -1698,10 +1704,11 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                       <button
                                         type="button"
                                         onClick={() => {
-                                          setEventQuery(
-                                            blackboardRowSourceEventId(latestDecision) ?? ""
+                                          openBlackboardContext(
+                                            "event",
+                                            blackboardRowStepId(latestDecision),
+                                            blackboardRowSourceEventId(latestDecision)
                                           );
-                                          focusOverviewSection("timeline");
                                         }}
                                         className="rounded-full border border-primary/20 bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.2em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
                                       >
@@ -1800,14 +1807,34 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                               </p>
                                               <div className="mt-3 flex flex-wrap gap-2">
                                                 {item.stepId ? (
-                                                  <span className="rounded-full border border-border bg-surface-elevated/50 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      openBlackboardContext(
+                                                        "task",
+                                                        item.stepId,
+                                                        item.sourceEventId
+                                                      )
+                                                    }
+                                                    className="rounded-full border border-border bg-surface-elevated/50 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                                  >
                                                     Step {item.stepId}
-                                                  </span>
+                                                  </button>
                                                 ) : null}
                                                 {item.sourceEventId ? (
-                                                  <span className="rounded-full border border-border bg-surface-elevated/50 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      openBlackboardContext(
+                                                        "event",
+                                                        item.stepId,
+                                                        item.sourceEventId
+                                                      )
+                                                    }
+                                                    className="rounded-full border border-border bg-surface-elevated/50 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                                  >
                                                     Source {item.sourceEventId}
-                                                  </span>
+                                                  </button>
                                                 ) : null}
                                                 {relatedArtifacts.map((artifact) => (
                                                   <button
@@ -1872,9 +1899,34 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                                     )}
                                                   </span>
                                                   {blackboardRowStepId(question) ? (
-                                                    <span>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() =>
+                                                        openBlackboardContext(
+                                                          "task",
+                                                          blackboardRowStepId(question),
+                                                          blackboardRowSourceEventId(question)
+                                                        )
+                                                      }
+                                                      className="rounded-full border border-border bg-surface-elevated/50 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                                    >
                                                       step {blackboardRowStepId(question)}
-                                                    </span>
+                                                    </button>
+                                                  ) : null}
+                                                  {blackboardRowSourceEventId(question) ? (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() =>
+                                                        openBlackboardContext(
+                                                          "event",
+                                                          blackboardRowStepId(question),
+                                                          blackboardRowSourceEventId(question)
+                                                        )
+                                                      }
+                                                      className="rounded-full border border-border bg-surface-elevated/50 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                                    >
+                                                      source {blackboardRowSourceEventId(question)}
+                                                    </button>
                                                   ) : null}
                                                 </div>
                                                 {relatedArtifacts.length > 0 ? (
