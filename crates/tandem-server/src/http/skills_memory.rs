@@ -917,19 +917,20 @@ pub(super) fn default_memory_capability_for(
     issue_run_memory_capability(run_id, None, partition, RunMemoryCapabilityPolicy::Default)
 }
 
-fn memory_metadata_with_artifact_refs(
+fn memory_metadata_with_storage_fields(
     metadata: Option<Value>,
     artifact_refs: &[String],
+    classification: tandem_memory::MemoryClassification,
 ) -> Option<Value> {
-    if artifact_refs.is_empty() {
-        return metadata;
-    }
     let mut metadata = metadata.unwrap_or_else(|| json!({}));
     if !metadata.is_object() {
         metadata = json!({ "value": metadata });
     }
     if let Some(obj) = metadata.as_object_mut() {
-        obj.insert("artifact_refs".to_string(), json!(artifact_refs));
+        if !artifact_refs.is_empty() {
+            obj.insert("artifact_refs".to_string(), json!(artifact_refs));
+        }
+        obj.insert("classification".to_string(), json!(classification));
     }
     Some(metadata)
 }
@@ -962,6 +963,14 @@ fn memory_tier_for_visibility(visibility: &str) -> tandem_memory::GovernedMemory
     } else {
         tandem_memory::GovernedMemoryTier::Session
     }
+}
+
+fn memory_classification_label(metadata: Option<&Value>) -> &str {
+    metadata
+        .and_then(|row| row.get("classification"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("internal")
 }
 
 pub(super) fn validate_memory_capability(
@@ -1649,9 +1658,10 @@ pub(super) async fn memory_put_impl(
         project_tag: Some(request.partition.project_id.clone()),
         channel_tag: None,
         host_tag: None,
-        metadata: memory_metadata_with_artifact_refs(
+        metadata: memory_metadata_with_storage_fields(
             request.metadata.clone(),
             &request.artifact_refs,
+            request.classification,
         ),
         provenance: Some(json!({
             "origin_event_type": "memory.put",
@@ -1919,7 +1929,7 @@ pub(super) async fn memory_search(
             json!({
                 "id": hit.record.id,
                 "tier": memory_tier_for_visibility(&hit.record.visibility),
-                "classification": "internal",
+                "classification": memory_classification_label(hit.record.metadata.as_ref()),
                 "kind": memory_kind_label(&hit.record.source_type),
                 "source_type": hit.record.source_type,
                 "created_at_ms": hit.record.created_at_ms,
@@ -2031,6 +2041,7 @@ pub(super) async fn memory_list(
                     "user_id": row.user_id,
                     "run_id": row.run_id,
                     "tier": memory_tier_for_visibility(&row.visibility),
+                    "classification": memory_classification_label(row.metadata.as_ref()),
                     "kind": memory_kind_label(&row.source_type),
                     "source_type": row.source_type,
                     "content": row.content,

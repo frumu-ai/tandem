@@ -102,6 +102,10 @@ async fn memory_put_then_search_in_session_scope() {
         .cloned()
         .unwrap_or(Value::Null);
     assert_eq!(
+        first_result.get("classification").and_then(Value::as_str),
+        Some("internal")
+    );
+    assert_eq!(
         first_result.get("tier").and_then(Value::as_str),
         Some("session")
     );
@@ -112,6 +116,76 @@ async fn memory_put_then_search_in_session_scope() {
     assert_eq!(
         first_result.get("artifact_refs").and_then(Value::as_array),
         Some(&artifact_refs)
+    );
+}
+
+#[tokio::test]
+async fn memory_search_preserves_restricted_classification() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let put_req = Request::builder()
+        .method("POST")
+        .uri("/memory/put")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "run-2b",
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "kind": "note",
+                "content": "restricted note without secrets",
+                "classification": "restricted"
+            })
+            .to_string(),
+        ))
+        .expect("put request");
+    let put_resp = app.clone().oneshot(put_req).await.expect("response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let search_req = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "run-2b",
+                "query": "restricted note without secrets",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "limit": 5
+            })
+            .to_string(),
+        ))
+        .expect("search request");
+    let search_resp = app.oneshot(search_req).await.expect("response");
+    assert_eq!(search_resp.status(), StatusCode::OK);
+    let body = to_bytes(search_resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let first_result = payload
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        first_result.get("classification").and_then(Value::as_str),
+        Some("restricted")
+    );
+    assert_eq!(
+        first_result.get("kind").and_then(Value::as_str),
+        Some("note")
     );
 }
 
@@ -507,6 +581,7 @@ async fn memory_list_and_delete_admin_routes_work() {
         .map(|rows| {
             rows.iter().any(|row| {
                 row.get("id").and_then(|v| v.as_str()) == Some(memory_id.as_str())
+                    && row.get("classification").and_then(Value::as_str) == Some("internal")
                     && row.get("tier").and_then(Value::as_str) == Some("session")
                     && row.get("kind").and_then(Value::as_str) == Some("fact")
                     && row.get("artifact_refs").and_then(Value::as_array) == Some(&artifact_refs)
