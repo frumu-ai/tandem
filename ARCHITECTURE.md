@@ -1,6 +1,6 @@
 # Tandem Architecture
 
-Tandem is built as a multi-crate Rust workspace to support various environments (Desktop UI, TUI, Headless Server, and background bots) using a shared core engine.
+Tandem is an **engine-owned workflow runtime** for coordinated autonomous work. It is built as a multi-crate Rust workspace to support various clients (Desktop UI, TUI, Headless Server, and background bots) using a shared core engine.
 
 ## 1) Core Engine (Rust Crates)
 
@@ -55,6 +55,7 @@ The TUI provides a native terminal experience for developers who want to stay cl
    - LLMs propose tool calls (like reading a file or querying an MCP resource).
    - In the Desktop app, risky tools require visual approval ("Zero Trust").
    - In TUI or Headless contexts, operations run according to the configured `Autonomy` policies.
+   - **Crucially**, multi-agent synchronization happens via the engine's internal Blackboard and Git Worktree Isolation, ensuring concurrent autonomous tasks do not collide.
 
 ## 6) Security and Trust Boundaries
 

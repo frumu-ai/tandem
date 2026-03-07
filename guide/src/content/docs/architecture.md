@@ -23,11 +23,14 @@ flowchart LR
     E --> P[Provider Gateway]
     E --> TOOLS[Tool Router]
     E --> MEM[Memory Runtime]
+    E --> BB[(Blackboard)]
+    E --> WT[Git Worktrees]
   end
 
   TOOLS --> FS[Workspace / Shell / Web / MCP Tools]
   AT --> S[Spawn Policy + Template Registry]
   MEM --> DB[(memory.sqlite)]
+  BB <--> AT
   P --> LLM[(LLM Providers)]
 ```
 
