@@ -249,6 +249,7 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
   const [runQuery, setRunQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [workflowFilter, setWorkflowFilter] = useState<string>("all");
+  const [artifactQuery, setArtifactQuery] = useState("");
   const [eventQuery, setEventQuery] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState<string>("all");
   const [detailTab, setDetailTab] = useState<"overview" | "artifacts" | "memory" | "validation">(
@@ -532,11 +533,23 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
   }, [selectedTaskRows]);
 
   const artifactGroups = useMemo<ArtifactGroup[]>(() => {
+    const needle = artifactQuery.trim().toLowerCase();
     const buckets = new Map<ArtifactCategory, CoderArtifactRecord[]>();
     for (const key of ["duplicate", "triage", "memory", "validation", "other"] as const) {
       buckets.set(key, []);
     }
     for (const artifact of artifacts) {
+      if (needle) {
+        const haystack = [
+          artifact.artifact_type,
+          artifact.path,
+          artifact.step_id ?? "",
+          artifact.source_event_id ?? "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(needle)) continue;
+      }
       buckets.get(artifactCategory(artifact))?.push(artifact);
     }
     const groups: ArtifactGroup[] = [
@@ -572,7 +585,7 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       },
     ];
     return groups.filter((group) => group.artifacts.length > 0);
-  }, [artifacts]);
+  }, [artifactQuery, artifacts]);
 
   const selectedArtifactRecord = useMemo(() => {
     if (!selectedArtifactPath) return null;
@@ -1390,6 +1403,15 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                         <p className="text-sm text-text-muted">No artifacts yet.</p>
                       ) : (
                         <>
+                          <div className="flex items-center gap-2 rounded-2xl border border-border bg-surface-elevated/40 px-3 py-2">
+                            <Search className="h-4 w-4 text-text-muted" />
+                            <input
+                              value={artifactQuery}
+                              onChange={(event) => setArtifactQuery(event.target.value)}
+                              placeholder="Filter artifacts by type, path, step, or event"
+                              className="w-full bg-transparent text-sm text-text outline-none placeholder:text-text-subtle"
+                            />
+                          </div>
                           <div className="grid gap-3 md:grid-cols-2">
                             {[
                               {
@@ -1424,6 +1446,11 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                           </div>
 
                           <div className="space-y-4">
+                            {artifactGroups.length === 0 ? (
+                              <p className="text-sm text-text-muted">
+                                No artifacts match the current filter.
+                              </p>
+                            ) : null}
                             {(artifactGroups.length > 0 ? artifactGroups : []).map((group) => (
                               <div
                                 key={group.key}
