@@ -276,7 +276,9 @@ jobs:
           cargo build --release -p tandem-browser --target ${{ matrix.target }}
           mkdir -p src-tauri/resources/binaries
           cp "target/${{ matrix.target }}/release/tandem-engine" "src-tauri/resources/binaries/tandem-engine"
+          cp "target/${{ matrix.target }}/release/tandem-browser" "src-tauri/resources/binaries/tandem-browser"
           chmod +x "src-tauri/resources/binaries/tandem-engine"
+          chmod +x "src-tauri/resources/binaries/tandem-browser"
 
       - name: Build bundled engine sidecar (Windows)
         if: ${{ matrix.platform == 'windows-latest' }}
@@ -287,6 +289,26 @@ jobs:
           cargo build --release -p tandem-browser --target ${{ matrix.target }}
           New-Item -ItemType Directory -Path "src-tauri/resources/binaries" -Force | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "src-tauri/resources/binaries/tandem-engine.exe" -Force
+          Copy-Item "target/${{ matrix.target }}/release/tandem-browser.exe" "src-tauri/resources/binaries/tandem-browser.exe" -Force
+
+      - name: Verify bundled sidecar resources (Unix)
+        if: ${{ matrix.platform != 'windows-latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "src-tauri/resources/binaries/tandem-engine"
+          test -f "src-tauri/resources/binaries/tandem-browser"
+
+      - name: Verify bundled sidecar resources (Windows)
+        if: ${{ matrix.platform == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          if (!(Test-Path "src-tauri/resources/binaries/tandem-engine.exe")) {
+            throw "Missing bundled tandem-engine.exe"
+          }
+          if (!(Test-Path "src-tauri/resources/binaries/tandem-browser.exe")) {
+            throw "Missing bundled tandem-browser.exe"
+          }
 
       # NOTE: We only attempt macOS signing/notarization when explicitly enabled via
       # `MACOS_SIGNING_ENABLED=true` (repo variable). This prevents release builds from
