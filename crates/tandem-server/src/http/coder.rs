@@ -113,6 +113,7 @@ pub(super) struct CoderRunListQuery {
 #[serde(rename_all = "snake_case")]
 pub(super) enum CoderMemoryCandidateKind {
     TriageMemory,
+    ReviewMemory,
     FailurePattern,
     RunOutcome,
 }
@@ -2318,6 +2319,7 @@ pub(super) async fn coder_memory_candidate_promote(
             partition: session_partition.clone(),
             kind: match kind {
                 CoderMemoryCandidateKind::TriageMemory => MemoryContentKind::SolutionCapsule,
+                CoderMemoryCandidateKind::ReviewMemory => MemoryContentKind::SolutionCapsule,
                 CoderMemoryCandidateKind::FailurePattern => MemoryContentKind::Fact,
                 CoderMemoryCandidateKind::RunOutcome => MemoryContentKind::Note,
             },
@@ -2626,6 +2628,32 @@ pub(super) async fn coder_pr_review_summary_create(
         .filter(|row| !row.is_empty())
         .map(ToString::to_string)
     {
+        let (review_memory_id, review_memory_artifact) = write_coder_memory_candidate_artifact(
+            &state,
+            &record,
+            CoderMemoryCandidateKind::ReviewMemory,
+            Some(summary_text.clone()),
+            Some("write_review_artifact".to_string()),
+            json!({
+                "workflow_mode": "pr_review",
+                "verdict": input.verdict,
+                "summary": summary_text,
+                "risk_level": input.risk_level,
+                "changed_files": input.changed_files,
+                "blockers": input.blockers,
+                "requested_changes": input.requested_changes,
+                "regression_signals": input.regression_signals,
+                "memory_hits_used": input.memory_hits_used,
+                "summary_artifact_path": artifact.path,
+            }),
+        )
+        .await?;
+        generated_candidates.push(json!({
+            "candidate_id": review_memory_id,
+            "kind": "review_memory",
+            "artifact_path": review_memory_artifact.path,
+        }));
+
         let verdict = input
             .verdict
             .as_deref()

@@ -116,6 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added `POST /coder/runs/{id}/pr-review-summary` so `pr_review` runs can write a structured `coder_pr_review_summary` artifact and emit a first `run_outcome` memory candidate
   - added a first `pr_review` coder workflow skeleton on top of context runs, including fail-closed GitHub pull-request readiness checks, seeded PR review tasks, and direct MCP GitHub capability bindings for pull-request list/get/comment actions
   - `pr_review` now defaults to pull-request-specific memory queries, bootstraps a `coder_memory_hits` artifact at run creation, and reuses prior review `run_outcome` memory during later reviews of the same repo/PR
+  - `pr_review` summary writes now also emit reusable `review_memory` candidates, and follow-on PR reviews can retrieve that review-specific memory through the shared coder memory-hits path
 
 - **Setup-understanding across channels and chat surfaces**:
   - added a shared deterministic setup-intent resolver at `POST /setup/understand` in `tandem-server`

@@ -455,6 +455,15 @@ async fn coder_pr_review_summary_create_writes_artifact_and_outcome() {
             .and_then(Value::as_array)
             .map(|rows| rows
                 .iter()
+                .any(|row| { row.get("kind").and_then(Value::as_str) == Some("review_memory") })),
+        Some(true)
+    );
+    assert_eq!(
+        summary_payload
+            .get("generated_candidates")
+            .and_then(Value::as_array)
+            .map(|rows| rows
+                .iter()
                 .any(|row| { row.get("kind").and_then(Value::as_str) == Some("run_outcome") })),
         Some(true)
     );
@@ -630,6 +639,16 @@ async fn coder_pr_review_reuses_prior_review_memory_hits() {
         .and_then(|row| row.get("hits"))
         .and_then(Value::as_array)
         .map(|rows| !rows.is_empty())
+        .unwrap_or(false));
+    assert!(hits_payload
+        .get("hits")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().any(|row| {
+            row.get("kind").and_then(Value::as_str) == Some("review_memory")
+                && (row.get("source_coder_run_id").and_then(Value::as_str)
+                    == Some("coder-pr-review-a")
+                    || row.get("run_id").and_then(Value::as_str) == Some("coder-pr-review-a"))
+        }))
         .unwrap_or(false));
     assert!(hits_payload
         .get("hits")
