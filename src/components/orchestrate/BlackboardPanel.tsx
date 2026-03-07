@@ -120,6 +120,7 @@ export function BlackboardPanel({
   const [showDriftDrawer, setShowDriftDrawer] = useState(false);
   const [expandNowWhy, setExpandNowWhy] = useState(false);
   const [nodeListScrollTop, setNodeListScrollTop] = useState(0);
+  const [showDockedDetails, setShowDockedDetails] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const fullscreenRef = useRef<HTMLDivElement | null>(null);
@@ -414,7 +415,7 @@ export function BlackboardPanel({
     ) : null;
 
   const dockedView = (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="rounded border border-border px-2 py-0.5 text-text">
           steps: {indicators.doneCount}/{tasks.length}
@@ -436,25 +437,44 @@ export function BlackboardPanel({
           </button>
         ) : null}
       </div>
-      {nowBlock}
-      {alertsBlock}
-      <div className="rounded border border-border/60 bg-surface p-2">
-        <div className="mb-1 text-[10px] uppercase tracking-wide text-text-subtle">Recent</div>
-        {recentEvents.length === 0 ? (
-          <p className="text-xs text-text-muted">No relevant events yet.</p>
-        ) : (
-          <div className="space-y-1">
-            {recentEvents.map((event) => (
-              <div
-                key={event.event_id}
-                className="rounded border border-border bg-surface-elevated px-2 py-1 text-xs text-text"
-              >
-                #{event.seq} {event.type}
-              </div>
-            ))}
-          </div>
-        )}
+      <div className="flex items-center justify-between">
+        <div className="text-[11px] text-text-muted">
+          {showDockedDetails ? "Compact details visible." : "Compact summary view."}
+        </div>
+        <button
+          type="button"
+          aria-label={
+            showDockedDetails ? "Hide docked blackboard details" : "Show docked blackboard details"
+          }
+          onClick={() => setShowDockedDetails((prev) => !prev)}
+          className="text-[11px] text-primary underline-offset-2 hover:underline"
+        >
+          {showDockedDetails ? "Hide details" : "Show details"}
+        </button>
       </div>
+      {showDockedDetails ? (
+        <>
+          {nowBlock}
+          {alertsBlock}
+          <div className="rounded border border-border/60 bg-surface p-2">
+            <div className="mb-1 text-[10px] uppercase tracking-wide text-text-subtle">Recent</div>
+            {recentEvents.length === 0 ? (
+              <p className="text-xs text-text-muted">No relevant events yet.</p>
+            ) : (
+              <div className="space-y-1">
+                {recentEvents.map((event) => (
+                  <div
+                    key={event.event_id}
+                    className="rounded border border-border bg-surface-elevated px-2 py-1 text-xs text-text"
+                  >
+                    #{event.seq} {event.type}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 
