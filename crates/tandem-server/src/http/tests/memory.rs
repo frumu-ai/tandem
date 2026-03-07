@@ -658,6 +658,14 @@ async fn memory_demote_hides_item_from_search_results() {
         .await
         .expect("demote response");
     assert_eq!(demote_resp.status(), StatusCode::OK);
+    let demote_body = to_bytes(demote_resp.into_body(), usize::MAX)
+        .await
+        .expect("demote body");
+    let demote_payload: Value = serde_json::from_slice(&demote_body).expect("demote json");
+    assert!(demote_payload
+        .get("audit_id")
+        .and_then(Value::as_str)
+        .is_some());
 
     let search_req = Request::builder()
         .method("POST")
@@ -728,6 +736,34 @@ async fn memory_demote_hides_item_from_search_results() {
         demoted_row.get("visibility").and_then(Value::as_str),
         Some("private")
     );
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit?run_id=run-5")
+        .body(Body::empty())
+        .expect("audit request");
+    let audit_resp = app
+        .clone()
+        .oneshot(audit_req)
+        .await
+        .expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    let demote_audit_exists = audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                row.get("action").and_then(Value::as_str) == Some("memory_demote")
+                    && row.get("memory_id").and_then(Value::as_str) == Some(memory_id.as_str())
+                    && row.get("status").and_then(Value::as_str) == Some("ok")
+            })
+        })
+        .unwrap_or(false);
+    assert!(demote_audit_exists);
 }
 
 #[tokio::test]

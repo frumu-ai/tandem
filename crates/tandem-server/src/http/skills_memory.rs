@@ -1994,15 +1994,37 @@ pub(super) async fn memory_demote(
     if !changed {
         return Err(StatusCode::NOT_FOUND);
     }
+    let audit_id = Uuid::new_v4().to_string();
+    append_memory_audit(
+        &state,
+        crate::MemoryAuditEvent {
+            audit_id: audit_id.clone(),
+            action: "memory_demote".to_string(),
+            run_id: input.run_id.clone(),
+            memory_id: Some(input.id.clone()),
+            source_memory_id: None,
+            to_tier: None,
+            partition_key: "demoted".to_string(),
+            actor: "system".to_string(),
+            status: "ok".to_string(),
+            detail: None,
+            created_at_ms: crate::now_ms(),
+        },
+    )
+    .await?;
     state.event_bus.publish(EngineEvent::new(
         "memory.updated",
         json!({
             "memoryID": input.id,
             "runID": input.run_id,
             "action": "demote",
+            "auditID": audit_id,
         }),
     ));
-    Ok(Json(json!({"ok": true})))
+    Ok(Json(json!({
+        "ok": true,
+        "audit_id": audit_id,
+    })))
 }
 
 pub(super) async fn memory_audit(
