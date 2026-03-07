@@ -471,10 +471,13 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
   const [memoryCandidates, setMemoryCandidates] = useState<CoderMemoryCandidateRecord[]>([]);
   const [selectedArtifactPath, setSelectedArtifactPath] = useState<string | null>(null);
   const [selectedArtifactContent, setSelectedArtifactContent] = useState<string>("");
+  const [compareArtifactPath, setCompareArtifactPath] = useState<string | null>(null);
+  const [compareArtifactContent, setCompareArtifactContent] = useState<string>("");
   const [selectedDiffFileKey, setSelectedDiffFileKey] = useState<string | null>(null);
   const [artifactPreviewMode, setArtifactPreviewMode] = useState<"diff" | "raw">("diff");
   const [artifactDiffSplitView, setArtifactDiffSplitView] = useState(true);
   const [loadingArtifact, setLoadingArtifact] = useState(false);
+  const [loadingCompareArtifact, setLoadingCompareArtifact] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [acting, setActing] = useState<"approve" | "cancel" | null>(null);
@@ -549,6 +552,8 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       setMemoryCandidates([]);
       setSelectedArtifactPath(null);
       setSelectedArtifactContent("");
+      setCompareArtifactPath(null);
+      setCompareArtifactContent("");
       return;
     }
     void loadRunDetail(selectedRunId);
@@ -587,7 +592,38 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     setSelectedDiffFileKey(null);
     setArtifactPreviewMode("diff");
     setArtifactDiffSplitView(true);
+    setCompareArtifactPath(null);
+    setCompareArtifactContent("");
   }, [selectedArtifactPath]);
+
+  useEffect(() => {
+    if (!compareArtifactPath) {
+      setCompareArtifactContent("");
+      return;
+    }
+    let cancelled = false;
+    const loadArtifact = async () => {
+      setLoadingCompareArtifact(true);
+      try {
+        const content = await readFileText(compareArtifactPath, 512 * 1024, 120_000);
+        if (!cancelled) {
+          setCompareArtifactContent(content);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setCompareArtifactContent(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingCompareArtifact(false);
+        }
+      }
+    };
+    void loadArtifact();
+    return () => {
+      cancelled = true;
+    };
+  }, [compareArtifactPath]);
 
   const selectedTaskRows = useMemo(() => {
     const tasks = runState?.tasks;
@@ -969,6 +1005,11 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       sameEventCount: sameEventArtifacts.length,
     };
   }, [artifacts, selectedArtifactRecord]);
+
+  const compareArtifactRecord = useMemo(() => {
+    if (!compareArtifactPath) return null;
+    return artifacts.find((artifact) => artifact.path === compareArtifactPath) ?? null;
+  }, [artifacts, compareArtifactPath]);
 
   const relatedBlackboardRows = useMemo(() => {
     if (!selectedArtifactContext) return [];
@@ -1531,6 +1572,62 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     },
     [artifactDiffSplitView, artifactPreview, artifactPreviewMode, loadingArtifact, selectedDiffFile]
   );
+
+  const renderCompareArtifactPreview = useCallback(() => {
+    if (!compareArtifactPath) return null;
+    if (loadingCompareArtifact) {
+      return <p className="text-sm text-text-muted">Loading comparison artifact…</p>;
+    }
+    return (
+      <div className="space-y-3 rounded-3xl border border-primary/20 bg-primary/5 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium text-text">Compare artifacts</p>
+            <p className="mt-1 break-all font-mono text-[11px] text-text-muted">
+              {selectedArtifactPath}
+            </p>
+            <p className="mt-1 break-all font-mono text-[11px] text-text-muted">
+              {compareArtifactPath}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setCompareArtifactPath(null);
+              setCompareArtifactContent("");
+            }}
+            className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+          >
+            Clear compare
+          </button>
+        </div>
+        <DiffViewer
+          oldValue={selectedArtifactContent}
+          newValue={compareArtifactContent}
+          oldTitle={
+            selectedArtifactRecord
+              ? `${selectedArtifactRecord.artifact_type} (${formatTimestamp(selectedArtifactRecord.ts_ms)})`
+              : "Current artifact"
+          }
+          newTitle={
+            compareArtifactRecord
+              ? `${compareArtifactRecord.artifact_type} (${formatTimestamp(compareArtifactRecord.ts_ms)})`
+              : "Compared artifact"
+          }
+          splitView={artifactDiffSplitView}
+        />
+      </div>
+    );
+  }, [
+    artifactDiffSplitView,
+    compareArtifactPath,
+    compareArtifactContent,
+    compareArtifactRecord,
+    loadingCompareArtifact,
+    selectedArtifactContent,
+    selectedArtifactPath,
+    selectedArtifactRecord,
+  ]);
 
   return (
     <div className="h-full w-full overflow-hidden app-background">
@@ -3052,66 +3149,122 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                             {selectedArtifactRecord ? (
                               <div className="mt-3 flex flex-wrap gap-2">
                                 {selectedArtifactSiblings.olderInCategory ? (
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setSelectedArtifactPath(
-                                        selectedArtifactSiblings.olderInCategory?.path ?? null
-                                      );
-                                    }}
-                                    className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
-                                  >
-                                    Older
-                                  </button>
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedArtifactPath(
+                                          selectedArtifactSiblings.olderInCategory?.path ?? null
+                                        );
+                                      }}
+                                      className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                    >
+                                      Older
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setCompareArtifactPath(
+                                          selectedArtifactSiblings.olderInCategory?.path ?? null
+                                        );
+                                      }}
+                                      className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text transition-colors hover:bg-primary/15"
+                                    >
+                                      Compare older
+                                    </button>
+                                  </>
                                 ) : null}
                                 {selectedArtifactSiblings.newerInCategory ? (
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setSelectedArtifactPath(
-                                        selectedArtifactSiblings.newerInCategory?.path ?? null
-                                      );
-                                    }}
-                                    className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
-                                  >
-                                    Newer
-                                  </button>
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedArtifactPath(
+                                          selectedArtifactSiblings.newerInCategory?.path ?? null
+                                        );
+                                      }}
+                                      className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                    >
+                                      Newer
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setCompareArtifactPath(
+                                          selectedArtifactSiblings.newerInCategory?.path ?? null
+                                        );
+                                      }}
+                                      className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text transition-colors hover:bg-primary/15"
+                                    >
+                                      Compare newer
+                                    </button>
+                                  </>
                                 ) : null}
                                 {selectedArtifactSiblings.sameStepLatest ? (
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setSelectedArtifactPath(
-                                        selectedArtifactSiblings.sameStepLatest?.path ?? null
-                                      );
-                                    }}
-                                    className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
-                                  >
-                                    Same step{" "}
-                                    {selectedArtifactSiblings.sameStepCount > 1
-                                      ? `· ${selectedArtifactSiblings.sameStepCount}`
-                                      : ""}
-                                  </button>
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedArtifactPath(
+                                          selectedArtifactSiblings.sameStepLatest?.path ?? null
+                                        );
+                                      }}
+                                      className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                    >
+                                      Same step{" "}
+                                      {selectedArtifactSiblings.sameStepCount > 1
+                                        ? `· ${selectedArtifactSiblings.sameStepCount}`
+                                        : ""}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setCompareArtifactPath(
+                                          selectedArtifactSiblings.sameStepLatest?.path ?? null
+                                        );
+                                      }}
+                                      className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text transition-colors hover:bg-primary/15"
+                                    >
+                                      Compare step
+                                    </button>
+                                  </>
                                 ) : null}
                                 {selectedArtifactSiblings.sameEventLatest ? (
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setSelectedArtifactPath(
-                                        selectedArtifactSiblings.sameEventLatest?.path ?? null
-                                      );
-                                    }}
-                                    className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
-                                  >
-                                    Same event{" "}
-                                    {selectedArtifactSiblings.sameEventCount > 1
-                                      ? `· ${selectedArtifactSiblings.sameEventCount}`
-                                      : ""}
-                                  </button>
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedArtifactPath(
+                                          selectedArtifactSiblings.sameEventLatest?.path ?? null
+                                        );
+                                      }}
+                                      className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                                    >
+                                      Same event{" "}
+                                      {selectedArtifactSiblings.sameEventCount > 1
+                                        ? `· ${selectedArtifactSiblings.sameEventCount}`
+                                        : ""}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setCompareArtifactPath(
+                                          selectedArtifactSiblings.sameEventLatest?.path ?? null
+                                        );
+                                      }}
+                                      className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text transition-colors hover:bg-primary/15"
+                                    >
+                                      Compare event
+                                    </button>
+                                  </>
                                 ) : null}
                               </div>
                             ) : null}
@@ -3247,6 +3400,7 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                               </button>
                             </div>
                           ) : null}
+                          {renderCompareArtifactPreview()}
                           {selectedArtifactContext ? (
                             <div className="rounded-3xl border border-sky-500/20 bg-sky-500/5 p-4">
                               <div className="flex items-start justify-between gap-3">
