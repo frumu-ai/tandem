@@ -719,6 +719,11 @@ async fn bug_monitor_draft_can_be_approved_and_denied() {
         .is_some_and(|path| {
             path.ends_with("/artifacts/bug_monitor.approval_failure_pattern.json")
         }));
+    assert!(approve_payload
+        .get("issue_draft")
+        .and_then(|row| row.get("rendered_body"))
+        .and_then(Value::as_str)
+        .is_some_and(|body| body.contains("boom")));
 
     let duplicate_req = Request::builder()
         .method("POST")

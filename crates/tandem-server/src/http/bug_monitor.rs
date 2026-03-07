@@ -1505,6 +1505,9 @@ pub(super) async fn approve_bug_monitor_draft(
             } else {
                 None
             };
+            let issue_draft = ensure_bug_monitor_issue_draft(state.clone(), &draft.draft_id, true)
+                .await
+                .ok();
             match bug_monitor_github::publish_draft(
                 &state,
                 &draft.draft_id,
@@ -1518,6 +1521,7 @@ pub(super) async fn approve_bug_monitor_draft(
                     "draft": outcome.draft,
                     "action": outcome.action,
                     "failure_pattern_memory": approval_failure_pattern_memory,
+                    "issue_draft": issue_draft,
                     "post": outcome.post,
                 }))
                 .into_response(),
@@ -1540,6 +1544,7 @@ pub(super) async fn approve_bug_monitor_draft(
                         "draft": updated_draft,
                         "action": "approved",
                         "failure_pattern_memory": approval_failure_pattern_memory,
+                        "issue_draft": issue_draft,
                         "publish_error": detail,
                     }))
                     .into_response()
