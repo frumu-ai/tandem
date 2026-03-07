@@ -91,6 +91,7 @@
   - `pr_review` now defaults to pull-request-specific memory queries, bootstraps a `coder_memory_hits` artifact at run creation, and reuses prior review `run_outcome` memory during later reviews of the same repo/PR
   - `pr_review` summary writes now also emit reusable `review_memory` candidates, and follow-on PR reviews can retrieve that review-specific memory through the shared coder memory-hits path
   - `pr_review` summary writes now also emit `regression_signal` candidates when review input includes historical regression signals, and later PR reviews can retrieve those signals through the same repo/PR memory-hits path
+  - added the first `merge_recommendation` coder workflow skeleton with PR-backed readiness checks, seeded merge-assessment tasks, bootstrapped `coder_memory_hits`, and `POST /coder/runs/{id}/merge-recommendation-summary` for structured merge recommendation artifacts
 
 - **Setup understanding now routes setup asks instead of treating them as ordinary chat**:
   - added a shared backend setup-understanding endpoint at `POST /setup/understand`
