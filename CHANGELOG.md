@@ -135,6 +135,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `pr_review` summary writes now also emit reusable `review_memory` candidates, and follow-on PR reviews can retrieve that review-specific memory through the shared coder memory-hits path
   - `pr_review` summary writes now also emit `regression_signal` candidates when review input includes historical regression signals, and later PR reviews can retrieve those signals through the same repo/PR memory-hits path
   - added the first `merge_recommendation` coder workflow skeleton with PR-backed readiness checks, seeded merge-assessment tasks, bootstrapped `coder_memory_hits`, and `POST /coder/runs/{id}/merge-recommendation-summary` for structured merge recommendation artifacts
+  - merge recommendation summaries now emit reusable `merge_recommendation_memory` and `run_outcome` candidates so later runs can reuse prior merge guidance without needing a separate manual candidate write
 
 - **Setup-understanding across channels and chat surfaces**:
   - added a shared deterministic setup-intent resolver at `POST /setup/understand` in `tandem-server`

@@ -102,6 +102,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - `pr_review` summary writes now also emit reusable `review_memory` candidates, and follow-on PR reviews can retrieve that review-specific memory through the shared coder memory-hits path.
   - `pr_review` summary writes now also emit `regression_signal` candidates when review input includes historical regression signals, and later PR reviews can retrieve those signals through the same repo/PR memory-hits path.
   - Added the first `merge_recommendation` coder workflow skeleton with PR-backed readiness checks, seeded merge-assessment tasks, bootstrapped `coder_memory_hits`, and `POST /coder/runs/{id}/merge-recommendation-summary` for structured merge recommendation artifacts.
+  - Merge recommendation summaries now emit reusable `merge_recommendation_memory` and `run_outcome` candidates so later runs can reuse prior merge guidance without needing a separate manual candidate write.
 
 ## v0.4.1 (2026-03-07)
 

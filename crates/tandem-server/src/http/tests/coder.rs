@@ -842,6 +842,24 @@ async fn coder_merge_recommendation_summary_create_writes_artifact() {
             .and_then(Value::as_str),
         Some("coder_merge_recommendation_summary")
     );
+    assert_eq!(
+        summary_payload
+            .get("generated_candidates")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().any(|row| {
+                row.get("kind").and_then(Value::as_str) == Some("merge_recommendation_memory")
+            })),
+        Some(true)
+    );
+    assert_eq!(
+        summary_payload
+            .get("generated_candidates")
+            .and_then(Value::as_array)
+            .map(|rows| rows
+                .iter()
+                .any(|row| { row.get("kind").and_then(Value::as_str) == Some("run_outcome") })),
+        Some(true)
+    );
 
     let artifacts_req = Request::builder()
         .method("GET")

@@ -114,6 +114,7 @@ pub(super) struct CoderRunListQuery {
 pub(super) enum CoderMemoryCandidateKind {
     TriageMemory,
     ReviewMemory,
+    MergeRecommendationMemory,
     RegressionSignal,
     FailurePattern,
     RunOutcome,
@@ -2623,6 +2624,9 @@ pub(super) async fn coder_memory_candidate_promote(
             kind: match kind {
                 CoderMemoryCandidateKind::TriageMemory => MemoryContentKind::SolutionCapsule,
                 CoderMemoryCandidateKind::ReviewMemory => MemoryContentKind::SolutionCapsule,
+                CoderMemoryCandidateKind::MergeRecommendationMemory => {
+                    MemoryContentKind::SolutionCapsule
+                }
                 CoderMemoryCandidateKind::RegressionSignal => MemoryContentKind::Fact,
                 CoderMemoryCandidateKind::FailurePattern => MemoryContentKind::Fact,
                 CoderMemoryCandidateKind::RunOutcome => MemoryContentKind::Note,
@@ -3092,8 +3096,75 @@ pub(super) async fn coder_merge_recommendation_summary_create(
         }
         extra
     });
+
+    let mut generated_candidates = Vec::<Value>::new();
+    if let Some(summary_text) = input
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|row| !row.is_empty())
+        .map(ToString::to_string)
+    {
+        let recommendation = input
+            .recommendation
+            .as_deref()
+            .map(str::trim)
+            .filter(|row| !row.is_empty())
+            .unwrap_or("hold");
+        let (merge_recommendation_memory_id, merge_recommendation_memory_artifact) =
+            write_coder_memory_candidate_artifact(
+                &state,
+                &record,
+                CoderMemoryCandidateKind::MergeRecommendationMemory,
+                Some(summary_text.clone()),
+                Some("write_merge_artifact".to_string()),
+                json!({
+                    "workflow_mode": "merge_recommendation",
+                    "recommendation": recommendation,
+                    "summary": summary_text,
+                    "risk_level": input.risk_level,
+                    "blockers": input.blockers,
+                    "required_checks": input.required_checks,
+                    "required_approvals": input.required_approvals,
+                    "memory_hits_used": input.memory_hits_used,
+                    "summary_artifact_path": artifact.path,
+                }),
+            )
+            .await?;
+        generated_candidates.push(json!({
+            "candidate_id": merge_recommendation_memory_id,
+            "kind": "merge_recommendation_memory",
+            "artifact_path": merge_recommendation_memory_artifact.path,
+        }));
+
+        let (run_outcome_id, run_outcome_artifact) = write_coder_memory_candidate_artifact(
+            &state,
+            &record,
+            CoderMemoryCandidateKind::RunOutcome,
+            Some(format!("Merge recommendation completed: {recommendation}")),
+            Some("write_merge_artifact".to_string()),
+            json!({
+                "workflow_mode": "merge_recommendation",
+                "result": recommendation,
+                "summary": summary_text,
+                "risk_level": input.risk_level,
+                "blockers": input.blockers,
+                "required_checks": input.required_checks,
+                "required_approvals": input.required_approvals,
+                "memory_hits_used": input.memory_hits_used,
+                "summary_artifact_path": artifact.path,
+            }),
+        )
+        .await?;
+        generated_candidates.push(json!({
+            "candidate_id": run_outcome_id,
+            "kind": "run_outcome",
+            "artifact_path": run_outcome_artifact.path,
+        }));
+    }
     Ok(Json(json!({
         "ok": true,
         "artifact": artifact,
+        "generated_candidates": generated_candidates,
     })))
 }
