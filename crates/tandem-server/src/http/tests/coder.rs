@@ -2331,6 +2331,29 @@ async fn coder_memory_hits_endpoint_returns_ranked_hits() {
         .expect("candidate response");
     assert_eq!(candidate_resp.status(), StatusCode::OK);
 
+    let failure_pattern_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-run-hits-a/memory-candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "kind": "failure_pattern",
+                "summary": "Capability readiness drift repeatedly blocks issue triage startup.",
+                "payload": {
+                    "type": "historical_failure_pattern",
+                    "root_cause": "GitHub capability bindings were missing during run bootstrap."
+                }
+            })
+            .to_string(),
+        ))
+        .expect("failure pattern request");
+    let failure_pattern_resp = app
+        .clone()
+        .oneshot(failure_pattern_req)
+        .await
+        .expect("failure pattern response");
+    assert_eq!(failure_pattern_resp.status(), StatusCode::OK);
+
     let second_req = Request::builder()
         .method("POST")
         .uri("/coder/runs")
@@ -2376,6 +2399,24 @@ async fn coder_memory_hits_endpoint_returns_ranked_hits() {
         .and_then(Value::as_array)
         .map(|rows| !rows.is_empty())
         .unwrap_or(false));
+    assert_eq!(
+        hits_payload
+            .get("hits")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("failure_pattern")
+    );
+    assert_eq!(
+        hits_payload
+            .get("hits")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("same_ref"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
 }
 
 #[tokio::test]
