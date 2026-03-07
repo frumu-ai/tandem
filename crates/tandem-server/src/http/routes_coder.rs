@@ -13,6 +13,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route("/coder/runs/{id}/artifacts", get(coder_run_artifacts))
         .route("/coder/runs/{id}/memory-hits", get(coder_memory_hits_get))
         .route(
+            "/coder/runs/{id}/triage-inspection-report",
+            post(coder_triage_inspection_report_create),
+        )
+        .route(
             "/coder/runs/{id}/triage-reproduction-report",
             post(coder_triage_reproduction_report_create),
         )

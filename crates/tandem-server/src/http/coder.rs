@@ -182,6 +182,20 @@ pub(super) struct CoderTriageReproductionReportCreateInput {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct CoderTriageInspectionReportCreateInput {
+    #[serde(default)]
+    pub(super) summary: Option<String>,
+    #[serde(default)]
+    pub(super) likely_areas: Vec<String>,
+    #[serde(default)]
+    pub(super) affected_files: Vec<String>,
+    #[serde(default)]
+    pub(super) memory_hits_used: Vec<String>,
+    #[serde(default)]
+    pub(super) notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct CoderPrReviewSummaryCreateInput {
     #[serde(default)]
     pub(super) verdict: Option<String>,
@@ -3938,6 +3952,72 @@ pub(super) async fn coder_triage_reproduction_report_create(
         &["inspect_repo", "attempt_reproduction"],
         &["write_triage_artifact"],
         "Write the triage summary and capture duplicate candidates.",
+    )
+    .await?;
+    record.updated_at_ms = final_run.updated_at_ms;
+    save_coder_run_record(&state, &record).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "artifact": artifact,
+        "coder_run": coder_run_payload(&record, &final_run),
+        "run": final_run,
+    })))
+}
+
+pub(super) async fn coder_triage_inspection_report_create(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<CoderTriageInspectionReportCreateInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let mut record = load_coder_run_record(&state, &id).await?;
+    if !matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if input
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+        && input.likely_areas.is_empty()
+        && input.affected_files.is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let artifact_id = format!("triage-inspection-{}", Uuid::new_v4().simple());
+    let payload = json!({
+        "coder_run_id": record.coder_run_id,
+        "linked_context_run_id": record.linked_context_run_id,
+        "workflow_mode": record.workflow_mode,
+        "repo_binding": record.repo_binding,
+        "github_ref": record.github_ref,
+        "summary": input.summary,
+        "likely_areas": input.likely_areas,
+        "affected_files": input.affected_files,
+        "memory_hits_used": input.memory_hits_used,
+        "notes": input.notes,
+        "created_at_ms": crate::now_ms(),
+    });
+    let artifact = write_coder_artifact(
+        &state,
+        &record.linked_context_run_id,
+        &artifact_id,
+        "coder_repo_inspection_report",
+        "artifacts/triage.inspection.json",
+        &payload,
+    )
+    .await?;
+    publish_coder_artifact_added(&state, &record, &artifact, Some("repo_inspection"), {
+        let mut extra = serde_json::Map::new();
+        extra.insert("kind".to_string(), json!("inspection_report"));
+        extra
+    });
+    let final_run = advance_coder_workflow_run(
+        &state,
+        &record,
+        &["inspect_repo"],
+        &["attempt_reproduction"],
+        "Attempt constrained reproduction using the inspected repo context.",
     )
     .await?;
     record.updated_at_ms = final_run.updated_at_ms;
