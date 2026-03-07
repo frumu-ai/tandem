@@ -235,6 +235,10 @@ function taskLabel(task: RunTaskRecord): string {
   return String(task.title ?? task.workflow_node_id ?? task.task_type ?? task.id ?? "task");
 }
 
+function memoryKindLabel(value: unknown): string {
+  return pickText(value) || "memory";
+}
+
 export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRunViewerProps) {
   const [runs, setRuns] = useState<CoderRunRecord[]>([]);
   const [runQuery, setRunQuery] = useState("");
@@ -1790,26 +1794,75 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                         Memory Hits
                       </CardTitle>
                     </CardHeader>
-                    <CardContent className="space-y-2">
+                    <CardContent className="space-y-4">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="rounded-2xl border border-border bg-surface-elevated/40 p-3">
+                          <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
+                            Hit count
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-text">
+                            {memoryHits.length}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-border bg-surface-elevated/40 p-3">
+                          <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
+                            Scored hits
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-text">
+                            {memoryHits.filter((hit) => typeof hit.score === "number").length}
+                          </p>
+                        </div>
+                      </div>
                       {memoryHits.length === 0 ? (
                         <p className="text-sm text-text-muted">No memory hits returned.</p>
                       ) : (
                         memoryHits.map((hit, index) => (
                           <div
                             key={String(hit.candidate_id ?? hit.memory_id ?? index)}
-                            className="rounded-2xl border border-border bg-surface-elevated/40 p-3"
+                            className="rounded-3xl border border-border bg-surface-elevated/40 p-4"
                           >
                             <div className="flex items-center justify-between gap-3">
-                              <p className="text-sm font-medium text-text">
-                                {renderValue(hit.kind ?? hit.source ?? "memory_hit")}
-                              </p>
-                              <span className="text-xs text-text-muted">
-                                {typeof hit.score === "number" ? hit.score.toFixed(2) : ""}
-                              </span>
+                              <div>
+                                <p className="text-sm font-medium text-text">
+                                  {memoryKindLabel(hit.kind ?? hit.source ?? "memory_hit")}
+                                </p>
+                                <p className="mt-1 text-[11px] text-text-muted">
+                                  {pickText(hit.candidate_id) ||
+                                    pickText(hit.memory_id) ||
+                                    `hit-${index + 1}`}
+                                </p>
+                              </div>
+                              {typeof hit.score === "number" ? (
+                                <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-emerald-200">
+                                  score {hit.score.toFixed(2)}
+                                </span>
+                              ) : null}
                             </div>
-                            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-[11px] text-text-muted">
-                              {renderValue(hit.summary ?? hit.content ?? hit.payload ?? hit)}
-                            </pre>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {pickText(hit.kind) ? (
+                                <span className="rounded-full border border-border px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                                  {pickText(hit.kind)}
+                                </span>
+                              ) : null}
+                              {pickText(hit.source) ? (
+                                <span className="rounded-full border border-border px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                                  {pickText(hit.source)}
+                                </span>
+                              ) : null}
+                              {pickText(hit.memory_id) ? (
+                                <span className="rounded-full border border-border px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                                  memory {pickText(hit.memory_id)}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-3 rounded-2xl border border-border bg-surface p-3">
+                              <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
+                                Summary
+                              </p>
+                              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-[11px] text-text-muted">
+                                {renderValue(hit.summary ?? hit.content ?? hit.payload ?? hit)}
+                              </pre>
+                            </div>
                           </div>
                         ))
                       )}
@@ -1823,24 +1876,79 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                         Memory Candidates
                       </CardTitle>
                     </CardHeader>
-                    <CardContent className="space-y-2">
+                    <CardContent className="space-y-4">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="rounded-2xl border border-border bg-surface-elevated/40 p-3">
+                          <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
+                            Candidate count
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-text">
+                            {memoryCandidates.length}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-border bg-surface-elevated/40 p-3">
+                          <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
+                            Linked artifacts
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-text">
+                            {memoryCandidates.filter((candidate) => candidate.artifact).length}
+                          </p>
+                        </div>
+                      </div>
                       {memoryCandidates.length === 0 ? (
                         <p className="text-sm text-text-muted">No memory candidates recorded.</p>
                       ) : (
                         memoryCandidates.map((candidate) => (
                           <div
                             key={candidate.candidate_id}
-                            className="rounded-2xl border border-border bg-surface-elevated/40 p-3"
+                            className="rounded-3xl border border-border bg-surface-elevated/40 p-4"
                           >
                             <div className="flex items-center justify-between gap-3">
-                              <p className="text-sm font-medium text-text">{candidate.kind}</p>
+                              <div>
+                                <p className="text-sm font-medium text-text">{candidate.kind}</p>
+                                <p className="mt-1 text-[11px] text-text-muted">
+                                  {candidate.candidate_id}
+                                </p>
+                              </div>
                               <span className="text-xs text-text-muted">
                                 {formatTimestamp(candidate.created_at_ms)}
                               </span>
                             </div>
-                            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-[11px] text-text-muted">
-                              {renderValue(candidate.summary ?? candidate.payload)}
-                            </pre>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-emerald-200">
+                                {candidate.kind}
+                              </span>
+                              {candidate.artifact?.artifact_type ? (
+                                <span className="rounded-full border border-border px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                                  {candidate.artifact.artifact_type}
+                                </span>
+                              ) : null}
+                            </div>
+                            {candidate.artifact ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedArtifactPath(candidate.artifact?.path ?? null);
+                                  setDetailTab("artifacts");
+                                }}
+                                className="mt-3 w-full rounded-2xl border border-border bg-surface p-3 text-left transition-colors hover:bg-surface-elevated"
+                              >
+                                <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
+                                  Linked artifact
+                                </p>
+                                <p className="mt-2 break-all font-mono text-[11px] text-text-muted">
+                                  {candidate.artifact.path}
+                                </p>
+                              </button>
+                            ) : null}
+                            <div className="mt-3 rounded-2xl border border-border bg-surface p-3">
+                              <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
+                                Summary
+                              </p>
+                              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-[11px] text-text-muted">
+                                {renderValue(candidate.summary ?? candidate.payload)}
+                              </pre>
+                            </div>
                           </div>
                         ))
                       )}
