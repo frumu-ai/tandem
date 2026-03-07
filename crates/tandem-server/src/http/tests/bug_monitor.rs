@@ -1336,6 +1336,82 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
                 .get("duplicate_matches_artifact")
                 .is_some_and(Value::is_null)
     );
+
+    state
+        .put_bug_monitor_incident(crate::BugMonitorIncidentRecord {
+            incident_id: "incident-replay-approved-draft".to_string(),
+            fingerprint: triage_payload
+                .get("draft")
+                .and_then(|row| row.get("fingerprint"))
+                .and_then(Value::as_str)
+                .expect("draft fingerprint")
+                .to_string(),
+            event_type: "orchestrator.run_failed".to_string(),
+            status: "queued".to_string(),
+            repo: "acme/platform".to_string(),
+            workspace_root: "/tmp/acme".to_string(),
+            title: "Build failure in CI".to_string(),
+            detail: Some("boom".to_string()),
+            excerpt: vec!["boom".to_string()],
+            source: Some("desktop_logs".to_string()),
+            run_id: None,
+            session_id: None,
+            correlation_id: None,
+            component: Some("orchestrator".to_string()),
+            level: Some("error".to_string()),
+            occurrence_count: 1,
+            created_at_ms: crate::now_ms(),
+            updated_at_ms: crate::now_ms(),
+            last_seen_at_ms: Some(crate::now_ms()),
+            draft_id: Some(draft_id.clone()),
+            triage_run_id: Some(run_id.clone()),
+            last_error: None,
+            duplicate_summary: None,
+            event_payload: None,
+        })
+        .await
+        .expect("seed replay incident");
+
+    let replay_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/incidents/incident-replay-approved-draft/replay")
+        .body(Body::empty())
+        .expect("replay request");
+    let replay_resp = app
+        .clone()
+        .oneshot(replay_req)
+        .await
+        .expect("replay response");
+    assert_eq!(replay_resp.status(), StatusCode::OK);
+    let replay_payload: Value = serde_json::from_slice(
+        &to_bytes(replay_resp.into_body(), usize::MAX)
+            .await
+            .expect("replay body"),
+    )
+    .expect("replay json");
+    assert_eq!(
+        replay_payload
+            .get("run")
+            .and_then(|row| row.get("run_id"))
+            .and_then(Value::as_str),
+        Some(run_id.as_str())
+    );
+    assert_eq!(
+        replay_payload.get("deduped").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(replay_payload
+        .get("issue_draft")
+        .and_then(|row| row.get("rendered_body"))
+        .and_then(Value::as_str)
+        .is_some_and(|body| body.contains("Build failure in CI")));
+    assert_eq!(
+        replay_payload
+            .get("issue_draft_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_issue_draft")
+    );
 }
 
 #[tokio::test]

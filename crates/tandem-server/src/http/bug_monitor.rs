@@ -1338,14 +1338,28 @@ pub(super) async fn replay_bug_monitor_incident(
             .into_response();
     };
     match ensure_bug_monitor_triage_run(state, draft_id, true).await {
-        Ok((draft, run, deduped)) => Json(json!({
-            "ok": true,
-            "incident": incident,
-            "draft": draft,
-            "run": run,
-            "deduped": deduped,
-        }))
-        .into_response(),
+        Ok((draft, run, deduped)) => {
+            let triage_run_id = draft.triage_run_id.as_deref().unwrap_or(run.as_str());
+            let run = load_context_run_state(&state, triage_run_id).await.ok();
+            let issue_draft = ensure_bug_monitor_issue_draft(state.clone(), draft_id, true)
+                .await
+                .ok();
+            let duplicate_matches_artifact =
+                latest_bug_monitor_artifact(&state, triage_run_id, "failure_duplicate_matches");
+            let issue_draft_artifact =
+                latest_bug_monitor_artifact(&state, triage_run_id, "bug_monitor_issue_draft");
+            Json(json!({
+                "ok": true,
+                "incident": incident,
+                "draft": draft,
+                "run": run,
+                "deduped": deduped,
+                "issue_draft": issue_draft,
+                "issue_draft_artifact": issue_draft_artifact,
+                "duplicate_matches_artifact": duplicate_matches_artifact,
+            }))
+            .into_response()
+        }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
