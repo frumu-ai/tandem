@@ -1320,8 +1320,10 @@ fn load_default_knowledge_override_from_env() -> anyhow::Result<
             continue;
         }
 
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read docs override file {}", path.display()))?;
+        let content =
+            normalize_default_knowledge_content(&fs::read_to_string(&path).with_context(|| {
+                format!("failed to read docs override file {}", path.display())
+            })?);
         if content.trim().is_empty() {
             continue;
         }
@@ -1388,6 +1390,10 @@ fn docs_url_for_relative_path(relative_path: &str) -> String {
         slug = stripped.to_string();
     }
     format!("{}{}", base, slug)
+}
+
+fn normalize_default_knowledge_content(content: &str) -> String {
+    content.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn load_default_knowledge_state(path: &Path) -> Option<DefaultKnowledgeState> {
@@ -1506,5 +1512,27 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("unsupported provider `openruter`"));
+    }
+
+    #[test]
+    fn normalize_default_knowledge_content_canonicalizes_line_endings() {
+        assert_eq!(
+            normalize_default_knowledge_content("alpha\r\nbeta\r\ngamma\r"),
+            "alpha\nbeta\ngamma\n"
+        );
+        assert_eq!(
+            normalize_default_knowledge_content("alpha\nbeta\ngamma\n"),
+            "alpha\nbeta\ngamma\n"
+        );
+    }
+
+    #[test]
+    fn normalized_default_knowledge_hashes_are_stable() {
+        let lf = normalize_default_knowledge_content("alpha\nbeta\n");
+        let crlf = normalize_default_knowledge_content("alpha\r\nbeta\r\n");
+
+        assert_eq!(lf, crlf);
+        assert_eq!(sha256_hex(lf.as_bytes()), sha256_hex(crlf.as_bytes()));
+        assert_eq!(lf.as_bytes().len(), crlf.as_bytes().len());
     }
 }
