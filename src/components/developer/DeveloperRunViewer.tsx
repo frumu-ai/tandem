@@ -149,6 +149,23 @@ function fileExtensionLabel(path: string): string {
   return extension ? extension.toUpperCase() : "TEXT";
 }
 
+function basename(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+function normalizedPath(path: string): string {
+  return path.replace(/\\/g, "/").trim().toLowerCase();
+}
+
+function pathSuffixes(path: string): string[] {
+  const parts = normalizedPath(path).split("/").filter(Boolean);
+  const suffixes: string[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    suffixes.push(parts.slice(index).join("/"));
+  }
+  return suffixes;
+}
+
 function nestedContent(value: unknown): string | null {
   if (typeof value === "string") return value;
   const record = asRecord(value);
@@ -1038,23 +1055,102 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
 
   const structuredComparePair = useMemo(() => {
     if (artifactPreview?.kind !== "diff" || compareArtifactPreview?.kind !== "diff") return null;
-    const selectedByLabel = new Map(artifactPreview.files.map((file) => [file.label, file]));
-    const compareByLabel = new Map(compareArtifactPreview.files.map((file) => [file.label, file]));
-    const sharedLabels = artifactPreview.files
-      .map((file) => file.label)
-      .filter((label) => compareByLabel.has(label));
-    if (sharedLabels.length === 0) return null;
+    const compareByExact = new Map(
+      compareArtifactPreview.files.map((file) => [normalizedPath(file.label), file])
+    );
+    const selectedBaseCounts = new Map<string, number>();
+    const compareBaseCounts = new Map<string, number>();
+    const selectedSuffixCounts = new Map<string, number>();
+    const compareSuffixCounts = new Map<string, number>();
+    artifactPreview.files.forEach((file) => {
+      const base = basename(normalizedPath(file.label));
+      selectedBaseCounts.set(base, (selectedBaseCounts.get(base) ?? 0) + 1);
+      const suffix = pathSuffixes(file.label).slice(0, 2).pop();
+      if (suffix) selectedSuffixCounts.set(suffix, (selectedSuffixCounts.get(suffix) ?? 0) + 1);
+    });
+    compareArtifactPreview.files.forEach((file) => {
+      const base = basename(normalizedPath(file.label));
+      compareBaseCounts.set(base, (compareBaseCounts.get(base) ?? 0) + 1);
+      const suffix = pathSuffixes(file.label).slice(0, 2).pop();
+      if (suffix) compareSuffixCounts.set(suffix, (compareSuffixCounts.get(suffix) ?? 0) + 1);
+    });
+    const compareByBase = new Map<string, ArtifactDiffFile>();
+    const compareBySuffix = new Map<string, ArtifactDiffFile>();
+    compareArtifactPreview.files.forEach((file) => {
+      const base = basename(normalizedPath(file.label));
+      if ((compareBaseCounts.get(base) ?? 0) === 1) {
+        compareByBase.set(base, file);
+      }
+      const suffix = pathSuffixes(file.label).slice(0, 2).pop();
+      if (suffix && (compareSuffixCounts.get(suffix) ?? 0) === 1) {
+        compareBySuffix.set(suffix, file);
+      }
+    });
+    const pairs = artifactPreview.files
+      .map((file) => {
+        const exact = compareByExact.get(normalizedPath(file.label));
+        if (exact) {
+          return {
+            label: file.label,
+            selectedFile: file,
+            compareFile: exact,
+            matchKind: "exact" as const,
+          };
+        }
+        const fileBase = basename(normalizedPath(file.label));
+        const byBase =
+          (selectedBaseCounts.get(fileBase) ?? 0) === 1 ? compareByBase.get(fileBase) : undefined;
+        if (byBase) {
+          return {
+            label: file.label,
+            selectedFile: file,
+            compareFile: byBase,
+            matchKind: "basename" as const,
+          };
+        }
+        const suffix2 = pathSuffixes(file.label).slice(0, 2).pop();
+        const bySuffix =
+          suffix2 && (selectedSuffixCounts.get(suffix2) ?? 0) === 1
+            ? compareBySuffix.get(suffix2)
+            : undefined;
+        if (bySuffix) {
+          return {
+            label: file.label,
+            selectedFile: file,
+            compareFile: bySuffix,
+            matchKind: "suffix" as const,
+          };
+        }
+        return null;
+      })
+      .filter(
+        (
+          pair
+        ): pair is {
+          label: string;
+          selectedFile: ArtifactDiffFile;
+          compareFile: ArtifactDiffFile;
+          matchKind: "exact" | "basename" | "suffix";
+        } => !!pair
+      );
+    if (pairs.length === 0) return null;
+    const pairByLabel = new Map(pairs.map((pair) => [pair.label, pair]));
     const activeLabel =
-      (selectedDiffFile && compareByLabel.has(selectedDiffFile.label) && selectedDiffFile.label) ||
-      (compareDiffFile && selectedByLabel.has(compareDiffFile.label) && compareDiffFile.label) ||
-      sharedLabels[0] ||
+      (selectedDiffFile && pairByLabel.has(selectedDiffFile.label) && selectedDiffFile.label) ||
+      (compareDiffFile && pairs.some((pair) => pair.compareFile.key === compareDiffFile.key)
+        ? pairs.find((pair) => pair.compareFile.key === compareDiffFile.key)?.label
+        : null) ||
+      pairs[0]?.label ||
       null;
     if (!activeLabel) return null;
+    const activePair = pairByLabel.get(activeLabel);
+    if (!activePair) return null;
     return {
-      sharedLabels,
-      selectedFile: selectedByLabel.get(activeLabel) ?? null,
-      compareFile: compareByLabel.get(activeLabel) ?? null,
+      sharedLabels: pairs.map((pair) => pair.label),
+      selectedFile: activePair.selectedFile,
+      compareFile: activePair.compareFile,
       activeLabel,
+      matchKind: activePair.matchKind,
     };
   }, [artifactPreview, compareArtifactPreview, compareDiffFile, selectedDiffFile]);
 
@@ -1658,6 +1754,20 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
               <div className="flex flex-wrap gap-2">
                 <span className="rounded-full border border-border px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted">
                   {structuredComparePair.selectedFile.extensionLabel}
+                </span>
+                <span
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-[0.18em]",
+                    structuredComparePair.matchKind === "exact"
+                      ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
+                      : "border-amber-500/20 bg-amber-500/10 text-amber-100"
+                  )}
+                >
+                  {structuredComparePair.matchKind === "exact"
+                    ? "Exact match"
+                    : structuredComparePair.matchKind === "basename"
+                      ? "Basename match"
+                      : "Suffix match"}
                 </span>
                 <button
                   type="button"
