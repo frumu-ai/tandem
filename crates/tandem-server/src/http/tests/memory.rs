@@ -34,6 +34,10 @@ async fn memory_put_enforces_default_write_scope() {
 async fn memory_put_then_search_in_session_scope() {
     let state = test_state().await;
     let app = app_router(state.clone());
+    let artifact_refs = vec![
+        Value::from("artifact://run-2/task-1/patch.diff"),
+        Value::from("artifact://run-2/task-2/validation.json"),
+    ];
 
     let put_req = Request::builder()
         .method("POST")
@@ -51,7 +55,7 @@ async fn memory_put_then_search_in_session_scope() {
                 "kind": "solution_capsule",
                 "content": "retry budget extension pattern",
                 "classification": "internal",
-                "artifact_refs": ["artifact://run-2/task-1/patch.diff"]
+                "artifact_refs": artifact_refs
             })
             .to_string(),
         ))
@@ -91,6 +95,16 @@ async fn memory_put_then_search_in_session_scope() {
         .map(|v| v.len())
         .unwrap_or(0);
     assert!(result_count >= 1);
+    let first_result = payload
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        first_result.get("artifact_refs").and_then(Value::as_array),
+        Some(&artifact_refs)
+    );
 }
 
 #[tokio::test]
