@@ -35,6 +35,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Split Bug Monitor readiness into local ingest vs GitHub publish readiness so live tracker surfaces can show “watching locally” when incident capture is healthy but GitHub posting is blocked.
   - Added `POST /bug-monitor/drafts/{id}/triage-summary` so Bug Monitor triage can persist a structured summary artifact for issue drafting.
   - Bug Monitor issue-draft generation now prefers that structured triage summary over raw incident detail when rendering the repo issue template.
+  - Bug Monitor now suppresses duplicate incidents earlier in both runtime ingest and manual `POST /bug-monitor/report` flows by consulting stored `failure_pattern` memory before opening a fresh draft.
 
 - Initial Tandem Coder engine API foundation
   - Added the first engine-owned coder endpoints:

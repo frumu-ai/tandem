@@ -339,6 +339,10 @@ async fn bug_monitor_report_surfaces_duplicate_failure_patterns() {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    assert_eq!(
+        report_payload.get("suppressed").and_then(Value::as_bool),
+        Some(true)
+    );
     assert_eq!(duplicate_matches.len(), 1);
     assert_eq!(
         duplicate_matches[0]
@@ -346,6 +350,118 @@ async fn bug_monitor_report_surfaces_duplicate_failure_patterns() {
             .and_then(Value::as_str),
         Some("manual-failure-pattern")
     );
+    assert!(state.list_bug_monitor_drafts(10).await.is_empty());
+}
+
+#[tokio::test]
+async fn bug_monitor_runtime_suppresses_duplicate_failure_patterns() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let seed_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-run-runtime-duplicate-seed",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "acme/platform"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 401
+                }
+            })
+            .to_string(),
+        ))
+        .expect("seed request");
+    let seed_resp = app.clone().oneshot(seed_req).await.expect("seed response");
+    assert_eq!(seed_resp.status(), StatusCode::OK);
+
+    let candidate_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-run-runtime-duplicate-seed/memory-candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "kind": "failure_pattern",
+                "summary": "Repeated orchestrator failure",
+                "payload": {
+                    "type": "failure.pattern",
+                    "repo_slug": "acme/platform",
+                    "fingerprint": "runtime-duplicate-fingerprint",
+                    "symptoms": ["session.error"],
+                    "canonical_markers": ["Prompt retry failed", "swarm-orchestrator"],
+                    "linked_issue_numbers": [401],
+                    "linked_pr_numbers": [],
+                    "affected_components": ["orchestrator"],
+                    "artifact_refs": ["artifact://ctx/manual/triage.summary.json"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("candidate request");
+    let candidate_resp = app
+        .clone()
+        .oneshot(candidate_req)
+        .await
+        .expect("candidate response");
+    assert_eq!(candidate_resp.status(), StatusCode::OK);
+
+    let task = tokio::spawn(crate::run_bug_monitor(state.clone()));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    state.event_bus.publish(EngineEvent::new(
+        "session.error",
+        json!({
+            "sessionID": "session-duplicate",
+            "runID": "run-duplicate",
+            "reason": "Prompt retry failed",
+            "component": "swarm-orchestrator",
+        }),
+    ));
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let incidents = state.list_bug_monitor_incidents(10).await;
+            if incidents
+                .iter()
+                .any(|row| row.status.eq_ignore_ascii_case("duplicate_suppressed"))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("duplicate timeout");
+
+    let incidents = state.list_bug_monitor_incidents(10).await;
+    assert_eq!(incidents.len(), 1);
+    let incident = &incidents[0];
+    assert_eq!(incident.status, "duplicate_suppressed");
+    assert!(incident.draft_id.is_none());
+    assert!(state.list_bug_monitor_drafts(10).await.is_empty());
+
+    task.abort();
 }
 
 #[tokio::test]

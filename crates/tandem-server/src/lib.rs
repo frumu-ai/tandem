@@ -4764,6 +4764,16 @@ async fn process_bug_monitor_event(
     config: &BugMonitorConfig,
 ) -> anyhow::Result<BugMonitorIncidentRecord> {
     let submission = build_bug_monitor_submission_from_event(state, config, event).await?;
+    let duplicate_matches = crate::http::bug_monitor::bug_monitor_failure_pattern_matches(
+        state,
+        submission.repo.as_deref().unwrap_or_default(),
+        submission.fingerprint.as_deref().unwrap_or_default(),
+        submission.title.as_deref(),
+        submission.detail.as_deref(),
+        &submission.excerpt,
+        3,
+    )
+    .await;
     let fingerprint = submission
         .fingerprint
         .clone()
@@ -4822,6 +4832,23 @@ async fn process_bug_monitor_event(
         }
     };
     state.put_bug_monitor_incident(incident.clone()).await?;
+
+    if !duplicate_matches.is_empty() {
+        incident.status = "duplicate_suppressed".to_string();
+        incident.updated_at_ms = now_ms();
+        state.put_bug_monitor_incident(incident.clone()).await?;
+        state.event_bus.publish(EngineEvent::new(
+            "bug_monitor.incident.duplicate_suppressed",
+            serde_json::json!({
+                "incident_id": incident.incident_id,
+                "fingerprint": incident.fingerprint,
+                "eventType": incident.event_type,
+                "status": incident.status,
+                "duplicate_matches": duplicate_matches,
+            }),
+        ));
+        return Ok(incident);
+    }
 
     let draft = match state.submit_bug_monitor_draft(submission).await {
         Ok(draft) => draft,

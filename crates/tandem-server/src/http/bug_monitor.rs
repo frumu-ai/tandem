@@ -389,6 +389,28 @@ pub(crate) async fn load_bug_monitor_triage_summary_artifact(
         .map(|(_, payload)| payload)
 }
 
+pub(crate) async fn bug_monitor_failure_pattern_matches(
+    state: &AppState,
+    repo_slug: &str,
+    fingerprint: &str,
+    title: Option<&str>,
+    detail: Option<&str>,
+    excerpt: &[String],
+    limit: usize,
+) -> Vec<Value> {
+    super::coder::query_failure_pattern_matches(
+        state,
+        repo_slug,
+        fingerprint,
+        title,
+        detail,
+        excerpt,
+        limit,
+    )
+    .await
+    .unwrap_or_default()
+}
+
 pub(crate) async fn load_bug_monitor_issue_draft_artifact(
     state: &AppState,
     triage_run_id: &str,
@@ -974,10 +996,35 @@ pub(super) async fn report_bug_monitor_issue(
         )
             .into_response();
     };
+    let config = state.bug_monitor_config().await;
+    let effective_repo = report
+        .repo
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or(config.repo.as_deref())
+        .unwrap_or_default();
+    let duplicate_matches = bug_monitor_failure_pattern_matches(
+        &state,
+        effective_repo,
+        report.fingerprint.as_deref().unwrap_or_default(),
+        report.title.as_deref(),
+        report.detail.as_deref(),
+        &report.excerpt,
+        3,
+    )
+    .await;
+    if !duplicate_matches.is_empty() {
+        return Json(json!({
+            "suppressed": true,
+            "reason": "duplicate_failure_pattern",
+            "duplicate_matches": duplicate_matches,
+        }))
+        .into_response();
+    }
     let report_excerpt = report.excerpt.clone();
     match state.submit_bug_monitor_draft(report).await {
         Ok(draft) => {
-            let duplicate_matches = super::coder::query_failure_pattern_matches(
+            let duplicate_matches = bug_monitor_failure_pattern_matches(
                 &state,
                 &draft.repo,
                 &draft.fingerprint,
@@ -986,8 +1033,7 @@ pub(super) async fn report_bug_monitor_issue(
                 &report_excerpt,
                 3,
             )
-            .await
-            .unwrap_or_default();
+            .await;
             Json(json!({
                 "draft": draft,
                 "duplicate_matches": duplicate_matches,
