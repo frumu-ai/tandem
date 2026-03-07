@@ -141,6 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `issue_fix` summary writes now also emit reusable `fix_pattern` memory so later fix runs can reuse prior patch strategies and validation context
   - `issue_fix` memory retrieval now ranks same-issue `fix_pattern` and issue-fix `run_outcome` hits ahead of generic triage memory so fix runs surface prior patch strategy first
   - `merge_recommendation` memory retrieval now ranks same-PR `merge_recommendation_memory`, merge run outcomes, and regression signals ahead of generic review memory so merge runs surface prior merge guidance first
+  - `pr_review` memory retrieval now ranks same-PR `review_memory`, `regression_signal`, and PR review outcomes ahead of generic triage memory so review runs surface prior review guidance first
 
 - **Setup-understanding across channels and chat surfaces**:
   - added a shared deterministic setup-intent resolver at `POST /setup/understand` in `tandem-server`

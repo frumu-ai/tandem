@@ -949,6 +949,20 @@ fn compare_coder_memory_hits(record: &CoderRunRecord, a: &Value, b: &Value) -> s
         {
             2_u8
         }
+        Some("review_memory") if matches!(record.workflow_mode, CoderWorkflowMode::PrReview) => {
+            4_u8
+        }
+        Some("regression_signal")
+            if matches!(record.workflow_mode, CoderWorkflowMode::PrReview) =>
+        {
+            3_u8
+        }
+        Some("run_outcome")
+            if matches!(record.workflow_mode, CoderWorkflowMode::PrReview)
+                && memory_hit_workflow_mode(hit).as_deref() == Some("pr_review") =>
+        {
+            2_u8
+        }
         _ => 1_u8,
     };
     if kind_weight(a) == 1 && kind_weight(b) == 1 {

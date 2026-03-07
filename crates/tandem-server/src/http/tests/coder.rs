@@ -998,6 +998,15 @@ async fn coder_pr_review_reuses_prior_review_memory_hits() {
         hits_payload.get("query").and_then(Value::as_str),
         Some("evan/tandem pull request #90")
     );
+    assert_eq!(
+        hits_payload
+            .get("hits")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("review_memory")
+    );
     assert!(get_payload
         .get("memory_hits")
         .and_then(|row| row.get("hits"))
