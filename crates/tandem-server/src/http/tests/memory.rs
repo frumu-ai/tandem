@@ -102,6 +102,10 @@ async fn memory_put_then_search_in_session_scope() {
         .cloned()
         .unwrap_or(Value::Null);
     assert_eq!(
+        first_result.get("tier").and_then(Value::as_str),
+        Some("session")
+    );
+    assert_eq!(
         first_result.get("kind").and_then(Value::as_str),
         Some("solution_capsule")
     );
@@ -425,6 +429,10 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
         .cloned()
         .expect("promoted hit");
     assert_eq!(
+        promoted_hit.get("tier").and_then(Value::as_str),
+        Some("project")
+    );
+    assert_eq!(
         promoted_hit.get("visibility").and_then(Value::as_str),
         Some("shared")
     );
@@ -499,6 +507,7 @@ async fn memory_list_and_delete_admin_routes_work() {
         .map(|rows| {
             rows.iter().any(|row| {
                 row.get("id").and_then(|v| v.as_str()) == Some(memory_id.as_str())
+                    && row.get("tier").and_then(Value::as_str) == Some("session")
                     && row.get("kind").and_then(Value::as_str) == Some("fact")
                     && row.get("artifact_refs").and_then(Value::as_array) == Some(&artifact_refs)
             })

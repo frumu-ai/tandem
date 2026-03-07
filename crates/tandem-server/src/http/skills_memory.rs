@@ -956,6 +956,14 @@ fn memory_kind_label(source_type: &str) -> &str {
     }
 }
 
+fn memory_tier_for_visibility(visibility: &str) -> tandem_memory::GovernedMemoryTier {
+    if visibility.eq_ignore_ascii_case("shared") {
+        tandem_memory::GovernedMemoryTier::Project
+    } else {
+        tandem_memory::GovernedMemoryTier::Session
+    }
+}
+
 pub(super) fn validate_memory_capability(
     run_id: &str,
     partition: &tandem_memory::MemoryPartition,
@@ -1907,7 +1915,7 @@ pub(super) async fn memory_search(
         .map(|hit| {
             json!({
                 "id": hit.record.id,
-                "tier": request.partition.tier,
+                "tier": memory_tier_for_visibility(&hit.record.visibility),
                 "classification": "internal",
                 "kind": memory_kind_label(&hit.record.source_type),
                 "source_type": hit.record.source_type,
@@ -2019,6 +2027,7 @@ pub(super) async fn memory_list(
                     "id": row.id,
                     "user_id": row.user_id,
                     "run_id": row.run_id,
+                    "tier": memory_tier_for_visibility(&row.visibility),
                     "kind": memory_kind_label(&row.source_type),
                     "source_type": row.source_type,
                     "content": row.content,
