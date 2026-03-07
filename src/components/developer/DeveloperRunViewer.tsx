@@ -2730,7 +2730,13 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                     <CardContent ref={validationInspectorRef} className="space-y-3">
                       {selectedArtifactPath ? (
                         <>
-                          <div className="rounded-2xl border border-border bg-surface-elevated/40 p-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              focusTabSection("validation", "validation_artifacts");
+                            }}
+                            className="w-full rounded-2xl border border-border bg-surface-elevated/40 p-3 text-left transition-colors hover:bg-surface-elevated"
+                          >
                             <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
                               Selected artifact
                             </p>
@@ -2760,17 +2766,25 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                 ) : null}
                               </div>
                             ) : null}
-                          </div>
+                          </button>
                           <div className="grid gap-3 md:grid-cols-3">
-                            <div className="rounded-2xl border border-border bg-surface-elevated/40 p-3">
+                            <button
+                              type="button"
+                              onClick={() => focusTabSection("validation", "validation_inspector")}
+                              className="rounded-2xl border border-border bg-surface-elevated/40 p-3 text-left transition-colors hover:bg-surface-elevated"
+                            >
                               <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
                                 Outcome
                               </p>
                               <p className="mt-1 text-sm font-medium text-text">
                                 {selectedValidationSummary?.outcome || "Unknown"}
                               </p>
-                            </div>
-                            <div className="rounded-2xl border border-border bg-surface-elevated/40 p-3">
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => focusTabSection("validation", "validation_artifacts")}
+                              className="rounded-2xl border border-border bg-surface-elevated/40 p-3 text-left transition-colors hover:bg-surface-elevated"
+                            >
                               <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
                                 Passed
                               </p>
@@ -2782,15 +2796,19 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                     ? "Yes"
                                     : "No"}
                               </p>
-                            </div>
-                            <div className="rounded-2xl border border-border bg-surface-elevated/40 p-3">
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => focusTabSection("validation", "validation_tasks")}
+                              className="rounded-2xl border border-border bg-surface-elevated/40 p-3 text-left transition-colors hover:bg-surface-elevated"
+                            >
                               <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
                                 Checks
                               </p>
                               <p className="mt-1 text-sm font-medium text-text">
                                 {selectedValidationSummary?.validationsAttempted ?? 0}
                               </p>
-                            </div>
+                            </button>
                           </div>
                           {loadingArtifact ? (
                             <p className="text-sm text-text-muted">Loading validation preview…</p>
