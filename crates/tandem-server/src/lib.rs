@@ -44,8 +44,8 @@ use tandem_workflows::{
 
 mod agent_teams;
 mod browser;
+mod bug_monitor_github;
 mod capability_resolver;
-mod failure_reporter_github;
 mod http;
 mod mcp_catalog;
 mod pack_builder;
@@ -701,7 +701,7 @@ pub struct AutomationV2RunRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum FailureReporterProviderPreference {
+pub enum BugMonitorProviderPreference {
     Auto,
     OfficialGithub,
     Composio,
@@ -710,24 +710,24 @@ pub enum FailureReporterProviderPreference {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum FailureReporterLabelMode {
+pub enum BugMonitorLabelMode {
     ReporterOnly,
 }
 
-impl Default for FailureReporterLabelMode {
+impl Default for BugMonitorLabelMode {
     fn default() -> Self {
         Self::ReporterOnly
     }
 }
 
-impl Default for FailureReporterProviderPreference {
+impl Default for BugMonitorProviderPreference {
     fn default() -> Self {
         Self::Auto
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FailureReporterConfig {
+pub struct BugMonitorConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -739,7 +739,7 @@ pub struct FailureReporterConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_server: Option<String>,
     #[serde(default)]
-    pub provider_preference: FailureReporterProviderPreference,
+    pub provider_preference: BugMonitorProviderPreference,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_policy: Option<Value>,
     #[serde(default = "default_true")]
@@ -749,12 +749,12 @@ pub struct FailureReporterConfig {
     #[serde(default = "default_true")]
     pub auto_comment_on_matched_open_issues: bool,
     #[serde(default)]
-    pub label_mode: FailureReporterLabelMode,
+    pub label_mode: BugMonitorLabelMode,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
 
-impl Default for FailureReporterConfig {
+impl Default for BugMonitorConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -762,19 +762,19 @@ impl Default for FailureReporterConfig {
             workspace_root: None,
             repo: None,
             mcp_server: None,
-            provider_preference: FailureReporterProviderPreference::Auto,
+            provider_preference: BugMonitorProviderPreference::Auto,
             model_policy: None,
             auto_create_new_issues: true,
             require_approval_for_new_issues: false,
             auto_comment_on_matched_open_issues: true,
-            label_mode: FailureReporterLabelMode::ReporterOnly,
+            label_mode: BugMonitorLabelMode::ReporterOnly,
             updated_at_ms: 0,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FailureReporterDraftRecord {
+pub struct BugMonitorDraftRecord {
     pub draft_id: String,
     pub fingerprint: String,
     pub repo: String,
@@ -807,7 +807,7 @@ pub struct FailureReporterDraftRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FailureReporterPostRecord {
+pub struct BugMonitorPostRecord {
     pub post_id: String,
     pub draft_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -836,7 +836,7 @@ pub struct FailureReporterPostRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FailureReporterIncidentRecord {
+pub struct BugMonitorIncidentRecord {
     pub incident_id: String,
     pub fingerprint: String,
     pub event_type: String,
@@ -877,7 +877,7 @@ pub struct FailureReporterIncidentRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FailureReporterRuntimeStatus {
+pub struct BugMonitorRuntimeStatus {
     #[serde(default)]
     pub monitoring_active: bool,
     #[serde(default)]
@@ -899,7 +899,7 @@ pub struct FailureReporterRuntimeStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FailureReporterSubmission {
+pub struct BugMonitorSubmission {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -931,7 +931,7 @@ pub struct FailureReporterSubmission {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FailureReporterCapabilityReadiness {
+pub struct BugMonitorCapabilityReadiness {
     #[serde(default)]
     pub github_list_issues: bool,
     #[serde(default)]
@@ -943,7 +943,7 @@ pub struct FailureReporterCapabilityReadiness {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FailureReporterCapabilityMatch {
+pub struct BugMonitorCapabilityMatch {
     pub capability_id: String,
     pub provider: String,
     pub tool_name: String,
@@ -951,7 +951,7 @@ pub struct FailureReporterCapabilityMatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FailureReporterBindingCandidate {
+pub struct BugMonitorBindingCandidate {
     pub capability_id: String,
     pub binding_tool_name: String,
     #[serde(default)]
@@ -961,7 +961,7 @@ pub struct FailureReporterBindingCandidate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FailureReporterReadiness {
+pub struct BugMonitorReadiness {
     #[serde(default)]
     pub config_valid: bool,
     #[serde(default)]
@@ -981,20 +981,20 @@ pub struct FailureReporterReadiness {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FailureReporterStatus {
-    pub config: FailureReporterConfig,
-    pub readiness: FailureReporterReadiness,
+pub struct BugMonitorStatus {
+    pub config: BugMonitorConfig,
+    pub readiness: BugMonitorReadiness,
     #[serde(default)]
-    pub runtime: FailureReporterRuntimeStatus,
-    pub required_capabilities: FailureReporterCapabilityReadiness,
+    pub runtime: BugMonitorRuntimeStatus,
+    pub required_capabilities: BugMonitorCapabilityReadiness,
     #[serde(default)]
     pub missing_required_capabilities: Vec<String>,
     #[serde(default)]
-    pub resolved_capabilities: Vec<FailureReporterCapabilityMatch>,
+    pub resolved_capabilities: Vec<BugMonitorCapabilityMatch>,
     #[serde(default)]
     pub discovered_mcp_tools: Vec<String>,
     #[serde(default)]
-    pub selected_server_binding_candidates: Vec<FailureReporterBindingCandidate>,
+    pub selected_server_binding_candidates: Vec<BugMonitorBindingCandidate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding_source_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1079,14 +1079,12 @@ pub struct AppState {
     pub routine_runs: Arc<RwLock<std::collections::HashMap<String, RoutineRunRecord>>>,
     pub automations_v2: Arc<RwLock<std::collections::HashMap<String, AutomationV2Spec>>>,
     pub automation_v2_runs: Arc<RwLock<std::collections::HashMap<String, AutomationV2RunRecord>>>,
-    pub failure_reporter_config: Arc<RwLock<FailureReporterConfig>>,
-    pub failure_reporter_drafts:
-        Arc<RwLock<std::collections::HashMap<String, FailureReporterDraftRecord>>>,
-    pub failure_reporter_incidents:
-        Arc<RwLock<std::collections::HashMap<String, FailureReporterIncidentRecord>>>,
-    pub failure_reporter_posts:
-        Arc<RwLock<std::collections::HashMap<String, FailureReporterPostRecord>>>,
-    pub failure_reporter_runtime_status: Arc<RwLock<FailureReporterRuntimeStatus>>,
+    pub bug_monitor_config: Arc<RwLock<BugMonitorConfig>>,
+    pub bug_monitor_drafts: Arc<RwLock<std::collections::HashMap<String, BugMonitorDraftRecord>>>,
+    pub bug_monitor_incidents:
+        Arc<RwLock<std::collections::HashMap<String, BugMonitorIncidentRecord>>>,
+    pub bug_monitor_posts: Arc<RwLock<std::collections::HashMap<String, BugMonitorPostRecord>>>,
+    pub bug_monitor_runtime_status: Arc<RwLock<BugMonitorRuntimeStatus>>,
     pub workflows: Arc<RwLock<WorkflowRegistry>>,
     pub workflow_runs: Arc<RwLock<std::collections::HashMap<String, WorkflowRunRecord>>>,
     pub workflow_hook_overrides: Arc<RwLock<std::collections::HashMap<String, bool>>>,
@@ -1100,10 +1098,10 @@ pub struct AppState {
     pub routine_runs_path: PathBuf,
     pub automations_v2_path: PathBuf,
     pub automation_v2_runs_path: PathBuf,
-    pub failure_reporter_config_path: PathBuf,
-    pub failure_reporter_drafts_path: PathBuf,
-    pub failure_reporter_incidents_path: PathBuf,
-    pub failure_reporter_posts_path: PathBuf,
+    pub bug_monitor_config_path: PathBuf,
+    pub bug_monitor_drafts_path: PathBuf,
+    pub bug_monitor_incidents_path: PathBuf,
+    pub bug_monitor_posts_path: PathBuf,
     pub workflow_runs_path: PathBuf,
     pub workflow_hook_overrides_path: PathBuf,
     pub agent_teams: AgentTeamRuntime,
@@ -1149,13 +1147,11 @@ impl AppState {
             routine_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automations_v2: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automation_v2_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            failure_reporter_config: Arc::new(RwLock::new(resolve_failure_reporter_env_config())),
-            failure_reporter_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            failure_reporter_incidents: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            failure_reporter_posts: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            failure_reporter_runtime_status: Arc::new(RwLock::new(
-                FailureReporterRuntimeStatus::default(),
-            )),
+            bug_monitor_config: Arc::new(RwLock::new(resolve_bug_monitor_env_config())),
+            bug_monitor_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            bug_monitor_incidents: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            bug_monitor_posts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            bug_monitor_runtime_status: Arc::new(RwLock::new(BugMonitorRuntimeStatus::default())),
             workflows: Arc::new(RwLock::new(WorkflowRegistry::default())),
             workflow_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_hook_overrides: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -1167,10 +1163,10 @@ impl AppState {
             routine_runs_path: resolve_routine_runs_path(),
             automations_v2_path: resolve_automations_v2_path(),
             automation_v2_runs_path: resolve_automation_v2_runs_path(),
-            failure_reporter_config_path: resolve_failure_reporter_config_path(),
-            failure_reporter_drafts_path: resolve_failure_reporter_drafts_path(),
-            failure_reporter_incidents_path: resolve_failure_reporter_incidents_path(),
-            failure_reporter_posts_path: resolve_failure_reporter_posts_path(),
+            bug_monitor_config_path: resolve_bug_monitor_config_path(),
+            bug_monitor_drafts_path: resolve_bug_monitor_drafts_path(),
+            bug_monitor_incidents_path: resolve_bug_monitor_incidents_path(),
+            bug_monitor_posts_path: resolve_bug_monitor_posts_path(),
             workflow_runs_path: resolve_workflow_runs_path(),
             workflow_hook_overrides_path: resolve_workflow_hook_overrides_path(),
             agent_teams: AgentTeamRuntime::new(resolve_agent_team_audit_path()),
@@ -1316,10 +1312,10 @@ impl AppState {
         let _ = self.load_routine_runs().await;
         self.load_automations_v2().await?;
         let _ = self.load_automation_v2_runs().await;
-        let _ = self.load_failure_reporter_config().await;
-        let _ = self.load_failure_reporter_drafts().await;
-        let _ = self.load_failure_reporter_incidents().await;
-        let _ = self.load_failure_reporter_posts().await;
+        let _ = self.load_bug_monitor_config().await;
+        let _ = self.load_bug_monitor_drafts().await;
+        let _ = self.load_bug_monitor_incidents().await;
+        let _ = self.load_bug_monitor_posts().await;
         let _ = self.load_workflow_runs().await;
         let _ = self.load_workflow_hook_overrides().await;
         let _ = self.reload_workflows().await;
@@ -2122,37 +2118,41 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn load_failure_reporter_config(&self) -> anyhow::Result<()> {
-        if !self.failure_reporter_config_path.exists() {
+    pub async fn load_bug_monitor_config(&self) -> anyhow::Result<()> {
+        let path = if self.bug_monitor_config_path.exists() {
+            self.bug_monitor_config_path.clone()
+        } else if legacy_failure_reporter_path("failure_reporter_config.json").exists() {
+            legacy_failure_reporter_path("failure_reporter_config.json")
+        } else {
             return Ok(());
-        }
-        let raw = fs::read_to_string(&self.failure_reporter_config_path).await?;
-        let parsed = serde_json::from_str::<FailureReporterConfig>(&raw)
-            .unwrap_or_else(|_| resolve_failure_reporter_env_config());
-        *self.failure_reporter_config.write().await = parsed;
+        };
+        let raw = fs::read_to_string(path).await?;
+        let parsed = serde_json::from_str::<BugMonitorConfig>(&raw)
+            .unwrap_or_else(|_| resolve_bug_monitor_env_config());
+        *self.bug_monitor_config.write().await = parsed;
         Ok(())
     }
 
-    pub async fn persist_failure_reporter_config(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.failure_reporter_config_path.parent() {
+    pub async fn persist_bug_monitor_config(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.bug_monitor_config_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let payload = {
-            let guard = self.failure_reporter_config.read().await;
+            let guard = self.bug_monitor_config.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.failure_reporter_config_path, payload).await?;
+        fs::write(&self.bug_monitor_config_path, payload).await?;
         Ok(())
     }
 
-    pub async fn failure_reporter_config(&self) -> FailureReporterConfig {
-        self.failure_reporter_config.read().await.clone()
+    pub async fn bug_monitor_config(&self) -> BugMonitorConfig {
+        self.bug_monitor_config.read().await.clone()
     }
 
-    pub async fn put_failure_reporter_config(
+    pub async fn put_bug_monitor_config(
         &self,
-        mut config: FailureReporterConfig,
-    ) -> anyhow::Result<FailureReporterConfig> {
+        mut config: BugMonitorConfig,
+    ) -> anyhow::Result<BugMonitorConfig> {
         config.workspace_root = config
             .workspace_root
             .as_ref()
@@ -2174,92 +2174,99 @@ impl AppState {
                 .map_err(anyhow::Error::msg)?;
         }
         config.updated_at_ms = now_ms();
-        *self.failure_reporter_config.write().await = config.clone();
-        self.persist_failure_reporter_config().await?;
+        *self.bug_monitor_config.write().await = config.clone();
+        self.persist_bug_monitor_config().await?;
         Ok(config)
     }
 
-    pub async fn load_failure_reporter_drafts(&self) -> anyhow::Result<()> {
-        if !self.failure_reporter_drafts_path.exists() {
+    pub async fn load_bug_monitor_drafts(&self) -> anyhow::Result<()> {
+        let path = if self.bug_monitor_drafts_path.exists() {
+            self.bug_monitor_drafts_path.clone()
+        } else if legacy_failure_reporter_path("failure_reporter_drafts.json").exists() {
+            legacy_failure_reporter_path("failure_reporter_drafts.json")
+        } else {
             return Ok(());
-        }
-        let raw = fs::read_to_string(&self.failure_reporter_drafts_path).await?;
-        let parsed = serde_json::from_str::<
-            std::collections::HashMap<String, FailureReporterDraftRecord>,
-        >(&raw)
-        .unwrap_or_default();
-        *self.failure_reporter_drafts.write().await = parsed;
+        };
+        let raw = fs::read_to_string(path).await?;
+        let parsed =
+            serde_json::from_str::<std::collections::HashMap<String, BugMonitorDraftRecord>>(&raw)
+                .unwrap_or_default();
+        *self.bug_monitor_drafts.write().await = parsed;
         Ok(())
     }
 
-    pub async fn persist_failure_reporter_drafts(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.failure_reporter_drafts_path.parent() {
+    pub async fn persist_bug_monitor_drafts(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.bug_monitor_drafts_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let payload = {
-            let guard = self.failure_reporter_drafts.read().await;
+            let guard = self.bug_monitor_drafts.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.failure_reporter_drafts_path, payload).await?;
+        fs::write(&self.bug_monitor_drafts_path, payload).await?;
         Ok(())
     }
 
-    pub async fn load_failure_reporter_incidents(&self) -> anyhow::Result<()> {
-        if !self.failure_reporter_incidents_path.exists() {
+    pub async fn load_bug_monitor_incidents(&self) -> anyhow::Result<()> {
+        let path = if self.bug_monitor_incidents_path.exists() {
+            self.bug_monitor_incidents_path.clone()
+        } else if legacy_failure_reporter_path("failure_reporter_incidents.json").exists() {
+            legacy_failure_reporter_path("failure_reporter_incidents.json")
+        } else {
             return Ok(());
-        }
-        let raw = fs::read_to_string(&self.failure_reporter_incidents_path).await?;
+        };
+        let raw = fs::read_to_string(path).await?;
         let parsed = serde_json::from_str::<
-            std::collections::HashMap<String, FailureReporterIncidentRecord>,
+            std::collections::HashMap<String, BugMonitorIncidentRecord>,
         >(&raw)
         .unwrap_or_default();
-        *self.failure_reporter_incidents.write().await = parsed;
+        *self.bug_monitor_incidents.write().await = parsed;
         Ok(())
     }
 
-    pub async fn persist_failure_reporter_incidents(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.failure_reporter_incidents_path.parent() {
+    pub async fn persist_bug_monitor_incidents(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.bug_monitor_incidents_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let payload = {
-            let guard = self.failure_reporter_incidents.read().await;
+            let guard = self.bug_monitor_incidents.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.failure_reporter_incidents_path, payload).await?;
+        fs::write(&self.bug_monitor_incidents_path, payload).await?;
         Ok(())
     }
 
-    pub async fn load_failure_reporter_posts(&self) -> anyhow::Result<()> {
-        if !self.failure_reporter_posts_path.exists() {
+    pub async fn load_bug_monitor_posts(&self) -> anyhow::Result<()> {
+        let path = if self.bug_monitor_posts_path.exists() {
+            self.bug_monitor_posts_path.clone()
+        } else if legacy_failure_reporter_path("failure_reporter_posts.json").exists() {
+            legacy_failure_reporter_path("failure_reporter_posts.json")
+        } else {
             return Ok(());
-        }
-        let raw = fs::read_to_string(&self.failure_reporter_posts_path).await?;
-        let parsed = serde_json::from_str::<
-            std::collections::HashMap<String, FailureReporterPostRecord>,
-        >(&raw)
-        .unwrap_or_default();
-        *self.failure_reporter_posts.write().await = parsed;
+        };
+        let raw = fs::read_to_string(path).await?;
+        let parsed =
+            serde_json::from_str::<std::collections::HashMap<String, BugMonitorPostRecord>>(&raw)
+                .unwrap_or_default();
+        *self.bug_monitor_posts.write().await = parsed;
         Ok(())
     }
 
-    pub async fn persist_failure_reporter_posts(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.failure_reporter_posts_path.parent() {
+    pub async fn persist_bug_monitor_posts(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.bug_monitor_posts_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let payload = {
-            let guard = self.failure_reporter_posts.read().await;
+            let guard = self.bug_monitor_posts.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.failure_reporter_posts_path, payload).await?;
+        fs::write(&self.bug_monitor_posts_path, payload).await?;
         Ok(())
     }
 
-    pub async fn list_failure_reporter_incidents(
-        &self,
-        limit: usize,
-    ) -> Vec<FailureReporterIncidentRecord> {
+    pub async fn list_bug_monitor_incidents(&self, limit: usize) -> Vec<BugMonitorIncidentRecord> {
         let mut rows = self
-            .failure_reporter_incidents
+            .bug_monitor_incidents
             .read()
             .await
             .values()
@@ -2270,35 +2277,32 @@ impl AppState {
         rows
     }
 
-    pub async fn get_failure_reporter_incident(
+    pub async fn get_bug_monitor_incident(
         &self,
         incident_id: &str,
-    ) -> Option<FailureReporterIncidentRecord> {
-        self.failure_reporter_incidents
+    ) -> Option<BugMonitorIncidentRecord> {
+        self.bug_monitor_incidents
             .read()
             .await
             .get(incident_id)
             .cloned()
     }
 
-    pub async fn put_failure_reporter_incident(
+    pub async fn put_bug_monitor_incident(
         &self,
-        incident: FailureReporterIncidentRecord,
-    ) -> anyhow::Result<FailureReporterIncidentRecord> {
-        self.failure_reporter_incidents
+        incident: BugMonitorIncidentRecord,
+    ) -> anyhow::Result<BugMonitorIncidentRecord> {
+        self.bug_monitor_incidents
             .write()
             .await
             .insert(incident.incident_id.clone(), incident.clone());
-        self.persist_failure_reporter_incidents().await?;
+        self.persist_bug_monitor_incidents().await?;
         Ok(incident)
     }
 
-    pub async fn list_failure_reporter_posts(
-        &self,
-        limit: usize,
-    ) -> Vec<FailureReporterPostRecord> {
+    pub async fn list_bug_monitor_posts(&self, limit: usize) -> Vec<BugMonitorPostRecord> {
         let mut rows = self
-            .failure_reporter_posts
+            .bug_monitor_posts
             .read()
             .await
             .values()
@@ -2309,44 +2313,34 @@ impl AppState {
         rows
     }
 
-    pub async fn get_failure_reporter_post(
-        &self,
-        post_id: &str,
-    ) -> Option<FailureReporterPostRecord> {
-        self.failure_reporter_posts
-            .read()
-            .await
-            .get(post_id)
-            .cloned()
+    pub async fn get_bug_monitor_post(&self, post_id: &str) -> Option<BugMonitorPostRecord> {
+        self.bug_monitor_posts.read().await.get(post_id).cloned()
     }
 
-    pub async fn put_failure_reporter_post(
+    pub async fn put_bug_monitor_post(
         &self,
-        post: FailureReporterPostRecord,
-    ) -> anyhow::Result<FailureReporterPostRecord> {
-        self.failure_reporter_posts
+        post: BugMonitorPostRecord,
+    ) -> anyhow::Result<BugMonitorPostRecord> {
+        self.bug_monitor_posts
             .write()
             .await
             .insert(post.post_id.clone(), post.clone());
-        self.persist_failure_reporter_posts().await?;
+        self.persist_bug_monitor_posts().await?;
         Ok(post)
     }
 
-    pub async fn update_failure_reporter_runtime_status(
+    pub async fn update_bug_monitor_runtime_status(
         &self,
-        update: impl FnOnce(&mut FailureReporterRuntimeStatus),
-    ) -> FailureReporterRuntimeStatus {
-        let mut guard = self.failure_reporter_runtime_status.write().await;
+        update: impl FnOnce(&mut BugMonitorRuntimeStatus),
+    ) -> BugMonitorRuntimeStatus {
+        let mut guard = self.bug_monitor_runtime_status.write().await;
         update(&mut guard);
         guard.clone()
     }
 
-    pub async fn list_failure_reporter_drafts(
-        &self,
-        limit: usize,
-    ) -> Vec<FailureReporterDraftRecord> {
+    pub async fn list_bug_monitor_drafts(&self, limit: usize) -> Vec<BugMonitorDraftRecord> {
         let mut rows = self
-            .failure_reporter_drafts
+            .bug_monitor_drafts
             .read()
             .await
             .values()
@@ -2357,33 +2351,26 @@ impl AppState {
         rows
     }
 
-    pub async fn get_failure_reporter_draft(
-        &self,
-        draft_id: &str,
-    ) -> Option<FailureReporterDraftRecord> {
-        self.failure_reporter_drafts
-            .read()
-            .await
-            .get(draft_id)
-            .cloned()
+    pub async fn get_bug_monitor_draft(&self, draft_id: &str) -> Option<BugMonitorDraftRecord> {
+        self.bug_monitor_drafts.read().await.get(draft_id).cloned()
     }
 
-    pub async fn put_failure_reporter_draft(
+    pub async fn put_bug_monitor_draft(
         &self,
-        draft: FailureReporterDraftRecord,
-    ) -> anyhow::Result<FailureReporterDraftRecord> {
-        self.failure_reporter_drafts
+        draft: BugMonitorDraftRecord,
+    ) -> anyhow::Result<BugMonitorDraftRecord> {
+        self.bug_monitor_drafts
             .write()
             .await
             .insert(draft.draft_id.clone(), draft.clone());
-        self.persist_failure_reporter_drafts().await?;
+        self.persist_bug_monitor_drafts().await?;
         Ok(draft)
     }
 
-    pub async fn submit_failure_reporter_draft(
+    pub async fn submit_bug_monitor_draft(
         &self,
-        mut submission: FailureReporterSubmission,
-    ) -> anyhow::Result<FailureReporterDraftRecord> {
+        mut submission: BugMonitorSubmission,
+    ) -> anyhow::Result<BugMonitorDraftRecord> {
         fn normalize_optional(value: Option<String>) -> Option<String> {
             value
                 .map(|v| v.trim().to_string())
@@ -2421,14 +2408,14 @@ impl AppState {
             .take(50)
             .collect();
 
-        let config = self.failure_reporter_config().await;
+        let config = self.bug_monitor_config().await;
         let repo = submission
             .repo
             .clone()
             .or(config.repo.clone())
-            .ok_or_else(|| anyhow::anyhow!("Failure Reporter repo is not configured"))?;
+            .ok_or_else(|| anyhow::anyhow!("Bug Monitor repo is not configured"))?;
         if !is_valid_owner_repo_slug(&repo) {
-            anyhow::bail!("Failure Reporter repo must be in owner/repo format");
+            anyhow::bail!("Bug Monitor repo must be in owner/repo format");
         }
 
         let title = submission.title.clone().unwrap_or_else(|| {
@@ -2502,7 +2489,7 @@ impl AppState {
             ])
         });
 
-        let mut drafts = self.failure_reporter_drafts.write().await;
+        let mut drafts = self.bug_monitor_drafts.write().await;
         if let Some(existing) = drafts
             .values()
             .find(|row| row.repo == repo && row.fingerprint == fingerprint)
@@ -2511,7 +2498,7 @@ impl AppState {
             return Ok(existing);
         }
 
-        let draft = FailureReporterDraftRecord {
+        let draft = BugMonitorDraftRecord {
             draft_id: format!("failure-draft-{}", uuid::Uuid::new_v4().simple()),
             fingerprint,
             repo,
@@ -2536,27 +2523,27 @@ impl AppState {
         };
         drafts.insert(draft.draft_id.clone(), draft.clone());
         drop(drafts);
-        self.persist_failure_reporter_drafts().await?;
+        self.persist_bug_monitor_drafts().await?;
         Ok(draft)
     }
 
-    pub async fn update_failure_reporter_draft_status(
+    pub async fn update_bug_monitor_draft_status(
         &self,
         draft_id: &str,
         next_status: &str,
         reason: Option<&str>,
-    ) -> anyhow::Result<FailureReporterDraftRecord> {
+    ) -> anyhow::Result<BugMonitorDraftRecord> {
         let normalized_status = next_status.trim().to_ascii_lowercase();
         if normalized_status != "draft_ready" && normalized_status != "denied" {
-            anyhow::bail!("unsupported Failure Reporter draft status");
+            anyhow::bail!("unsupported Bug Monitor draft status");
         }
 
-        let mut drafts = self.failure_reporter_drafts.write().await;
+        let mut drafts = self.bug_monitor_drafts.write().await;
         let Some(draft) = drafts.get_mut(draft_id) else {
-            anyhow::bail!("Failure Reporter draft not found");
+            anyhow::bail!("Bug Monitor draft not found");
         };
         if !draft.status.eq_ignore_ascii_case("approval_required") {
-            anyhow::bail!("Failure Reporter draft is not waiting for approval");
+            anyhow::bail!("Bug Monitor draft is not waiting for approval");
         }
         draft.status = normalized_status.clone();
         if let Some(reason) = reason
@@ -2572,12 +2559,12 @@ impl AppState {
         }
         let updated = draft.clone();
         drop(drafts);
-        self.persist_failure_reporter_drafts().await?;
+        self.persist_bug_monitor_drafts().await?;
 
         let event_name = if normalized_status == "draft_ready" {
-            "failure_reporter.draft.approved"
+            "bug_monitor.draft.approved"
         } else {
-            "failure_reporter.draft.denied"
+            "bug_monitor.draft.denied"
         };
         self.event_bus.publish(EngineEvent::new(
             event_name,
@@ -2591,17 +2578,17 @@ impl AppState {
         Ok(updated)
     }
 
-    pub async fn failure_reporter_status(&self) -> FailureReporterStatus {
+    pub async fn bug_monitor_status(&self) -> BugMonitorStatus {
         let required_capabilities = vec![
             "github.list_issues".to_string(),
             "github.get_issue".to_string(),
             "github.create_issue".to_string(),
             "github.comment_on_issue".to_string(),
         ];
-        let config = self.failure_reporter_config().await;
-        let drafts = self.failure_reporter_drafts.read().await;
-        let incidents = self.failure_reporter_incidents.read().await;
-        let posts = self.failure_reporter_posts.read().await;
+        let config = self.bug_monitor_config().await;
+        let drafts = self.bug_monitor_drafts.read().await;
+        let incidents = self.bug_monitor_incidents.read().await;
+        let posts = self.bug_monitor_posts.read().await;
         let total_incidents = incidents.len();
         let pending_incidents = incidents
             .values()
@@ -2628,19 +2615,19 @@ impl AppState {
         drop(drafts);
         drop(incidents);
         drop(posts);
-        let mut runtime = self.failure_reporter_runtime_status.read().await.clone();
+        let mut runtime = self.bug_monitor_runtime_status.read().await.clone();
         runtime.paused = config.paused;
         runtime.total_incidents = total_incidents;
         runtime.pending_incidents = pending_incidents;
         runtime.pending_posts = pending_posts;
 
-        let mut status = FailureReporterStatus {
+        let mut status = BugMonitorStatus {
             config: config.clone(),
             runtime,
             pending_drafts,
             pending_posts,
             last_activity_at_ms,
-            ..FailureReporterStatus::default()
+            ..BugMonitorStatus::default()
         };
         let repo_valid = config
             .repo
@@ -2681,28 +2668,28 @@ impl AppState {
             .map(|row| row.provider.to_ascii_lowercase())
             .collect::<std::collections::HashSet<_>>();
         let provider_preference = match config.provider_preference {
-            FailureReporterProviderPreference::OfficialGithub => {
+            BugMonitorProviderPreference::OfficialGithub => {
                 vec![
                     "mcp".to_string(),
                     "composio".to_string(),
                     "arcade".to_string(),
                 ]
             }
-            FailureReporterProviderPreference::Composio => {
+            BugMonitorProviderPreference::Composio => {
                 vec![
                     "composio".to_string(),
                     "mcp".to_string(),
                     "arcade".to_string(),
                 ]
             }
-            FailureReporterProviderPreference::Arcade => {
+            BugMonitorProviderPreference::Arcade => {
                 vec![
                     "arcade".to_string(),
                     "mcp".to_string(),
                     "composio".to_string(),
                 ]
             }
-            FailureReporterProviderPreference::Auto => {
+            BugMonitorProviderPreference::Auto => {
                 vec![
                     "mcp".to_string(),
                     "composio".to_string(),
@@ -2714,7 +2701,7 @@ impl AppState {
             .capability_resolver
             .resolve(
                 crate::capability_resolver::CapabilityResolveInput {
-                    workflow_id: Some("failure_reporter".to_string()),
+                    workflow_id: Some("bug_monitor".to_string()),
                     required_capabilities: required_capabilities.clone(),
                     optional_capabilities: Vec::new(),
                     provider_preference,
@@ -2755,7 +2742,7 @@ impl AppState {
                             })
                         })
                         .unwrap_or(false);
-                    FailureReporterBindingCandidate {
+                    BugMonitorBindingCandidate {
                         capability_id: binding.capability_id.clone(),
                         binding_tool_name: binding.tool_name.clone(),
                         aliases: binding.tool_name_aliases.clone(),
@@ -2785,7 +2772,7 @@ impl AppState {
             status.resolved_capabilities = resolution
                 .resolved
                 .iter()
-                .map(|row| FailureReporterCapabilityMatch {
+                .map(|row| BugMonitorCapabilityMatch {
                     capability_id: row.capability_id.clone(),
                     provider: row.provider.clone(),
                     tool_name: row.tool_name.clone(),
@@ -2795,14 +2782,14 @@ impl AppState {
         } else {
             status.missing_required_capabilities = required_capabilities.clone();
         }
-        status.required_capabilities = FailureReporterCapabilityReadiness {
+        status.required_capabilities = BugMonitorCapabilityReadiness {
             github_list_issues: capability_ready("github.list_issues"),
             github_get_issue: capability_ready("github.get_issue"),
             github_create_issue: capability_ready("github.create_issue"),
             github_comment_on_issue: capability_ready("github.comment_on_issue"),
         };
         status.selected_model = selected_model;
-        status.readiness = FailureReporterReadiness {
+        status.readiness = BugMonitorReadiness {
             config_valid: repo_valid
                 && selected_server.is_some()
                 && status.required_capabilities.github_list_issues
@@ -2836,7 +2823,7 @@ impl AppState {
         };
         if config.enabled {
             if config.paused {
-                status.last_error = Some("Failure reporter monitoring is paused.".to_string());
+                status.last_error = Some("Bug monitor monitoring is paused.".to_string());
             } else if !repo_valid {
                 status.last_error = Some("Target repo is missing or invalid.".to_string());
             } else if selected_server.is_none() {
@@ -2845,7 +2832,7 @@ impl AppState {
                 status.last_error = Some("Selected MCP server is disconnected.".to_string());
             } else if !selected_model_ready {
                 status.last_error = Some(
-                    "Selected provider/model is unavailable. Failure reporter is fail-closed."
+                    "Selected provider/model is unavailable. Bug monitor is fail-closed."
                         .to_string(),
                 );
             } else if !status.readiness.github_read_ready || !status.readiness.github_write_ready {
@@ -3462,29 +3449,53 @@ fn parse_bool_env(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-fn resolve_failure_reporter_env_config() -> FailureReporterConfig {
-    let provider_preference = match std::env::var("TANDEM_FAILURE_REPORTER_PROVIDER_PREFERENCE")
-        .ok()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
+fn resolve_bug_monitor_env_config() -> BugMonitorConfig {
+    fn env_value(new_name: &str, legacy_name: &str) -> Option<String> {
+        std::env::var(new_name)
+            .ok()
+            .or_else(|| std::env::var(legacy_name).ok())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+
+    fn env_bool(new_name: &str, legacy_name: &str, default: bool) -> bool {
+        env_value(new_name, legacy_name)
+            .map(|value| parse_bool_like(&value, default))
+            .unwrap_or(default)
+    }
+
+    fn parse_bool_like(value: &str, default: bool) -> bool {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        }
+    }
+
+    let provider_preference = match env_value(
+        "TANDEM_BUG_MONITOR_PROVIDER_PREFERENCE",
+        "TANDEM_FAILURE_REPORTER_PROVIDER_PREFERENCE",
+    )
+    .unwrap_or_default()
+    .trim()
+    .to_ascii_lowercase()
+    .as_str()
     {
         "official_github" | "official-github" | "github" => {
-            FailureReporterProviderPreference::OfficialGithub
+            BugMonitorProviderPreference::OfficialGithub
         }
-        "composio" => FailureReporterProviderPreference::Composio,
-        "arcade" => FailureReporterProviderPreference::Arcade,
-        _ => FailureReporterProviderPreference::Auto,
+        "composio" => BugMonitorProviderPreference::Composio,
+        "arcade" => BugMonitorProviderPreference::Arcade,
+        _ => BugMonitorProviderPreference::Auto,
     };
-    let provider_id = std::env::var("TANDEM_FAILURE_REPORTER_PROVIDER_ID")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    let model_id = std::env::var("TANDEM_FAILURE_REPORTER_MODEL_ID")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
+    let provider_id = env_value(
+        "TANDEM_BUG_MONITOR_PROVIDER_ID",
+        "TANDEM_FAILURE_REPORTER_PROVIDER_ID",
+    );
+    let model_id = env_value(
+        "TANDEM_BUG_MONITOR_MODEL_ID",
+        "TANDEM_FAILURE_REPORTER_MODEL_ID",
+    );
     let model_policy = match (provider_id, model_id) {
         (Some(provider_id), Some(model_id)) => Some(json!({
             "default_model": {
@@ -3494,36 +3505,44 @@ fn resolve_failure_reporter_env_config() -> FailureReporterConfig {
         })),
         _ => None,
     };
-    FailureReporterConfig {
-        enabled: parse_bool_env("TANDEM_FAILURE_REPORTER_ENABLED", false),
-        paused: parse_bool_env("TANDEM_FAILURE_REPORTER_PAUSED", false),
-        workspace_root: std::env::var("TANDEM_FAILURE_REPORTER_WORKSPACE_ROOT")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty()),
-        repo: std::env::var("TANDEM_FAILURE_REPORTER_REPO")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty()),
-        mcp_server: std::env::var("TANDEM_FAILURE_REPORTER_MCP_SERVER")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty()),
+    BugMonitorConfig {
+        enabled: env_bool(
+            "TANDEM_BUG_MONITOR_ENABLED",
+            "TANDEM_FAILURE_REPORTER_ENABLED",
+            false,
+        ),
+        paused: env_bool(
+            "TANDEM_BUG_MONITOR_PAUSED",
+            "TANDEM_FAILURE_REPORTER_PAUSED",
+            false,
+        ),
+        workspace_root: env_value(
+            "TANDEM_BUG_MONITOR_WORKSPACE_ROOT",
+            "TANDEM_FAILURE_REPORTER_WORKSPACE_ROOT",
+        ),
+        repo: env_value("TANDEM_BUG_MONITOR_REPO", "TANDEM_FAILURE_REPORTER_REPO"),
+        mcp_server: env_value(
+            "TANDEM_BUG_MONITOR_MCP_SERVER",
+            "TANDEM_FAILURE_REPORTER_MCP_SERVER",
+        ),
         provider_preference,
         model_policy,
-        auto_create_new_issues: parse_bool_env(
+        auto_create_new_issues: env_bool(
+            "TANDEM_BUG_MONITOR_AUTO_CREATE_NEW_ISSUES",
             "TANDEM_FAILURE_REPORTER_AUTO_CREATE_NEW_ISSUES",
             true,
         ),
-        require_approval_for_new_issues: parse_bool_env(
+        require_approval_for_new_issues: env_bool(
+            "TANDEM_BUG_MONITOR_REQUIRE_APPROVAL_FOR_NEW_ISSUES",
             "TANDEM_FAILURE_REPORTER_REQUIRE_APPROVAL_FOR_NEW_ISSUES",
             false,
         ),
-        auto_comment_on_matched_open_issues: parse_bool_env(
+        auto_comment_on_matched_open_issues: env_bool(
+            "TANDEM_BUG_MONITOR_AUTO_COMMENT_ON_MATCHED_OPEN_ISSUES",
             "TANDEM_FAILURE_REPORTER_AUTO_COMMENT_ON_MATCHED_OPEN_ISSUES",
             true,
         ),
-        label_mode: FailureReporterLabelMode::ReporterOnly,
+        label_mode: BugMonitorLabelMode::ReporterOnly,
         updated_at_ms: 0,
     }
 }
@@ -3613,44 +3632,54 @@ fn resolve_workflow_runs_path() -> PathBuf {
     default_state_dir().join("workflow_runs.json")
 }
 
-fn resolve_failure_reporter_config_path() -> PathBuf {
+fn resolve_bug_monitor_config_path() -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
         let trimmed = root.trim();
         if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("failure_reporter_config.json");
+            return PathBuf::from(trimmed).join("bug_monitor_config.json");
         }
     }
-    default_state_dir().join("failure_reporter_config.json")
+    default_state_dir().join("bug_monitor_config.json")
 }
 
-fn resolve_failure_reporter_drafts_path() -> PathBuf {
+fn resolve_bug_monitor_drafts_path() -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
         let trimmed = root.trim();
         if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("failure_reporter_drafts.json");
+            return PathBuf::from(trimmed).join("bug_monitor_drafts.json");
         }
     }
-    default_state_dir().join("failure_reporter_drafts.json")
+    default_state_dir().join("bug_monitor_drafts.json")
 }
 
-fn resolve_failure_reporter_incidents_path() -> PathBuf {
+fn resolve_bug_monitor_incidents_path() -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
         let trimmed = root.trim();
         if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("failure_reporter_incidents.json");
+            return PathBuf::from(trimmed).join("bug_monitor_incidents.json");
         }
     }
-    default_state_dir().join("failure_reporter_incidents.json")
+    default_state_dir().join("bug_monitor_incidents.json")
 }
 
-fn resolve_failure_reporter_posts_path() -> PathBuf {
+fn resolve_bug_monitor_posts_path() -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
         let trimmed = root.trim();
         if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("failure_reporter_posts.json");
+            return PathBuf::from(trimmed).join("bug_monitor_posts.json");
         }
     }
-    default_state_dir().join("failure_reporter_posts.json")
+    default_state_dir().join("bug_monitor_posts.json")
+}
+
+fn legacy_failure_reporter_path(file_name: &str) -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join(file_name);
+        }
+    }
+    default_state_dir().join(file_name)
 }
 
 fn resolve_workflow_hook_overrides_path() -> PathBuf {
@@ -4570,13 +4599,13 @@ pub async fn run_agent_team_supervisor(state: AppState) {
     }
 }
 
-pub async fn run_failure_reporter(state: AppState) {
+pub async fn run_bug_monitor(state: AppState) {
     if !state.wait_until_ready_or_failed(120, 250).await {
-        tracing::warn!("failure reporter: skipped because runtime did not become ready");
+        tracing::warn!("bug monitor: skipped because runtime did not become ready");
         return;
     }
     state
-        .update_failure_reporter_runtime_status(|runtime| {
+        .update_bug_monitor_runtime_status(|runtime| {
             runtime.monitoring_active = false;
             runtime.last_runtime_error = None;
         })
@@ -4585,13 +4614,13 @@ pub async fn run_failure_reporter(state: AppState) {
     loop {
         match rx.recv().await {
             Ok(event) => {
-                if !is_failure_reporter_candidate_event(&event) {
+                if !is_bug_monitor_candidate_event(&event) {
                     continue;
                 }
-                let status = state.failure_reporter_status().await;
+                let status = state.bug_monitor_status().await;
                 if !status.config.enabled || status.config.paused || !status.readiness.repo_valid {
                     state
-                        .update_failure_reporter_runtime_status(|runtime| {
+                        .update_bug_monitor_runtime_status(|runtime| {
                             runtime.monitoring_active = status.config.enabled
                                 && !status.config.paused
                                 && status.readiness.repo_valid;
@@ -4601,10 +4630,10 @@ pub async fn run_failure_reporter(state: AppState) {
                         .await;
                     continue;
                 }
-                match process_failure_reporter_event(&state, &event, &status.config).await {
+                match process_bug_monitor_event(&state, &event, &status.config).await {
                     Ok(incident) => {
                         state
-                            .update_failure_reporter_runtime_status(|runtime| {
+                            .update_bug_monitor_runtime_status(|runtime| {
                                 runtime.monitoring_active = true;
                                 runtime.paused = status.config.paused;
                                 runtime.last_processed_at_ms = Some(now_ms());
@@ -4617,7 +4646,7 @@ pub async fn run_failure_reporter(state: AppState) {
                     Err(error) => {
                         let detail = truncate_text(&error.to_string(), 500);
                         state
-                            .update_failure_reporter_runtime_status(|runtime| {
+                            .update_bug_monitor_runtime_status(|runtime| {
                                 runtime.monitoring_active = true;
                                 runtime.paused = status.config.paused;
                                 runtime.last_processed_at_ms = Some(now_ms());
@@ -4626,7 +4655,7 @@ pub async fn run_failure_reporter(state: AppState) {
                             })
                             .await;
                         state.event_bus.publish(EngineEvent::new(
-                            "failure_reporter.error",
+                            "bug_monitor.error",
                             serde_json::json!({
                                 "eventType": event.event_type,
                                 "detail": detail,
@@ -4638,10 +4667,9 @@ pub async fn run_failure_reporter(state: AppState) {
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                 state
-                    .update_failure_reporter_runtime_status(|runtime| {
-                        runtime.last_runtime_error = Some(format!(
-                            "Failure reporter lagged and dropped {count} events."
-                        ));
+                    .update_bug_monitor_runtime_status(|runtime| {
+                        runtime.last_runtime_error =
+                            Some(format!("Bug monitor lagged and dropped {count} events."));
                     })
                     .await;
             }
@@ -4699,8 +4727,8 @@ pub async fn run_usage_aggregator(state: AppState) {
     }
 }
 
-fn is_failure_reporter_candidate_event(event: &EngineEvent) -> bool {
-    if event.event_type.starts_with("failure_reporter.") {
+fn is_bug_monitor_candidate_event(event: &EngineEvent) -> bool {
+    if event.event_type.starts_with("bug_monitor.") {
         return false;
     }
     matches!(
@@ -4709,16 +4737,16 @@ fn is_failure_reporter_candidate_event(event: &EngineEvent) -> bool {
     )
 }
 
-async fn process_failure_reporter_event(
+async fn process_bug_monitor_event(
     state: &AppState,
     event: &EngineEvent,
-    config: &FailureReporterConfig,
-) -> anyhow::Result<FailureReporterIncidentRecord> {
-    let submission = build_failure_reporter_submission_from_event(state, config, event).await?;
+    config: &BugMonitorConfig,
+) -> anyhow::Result<BugMonitorIncidentRecord> {
+    let submission = build_bug_monitor_submission_from_event(state, config, event).await?;
     let fingerprint = submission
         .fingerprint
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("failure reporter submission fingerprint missing"))?;
+        .ok_or_else(|| anyhow::anyhow!("bug monitor submission fingerprint missing"))?;
     let default_workspace_root = state.workspace_index.snapshot().await.root;
     let workspace_root = config
         .workspace_root
@@ -4727,7 +4755,7 @@ async fn process_failure_reporter_event(
     let now = now_ms();
 
     let existing = state
-        .failure_reporter_incidents
+        .bug_monitor_incidents
         .read()
         .await
         .values()
@@ -4743,7 +4771,7 @@ async fn process_failure_reporter_event(
         }
         row
     } else {
-        FailureReporterIncidentRecord {
+        BugMonitorIncidentRecord {
             incident_id: format!("failure-incident-{}", uuid::Uuid::new_v4().simple()),
             fingerprint: fingerprint.clone(),
             event_type: event.event_type.clone(),
@@ -4772,15 +4800,13 @@ async fn process_failure_reporter_event(
             event_payload: Some(event.properties.clone()),
         }
     };
-    state
-        .put_failure_reporter_incident(incident.clone())
-        .await?;
+    state.put_bug_monitor_incident(incident.clone()).await?;
 
-    let draft = state.submit_failure_reporter_draft(submission).await?;
+    let draft = state.submit_bug_monitor_draft(submission).await?;
     incident.draft_id = Some(draft.draft_id.clone());
     incident.status = "draft_created".to_string();
 
-    match crate::http::failure_reporter::ensure_failure_reporter_triage_run(
+    match crate::http::bug_monitor::ensure_bug_monitor_triage_run(
         state.clone(),
         &draft.draft_id,
         true,
@@ -4802,14 +4828,14 @@ async fn process_failure_reporter_event(
 
     if let Some(draft_id) = incident.draft_id.clone() {
         let latest_draft = state
-            .get_failure_reporter_draft(&draft_id)
+            .get_bug_monitor_draft(&draft_id)
             .await
             .unwrap_or(draft.clone());
-        match crate::failure_reporter_github::publish_draft(
+        match crate::bug_monitor_github::publish_draft(
             state,
             &draft_id,
             Some(&incident.incident_id),
-            crate::failure_reporter_github::PublishMode::Auto,
+            crate::bug_monitor_github::PublishMode::Auto,
         )
         .await
         {
@@ -4825,8 +4851,8 @@ async fn process_failure_reporter_event(
                 failed_draft.github_status = Some("github_post_failed".to_string());
                 failed_draft.last_post_error = Some(detail.clone());
                 let evidence_digest = failed_draft.evidence_digest.clone();
-                let _ = state.put_failure_reporter_draft(failed_draft.clone()).await;
-                let _ = crate::failure_reporter_github::record_post_failure(
+                let _ = state.put_bug_monitor_draft(failed_draft.clone()).await;
+                let _ = crate::bug_monitor_github::record_post_failure(
                     state,
                     &failed_draft,
                     Some(&incident.incident_id),
@@ -4840,11 +4866,9 @@ async fn process_failure_reporter_event(
     }
 
     incident.updated_at_ms = now_ms();
-    state
-        .put_failure_reporter_incident(incident.clone())
-        .await?;
+    state.put_bug_monitor_incident(incident.clone()).await?;
     state.event_bus.publish(EngineEvent::new(
-        "failure_reporter.incident.detected",
+        "bug_monitor.incident.detected",
         serde_json::json!({
             "incident_id": incident.incident_id,
             "fingerprint": incident.fingerprint,
@@ -4857,15 +4881,15 @@ async fn process_failure_reporter_event(
     Ok(incident)
 }
 
-async fn build_failure_reporter_submission_from_event(
+async fn build_bug_monitor_submission_from_event(
     state: &AppState,
-    config: &FailureReporterConfig,
+    config: &BugMonitorConfig,
     event: &EngineEvent,
-) -> anyhow::Result<FailureReporterSubmission> {
+) -> anyhow::Result<BugMonitorSubmission> {
     let repo = config
         .repo
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("Failure Reporter repo is not configured"))?;
+        .ok_or_else(|| anyhow::anyhow!("Bug Monitor repo is not configured"))?;
     let default_workspace_root = state.workspace_index.snapshot().await.root;
     let workspace_root = config
         .workspace_root
@@ -4893,7 +4917,7 @@ async fn build_failure_reporter_submission_from_event(
             "title",
         ],
     );
-    let mut excerpt = collect_failure_reporter_excerpt(state, &event.properties).await;
+    let mut excerpt = collect_bug_monitor_excerpt(state, &event.properties).await;
     if excerpt.is_empty() {
         if let Some(reason) = reason.as_ref() {
             excerpt.push(reason.clone());
@@ -4941,7 +4965,7 @@ async fn build_failure_reporter_submission_from_event(
         detail_lines.push(truncate_text(&serialized, 2_000));
     }
 
-    Ok(FailureReporterSubmission {
+    Ok(BugMonitorSubmission {
         repo: Some(repo),
         title: Some(title),
         detail: Some(detail_lines.join("\n")),
@@ -4959,7 +4983,7 @@ async fn build_failure_reporter_submission_from_event(
     })
 }
 
-async fn collect_failure_reporter_excerpt(state: &AppState, properties: &Value) -> Vec<String> {
+async fn collect_bug_monitor_excerpt(state: &AppState, properties: &Value) -> Vec<String> {
     let mut excerpt = Vec::new();
     if let Some(reason) = first_string(properties, &["reason", "error", "detail", "message"]) {
         excerpt.push(reason);

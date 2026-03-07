@@ -1,19 +1,20 @@
 use super::*;
 
 #[tokio::test]
-async fn failure_reporter_runtime_creates_incident_and_draft_from_failure_event() {
+async fn bug_monitor_runtime_creates_incident_and_draft_from_failure_event() {
     let state = test_state().await;
     state
-        .put_failure_reporter_config(crate::FailureReporterConfig {
+        .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
             workspace_root: Some("/tmp/acme".to_string()),
+            require_approval_for_new_issues: true,
             ..Default::default()
         })
         .await
         .expect("config");
 
-    let task = tokio::spawn(crate::run_failure_reporter(state.clone()));
+    let task = tokio::spawn(crate::run_bug_monitor(state.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     state.event_bus.publish(EngineEvent::new(
         "session.error",
@@ -27,8 +28,8 @@ async fn failure_reporter_runtime_creates_incident_and_draft_from_failure_event(
 
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            let incidents = state.list_failure_reporter_incidents(10).await;
-            let drafts = state.list_failure_reporter_drafts(10).await;
+            let incidents = state.list_bug_monitor_incidents(10).await;
+            let drafts = state.list_bug_monitor_drafts(10).await;
             if incidents
                 .iter()
                 .any(|row| row.draft_id.is_some() || row.last_error.is_some())
@@ -42,7 +43,7 @@ async fn failure_reporter_runtime_creates_incident_and_draft_from_failure_event(
     .await
     .expect("incident timeout");
 
-    let incidents = state.list_failure_reporter_incidents(10).await;
+    let incidents = state.list_bug_monitor_incidents(10).await;
     assert_eq!(incidents.len(), 1);
     let incident = &incidents[0];
     assert_eq!(incident.event_type, "session.error");
@@ -50,7 +51,7 @@ async fn failure_reporter_runtime_creates_incident_and_draft_from_failure_event(
     assert_eq!(incident.workspace_root, "/tmp/acme");
     assert!(incident.draft_id.is_some());
 
-    let drafts = state.list_failure_reporter_drafts(10).await;
+    let drafts = state.list_bug_monitor_drafts(10).await;
     assert_eq!(drafts.len(), 1);
     assert_eq!(
         drafts[0].draft_id,
@@ -61,10 +62,10 @@ async fn failure_reporter_runtime_creates_incident_and_draft_from_failure_event(
 }
 
 #[tokio::test]
-async fn paused_failure_reporter_runtime_ignores_failure_events() {
+async fn paused_bug_monitor_runtime_ignores_failure_events() {
     let state = test_state().await;
     state
-        .put_failure_reporter_config(crate::FailureReporterConfig {
+        .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             paused: true,
             repo: Some("acme/platform".to_string()),
@@ -73,7 +74,7 @@ async fn paused_failure_reporter_runtime_ignores_failure_events() {
         .await
         .expect("config");
 
-    let task = tokio::spawn(crate::run_failure_reporter(state.clone()));
+    let task = tokio::spawn(crate::run_bug_monitor(state.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     state.event_bus.publish(EngineEvent::new(
         "session.error",
@@ -84,16 +85,16 @@ async fn paused_failure_reporter_runtime_ignores_failure_events() {
     ));
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
-    assert!(state.list_failure_reporter_incidents(10).await.is_empty());
-    assert!(state.list_failure_reporter_drafts(10).await.is_empty());
+    assert!(state.list_bug_monitor_incidents(10).await.is_empty());
+    assert!(state.list_bug_monitor_drafts(10).await.is_empty());
     task.abort();
 }
 
 #[tokio::test]
-async fn failure_reporter_runtime_detects_real_context_task_failures() {
+async fn bug_monitor_runtime_detects_real_context_task_failures() {
     let state = test_state().await;
     state
-        .put_failure_reporter_config(crate::FailureReporterConfig {
+        .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
             workspace_root: Some("/tmp/acme".to_string()),
@@ -102,7 +103,7 @@ async fn failure_reporter_runtime_detects_real_context_task_failures() {
         .await
         .expect("config");
 
-    let task = tokio::spawn(crate::run_failure_reporter(state.clone()));
+    let task = tokio::spawn(crate::run_bug_monitor(state.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     state.event_bus.publish(EngineEvent::new(
         "context.task.failed",
@@ -123,8 +124,8 @@ async fn failure_reporter_runtime_detects_real_context_task_failures() {
 
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            let incidents = state.list_failure_reporter_incidents(10).await;
-            let drafts = state.list_failure_reporter_drafts(10).await;
+            let incidents = state.list_bug_monitor_incidents(10).await;
+            let drafts = state.list_bug_monitor_drafts(10).await;
             if incidents
                 .iter()
                 .any(|row| row.draft_id.is_some() || row.last_error.is_some())
@@ -138,7 +139,7 @@ async fn failure_reporter_runtime_detects_real_context_task_failures() {
     .await
     .expect("incident timeout");
 
-    let incidents = state.list_failure_reporter_incidents(10).await;
+    let incidents = state.list_bug_monitor_incidents(10).await;
     assert_eq!(incidents.len(), 1);
     let incident = &incidents[0];
     assert_eq!(incident.event_type, "context.task.failed");
@@ -159,10 +160,10 @@ async fn failure_reporter_runtime_detects_real_context_task_failures() {
 }
 
 #[tokio::test]
-async fn failure_reporter_report_creates_and_dedupes_draft() {
+async fn bug_monitor_report_creates_and_dedupes_draft() {
     let state = test_state().await;
     state
-        .put_failure_reporter_config(crate::FailureReporterConfig {
+        .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
             ..Default::default()
@@ -181,7 +182,7 @@ async fn failure_reporter_report_creates_and_dedupes_draft() {
     });
     let req = Request::builder()
         .method("POST")
-        .uri("/failure-reporter/report")
+        .uri("/bug-monitor/report")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .expect("request");
@@ -207,7 +208,7 @@ async fn failure_reporter_report_creates_and_dedupes_draft() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/failure-reporter/report")
+        .uri("/bug-monitor/report")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .expect("request");
@@ -227,17 +228,132 @@ async fn failure_reporter_report_creates_and_dedupes_draft() {
             .and_then(Value::as_str)
     );
 
-    let drafts = state.list_failure_reporter_drafts(10).await;
+    let drafts = state.list_bug_monitor_drafts(10).await;
     assert_eq!(drafts.len(), 1);
 }
 
 #[tokio::test]
-async fn failure_reporter_report_requires_repo() {
+async fn bug_monitor_report_surfaces_duplicate_failure_patterns() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let seed_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-run-failure-pattern-seed",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "acme/platform"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 301
+                }
+            })
+            .to_string(),
+        ))
+        .expect("seed request");
+    let seed_resp = app.clone().oneshot(seed_req).await.expect("seed response");
+    assert_eq!(seed_resp.status(), StatusCode::OK);
+
+    let candidate_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-run-failure-pattern-seed/memory-candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "kind": "failure_pattern",
+                "summary": "Repeated orchestrator failure",
+                "payload": {
+                    "type": "failure.pattern",
+                    "repo_slug": "acme/platform",
+                    "fingerprint": "manual-failure-pattern",
+                    "symptoms": ["orchestrator.run_failed"],
+                    "canonical_markers": ["orchestrator.run_failed", "stack trace"],
+                    "linked_issue_numbers": [301],
+                    "linked_pr_numbers": [],
+                    "affected_components": ["orchestrator"],
+                    "artifact_refs": ["artifact://ctx/manual/triage.summary.json"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("candidate request");
+    let candidate_resp = app
+        .clone()
+        .oneshot(candidate_req)
+        .await
+        .expect("candidate response");
+    assert_eq!(candidate_resp.status(), StatusCode::OK);
+
+    let report_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "desktop_logs",
+                    "event": "orchestrator.run_failed",
+                    "fingerprint": "manual-failure-pattern",
+                    "excerpt": ["stack trace"],
+                }
+            })
+            .to_string(),
+        ))
+        .expect("report request");
+    let report_resp = app
+        .clone()
+        .oneshot(report_req)
+        .await
+        .expect("report response");
+    assert_eq!(report_resp.status(), StatusCode::OK);
+    let report_payload: Value = serde_json::from_slice(
+        &to_bytes(report_resp.into_body(), usize::MAX)
+            .await
+            .expect("report body"),
+    )
+    .expect("report json");
+    let duplicate_matches = report_payload
+        .get("duplicate_matches")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(duplicate_matches.len(), 1);
+    assert_eq!(
+        duplicate_matches[0]
+            .get("fingerprint")
+            .and_then(Value::as_str),
+        Some("manual-failure-pattern")
+    );
+}
+
+#[tokio::test]
+async fn bug_monitor_report_requires_repo() {
     let state = test_state().await;
     let app = app_router(state);
     let req = Request::builder()
         .method("POST")
-        .uri("/failure-reporter/report")
+        .uri("/bug-monitor/report")
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -256,15 +372,15 @@ async fn failure_reporter_report_requires_repo() {
             .expect("json");
     assert_eq!(
         payload.get("code").and_then(Value::as_str),
-        Some("FAILURE_REPORTER_REPORT_INVALID")
+        Some("BUG_MONITOR_REPORT_INVALID")
     );
 }
 
 #[tokio::test]
-async fn failure_reporter_draft_can_be_approved_and_denied() {
+async fn bug_monitor_draft_can_be_approved_and_denied() {
     let state = test_state().await;
     state
-        .put_failure_reporter_config(crate::FailureReporterConfig {
+        .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
             ..Default::default()
@@ -275,7 +391,7 @@ async fn failure_reporter_draft_can_be_approved_and_denied() {
     let app = app_router(state);
     let req = Request::builder()
         .method("POST")
-        .uri("/failure-reporter/report")
+        .uri("/bug-monitor/report")
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -300,7 +416,7 @@ async fn failure_reporter_draft_can_be_approved_and_denied() {
 
     let approve_req = Request::builder()
         .method("POST")
-        .uri(format!("/failure-reporter/drafts/{draft_id}/approve"))
+        .uri(format!("/bug-monitor/drafts/{draft_id}/approve"))
         .header("content-type", "application/json")
         .body(Body::from(json!({"reason":"looks valid"}).to_string()))
         .expect("approve request");
@@ -326,7 +442,7 @@ async fn failure_reporter_draft_can_be_approved_and_denied() {
 
     let deny_req = Request::builder()
         .method("POST")
-        .uri(format!("/failure-reporter/drafts/{draft_id}/deny"))
+        .uri(format!("/bug-monitor/drafts/{draft_id}/deny"))
         .header("content-type", "application/json")
         .body(Body::from(json!({"reason":"too late"}).to_string()))
         .expect("deny request");
@@ -335,7 +451,7 @@ async fn failure_reporter_draft_can_be_approved_and_denied() {
 
     let second_req = Request::builder()
         .method("POST")
-        .uri("/failure-reporter/report")
+        .uri("/bug-monitor/report")
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -364,7 +480,7 @@ async fn failure_reporter_draft_can_be_approved_and_denied() {
 
     let deny_req = Request::builder()
         .method("POST")
-        .uri(format!("/failure-reporter/drafts/{second_draft_id}/deny"))
+        .uri(format!("/bug-monitor/drafts/{second_draft_id}/deny"))
         .header("content-type", "application/json")
         .body(Body::from(json!({"reason":"noise"}).to_string()))
         .expect("deny request");
@@ -386,10 +502,10 @@ async fn failure_reporter_draft_can_be_approved_and_denied() {
 }
 
 #[tokio::test]
-async fn failure_reporter_triage_run_created_from_approved_draft() {
+async fn bug_monitor_triage_run_created_from_approved_draft() {
     let state = test_state().await;
     state
-        .put_failure_reporter_config(crate::FailureReporterConfig {
+        .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
             workspace_root: Some("/tmp/acme".to_string()),
@@ -401,7 +517,7 @@ async fn failure_reporter_triage_run_created_from_approved_draft() {
     let app = app_router(state.clone());
     let create_req = Request::builder()
         .method("POST")
-        .uri("/failure-reporter/report")
+        .uri("/bug-monitor/report")
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -427,23 +543,30 @@ async fn failure_reporter_triage_run_created_from_approved_draft() {
         .and_then(Value::as_str)
         .expect("draft id")
         .to_string();
-
-    let approve_req = Request::builder()
-        .method("POST")
-        .uri(format!("/failure-reporter/drafts/{draft_id}/approve"))
-        .header("content-type", "application/json")
-        .body(Body::from("{}"))
-        .expect("approve request");
-    let approve_resp = app
-        .clone()
-        .oneshot(approve_req)
-        .await
-        .expect("approve response");
-    assert_eq!(approve_resp.status(), StatusCode::OK);
+    let draft_status = create_payload
+        .get("draft")
+        .and_then(|row| row.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if draft_status.eq_ignore_ascii_case("approval_required") {
+        let approve_req = Request::builder()
+            .method("POST")
+            .uri(format!("/bug-monitor/drafts/{draft_id}/approve"))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .expect("approve request");
+        let approve_resp = app
+            .clone()
+            .oneshot(approve_req)
+            .await
+            .expect("approve response");
+        assert_eq!(approve_resp.status(), StatusCode::OK);
+    }
 
     let triage_req = Request::builder()
         .method("POST")
-        .uri(format!("/failure-reporter/drafts/{draft_id}/triage-run"))
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-run"))
         .body(Body::empty())
         .expect("triage request");
     let triage_resp = app
@@ -501,7 +624,7 @@ async fn failure_reporter_triage_run_created_from_approved_draft() {
             .get("run")
             .and_then(|row| row.get("run_type"))
             .and_then(Value::as_str),
-        Some("failure_reporter_triage")
+        Some("bug_monitor_triage")
     );
     assert_eq!(
         get_run_payload
@@ -511,10 +634,22 @@ async fn failure_reporter_triage_run_created_from_approved_draft() {
             .map(|rows| rows.len()),
         Some(2)
     );
+    let duplicate_artifact_present = get_run_payload
+        .get("run")
+        .and_then(|row| row.get("artifacts"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                row.get("artifact_type").and_then(Value::as_str)
+                    == Some("failure_duplicate_matches")
+            })
+        })
+        .unwrap_or(false);
+    assert!(!duplicate_artifact_present);
 
     let second_req = Request::builder()
         .method("POST")
-        .uri(format!("/failure-reporter/drafts/{draft_id}/triage-run"))
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-run"))
         .body(Body::empty())
         .expect("second triage request");
     let second_resp = app
@@ -540,4 +675,191 @@ async fn failure_reporter_triage_run_created_from_approved_draft() {
         second_payload.get("deduped").and_then(Value::as_bool),
         Some(true)
     );
+}
+
+#[tokio::test]
+async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let seed_run_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-run-failure-pattern-artifact",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "acme/platform"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 302
+                }
+            })
+            .to_string(),
+        ))
+        .expect("seed request");
+    let seed_run_resp = app
+        .clone()
+        .oneshot(seed_run_req)
+        .await
+        .expect("seed response");
+    assert_eq!(seed_run_resp.status(), StatusCode::OK);
+
+    let candidate_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-run-failure-pattern-artifact/memory-candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "kind": "failure_pattern",
+                "summary": "Repeated orchestrator failure",
+                "payload": {
+                    "type": "failure.pattern",
+                    "repo_slug": "acme/platform",
+                    "fingerprint": "manual-artifact-fingerprint",
+                    "symptoms": ["Build failure in CI"],
+                    "canonical_markers": ["Build failure in CI"],
+                    "linked_issue_numbers": [302],
+                    "linked_pr_numbers": [],
+                    "affected_components": ["ci"],
+                    "artifact_refs": ["artifact://ctx/manual/triage.summary.json"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("candidate request");
+    let candidate_resp = app
+        .clone()
+        .oneshot(candidate_req)
+        .await
+        .expect("candidate response");
+    assert_eq!(candidate_resp.status(), StatusCode::OK);
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "desktop_logs",
+                    "title": "Build failure in CI",
+                    "fingerprint": "manual-artifact-fingerprint",
+                    "excerpt": ["Build failure in CI"],
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let draft_id = create_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
+    let draft_status = create_payload
+        .get("draft")
+        .and_then(|row| row.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if draft_status.eq_ignore_ascii_case("approval_required") {
+        let approve_req = Request::builder()
+            .method("POST")
+            .uri(format!("/bug-monitor/drafts/{draft_id}/approve"))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .expect("approve request");
+        let approve_resp = app
+            .clone()
+            .oneshot(approve_req)
+            .await
+            .expect("approve response");
+        assert_eq!(approve_resp.status(), StatusCode::OK);
+    }
+
+    let triage_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-run"))
+        .body(Body::empty())
+        .expect("triage request");
+    let triage_resp = app
+        .clone()
+        .oneshot(triage_req)
+        .await
+        .expect("triage response");
+    assert_eq!(triage_resp.status(), StatusCode::OK);
+    let triage_payload: Value = serde_json::from_slice(
+        &to_bytes(triage_resp.into_body(), usize::MAX)
+            .await
+            .expect("triage body"),
+    )
+    .expect("triage json");
+    let run_id = triage_payload
+        .get("run")
+        .and_then(|row| row.get("run_id"))
+        .and_then(Value::as_str)
+        .expect("run id");
+
+    let get_blackboard_req = Request::builder()
+        .method("GET")
+        .uri(format!("/context/runs/{run_id}/blackboard"))
+        .body(Body::empty())
+        .expect("get blackboard request");
+    let get_blackboard_resp = app
+        .clone()
+        .oneshot(get_blackboard_req)
+        .await
+        .expect("get blackboard response");
+    assert_eq!(get_blackboard_resp.status(), StatusCode::OK);
+    let get_blackboard_payload: Value = serde_json::from_slice(
+        &to_bytes(get_blackboard_resp.into_body(), usize::MAX)
+            .await
+            .expect("get blackboard body"),
+    )
+    .expect("get blackboard json");
+    let duplicate_artifact_present = get_blackboard_payload
+        .get("blackboard")
+        .and_then(|row| row.get("artifacts"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                row.get("artifact_type").and_then(Value::as_str)
+                    == Some("failure_duplicate_matches")
+            })
+        })
+        .unwrap_or(false);
+    assert!(duplicate_artifact_present);
 }

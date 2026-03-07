@@ -1,9 +1,6 @@
 use crate::capability_resolver::canonicalize_tool_name;
 use crate::http::AppState;
-use crate::{
-    failure_reporter_github, FailureReporterConfig, FailureReporterDraftRecord,
-    FailureReporterSubmission,
-};
+use crate::{bug_monitor_github, BugMonitorConfig, BugMonitorDraftRecord, BugMonitorSubmission};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -24,39 +21,39 @@ use super::context_types::{
 };
 
 #[derive(Debug, Deserialize, Default)]
-pub(super) struct FailureReporterConfigInput {
+pub(super) struct BugMonitorConfigInput {
     #[serde(default)]
-    pub failure_reporter: Option<FailureReporterConfig>,
+    pub bug_monitor: Option<BugMonitorConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
-pub(super) struct FailureReporterDraftsQuery {
+pub(super) struct BugMonitorDraftsQuery {
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
-pub(super) struct FailureReporterIncidentsQuery {
+pub(super) struct BugMonitorIncidentsQuery {
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
-pub(super) struct FailureReporterPostsQuery {
+pub(super) struct BugMonitorPostsQuery {
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
-pub(super) struct FailureReporterSubmissionInput {
+pub(super) struct BugMonitorSubmissionInput {
     #[serde(default)]
-    pub report: Option<FailureReporterSubmission>,
+    pub report: Option<BugMonitorSubmission>,
 }
 
 #[derive(Debug, Deserialize, Default)]
-pub(super) struct FailureReporterDecisionInput {
+pub(super) struct BugMonitorDecisionInput {
     #[serde(default)]
     pub reason: Option<String>,
 }
 
-async fn write_failure_reporter_artifact(
+async fn write_bug_monitor_artifact(
     state: &AppState,
     linked_context_run_id: &str,
     artifact_id: &str,
@@ -95,36 +92,36 @@ async fn write_failure_reporter_artifact(
     Ok(())
 }
 
-pub(super) async fn get_failure_reporter_config(
+pub(super) async fn get_bug_monitor_config(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    let config = state.failure_reporter_config().await;
+    let config = state.bug_monitor_config().await;
     Json(json!({
-        "failure_reporter": config
+        "bug_monitor": config
     }))
 }
 
-pub(super) async fn patch_failure_reporter_config(
+pub(super) async fn patch_bug_monitor_config(
     State(state): State<AppState>,
-    Json(input): Json<FailureReporterConfigInput>,
+    Json(input): Json<BugMonitorConfigInput>,
 ) -> Response {
-    let Some(config) = input.failure_reporter else {
+    let Some(config) = input.bug_monitor else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "failure_reporter object is required",
-                "code": "FAILURE_REPORTER_CONFIG_REQUIRED",
+                "error": "bug_monitor object is required",
+                "code": "BUG_MONITOR_CONFIG_REQUIRED",
             })),
         )
             .into_response();
     };
-    match state.put_failure_reporter_config(config).await {
-        Ok(saved) => Json(json!({ "failure_reporter": saved })).into_response(),
+    match state.put_bug_monitor_config(config).await {
+        Ok(saved) => Json(json!({ "bug_monitor": saved })).into_response(),
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Invalid failure reporter config",
-                "code": "FAILURE_REPORTER_CONFIG_INVALID",
+                "error": "Invalid bug monitor config",
+                "code": "BUG_MONITOR_CONFIG_INVALID",
                 "detail": error.to_string(),
             })),
         )
@@ -132,28 +129,28 @@ pub(super) async fn patch_failure_reporter_config(
     }
 }
 
-pub(super) async fn get_failure_reporter_status(
+pub(super) async fn get_bug_monitor_status(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    let status = state.failure_reporter_status().await;
+    let status = state.bug_monitor_status().await;
     Json(json!({
         "status": status
     }))
 }
 
-pub(super) async fn recompute_failure_reporter_status(
+pub(super) async fn recompute_bug_monitor_status(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    let status = state.failure_reporter_status().await;
+    let status = state.bug_monitor_status().await;
     Json(json!({
         "status": status
     }))
 }
 
-pub(super) async fn get_failure_reporter_debug(
+pub(super) async fn get_bug_monitor_debug(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    let status = state.failure_reporter_status().await;
+    let status = state.bug_monitor_status().await;
     let selected_server_tools = if let Some(server_name) = status.config.mcp_server.as_deref() {
         state.mcp.server_tools(server_name).await
     } else {
@@ -177,12 +174,12 @@ pub(super) async fn get_failure_reporter_debug(
     }))
 }
 
-pub(super) async fn list_failure_reporter_incidents(
+pub(super) async fn list_bug_monitor_incidents(
     State(state): State<AppState>,
-    Query(query): Query<FailureReporterIncidentsQuery>,
+    Query(query): Query<BugMonitorIncidentsQuery>,
 ) -> Json<serde_json::Value> {
     let incidents = state
-        .list_failure_reporter_incidents(query.limit.unwrap_or(50))
+        .list_bug_monitor_incidents(query.limit.unwrap_or(50))
         .await;
     Json(json!({
         "incidents": incidents,
@@ -190,17 +187,17 @@ pub(super) async fn list_failure_reporter_incidents(
     }))
 }
 
-pub(super) async fn get_failure_reporter_incident(
+pub(super) async fn get_bug_monitor_incident(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
-    match state.get_failure_reporter_incident(&id).await {
+    match state.get_bug_monitor_incident(&id).await {
         Some(incident) => Json(json!({ "incident": incident })).into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(json!({
-                "error": "Failure reporter incident not found",
-                "code": "FAILURE_REPORTER_INCIDENT_NOT_FOUND",
+                "error": "Bug monitor incident not found",
+                "code": "BUG_MONITOR_INCIDENT_NOT_FOUND",
                 "incident_id": id,
             })),
         )
@@ -208,12 +205,12 @@ pub(super) async fn get_failure_reporter_incident(
     }
 }
 
-pub(super) async fn list_failure_reporter_drafts(
+pub(super) async fn list_bug_monitor_drafts(
     State(state): State<AppState>,
-    Query(query): Query<FailureReporterDraftsQuery>,
+    Query(query): Query<BugMonitorDraftsQuery>,
 ) -> Json<serde_json::Value> {
     let drafts = state
-        .list_failure_reporter_drafts(query.limit.unwrap_or(50))
+        .list_bug_monitor_drafts(query.limit.unwrap_or(50))
         .await;
     Json(json!({
         "drafts": drafts,
@@ -221,12 +218,12 @@ pub(super) async fn list_failure_reporter_drafts(
     }))
 }
 
-pub(super) async fn list_failure_reporter_posts(
+pub(super) async fn list_bug_monitor_posts(
     State(state): State<AppState>,
-    Query(query): Query<FailureReporterPostsQuery>,
+    Query(query): Query<BugMonitorPostsQuery>,
 ) -> Json<serde_json::Value> {
     let posts = state
-        .list_failure_reporter_posts(query.limit.unwrap_or(50))
+        .list_bug_monitor_posts(query.limit.unwrap_or(50))
         .await;
     Json(json!({
         "posts": posts,
@@ -234,16 +231,16 @@ pub(super) async fn list_failure_reporter_posts(
     }))
 }
 
-pub(super) async fn pause_failure_reporter(State(state): State<AppState>) -> Response {
-    let mut config = state.failure_reporter_config().await;
+pub(super) async fn pause_bug_monitor(State(state): State<AppState>) -> Response {
+    let mut config = state.bug_monitor_config().await;
     config.paused = true;
-    match state.put_failure_reporter_config(config).await {
-        Ok(saved) => Json(json!({ "ok": true, "failure_reporter": saved })).into_response(),
+    match state.put_bug_monitor_config(config).await {
+        Ok(saved) => Json(json!({ "ok": true, "bug_monitor": saved })).into_response(),
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Failed to pause Failure Reporter",
-                "code": "FAILURE_REPORTER_PAUSE_FAILED",
+                "error": "Failed to pause Bug Monitor",
+                "code": "BUG_MONITOR_PAUSE_FAILED",
                 "detail": error.to_string(),
             })),
         )
@@ -251,16 +248,16 @@ pub(super) async fn pause_failure_reporter(State(state): State<AppState>) -> Res
     }
 }
 
-pub(super) async fn resume_failure_reporter(State(state): State<AppState>) -> Response {
-    let mut config = state.failure_reporter_config().await;
+pub(super) async fn resume_bug_monitor(State(state): State<AppState>) -> Response {
+    let mut config = state.bug_monitor_config().await;
     config.paused = false;
-    match state.put_failure_reporter_config(config).await {
-        Ok(saved) => Json(json!({ "ok": true, "failure_reporter": saved })).into_response(),
+    match state.put_bug_monitor_config(config).await {
+        Ok(saved) => Json(json!({ "ok": true, "bug_monitor": saved })).into_response(),
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Failed to resume Failure Reporter",
-                "code": "FAILURE_REPORTER_RESUME_FAILED",
+                "error": "Failed to resume Bug Monitor",
+                "code": "BUG_MONITOR_RESUME_FAILED",
                 "detail": error.to_string(),
             })),
         )
@@ -268,16 +265,16 @@ pub(super) async fn resume_failure_reporter(State(state): State<AppState>) -> Re
     }
 }
 
-pub(super) async fn replay_failure_reporter_incident(
+pub(super) async fn replay_bug_monitor_incident(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(incident) = state.get_failure_reporter_incident(&id).await else {
+    let Some(incident) = state.get_bug_monitor_incident(&id).await else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({
-                "error": "Failure reporter incident not found",
-                "code": "FAILURE_REPORTER_INCIDENT_NOT_FOUND",
+                "error": "Bug monitor incident not found",
+                "code": "BUG_MONITOR_INCIDENT_NOT_FOUND",
                 "incident_id": id,
             })),
         )
@@ -287,14 +284,14 @@ pub(super) async fn replay_failure_reporter_incident(
         return (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Failure reporter incident has no associated draft",
-                "code": "FAILURE_REPORTER_INCIDENT_NO_DRAFT",
+                "error": "Bug monitor incident has no associated draft",
+                "code": "BUG_MONITOR_INCIDENT_NO_DRAFT",
                 "incident_id": id,
             })),
         )
             .into_response();
     };
-    match ensure_failure_reporter_triage_run(state, draft_id, true).await {
+    match ensure_bug_monitor_triage_run(state, draft_id, true).await {
         Ok((draft, run, deduped)) => Json(json!({
             "ok": true,
             "incident": incident,
@@ -306,8 +303,8 @@ pub(super) async fn replay_failure_reporter_incident(
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Failed to replay Failure Reporter incident",
-                "code": "FAILURE_REPORTER_INCIDENT_REPLAY_FAILED",
+                "error": "Failed to replay Bug Monitor incident",
+                "code": "BUG_MONITOR_INCIDENT_REPLAY_FAILED",
                 "incident_id": id,
                 "detail": error.to_string(),
             })),
@@ -316,25 +313,25 @@ pub(super) async fn replay_failure_reporter_incident(
     }
 }
 
-pub(super) async fn get_failure_reporter_draft(
+pub(super) async fn get_bug_monitor_draft(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
-    let draft = state.get_failure_reporter_draft(&id).await;
+    let draft = state.get_bug_monitor_draft(&id).await;
     match draft {
         Some(draft) => Json(json!({ "draft": draft })).into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(json!({
-                "error": "Failure reporter draft not found",
-                "code": "FAILURE_REPORTER_DRAFT_NOT_FOUND",
+                "error": "Bug monitor draft not found",
+                "code": "BUG_MONITOR_DRAFT_NOT_FOUND",
             })),
         )
             .into_response(),
     }
 }
 
-fn map_failure_reporter_draft_update_error(
+fn map_bug_monitor_draft_update_error(
     draft_id: String,
     error: anyhow::Error,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -343,8 +340,8 @@ fn map_failure_reporter_draft_update_error(
         (
             StatusCode::NOT_FOUND,
             Json(json!({
-                "error": "Failure Reporter draft not found",
-                "code": "FAILURE_REPORTER_DRAFT_NOT_FOUND",
+                "error": "Bug Monitor draft not found",
+                "code": "BUG_MONITOR_DRAFT_NOT_FOUND",
                 "draft_id": draft_id,
             })),
         )
@@ -352,8 +349,8 @@ fn map_failure_reporter_draft_update_error(
         (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Failure Reporter draft is not waiting for approval",
-                "code": "FAILURE_REPORTER_DRAFT_NOT_PENDING_APPROVAL",
+                "error": "Bug Monitor draft is not waiting for approval",
+                "code": "BUG_MONITOR_DRAFT_NOT_PENDING_APPROVAL",
                 "draft_id": draft_id,
                 "detail": detail,
             })),
@@ -362,8 +359,8 @@ fn map_failure_reporter_draft_update_error(
         (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Failed to update Failure Reporter draft",
-                "code": "FAILURE_REPORTER_DRAFT_UPDATE_FAILED",
+                "error": "Failed to update Bug Monitor draft",
+                "code": "BUG_MONITOR_DRAFT_UPDATE_FAILED",
                 "draft_id": draft_id,
                 "detail": detail,
             })),
@@ -371,22 +368,22 @@ fn map_failure_reporter_draft_update_error(
     }
 }
 
-pub(super) async fn report_failure_reporter_issue(
+pub(super) async fn report_bug_monitor_issue(
     State(state): State<AppState>,
-    Json(input): Json<FailureReporterSubmissionInput>,
+    Json(input): Json<BugMonitorSubmissionInput>,
 ) -> Response {
     let Some(report) = input.report else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": "report object is required",
-                "code": "FAILURE_REPORTER_REPORT_REQUIRED",
+                "code": "BUG_MONITOR_REPORT_REQUIRED",
             })),
         )
             .into_response();
     };
     let report_excerpt = report.excerpt.clone();
-    match state.submit_failure_reporter_draft(report).await {
+    match state.submit_bug_monitor_draft(report).await {
         Ok(draft) => {
             let duplicate_matches = super::coder::query_failure_pattern_matches(
                 &state,
@@ -408,8 +405,8 @@ pub(super) async fn report_failure_reporter_issue(
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Failed to create Failure Reporter draft",
-                "code": "FAILURE_REPORTER_REPORT_INVALID",
+                "error": "Failed to create Bug Monitor draft",
+                "code": "BUG_MONITOR_REPORT_INVALID",
                 "detail": error.to_string(),
             })),
         )
@@ -417,20 +414,20 @@ pub(super) async fn report_failure_reporter_issue(
     }
 }
 
-pub(super) async fn approve_failure_reporter_draft(
+pub(super) async fn approve_bug_monitor_draft(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(input): Json<FailureReporterDecisionInput>,
+    Json(input): Json<BugMonitorDecisionInput>,
 ) -> Response {
     match state
-        .update_failure_reporter_draft_status(&id, "draft_ready", input.reason.as_deref())
+        .update_bug_monitor_draft_status(&id, "draft_ready", input.reason.as_deref())
         .await
     {
-        Ok(draft) => match failure_reporter_github::publish_draft(
+        Ok(draft) => match bug_monitor_github::publish_draft(
             &state,
             &draft.draft_id,
             None,
-            failure_reporter_github::PublishMode::Auto,
+            bug_monitor_github::PublishMode::Auto,
         )
         .await
         {
@@ -445,36 +442,36 @@ pub(super) async fn approve_failure_reporter_draft(
                 StatusCode::BAD_REQUEST,
                 Json(json!({
                     "error": "Draft approved but GitHub publish failed",
-                    "code": "FAILURE_REPORTER_DRAFT_PUBLISH_FAILED",
+                    "code": "BUG_MONITOR_DRAFT_PUBLISH_FAILED",
                     "draft_id": draft.draft_id,
                     "detail": error.to_string(),
                 })),
             )
                 .into_response(),
         },
-        Err(error) => map_failure_reporter_draft_update_error(id, error).into_response(),
+        Err(error) => map_bug_monitor_draft_update_error(id, error).into_response(),
     }
 }
 
-pub(super) async fn deny_failure_reporter_draft(
+pub(super) async fn deny_bug_monitor_draft(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(input): Json<FailureReporterDecisionInput>,
+    Json(input): Json<BugMonitorDecisionInput>,
 ) -> Response {
     match state
-        .update_failure_reporter_draft_status(&id, "denied", input.reason.as_deref())
+        .update_bug_monitor_draft_status(&id, "denied", input.reason.as_deref())
         .await
     {
         Ok(draft) => Json(json!({ "ok": true, "draft": draft })).into_response(),
-        Err(error) => map_failure_reporter_draft_update_error(id, error).into_response(),
+        Err(error) => map_bug_monitor_draft_update_error(id, error).into_response(),
     }
 }
 
-pub(super) async fn create_failure_reporter_triage_run(
+pub(super) async fn create_bug_monitor_triage_run(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
-    match ensure_failure_reporter_triage_run(state.clone(), &id, false).await {
+    match ensure_bug_monitor_triage_run(state.clone(), &id, false).await {
         Ok((draft, run_id, deduped)) => {
             let run = load_context_run_state(
                 &state,
@@ -502,8 +499,8 @@ pub(super) async fn create_failure_reporter_triage_run(
             (
                 status,
                 Json(json!({
-                    "error": "Failed to create Failure Reporter triage run",
-                    "code": "FAILURE_REPORTER_TRIAGE_RUN_CREATE_FAILED",
+                    "error": "Failed to create Bug Monitor triage run",
+                    "code": "BUG_MONITOR_TRIAGE_RUN_CREATE_FAILED",
                     "draft_id": id,
                     "detail": detail,
                 })),
@@ -513,15 +510,15 @@ pub(super) async fn create_failure_reporter_triage_run(
     }
 }
 
-pub(super) async fn publish_failure_reporter_draft(
+pub(super) async fn publish_bug_monitor_draft(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
-    match failure_reporter_github::publish_draft(
+    match bug_monitor_github::publish_draft(
         &state,
         &id,
         None,
-        failure_reporter_github::PublishMode::ManualPublish,
+        bug_monitor_github::PublishMode::ManualPublish,
     )
     .await
     {
@@ -536,7 +533,7 @@ pub(super) async fn publish_failure_reporter_draft(
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": "Failed to publish Bug Monitor draft to GitHub",
-                "code": "FAILURE_REPORTER_DRAFT_PUBLISH_FAILED",
+                "code": "BUG_MONITOR_DRAFT_PUBLISH_FAILED",
                 "draft_id": id,
                 "detail": error.to_string(),
             })),
@@ -545,15 +542,15 @@ pub(super) async fn publish_failure_reporter_draft(
     }
 }
 
-pub(super) async fn recheck_failure_reporter_draft_match(
+pub(super) async fn recheck_bug_monitor_draft_match(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
-    match failure_reporter_github::publish_draft(
+    match bug_monitor_github::publish_draft(
         &state,
         &id,
         None,
-        failure_reporter_github::PublishMode::RecheckOnly,
+        bug_monitor_github::PublishMode::RecheckOnly,
     )
     .await
     {
@@ -568,7 +565,7 @@ pub(super) async fn recheck_failure_reporter_draft_match(
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": "Failed to recheck Bug Monitor draft against GitHub",
-                "code": "FAILURE_REPORTER_DRAFT_RECHECK_FAILED",
+                "code": "BUG_MONITOR_DRAFT_RECHECK_FAILED",
                 "draft_id": id,
                 "detail": error.to_string(),
             })),
@@ -577,25 +574,25 @@ pub(super) async fn recheck_failure_reporter_draft_match(
     }
 }
 
-pub(crate) async fn ensure_failure_reporter_triage_run(
+pub(crate) async fn ensure_bug_monitor_triage_run(
     state: AppState,
     id: &str,
     bypass_approval_gate: bool,
-) -> anyhow::Result<(FailureReporterDraftRecord, String, bool)> {
-    let config = state.failure_reporter_config().await;
+) -> anyhow::Result<(BugMonitorDraftRecord, String, bool)> {
+    let config = state.bug_monitor_config().await;
     let draft = state
-        .get_failure_reporter_draft(id)
+        .get_bug_monitor_draft(id)
         .await
-        .ok_or_else(|| anyhow::anyhow!("Failure Reporter draft not found"))?;
+        .ok_or_else(|| anyhow::anyhow!("Bug Monitor draft not found"))?;
 
     if draft.status.eq_ignore_ascii_case("denied") {
-        anyhow::bail!("Denied Failure Reporter drafts cannot create triage runs");
+        anyhow::bail!("Denied Bug Monitor drafts cannot create triage runs");
     }
     if !bypass_approval_gate
         && config.require_approval_for_new_issues
         && draft.status.eq_ignore_ascii_case("approval_required")
     {
-        anyhow::bail!("Failure Reporter draft must be approved before triage run creation");
+        anyhow::bail!("Bug Monitor draft must be approved before triage run creation");
     }
 
     if let Some(existing_run_id) = draft.triage_run_id.clone() {
@@ -607,7 +604,7 @@ pub(crate) async fn ensure_failure_reporter_triage_run(
 
     let run_id = format!("failure-triage-{}", Uuid::new_v4().simple());
     let objective = format!(
-        "Triage failure reporter draft {} for {}: {}",
+        "Triage bug monitor draft {} for {}: {}",
         draft.draft_id,
         draft.repo,
         draft
@@ -662,9 +659,9 @@ pub(crate) async fn ensure_failure_reporter_triage_run(
     let create_input = ContextRunCreateInput {
         run_id: Some(run_id.clone()),
         objective,
-        run_type: Some("failure_reporter_triage".to_string()),
+        run_type: Some("bug_monitor_triage".to_string()),
         workspace,
-        source_client: Some("failure_reporter".to_string()),
+        source_client: Some("bug_monitor".to_string()),
         model_provider,
         model_id,
         mcp_servers,
@@ -700,7 +697,7 @@ pub(crate) async fn ensure_failure_reporter_triage_run(
                     "duplicate_matches": duplicate_matches,
                 }),
                 status: Some(ContextBlackboardTaskStatus::Runnable),
-                workflow_id: Some("failure_reporter_triage".to_string()),
+                workflow_id: Some("bug_monitor_triage".to_string()),
                 workflow_node_id: Some("inspect_failure_report".to_string()),
                 parent_task_id: None,
                 depends_on_task_ids: Vec::new(),
@@ -721,7 +718,7 @@ pub(crate) async fn ensure_failure_reporter_triage_run(
                     "depends_on": inspect_task_id,
                 }),
                 status: Some(ContextBlackboardTaskStatus::Pending),
-                workflow_id: Some("failure_reporter_triage".to_string()),
+                workflow_id: Some("bug_monitor_triage".to_string()),
                 workflow_node_id: Some("validate_failure_scope".to_string()),
                 parent_task_id: None,
                 depends_on_task_ids: vec![inspect_task_id.clone()],
@@ -743,7 +740,7 @@ pub(crate) async fn ensure_failure_reporter_triage_run(
     }
 
     if !duplicate_matches.is_empty() {
-        write_failure_reporter_artifact(
+        write_bug_monitor_artifact(
             &state,
             &run_id,
             "failure-duplicate-matches",
@@ -767,10 +764,10 @@ pub(crate) async fn ensure_failure_reporter_triage_run(
     updated_draft.triage_run_id = Some(run_id.clone());
     updated_draft.status = "triage_queued".to_string();
     {
-        let mut drafts = state.failure_reporter_drafts.write().await;
+        let mut drafts = state.bug_monitor_drafts.write().await;
         drafts.insert(updated_draft.draft_id.clone(), updated_draft.clone());
     }
-    state.persist_failure_reporter_drafts().await?;
+    state.persist_bug_monitor_drafts().await?;
 
     let mut run = match load_context_run_state(&state, &run_id).await {
         Ok(row) => row,
@@ -788,7 +785,7 @@ pub(crate) async fn ensure_failure_reporter_triage_run(
         .await
         .map_err(|status| anyhow::anyhow!("Failed to finalize triage run state: HTTP {status}"))?;
     state.event_bus.publish(tandem_types::EngineEvent::new(
-        "failure_reporter.triage_run.created",
+        "bug_monitor.triage_run.created",
         json!({
             "draft_id": updated_draft.draft_id,
             "run_id": run.run_id,

@@ -57,10 +57,10 @@ type SettingsSection =
   | "theme"
   | "channels"
   | "mcp"
-  | "failure_reporter"
+  | "bug_monitor"
   | "browser";
 
-type FailureReporterConfigRow = {
+type BugMonitorConfigRow = {
   enabled?: boolean;
   paused?: boolean;
   workspace_root?: string | null;
@@ -79,8 +79,8 @@ type FailureReporterConfigRow = {
   label_mode?: string | null;
 };
 
-type FailureReporterStatusRow = {
-  config?: FailureReporterConfigRow;
+type BugMonitorStatusRow = {
+  config?: BugMonitorConfigRow;
   readiness?: Record<string, boolean>;
   runtime?: {
     monitoring_active?: boolean;
@@ -118,7 +118,7 @@ type FailureReporterStatusRow = {
   last_error?: string | null;
 };
 
-type FailureReporterIncidentRow = {
+type BugMonitorIncidentRow = {
   incident_id: string;
   fingerprint: string;
   event_type: string;
@@ -136,7 +136,7 @@ type FailureReporterIncidentRow = {
   last_error?: string | null;
 };
 
-type FailureReporterDraftRow = {
+type BugMonitorDraftRow = {
   draft_id: string;
   fingerprint: string;
   repo: string;
@@ -156,7 +156,7 @@ type FailureReporterDraftRow = {
   last_post_error?: string | null;
 };
 
-type FailureReporterPostRow = {
+type BugMonitorPostRow = {
   post_id: string;
   draft_id: string;
   repo: string;
@@ -468,23 +468,20 @@ export function SettingsPage({
   const [mcpEditingName, setMcpEditingName] = useState("");
   const [mcpModalTab, setMcpModalTab] = useState<"manual" | "catalog">("manual");
   const [mcpCatalogSearch, setMcpCatalogSearch] = useState("");
-  const [failureReporterEnabled, setFailureReporterEnabled] = useState(false);
-  const [failureReporterPaused, setFailureReporterPaused] = useState(false);
-  const [failureReporterWorkspaceRoot, setFailureReporterWorkspaceRoot] = useState("");
-  const [failureReporterRepo, setFailureReporterRepo] = useState("");
-  const [failureReporterMcpServer, setFailureReporterMcpServer] = useState("");
-  const [failureReporterProviderPreference, setFailureReporterProviderPreference] =
-    useState("auto");
-  const [failureReporterProviderId, setFailureReporterProviderId] = useState("");
-  const [failureReporterModelId, setFailureReporterModelId] = useState("");
-  const [failureReporterAutoCreateIssues, setFailureReporterAutoCreateIssues] = useState(true);
-  const [failureReporterRequireApproval, setFailureReporterRequireApproval] = useState(false);
-  const [failureReporterAutoComment, setFailureReporterAutoComment] = useState(true);
-  const [failureReporterWorkspaceBrowserOpen, setFailureReporterWorkspaceBrowserOpen] =
-    useState(false);
-  const [failureReporterWorkspaceBrowserDir, setFailureReporterWorkspaceBrowserDir] = useState("");
-  const [failureReporterWorkspaceBrowserSearch, setFailureReporterWorkspaceBrowserSearch] =
-    useState("");
+  const [bugMonitorEnabled, setBugMonitorEnabled] = useState(false);
+  const [bugMonitorPaused, setBugMonitorPaused] = useState(false);
+  const [bugMonitorWorkspaceRoot, setBugMonitorWorkspaceRoot] = useState("");
+  const [bugMonitorRepo, setBugMonitorRepo] = useState("");
+  const [bugMonitorMcpServer, setBugMonitorMcpServer] = useState("");
+  const [bugMonitorProviderPreference, setBugMonitorProviderPreference] = useState("auto");
+  const [bugMonitorProviderId, setBugMonitorProviderId] = useState("");
+  const [bugMonitorModelId, setBugMonitorModelId] = useState("");
+  const [bugMonitorAutoCreateIssues, setBugMonitorAutoCreateIssues] = useState(true);
+  const [bugMonitorRequireApproval, setBugMonitorRequireApproval] = useState(false);
+  const [bugMonitorAutoComment, setBugMonitorAutoComment] = useState(true);
+  const [bugMonitorWorkspaceBrowserOpen, setBugMonitorWorkspaceBrowserOpen] = useState(false);
+  const [bugMonitorWorkspaceBrowserDir, setBugMonitorWorkspaceBrowserDir] = useState("");
+  const [bugMonitorWorkspaceBrowserSearch, setBugMonitorWorkspaceBrowserSearch] = useState("");
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadIdentityConfig = async () => {
@@ -523,7 +520,7 @@ export function SettingsPage({
   useEffect(() => {
     if (currentRoute === "mcp") setActiveSection("mcp");
     if (currentRoute === "channels") setActiveSection("channels");
-    if (currentRoute === "failure-reporter") setActiveSection("failure_reporter");
+    if (currentRoute === "bug-monitor") setActiveSection("bug_monitor");
   }, [currentRoute]);
 
   const providersCatalog = useQuery({
@@ -583,57 +580,52 @@ export function SettingsPage({
     queryFn: () => api("/api/engine/mcp/catalog", { method: "GET" }).catch(() => null),
     refetchInterval: 60_000,
   });
-  const failureReporterConfigQuery = useQuery({
-    queryKey: ["settings", "failure-reporter", "config"],
+  const bugMonitorConfigQuery = useQuery({
+    queryKey: ["settings", "bug-monitor", "config"],
     queryFn: () =>
-      api("/api/engine/config/failure-reporter", { method: "GET" }).catch(() => ({
-        failure_reporter: {},
+      api("/api/engine/config/bug-monitor", { method: "GET" }).catch(() => ({
+        bug_monitor: {},
       })),
   });
-  const failureReporterStatusQuery = useQuery({
-    queryKey: ["settings", "failure-reporter", "status"],
+  const bugMonitorStatusQuery = useQuery({
+    queryKey: ["settings", "bug-monitor", "status"],
     queryFn: () =>
-      api("/api/engine/failure-reporter/status", { method: "GET" }).catch(() => ({
+      api("/api/engine/bug-monitor/status", { method: "GET" }).catch(() => ({
         status: {},
       })),
     refetchInterval: 10_000,
   });
-  const failureReporterDraftsQuery = useQuery({
-    queryKey: ["settings", "failure-reporter", "drafts"],
+  const bugMonitorDraftsQuery = useQuery({
+    queryKey: ["settings", "bug-monitor", "drafts"],
     queryFn: () =>
-      api("/api/engine/failure-reporter/drafts?limit=10", { method: "GET" }).catch(() => ({
+      api("/api/engine/bug-monitor/drafts?limit=10", { method: "GET" }).catch(() => ({
         drafts: [],
       })),
     refetchInterval: 15_000,
   });
-  const failureReporterIncidentsQuery = useQuery({
-    queryKey: ["settings", "failure-reporter", "incidents"],
+  const bugMonitorIncidentsQuery = useQuery({
+    queryKey: ["settings", "bug-monitor", "incidents"],
     queryFn: () =>
-      api("/api/engine/failure-reporter/incidents?limit=10", { method: "GET" }).catch(() => ({
+      api("/api/engine/bug-monitor/incidents?limit=10", { method: "GET" }).catch(() => ({
         incidents: [],
       })),
     refetchInterval: 10_000,
   });
-  const failureReporterPostsQuery = useQuery({
-    queryKey: ["settings", "failure-reporter", "posts"],
+  const bugMonitorPostsQuery = useQuery({
+    queryKey: ["settings", "bug-monitor", "posts"],
     queryFn: () =>
-      api("/api/engine/failure-reporter/posts?limit=10", { method: "GET" }).catch(() => ({
+      api("/api/engine/bug-monitor/posts?limit=10", { method: "GET" }).catch(() => ({
         posts: [],
       })),
     refetchInterval: 15_000,
   });
-  const failureReporterWorkspaceBrowserQuery = useQuery({
-    queryKey: [
-      "settings",
-      "failure-reporter",
-      "workspace-browser",
-      failureReporterWorkspaceBrowserDir,
-    ],
-    enabled: failureReporterWorkspaceBrowserOpen && !!failureReporterWorkspaceBrowserDir,
+  const bugMonitorWorkspaceBrowserQuery = useQuery({
+    queryKey: ["settings", "bug-monitor", "workspace-browser", bugMonitorWorkspaceBrowserDir],
+    enabled: bugMonitorWorkspaceBrowserOpen && !!bugMonitorWorkspaceBrowserDir,
     queryFn: () =>
       api(
         `/api/orchestrator/workspaces/list?dir=${encodeURIComponent(
-          failureReporterWorkspaceBrowserDir
+          bugMonitorWorkspaceBrowserDir
         )}`,
         { method: "GET" }
       ),
@@ -661,39 +653,37 @@ export function SettingsPage({
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
-  const saveFailureReporterMutation = useMutation({
+  const saveBugMonitorMutation = useMutation({
     mutationFn: async () =>
-      api("/api/engine/config/failure-reporter", {
+      api("/api/engine/config/bug-monitor", {
         method: "PATCH",
         body: JSON.stringify({
-          failure_reporter: {
-            enabled: failureReporterEnabled,
-            paused: failureReporterPaused,
-            workspace_root: String(failureReporterWorkspaceRoot || "").trim() || null,
-            repo: String(failureReporterRepo || "").trim() || null,
-            mcp_server: String(failureReporterMcpServer || "").trim() || null,
-            provider_preference: String(failureReporterProviderPreference || "auto").trim(),
+          bug_monitor: {
+            enabled: bugMonitorEnabled,
+            paused: bugMonitorPaused,
+            workspace_root: String(bugMonitorWorkspaceRoot || "").trim() || null,
+            repo: String(bugMonitorRepo || "").trim() || null,
+            mcp_server: String(bugMonitorMcpServer || "").trim() || null,
+            provider_preference: String(bugMonitorProviderPreference || "auto").trim(),
             model_policy:
-              failureReporterProviderId && failureReporterModelId
+              bugMonitorProviderId && bugMonitorModelId
                 ? {
                     default_model: {
-                      provider_id: failureReporterProviderId,
-                      model_id: failureReporterModelId,
+                      provider_id: bugMonitorProviderId,
+                      model_id: bugMonitorModelId,
                     },
                   }
                 : null,
-            auto_create_new_issues: failureReporterAutoCreateIssues,
-            require_approval_for_new_issues: failureReporterRequireApproval,
-            auto_comment_on_matched_open_issues: failureReporterAutoComment,
+            auto_create_new_issues: bugMonitorAutoCreateIssues,
+            require_approval_for_new_issues: bugMonitorRequireApproval,
+            auto_comment_on_matched_open_issues: bugMonitorAutoComment,
             label_mode: "reporter_only",
           },
         }),
       }),
     onSuccess: async () => {
       toast("ok", "Bug Monitor settings saved.");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
     },
     onError: (error: any) => {
       const detail =
@@ -701,14 +691,14 @@ export function SettingsPage({
       toast("err", detail);
     },
   });
-  const refreshFailureReporterBindingsMutation = useMutation({
+  const refreshBugMonitorBindingsMutation = useMutation({
     mutationFn: async () =>
       api("/api/engine/capabilities/bindings/refresh-builtins", {
         method: "POST",
       }),
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
+        queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] }),
         queryClient.invalidateQueries({ queryKey: ["settings", "mcp"] }),
       ]);
       toast("ok", "Capability bindings refreshed from built-ins.");
@@ -719,18 +709,16 @@ export function SettingsPage({
       toast("err", detail);
     },
   });
-  const failureReporterDraftDecisionMutation = useMutation({
+  const bugMonitorDraftDecisionMutation = useMutation({
     mutationFn: async ({ draftId, decision }: { draftId: string; decision: "approve" | "deny" }) =>
-      api(`/api/engine/failure-reporter/drafts/${encodeURIComponent(draftId)}/${decision}`, {
+      api(`/api/engine/bug-monitor/drafts/${encodeURIComponent(draftId)}/${decision}`, {
         method: "POST",
         body: JSON.stringify({
           reason: `${decision}d from control panel settings`,
         }),
       }),
     onSuccess: async (_payload, vars) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
       toast("ok", `Bug Monitor draft ${vars.decision === "approve" ? "approved" : "denied"}.`);
     },
     onError: (error: any) => {
@@ -739,15 +727,13 @@ export function SettingsPage({
       toast("err", detail);
     },
   });
-  const failureReporterTriageRunMutation = useMutation({
+  const bugMonitorTriageRunMutation = useMutation({
     mutationFn: async ({ draftId }: { draftId: string }) =>
-      api(`/api/engine/failure-reporter/drafts/${encodeURIComponent(draftId)}/triage-run`, {
+      api(`/api/engine/bug-monitor/drafts/${encodeURIComponent(draftId)}/triage-run`, {
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
       toast(
         "ok",
         payload?.deduped
@@ -761,15 +747,13 @@ export function SettingsPage({
       toast("err", detail);
     },
   });
-  const failureReporterPauseResumeMutation = useMutation({
+  const bugMonitorPauseResumeMutation = useMutation({
     mutationFn: async ({ action }: { action: "pause" | "resume" }) =>
-      api(`/api/engine/failure-reporter/${action}`, {
+      api(`/api/engine/bug-monitor/${action}`, {
         method: "POST",
       }),
     onSuccess: async (_payload, vars) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
       toast("ok", `Bug Monitor ${vars.action === "pause" ? "paused" : "resumed"}.`);
     },
     onError: (error: any) => {
@@ -778,15 +762,13 @@ export function SettingsPage({
       toast("err", detail);
     },
   });
-  const failureReporterReplayIncidentMutation = useMutation({
+  const bugMonitorReplayIncidentMutation = useMutation({
     mutationFn: async ({ incidentId }: { incidentId: string }) =>
-      api(`/api/engine/failure-reporter/incidents/${encodeURIComponent(incidentId)}/replay`, {
+      api(`/api/engine/bug-monitor/incidents/${encodeURIComponent(incidentId)}/replay`, {
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
       toast(
         "ok",
         payload?.deduped
@@ -800,15 +782,13 @@ export function SettingsPage({
       toast("err", detail);
     },
   });
-  const failureReporterPublishDraftMutation = useMutation({
+  const bugMonitorPublishDraftMutation = useMutation({
     mutationFn: async ({ draftId }: { draftId: string }) =>
-      api(`/api/engine/failure-reporter/drafts/${encodeURIComponent(draftId)}/publish`, {
+      api(`/api/engine/bug-monitor/drafts/${encodeURIComponent(draftId)}/publish`, {
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
       toast(
         "ok",
         payload?.action === "comment_issue"
@@ -822,15 +802,13 @@ export function SettingsPage({
       toast("err", detail);
     },
   });
-  const failureReporterRecheckMatchMutation = useMutation({
+  const bugMonitorRecheckMatchMutation = useMutation({
     mutationFn: async ({ draftId }: { draftId: string }) =>
-      api(`/api/engine/failure-reporter/drafts/${encodeURIComponent(draftId)}/recheck-match`, {
+      api(`/api/engine/bug-monitor/drafts/${encodeURIComponent(draftId)}/recheck-match`, {
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
       toast(
         "ok",
         `GitHub match result: ${String(payload?.action || "rechecked").replaceAll("_", " ")}.`
@@ -1083,61 +1061,60 @@ export function SettingsPage({
       .slice(0, 36);
   }, [mcpCatalog.servers, mcpCatalogSearch]);
   const connectedMcpCount = mcpServers.filter((server) => server.connected).length;
-  const failureReporterStatus = useMemo(
-    () => ((failureReporterStatusQuery.data as any)?.status || {}) as FailureReporterStatusRow,
-    [failureReporterStatusQuery.data]
+  const bugMonitorStatus = useMemo(
+    () => ((bugMonitorStatusQuery.data as any)?.status || {}) as BugMonitorStatusRow,
+    [bugMonitorStatusQuery.data]
   );
-  const failureReporterDrafts = useMemo(
+  const bugMonitorDrafts = useMemo(
     () =>
-      Array.isArray((failureReporterDraftsQuery.data as any)?.drafts)
-        ? ((failureReporterDraftsQuery.data as any).drafts as FailureReporterDraftRow[]) || []
+      Array.isArray((bugMonitorDraftsQuery.data as any)?.drafts)
+        ? ((bugMonitorDraftsQuery.data as any).drafts as BugMonitorDraftRow[]) || []
         : [],
-    [failureReporterDraftsQuery.data]
+    [bugMonitorDraftsQuery.data]
   );
-  const failureReporterIncidents = useMemo(
+  const bugMonitorIncidents = useMemo(
     () =>
-      Array.isArray((failureReporterIncidentsQuery.data as any)?.incidents)
-        ? ((failureReporterIncidentsQuery.data as any).incidents as FailureReporterIncidentRow[]) ||
-          []
+      Array.isArray((bugMonitorIncidentsQuery.data as any)?.incidents)
+        ? ((bugMonitorIncidentsQuery.data as any).incidents as BugMonitorIncidentRow[]) || []
         : [],
-    [failureReporterIncidentsQuery.data]
+    [bugMonitorIncidentsQuery.data]
   );
-  const failureReporterPosts = useMemo(
+  const bugMonitorPosts = useMemo(
     () =>
-      Array.isArray((failureReporterPostsQuery.data as any)?.posts)
-        ? ((failureReporterPostsQuery.data as any).posts as FailureReporterPostRow[]) || []
+      Array.isArray((bugMonitorPostsQuery.data as any)?.posts)
+        ? ((bugMonitorPostsQuery.data as any).posts as BugMonitorPostRow[]) || []
         : [],
-    [failureReporterPostsQuery.data]
+    [bugMonitorPostsQuery.data]
   );
-  const selectedFailureReporterServer = useMemo(
+  const selectedBugMonitorServer = useMemo(
     () =>
       mcpServers.find(
         (server) =>
           server.name.toLowerCase() ===
-          String(failureReporterMcpServer || "")
+          String(bugMonitorMcpServer || "")
             .trim()
             .toLowerCase()
       ) || null,
-    [failureReporterMcpServer, mcpServers]
+    [bugMonitorMcpServer, mcpServers]
   );
-  const selectedFailureReporterProvider = useMemo(
+  const selectedBugMonitorProvider = useMemo(
     () =>
       providers.find(
         (provider: any) =>
           String(provider?.id || "").toLowerCase() ===
-          String(failureReporterProviderId || "")
+          String(bugMonitorProviderId || "")
             .trim()
             .toLowerCase()
       ) || null,
-    [failureReporterProviderId, providers]
+    [bugMonitorProviderId, providers]
   );
-  const failureReporterProviderModels = useMemo(() => {
+  const bugMonitorProviderModels = useMemo(() => {
     const modelMap =
-      selectedFailureReporterProvider && typeof selectedFailureReporterProvider === "object"
-        ? selectedFailureReporterProvider.models || {}
+      selectedBugMonitorProvider && typeof selectedBugMonitorProvider === "object"
+        ? selectedBugMonitorProvider.models || {}
         : {};
     return Object.keys(modelMap).sort((a, b) => a.localeCompare(b));
-  }, [selectedFailureReporterProvider]);
+  }, [selectedBugMonitorProvider]);
   const browserIssues = Array.isArray(browserStatus.data?.blocking_issues)
     ? browserStatus.data?.blocking_issues || []
     : [];
@@ -1151,52 +1128,48 @@ export function SettingsPage({
   const connectedChannelCount = channelNames.filter(
     (name) => !!(channelsStatusQuery.data as any)?.[name]?.connected
   ).length;
-  const failureReporterWorkspaceDirectories = Array.isArray(
-    failureReporterWorkspaceBrowserQuery.data?.directories
+  const bugMonitorWorkspaceDirectories = Array.isArray(
+    bugMonitorWorkspaceBrowserQuery.data?.directories
   )
-    ? failureReporterWorkspaceBrowserQuery.data.directories
+    ? bugMonitorWorkspaceBrowserQuery.data.directories
     : [];
-  const failureReporterWorkspaceSearchQuery = String(failureReporterWorkspaceBrowserSearch || "")
+  const bugMonitorWorkspaceSearchQuery = String(bugMonitorWorkspaceBrowserSearch || "")
     .trim()
     .toLowerCase();
-  const filteredFailureReporterWorkspaceDirectories = useMemo(() => {
-    if (!failureReporterWorkspaceSearchQuery) return failureReporterWorkspaceDirectories;
-    return failureReporterWorkspaceDirectories.filter((entry: any) => {
+  const filteredBugMonitorWorkspaceDirectories = useMemo(() => {
+    if (!bugMonitorWorkspaceSearchQuery) return bugMonitorWorkspaceDirectories;
+    return bugMonitorWorkspaceDirectories.filter((entry: any) => {
       const name = String(entry?.name || entry?.path || "")
         .trim()
         .toLowerCase();
-      return name.includes(failureReporterWorkspaceSearchQuery);
+      return name.includes(bugMonitorWorkspaceSearchQuery);
     });
-  }, [failureReporterWorkspaceDirectories, failureReporterWorkspaceSearchQuery]);
-  const failureReporterWorkspaceParentDir = String(
-    failureReporterWorkspaceBrowserQuery.data?.parent || ""
+  }, [bugMonitorWorkspaceDirectories, bugMonitorWorkspaceSearchQuery]);
+  const bugMonitorWorkspaceParentDir = String(
+    bugMonitorWorkspaceBrowserQuery.data?.parent || ""
   ).trim();
-  const failureReporterCurrentBrowseDir = String(
-    failureReporterWorkspaceBrowserQuery.data?.dir || failureReporterWorkspaceBrowserDir || ""
+  const bugMonitorCurrentBrowseDir = String(
+    bugMonitorWorkspaceBrowserQuery.data?.dir || bugMonitorWorkspaceBrowserDir || ""
   ).trim();
 
   useEffect(() => {
     const config =
-      (failureReporterConfigQuery.data as any)?.failure_reporter &&
-      typeof (failureReporterConfigQuery.data as any)?.failure_reporter === "object"
-        ? ((failureReporterConfigQuery.data as any).failure_reporter as FailureReporterConfigRow)
+      (bugMonitorConfigQuery.data as any)?.bug_monitor &&
+      typeof (bugMonitorConfigQuery.data as any)?.bug_monitor === "object"
+        ? ((bugMonitorConfigQuery.data as any).bug_monitor as BugMonitorConfigRow)
         : {};
-    setFailureReporterEnabled(!!config.enabled);
-    setFailureReporterPaused(!!config.paused);
-    setFailureReporterWorkspaceRoot(String(config.workspace_root || "").trim());
-    setFailureReporterRepo(String(config.repo || "").trim());
-    setFailureReporterMcpServer(String(config.mcp_server || "").trim());
-    setFailureReporterProviderPreference(
-      String(config.provider_preference || "auto").trim() || "auto"
-    );
-    setFailureReporterProviderId(
-      String(config.model_policy?.default_model?.provider_id || "").trim()
-    );
-    setFailureReporterModelId(String(config.model_policy?.default_model?.model_id || "").trim());
-    setFailureReporterAutoCreateIssues(config.auto_create_new_issues !== false);
-    setFailureReporterRequireApproval(!!config.require_approval_for_new_issues);
-    setFailureReporterAutoComment(config.auto_comment_on_matched_open_issues !== false);
-  }, [failureReporterConfigQuery.data]);
+    setBugMonitorEnabled(!!config.enabled);
+    setBugMonitorPaused(!!config.paused);
+    setBugMonitorWorkspaceRoot(String(config.workspace_root || "").trim());
+    setBugMonitorRepo(String(config.repo || "").trim());
+    setBugMonitorMcpServer(String(config.mcp_server || "").trim());
+    setBugMonitorProviderPreference(String(config.provider_preference || "auto").trim() || "auto");
+    setBugMonitorProviderId(String(config.model_policy?.default_model?.provider_id || "").trim());
+    setBugMonitorModelId(String(config.model_policy?.default_model?.model_id || "").trim());
+    setBugMonitorAutoCreateIssues(config.auto_create_new_issues !== false);
+    setBugMonitorRequireApproval(!!config.require_approval_for_new_issues);
+    setBugMonitorAutoComment(config.auto_comment_on_matched_open_issues !== false);
+  }, [bugMonitorConfigQuery.data]);
 
   useEffect(() => {
     const config =
@@ -1263,8 +1236,8 @@ export function SettingsPage({
     setMcpModalOpen(true);
   };
 
-  const copyFailureReporterDebugPayload = async () => {
-    const payload = await api("/api/engine/failure-reporter/debug", { method: "GET" });
+  const copyBugMonitorDebugPayload = async () => {
+    const payload = await api("/api/engine/bug-monitor/debug", { method: "GET" });
     await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
     toast("ok", "Bug Monitor debug payload copied.");
   };
@@ -1275,7 +1248,7 @@ export function SettingsPage({
     { id: "theme", label: "Themes", icon: "paint-bucket" },
     { id: "channels", label: "Channels", icon: "message-circle" },
     { id: "mcp", label: "MCP", icon: "plug-zap" },
-    { id: "failure_reporter", label: "Bug Monitor", icon: "bug-play" },
+    { id: "bug_monitor", label: "Bug Monitor", icon: "bug-play" },
     { id: "browser", label: "Browser", icon: "monitor-cog" },
   ];
   const mcpAuthPreviewText = useMemo(
@@ -1289,23 +1262,23 @@ export function SettingsPage({
     else renderIcons();
   }, [
     activeSection,
-    failureReporterEnabled,
-    failureReporterPaused,
-    failureReporterWorkspaceRoot,
-    failureReporterMcpServer,
-    failureReporterStatus.readiness?.runtime_ready,
-    failureReporterStatus.runtime?.monitoring_active,
-    failureReporterStatus.runtime?.paused,
-    failureReporterStatus.runtime?.pending_incidents,
-    failureReporterStatus.pending_drafts,
-    failureReporterDrafts.length,
-    failureReporterIncidents.length,
-    refreshFailureReporterBindingsMutation.isPending,
-    failureReporterPauseResumeMutation.isPending,
-    failureReporterDraftDecisionMutation.isPending,
-    failureReporterReplayIncidentMutation.isPending,
-    failureReporterTriageRunMutation.isPending,
-    saveFailureReporterMutation.isPending,
+    bugMonitorEnabled,
+    bugMonitorPaused,
+    bugMonitorWorkspaceRoot,
+    bugMonitorMcpServer,
+    bugMonitorStatus.readiness?.runtime_ready,
+    bugMonitorStatus.runtime?.monitoring_active,
+    bugMonitorStatus.runtime?.paused,
+    bugMonitorStatus.runtime?.pending_incidents,
+    bugMonitorStatus.pending_drafts,
+    bugMonitorDrafts.length,
+    bugMonitorIncidents.length,
+    refreshBugMonitorBindingsMutation.isPending,
+    bugMonitorPauseResumeMutation.isPending,
+    bugMonitorDraftDecisionMutation.isPending,
+    bugMonitorReplayIncidentMutation.isPending,
+    bugMonitorTriageRunMutation.isPending,
+    saveBugMonitorMutation.isPending,
     mcpActionMutation.isPending,
   ]);
 
@@ -1992,37 +1965,37 @@ export function SettingsPage({
                 </PanelCard>
               ) : null}
 
-              {activeSection === "failure_reporter" ? (
+              {activeSection === "bug_monitor" ? (
                 <PanelCard
                   title="Bug monitor"
                   actions={
                     <div className="flex flex-wrap items-center justify-end gap-2">
                       <Badge
                         tone={
-                          failureReporterStatus.runtime?.monitoring_active
+                          bugMonitorStatus.runtime?.monitoring_active
                             ? "ok"
-                            : failureReporterStatus.readiness?.runtime_ready
+                            : bugMonitorStatus.readiness?.runtime_ready
                               ? "info"
                               : "warn"
                         }
                       >
-                        {failureReporterStatus.runtime?.monitoring_active
+                        {bugMonitorStatus.runtime?.monitoring_active
                           ? "Monitoring"
-                          : failureReporterStatus.readiness?.runtime_ready
+                          : bugMonitorStatus.readiness?.runtime_ready
                             ? "Ready"
                             : "Not ready"}
                       </Badge>
-                      {failureReporterPaused || failureReporterStatus.runtime?.paused ? (
+                      {bugMonitorPaused || bugMonitorStatus.runtime?.paused ? (
                         <Badge tone="warn">Paused</Badge>
                       ) : null}
                       <Badge tone="info">
-                        {Number(failureReporterStatus.runtime?.pending_incidents || 0)} incidents
+                        {Number(bugMonitorStatus.runtime?.pending_incidents || 0)} incidents
                       </Badge>
                       <Badge tone="info">
-                        {Number(failureReporterStatus.pending_drafts || 0)} pending drafts
+                        {Number(bugMonitorStatus.pending_drafts || 0)} pending drafts
                       </Badge>
                       <Badge tone="info">
-                        {Number(failureReporterStatus.pending_posts || 0)} post attempts
+                        {Number(bugMonitorStatus.pending_posts || 0)} post attempts
                       </Badge>
                       <button
                         className="tcp-icon-btn"
@@ -2030,10 +2003,10 @@ export function SettingsPage({
                         aria-label="Reload status"
                         onClick={() =>
                           Promise.all([
-                            failureReporterStatusQuery.refetch(),
-                            failureReporterDraftsQuery.refetch(),
-                            failureReporterIncidentsQuery.refetch(),
-                            failureReporterPostsQuery.refetch(),
+                            bugMonitorStatusQuery.refetch(),
+                            bugMonitorDraftsQuery.refetch(),
+                            bugMonitorIncidentsQuery.refetch(),
+                            bugMonitorPostsQuery.refetch(),
                           ]).then(() => toast("ok", "Bug Monitor status refreshed."))
                         }
                       >
@@ -2042,20 +2015,20 @@ export function SettingsPage({
                       <button
                         className="tcp-icon-btn"
                         title={
-                          failureReporterPaused || failureReporterStatus.runtime?.paused
+                          bugMonitorPaused || bugMonitorStatus.runtime?.paused
                             ? "Resume monitoring"
                             : "Pause monitoring"
                         }
                         aria-label={
-                          failureReporterPaused || failureReporterStatus.runtime?.paused
+                          bugMonitorPaused || bugMonitorStatus.runtime?.paused
                             ? "Resume monitoring"
                             : "Pause monitoring"
                         }
-                        disabled={failureReporterPauseResumeMutation.isPending}
+                        disabled={bugMonitorPauseResumeMutation.isPending}
                         onClick={() =>
-                          failureReporterPauseResumeMutation.mutate({
+                          bugMonitorPauseResumeMutation.mutate({
                             action:
-                              failureReporterPaused || failureReporterStatus.runtime?.paused
+                              bugMonitorPaused || bugMonitorStatus.runtime?.paused
                                 ? "resume"
                                 : "pause",
                           })
@@ -2063,9 +2036,7 @@ export function SettingsPage({
                       >
                         <i
                           data-lucide={
-                            failureReporterPaused || failureReporterStatus.runtime?.paused
-                              ? "play"
-                              : "pause"
+                            bugMonitorPaused || bugMonitorStatus.runtime?.paused ? "play" : "pause"
                           }
                         ></i>
                       </button>
@@ -2073,8 +2044,8 @@ export function SettingsPage({
                         className="tcp-icon-btn"
                         title="Refresh capability bindings"
                         aria-label="Refresh capability bindings"
-                        disabled={refreshFailureReporterBindingsMutation.isPending}
-                        onClick={() => refreshFailureReporterBindingsMutation.mutate()}
+                        disabled={refreshBugMonitorBindingsMutation.isPending}
+                        onClick={() => refreshBugMonitorBindingsMutation.mutate()}
                       >
                         <i data-lucide="rotate-cw"></i>
                       </button>
@@ -2082,7 +2053,7 @@ export function SettingsPage({
                         className="tcp-icon-btn"
                         title="Copy debug payload"
                         aria-label="Copy debug payload"
-                        onClick={() => void copyFailureReporterDebugPayload()}
+                        onClick={() => void copyBugMonitorDebugPayload()}
                       >
                         <i data-lucide="copy"></i>
                       </button>
@@ -2105,19 +2076,19 @@ export function SettingsPage({
                         </span>
                         <button
                           type="button"
-                          className={`tcp-list-item text-left ${failureReporterEnabled ? "ring-1 ring-emerald-400/40" : ""}`}
-                          onClick={() => setFailureReporterEnabled((prev) => !prev)}
+                          className={`tcp-list-item text-left ${bugMonitorEnabled ? "ring-1 ring-emerald-400/40" : ""}`}
+                          onClick={() => setBugMonitorEnabled((prev) => !prev)}
                         >
                           <div className="font-medium">
-                            {failureReporterEnabled
-                              ? failureReporterPaused
+                            {bugMonitorEnabled
+                              ? bugMonitorPaused
                                 ? "Paused"
                                 : "Enabled"
                               : "Disabled"}
                           </div>
                           <div className="tcp-subtle text-xs">
-                            {failureReporterEnabled
-                              ? failureReporterPaused
+                            {bugMonitorEnabled
+                              ? bugMonitorPaused
                                 ? "Monitoring is paused. Resume to process new failures."
                                 : "Failure events can be analyzed once readiness is green."
                               : "No reporter work will execute."}
@@ -2134,10 +2105,10 @@ export function SettingsPage({
                             className="tcp-btn"
                             type="button"
                             onClick={() => {
-                              const seed = String(failureReporterWorkspaceRoot || "/").trim();
-                              setFailureReporterWorkspaceBrowserDir(seed || "/");
-                              setFailureReporterWorkspaceBrowserSearch("");
-                              setFailureReporterWorkspaceBrowserOpen(true);
+                              const seed = String(bugMonitorWorkspaceRoot || "/").trim();
+                              setBugMonitorWorkspaceBrowserDir(seed || "/");
+                              setBugMonitorWorkspaceBrowserSearch("");
+                              setBugMonitorWorkspaceBrowserOpen(true);
                             }}
                           >
                             <i data-lucide="folder-open"></i>
@@ -2146,22 +2117,22 @@ export function SettingsPage({
                           <input
                             className="tcp-input"
                             readOnly
-                            value={failureReporterWorkspaceRoot}
+                            value={bugMonitorWorkspaceRoot}
                             placeholder="No local directory selected. Use Browse."
                           />
                           <button
                             className="tcp-btn"
                             type="button"
-                            onClick={() => setFailureReporterWorkspaceRoot("")}
-                            disabled={!failureReporterWorkspaceRoot}
+                            onClick={() => setBugMonitorWorkspaceRoot("")}
+                            disabled={!bugMonitorWorkspaceRoot}
                           >
                             <i data-lucide="x"></i>
                             Clear
                           </button>
                         </div>
                         <div className="tcp-subtle text-xs">
-                          {failureReporterWorkspaceRoot
-                            ? `Reporter analysis root: ${failureReporterWorkspaceRoot}`
+                          {bugMonitorWorkspaceRoot
+                            ? `Reporter analysis root: ${bugMonitorWorkspaceRoot}`
                             : "Defaults to the engine workspace root if not set."}
                         </div>
                       </label>
@@ -2172,8 +2143,8 @@ export function SettingsPage({
                         </span>
                         <input
                           className="tcp-input"
-                          value={failureReporterRepo}
-                          onChange={(event) => setFailureReporterRepo(event.target.value)}
+                          value={bugMonitorRepo}
+                          onChange={(event) => setBugMonitorRepo(event.target.value)}
                           placeholder="owner/repo"
                         />
                       </label>
@@ -2184,8 +2155,8 @@ export function SettingsPage({
                         </span>
                         <select
                           className="tcp-input"
-                          value={failureReporterMcpServer}
-                          onChange={(event) => setFailureReporterMcpServer(event.target.value)}
+                          value={bugMonitorMcpServer}
+                          onChange={(event) => setBugMonitorMcpServer(event.target.value)}
                         >
                           <option value="">Select an MCP server</option>
                           {mcpServers.map((server) => (
@@ -2202,10 +2173,8 @@ export function SettingsPage({
                         </span>
                         <select
                           className="tcp-input"
-                          value={failureReporterProviderPreference}
-                          onChange={(event) =>
-                            setFailureReporterProviderPreference(event.target.value)
-                          }
+                          value={bugMonitorProviderPreference}
+                          onChange={(event) => setBugMonitorProviderPreference(event.target.value)}
                         >
                           <option value="auto">Auto</option>
                           <option value="official_github">Official GitHub</option>
@@ -2220,11 +2189,11 @@ export function SettingsPage({
                         </span>
                         <select
                           className="tcp-input"
-                          value={failureReporterProviderId}
+                          value={bugMonitorProviderId}
                           onChange={(event) => {
                             const nextProvider = event.target.value;
-                            setFailureReporterProviderId(nextProvider);
-                            setFailureReporterModelId("");
+                            setBugMonitorProviderId(nextProvider);
+                            setBugMonitorModelId("");
                           }}
                         >
                           <option value="">Select a provider</option>
@@ -2245,26 +2214,26 @@ export function SettingsPage({
                         </span>
                         <input
                           className="tcp-input"
-                          value={failureReporterModelId}
-                          onChange={(event) => setFailureReporterModelId(event.target.value)}
-                          list="failure-reporter-models"
-                          disabled={!failureReporterProviderId}
+                          value={bugMonitorModelId}
+                          onChange={(event) => setBugMonitorModelId(event.target.value)}
+                          list="bug-monitor-models"
+                          disabled={!bugMonitorProviderId}
                           placeholder={
-                            failureReporterProviderId
+                            bugMonitorProviderId
                               ? "Type or paste a model id"
                               : "Choose a provider first"
                           }
                           spellCheck={false}
                         />
-                        <datalist id="failure-reporter-models">
-                          {failureReporterProviderModels.map((modelId) => (
+                        <datalist id="bug-monitor-models">
+                          {bugMonitorProviderModels.map((modelId) => (
                             <option key={modelId} value={modelId} />
                           ))}
                         </datalist>
                         <div className="tcp-subtle text-xs">
-                          {failureReporterProviderId
-                            ? failureReporterProviderModels.length
-                              ? `${failureReporterProviderModels.length} suggested models from provider catalog`
+                          {bugMonitorProviderId
+                            ? bugMonitorProviderModels.length
+                              ? `${bugMonitorProviderModels.length} suggested models from provider catalog`
                               : "No provider catalog models available. Manual model ids are allowed."
                             : "Select a provider to load model suggestions."}
                         </div>
@@ -2277,50 +2246,47 @@ export function SettingsPage({
                         <div className="grid gap-2 md:grid-cols-3">
                           <button
                             type="button"
-                            className={`tcp-list-item text-left ${failureReporterAutoCreateIssues && !failureReporterRequireApproval ? "ring-1 ring-emerald-400/40" : ""}`}
+                            className={`tcp-list-item text-left ${bugMonitorAutoCreateIssues && !bugMonitorRequireApproval ? "ring-1 ring-emerald-400/40" : ""}`}
                             onClick={() => {
-                              setFailureReporterAutoCreateIssues((prev) => !prev);
-                              if (
-                                failureReporterRequireApproval &&
-                                failureReporterAutoCreateIssues
-                              ) {
-                                setFailureReporterRequireApproval(false);
+                              setBugMonitorAutoCreateIssues((prev) => !prev);
+                              if (bugMonitorRequireApproval && bugMonitorAutoCreateIssues) {
+                                setBugMonitorRequireApproval(false);
                               }
                             }}
                           >
                             <div className="font-medium">Auto-create new issues</div>
                             <div className="tcp-subtle text-xs">
-                              {failureReporterAutoCreateIssues
+                              {bugMonitorAutoCreateIssues
                                 ? "New drafts post to GitHub automatically."
                                 : "New drafts stay internal until published manually."}
                             </div>
                           </button>
                           <button
                             type="button"
-                            className={`tcp-list-item text-left ${failureReporterRequireApproval ? "ring-1 ring-amber-400/40" : ""}`}
+                            className={`tcp-list-item text-left ${bugMonitorRequireApproval ? "ring-1 ring-amber-400/40" : ""}`}
                             onClick={() => {
-                              setFailureReporterRequireApproval((prev) => {
+                              setBugMonitorRequireApproval((prev) => {
                                 const next = !prev;
-                                if (next) setFailureReporterAutoCreateIssues(false);
+                                if (next) setBugMonitorAutoCreateIssues(false);
                                 return next;
                               });
                             }}
                           >
                             <div className="font-medium">Require approval</div>
                             <div className="tcp-subtle text-xs">
-                              {failureReporterRequireApproval
+                              {bugMonitorRequireApproval
                                 ? "New drafts wait for a manual publish click."
                                 : "Approval gate disabled."}
                             </div>
                           </button>
                           <button
                             type="button"
-                            className={`tcp-list-item text-left ${failureReporterAutoComment ? "ring-1 ring-sky-400/40" : ""}`}
-                            onClick={() => setFailureReporterAutoComment((prev) => !prev)}
+                            className={`tcp-list-item text-left ${bugMonitorAutoComment ? "ring-1 ring-sky-400/40" : ""}`}
+                            onClick={() => setBugMonitorAutoComment((prev) => !prev)}
                           >
                             <div className="font-medium">Auto-comment matches</div>
                             <div className="tcp-subtle text-xs">
-                              {failureReporterAutoComment
+                              {bugMonitorAutoComment
                                 ? "Open matching GitHub issues receive new evidence comments."
                                 : "Matching issues are detected but not updated automatically."}
                             </div>
@@ -2332,13 +2298,13 @@ export function SettingsPage({
                     <div className="flex flex-wrap gap-2">
                       <button
                         className="tcp-btn-primary"
-                        disabled={saveFailureReporterMutation.isPending}
+                        disabled={saveBugMonitorMutation.isPending}
                         title="Save Bug Monitor settings"
                         aria-label="Save Bug Monitor settings"
-                        onClick={() => saveFailureReporterMutation.mutate()}
+                        onClick={() => saveBugMonitorMutation.mutate()}
                       >
                         <i data-lucide="save"></i>
-                        {saveFailureReporterMutation.isPending ? "Saving..." : null}
+                        {saveBugMonitorMutation.isPending ? "Saving..." : null}
                       </button>
                       <button
                         className="tcp-icon-btn"
@@ -2360,8 +2326,8 @@ export function SettingsPage({
                         className="tcp-icon-btn"
                         title="Refresh capability bindings"
                         aria-label="Refresh capability bindings"
-                        disabled={refreshFailureReporterBindingsMutation.isPending}
-                        onClick={() => refreshFailureReporterBindingsMutation.mutate()}
+                        disabled={refreshBugMonitorBindingsMutation.isPending}
+                        onClick={() => refreshBugMonitorBindingsMutation.mutate()}
                       >
                         <i data-lucide="rotate-cw"></i>
                       </button>
@@ -2369,36 +2335,34 @@ export function SettingsPage({
                         className="tcp-icon-btn"
                         title="Copy debug payload"
                         aria-label="Copy debug payload"
-                        onClick={() => void copyFailureReporterDebugPayload()}
+                        onClick={() => void copyBugMonitorDebugPayload()}
                       >
                         <i data-lucide="copy"></i>
                       </button>
-                      {selectedFailureReporterServer ? (
+                      {selectedBugMonitorServer ? (
                         <button
                           className="tcp-icon-btn"
                           title={
-                            selectedFailureReporterServer.connected
+                            selectedBugMonitorServer.connected
                               ? "Refresh selected MCP"
                               : "Connect selected MCP"
                           }
                           aria-label={
-                            selectedFailureReporterServer.connected
+                            selectedBugMonitorServer.connected
                               ? "Refresh selected MCP"
                               : "Connect selected MCP"
                           }
                           disabled={mcpActionMutation.isPending}
                           onClick={() =>
                             mcpActionMutation.mutate({
-                              action: selectedFailureReporterServer.connected
-                                ? "refresh"
-                                : "connect",
-                              server: selectedFailureReporterServer,
+                              action: selectedBugMonitorServer.connected ? "refresh" : "connect",
+                              server: selectedBugMonitorServer,
                             })
                           }
                         >
                           <i
                             data-lucide={
-                              selectedFailureReporterServer.connected ? "refresh-cw" : "plug-zap"
+                              selectedBugMonitorServer.connected ? "refresh-cw" : "plug-zap"
                             }
                           ></i>
                         </button>
@@ -2409,78 +2373,76 @@ export function SettingsPage({
                       <div className="tcp-list-item">
                         <div className="text-sm font-medium">Readiness</div>
                         <div className="mt-1 text-sm">
-                          {failureReporterStatus.runtime?.monitoring_active
+                          {bugMonitorStatus.runtime?.monitoring_active
                             ? "Monitoring"
-                            : failureReporterStatus.runtime?.paused || failureReporterPaused
+                            : bugMonitorStatus.runtime?.paused || bugMonitorPaused
                               ? "Paused"
-                              : failureReporterStatus.readiness?.runtime_ready
+                              : bugMonitorStatus.readiness?.runtime_ready
                                 ? "Ready"
                                 : "Blocked"}
                         </div>
                         <div className="tcp-subtle text-xs">
-                          {failureReporterStatus.runtime?.last_runtime_error ||
-                            failureReporterStatus.last_error ||
+                          {bugMonitorStatus.runtime?.last_runtime_error ||
+                            bugMonitorStatus.last_error ||
                             "No blocking issue reported."}
                         </div>
-                        {!failureReporterStatus.readiness?.runtime_ready &&
-                        Array.isArray(failureReporterStatus.missing_required_capabilities) &&
-                        failureReporterStatus.missing_required_capabilities.length ? (
+                        {!bugMonitorStatus.readiness?.runtime_ready &&
+                        Array.isArray(bugMonitorStatus.missing_required_capabilities) &&
+                        bugMonitorStatus.missing_required_capabilities.length ? (
                           <div className="tcp-subtle mt-2 text-xs">
-                            Missing:{" "}
-                            {failureReporterStatus.missing_required_capabilities.join(", ")}
+                            Missing: {bugMonitorStatus.missing_required_capabilities.join(", ")}
                           </div>
                         ) : null}
                       </div>
                       <div className="tcp-list-item">
                         <div className="text-sm font-medium">Selected MCP</div>
                         <div className="mt-1 text-sm">
-                          {selectedFailureReporterServer?.name || "None selected"}
+                          {selectedBugMonitorServer?.name || "None selected"}
                         </div>
                         <div className="tcp-subtle text-xs">
-                          {selectedFailureReporterServer
-                            ? selectedFailureReporterServer.connected
+                          {selectedBugMonitorServer
+                            ? selectedBugMonitorServer.connected
                               ? "Connected"
                               : "Disconnected"
                             : "No server selected"}
                         </div>
                         <div className="tcp-subtle mt-2 text-xs">
-                          Bindings:{" "}
-                          {failureReporterStatus.binding_source_version || "unknown version"}
-                          {failureReporterStatus.bindings_last_merged_at_ms
-                            ? ` · merged ${new Date(failureReporterStatus.bindings_last_merged_at_ms).toLocaleString()}`
+                          Bindings: {bugMonitorStatus.binding_source_version || "unknown version"}
+                          {bugMonitorStatus.bindings_last_merged_at_ms
+                            ? ` · merged ${new Date(bugMonitorStatus.bindings_last_merged_at_ms).toLocaleString()}`
                             : ""}
                         </div>
                         <div className="tcp-subtle mt-2 text-xs">
                           Local directory:{" "}
-                          {failureReporterWorkspaceRoot ||
-                            String(failureReporterStatus.config?.workspace_root || "").trim() ||
+                          {bugMonitorWorkspaceRoot ||
+                            String(bugMonitorStatus.config?.workspace_root || "").trim() ||
                             "engine workspace root"}
                         </div>
                         <div className="tcp-subtle mt-2 text-xs">
                           Last event:{" "}
                           {String(
-                            failureReporterStatus.runtime?.last_incident_event_type || ""
+                            bugMonitorStatus.runtime?.last_incident_event_type || ""
                           ).trim() || "No incidents processed yet"}
                         </div>
                       </div>
                       <div className="tcp-list-item">
                         <div className="text-sm font-medium">Model route</div>
                         <div className="mt-1 break-all text-sm">
-                          {failureReporterStatus.selected_model?.provider_id &&
-                          failureReporterStatus.selected_model?.model_id
-                            ? `${failureReporterStatus.selected_model.provider_id} / ${failureReporterStatus.selected_model.model_id}`
+                          {bugMonitorStatus.selected_model?.provider_id &&
+                          bugMonitorStatus.selected_model?.model_id
+                            ? `${bugMonitorStatus.selected_model.provider_id} / ${bugMonitorStatus.selected_model.model_id}`
                             : "No dedicated model selected"}
                         </div>
                         <div className="tcp-subtle text-xs">
-                          {failureReporterStatus.readiness?.selected_model_ready
+                          {bugMonitorStatus.readiness?.selected_model_ready
                             ? "Available"
                             : "Fail-closed when unavailable"}
                         </div>
                         <div className="tcp-subtle mt-2 text-xs">
                           Last processed:{" "}
-                          {failureReporterStatus.runtime?.last_processed_at_ms
+                          {bugMonitorStatus.runtime?.last_processed_at_ms
                             ? new Date(
-                                Number(failureReporterStatus.runtime.last_processed_at_ms)
+                                Number(bugMonitorStatus.runtime.last_processed_at_ms)
                               ).toLocaleString()
                             : "Not processed yet"}
                         </div>
@@ -2493,33 +2455,33 @@ export function SettingsPage({
                         <div className="tcp-subtle mt-2 grid gap-1 text-xs">
                           <div>
                             github.list_issues:{" "}
-                            {failureReporterStatus.required_capabilities?.github_list_issues
+                            {bugMonitorStatus.required_capabilities?.github_list_issues
                               ? "ready"
                               : "missing"}
                           </div>
                           <div>
                             github.get_issue:{" "}
-                            {failureReporterStatus.required_capabilities?.github_get_issue
+                            {bugMonitorStatus.required_capabilities?.github_get_issue
                               ? "ready"
                               : "missing"}
                           </div>
                           <div>
                             github.create_issue:{" "}
-                            {failureReporterStatus.required_capabilities?.github_create_issue
+                            {bugMonitorStatus.required_capabilities?.github_create_issue
                               ? "ready"
                               : "missing"}
                           </div>
                           <div>
                             github.comment_on_issue:{" "}
-                            {failureReporterStatus.required_capabilities?.github_comment_on_issue
+                            {bugMonitorStatus.required_capabilities?.github_comment_on_issue
                               ? "ready"
                               : "missing"}
                           </div>
                         </div>
-                        {Array.isArray(failureReporterStatus.resolved_capabilities) &&
-                        failureReporterStatus.resolved_capabilities.length ? (
+                        {Array.isArray(bugMonitorStatus.resolved_capabilities) &&
+                        bugMonitorStatus.resolved_capabilities.length ? (
                           <div className="tcp-subtle mt-3 grid gap-1 text-xs">
-                            {failureReporterStatus.resolved_capabilities.map((row, index) => (
+                            {bugMonitorStatus.resolved_capabilities.map((row, index) => (
                               <div key={`${row.capability_id || "cap"}-${index}`}>
                                 {String(row.capability_id || "unknown")}:{" "}
                                 {String(row.tool_name || "unresolved")}
@@ -2527,10 +2489,10 @@ export function SettingsPage({
                             ))}
                           </div>
                         ) : null}
-                        {Array.isArray(failureReporterStatus.selected_server_binding_candidates) &&
-                        failureReporterStatus.selected_server_binding_candidates.length ? (
+                        {Array.isArray(bugMonitorStatus.selected_server_binding_candidates) &&
+                        bugMonitorStatus.selected_server_binding_candidates.length ? (
                           <div className="tcp-subtle mt-3 grid gap-1 text-xs">
-                            {failureReporterStatus.selected_server_binding_candidates.map(
+                            {bugMonitorStatus.selected_server_binding_candidates.map(
                               (row, index) => (
                                 <div key={`${row.capability_id || "candidate"}-${index}`}>
                                   {String(row.capability_id || "unknown")}:{" "}
@@ -2541,14 +2503,14 @@ export function SettingsPage({
                             )}
                           </div>
                         ) : null}
-                        {Array.isArray(failureReporterStatus.discovered_mcp_tools) &&
-                        failureReporterStatus.discovered_mcp_tools.length ? (
+                        {Array.isArray(bugMonitorStatus.discovered_mcp_tools) &&
+                        bugMonitorStatus.discovered_mcp_tools.length ? (
                           <div className="mt-3">
                             <div className="tcp-subtle text-xs font-medium">
                               Discovered MCP tools
                             </div>
                             <pre className="tcp-code mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs">
-                              {failureReporterStatus.discovered_mcp_tools.join("\n")}
+                              {bugMonitorStatus.discovered_mcp_tools.join("\n")}
                             </pre>
                           </div>
                         ) : (
@@ -2563,15 +2525,15 @@ export function SettingsPage({
                         <div className="tcp-subtle mt-2 grid gap-1 text-xs">
                           <div>
                             New issues:{" "}
-                            {failureReporterRequireApproval
+                            {bugMonitorRequireApproval
                               ? "Manual publish"
-                              : failureReporterAutoCreateIssues
+                              : bugMonitorAutoCreateIssues
                                 ? "Auto-create"
                                 : "Internal draft only"}
                           </div>
                           <div>
                             Matched open issues:{" "}
-                            {failureReporterAutoComment ? "Auto-comment" : "Detect only"}
+                            {bugMonitorAutoComment ? "Auto-comment" : "Detect only"}
                           </div>
                           <div>Dedupe: Fingerprint marker + label</div>
                           <div>Labels: bug-monitor</div>
@@ -2583,9 +2545,9 @@ export function SettingsPage({
 
                     <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 p-3">
                       <div className="mb-2 font-medium">Recent incidents</div>
-                      {failureReporterIncidents.length ? (
+                      {bugMonitorIncidents.length ? (
                         <div className="grid gap-2">
-                          {failureReporterIncidents.map((incident) => (
+                          {bugMonitorIncidents.map((incident) => (
                             <div key={incident.incident_id} className="tcp-list-item">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="font-medium">
@@ -2616,9 +2578,9 @@ export function SettingsPage({
                                   className="tcp-icon-btn"
                                   title="Replay triage for this incident"
                                   aria-label="Replay triage for this incident"
-                                  disabled={failureReporterReplayIncidentMutation.isPending}
+                                  disabled={bugMonitorReplayIncidentMutation.isPending}
                                   onClick={() =>
-                                    failureReporterReplayIncidentMutation.mutate({
+                                    bugMonitorReplayIncidentMutation.mutate({
                                       incidentId: incident.incident_id,
                                     })
                                   }
@@ -2646,9 +2608,9 @@ export function SettingsPage({
 
                     <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 p-3">
                       <div className="mb-2 font-medium">Recent reporter drafts</div>
-                      {failureReporterDrafts.length ? (
+                      {bugMonitorDrafts.length ? (
                         <div className="grid gap-2">
-                          {failureReporterDrafts.map((draft) => (
+                          {bugMonitorDrafts.map((draft) => (
                             <div key={draft.draft_id} className="tcp-list-item">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="font-medium">
@@ -2693,18 +2655,18 @@ export function SettingsPage({
                                 <div className="mt-3 flex flex-wrap gap-2">
                                   <button
                                     className="tcp-btn-primary"
-                                    disabled={failureReporterDraftDecisionMutation.isPending}
+                                    disabled={bugMonitorDraftDecisionMutation.isPending}
                                     title="Approve draft"
                                     aria-label="Approve draft"
                                     onClick={() =>
-                                      failureReporterDraftDecisionMutation.mutate({
+                                      bugMonitorDraftDecisionMutation.mutate({
                                         draftId: draft.draft_id,
                                         decision: "approve",
                                       })
                                     }
                                   >
                                     <i data-lucide="check"></i>
-                                    {failureReporterDraftDecisionMutation.isPending
+                                    {bugMonitorDraftDecisionMutation.isPending
                                       ? "Updating..."
                                       : null}
                                   </button>
@@ -2712,9 +2674,9 @@ export function SettingsPage({
                                     className="tcp-icon-btn"
                                     title="Deny draft"
                                     aria-label="Deny draft"
-                                    disabled={failureReporterDraftDecisionMutation.isPending}
+                                    disabled={bugMonitorDraftDecisionMutation.isPending}
                                     onClick={() =>
-                                      failureReporterDraftDecisionMutation.mutate({
+                                      bugMonitorDraftDecisionMutation.mutate({
                                         draftId: draft.draft_id,
                                         decision: "deny",
                                       })
@@ -2730,9 +2692,9 @@ export function SettingsPage({
                                     className="tcp-icon-btn"
                                     title="Publish this draft to GitHub now"
                                     aria-label="Publish this draft to GitHub now"
-                                    disabled={failureReporterPublishDraftMutation.isPending}
+                                    disabled={bugMonitorPublishDraftMutation.isPending}
                                     onClick={() =>
-                                      failureReporterPublishDraftMutation.mutate({
+                                      bugMonitorPublishDraftMutation.mutate({
                                         draftId: draft.draft_id,
                                       })
                                     }
@@ -2743,9 +2705,9 @@ export function SettingsPage({
                                     className="tcp-icon-btn"
                                     title="Recheck GitHub for an existing matching issue"
                                     aria-label="Recheck GitHub for an existing matching issue"
-                                    disabled={failureReporterRecheckMatchMutation.isPending}
+                                    disabled={bugMonitorRecheckMatchMutation.isPending}
                                     onClick={() =>
-                                      failureReporterRecheckMatchMutation.mutate({
+                                      bugMonitorRecheckMatchMutation.mutate({
                                         draftId: draft.draft_id,
                                       })
                                     }
@@ -2788,9 +2750,9 @@ export function SettingsPage({
                                     className="tcp-icon-btn"
                                     title="Create triage run"
                                     aria-label="Create triage run"
-                                    disabled={failureReporterTriageRunMutation.isPending}
+                                    disabled={bugMonitorTriageRunMutation.isPending}
                                     onClick={() =>
-                                      failureReporterTriageRunMutation.mutate({
+                                      bugMonitorTriageRunMutation.mutate({
                                         draftId: draft.draft_id,
                                       })
                                     }
@@ -2809,9 +2771,9 @@ export function SettingsPage({
 
                     <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 p-3">
                       <div className="mb-2 font-medium">Recent GitHub posts</div>
-                      {failureReporterPosts.length ? (
+                      {bugMonitorPosts.length ? (
                         <div className="grid gap-2">
-                          {failureReporterPosts.map((post) => (
+                          {bugMonitorPosts.map((post) => (
                             <div key={post.post_id} className="tcp-list-item">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="font-medium">{post.operation}</div>
@@ -3018,13 +2980,13 @@ export function SettingsPage({
                   <div className="tcp-list-item">
                     <div className="font-medium">Bug monitor</div>
                     <div className="tcp-subtle mt-1 text-xs">
-                      {failureReporterStatus.readiness?.runtime_ready
+                      {bugMonitorStatus.readiness?.runtime_ready
                         ? "Ready"
-                        : failureReporterEnabled
+                        : bugMonitorEnabled
                           ? "Enabled but blocked"
                           : "Disabled"}
                       {" · "}
-                      {Number(failureReporterStatus.pending_drafts || 0)} pending drafts
+                      {Number(bugMonitorStatus.pending_drafts || 0)} pending drafts
                     </div>
                   </div>
                   <div className="tcp-list-item">
@@ -3147,7 +3109,7 @@ export function SettingsPage({
         </DetailDrawer>
 
         <AnimatePresence>
-          {failureReporterWorkspaceBrowserOpen ? (
+          {bugMonitorWorkspaceBrowserOpen ? (
             <motion.div
               className="tcp-confirm-overlay"
               initial={{ opacity: 0 }}
@@ -3159,8 +3121,8 @@ export function SettingsPage({
                 className="tcp-confirm-backdrop"
                 aria-label="Close Bug Monitor workspace dialog"
                 onClick={() => {
-                  setFailureReporterWorkspaceBrowserOpen(false);
-                  setFailureReporterWorkspaceBrowserSearch("");
+                  setBugMonitorWorkspaceBrowserOpen(false);
+                  setBugMonitorWorkspaceBrowserSearch("");
                 }}
               />
               <motion.div
@@ -3171,16 +3133,16 @@ export function SettingsPage({
               >
                 <h3 className="tcp-confirm-title">Select Bug Monitor Directory</h3>
                 <p className="tcp-confirm-message">
-                  Current: {failureReporterCurrentBrowseDir || "n/a"}
+                  Current: {bugMonitorCurrentBrowseDir || "n/a"}
                 </p>
                 <div className="mb-2 flex flex-wrap gap-2">
                   <button
                     className="tcp-btn"
                     onClick={() => {
-                      if (!failureReporterWorkspaceParentDir) return;
-                      setFailureReporterWorkspaceBrowserDir(failureReporterWorkspaceParentDir);
+                      if (!bugMonitorWorkspaceParentDir) return;
+                      setBugMonitorWorkspaceBrowserDir(bugMonitorWorkspaceParentDir);
                     }}
-                    disabled={!failureReporterWorkspaceParentDir}
+                    disabled={!bugMonitorWorkspaceParentDir}
                   >
                     <i data-lucide="arrow-up-circle"></i>
                     Up
@@ -3188,14 +3150,11 @@ export function SettingsPage({
                   <button
                     className="tcp-btn-primary"
                     onClick={() => {
-                      if (!failureReporterCurrentBrowseDir) return;
-                      setFailureReporterWorkspaceRoot(failureReporterCurrentBrowseDir);
-                      setFailureReporterWorkspaceBrowserOpen(false);
-                      setFailureReporterWorkspaceBrowserSearch("");
-                      toast(
-                        "ok",
-                        `Bug Monitor directory selected: ${failureReporterCurrentBrowseDir}`
-                      );
+                      if (!bugMonitorCurrentBrowseDir) return;
+                      setBugMonitorWorkspaceRoot(bugMonitorCurrentBrowseDir);
+                      setBugMonitorWorkspaceBrowserOpen(false);
+                      setBugMonitorWorkspaceBrowserSearch("");
+                      toast("ok", `Bug Monitor directory selected: ${bugMonitorCurrentBrowseDir}`);
                     }}
                   >
                     <i data-lucide="badge-check"></i>
@@ -3204,8 +3163,8 @@ export function SettingsPage({
                   <button
                     className="tcp-btn"
                     onClick={() => {
-                      setFailureReporterWorkspaceBrowserOpen(false);
-                      setFailureReporterWorkspaceBrowserSearch("");
+                      setBugMonitorWorkspaceBrowserOpen(false);
+                      setBugMonitorWorkspaceBrowserSearch("");
                     }}
                   >
                     <i data-lucide="x"></i>
@@ -3216,21 +3175,19 @@ export function SettingsPage({
                   <input
                     className="tcp-input"
                     placeholder="Type to filter folders..."
-                    value={failureReporterWorkspaceBrowserSearch}
+                    value={bugMonitorWorkspaceBrowserSearch}
                     onInput={(e) =>
-                      setFailureReporterWorkspaceBrowserSearch((e.target as HTMLInputElement).value)
+                      setBugMonitorWorkspaceBrowserSearch((e.target as HTMLInputElement).value)
                     }
                   />
                 </div>
                 <div className="max-h-[360px] overflow-auto rounded-lg border border-slate-700/60 bg-slate-900/20 p-2">
-                  {filteredFailureReporterWorkspaceDirectories.length ? (
-                    filteredFailureReporterWorkspaceDirectories.map((entry: any) => (
+                  {filteredBugMonitorWorkspaceDirectories.length ? (
+                    filteredBugMonitorWorkspaceDirectories.map((entry: any) => (
                       <button
                         key={String(entry?.path || entry?.name)}
                         className="tcp-list-item mb-1 w-full text-left"
-                        onClick={() =>
-                          setFailureReporterWorkspaceBrowserDir(String(entry?.path || ""))
-                        }
+                        onClick={() => setBugMonitorWorkspaceBrowserDir(String(entry?.path || ""))}
                       >
                         <i data-lucide="folder-open"></i>
                         {String(entry?.name || entry?.path || "")}
@@ -3239,7 +3196,7 @@ export function SettingsPage({
                   ) : (
                     <EmptyState
                       text={
-                        failureReporterWorkspaceSearchQuery
+                        bugMonitorWorkspaceSearchQuery
                           ? "No folders match your search."
                           : "No subdirectories in this folder."
                       }

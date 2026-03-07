@@ -284,7 +284,7 @@ export function AppShell({
                       : bugMonitorState.label
                   }
                   onClick={() => {
-                    onNavigate("failure-reporter");
+                    onNavigate("bug-monitor");
                     if (mobile) setMobileNavOpen(false);
                   }}
                 >
@@ -394,7 +394,7 @@ export function AppShell({
                   ? `${bugMonitorState.label}: ${statusBar.bugMonitor.lastError}`
                   : bugMonitorState.label
               }
-              onClick={() => onNavigate("failure-reporter")}
+              onClick={() => onNavigate("bug-monitor")}
             >
               <i data-lucide="bug-play"></i>
               <span className="tcp-bug-monitor-dot" aria-hidden="true"></span>
@@ -421,7 +421,7 @@ export function AppShell({
                     ? `${bugMonitorState.label}: ${statusBar.bugMonitor.lastError}`
                     : bugMonitorState.label
                 }
-                onClick={() => onNavigate("failure-reporter")}
+                onClick={() => onNavigate("bug-monitor")}
               >
                 <i data-lucide="bug-play"></i>
                 <span className="tcp-bug-monitor-dot" aria-hidden="true"></span>

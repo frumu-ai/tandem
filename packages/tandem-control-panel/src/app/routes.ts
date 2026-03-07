@@ -11,7 +11,7 @@ export type RouteId =
   | "agents"
   | "channels"
   | "mcp"
-  | "failure-reporter"
+  | "bug-monitor"
   | "packs"
   | "files"
   | "memory"
@@ -27,6 +27,7 @@ const LEGACY_ROUTE_REDIRECTS = new Map<string, RouteId>([
   ["packs", "automations"],
   ["teams", "automations"],
   ["swarm", "orchestrator"],
+  ["failure-reporter", "bug-monitor"],
 ]);
 
 const routeSet = new Set(APP_ROUTES.map(([id]) => id));

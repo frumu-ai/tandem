@@ -101,6 +101,27 @@ async fn coder_issue_triage_run_create_get_and_list() {
             .map(|rows| rows.len()),
         Some(5)
     );
+    assert!(get_payload
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().any(|row| {
+            row.get("artifact_type").and_then(Value::as_str) == Some("coder_memory_hits")
+        }))
+        .unwrap_or(false));
+    assert_eq!(
+        get_payload
+            .get("memory_hits")
+            .and_then(|row| row.get("query"))
+            .and_then(Value::as_str),
+        Some("evan/tandem issue #1234")
+    );
+    assert_eq!(
+        get_payload
+            .get("memory_candidates")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(0)
+    );
 
     let list_req = Request::builder()
         .method("GET")

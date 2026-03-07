@@ -2,37 +2,37 @@
 
 ### Highlights
 
-- **Failure reporter settings foundation and runtime config surface**:
-  - added persisted failure-reporter config/state in `tandem-server` with explicit repo, MCP server, provider preference, and dedicated `model_policy.default_model` routing for the reporter agent
+- **Bug Monitor settings foundation and runtime config surface**:
+  - added persisted bug-monitor config/state in `tandem-server` with explicit repo, MCP server, provider preference, and dedicated `model_policy.default_model` routing for the reporter agent
   - added fail-closed readiness evaluation for:
     - selected provider/model availability
     - selected MCP server presence/connectivity
     - required GitHub read/write capability coverage
-  - fixed the control-panel Failure Reporter settings-page initialization crash caused by early query access
+  - fixed the control-panel Bug Monitor settings-page initialization crash caused by early query access
   - changed reporter model selection to allow typed/manual model IDs with provider suggestions and fixed model persistence across reloads
   - generalized GitHub MCP capability readiness so arbitrary MCP server instance names can satisfy reporter issue capabilities
   - added new reporter endpoints:
-    - `GET /config/failure-reporter`
-    - `PATCH /config/failure-reporter`
-    - `GET /failure-reporter/status`
-    - `GET /failure-reporter/drafts`
-    - `GET /failure-reporter/drafts/{id}`
-  - control-panel Settings now includes a dedicated `Failure Reporter` tab with:
+    - `GET /config/bug-monitor`
+    - `PATCH /config/bug-monitor`
+    - `GET /bug-monitor/status`
+    - `GET /bug-monitor/drafts`
+    - `GET /bug-monitor/drafts/{id}`
+  - control-panel Settings now includes a dedicated `Bug Monitor` tab with:
     - enable/disable control
     - target repo input
     - reuse of existing MCP server config
     - dedicated provider/model selection for a cheaper reporter route
     - readiness and capability coverage summaries
-  - added a direct `#/failure-reporter` route alias for opening the Settings reporter tab
-  - desktop Settings now includes a matching engine-backed `Failure Reporter` surface with runtime readiness, recent draft visibility, and a deep link into `Extensions -> MCP`
-  - added a Tauri bridge for Failure Reporter config, status, draft listing, draft lookup, and manual draft submission
-  - added `POST /failure-reporter/report` so desktop logs and failed orchestrator runs can create deduped local failure drafts through the engine
-  - fixed the desktop sidecar reporter config path to use the canonical `GET/PATCH /config/failure-reporter` route
-  - added engine-backed draft approval/deny actions at `POST /failure-reporter/drafts/{id}/approve` and `POST /failure-reporter/drafts/{id}/deny`, and surfaced those actions in desktop Settings
-  - control-panel Settings now uses those same draft approval endpoints, keeping Failure Reporter decisions consistent across desktop and web surfaces
-  - added `POST /failure-reporter/drafts/{id}/triage-run`, which promotes an approved draft into a minimal engine-owned `failure_reporter_triage` context run with seeded inspection and validation tasks
-  - desktop and control-panel Settings can now create those triage runs directly from approved Failure Reporter drafts
-  - control-panel Dashboard now includes those `failure_reporter_triage` context runs in the existing context-run visibility drawer
+  - added a direct `#/bug-monitor` route as the canonical entry for opening the Settings Bug Monitor tab
+  - desktop Settings now includes a matching engine-backed `Bug Monitor` surface with runtime readiness, recent draft visibility, and a deep link into `Extensions -> MCP`
+  - added a Tauri bridge for Bug Monitor config, status, draft listing, draft lookup, and manual draft submission
+  - added `POST /bug-monitor/report` so desktop logs and failed orchestrator runs can create deduped local failure drafts through the engine
+  - fixed the desktop sidecar reporter config path to use the canonical `GET/PATCH /config/bug-monitor` route
+  - added engine-backed draft approval/deny actions at `POST /bug-monitor/drafts/{id}/approve` and `POST /bug-monitor/drafts/{id}/deny`, and surfaced those actions in desktop Settings
+  - control-panel Settings now uses those same draft approval endpoints, keeping Bug Monitor decisions consistent across desktop and web surfaces
+  - added `POST /bug-monitor/drafts/{id}/triage-run`, which promotes an approved draft into a minimal engine-owned `bug_monitor_triage` context run with seeded inspection and validation tasks
+  - desktop and control-panel Settings can now create those triage runs directly from approved Bug Monitor drafts
+  - control-panel Dashboard now includes those `bug_monitor_triage` context runs in the existing context-run visibility drawer
 
 - **Initial Tandem Coder engine API foundation**:
   - added the first engine-owned coder endpoints:

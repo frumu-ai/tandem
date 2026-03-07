@@ -548,7 +548,7 @@ pub(crate) async fn query_failure_pattern_matches(
         repo_slug,
         None,
         &[
-            "failure_reporter".to_string(),
+            "bug_monitor".to_string(),
             "default".to_string(),
             "coder_api".to_string(),
             "desktop_developer_mode".to_string(),
@@ -1441,6 +1441,15 @@ fn coder_run_payload(record: &CoderRunRecord, context_run: &ContextRunState) -> 
     })
 }
 
+fn default_coder_memory_query(record: &CoderRunRecord) -> String {
+    let issue_number = record
+        .github_ref
+        .as_ref()
+        .map(|row| row.number)
+        .unwrap_or_default();
+    format!("{} issue #{}", record.repo_binding.repo_slug, issue_number)
+}
+
 pub(super) async fn coder_run_create(
     State(state): State<AppState>,
     Json(input): Json<CoderRunCreateInput>,
@@ -1668,9 +1677,26 @@ pub(super) async fn coder_run_get(
 ) -> Result<Json<Value>, StatusCode> {
     let record = load_coder_run_record(&state, &id).await?;
     let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
+    let blackboard = load_context_blackboard(&state, &record.linked_context_run_id);
+    let memory_query = default_coder_memory_query(&record);
+    let memory_hits = if matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) {
+        collect_issue_triage_memory_hits(&state, &record, &memory_query, 8).await?
+    } else {
+        Vec::new()
+    };
+    let issue_number = record.github_ref.as_ref().map(|row| row.number);
+    let memory_candidates =
+        list_repo_memory_candidates(&state, &record.repo_binding.repo_slug, issue_number, 20)
+            .await?;
     Ok(Json(json!({
         "coder_run": coder_run_payload(&record, &run),
         "run": run,
+        "artifacts": blackboard.artifacts,
+        "memory_hits": {
+            "query": memory_query,
+            "hits": memory_hits,
+        },
+        "memory_candidates": memory_candidates,
     })))
 }
 

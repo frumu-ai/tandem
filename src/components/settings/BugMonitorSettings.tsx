@@ -5,26 +5,26 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 import {
-  approveFailureReporterDraft,
-  createFailureReporterTriageRun,
-  denyFailureReporterDraft,
-  getFailureReporterConfig,
-  getFailureReporterStatus,
-  listFailureReporterDrafts,
+  approveBugMonitorDraft,
+  createBugMonitorTriageRun,
+  denyBugMonitorDraft,
+  getBugMonitorConfig,
+  getBugMonitorStatus,
+  listBugMonitorDrafts,
   mcpListServers,
-  patchFailureReporterConfig,
-  type FailureReporterConfig,
-  type FailureReporterDraftRecord,
-  type FailureReporterStatus,
+  patchBugMonitorConfig,
+  type BugMonitorConfig,
+  type BugMonitorDraftRecord,
+  type BugMonitorStatus,
   type McpServerRecord,
 } from "@/lib/tauri";
 
-interface FailureReporterSettingsProps {
+interface BugMonitorSettingsProps {
   providerCatalogModels: Record<string, string[]>;
   onOpenMcpSettings?: () => void;
 }
 
-function emptyConfig(): FailureReporterConfig {
+function emptyConfig(): BugMonitorConfig {
   return {
     enabled: false,
     repo: "",
@@ -36,7 +36,7 @@ function emptyConfig(): FailureReporterConfig {
   };
 }
 
-function normalizeConfig(config?: FailureReporterConfig | null): FailureReporterConfig {
+function normalizeConfig(config?: BugMonitorConfig | null): BugMonitorConfig {
   if (!config) return emptyConfig();
   return {
     enabled: !!config.enabled,
@@ -50,13 +50,13 @@ function normalizeConfig(config?: FailureReporterConfig | null): FailureReporter
   };
 }
 
-export function FailureReporterSettings({
+export function BugMonitorSettings({
   providerCatalogModels,
   onOpenMcpSettings,
-}: FailureReporterSettingsProps) {
-  const [config, setConfig] = useState<FailureReporterConfig>(emptyConfig);
-  const [status, setStatus] = useState<FailureReporterStatus | null>(null);
-  const [drafts, setDrafts] = useState<FailureReporterDraftRecord[]>([]);
+}: BugMonitorSettingsProps) {
+  const [config, setConfig] = useState<BugMonitorConfig>(emptyConfig);
+  const [status, setStatus] = useState<BugMonitorStatus | null>(null);
+  const [drafts, setDrafts] = useState<BugMonitorDraftRecord[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -78,17 +78,17 @@ export function FailureReporterSettings({
     setError(null);
     try {
       const [configPayload, statusPayload, draftsPayload, servers] = await Promise.all([
-        getFailureReporterConfig(),
-        getFailureReporterStatus(),
-        listFailureReporterDrafts(20),
+        getBugMonitorConfig(),
+        getBugMonitorStatus(),
+        listBugMonitorDrafts(20),
         mcpListServers(),
       ]);
-      setConfig(normalizeConfig(configPayload.failure_reporter));
+      setConfig(normalizeConfig(configPayload.bug_monitor));
       setStatus(statusPayload.status ?? null);
       setDrafts(Array.isArray(draftsPayload.drafts) ? draftsPayload.drafts : []);
       setMcpServers(servers);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load Failure Reporter settings");
+      setError(err instanceof Error ? err.message : "Failed to load Bug Monitor settings");
     } finally {
       setLoading(false);
     }
@@ -98,7 +98,7 @@ export function FailureReporterSettings({
     void refresh();
   }, [refresh]);
 
-  const updateConfig = (patch: Partial<FailureReporterConfig>) => {
+  const updateConfig = (patch: Partial<BugMonitorConfig>) => {
     setConfig((prev) => ({ ...prev, ...patch }));
   };
 
@@ -142,12 +142,12 @@ export function FailureReporterSettings({
         require_approval_for_new_issues: config.require_approval_for_new_issues ?? true,
         auto_comment_on_matched_open_issues: config.auto_comment_on_matched_open_issues ?? true,
       };
-      const response = await patchFailureReporterConfig(payload);
-      setConfig(normalizeConfig(response.failure_reporter));
-      setNotice("Failure Reporter settings saved.");
+      const response = await patchBugMonitorConfig(payload);
+      setConfig(normalizeConfig(response.bug_monitor));
+      setNotice("Bug Monitor settings saved.");
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save Failure Reporter settings");
+      setError(err instanceof Error ? err.message : "Failed to save Bug Monitor settings");
     } finally {
       setSaving(false);
     }
@@ -159,15 +159,15 @@ export function FailureReporterSettings({
     setNotice(null);
     try {
       if (decision === "approve") {
-        await approveFailureReporterDraft(draftId, "approved from desktop settings");
-        setNotice(`Failure Reporter draft ${draftId} approved.`);
+        await approveBugMonitorDraft(draftId, "approved from desktop settings");
+        setNotice(`Bug Monitor draft ${draftId} approved.`);
       } else {
-        await denyFailureReporterDraft(draftId, "denied from desktop settings");
-        setNotice(`Failure Reporter draft ${draftId} denied.`);
+        await denyBugMonitorDraft(draftId, "denied from desktop settings");
+        setNotice(`Bug Monitor draft ${draftId} denied.`);
       }
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to ${decision} Failure Reporter draft`);
+      setError(err instanceof Error ? err.message : `Failed to ${decision} Bug Monitor draft`);
     } finally {
       setActingDraftId(null);
     }
@@ -178,11 +178,11 @@ export function FailureReporterSettings({
     setError(null);
     setNotice(null);
     try {
-      const response = await createFailureReporterTriageRun(draftId);
+      const response = await createBugMonitorTriageRun(draftId);
       setNotice(
         response.deduped
-          ? `Failure Reporter triage run already exists: ${response.run.run_id}`
-          : `Failure Reporter triage run created: ${response.run.run_id}`
+          ? `Bug Monitor triage run already exists: ${response.run.run_id}`
+          : `Bug Monitor triage run created: ${response.run.run_id}`
       );
       await refresh();
     } catch (err) {
@@ -199,7 +199,7 @@ export function FailureReporterSettings({
           <div>
             <CardTitle className="flex items-center gap-2">
               <Siren className="h-5 w-5 text-primary" />
-              Failure Reporter
+              Bug Monitor
             </CardTitle>
             <CardDescription>
               Configure engine-backed failure-to-issue reporting and inspect pending drafts without
@@ -298,7 +298,7 @@ export function FailureReporterSettings({
               onChange={(event) =>
                 updateConfig({
                   provider_preference: event.target
-                    .value as FailureReporterConfig["provider_preference"],
+                    .value as BugMonitorConfig["provider_preference"],
                 })
               }
             >
@@ -326,13 +326,13 @@ export function FailureReporterSettings({
           <div className="space-y-2 md:col-span-2">
             <label className="text-xs font-medium text-text-subtle">Model</label>
             <Input
-              list="failure-reporter-model-options"
+              list="bug-monitor-model-options"
               value={modelId}
               onChange={(event) => setModelRoute(providerId, event.target.value)}
               placeholder={providerId ? "Type or paste a model id" : "Choose a provider first"}
               disabled={!providerId}
             />
-            <datalist id="failure-reporter-model-options">
+            <datalist id="bug-monitor-model-options">
               {modelOptions.map((option) => (
                 <option key={option} value={option} />
               ))}
@@ -392,7 +392,7 @@ export function FailureReporterSettings({
 
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => void save()} disabled={saving || loading}>
-            {saving ? "Saving..." : "Save Failure Reporter"}
+            {saving ? "Saving..." : "Save Bug Monitor"}
           </Button>
           {onOpenMcpSettings && (
             <Button variant="secondary" onClick={onOpenMcpSettings}>
@@ -411,7 +411,7 @@ export function FailureReporterSettings({
           ) : drafts.length === 0 ? (
             <div className="flex items-start gap-2 rounded-lg border border-border bg-surface p-3 text-sm text-text-muted">
               <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-              No Failure Reporter drafts yet.
+              No Bug Monitor drafts yet.
             </div>
           ) : (
             <div className="space-y-2">

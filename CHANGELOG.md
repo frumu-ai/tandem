@@ -9,44 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Failure reporter settings foundation and server config/status surface**:
-  - added persisted failure-reporter config and status state in `tandem-server`, including repo, MCP server, provider preference, and dedicated `model_policy.default_model` routing for the reporter agent
+- **Bug Monitor settings foundation and server config/status surface**:
+  - added persisted bug-monitor config and status state in `tandem-server`, including repo, MCP server, provider preference, and dedicated `model_policy.default_model` routing for the reporter agent
   - added fail-closed readiness validation for the selected provider/model, required GitHub capabilities, and selected MCP server connectivity
-  - fixed the control-panel Failure Reporter tab initialization crash caused by early query access
+  - fixed the control-panel Bug Monitor tab initialization crash caused by early query access
   - changed reporter model selection from a strict catalog-only dropdown to typed model entry with provider suggestions so manual model IDs persist across reloads
   - generalized GitHub MCP capability readiness so arbitrary MCP server instance names can satisfy reporter issue capabilities instead of depending on hardcoded provider-style server names
   - added new HTTP endpoints for reporter configuration and operator visibility:
-    - `GET /config/failure-reporter`
-    - `PATCH /config/failure-reporter`
-    - `GET /failure-reporter/status`
-    - `GET /failure-reporter/drafts`
-    - `GET /failure-reporter/drafts/{id}`
-  - control-panel Settings now includes a dedicated `Failure Reporter` tab with:
+    - `GET /config/bug-monitor`
+    - `PATCH /config/bug-monitor`
+    - `GET /bug-monitor/status`
+    - `GET /bug-monitor/drafts`
+    - `GET /bug-monitor/drafts/{id}`
+  - control-panel Settings now includes a dedicated `Bug Monitor` tab with:
     - enable/disable toggle
     - target repo configuration
     - reuse of existing MCP server connections
     - dedicated provider/model selection for a cheap/fast reporter route
     - readiness, capability coverage, and draft summary cards
-  - added a direct `#/failure-reporter` control-panel route alias that opens the Settings reporter tab
-  - desktop Settings now includes an engine-backed `Failure Reporter` surface with:
+  - added a direct `#/bug-monitor` control-panel route as the canonical Settings entry for Bug Monitor
+  - desktop Settings now includes an engine-backed `Bug Monitor` surface with:
     - repo, MCP server, provider, and model route configuration
     - runtime readiness and capability visibility
     - recent draft visibility
     - deep-link into `Extensions -> MCP`
-  - added a Tauri bridge for Failure Reporter config, status, draft listing, draft lookup, and manual report submission
-  - fixed the desktop sidecar Failure Reporter config path to use the engine’s canonical `GET/PATCH /config/failure-reporter` route instead of a non-existent `/failure-reporter/config` path
-  - added `POST /failure-reporter/report` so desktop and future clients can submit structured failure context through the engine and receive a deduped local draft record
-  - desktop logs and failed orchestrator runs can now create Failure Reporter drafts directly without implementing issue logic in the frontend
-  - added engine-owned Failure Reporter draft approval endpoints:
-    - `POST /failure-reporter/drafts/{id}/approve`
-    - `POST /failure-reporter/drafts/{id}/deny`
-  - desktop Settings can now approve or deny `approval_required` Failure Reporter drafts directly from the recent-drafts list
-  - control-panel Settings now uses the same engine draft approval endpoints so Failure Reporter draft decisions work consistently across both UIs
-  - added engine-backed triage-run creation for approved Failure Reporter drafts through:
-    - `POST /failure-reporter/drafts/{id}/triage-run`
-  - triage-run creation now seeds a minimal `failure_reporter_triage` context run with inspection and validation blackboard tasks, plus draft-to-run dedupe through `triage_run_id`
-  - desktop and control-panel Settings can now promote approved Failure Reporter drafts into triage context runs without frontend-owned run orchestration
-  - control-panel Dashboard context-run visibility now includes `failure_reporter_triage` runs in the existing context-run drawer so the handoff can be inspected without a new page
+  - added a Tauri bridge for Bug Monitor config, status, draft listing, draft lookup, and manual report submission
+  - fixed the desktop sidecar Bug Monitor config path to use the engine’s canonical `GET/PATCH /config/bug-monitor` route instead of a non-existent `/bug-monitor/config` path
+  - added `POST /bug-monitor/report` so desktop and future clients can submit structured failure context through the engine and receive a deduped local draft record
+  - desktop logs and failed orchestrator runs can now create Bug Monitor drafts directly without implementing issue logic in the frontend
+  - added engine-owned Bug Monitor draft approval endpoints:
+    - `POST /bug-monitor/drafts/{id}/approve`
+    - `POST /bug-monitor/drafts/{id}/deny`
+  - desktop Settings can now approve or deny `approval_required` Bug Monitor drafts directly from the recent-drafts list
+  - control-panel Settings now uses the same engine draft approval endpoints so Bug Monitor draft decisions work consistently across both UIs
+  - added engine-backed triage-run creation for approved Bug Monitor drafts through:
+    - `POST /bug-monitor/drafts/{id}/triage-run`
+  - triage-run creation now seeds a minimal `bug_monitor_triage` context run with inspection and validation blackboard tasks, plus draft-to-run dedupe through `triage_run_id`
+  - desktop and control-panel Settings can now promote approved Bug Monitor drafts into triage context runs without frontend-owned run orchestration
+  - control-panel Dashboard context-run visibility now includes `bug_monitor_triage` runs in the existing context-run drawer so the handoff can be inspected without a new page
 
 - **Initial Tandem Coder engine API foundation**:
   - added a first engine-owned coder API surface:

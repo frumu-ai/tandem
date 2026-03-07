@@ -49,13 +49,13 @@ use crate::{
     ActiveRun, AppState, ChannelStatus, DiscordConfigFile, SlackConfigFile, TelegramConfigFile,
 };
 
+pub(crate) mod bug_monitor;
 mod capabilities;
 mod channels_api;
 mod coder;
 mod config_providers;
 mod context_runs;
 mod context_types;
-pub(crate) mod failure_reporter;
 mod global;
 mod mcp;
 mod middleware;
@@ -66,11 +66,11 @@ mod permissions_questions;
 mod presets;
 mod resources;
 mod router;
+mod routes_bug_monitor;
 mod routes_capabilities;
 mod routes_coder;
 mod routes_config_providers;
 mod routes_context;
-mod routes_failure_reporter;
 mod routes_global;
 mod routes_mcp;
 mod routes_missions_teams;
@@ -217,7 +217,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let workflow_dispatcher_state = state.clone();
     let agent_team_supervisor_state = state.clone();
     let global_memory_ingestor_state = state.clone();
-    let failure_reporter_state = state.clone();
+    let bug_monitor_state = state.clone();
     let mcp_bootstrap_state = state.clone();
     tokio::spawn(async move {
         bootstrap_mcp_servers_when_ready(mcp_bootstrap_state).await;
@@ -265,7 +265,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let agent_team_supervisor = tokio::spawn(crate::run_agent_team_supervisor(
         agent_team_supervisor_state,
     ));
-    let failure_reporter = tokio::spawn(crate::run_failure_reporter(failure_reporter_state));
+    let bug_monitor = tokio::spawn(crate::run_bug_monitor(bug_monitor_state));
     let global_memory_ingestor =
         tokio::spawn(run_global_memory_ingestor(global_memory_ingestor_state));
 
@@ -332,7 +332,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     automation_v2_executor.abort();
     workflow_dispatcher.abort();
     agent_team_supervisor.abort();
-    failure_reporter.abort();
+    bug_monitor.abort();
     global_memory_ingestor.abort();
     hygiene_task.abort();
     if let Some(mut set) = channel_listener_set {

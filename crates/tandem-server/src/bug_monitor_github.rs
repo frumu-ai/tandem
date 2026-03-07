@@ -4,8 +4,8 @@ use tandem_runtime::McpRemoteTool;
 use tandem_types::EngineEvent;
 
 use crate::{
-    now_ms, sha256_hex, truncate_text, AppState, FailureReporterConfig, FailureReporterDraftRecord,
-    FailureReporterPostRecord,
+    now_ms, sha256_hex, truncate_text, AppState, BugMonitorConfig, BugMonitorDraftRecord,
+    BugMonitorPostRecord,
 };
 
 const BUG_MONITOR_LABEL: &str = "bug-monitor";
@@ -20,20 +20,20 @@ pub enum PublishMode {
 #[derive(Debug, Clone)]
 pub struct PublishOutcome {
     pub action: String,
-    pub draft: FailureReporterDraftRecord,
-    pub post: Option<FailureReporterPostRecord>,
+    pub draft: BugMonitorDraftRecord,
+    pub post: Option<BugMonitorPostRecord>,
 }
 
 pub async fn record_post_failure(
     state: &AppState,
-    draft: &FailureReporterDraftRecord,
+    draft: &BugMonitorDraftRecord,
     incident_id: Option<&str>,
     operation: &str,
     evidence_digest: Option<&str>,
     error: &str,
-) -> anyhow::Result<FailureReporterPostRecord> {
+) -> anyhow::Result<BugMonitorPostRecord> {
     let now = now_ms();
-    let post = FailureReporterPostRecord {
+    let post = BugMonitorPostRecord {
         post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
         draft_id: draft.draft_id.clone(),
         incident_id: incident_id.map(|value| value.to_string()),
@@ -57,7 +57,7 @@ pub async fn record_post_failure(
         created_at_ms: now,
         updated_at_ms: now,
     };
-    state.put_failure_reporter_post(post).await
+    state.put_bug_monitor_post(post).await
 }
 
 #[derive(Debug, Clone, Default)]
@@ -90,7 +90,7 @@ pub async fn publish_draft(
     incident_id: Option<&str>,
     mode: PublishMode,
 ) -> anyhow::Result<PublishOutcome> {
-    let status = state.failure_reporter_status().await;
+    let status = state.bug_monitor_status().await;
     let config = status.config.clone();
     if !config.enabled {
         anyhow::bail!("Bug Monitor is disabled");
@@ -108,11 +108,11 @@ pub async fn publish_draft(
         );
     }
     let mut draft = state
-        .get_failure_reporter_draft(draft_id)
+        .get_bug_monitor_draft(draft_id)
         .await
-        .ok_or_else(|| anyhow::anyhow!("Failure Reporter draft not found"))?;
+        .ok_or_else(|| anyhow::anyhow!("Bug Monitor draft not found"))?;
     if draft.status.eq_ignore_ascii_case("denied") {
-        anyhow::bail!("Failure Reporter draft has been denied");
+        anyhow::bail!("Bug Monitor draft has been denied");
     }
     if mode == PublishMode::Auto
         && config.require_approval_for_new_issues
@@ -129,7 +129,7 @@ pub async fn publish_draft(
         .await
         .context("resolve GitHub MCP tools for Bug Monitor")?;
     let incident = match incident_id {
-        Some(id) => state.get_failure_reporter_incident(id).await,
+        Some(id) => state.get_bug_monitor_incident(id).await,
         None => None,
     };
     let evidence_digest = compute_evidence_digest(&draft, incident.as_ref());
@@ -145,7 +145,7 @@ pub async fn publish_draft(
             draft.matched_issue_number = Some(issue.number);
             draft.matched_issue_state = Some(issue.state.clone());
             if mode == PublishMode::RecheckOnly {
-                let draft = state.put_failure_reporter_draft(draft).await?;
+                let draft = state.put_bug_monitor_draft(draft).await?;
                 return Ok(PublishOutcome {
                     action: "matched_open".to_string(),
                     draft,
@@ -154,7 +154,7 @@ pub async fn publish_draft(
             }
             if !config.auto_comment_on_matched_open_issues && mode == PublishMode::Auto {
                 draft.github_status = Some("draft_ready".to_string());
-                let draft = state.put_failure_reporter_draft(draft).await?;
+                let draft = state.put_bug_monitor_draft(draft).await?;
                 return Ok(PublishOutcome {
                     action: "matched_open_no_comment".to_string(),
                     draft,
@@ -174,7 +174,7 @@ pub async fn publish_draft(
                 draft.github_comment_url = existing.comment_url.clone();
                 draft.github_posted_at_ms = Some(existing.updated_at_ms);
                 draft.last_post_error = None;
-                let draft = state.put_failure_reporter_draft(draft).await?;
+                let draft = state.put_bug_monitor_draft(draft).await?;
                 return Ok(PublishOutcome {
                     action: "skip_duplicate".to_string(),
                     draft,
@@ -186,7 +186,7 @@ pub async fn publish_draft(
             let result = call_add_issue_comment(state, &tools, &owner_repo, issue.number, &body)
                 .await
                 .context("post Bug Monitor comment to GitHub")?;
-            let post = FailureReporterPostRecord {
+            let post = BugMonitorPostRecord {
                 post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
                 draft_id: draft.draft_id.clone(),
                 incident_id: incident.as_ref().map(|row| row.incident_id.clone()),
@@ -205,7 +205,7 @@ pub async fn publish_draft(
                 created_at_ms: now_ms(),
                 updated_at_ms: now_ms(),
             };
-            let post = state.put_failure_reporter_post(post).await?;
+            let post = state.put_bug_monitor_post(post).await?;
             draft.status = "github_comment_posted".to_string();
             draft.github_status = Some("github_comment_posted".to_string());
             draft.github_issue_url = issue.html_url.clone();
@@ -213,14 +213,14 @@ pub async fn publish_draft(
             draft.github_posted_at_ms = Some(post.updated_at_ms);
             draft.issue_number = Some(issue.number);
             draft.last_post_error = None;
-            let draft = state.put_failure_reporter_draft(draft).await?;
+            let draft = state.put_bug_monitor_draft(draft).await?;
             state
-                .update_failure_reporter_runtime_status(|runtime| {
+                .update_bug_monitor_runtime_status(|runtime| {
                     runtime.last_post_result = Some(format!("commented issue #{}", issue.number));
                 })
                 .await;
             state.event_bus.publish(EngineEvent::new(
-                "failure_reporter.github.comment_posted",
+                "bug_monitor.github.comment_posted",
                 json!({
                     "draft_id": draft.draft_id,
                     "issue_number": issue.number,
@@ -237,7 +237,7 @@ pub async fn publish_draft(
             draft.matched_issue_number = Some(issue.number);
             draft.matched_issue_state = Some(issue.state.clone());
             if mode == PublishMode::RecheckOnly {
-                let draft = state.put_failure_reporter_draft(draft).await?;
+                let draft = state.put_bug_monitor_draft(draft).await?;
                 return Ok(PublishOutcome {
                     action: "matched_closed".to_string(),
                     draft,
@@ -257,7 +257,7 @@ pub async fn publish_draft(
         }
         None => {
             if mode == PublishMode::RecheckOnly {
-                let draft = state.put_failure_reporter_draft(draft).await?;
+                let draft = state.put_bug_monitor_draft(draft).await?;
                 return Ok(PublishOutcome {
                     action: "no_match".to_string(),
                     draft,
@@ -281,16 +281,16 @@ pub async fn publish_draft(
 async fn create_issue_from_draft(
     state: &AppState,
     tools: &GithubToolSet,
-    config: &FailureReporterConfig,
-    mut draft: FailureReporterDraftRecord,
-    incident: Option<&crate::FailureReporterIncidentRecord>,
+    config: &BugMonitorConfig,
+    mut draft: BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
     matched_closed_issue: Option<&GithubIssue>,
     evidence_digest: &str,
 ) -> anyhow::Result<PublishOutcome> {
     if config.require_approval_for_new_issues && !draft.status.eq_ignore_ascii_case("draft_ready") {
         draft.status = "approval_required".to_string();
         draft.github_status = Some("approval_required".to_string());
-        let draft = state.put_failure_reporter_draft(draft).await?;
+        let draft = state.put_bug_monitor_draft(draft).await?;
         return Ok(PublishOutcome {
             action: "approval_required".to_string(),
             draft,
@@ -298,7 +298,7 @@ async fn create_issue_from_draft(
         });
     }
     if !config.auto_create_new_issues && draft.status.eq_ignore_ascii_case("draft_ready") {
-        let draft = state.put_failure_reporter_draft(draft).await?;
+        let draft = state.put_bug_monitor_draft(draft).await?;
         return Ok(PublishOutcome {
             action: "draft_ready".to_string(),
             draft,
@@ -318,7 +318,7 @@ async fn create_issue_from_draft(
         draft.github_issue_url = existing.issue_url.clone();
         draft.github_posted_at_ms = Some(existing.updated_at_ms);
         draft.last_post_error = None;
-        let draft = state.put_failure_reporter_draft(draft).await?;
+        let draft = state.put_bug_monitor_draft(draft).await?;
         return Ok(PublishOutcome {
             action: "skip_duplicate".to_string(),
             draft,
@@ -337,7 +337,7 @@ async fn create_issue_from_draft(
     )
     .await
     .context("create Bug Monitor issue on GitHub")?;
-    let post = FailureReporterPostRecord {
+    let post = BugMonitorPostRecord {
         post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
         draft_id: draft.draft_id.clone(),
         incident_id: incident.map(|row| row.incident_id.clone()),
@@ -356,21 +356,21 @@ async fn create_issue_from_draft(
         created_at_ms: now_ms(),
         updated_at_ms: now_ms(),
     };
-    let post = state.put_failure_reporter_post(post).await?;
+    let post = state.put_bug_monitor_post(post).await?;
     draft.status = "github_issue_created".to_string();
     draft.github_status = Some("github_issue_created".to_string());
     draft.github_issue_url = created.html_url.clone();
     draft.github_posted_at_ms = Some(post.updated_at_ms);
     draft.issue_number = Some(created.number);
     draft.last_post_error = None;
-    let draft = state.put_failure_reporter_draft(draft).await?;
+    let draft = state.put_bug_monitor_draft(draft).await?;
     state
-        .update_failure_reporter_runtime_status(|runtime| {
+        .update_bug_monitor_runtime_status(|runtime| {
             runtime.last_post_result = Some(format!("created issue #{}", created.number));
         })
         .await;
     state.event_bus.publish(EngineEvent::new(
-        "failure_reporter.github.issue_created",
+        "bug_monitor.github.issue_created",
         json!({
             "draft_id": draft.draft_id,
             "issue_number": created.number,
@@ -386,7 +386,7 @@ async fn create_issue_from_draft(
 
 async fn resolve_github_tool_set(
     state: &AppState,
-    config: &FailureReporterConfig,
+    config: &BugMonitorConfig,
 ) -> anyhow::Result<GithubToolSet> {
     let server_name = config
         .mcp_server
@@ -459,7 +459,7 @@ async fn find_matching_issue(
     state: &AppState,
     tools: &GithubToolSet,
     owner_repo: &(&str, &str),
-    draft: &FailureReporterDraftRecord,
+    draft: &BugMonitorDraftRecord,
 ) -> anyhow::Result<Option<GithubIssue>> {
     let mut issues = call_list_issues(state, tools, owner_repo).await?;
     if let Some(existing_number) = draft.issue_number {
@@ -497,9 +497,9 @@ async fn find_matching_issue(
 async fn successful_post_by_idempotency(
     state: &AppState,
     idempotency_key: &str,
-) -> Option<FailureReporterPostRecord> {
+) -> Option<BugMonitorPostRecord> {
     state
-        .failure_reporter_posts
+        .bug_monitor_posts
         .read()
         .await
         .values()
@@ -508,8 +508,8 @@ async fn successful_post_by_idempotency(
 }
 
 fn compute_evidence_digest(
-    draft: &FailureReporterDraftRecord,
-    incident: Option<&crate::FailureReporterIncidentRecord>,
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
 ) -> String {
     sha256_hex(&[
         draft.repo.as_str(),
@@ -533,8 +533,8 @@ fn build_idempotency_key(repo: &str, fingerprint: &str, operation: &str, digest:
 }
 
 fn build_issue_body(
-    draft: &FailureReporterDraftRecord,
-    incident: Option<&crate::FailureReporterIncidentRecord>,
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
     matched_closed_issue: Option<&GithubIssue>,
     evidence_digest: &str,
 ) -> String {
@@ -570,8 +570,8 @@ fn build_issue_body(
 }
 
 fn build_comment_body(
-    draft: &FailureReporterDraftRecord,
-    incident: Option<&crate::FailureReporterIncidentRecord>,
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&crate::BugMonitorIncidentRecord>,
     issue_number: u64,
     evidence_digest: &str,
 ) -> String {
@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn build_issue_body_includes_hidden_markers() {
-        let draft = FailureReporterDraftRecord {
+        let draft = BugMonitorDraftRecord {
             draft_id: "draft-1".to_string(),
             fingerprint: "abc123".to_string(),
             repo: "acme/platform".to_string(),
@@ -887,7 +887,7 @@ mod tests {
             issue_number: None,
             title: Some("session.error detected".to_string()),
             detail: Some("summary".to_string()),
-            ..FailureReporterDraftRecord::default()
+            ..BugMonitorDraftRecord::default()
         };
         let body = build_issue_body(&draft, None, None, "digest-1");
         assert!(body.contains("<!-- tandem:fingerprint:v1:abc123 -->"));

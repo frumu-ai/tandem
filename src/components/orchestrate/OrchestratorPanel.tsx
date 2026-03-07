@@ -24,7 +24,7 @@ import { LogsDrawer } from "@/components/logs";
 import {
   getProvidersConfig,
   getSessionMessages,
-  reportFailureReporterIssue,
+  reportBugMonitorIssue,
   type SessionMessage,
 } from "@/lib/tauri";
 import { DEFAULT_ORCHESTRATOR_CONFIG } from "./types";
@@ -874,7 +874,7 @@ export function OrchestratorPanel({
         ...(snapshot.error_message ? [`error: ${snapshot.error_message}`] : []),
         ...failedTasks,
       ];
-      const response = await reportFailureReporterIssue({
+      const response = await reportBugMonitorIssue({
         title: `Orchestrator run failed: ${snapshot.objective}`,
         detail: snapshot.error_message ?? null,
         source: "orchestrator_run",
@@ -883,7 +883,7 @@ export function OrchestratorPanel({
         event: "orchestrator.run_failed",
         excerpt,
       });
-      setActionNotice(`Failure draft ready: ${response.draft.draft_id}`);
+      setActionNotice(`Bug Monitor draft ready: ${response.draft.draft_id}`);
     } catch (e) {
       setError(`Failed to report failure: ${e}`);
     } finally {

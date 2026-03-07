@@ -992,40 +992,40 @@ export async function capabilityReadiness(
   return invoke("capability_readiness", { request });
 }
 
-export type FailureReporterProviderPreference = "auto" | "official_github" | "composio" | "arcade";
+export type BugMonitorProviderPreference = "auto" | "official_github" | "composio" | "arcade";
 
-export interface FailureReporterModelPolicy {
+export interface BugMonitorModelPolicy {
   default_model?: {
     provider_id?: string;
     model_id?: string;
   };
 }
 
-export interface FailureReporterConfig {
+export interface BugMonitorConfig {
   enabled: boolean;
   repo?: string | null;
   mcp_server?: string | null;
-  provider_preference: FailureReporterProviderPreference | string;
-  model_policy?: FailureReporterModelPolicy | null;
+  provider_preference: BugMonitorProviderPreference | string;
+  model_policy?: BugMonitorModelPolicy | null;
   require_approval_for_new_issues?: boolean;
   auto_comment_on_matched_open_issues?: boolean;
   updated_at_ms?: number;
 }
 
-export interface FailureReporterCapabilityReadiness {
+export interface BugMonitorCapabilityReadiness {
   github_list_issues?: boolean;
   github_get_issue?: boolean;
   github_create_issue?: boolean;
   github_comment_on_issue?: boolean;
 }
 
-export interface FailureReporterCapabilityMatch {
+export interface BugMonitorCapabilityMatch {
   capability_id: string;
   provider: string;
   tool_name: string;
 }
 
-export interface FailureReporterReadiness {
+export interface BugMonitorReadiness {
   config_valid?: boolean;
   repo_valid?: boolean;
   mcp_server_present?: boolean;
@@ -1036,25 +1036,25 @@ export interface FailureReporterReadiness {
   runtime_ready?: boolean;
 }
 
-export interface FailureReporterSelectedModel {
+export interface BugMonitorSelectedModel {
   provider_id?: string;
   model_id?: string;
 }
 
-export interface FailureReporterStatus {
-  config: FailureReporterConfig;
-  readiness?: FailureReporterReadiness;
-  required_capabilities?: FailureReporterCapabilityReadiness;
+export interface BugMonitorStatus {
+  config: BugMonitorConfig;
+  readiness?: BugMonitorReadiness;
+  required_capabilities?: BugMonitorCapabilityReadiness;
   missing_required_capabilities?: string[];
-  resolved_capabilities?: FailureReporterCapabilityMatch[];
+  resolved_capabilities?: BugMonitorCapabilityMatch[];
   discovered_mcp_tools?: string[];
-  selected_model?: FailureReporterSelectedModel | null;
+  selected_model?: BugMonitorSelectedModel | null;
   pending_drafts?: number;
   last_activity_at_ms?: number | null;
   last_error?: string | null;
 }
 
-export interface FailureReporterDraftRecord {
+export interface BugMonitorDraftRecord {
   draft_id: string;
   fingerprint: string;
   repo: string;
@@ -1066,7 +1066,7 @@ export interface FailureReporterDraftRecord {
   detail?: string | null;
 }
 
-export interface FailureReporterTriageRunRecord {
+export interface BugMonitorTriageRunRecord {
   run_id: string;
   run_type?: string;
   status?: string;
@@ -1074,7 +1074,7 @@ export interface FailureReporterTriageRunRecord {
   [key: string]: unknown;
 }
 
-export interface FailureReporterSubmission {
+export interface BugMonitorSubmission {
   repo?: string | null;
   title?: string | null;
   detail?: string | null;
@@ -1136,62 +1136,62 @@ export interface CoderMemoryCandidateRecord {
   created_at_ms?: number;
 }
 
-export async function getFailureReporterConfig(): Promise<{
-  failure_reporter: FailureReporterConfig;
+export async function getBugMonitorConfig(): Promise<{
+  bug_monitor: BugMonitorConfig;
 }> {
-  return invoke("failure_reporter_get_config");
+  return invoke("bug_monitor_get_config");
 }
 
-export async function patchFailureReporterConfig(
+export async function patchBugMonitorConfig(
   config: Record<string, unknown>
-): Promise<{ failure_reporter: FailureReporterConfig }> {
-  return invoke("failure_reporter_patch_config", { config });
+): Promise<{ bug_monitor: BugMonitorConfig }> {
+  return invoke("bug_monitor_patch_config", { config });
 }
 
-export async function getFailureReporterStatus(): Promise<{ status: FailureReporterStatus }> {
-  return invoke("failure_reporter_get_status");
+export async function getBugMonitorStatus(): Promise<{ status: BugMonitorStatus }> {
+  return invoke("bug_monitor_get_status");
 }
 
-export async function listFailureReporterDrafts(limit?: number): Promise<{
-  drafts: FailureReporterDraftRecord[];
+export async function listBugMonitorDrafts(limit?: number): Promise<{
+  drafts: BugMonitorDraftRecord[];
   count: number;
 }> {
-  return invoke("failure_reporter_list_drafts", { limit });
+  return invoke("bug_monitor_list_drafts", { limit });
 }
 
-export async function getFailureReporterDraft(draftId: string): Promise<{
-  draft: FailureReporterDraftRecord;
+export async function getBugMonitorDraft(draftId: string): Promise<{
+  draft: BugMonitorDraftRecord;
 }> {
-  return invoke("failure_reporter_get_draft", { draftId });
+  return invoke("bug_monitor_get_draft", { draftId });
 }
 
-export async function reportFailureReporterIssue(
-  report: FailureReporterSubmission
-): Promise<{ draft: FailureReporterDraftRecord }> {
-  return invoke("failure_reporter_report", { report });
+export async function reportBugMonitorIssue(
+  report: BugMonitorSubmission
+): Promise<{ draft: BugMonitorDraftRecord }> {
+  return invoke("bug_monitor_report", { report });
 }
 
-export async function approveFailureReporterDraft(
+export async function approveBugMonitorDraft(
   draftId: string,
   reason?: string
-): Promise<{ ok: boolean; draft: FailureReporterDraftRecord }> {
-  return invoke("failure_reporter_approve_draft", { draftId, reason });
+): Promise<{ ok: boolean; draft: BugMonitorDraftRecord }> {
+  return invoke("bug_monitor_approve_draft", { draftId, reason });
 }
 
-export async function denyFailureReporterDraft(
+export async function denyBugMonitorDraft(
   draftId: string,
   reason?: string
-): Promise<{ ok: boolean; draft: FailureReporterDraftRecord }> {
-  return invoke("failure_reporter_deny_draft", { draftId, reason });
+): Promise<{ ok: boolean; draft: BugMonitorDraftRecord }> {
+  return invoke("bug_monitor_deny_draft", { draftId, reason });
 }
 
-export async function createFailureReporterTriageRun(draftId: string): Promise<{
+export async function createBugMonitorTriageRun(draftId: string): Promise<{
   ok: boolean;
   deduped?: boolean;
-  draft: FailureReporterDraftRecord;
-  run: FailureReporterTriageRunRecord;
+  draft: BugMonitorDraftRecord;
+  run: BugMonitorTriageRunRecord;
 }> {
-  return invoke("failure_reporter_create_triage_run", { draftId });
+  return invoke("bug_monitor_create_triage_run", { draftId });
 }
 
 export async function listCoderRuns(params?: {

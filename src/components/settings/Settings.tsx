@@ -35,7 +35,7 @@ import { MemoryStats } from "./MemoryStats";
 import { LogsDrawer } from "@/components/logs";
 import { LanguageSettings } from "./LanguageSettings";
 import { ConnectionsSettings } from "./ConnectionsSettings";
-import { FailureReporterSettings } from "./FailureReporterSettings";
+import { BugMonitorSettings } from "./BugMonitorSettings";
 
 import { useUpdater } from "@/hooks/useUpdater";
 import {
@@ -1980,7 +1980,7 @@ export function Settings({
         {/* Memory Stats */}
         <MemoryStats />
 
-        <FailureReporterSettings
+        <BugMonitorSettings
           providerCatalogModels={providerCatalogModels}
           onOpenMcpSettings={onOpenMcpSettings}
         />

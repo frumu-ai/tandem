@@ -120,12 +120,12 @@ function useIdentity(client: TandemClient | null, enabled: boolean) {
 
 function useBugMonitorStatus(enabled: boolean) {
   return useQuery({
-    queryKey: ["failure-reporter", "status"],
+    queryKey: ["bug-monitor", "status"],
     enabled,
     refetchInterval: enabled ? 10000 : false,
     queryFn: async () => {
       try {
-        return await api("/api/engine/failure-reporter/status", { method: "GET" });
+        return await api("/api/engine/bug-monitor/status", { method: "GET" });
       } catch {
         return null;
       }
