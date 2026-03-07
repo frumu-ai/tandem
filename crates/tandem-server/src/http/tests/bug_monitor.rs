@@ -1051,6 +1051,30 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
     )
     .expect("summary json");
     let issue_draft = summary_payload.get("issue_draft").expect("issue draft");
+    assert_eq!(
+        summary_payload
+            .get("triage_summary_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_triage_summary")
+    );
+    assert!(summary_payload
+        .get("triage_summary_artifact")
+        .and_then(|row| row.get("path"))
+        .and_then(Value::as_str)
+        .is_some_and(|path| path.ends_with("/artifacts/bug_monitor.triage_summary.json")));
+    assert_eq!(
+        summary_payload
+            .get("issue_draft_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_issue_draft")
+    );
+    assert!(summary_payload
+        .get("issue_draft_artifact")
+        .and_then(|row| row.get("path"))
+        .and_then(Value::as_str)
+        .is_some_and(|path| path.ends_with("/artifacts/bug_monitor.issue_draft.json")));
     let rendered_body = issue_draft
         .get("rendered_body")
         .and_then(Value::as_str)

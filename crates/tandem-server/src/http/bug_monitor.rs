@@ -1114,15 +1114,23 @@ pub(super) async fn create_bug_monitor_triage_summary(
                 .into_response();
         }
     };
+    let triage_summary_artifact =
+        latest_bug_monitor_artifact(&state, &triage_run_id, "bug_monitor_triage_summary");
     match ensure_bug_monitor_issue_draft(state.clone(), &id, true).await {
-        Ok(issue_draft) => Json(json!({
-            "ok": true,
-            "draft": draft,
-            "triage_summary": payload,
-            "failure_pattern_memory": failure_pattern_memory,
-            "issue_draft": issue_draft,
-        }))
-        .into_response(),
+        Ok(issue_draft) => {
+            let issue_draft_artifact =
+                latest_bug_monitor_artifact(&state, &triage_run_id, "bug_monitor_issue_draft");
+            Json(json!({
+                "ok": true,
+                "draft": draft,
+                "triage_summary": payload,
+                "triage_summary_artifact": triage_summary_artifact,
+                "failure_pattern_memory": failure_pattern_memory,
+                "issue_draft": issue_draft,
+                "issue_draft_artifact": issue_draft_artifact,
+            }))
+            .into_response()
+        }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -1130,6 +1138,7 @@ pub(super) async fn create_bug_monitor_triage_summary(
                 "code": "BUG_MONITOR_TRIAGE_SUMMARY_ISSUE_DRAFT_FAILED",
                 "draft": draft,
                 "triage_summary": payload,
+                "triage_summary_artifact": triage_summary_artifact,
                 "failure_pattern_memory": failure_pattern_memory,
                 "detail": error.to_string(),
             })),
