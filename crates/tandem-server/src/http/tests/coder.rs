@@ -3556,6 +3556,193 @@ async fn coder_promoted_review_memory_reuses_requested_changes_across_pull_reque
 }
 
 #[tokio::test]
+async fn coder_promoted_regression_signal_reuses_across_pull_requests() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_first_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-regression-promote-a",
+                "workflow_mode": "pr_review",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "pull_request",
+                    "number": 501
+                },
+                "source_client": "desktop_developer_mode"
+            })
+            .to_string(),
+        ))
+        .expect("first create request");
+    let create_first_resp = app
+        .clone()
+        .oneshot(create_first_req)
+        .await
+        .expect("first create response");
+    assert_eq!(create_first_resp.status(), StatusCode::OK);
+
+    let summary_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-regression-promote-a/pr-review-summary")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "verdict": "changes_requested",
+                "summary": "This change repeats the rollback-free migration pattern that regressed previously.",
+                "regression_signals": [{
+                    "kind": "historical_failure_pattern",
+                    "summary": "Rollback-free migrations regressed previously during deploy."
+                }]
+            })
+            .to_string(),
+        ))
+        .expect("summary request");
+    let summary_resp = app
+        .clone()
+        .oneshot(summary_req)
+        .await
+        .expect("summary response");
+    assert_eq!(summary_resp.status(), StatusCode::OK);
+    let summary_payload: Value = serde_json::from_slice(
+        &to_bytes(summary_resp.into_body(), usize::MAX)
+            .await
+            .expect("summary body"),
+    )
+    .expect("summary json");
+    let regression_candidate_id = summary_payload
+        .get("generated_candidates")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter().find_map(|row| {
+                (row.get("kind").and_then(Value::as_str) == Some("regression_signal")).then(
+                    || {
+                        row.get("candidate_id")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    },
+                )?
+            })
+        })
+        .expect("regression candidate id");
+
+    let promote_req = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/coder/runs/coder-regression-promote-a/memory-candidates/{regression_candidate_id}/promote"
+        ))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "to_tier": "project",
+                "reviewer_id": "reviewer-1",
+                "approval_id": "approval-1",
+                "reason": "approved reusable regression signal"
+            })
+            .to_string(),
+        ))
+        .expect("promote request");
+    let promote_resp = app
+        .clone()
+        .oneshot(promote_req)
+        .await
+        .expect("promote response");
+    assert_eq!(promote_resp.status(), StatusCode::OK);
+    let promote_payload: Value = serde_json::from_slice(
+        &to_bytes(promote_resp.into_body(), usize::MAX)
+            .await
+            .expect("promote body"),
+    )
+    .expect("promote json");
+
+    let create_second_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-regression-promote-b",
+                "workflow_mode": "pr_review",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "pull_request",
+                    "number": 502
+                },
+                "source_client": "desktop_developer_mode"
+            })
+            .to_string(),
+        ))
+        .expect("second create request");
+    let create_second_resp = app
+        .clone()
+        .oneshot(create_second_req)
+        .await
+        .expect("second create response");
+    assert_eq!(create_second_resp.status(), StatusCode::OK);
+
+    let hits_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-regression-promote-b/memory-hits?q=rollback-free%20migrations%20regressed%20during%20deploy")
+        .body(Body::empty())
+        .expect("hits request");
+    let hits_resp = app.clone().oneshot(hits_req).await.expect("hits response");
+    assert_eq!(hits_resp.status(), StatusCode::OK);
+    let hits_payload: Value = serde_json::from_slice(
+        &to_bytes(hits_resp.into_body(), usize::MAX)
+            .await
+            .expect("hits body"),
+    )
+    .expect("hits json");
+    let first_hit = hits_payload
+        .get("hits")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .cloned()
+        .expect("first hit");
+    assert_eq!(
+        first_hit.get("source").and_then(Value::as_str),
+        Some("governed_memory")
+    );
+    assert_eq!(
+        first_hit
+            .get("metadata")
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("regression_signal")
+    );
+    assert_eq!(
+        first_hit
+            .get("metadata")
+            .and_then(|row| row.get("workflow_mode"))
+            .and_then(Value::as_str),
+        Some("pr_review")
+    );
+    assert_eq!(
+        first_hit.get("memory_id").and_then(Value::as_str),
+        promote_payload.get("memory_id").and_then(Value::as_str)
+    );
+    assert_eq!(first_hit.get("same_ref").and_then(Value::as_bool), None);
+}
+
+#[tokio::test]
 async fn coder_promoted_fix_memory_reuses_strategy_across_issues() {
     let state = test_state().await;
     state
