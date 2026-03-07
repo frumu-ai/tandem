@@ -13,20 +13,60 @@
   </p>
 </div>
 
-**Tandem 是一个本地优先（local-first）的自治 Agent 运行时。**  
+**Tandem 是一个面向协调自治工作流的引擎主导型（engine-owned）运行时。**
 可作为桌面应用运行、在 VPS 上以无头服务运行，或通过 HTTP + SSE API 从任意语言接入。
 
-```typescript
-// npm install @frumu/tandem-client
-import { TandemClient } from "@frumu/tandem-client";
+```bash
+# 选项 1：快速运行（无需全局安装与源码）：
+npx @frumu/tandem-panel
 
-const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "..." });
-const sessionId = await client.sessions.create({ title: "My agent" });
-const { runId } = await client.sessions.promptAsync(sessionId, "Summarize README.md");
+# 选项 2：可修改源码与系统服务安装（Hackable / Systemd）：
+git clone https://github.com/frumu-ai/tandem.git
+cd tandem/examples/agent-quickstart
+sudo bash setup-agent.sh
+```
 
-for await (const event of client.stream(sessionId, runId)) {
-  if (event.type === "session.response") process.stdout.write(event.properties.delta ?? "");
-}
+它提供了持久化、坚固的协调原语——例如黑板（blackboards）、工作板（workboards）、显式任务认领、记忆积累和检查点（checkpoints）——允许多个 Agent 并发地执行复杂且长时间运行的工程或自动化任务，彻底阻绝冲突碰撞。
+
+- **多客户端，单一引擎：** 桌面端应用、TUI 以及无头 API 全部基于同一个事实来源运作。
+- **引擎主导的编排机制：** 共享的任务状态、全局流重放（replay）、审核流以及确定性的工作流投影。
+- **提供商无绑定：** 支持 OpenRouter、OpenCode Zen、Anthropic、OpenAI，或通过 Ollama 本地运行模型。
+
+`持久状态 → 工作板 → 智能体 Swarm → 结构化产物`
+
+```mermaid
+graph TD
+    %% Clients
+    Desktop[Desktop App]
+    ControlPanel[Web Control Panel]
+    TUI[Terminal UI]
+    API[SDKs & API Clients]
+
+    subgraph "Tandem Engine (Source of Truth)"
+        Orchestrator[Orchestration & Approvals]
+        Blackboard[(Blackboard & Shared State)]
+        Memory[(Vector Memory & Checkpoints)]
+        Worktrees[Git Worktree Isolation]
+    end
+
+    subgraph "Agent Swarm"
+        Planner[Planner Agent]
+        Builder[Builder Agent]
+        Validator[Verifier Agent]
+    end
+
+    Desktop -.-> Orchestrator
+    ControlPanel -.-> Orchestrator
+    TUI -.-> Orchestrator
+    API -.-> Orchestrator
+
+    Orchestrator --> Blackboard
+    Orchestrator --> Memory
+    Orchestrator --> Worktrees
+
+    Blackboard <--> Planner
+    Blackboard <--> Builder
+    Blackboard <--> Validator
 ```
 
 ```python
@@ -99,15 +139,18 @@ Tandem 将自治 AI 工具带给所有需要处理文件的人，而不只是开
 - **📋 执行计划**：执行前先审查并批量批准多步骤 AI 操作
 - **🔄 自动更新**：使用安装包时支持签名发布的无缝更新
 
-### AI Agent 模式
+### 引擎主导的工作流运行时
 
-Tandem 基于原生 Tandem 引擎，支持多种专用 agent 模式：
+- **协调的自治工作流：** 显式的黑板机制优于单纯的对话历史文本堆积。
+- **多 Agent 并发运行：** 通过 Git 工作树隔离（Worktree Isolation）和补丁流安全管理并发执行。
+- **状态持久与恢复：** 拥有检查点、可重放的事件历史、以及具象化的运行状态。
+- **安全审批门控：** 对破坏性操作采用受监督的工具流以保持“人在回路”。
 
-- **💬 Chat 模式**：带上下文感知文件操作的交互式对话
-- **📝 Plan 模式**：在执行改动前先生成完整实施计划（`.md`）
-- **♾️ Ralph Loop**：自治迭代循环，直到任务可验证完成
-- **🔍 Ask 模式**：只读探索与分析，不进行改动
-- **🐛 Debug 模式**：基于运行时证据的系统化调试
+### 多智能体编排（Multi-Agent Orchestration）
+
+- **Kanban 驱动的执行模式：** Agents 认领任务，报告堵塞状态，并通过确定性的状态流而不是聊天交接工作。
+- **具备记忆的 Swarm 集群：** Agent 会从历史运行中学习，自动提取修复策略以及错误模式。
+- **版本控制级别协同：** 引擎强制加锁机制，防止多个 Agent 同时踩踏修改同一代码库。
 
 ### 🎼 多智能体编排（Multi-Agent Orchestration）
 

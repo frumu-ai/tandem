@@ -15,13 +15,17 @@
 
 ## Tandem
 
-Tandem is a local-first runtime for executing AI workflows on desktop or server environments.
+Tandem is an **engine-owned workflow runtime** for coordinated autonomous work.
 
-- Run real workflows, not just single-turn chat replies.
-- Keep humans in control with staged plans, approvals, and reviewable diffs.
-- Use your own model providers (OpenRouter, OpenCode Zen, Anthropic, OpenAI, Ollama, or compatible custom endpoints).
+While most agent projects are built as chat-first assistants, Tandem is built for execution that survives beyond a single transcript.
 
-`Prompt → Plan → Tasks → Agents → Results`
+It provides durable coordination primitives—blackboards, workboards, explicit task claiming, memory accumulation, and checkpoints—allowing multiple agents to work on complex, long-running engineering and automation tasks concurrently without colliding.
+
+- **Multiple clients, one engine:** The desktop app, TUI, and headless APIs all operate on the same truth.
+- **Engine-owned orchestration:** Shared task state, replay, approvals, and deterministic workflow projections.
+- **Provider agnostic:** Use OpenRouter, OpenCode Zen, Anthropic, OpenAI, or local Ollama endpoints.
+
+`Durable State → Workboards → Agent Swarm → Artifacts`
 
 **→ [Download desktop app](https://tandem.frumu.ai/) · [Deploy on a VPS (5 min)](examples/agent-quickstart/) · [Read the docs](https://tandem.docs.frumu.ai/)**
 
@@ -42,15 +46,60 @@ Tandem is a local-first runtime for executing AI workflows on desktop or server 
 
 ### Headless (server/VPS)
 
-1. Open the quickstart: [examples/agent-quickstart/](examples/agent-quickstart/)
-2. Run:
+**Option 1: Quick Start (Run instantly)**
+Run the pre-built control panel directly (it automatically downloads and starts the engine):
 
-   ```bash
-   cd examples/agent-quickstart
-   sudo bash setup-agent.sh
-   ```
+```bash
+npx @frumu/tandem-panel
+```
 
-3. Open the printed portal URL and sign in with the generated key.
+**Option 2: Hackable / Service Install (Modifiable source)**
+Clone the repo to get the control panel source code, which allows you to modify it and install it as a background systemd service:
+
+```bash
+git clone https://github.com/frumu-ai/tandem.git
+cd tandem/examples/agent-quickstart
+sudo bash setup-agent.sh
+```
+
+Open the printed URL and sign in with the generated key!
+
+## Architecture
+
+```mermaid
+graph TD
+    %% Clients
+    Desktop[Desktop App]
+    ControlPanel[Web Control Panel]
+    TUI[Terminal UI]
+    API[SDKs & API Clients]
+
+    subgraph "Tandem Engine (Source of Truth)"
+        Orchestrator[Orchestration & Approvals]
+        Blackboard[(Blackboard & Shared State)]
+        Memory[(Vector Memory & Checkpoints)]
+        Worktrees[Git Worktree Isolation]
+    end
+
+    subgraph "Agent Swarm"
+        Planner[Planner Agent]
+        Builder[Builder Agent]
+        Validator[Verifier Agent]
+    end
+
+    Desktop -.-> Orchestrator
+    ControlPanel -.-> Orchestrator
+    TUI -.-> Orchestrator
+    API -.-> Orchestrator
+
+    Orchestrator --> Blackboard
+    Orchestrator --> Memory
+    Orchestrator --> Worktrees
+
+    Blackboard <--> Planner
+    Blackboard <--> Builder
+    Blackboard <--> Validator
+```
 
 ## Common workflows
 
@@ -64,20 +113,18 @@ Tandem is a local-first runtime for executing AI workflows on desktop or server 
 
 ## Features
 
-### Workflow runtime and execution modes
+### Engine-Owned Workflow Runtime
 
-- Chat mode for interactive, file-aware assistance
-- Plan mode for batched, review-first execution
-- Immediate mode for per-operation approval flow
-- Autonomous loops for iterative execution
-- Debug mode for failure analysis with runtime evidence
+- **Coordinated autonomous work:** Explicit blackboards over conversational thread dumping.
+- **Multi-simultaneous agents:** Manage parallel execution through Git Worktree Isolation and patch streams.
+- **State survival:** Checkpoints, replayable event history, and materialized run states.
+- **Approval gates:** Keep humans in control with supervised tool flows for destructive actions.
 
-### Multi-agent orchestration and planning
+### Multi-Agent Orchestration
 
-- Specialized planner/builder/validator patterns
-- Task decomposition and agent assignment per run
-- Execution plan panel for staged operations and diffs
-- Batch apply with undo support for approved plans
+- **Kanban-driven execution:** Agents claim tasks, report blockers, and hand off work through deterministic state.
+- **Memory-aware swarms:** Agents learn from prior runs, extracting fixes and failure patterns automatically.
+- **Revisioned coordination:** Engine-enforced locks prevent agents from trampling the same codebase simultaneously.
 
 ### Integrations and automation
 
