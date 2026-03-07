@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { renderIcons } from "../app/icons.js";
 import {
   AnimatedPage,
   Badge,
@@ -61,6 +62,7 @@ type SettingsSection =
 
 type FailureReporterConfigRow = {
   enabled?: boolean;
+  paused?: boolean;
   workspace_root?: string | null;
   repo?: string | null;
   mcp_server?: string | null;
@@ -78,6 +80,15 @@ type FailureReporterConfigRow = {
 type FailureReporterStatusRow = {
   config?: FailureReporterConfigRow;
   readiness?: Record<string, boolean>;
+  runtime?: {
+    monitoring_active?: boolean;
+    paused?: boolean;
+    pending_incidents?: number;
+    total_incidents?: number;
+    last_processed_at_ms?: number | null;
+    last_incident_event_type?: string | null;
+    last_runtime_error?: string | null;
+  };
   required_capabilities?: Record<string, boolean>;
   missing_required_capabilities?: string[];
   resolved_capabilities?: Array<{
@@ -101,6 +112,24 @@ type FailureReporterStatusRow = {
   } | null;
   pending_drafts?: number;
   last_activity_at_ms?: number | null;
+  last_error?: string | null;
+};
+
+type FailureReporterIncidentRow = {
+  incident_id: string;
+  fingerprint: string;
+  event_type: string;
+  status: string;
+  repo: string;
+  workspace_root: string;
+  title: string;
+  detail?: string | null;
+  excerpt?: string[];
+  occurrence_count?: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+  draft_id?: string | null;
+  triage_run_id?: string | null;
   last_error?: string | null;
 };
 
@@ -394,6 +423,7 @@ export function SettingsPage({
   refreshIdentityStatus,
 }: AppPageProps) {
   const queryClient = useQueryClient();
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const [modelSearchByProvider, setModelSearchByProvider] = useState<Record<string, string>>({});
   const [botName, setBotName] = useState(String(identity?.botName || "Tandem"));
   const [botAvatarUrl, setBotAvatarUrl] = useState(String(identity?.botAvatarUrl || ""));
@@ -415,6 +445,7 @@ export function SettingsPage({
   const [mcpModalTab, setMcpModalTab] = useState<"manual" | "catalog">("manual");
   const [mcpCatalogSearch, setMcpCatalogSearch] = useState("");
   const [failureReporterEnabled, setFailureReporterEnabled] = useState(false);
+  const [failureReporterPaused, setFailureReporterPaused] = useState(false);
   const [failureReporterWorkspaceRoot, setFailureReporterWorkspaceRoot] = useState("");
   const [failureReporterRepo, setFailureReporterRepo] = useState("");
   const [failureReporterMcpServer, setFailureReporterMcpServer] = useState("");
@@ -548,6 +579,14 @@ export function SettingsPage({
       })),
     refetchInterval: 15_000,
   });
+  const failureReporterIncidentsQuery = useQuery({
+    queryKey: ["settings", "failure-reporter", "incidents"],
+    queryFn: () =>
+      api("/api/engine/failure-reporter/incidents?limit=10", { method: "GET" }).catch(() => ({
+        incidents: [],
+      })),
+    refetchInterval: 10_000,
+  });
   const failureReporterWorkspaceBrowserQuery = useQuery({
     queryKey: [
       "settings",
@@ -594,6 +633,7 @@ export function SettingsPage({
         body: JSON.stringify({
           failure_reporter: {
             enabled: failureReporterEnabled,
+            paused: failureReporterPaused,
             workspace_root: String(failureReporterWorkspaceRoot || "").trim() || null,
             repo: String(failureReporterRepo || "").trim() || null,
             mcp_server: String(failureReporterMcpServer || "").trim() || null,
@@ -613,7 +653,7 @@ export function SettingsPage({
         }),
       }),
     onSuccess: async () => {
-      toast("ok", "Failure reporter settings saved.");
+      toast("ok", "Bug Monitor settings saved.");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
       ]);
@@ -654,7 +694,7 @@ export function SettingsPage({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
       ]);
-      toast("ok", `Failure Reporter draft ${vars.decision === "approve" ? "approved" : "denied"}.`);
+      toast("ok", `Bug Monitor draft ${vars.decision === "approve" ? "approved" : "denied"}.`);
     },
     onError: (error: any) => {
       const detail =
@@ -674,8 +714,47 @@ export function SettingsPage({
       toast(
         "ok",
         payload?.deduped
-          ? `Failure Reporter triage run already exists: ${payload?.run?.run_id || "unknown"}`
-          : `Failure Reporter triage run created: ${payload?.run?.run_id || "unknown"}`
+          ? `Bug Monitor triage run already exists: ${payload?.run?.run_id || "unknown"}`
+          : `Bug Monitor triage run created: ${payload?.run?.run_id || "unknown"}`
+      );
+    },
+    onError: (error: any) => {
+      const detail =
+        error instanceof Error ? error.message : String(error?.detail || error?.error || error);
+      toast("err", detail);
+    },
+  });
+  const failureReporterPauseResumeMutation = useMutation({
+    mutationFn: async ({ action }: { action: "pause" | "resume" }) =>
+      api(`/api/engine/failure-reporter/${action}`, {
+        method: "POST",
+      }),
+    onSuccess: async (_payload, vars) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
+      ]);
+      toast("ok", `Bug Monitor ${vars.action === "pause" ? "paused" : "resumed"}.`);
+    },
+    onError: (error: any) => {
+      const detail =
+        error instanceof Error ? error.message : String(error?.detail || error?.error || error);
+      toast("err", detail);
+    },
+  });
+  const failureReporterReplayIncidentMutation = useMutation({
+    mutationFn: async ({ incidentId }: { incidentId: string }) =>
+      api(`/api/engine/failure-reporter/incidents/${encodeURIComponent(incidentId)}/replay`, {
+        method: "POST",
+      }),
+    onSuccess: async (payload: any) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "failure-reporter"] }),
+      ]);
+      toast(
+        "ok",
+        payload?.deduped
+          ? `Bug Monitor triage run already exists: ${payload?.run?.run_id || "unknown"}`
+          : `Bug Monitor replay queued triage: ${payload?.run?.run_id || "unknown"}`
       );
     },
     onError: (error: any) => {
@@ -936,6 +1015,14 @@ export function SettingsPage({
         : [],
     [failureReporterDraftsQuery.data]
   );
+  const failureReporterIncidents = useMemo(
+    () =>
+      Array.isArray((failureReporterIncidentsQuery.data as any)?.incidents)
+        ? ((failureReporterIncidentsQuery.data as any).incidents as FailureReporterIncidentRow[]) ||
+          []
+        : [],
+    [failureReporterIncidentsQuery.data]
+  );
   const selectedFailureReporterServer = useMemo(
     () =>
       mcpServers.find(
@@ -1009,6 +1096,7 @@ export function SettingsPage({
         ? ((failureReporterConfigQuery.data as any).failure_reporter as FailureReporterConfigRow)
         : {};
     setFailureReporterEnabled(!!config.enabled);
+    setFailureReporterPaused(!!config.paused);
     setFailureReporterWorkspaceRoot(String(config.workspace_root || "").trim());
     setFailureReporterRepo(String(config.repo || "").trim());
     setFailureReporterMcpServer(String(config.mcp_server || "").trim());
@@ -1089,7 +1177,7 @@ export function SettingsPage({
   const copyFailureReporterDebugPayload = async () => {
     const payload = await api("/api/engine/failure-reporter/debug", { method: "GET" });
     await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-    toast("ok", "Failure reporter debug payload copied.");
+    toast("ok", "Bug Monitor debug payload copied.");
   };
 
   const sectionTabs: Array<{ id: SettingsSection; label: string; icon: string }> = [
@@ -1098,7 +1186,7 @@ export function SettingsPage({
     { id: "theme", label: "Themes", icon: "palette" },
     { id: "channels", label: "Channels", icon: "message-circle" },
     { id: "mcp", label: "MCP", icon: "plug-zap" },
-    { id: "failure_reporter", label: "Failure Reporter", icon: "siren" },
+    { id: "failure_reporter", label: "Bug Monitor", icon: "bug-play" },
     { id: "browser", label: "Browser", icon: "monitor-cog" },
   ];
   const mcpAuthPreviewText = useMemo(
@@ -1106,1257 +1194,1865 @@ export function SettingsPage({
     [mcpAuthMode, mcpCustomHeader, mcpToken, mcpTransport]
   );
 
+  useEffect(() => {
+    const root = rootRef.current;
+    if (root) renderIcons(root);
+    else renderIcons();
+  }, [
+    activeSection,
+    failureReporterEnabled,
+    failureReporterPaused,
+    failureReporterWorkspaceRoot,
+    failureReporterMcpServer,
+    failureReporterStatus.readiness?.runtime_ready,
+    failureReporterStatus.runtime?.monitoring_active,
+    failureReporterStatus.runtime?.paused,
+    failureReporterStatus.runtime?.pending_incidents,
+    failureReporterStatus.pending_drafts,
+    failureReporterDrafts.length,
+    failureReporterIncidents.length,
+    refreshFailureReporterBindingsMutation.isPending,
+    failureReporterPauseResumeMutation.isPending,
+    failureReporterDraftDecisionMutation.isPending,
+    failureReporterReplayIncidentMutation.isPending,
+    failureReporterTriageRunMutation.isPending,
+    saveFailureReporterMutation.isPending,
+    mcpActionMutation.isPending,
+  ]);
+
   return (
     <AnimatedPage className="grid gap-4">
-      <div className="tcp-settings-tabs">
-        {sectionTabs.map((section) => (
-          <button
-            key={section.id}
-            type="button"
-            className={`tcp-settings-tab tcp-settings-tab-underline ${
-              activeSection === section.id ? "active" : ""
-            }`}
-            onClick={() => setActiveSection(section.id)}
-          >
-            <i data-lucide={section.icon}></i>
-            {section.label}
-          </button>
-        ))}
-      </div>
+      <div ref={rootRef} className="grid gap-4">
+        <div className="tcp-settings-tabs">
+          {sectionTabs.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              className={`tcp-settings-tab tcp-settings-tab-underline ${
+                activeSection === section.id ? "active" : ""
+              }`}
+              onClick={() => setActiveSection(section.id)}
+            >
+              <i data-lucide={section.icon}></i>
+              {section.label}
+            </button>
+          ))}
+        </div>
 
-      <SplitView
-        main={
-          <StaggerGroup className="grid gap-4">
-            {activeSection === "providers" ? (
-              <PanelCard
-                title="Provider defaults"
-                subtitle="Provider catalog, model selection, and API key entry."
-                actions={
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <Badge
-                      tone={String(providersConfig.data?.default || "").trim() ? "ok" : "warn"}
-                    >
-                      Default: {String(providersConfig.data?.default || "none")}
-                    </Badge>
-                    <Badge tone="info">
-                      {String(providersCatalog.data?.connected?.length || 0)} connected
-                    </Badge>
-                    <button
-                      className="tcp-btn"
-                      onClick={() =>
-                        refreshProviderStatus().then(() =>
-                          toast("ok", "Provider status refreshed.")
-                        )
-                      }
-                    >
-                      <i data-lucide="refresh-cw"></i>
-                      Refresh provider
-                    </button>
-                  </div>
-                }
-              >
-                <div className="grid gap-3">
-                  <button
-                    type="button"
-                    className="tcp-list-item text-left"
-                    onClick={() => setProviderDefaultsOpen((prev) => !prev)}
-                    aria-expanded={providerDefaultsOpen}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="font-medium inline-flex items-center gap-2">
-                          <i
-                            data-lucide={providerDefaultsOpen ? "chevron-down" : "chevron-right"}
-                          ></i>
-                          <span>
-                            {providerDefaultsOpen
-                              ? "Hide provider catalog"
-                              : "Show provider catalog"}
-                          </span>
-                        </div>
-                        <div className="tcp-subtle mt-1 text-xs">
-                          {providers.length} providers available for configuration. Expand to change
-                          models and API keys.
-                        </div>
-                      </div>
+        <SplitView
+          main={
+            <StaggerGroup className="grid gap-4">
+              {activeSection === "providers" ? (
+                <PanelCard
+                  title="Provider defaults"
+                  subtitle="Provider catalog, model selection, and API key entry."
+                  actions={
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Badge
+                        tone={String(providersConfig.data?.default || "").trim() ? "ok" : "warn"}
+                      >
+                        Default: {String(providersConfig.data?.default || "none")}
+                      </Badge>
                       <Badge tone="info">
                         {String(providersCatalog.data?.connected?.length || 0)} connected
                       </Badge>
-                    </div>
-                  </button>
-
-                  <AnimatePresence initial={false}>
-                    {providerDefaultsOpen ? (
-                      <motion.div
-                        className="grid gap-3"
-                        initial={{ opacity: 0, y: -8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
+                      <button
+                        className="tcp-btn"
+                        onClick={() =>
+                          refreshProviderStatus().then(() =>
+                            toast("ok", "Provider status refreshed.")
+                          )
+                        }
                       >
-                        {providers.length ? (
-                          providers.map((provider: any) => {
-                            const providerId = String(provider?.id || "");
-                            const models = Object.keys(provider?.models || {});
-                            const defaultModel = String(
-                              providersConfig.data?.providers?.[providerId]?.default_model ||
-                                models[0] ||
-                                ""
-                            );
-                            const typedModel = String(
-                              modelSearchByProvider[providerId] ?? defaultModel
-                            ).trim();
-                            const normalizedTyped = typedModel.toLowerCase();
-                            const filteredModels = models
-                              .filter((modelId) =>
-                                normalizedTyped
-                                  ? modelId.toLowerCase().includes(normalizedTyped)
-                                  : true
-                              )
-                              .slice(0, 80);
-                            const badge = providerCatalogBadge(provider, models.length);
-                            const subtitle = providerCatalogSubtitle(provider, defaultModel);
-                            const providerHint =
-                              (providerHints as Record<string, any>)[providerId] || null;
-                            const keyUrl = String(providerHint?.keyUrl || "").trim();
+                        <i data-lucide="refresh-cw"></i>
+                        Refresh provider
+                      </button>
+                    </div>
+                  }
+                >
+                  <div className="grid gap-3">
+                    <button
+                      type="button"
+                      className="tcp-list-item text-left"
+                      onClick={() => setProviderDefaultsOpen((prev) => !prev)}
+                      aria-expanded={providerDefaultsOpen}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-medium inline-flex items-center gap-2">
+                            <i
+                              data-lucide={providerDefaultsOpen ? "chevron-down" : "chevron-right"}
+                            ></i>
+                            <span>
+                              {providerDefaultsOpen
+                                ? "Hide provider catalog"
+                                : "Show provider catalog"}
+                            </span>
+                          </div>
+                          <div className="tcp-subtle mt-1 text-xs">
+                            {providers.length} providers available for configuration. Expand to
+                            change models and API keys.
+                          </div>
+                        </div>
+                        <Badge tone="info">
+                          {String(providersCatalog.data?.connected?.length || 0)} connected
+                        </Badge>
+                      </div>
+                    </button>
 
-                            return (
-                              <motion.details key={providerId} layout className="tcp-list-item">
-                                <summary className="cursor-pointer list-none">
-                                  <div className="flex items-center justify-between gap-3">
-                                    <div>
-                                      <div className="font-medium">{providerId}</div>
-                                      <div className="tcp-subtle text-xs">{subtitle}</div>
+                    <AnimatePresence initial={false}>
+                      {providerDefaultsOpen ? (
+                        <motion.div
+                          className="grid gap-3"
+                          initial={{ opacity: 0, y: -8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -8 }}
+                        >
+                          {providers.length ? (
+                            providers.map((provider: any) => {
+                              const providerId = String(provider?.id || "");
+                              const models = Object.keys(provider?.models || {});
+                              const defaultModel = String(
+                                providersConfig.data?.providers?.[providerId]?.default_model ||
+                                  models[0] ||
+                                  ""
+                              );
+                              const typedModel = String(
+                                modelSearchByProvider[providerId] ?? defaultModel
+                              ).trim();
+                              const normalizedTyped = typedModel.toLowerCase();
+                              const filteredModels = models
+                                .filter((modelId) =>
+                                  normalizedTyped
+                                    ? modelId.toLowerCase().includes(normalizedTyped)
+                                    : true
+                                )
+                                .slice(0, 80);
+                              const badge = providerCatalogBadge(provider, models.length);
+                              const subtitle = providerCatalogSubtitle(provider, defaultModel);
+                              const providerHint =
+                                (providerHints as Record<string, any>)[providerId] || null;
+                              const keyUrl = String(providerHint?.keyUrl || "").trim();
+
+                              return (
+                                <motion.details key={providerId} layout className="tcp-list-item">
+                                  <summary className="cursor-pointer list-none">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div>
+                                        <div className="font-medium">{providerId}</div>
+                                        <div className="tcp-subtle text-xs">{subtitle}</div>
+                                      </div>
+                                      <Badge tone={badge.tone}>{badge.text}</Badge>
                                     </div>
-                                    <Badge tone={badge.tone}>{badge.text}</Badge>
-                                  </div>
-                                </summary>
-                                <div className="mt-3 grid gap-3">
-                                  {keyUrl ? (
-                                    <div className="flex justify-end">
-                                      <a
-                                        className="tcp-btn h-8 px-3 text-xs"
-                                        href={keyUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                      >
-                                        <i data-lucide="external-link"></i>
-                                        Get API key
-                                      </a>
-                                    </div>
-                                  ) : null}
-                                  <form
-                                    className="grid gap-2"
-                                    onSubmit={(e) => {
-                                      e.preventDefault();
-                                      applyDefaultModel(providerId, typedModel);
-                                    }}
-                                  >
-                                    <div className="flex gap-2">
+                                  </summary>
+                                  <div className="mt-3 grid gap-3">
+                                    {keyUrl ? (
+                                      <div className="flex justify-end">
+                                        <a
+                                          className="tcp-btn h-8 px-3 text-xs"
+                                          href={keyUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                        >
+                                          <i data-lucide="external-link"></i>
+                                          Get API key
+                                        </a>
+                                      </div>
+                                    ) : null}
+                                    <form
+                                      className="grid gap-2"
+                                      onSubmit={(e) => {
+                                        e.preventDefault();
+                                        applyDefaultModel(providerId, typedModel);
+                                      }}
+                                    >
+                                      <div className="flex gap-2">
+                                        <input
+                                          className="tcp-input"
+                                          value={typedModel}
+                                          placeholder={`Type model id for ${providerId}`}
+                                          onInput={(e) =>
+                                            setModelSearchByProvider((prev) => ({
+                                              ...prev,
+                                              [providerId]: (e.target as HTMLInputElement).value,
+                                            }))
+                                          }
+                                        />
+                                        <button className="tcp-btn" type="submit">
+                                          <i data-lucide="badge-check"></i>
+                                          Apply
+                                        </button>
+                                      </div>
+                                      <div className="max-h-48 overflow-auto rounded-xl border border-slate-700/60 bg-slate-900/20 p-1">
+                                        {filteredModels.length ? (
+                                          filteredModels.map((modelId) => (
+                                            <button
+                                              key={modelId}
+                                              type="button"
+                                              className={`block w-full rounded-lg px-2 py-1.5 text-left text-sm hover:bg-slate-700/30 ${
+                                                modelId === defaultModel ? "bg-slate-700/40" : ""
+                                              }`}
+                                              onClick={() => {
+                                                setModelSearchByProvider((prev) => ({
+                                                  ...prev,
+                                                  [providerId]: modelId,
+                                                }));
+                                                applyDefaultModel(providerId, modelId);
+                                              }}
+                                            >
+                                              {modelId}
+                                            </button>
+                                          ))
+                                        ) : (
+                                          <div className="tcp-subtle px-2 py-1 text-xs">
+                                            {models.length
+                                              ? "No matching models."
+                                              : "No live catalog available. Type a model ID manually."}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </form>
+
+                                    <form
+                                      onSubmit={(e) => {
+                                        e.preventDefault();
+                                        const input = e.currentTarget.elements.namedItem(
+                                          "apiKey"
+                                        ) as HTMLInputElement;
+                                        const value = String(input?.value || "").trim();
+                                        if (!value) return;
+                                        setApiKeyMutation.mutate({ providerId, apiKey: value });
+                                        input.value = "";
+                                      }}
+                                      className="flex gap-2"
+                                    >
                                       <input
+                                        name="apiKey"
                                         className="tcp-input"
-                                        value={typedModel}
-                                        placeholder={`Type model id for ${providerId}`}
-                                        onInput={(e) =>
-                                          setModelSearchByProvider((prev) => ({
-                                            ...prev,
-                                            [providerId]: (e.target as HTMLInputElement).value,
-                                          }))
-                                        }
+                                        placeholder={String(
+                                          providerHint?.placeholder || `Set ${providerId} API key`
+                                        )}
                                       />
                                       <button className="tcp-btn" type="submit">
-                                        <i data-lucide="badge-check"></i>
-                                        Apply
+                                        <i data-lucide="save"></i>
+                                        Save
                                       </button>
-                                    </div>
-                                    <div className="max-h-48 overflow-auto rounded-xl border border-slate-700/60 bg-slate-900/20 p-1">
-                                      {filteredModels.length ? (
-                                        filteredModels.map((modelId) => (
-                                          <button
-                                            key={modelId}
-                                            type="button"
-                                            className={`block w-full rounded-lg px-2 py-1.5 text-left text-sm hover:bg-slate-700/30 ${
-                                              modelId === defaultModel ? "bg-slate-700/40" : ""
-                                            }`}
-                                            onClick={() => {
-                                              setModelSearchByProvider((prev) => ({
-                                                ...prev,
-                                                [providerId]: modelId,
-                                              }));
-                                              applyDefaultModel(providerId, modelId);
-                                            }}
-                                          >
-                                            {modelId}
-                                          </button>
-                                        ))
-                                      ) : (
-                                        <div className="tcp-subtle px-2 py-1 text-xs">
-                                          {models.length
-                                            ? "No matching models."
-                                            : "No live catalog available. Type a model ID manually."}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </form>
-
-                                  <form
-                                    onSubmit={(e) => {
-                                      e.preventDefault();
-                                      const input = e.currentTarget.elements.namedItem(
-                                        "apiKey"
-                                      ) as HTMLInputElement;
-                                      const value = String(input?.value || "").trim();
-                                      if (!value) return;
-                                      setApiKeyMutation.mutate({ providerId, apiKey: value });
-                                      input.value = "";
-                                    }}
-                                    className="flex gap-2"
-                                  >
-                                    <input
-                                      name="apiKey"
-                                      className="tcp-input"
-                                      placeholder={String(
-                                        providerHint?.placeholder || `Set ${providerId} API key`
-                                      )}
-                                    />
-                                    <button className="tcp-btn" type="submit">
-                                      <i data-lucide="save"></i>
-                                      Save
-                                    </button>
-                                  </form>
-                                </div>
-                              </motion.details>
-                            );
-                          })
-                        ) : (
-                          <EmptyState text="No providers were detected from the engine catalog." />
-                        )}
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
-                </div>
-              </PanelCard>
-            ) : null}
-
-            {activeSection === "identity" ? (
-              <PanelCard
-                title="Identity preview"
-                subtitle="Live preview of how the assistant appears across the panel."
-                actions={
-                  <Toolbar>
-                    <button
-                      className="tcp-btn"
-                      onClick={() =>
-                        refreshIdentityStatus().then(() => toast("ok", "Identity refreshed."))
-                      }
-                    >
-                      <i data-lucide="refresh-cw"></i>
-                      Refresh identity
-                    </button>
-                    <button
-                      className="tcp-btn-primary"
-                      onClick={() => saveIdentityMutation.mutate()}
-                      disabled={saveIdentityMutation.isPending}
-                    >
-                      <i data-lucide="save"></i>
-                      Save
-                    </button>
-                  </Toolbar>
-                }
-              >
-                <div className="grid gap-3">
-                  <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="inline-flex items-center gap-3">
-                        <span className="tcp-brand-avatar inline-grid h-12 w-12 rounded-xl">
-                          {botAvatarUrl ? (
-                            <img
-                              src={botAvatarUrl}
-                              alt={botName || "Bot"}
-                              className="block h-full w-full object-cover"
-                            />
+                                    </form>
+                                  </div>
+                                </motion.details>
+                              );
+                            })
                           ) : (
-                            <i data-lucide="cpu"></i>
+                            <EmptyState text="No providers were detected from the engine catalog." />
                           )}
-                        </span>
-                        <div>
-                          <div className="font-semibold">{botName || "Tandem"}</div>
-                          <div className="tcp-subtle text-xs">
-                            {botControlPanelAlias || "Control Center"}
-                          </div>
-                        </div>
-                      </div>
-                      <Toolbar>
-                        <button
-                          className="tcp-icon-btn"
-                          title="Upload avatar"
-                          aria-label="Upload avatar"
-                          onClick={() => avatarInputRef.current?.click()}
-                        >
-                          <i data-lucide="pencil"></i>
-                        </button>
-                        <button
-                          className="tcp-icon-btn"
-                          title="Clear avatar"
-                          aria-label="Clear avatar"
-                          onClick={() => setBotAvatarUrl("")}
-                        >
-                          <i data-lucide="trash-2"></i>
-                        </button>
-                      </Toolbar>
-                    </div>
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
                   </div>
+                </PanelCard>
+              ) : null}
 
-                  <input
-                    className="tcp-input"
-                    value={botName}
-                    onInput={(e) => setBotName((e.target as HTMLInputElement).value)}
-                    placeholder="Bot name"
-                  />
-                  <input
-                    className="tcp-input"
-                    value={botControlPanelAlias}
-                    onInput={(e) => setBotControlPanelAlias((e.target as HTMLInputElement).value)}
-                    placeholder="Control panel alias"
-                  />
-                  <input
-                    className="tcp-input"
-                    value={botAvatarUrl}
-                    onInput={(e) => setBotAvatarUrl((e.target as HTMLInputElement).value)}
-                    placeholder="Avatar URL or data URL"
-                  />
-                  <input
-                    ref={avatarInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) =>
-                      handleAvatarUpload((e.target as HTMLInputElement).files?.[0] || null)
-                    }
-                  />
-                </div>
-              </PanelCard>
-            ) : null}
-
-            {activeSection === "theme" ? (
-              <PanelCard
-                title="Theme studio"
-                subtitle="Preview tiles with richer feedback and immediate switching."
-              >
-                <ThemePicker themes={themes} themeId={themeId} onChange={setTheme} />
-              </PanelCard>
-            ) : null}
-
-            {activeSection === "channels" ? (
-              <PanelCard
-                title="Channel connections"
-                subtitle="Telegram, Discord, and Slack delivery setup and live listener status."
-                actions={
-                  <Toolbar>
-                    <Badge tone={connectedChannelCount ? "ok" : "warn"}>
-                      {connectedChannelCount}/{channelNames.length} connected
-                    </Badge>
-                    <button className="tcp-btn" onClick={() => void invalidateChannels()}>
-                      <i data-lucide="refresh-cw"></i>
-                      Refresh channels
-                    </button>
-                  </Toolbar>
-                }
-              >
-                <div className="grid gap-3">
-                  {channelNames.map((channel) => {
-                    const config = ((channelsConfigQuery.data as any)?.[channel] ||
-                      {}) as ChannelConfigRow;
-                    const status = ((channelsStatusQuery.data as any)?.[channel] ||
-                      {}) as ChannelStatusRow;
-                    const draft = channelDrafts[channel] || normalizeChannelDraft(channel, config);
-                    const verifyResult = channelVerifyResult[channel];
-                    const hasSavedConfig =
-                      !!config?.has_token ||
-                      !!(Array.isArray(config?.allowed_users) && config.allowed_users.length) ||
-                      !!String(config?.guild_id || "").trim() ||
-                      !!String(config?.channel_id || "").trim();
-
-                    return (
-                      <div key={channel} className="tcp-list-item grid gap-3">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
+              {activeSection === "identity" ? (
+                <PanelCard
+                  title="Identity preview"
+                  subtitle="Live preview of how the assistant appears across the panel."
+                  actions={
+                    <Toolbar>
+                      <button
+                        className="tcp-btn"
+                        onClick={() =>
+                          refreshIdentityStatus().then(() => toast("ok", "Identity refreshed."))
+                        }
+                      >
+                        <i data-lucide="refresh-cw"></i>
+                        Refresh identity
+                      </button>
+                      <button
+                        className="tcp-btn-primary"
+                        onClick={() => saveIdentityMutation.mutate()}
+                        disabled={saveIdentityMutation.isPending}
+                      >
+                        <i data-lucide="save"></i>
+                        Save
+                      </button>
+                    </Toolbar>
+                  }
+                >
+                  <div className="grid gap-3">
+                    <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="inline-flex items-center gap-3">
+                          <span className="tcp-brand-avatar inline-grid h-12 w-12 rounded-xl">
+                            {botAvatarUrl ? (
+                              <img
+                                src={botAvatarUrl}
+                                alt={botName || "Bot"}
+                                className="block h-full w-full object-cover"
+                              />
+                            ) : (
+                              <i data-lucide="cpu"></i>
+                            )}
+                          </span>
                           <div>
-                            <div className="font-semibold capitalize">{channel}</div>
+                            <div className="font-semibold">{botName || "Tandem"}</div>
                             <div className="tcp-subtle text-xs">
-                              {channel === "telegram"
-                                ? "Bot token, allowed users, and style profile."
-                                : channel === "discord"
-                                  ? "Bot token, allowed users, mention policy, and guild targeting."
-                                  : "Bot token, allowed users, mention policy, and default channel."}
+                              {botControlPanelAlias || "Control Center"}
                             </div>
                           </div>
-                          <div className="flex flex-wrap gap-2">
-                            <Badge tone={status.connected ? "ok" : "warn"}>
-                              {status.connected
-                                ? "Connected"
-                                : status.enabled
-                                  ? "Configured"
-                                  : "Disconnected"}
-                            </Badge>
-                            <Badge tone={config.has_token ? "info" : "warn"}>
-                              {config.has_token ? "Token saved" : "No token"}
-                            </Badge>
-                          </div>
                         </div>
-
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <input
-                            className="tcp-input"
-                            type="password"
-                            placeholder={
-                              config.has_token
-                                ? `Token saved for ${channel}. Enter a new token to replace it.`
-                                : `Paste ${channel} bot token`
-                            }
-                            value={draft.botToken}
-                            onInput={(e) =>
-                              setChannelDrafts((prev) => ({
-                                ...prev,
-                                [channel]: {
-                                  ...draft,
-                                  botToken: (e.target as HTMLInputElement).value,
-                                },
-                              }))
-                            }
-                          />
-                          <input
-                            className="tcp-input"
-                            placeholder="Allowed users (comma separated)"
-                            value={draft.allowedUsers}
-                            onInput={(e) =>
-                              setChannelDrafts((prev) => ({
-                                ...prev,
-                                [channel]: {
-                                  ...draft,
-                                  allowedUsers: (e.target as HTMLInputElement).value,
-                                },
-                              }))
-                            }
-                          />
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-2">
-                          {channel === "telegram" ? (
-                            <input
-                              className="tcp-input"
-                              placeholder="Style profile"
-                              value={draft.styleProfile}
-                              onInput={(e) =>
-                                setChannelDrafts((prev) => ({
-                                  ...prev,
-                                  [channel]: {
-                                    ...draft,
-                                    styleProfile: (e.target as HTMLInputElement).value,
-                                  },
-                                }))
-                              }
-                            />
-                          ) : null}
-                          {channel === "discord" ? (
-                            <input
-                              className="tcp-input"
-                              placeholder="Guild ID (optional)"
-                              value={draft.guildId}
-                              onInput={(e) =>
-                                setChannelDrafts((prev) => ({
-                                  ...prev,
-                                  [channel]: {
-                                    ...draft,
-                                    guildId: (e.target as HTMLInputElement).value,
-                                  },
-                                }))
-                              }
-                            />
-                          ) : null}
-                          {channel === "slack" ? (
-                            <input
-                              className="tcp-input"
-                              placeholder="Default channel ID"
-                              value={draft.channelId}
-                              onInput={(e) =>
-                                setChannelDrafts((prev) => ({
-                                  ...prev,
-                                  [channel]: {
-                                    ...draft,
-                                    channelId: (e.target as HTMLInputElement).value,
-                                  },
-                                }))
-                              }
-                            />
-                          ) : null}
-                          <label className="inline-flex items-center gap-2 rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={draft.mentionOnly}
-                              onChange={(e) =>
-                                setChannelDrafts((prev) => ({
-                                  ...prev,
-                                  [channel]: {
-                                    ...draft,
-                                    mentionOnly: e.target.checked,
-                                  },
-                                }))
-                              }
-                            />
-                            Mention only
-                          </label>
-                        </div>
-
-                        <div className="tcp-subtle text-xs">
-                          Active sessions: {Number(status.active_sessions || 0)}
-                          {status.last_error ? ` · Last error: ${status.last_error}` : ""}
-                        </div>
-
-                        {verifyResult?.hints?.length ? (
-                          <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 p-3 text-xs">
-                            <div className="mb-1 font-medium">Verification hints</div>
-                            <div className="grid gap-1">
-                              {verifyResult.hints.map((hint: string, index: number) => (
-                                <div key={`${channel}-hint-${index}`} className="tcp-subtle">
-                                  {hint}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-
-                        <div className="flex flex-wrap gap-2">
+                        <Toolbar>
                           <button
-                            className="tcp-btn-primary"
-                            disabled={saveChannelMutation.isPending}
-                            onClick={() => saveChannelMutation.mutate(channel)}
+                            className="tcp-icon-btn"
+                            title="Upload avatar"
+                            aria-label="Upload avatar"
+                            onClick={() => avatarInputRef.current?.click()}
                           >
-                            <i data-lucide="save"></i>
-                            Save
+                            <i data-lucide="pencil"></i>
                           </button>
-                          {channel === "discord" ? (
-                            <button
-                              className="tcp-btn"
-                              disabled={verifyChannelMutation.isPending}
-                              onClick={() => verifyChannelMutation.mutate("discord")}
-                            >
-                              <i data-lucide="shield-check"></i>
-                              Verify
-                            </button>
-                          ) : null}
                           <button
-                            className="tcp-btn-danger"
-                            disabled={deleteChannelMutation.isPending || !hasSavedConfig}
-                            onClick={() => deleteChannelMutation.mutate(channel)}
+                            className="tcp-icon-btn"
+                            title="Clear avatar"
+                            aria-label="Clear avatar"
+                            onClick={() => setBotAvatarUrl("")}
                           >
                             <i data-lucide="trash-2"></i>
-                            Remove
                           </button>
-                        </div>
+                        </Toolbar>
                       </div>
-                    );
-                  })}
-                </div>
-              </PanelCard>
-            ) : null}
+                    </div>
 
-            {activeSection === "mcp" ? (
-              <PanelCard
-                title="MCP connections"
-                subtitle="Configured MCP servers, connection state, and discovered tool coverage."
-                actions={
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <Badge tone={connectedMcpCount ? "ok" : "warn"}>
-                      {connectedMcpCount}/{mcpServers.length} connected
-                    </Badge>
-                    <Badge tone="info">{mcpToolIds.length} tools</Badge>
-                    <button className="tcp-btn-primary" onClick={() => openMcpModal()}>
-                      <i data-lucide="plus"></i>
-                      Add MCP server
-                    </button>
-                    <button className="tcp-btn" onClick={() => void invalidateMcp()}>
-                      <i data-lucide="refresh-cw"></i>
-                      Reload
-                    </button>
+                    <input
+                      className="tcp-input"
+                      value={botName}
+                      onInput={(e) => setBotName((e.target as HTMLInputElement).value)}
+                      placeholder="Bot name"
+                    />
+                    <input
+                      className="tcp-input"
+                      value={botControlPanelAlias}
+                      onInput={(e) => setBotControlPanelAlias((e.target as HTMLInputElement).value)}
+                      placeholder="Control panel alias"
+                    />
+                    <input
+                      className="tcp-input"
+                      value={botAvatarUrl}
+                      onInput={(e) => setBotAvatarUrl((e.target as HTMLInputElement).value)}
+                      placeholder="Avatar URL or data URL"
+                    />
+                    <input
+                      ref={avatarInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) =>
+                        handleAvatarUpload((e.target as HTMLInputElement).files?.[0] || null)
+                      }
+                    />
                   </div>
-                }
-              >
-                <div className="grid gap-3">
-                  {mcpServers.length ? (
-                    mcpServers.map((server) => {
-                      const headerKeys = Object.keys(server.headers || {}).filter(Boolean);
-                      const toolCount = Array.isArray(server.toolCache)
-                        ? server.toolCache.length
-                        : 0;
+                </PanelCard>
+              ) : null}
+
+              {activeSection === "theme" ? (
+                <PanelCard
+                  title="Theme studio"
+                  subtitle="Preview tiles with richer feedback and immediate switching."
+                >
+                  <ThemePicker themes={themes} themeId={themeId} onChange={setTheme} />
+                </PanelCard>
+              ) : null}
+
+              {activeSection === "channels" ? (
+                <PanelCard
+                  title="Channel connections"
+                  subtitle="Telegram, Discord, and Slack delivery setup and live listener status."
+                  actions={
+                    <Toolbar>
+                      <Badge tone={connectedChannelCount ? "ok" : "warn"}>
+                        {connectedChannelCount}/{channelNames.length} connected
+                      </Badge>
+                      <button className="tcp-btn" onClick={() => void invalidateChannels()}>
+                        <i data-lucide="refresh-cw"></i>
+                        Refresh channels
+                      </button>
+                    </Toolbar>
+                  }
+                >
+                  <div className="grid gap-3">
+                    {channelNames.map((channel) => {
+                      const config = ((channelsConfigQuery.data as any)?.[channel] ||
+                        {}) as ChannelConfigRow;
+                      const status = ((channelsStatusQuery.data as any)?.[channel] ||
+                        {}) as ChannelStatusRow;
+                      const draft =
+                        channelDrafts[channel] || normalizeChannelDraft(channel, config);
+                      const verifyResult = channelVerifyResult[channel];
+                      const hasSavedConfig =
+                        !!config?.has_token ||
+                        !!(Array.isArray(config?.allowed_users) && config.allowed_users.length) ||
+                        !!String(config?.guild_id || "").trim() ||
+                        !!String(config?.channel_id || "").trim();
+
                       return (
-                        <div key={server.name} className="tcp-list-item grid gap-2">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div key={channel} className="tcp-list-item grid gap-3">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
-                              <div className="font-semibold">{server.name}</div>
-                              <div className="tcp-subtle text-sm">
-                                {server.transport || "No transport set"}
+                              <div className="font-semibold capitalize">{channel}</div>
+                              <div className="tcp-subtle text-xs">
+                                {channel === "telegram"
+                                  ? "Bot token, allowed users, and style profile."
+                                  : channel === "discord"
+                                    ? "Bot token, allowed users, mention policy, and guild targeting."
+                                    : "Bot token, allowed users, mention policy, and default channel."}
                               </div>
                             </div>
                             <div className="flex flex-wrap gap-2">
-                              <Badge tone={server.connected ? "ok" : "warn"}>
-                                {server.connected ? "Connected" : "Disconnected"}
+                              <Badge tone={status.connected ? "ok" : "warn"}>
+                                {status.connected
+                                  ? "Connected"
+                                  : status.enabled
+                                    ? "Configured"
+                                    : "Disconnected"}
                               </Badge>
-                              <Badge tone={server.enabled ? "info" : "warn"}>
-                                {server.enabled ? "Enabled" : "Disabled"}
+                              <Badge tone={config.has_token ? "info" : "warn"}>
+                                {config.has_token ? "Token saved" : "No token"}
                               </Badge>
-                              <Badge tone="info">{toolCount} tools</Badge>
                             </div>
                           </div>
-                          {server.lastError ? (
-                            <div className="rounded-xl border border-rose-700/60 bg-rose-950/20 px-2 py-1 text-xs text-rose-300">
-                              {server.lastError}
+
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <input
+                              className="tcp-input"
+                              type="password"
+                              placeholder={
+                                config.has_token
+                                  ? `Token saved for ${channel}. Enter a new token to replace it.`
+                                  : `Paste ${channel} bot token`
+                              }
+                              value={draft.botToken}
+                              onInput={(e) =>
+                                setChannelDrafts((prev) => ({
+                                  ...prev,
+                                  [channel]: {
+                                    ...draft,
+                                    botToken: (e.target as HTMLInputElement).value,
+                                  },
+                                }))
+                              }
+                            />
+                            <input
+                              className="tcp-input"
+                              placeholder="Allowed users (comma separated)"
+                              value={draft.allowedUsers}
+                              onInput={(e) =>
+                                setChannelDrafts((prev) => ({
+                                  ...prev,
+                                  [channel]: {
+                                    ...draft,
+                                    allowedUsers: (e.target as HTMLInputElement).value,
+                                  },
+                                }))
+                              }
+                            />
+                          </div>
+
+                          <div className="grid gap-3 md:grid-cols-2">
+                            {channel === "telegram" ? (
+                              <input
+                                className="tcp-input"
+                                placeholder="Style profile"
+                                value={draft.styleProfile}
+                                onInput={(e) =>
+                                  setChannelDrafts((prev) => ({
+                                    ...prev,
+                                    [channel]: {
+                                      ...draft,
+                                      styleProfile: (e.target as HTMLInputElement).value,
+                                    },
+                                  }))
+                                }
+                              />
+                            ) : null}
+                            {channel === "discord" ? (
+                              <input
+                                className="tcp-input"
+                                placeholder="Guild ID (optional)"
+                                value={draft.guildId}
+                                onInput={(e) =>
+                                  setChannelDrafts((prev) => ({
+                                    ...prev,
+                                    [channel]: {
+                                      ...draft,
+                                      guildId: (e.target as HTMLInputElement).value,
+                                    },
+                                  }))
+                                }
+                              />
+                            ) : null}
+                            {channel === "slack" ? (
+                              <input
+                                className="tcp-input"
+                                placeholder="Default channel ID"
+                                value={draft.channelId}
+                                onInput={(e) =>
+                                  setChannelDrafts((prev) => ({
+                                    ...prev,
+                                    [channel]: {
+                                      ...draft,
+                                      channelId: (e.target as HTMLInputElement).value,
+                                    },
+                                  }))
+                                }
+                              />
+                            ) : null}
+                            <label className="inline-flex items-center gap-2 rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-2 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={draft.mentionOnly}
+                                onChange={(e) =>
+                                  setChannelDrafts((prev) => ({
+                                    ...prev,
+                                    [channel]: {
+                                      ...draft,
+                                      mentionOnly: e.target.checked,
+                                    },
+                                  }))
+                                }
+                              />
+                              Mention only
+                            </label>
+                          </div>
+
+                          <div className="tcp-subtle text-xs">
+                            Active sessions: {Number(status.active_sessions || 0)}
+                            {status.last_error ? ` · Last error: ${status.last_error}` : ""}
+                          </div>
+
+                          {verifyResult?.hints?.length ? (
+                            <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 p-3 text-xs">
+                              <div className="mb-1 font-medium">Verification hints</div>
+                              <div className="grid gap-1">
+                                {verifyResult.hints.map((hint: string, index: number) => (
+                                  <div key={`${channel}-hint-${index}`} className="tcp-subtle">
+                                    {hint}
+                                  </div>
+                                ))}
+                              </div>
                             </div>
                           ) : null}
-                          <div className="tcp-subtle text-xs">
-                            {headerKeys.length
-                              ? `Auth headers: ${headerKeys.join(", ")}`
-                              : "No stored auth headers."}
-                          </div>
+
                           <div className="flex flex-wrap gap-2">
-                            <button className="tcp-btn" onClick={() => openMcpModal(server)}>
-                              Edit
-                            </button>
                             <button
-                              className="tcp-btn"
-                              disabled={mcpActionMutation.isPending}
-                              onClick={() =>
-                                mcpActionMutation.mutate({
-                                  action: server.connected ? "disconnect" : "connect",
-                                  server,
-                                })
-                              }
+                              className="tcp-btn-primary"
+                              disabled={saveChannelMutation.isPending}
+                              onClick={() => saveChannelMutation.mutate(channel)}
                             >
-                              {server.connected ? "Disconnect" : "Connect"}
+                              <i data-lucide="save"></i>
+                              Save
                             </button>
-                            <button
-                              className="tcp-btn"
-                              disabled={mcpActionMutation.isPending}
-                              onClick={() =>
-                                mcpActionMutation.mutate({ action: "refresh", server })
-                              }
-                            >
-                              Refresh
-                            </button>
-                            <button
-                              className="tcp-btn"
-                              disabled={mcpActionMutation.isPending}
-                              onClick={() =>
-                                mcpActionMutation.mutate({ action: "toggle-enabled", server })
-                              }
-                            >
-                              {server.enabled ? "Disable" : "Enable"}
-                            </button>
+                            {channel === "discord" ? (
+                              <button
+                                className="tcp-btn"
+                                disabled={verifyChannelMutation.isPending}
+                                onClick={() => verifyChannelMutation.mutate("discord")}
+                              >
+                                <i data-lucide="shield-check"></i>
+                                Verify
+                              </button>
+                            ) : null}
                             <button
                               className="tcp-btn-danger"
-                              disabled={mcpActionMutation.isPending}
-                              onClick={() => mcpActionMutation.mutate({ action: "delete", server })}
+                              disabled={deleteChannelMutation.isPending || !hasSavedConfig}
+                              onClick={() => deleteChannelMutation.mutate(channel)}
                             >
-                              Delete
+                              <i data-lucide="trash-2"></i>
+                              Remove
                             </button>
                           </div>
                         </div>
                       );
-                    })
-                  ) : (
-                    <div className="grid gap-3">
-                      <EmptyState text="No MCP servers configured." />
-                      <div className="flex justify-start">
-                        <button className="tcp-btn-primary" onClick={() => openMcpModal()}>
-                          <i data-lucide="plus"></i>
-                          Add MCP server
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 p-3">
-                    <div className="mb-2 font-medium">Discovered tools</div>
-                    <pre className="tcp-code max-h-56 overflow-auto whitespace-pre-wrap break-words">
-                      {mcpToolIds.length
-                        ? mcpToolIds.slice(0, 250).join("\n")
-                        : "No MCP tools discovered yet. Connect a server first."}
-                    </pre>
+                    })}
                   </div>
-                </div>
-              </PanelCard>
-            ) : null}
+                </PanelCard>
+              ) : null}
 
-            {activeSection === "failure_reporter" ? (
-              <PanelCard
-                title="Failure reporter"
-                subtitle="Enable failure-to-issue reporting, choose a GitHub MCP backend, and pin a dedicated model route."
-                actions={
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <Badge tone={failureReporterStatus.readiness?.runtime_ready ? "ok" : "warn"}>
-                      {failureReporterStatus.readiness?.runtime_ready ? "Ready" : "Not ready"}
-                    </Badge>
-                    <Badge tone="info">
-                      {Number(failureReporterStatus.pending_drafts || 0)} pending drafts
-                    </Badge>
-                    <button
-                      className="tcp-btn"
-                      onClick={() =>
-                        Promise.all([
-                          failureReporterStatusQuery.refetch(),
-                          failureReporterDraftsQuery.refetch(),
-                        ]).then(() => toast("ok", "Failure reporter status refreshed."))
-                      }
-                    >
-                      <i data-lucide="refresh-cw"></i>
-                      Reload status
-                    </button>
-                    <button
-                      className="tcp-btn"
-                      disabled={refreshFailureReporterBindingsMutation.isPending}
-                      onClick={() => refreshFailureReporterBindingsMutation.mutate()}
-                    >
-                      <i data-lucide="rotate-cw"></i>
-                      Refresh capability bindings
-                    </button>
-                    <button
-                      className="tcp-btn"
-                      onClick={() => void copyFailureReporterDebugPayload()}
-                    >
-                      <i data-lucide="copy"></i>
-                      Copy debug payload
-                    </button>
-                    <button className="tcp-btn" onClick={() => setGithubMcpGuideOpen(true)}>
-                      <i data-lucide="book-open"></i>
-                      GitHub MCP guide
-                    </button>
-                  </div>
-                }
-              >
-                <div className="grid gap-4">
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="grid gap-2">
-                      <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
-                        Reporter state
-                      </span>
-                      <button
-                        type="button"
-                        className={`tcp-list-item text-left ${failureReporterEnabled ? "ring-1 ring-emerald-400/40" : ""}`}
-                        onClick={() => setFailureReporterEnabled((prev) => !prev)}
-                      >
-                        <div className="font-medium">
-                          {failureReporterEnabled ? "Enabled" : "Disabled"}
-                        </div>
-                        <div className="tcp-subtle text-xs">
-                          {failureReporterEnabled
-                            ? "Failure events can be analyzed once readiness is green."
-                            : "No reporter work will execute."}
-                        </div>
+              {activeSection === "mcp" ? (
+                <PanelCard
+                  title="MCP connections"
+                  subtitle="Configured MCP servers, connection state, and discovered tool coverage."
+                  actions={
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Badge tone={connectedMcpCount ? "ok" : "warn"}>
+                        {connectedMcpCount}/{mcpServers.length} connected
+                      </Badge>
+                      <Badge tone="info">{mcpToolIds.length} tools</Badge>
+                      <button className="tcp-btn-primary" onClick={() => openMcpModal()}>
+                        <i data-lucide="plus"></i>
+                        Add MCP server
                       </button>
-                    </label>
-
-                    <label className="grid gap-2">
-                      <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
-                        Local directory
-                      </span>
-                      <div className="grid gap-2 md:grid-cols-[auto_1fr_auto]">
-                        <button
-                          className="tcp-btn"
-                          type="button"
-                          onClick={() => {
-                            const seed = String(failureReporterWorkspaceRoot || "/").trim();
-                            setFailureReporterWorkspaceBrowserDir(seed || "/");
-                            setFailureReporterWorkspaceBrowserSearch("");
-                            setFailureReporterWorkspaceBrowserOpen(true);
-                          }}
-                        >
-                          <i data-lucide="folder-open"></i>
-                          Browse
-                        </button>
-                        <input
-                          className="tcp-input"
-                          readOnly
-                          value={failureReporterWorkspaceRoot}
-                          placeholder="No local directory selected. Use Browse."
-                        />
-                        <button
-                          className="tcp-btn"
-                          type="button"
-                          onClick={() => setFailureReporterWorkspaceRoot("")}
-                          disabled={!failureReporterWorkspaceRoot}
-                        >
-                          <i data-lucide="x"></i>
-                          Clear
-                        </button>
+                      <button className="tcp-btn" onClick={() => void invalidateMcp()}>
+                        <i data-lucide="refresh-cw"></i>
+                        Reload
+                      </button>
+                    </div>
+                  }
+                >
+                  <div className="grid gap-3">
+                    {mcpServers.length ? (
+                      mcpServers.map((server) => {
+                        const headerKeys = Object.keys(server.headers || {}).filter(Boolean);
+                        const toolCount = Array.isArray(server.toolCache)
+                          ? server.toolCache.length
+                          : 0;
+                        return (
+                          <div key={server.name} className="tcp-list-item grid gap-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <div className="font-semibold">{server.name}</div>
+                                <div className="tcp-subtle text-sm">
+                                  {server.transport || "No transport set"}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Badge tone={server.connected ? "ok" : "warn"}>
+                                  {server.connected ? "Connected" : "Disconnected"}
+                                </Badge>
+                                <Badge tone={server.enabled ? "info" : "warn"}>
+                                  {server.enabled ? "Enabled" : "Disabled"}
+                                </Badge>
+                                <Badge tone="info">{toolCount} tools</Badge>
+                              </div>
+                            </div>
+                            {server.lastError ? (
+                              <div className="rounded-xl border border-rose-700/60 bg-rose-950/20 px-2 py-1 text-xs text-rose-300">
+                                {server.lastError}
+                              </div>
+                            ) : null}
+                            <div className="tcp-subtle text-xs">
+                              {headerKeys.length
+                                ? `Auth headers: ${headerKeys.join(", ")}`
+                                : "No stored auth headers."}
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <button className="tcp-btn" onClick={() => openMcpModal(server)}>
+                                Edit
+                              </button>
+                              <button
+                                className="tcp-btn"
+                                disabled={mcpActionMutation.isPending}
+                                onClick={() =>
+                                  mcpActionMutation.mutate({
+                                    action: server.connected ? "disconnect" : "connect",
+                                    server,
+                                  })
+                                }
+                              >
+                                {server.connected ? "Disconnect" : "Connect"}
+                              </button>
+                              <button
+                                className="tcp-btn"
+                                disabled={mcpActionMutation.isPending}
+                                onClick={() =>
+                                  mcpActionMutation.mutate({ action: "refresh", server })
+                                }
+                              >
+                                Refresh
+                              </button>
+                              <button
+                                className="tcp-btn"
+                                disabled={mcpActionMutation.isPending}
+                                onClick={() =>
+                                  mcpActionMutation.mutate({ action: "toggle-enabled", server })
+                                }
+                              >
+                                {server.enabled ? "Disable" : "Enable"}
+                              </button>
+                              <button
+                                className="tcp-btn-danger"
+                                disabled={mcpActionMutation.isPending}
+                                onClick={() =>
+                                  mcpActionMutation.mutate({ action: "delete", server })
+                                }
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="grid gap-3">
+                        <EmptyState text="No MCP servers configured." />
+                        <div className="flex justify-start">
+                          <button className="tcp-btn-primary" onClick={() => openMcpModal()}>
+                            <i data-lucide="plus"></i>
+                            Add MCP server
+                          </button>
+                        </div>
                       </div>
-                      <div className="tcp-subtle text-xs">
-                        {failureReporterWorkspaceRoot
-                          ? `Reporter analysis root: ${failureReporterWorkspaceRoot}`
-                          : "Defaults to the engine workspace root if not set."}
-                      </div>
-                    </label>
+                    )}
 
-                    <label className="grid gap-2">
-                      <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
-                        Target repo
-                      </span>
-                      <input
-                        className="tcp-input"
-                        value={failureReporterRepo}
-                        onChange={(event) => setFailureReporterRepo(event.target.value)}
-                        placeholder="owner/repo"
-                      />
-                    </label>
-
-                    <label className="grid gap-2">
-                      <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
-                        MCP server
-                      </span>
-                      <select
-                        className="tcp-input"
-                        value={failureReporterMcpServer}
-                        onChange={(event) => setFailureReporterMcpServer(event.target.value)}
-                      >
-                        <option value="">Select an MCP server</option>
-                        {mcpServers.map((server) => (
-                          <option key={server.name} value={server.name}>
-                            {server.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className="grid gap-2">
-                      <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
-                        Provider preference
-                      </span>
-                      <select
-                        className="tcp-input"
-                        value={failureReporterProviderPreference}
-                        onChange={(event) =>
-                          setFailureReporterProviderPreference(event.target.value)
-                        }
-                      >
-                        <option value="auto">Auto</option>
-                        <option value="official_github">Official GitHub</option>
-                        <option value="composio">Composio</option>
-                        <option value="arcade">Arcade</option>
-                      </select>
-                    </label>
-
-                    <label className="grid gap-2">
-                      <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
-                        Provider
-                      </span>
-                      <select
-                        className="tcp-input"
-                        value={failureReporterProviderId}
-                        onChange={(event) => {
-                          const nextProvider = event.target.value;
-                          setFailureReporterProviderId(nextProvider);
-                          setFailureReporterModelId("");
-                        }}
-                      >
-                        <option value="">Select a provider</option>
-                        {providers.map((provider: any) => (
-                          <option
-                            key={String(provider?.id || "")}
-                            value={String(provider?.id || "")}
-                          >
-                            {String(provider?.id || "")}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className="grid gap-2">
-                      <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">Model</span>
-                      <input
-                        className="tcp-input"
-                        value={failureReporterModelId}
-                        onChange={(event) => setFailureReporterModelId(event.target.value)}
-                        list="failure-reporter-models"
-                        disabled={!failureReporterProviderId}
-                        placeholder={
-                          failureReporterProviderId
-                            ? "Type or paste a model id"
-                            : "Choose a provider first"
-                        }
-                        spellCheck={false}
-                      />
-                      <datalist id="failure-reporter-models">
-                        {failureReporterProviderModels.map((modelId) => (
-                          <option key={modelId} value={modelId} />
-                        ))}
-                      </datalist>
-                      <div className="tcp-subtle text-xs">
-                        {failureReporterProviderId
-                          ? failureReporterProviderModels.length
-                            ? `${failureReporterProviderModels.length} suggested models from provider catalog`
-                            : "No provider catalog models available. Manual model ids are allowed."
-                          : "Select a provider to load model suggestions."}
-                      </div>
-                    </label>
+                    <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 p-3">
+                      <div className="mb-2 font-medium">Discovered tools</div>
+                      <pre className="tcp-code max-h-56 overflow-auto whitespace-pre-wrap break-words">
+                        {mcpToolIds.length
+                          ? mcpToolIds.slice(0, 250).join("\n")
+                          : "No MCP tools discovered yet. Connect a server first."}
+                      </pre>
+                    </div>
                   </div>
+                </PanelCard>
+              ) : null}
 
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      className="tcp-btn-primary"
-                      disabled={saveFailureReporterMutation.isPending}
-                      onClick={() => saveFailureReporterMutation.mutate()}
-                    >
-                      <i data-lucide="save"></i>
-                      {saveFailureReporterMutation.isPending ? "Saving..." : "Save"}
-                    </button>
-                    <button className="tcp-btn" onClick={() => openMcpModal()}>
-                      <i data-lucide="plus"></i>
-                      Add MCP server
-                    </button>
-                    <button className="tcp-btn" onClick={() => setGithubMcpGuideOpen(true)}>
-                      <i data-lucide="external-link"></i>
-                      Setup guide
-                    </button>
-                    <button
-                      className="tcp-btn"
-                      disabled={refreshFailureReporterBindingsMutation.isPending}
-                      onClick={() => refreshFailureReporterBindingsMutation.mutate()}
-                    >
-                      <i data-lucide="rotate-cw"></i>
-                      Refresh capability bindings
-                    </button>
-                    <button
-                      className="tcp-btn"
-                      onClick={() => void copyFailureReporterDebugPayload()}
-                    >
-                      <i data-lucide="copy"></i>
-                      Copy debug payload
-                    </button>
-                    {selectedFailureReporterServer ? (
+              {activeSection === "failure_reporter" ? (
+                <PanelCard
+                  title="Bug monitor"
+                  actions={
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Badge
+                        tone={
+                          failureReporterStatus.runtime?.monitoring_active
+                            ? "ok"
+                            : failureReporterStatus.readiness?.runtime_ready
+                              ? "info"
+                              : "warn"
+                        }
+                      >
+                        {failureReporterStatus.runtime?.monitoring_active
+                          ? "Monitoring"
+                          : failureReporterStatus.readiness?.runtime_ready
+                            ? "Ready"
+                            : "Not ready"}
+                      </Badge>
+                      {failureReporterPaused || failureReporterStatus.runtime?.paused ? (
+                        <Badge tone="warn">Paused</Badge>
+                      ) : null}
+                      <Badge tone="info">
+                        {Number(failureReporterStatus.runtime?.pending_incidents || 0)} incidents
+                      </Badge>
+                      <Badge tone="info">
+                        {Number(failureReporterStatus.pending_drafts || 0)} pending drafts
+                      </Badge>
                       <button
-                        className="tcp-btn"
-                        disabled={mcpActionMutation.isPending}
+                        className="tcp-icon-btn"
+                        title="Reload status"
+                        aria-label="Reload status"
                         onClick={() =>
-                          mcpActionMutation.mutate({
-                            action: selectedFailureReporterServer.connected ? "refresh" : "connect",
-                            server: selectedFailureReporterServer,
+                          Promise.all([
+                            failureReporterStatusQuery.refetch(),
+                            failureReporterDraftsQuery.refetch(),
+                            failureReporterIncidentsQuery.refetch(),
+                          ]).then(() => toast("ok", "Bug Monitor status refreshed."))
+                        }
+                      >
+                        <i data-lucide="refresh-cw"></i>
+                      </button>
+                      <button
+                        className="tcp-icon-btn"
+                        title={
+                          failureReporterPaused || failureReporterStatus.runtime?.paused
+                            ? "Resume monitoring"
+                            : "Pause monitoring"
+                        }
+                        aria-label={
+                          failureReporterPaused || failureReporterStatus.runtime?.paused
+                            ? "Resume monitoring"
+                            : "Pause monitoring"
+                        }
+                        disabled={failureReporterPauseResumeMutation.isPending}
+                        onClick={() =>
+                          failureReporterPauseResumeMutation.mutate({
+                            action:
+                              failureReporterPaused || failureReporterStatus.runtime?.paused
+                                ? "resume"
+                                : "pause",
                           })
                         }
                       >
                         <i
                           data-lucide={
-                            selectedFailureReporterServer.connected ? "refresh-cw" : "plug-zap"
+                            failureReporterPaused || failureReporterStatus.runtime?.paused
+                              ? "play"
+                              : "pause"
                           }
                         ></i>
-                        {selectedFailureReporterServer.connected
-                          ? "Refresh selected MCP"
-                          : "Connect selected MCP"}
                       </button>
-                    ) : null}
-                  </div>
+                      <button
+                        className="tcp-icon-btn"
+                        title="Refresh capability bindings"
+                        aria-label="Refresh capability bindings"
+                        disabled={refreshFailureReporterBindingsMutation.isPending}
+                        onClick={() => refreshFailureReporterBindingsMutation.mutate()}
+                      >
+                        <i data-lucide="rotate-cw"></i>
+                      </button>
+                      <button
+                        className="tcp-icon-btn"
+                        title="Copy debug payload"
+                        aria-label="Copy debug payload"
+                        onClick={() => void copyFailureReporterDebugPayload()}
+                      >
+                        <i data-lucide="copy"></i>
+                      </button>
+                      <button
+                        className="tcp-icon-btn"
+                        title="Open GitHub MCP guide"
+                        aria-label="Open GitHub MCP guide"
+                        onClick={() => setGithubMcpGuideOpen(true)}
+                      >
+                        <i data-lucide="book-open"></i>
+                      </button>
+                    </div>
+                  }
+                >
+                  <div className="grid gap-4">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="grid gap-2">
+                        <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
+                          Reporter state
+                        </span>
+                        <button
+                          type="button"
+                          className={`tcp-list-item text-left ${failureReporterEnabled ? "ring-1 ring-emerald-400/40" : ""}`}
+                          onClick={() => setFailureReporterEnabled((prev) => !prev)}
+                        >
+                          <div className="font-medium">
+                            {failureReporterEnabled
+                              ? failureReporterPaused
+                                ? "Paused"
+                                : "Enabled"
+                              : "Disabled"}
+                          </div>
+                          <div className="tcp-subtle text-xs">
+                            {failureReporterEnabled
+                              ? failureReporterPaused
+                                ? "Monitoring is paused. Resume to process new failures."
+                                : "Failure events can be analyzed once readiness is green."
+                              : "No reporter work will execute."}
+                          </div>
+                        </button>
+                      </label>
 
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <div className="tcp-list-item">
-                      <div className="text-sm font-medium">Readiness</div>
-                      <div className="mt-1 text-sm">
-                        {failureReporterStatus.readiness?.runtime_ready ? "Ready" : "Blocked"}
-                      </div>
-                      <div className="tcp-subtle text-xs">
-                        {failureReporterStatus.last_error || "No blocking issue reported."}
-                      </div>
-                      {!failureReporterStatus.readiness?.runtime_ready &&
-                      Array.isArray(failureReporterStatus.missing_required_capabilities) &&
-                      failureReporterStatus.missing_required_capabilities.length ? (
-                        <div className="tcp-subtle mt-2 text-xs">
-                          Missing: {failureReporterStatus.missing_required_capabilities.join(", ")}
+                      <label className="grid gap-2">
+                        <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
+                          Local directory
+                        </span>
+                        <div className="grid gap-2 md:grid-cols-[auto_1fr_auto]">
+                          <button
+                            className="tcp-btn"
+                            type="button"
+                            onClick={() => {
+                              const seed = String(failureReporterWorkspaceRoot || "/").trim();
+                              setFailureReporterWorkspaceBrowserDir(seed || "/");
+                              setFailureReporterWorkspaceBrowserSearch("");
+                              setFailureReporterWorkspaceBrowserOpen(true);
+                            }}
+                          >
+                            <i data-lucide="folder-open"></i>
+                            Browse
+                          </button>
+                          <input
+                            className="tcp-input"
+                            readOnly
+                            value={failureReporterWorkspaceRoot}
+                            placeholder="No local directory selected. Use Browse."
+                          />
+                          <button
+                            className="tcp-btn"
+                            type="button"
+                            onClick={() => setFailureReporterWorkspaceRoot("")}
+                            disabled={!failureReporterWorkspaceRoot}
+                          >
+                            <i data-lucide="x"></i>
+                            Clear
+                          </button>
                         </div>
+                        <div className="tcp-subtle text-xs">
+                          {failureReporterWorkspaceRoot
+                            ? `Reporter analysis root: ${failureReporterWorkspaceRoot}`
+                            : "Defaults to the engine workspace root if not set."}
+                        </div>
+                      </label>
+
+                      <label className="grid gap-2">
+                        <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
+                          Target repo
+                        </span>
+                        <input
+                          className="tcp-input"
+                          value={failureReporterRepo}
+                          onChange={(event) => setFailureReporterRepo(event.target.value)}
+                          placeholder="owner/repo"
+                        />
+                      </label>
+
+                      <label className="grid gap-2">
+                        <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
+                          MCP server
+                        </span>
+                        <select
+                          className="tcp-input"
+                          value={failureReporterMcpServer}
+                          onChange={(event) => setFailureReporterMcpServer(event.target.value)}
+                        >
+                          <option value="">Select an MCP server</option>
+                          {mcpServers.map((server) => (
+                            <option key={server.name} value={server.name}>
+                              {server.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="grid gap-2">
+                        <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
+                          Provider preference
+                        </span>
+                        <select
+                          className="tcp-input"
+                          value={failureReporterProviderPreference}
+                          onChange={(event) =>
+                            setFailureReporterProviderPreference(event.target.value)
+                          }
+                        >
+                          <option value="auto">Auto</option>
+                          <option value="official_github">Official GitHub</option>
+                          <option value="composio">Composio</option>
+                          <option value="arcade">Arcade</option>
+                        </select>
+                      </label>
+
+                      <label className="grid gap-2">
+                        <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
+                          Provider
+                        </span>
+                        <select
+                          className="tcp-input"
+                          value={failureReporterProviderId}
+                          onChange={(event) => {
+                            const nextProvider = event.target.value;
+                            setFailureReporterProviderId(nextProvider);
+                            setFailureReporterModelId("");
+                          }}
+                        >
+                          <option value="">Select a provider</option>
+                          {providers.map((provider: any) => (
+                            <option
+                              key={String(provider?.id || "")}
+                              value={String(provider?.id || "")}
+                            >
+                              {String(provider?.id || "")}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="grid gap-2">
+                        <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
+                          Model
+                        </span>
+                        <input
+                          className="tcp-input"
+                          value={failureReporterModelId}
+                          onChange={(event) => setFailureReporterModelId(event.target.value)}
+                          list="failure-reporter-models"
+                          disabled={!failureReporterProviderId}
+                          placeholder={
+                            failureReporterProviderId
+                              ? "Type or paste a model id"
+                              : "Choose a provider first"
+                          }
+                          spellCheck={false}
+                        />
+                        <datalist id="failure-reporter-models">
+                          {failureReporterProviderModels.map((modelId) => (
+                            <option key={modelId} value={modelId} />
+                          ))}
+                        </datalist>
+                        <div className="tcp-subtle text-xs">
+                          {failureReporterProviderId
+                            ? failureReporterProviderModels.length
+                              ? `${failureReporterProviderModels.length} suggested models from provider catalog`
+                              : "No provider catalog models available. Manual model ids are allowed."
+                            : "Select a provider to load model suggestions."}
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className="tcp-btn-primary"
+                        disabled={saveFailureReporterMutation.isPending}
+                        title="Save Bug Monitor settings"
+                        aria-label="Save Bug Monitor settings"
+                        onClick={() => saveFailureReporterMutation.mutate()}
+                      >
+                        <i data-lucide="save"></i>
+                        {saveFailureReporterMutation.isPending ? "Saving..." : null}
+                      </button>
+                      <button
+                        className="tcp-icon-btn"
+                        title="Add MCP server"
+                        aria-label="Add MCP server"
+                        onClick={() => openMcpModal()}
+                      >
+                        <i data-lucide="plus"></i>
+                      </button>
+                      <button
+                        className="tcp-icon-btn"
+                        title="Open setup guide"
+                        aria-label="Open setup guide"
+                        onClick={() => setGithubMcpGuideOpen(true)}
+                      >
+                        <i data-lucide="external-link"></i>
+                      </button>
+                      <button
+                        className="tcp-icon-btn"
+                        title="Refresh capability bindings"
+                        aria-label="Refresh capability bindings"
+                        disabled={refreshFailureReporterBindingsMutation.isPending}
+                        onClick={() => refreshFailureReporterBindingsMutation.mutate()}
+                      >
+                        <i data-lucide="rotate-cw"></i>
+                      </button>
+                      <button
+                        className="tcp-icon-btn"
+                        title="Copy debug payload"
+                        aria-label="Copy debug payload"
+                        onClick={() => void copyFailureReporterDebugPayload()}
+                      >
+                        <i data-lucide="copy"></i>
+                      </button>
+                      {selectedFailureReporterServer ? (
+                        <button
+                          className="tcp-icon-btn"
+                          title={
+                            selectedFailureReporterServer.connected
+                              ? "Refresh selected MCP"
+                              : "Connect selected MCP"
+                          }
+                          aria-label={
+                            selectedFailureReporterServer.connected
+                              ? "Refresh selected MCP"
+                              : "Connect selected MCP"
+                          }
+                          disabled={mcpActionMutation.isPending}
+                          onClick={() =>
+                            mcpActionMutation.mutate({
+                              action: selectedFailureReporterServer.connected
+                                ? "refresh"
+                                : "connect",
+                              server: selectedFailureReporterServer,
+                            })
+                          }
+                        >
+                          <i
+                            data-lucide={
+                              selectedFailureReporterServer.connected ? "refresh-cw" : "plug-zap"
+                            }
+                          ></i>
+                        </button>
                       ) : null}
                     </div>
-                    <div className="tcp-list-item">
-                      <div className="text-sm font-medium">Selected MCP</div>
-                      <div className="mt-1 text-sm">
-                        {selectedFailureReporterServer?.name || "None selected"}
-                      </div>
-                      <div className="tcp-subtle text-xs">
-                        {selectedFailureReporterServer
-                          ? selectedFailureReporterServer.connected
-                            ? "Connected"
-                            : "Disconnected"
-                          : "No server selected"}
-                      </div>
-                      <div className="tcp-subtle mt-2 text-xs">
-                        Bindings:{" "}
-                        {failureReporterStatus.binding_source_version || "unknown version"}
-                        {failureReporterStatus.bindings_last_merged_at_ms
-                          ? ` · merged ${new Date(failureReporterStatus.bindings_last_merged_at_ms).toLocaleString()}`
-                          : ""}
-                      </div>
-                      <div className="tcp-subtle mt-2 text-xs">
-                        Local directory:{" "}
-                        {failureReporterWorkspaceRoot ||
-                          String(failureReporterStatus.config?.workspace_root || "").trim() ||
-                          "engine workspace root"}
-                      </div>
-                    </div>
-                    <div className="tcp-list-item">
-                      <div className="text-sm font-medium">Model route</div>
-                      <div className="mt-1 break-all text-sm">
-                        {failureReporterStatus.selected_model?.provider_id &&
-                        failureReporterStatus.selected_model?.model_id
-                          ? `${failureReporterStatus.selected_model.provider_id} / ${failureReporterStatus.selected_model.model_id}`
-                          : "No dedicated model selected"}
-                      </div>
-                      <div className="tcp-subtle text-xs">
-                        {failureReporterStatus.readiness?.selected_model_ready
-                          ? "Available"
-                          : "Fail-closed when unavailable"}
-                      </div>
-                    </div>
-                  </div>
 
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="tcp-list-item">
-                      <div className="font-medium">Capability readiness</div>
-                      <div className="tcp-subtle mt-2 grid gap-1 text-xs">
-                        <div>
-                          github.list_issues:{" "}
-                          {failureReporterStatus.required_capabilities?.github_list_issues
-                            ? "ready"
-                            : "missing"}
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="tcp-list-item">
+                        <div className="text-sm font-medium">Readiness</div>
+                        <div className="mt-1 text-sm">
+                          {failureReporterStatus.runtime?.monitoring_active
+                            ? "Monitoring"
+                            : failureReporterStatus.runtime?.paused || failureReporterPaused
+                              ? "Paused"
+                              : failureReporterStatus.readiness?.runtime_ready
+                                ? "Ready"
+                                : "Blocked"}
                         </div>
-                        <div>
-                          github.get_issue:{" "}
-                          {failureReporterStatus.required_capabilities?.github_get_issue
-                            ? "ready"
-                            : "missing"}
+                        <div className="tcp-subtle text-xs">
+                          {failureReporterStatus.runtime?.last_runtime_error ||
+                            failureReporterStatus.last_error ||
+                            "No blocking issue reported."}
                         </div>
-                        <div>
-                          github.create_issue:{" "}
-                          {failureReporterStatus.required_capabilities?.github_create_issue
-                            ? "ready"
-                            : "missing"}
+                        {!failureReporterStatus.readiness?.runtime_ready &&
+                        Array.isArray(failureReporterStatus.missing_required_capabilities) &&
+                        failureReporterStatus.missing_required_capabilities.length ? (
+                          <div className="tcp-subtle mt-2 text-xs">
+                            Missing:{" "}
+                            {failureReporterStatus.missing_required_capabilities.join(", ")}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="tcp-list-item">
+                        <div className="text-sm font-medium">Selected MCP</div>
+                        <div className="mt-1 text-sm">
+                          {selectedFailureReporterServer?.name || "None selected"}
                         </div>
-                        <div>
-                          github.comment_on_issue:{" "}
-                          {failureReporterStatus.required_capabilities?.github_comment_on_issue
-                            ? "ready"
-                            : "missing"}
+                        <div className="tcp-subtle text-xs">
+                          {selectedFailureReporterServer
+                            ? selectedFailureReporterServer.connected
+                              ? "Connected"
+                              : "Disconnected"
+                            : "No server selected"}
+                        </div>
+                        <div className="tcp-subtle mt-2 text-xs">
+                          Bindings:{" "}
+                          {failureReporterStatus.binding_source_version || "unknown version"}
+                          {failureReporterStatus.bindings_last_merged_at_ms
+                            ? ` · merged ${new Date(failureReporterStatus.bindings_last_merged_at_ms).toLocaleString()}`
+                            : ""}
+                        </div>
+                        <div className="tcp-subtle mt-2 text-xs">
+                          Local directory:{" "}
+                          {failureReporterWorkspaceRoot ||
+                            String(failureReporterStatus.config?.workspace_root || "").trim() ||
+                            "engine workspace root"}
+                        </div>
+                        <div className="tcp-subtle mt-2 text-xs">
+                          Last event:{" "}
+                          {String(
+                            failureReporterStatus.runtime?.last_incident_event_type || ""
+                          ).trim() || "No incidents processed yet"}
                         </div>
                       </div>
-                      {Array.isArray(failureReporterStatus.resolved_capabilities) &&
-                      failureReporterStatus.resolved_capabilities.length ? (
-                        <div className="tcp-subtle mt-3 grid gap-1 text-xs">
-                          {failureReporterStatus.resolved_capabilities.map((row, index) => (
-                            <div key={`${row.capability_id || "cap"}-${index}`}>
-                              {String(row.capability_id || "unknown")}:{" "}
-                              {String(row.tool_name || "unresolved")}
+                      <div className="tcp-list-item">
+                        <div className="text-sm font-medium">Model route</div>
+                        <div className="mt-1 break-all text-sm">
+                          {failureReporterStatus.selected_model?.provider_id &&
+                          failureReporterStatus.selected_model?.model_id
+                            ? `${failureReporterStatus.selected_model.provider_id} / ${failureReporterStatus.selected_model.model_id}`
+                            : "No dedicated model selected"}
+                        </div>
+                        <div className="tcp-subtle text-xs">
+                          {failureReporterStatus.readiness?.selected_model_ready
+                            ? "Available"
+                            : "Fail-closed when unavailable"}
+                        </div>
+                        <div className="tcp-subtle mt-2 text-xs">
+                          Last processed:{" "}
+                          {failureReporterStatus.runtime?.last_processed_at_ms
+                            ? new Date(
+                                Number(failureReporterStatus.runtime.last_processed_at_ms)
+                              ).toLocaleString()
+                            : "Not processed yet"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="tcp-list-item">
+                        <div className="font-medium">Capability readiness</div>
+                        <div className="tcp-subtle mt-2 grid gap-1 text-xs">
+                          <div>
+                            github.list_issues:{" "}
+                            {failureReporterStatus.required_capabilities?.github_list_issues
+                              ? "ready"
+                              : "missing"}
+                          </div>
+                          <div>
+                            github.get_issue:{" "}
+                            {failureReporterStatus.required_capabilities?.github_get_issue
+                              ? "ready"
+                              : "missing"}
+                          </div>
+                          <div>
+                            github.create_issue:{" "}
+                            {failureReporterStatus.required_capabilities?.github_create_issue
+                              ? "ready"
+                              : "missing"}
+                          </div>
+                          <div>
+                            github.comment_on_issue:{" "}
+                            {failureReporterStatus.required_capabilities?.github_comment_on_issue
+                              ? "ready"
+                              : "missing"}
+                          </div>
+                        </div>
+                        {Array.isArray(failureReporterStatus.resolved_capabilities) &&
+                        failureReporterStatus.resolved_capabilities.length ? (
+                          <div className="tcp-subtle mt-3 grid gap-1 text-xs">
+                            {failureReporterStatus.resolved_capabilities.map((row, index) => (
+                              <div key={`${row.capability_id || "cap"}-${index}`}>
+                                {String(row.capability_id || "unknown")}:{" "}
+                                {String(row.tool_name || "unresolved")}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {Array.isArray(failureReporterStatus.selected_server_binding_candidates) &&
+                        failureReporterStatus.selected_server_binding_candidates.length ? (
+                          <div className="tcp-subtle mt-3 grid gap-1 text-xs">
+                            {failureReporterStatus.selected_server_binding_candidates.map(
+                              (row, index) => (
+                                <div key={`${row.capability_id || "candidate"}-${index}`}>
+                                  {String(row.capability_id || "unknown")}:{" "}
+                                  {String(row.binding_tool_name || "unknown")}
+                                  {row.matched ? " · matched" : " · candidate"}
+                                </div>
+                              )
+                            )}
+                          </div>
+                        ) : null}
+                        {Array.isArray(failureReporterStatus.discovered_mcp_tools) &&
+                        failureReporterStatus.discovered_mcp_tools.length ? (
+                          <div className="mt-3">
+                            <div className="tcp-subtle text-xs font-medium">
+                              Discovered MCP tools
+                            </div>
+                            <pre className="tcp-code mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs">
+                              {failureReporterStatus.discovered_mcp_tools.join("\n")}
+                            </pre>
+                          </div>
+                        ) : (
+                          <div className="tcp-subtle mt-3 text-xs">
+                            No MCP tools were discovered for the selected server.
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="tcp-list-item">
+                        <div className="font-medium">Posting policy</div>
+                        <div className="tcp-subtle mt-2 grid gap-1 text-xs">
+                          <div>New issues: Draft + approval</div>
+                          <div>Matched open issues: Auto-comment</div>
+                          <div>Dedupe: Fingerprint marker + label</div>
+                          <div>Workspace write tools: Disabled</div>
+                          <div>Model fallback: Fail closed</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 p-3">
+                      <div className="mb-2 font-medium">Recent incidents</div>
+                      {failureReporterIncidents.length ? (
+                        <div className="grid gap-2">
+                          {failureReporterIncidents.map((incident) => (
+                            <div key={incident.incident_id} className="tcp-list-item">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="font-medium">
+                                  {incident.title || incident.event_type}
+                                </div>
+                                <Badge tone={incident.last_error ? "warn" : "info"}>
+                                  {incident.status}
+                                </Badge>
+                              </div>
+                              <div className="tcp-subtle mt-1 text-xs">
+                                {incident.event_type} · seen{" "}
+                                {Number(incident.occurrence_count || 0)}x{" · "}
+                                {incident.updated_at_ms
+                                  ? new Date(incident.updated_at_ms).toLocaleString()
+                                  : "time unavailable"}
+                              </div>
+                              <div className="tcp-subtle mt-1 text-xs">
+                                {incident.workspace_root || "engine workspace root"}
+                              </div>
+                              {incident.last_error ? (
+                                <div className="tcp-subtle mt-1 text-xs">{incident.last_error}</div>
+                              ) : null}
+                              {incident.detail ? (
+                                <div className="tcp-subtle mt-1 text-xs">{incident.detail}</div>
+                              ) : null}
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <button
+                                  className="tcp-icon-btn"
+                                  title="Replay triage for this incident"
+                                  aria-label="Replay triage for this incident"
+                                  disabled={failureReporterReplayIncidentMutation.isPending}
+                                  onClick={() =>
+                                    failureReporterReplayIncidentMutation.mutate({
+                                      incidentId: incident.incident_id,
+                                    })
+                                  }
+                                >
+                                  <i data-lucide="rotate-cw"></i>
+                                </button>
+                                {incident.triage_run_id ? (
+                                  <span className="tcp-subtle text-xs">
+                                    triage run: {incident.triage_run_id}
+                                  </span>
+                                ) : null}
+                                {incident.draft_id ? (
+                                  <span className="tcp-subtle text-xs">
+                                    draft: {incident.draft_id}
+                                  </span>
+                                ) : null}
+                              </div>
                             </div>
                           ))}
                         </div>
-                      ) : null}
-                      {Array.isArray(failureReporterStatus.selected_server_binding_candidates) &&
-                      failureReporterStatus.selected_server_binding_candidates.length ? (
-                        <div className="tcp-subtle mt-3 grid gap-1 text-xs">
-                          {failureReporterStatus.selected_server_binding_candidates.map(
-                            (row, index) => (
-                              <div key={`${row.capability_id || "candidate"}-${index}`}>
-                                {String(row.capability_id || "unknown")}:{" "}
-                                {String(row.binding_tool_name || "unknown")}
-                                {row.matched ? " · matched" : " · candidate"}
-                              </div>
-                            )
-                          )}
-                        </div>
-                      ) : null}
-                      {Array.isArray(failureReporterStatus.discovered_mcp_tools) &&
-                      failureReporterStatus.discovered_mcp_tools.length ? (
-                        <div className="mt-3">
-                          <div className="tcp-subtle text-xs font-medium">Discovered MCP tools</div>
-                          <pre className="tcp-code mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs">
-                            {failureReporterStatus.discovered_mcp_tools.join("\n")}
-                          </pre>
-                        </div>
                       ) : (
-                        <div className="tcp-subtle mt-3 text-xs">
-                          No MCP tools were discovered for the selected server.
-                        </div>
+                        <EmptyState text="No Bug Monitor incidents yet." />
                       )}
                     </div>
 
+                    <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 p-3">
+                      <div className="mb-2 font-medium">Recent reporter drafts</div>
+                      {failureReporterDrafts.length ? (
+                        <div className="grid gap-2">
+                          {failureReporterDrafts.map((draft) => (
+                            <div key={draft.draft_id} className="tcp-list-item">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="font-medium">
+                                  {draft.title || draft.fingerprint}
+                                </div>
+                                <Badge
+                                  tone={draft.status === "approval_required" ? "warn" : "info"}
+                                >
+                                  {draft.status}
+                                </Badge>
+                              </div>
+                              <div className="tcp-subtle mt-1 text-xs">
+                                {draft.repo} ·{" "}
+                                {draft.issue_number ? `issue #${draft.issue_number}` : "draft only"}{" "}
+                                ·{" "}
+                                {draft.created_at_ms
+                                  ? new Date(draft.created_at_ms).toLocaleString()
+                                  : "time unavailable"}
+                              </div>
+                              {draft.detail ? (
+                                <div className="tcp-subtle mt-1 text-xs">{draft.detail}</div>
+                              ) : null}
+                              {draft.triage_run_id ? (
+                                <div className="tcp-subtle mt-2 text-xs">
+                                  triage run: {draft.triage_run_id}
+                                </div>
+                              ) : null}
+                              {draft.status === "approval_required" ? (
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <button
+                                    className="tcp-btn-primary"
+                                    disabled={failureReporterDraftDecisionMutation.isPending}
+                                    title="Approve draft"
+                                    aria-label="Approve draft"
+                                    onClick={() =>
+                                      failureReporterDraftDecisionMutation.mutate({
+                                        draftId: draft.draft_id,
+                                        decision: "approve",
+                                      })
+                                    }
+                                  >
+                                    <i data-lucide="check"></i>
+                                    {failureReporterDraftDecisionMutation.isPending
+                                      ? "Updating..."
+                                      : null}
+                                  </button>
+                                  <button
+                                    className="tcp-icon-btn"
+                                    title="Deny draft"
+                                    aria-label="Deny draft"
+                                    disabled={failureReporterDraftDecisionMutation.isPending}
+                                    onClick={() =>
+                                      failureReporterDraftDecisionMutation.mutate({
+                                        draftId: draft.draft_id,
+                                        decision: "deny",
+                                      })
+                                    }
+                                  >
+                                    <i data-lucide="x"></i>
+                                  </button>
+                                </div>
+                              ) : null}
+                              {(draft.status === "draft_ready" ||
+                                draft.status === "triage_queued") &&
+                              !draft.triage_run_id ? (
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <button
+                                    className="tcp-icon-btn"
+                                    title="Create triage run"
+                                    aria-label="Create triage run"
+                                    disabled={failureReporterTriageRunMutation.isPending}
+                                    onClick={() =>
+                                      failureReporterTriageRunMutation.mutate({
+                                        draftId: draft.draft_id,
+                                      })
+                                    }
+                                  >
+                                    <i data-lucide="sparkles"></i>
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <EmptyState text="No Bug Monitor drafts yet." />
+                      )}
+                    </div>
+                  </div>
+                </PanelCard>
+              ) : null}
+
+              {activeSection === "browser" ? (
+                <PanelCard
+                  title="Browser readiness"
+                  subtitle="Operational browser status, diagnostics, and recovery actions."
+                  actions={
+                    <Toolbar>
+                      <button className="tcp-btn" onClick={() => void browserStatus.refetch()}>
+                        <i data-lucide="refresh-cw"></i>
+                        Refresh browser status
+                      </button>
+                      <button
+                        className="tcp-btn"
+                        onClick={() => installBrowserMutation.mutate()}
+                        disabled={installBrowserMutation.isPending}
+                      >
+                        <i data-lucide="download"></i>
+                        {installBrowserMutation.isPending
+                          ? "Installing sidecar..."
+                          : "Install sidecar"}
+                      </button>
+                      <button
+                        className="tcp-btn"
+                        onClick={() => smokeTestBrowserMutation.mutate()}
+                        disabled={smokeTestBrowserMutation.isPending}
+                      >
+                        <i data-lucide="globe"></i>
+                        {smokeTestBrowserMutation.isPending
+                          ? "Running smoke test..."
+                          : "Run smoke test"}
+                      </button>
+                      <button className="tcp-btn" onClick={() => setDiagnosticsOpen(true)}>
+                        <i data-lucide="activity"></i>
+                        Diagnostics
+                      </button>
+                    </Toolbar>
+                  }
+                >
+                  <div className="grid gap-2 md:grid-cols-3">
                     <div className="tcp-list-item">
-                      <div className="font-medium">Posting policy</div>
-                      <div className="tcp-subtle mt-2 grid gap-1 text-xs">
-                        <div>New issues: Draft + approval</div>
-                        <div>Matched open issues: Auto-comment</div>
-                        <div>Dedupe: Fingerprint marker + label</div>
-                        <div>Workspace write tools: Disabled</div>
-                        <div>Model fallback: Fail closed</div>
+                      <div className="text-sm font-medium">Status</div>
+                      <div className="mt-1 text-sm">
+                        {browserStatus.data
+                          ? browserStatus.data.runnable
+                            ? "Ready"
+                            : browserStatus.data.enabled
+                              ? "Blocked"
+                              : "Disabled"
+                          : "Unknown"}
+                      </div>
+                      <div className="tcp-subtle text-xs">
+                        Headless default: {browserStatus.data?.headless_default ? "yes" : "no"}
+                      </div>
+                    </div>
+                    <div className="tcp-list-item">
+                      <div className="text-sm font-medium">Sidecar</div>
+                      <div className="mt-1 break-all text-sm">
+                        {browserStatus.data?.sidecar?.path || "Not found"}
+                      </div>
+                      <div className="tcp-subtle text-xs">
+                        {browserStatus.data?.sidecar?.version || "No version detected"}
+                      </div>
+                    </div>
+                    <div className="tcp-list-item">
+                      <div className="text-sm font-medium">Browser</div>
+                      <div className="mt-1 break-all text-sm">
+                        {browserStatus.data?.browser?.path || "Not found"}
+                      </div>
+                      <div className="tcp-subtle text-xs">
+                        {browserStatus.data?.browser?.version ||
+                          browserStatus.data?.browser?.channel ||
+                          "No version detected"}
                       </div>
                     </div>
                   </div>
-
-                  <div className="rounded-xl border border-slate-700/60 bg-slate-900/20 p-3">
-                    <div className="mb-2 font-medium">Recent reporter drafts</div>
-                    {failureReporterDrafts.length ? (
-                      <div className="grid gap-2">
-                        {failureReporterDrafts.map((draft) => (
-                          <div key={draft.draft_id} className="tcp-list-item">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="font-medium">{draft.title || draft.fingerprint}</div>
-                              <Badge tone={draft.status === "approval_required" ? "warn" : "info"}>
-                                {draft.status}
-                              </Badge>
-                            </div>
-                            <div className="tcp-subtle mt-1 text-xs">
-                              {draft.repo} ·{" "}
-                              {draft.issue_number ? `issue #${draft.issue_number}` : "draft only"} ·{" "}
-                              {draft.created_at_ms
-                                ? new Date(draft.created_at_ms).toLocaleString()
-                                : "time unavailable"}
-                            </div>
-                            {draft.detail ? (
-                              <div className="tcp-subtle mt-1 text-xs">{draft.detail}</div>
-                            ) : null}
-                            {draft.triage_run_id ? (
-                              <div className="tcp-subtle mt-2 text-xs">
-                                triage run: {draft.triage_run_id}
-                              </div>
-                            ) : null}
-                            {draft.status === "approval_required" ? (
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                <button
-                                  className="tcp-btn-primary"
-                                  disabled={failureReporterDraftDecisionMutation.isPending}
-                                  onClick={() =>
-                                    failureReporterDraftDecisionMutation.mutate({
-                                      draftId: draft.draft_id,
-                                      decision: "approve",
-                                    })
-                                  }
-                                >
-                                  <i data-lucide="check"></i>
-                                  {failureReporterDraftDecisionMutation.isPending
-                                    ? "Updating..."
-                                    : "Approve"}
-                                </button>
-                                <button
-                                  className="tcp-btn"
-                                  disabled={failureReporterDraftDecisionMutation.isPending}
-                                  onClick={() =>
-                                    failureReporterDraftDecisionMutation.mutate({
-                                      draftId: draft.draft_id,
-                                      decision: "deny",
-                                    })
-                                  }
-                                >
-                                  <i data-lucide="x"></i>
-                                  Deny
-                                </button>
-                              </div>
-                            ) : null}
-                            {(draft.status === "draft_ready" || draft.status === "triage_queued") &&
-                            !draft.triage_run_id ? (
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                <button
-                                  className="tcp-btn"
-                                  disabled={failureReporterTriageRunMutation.isPending}
-                                  onClick={() =>
-                                    failureReporterTriageRunMutation.mutate({
-                                      draftId: draft.draft_id,
-                                    })
-                                  }
-                                >
-                                  <i data-lucide="sparkles"></i>
-                                  {failureReporterTriageRunMutation.isPending
-                                    ? "Creating..."
-                                    : "Create triage run"}
-                                </button>
-                              </div>
-                            ) : null}
+                  {browserIssues.length ? (
+                    <div className="mt-3 grid gap-2">
+                      {browserIssues.map((issue, index) => (
+                        <div key={`${issue.code || "issue"}-${index}`} className="tcp-list-item">
+                          <div className="text-sm font-medium">{issue.code || "browser_issue"}</div>
+                          <div className="tcp-subtle text-xs">
+                            {issue.message || "Unknown browser issue."}
                           </div>
-                        ))}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {browserSmokeResult ? (
+                    <div className="mt-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+                      <div className="font-medium">
+                        Smoke test passed
+                        {browserSmokeResult.title ? `: ${browserSmokeResult.title}` : ""}
                       </div>
-                    ) : (
-                      <EmptyState text="No failure reporter drafts yet." />
-                    )}
-                  </div>
-                </div>
-              </PanelCard>
-            ) : null}
-
-            {activeSection === "browser" ? (
+                      <div className="tcp-subtle mt-1 text-xs">
+                        {browserSmokeResult.final_url ||
+                          browserSmokeResult.url ||
+                          "No URL returned"}
+                      </div>
+                      <div className="tcp-subtle text-xs">
+                        Load state: {browserSmokeResult.load_state || "unknown"} · elements:{" "}
+                        {String(browserSmokeResult.element_count ?? 0)} · closed:{" "}
+                        {browserSmokeResult.closed ? "yes" : "no"}
+                      </div>
+                      {browserSmokeResult.excerpt ? (
+                        <pre className="tcp-code mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words">
+                          {browserSmokeResult.excerpt}
+                        </pre>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </PanelCard>
+              ) : null}
+            </StaggerGroup>
+          }
+          aside={
+            <div className="grid gap-4">
               <PanelCard
-                title="Browser readiness"
-                subtitle="Operational browser status, diagnostics, and recovery actions."
-                actions={
-                  <Toolbar>
-                    <button className="tcp-btn" onClick={() => void browserStatus.refetch()}>
-                      <i data-lucide="refresh-cw"></i>
-                      Refresh browser status
-                    </button>
-                    <button
-                      className="tcp-btn"
-                      onClick={() => installBrowserMutation.mutate()}
-                      disabled={installBrowserMutation.isPending}
-                    >
-                      <i data-lucide="download"></i>
-                      {installBrowserMutation.isPending
-                        ? "Installing sidecar..."
-                        : "Install sidecar"}
-                    </button>
-                    <button
-                      className="tcp-btn"
-                      onClick={() => smokeTestBrowserMutation.mutate()}
-                      disabled={smokeTestBrowserMutation.isPending}
-                    >
-                      <i data-lucide="globe"></i>
-                      {smokeTestBrowserMutation.isPending
-                        ? "Running smoke test..."
-                        : "Run smoke test"}
-                    </button>
-                    <button className="tcp-btn" onClick={() => setDiagnosticsOpen(true)}>
-                      <i data-lucide="activity"></i>
-                      Diagnostics
-                    </button>
-                  </Toolbar>
-                }
+                title="Readiness snapshot"
+                subtitle="High-signal operational summary for this configuration state."
               >
-                <div className="grid gap-2 md:grid-cols-3">
+                <div className="grid gap-2">
                   <div className="tcp-list-item">
-                    <div className="text-sm font-medium">Status</div>
-                    <div className="mt-1 text-sm">
+                    <div className="font-medium">Connected providers</div>
+                    <div className="tcp-subtle mt-1 text-xs">
+                      {String(providersCatalog.data?.connected?.length || 0)} connected, default{" "}
+                      {String(providersConfig.data?.default || "none")}
+                    </div>
+                  </div>
+                  <div className="tcp-list-item">
+                    <div className="font-medium">Browser automation</div>
+                    <div className="tcp-subtle mt-1 text-xs">
                       {browserStatus.data
                         ? browserStatus.data.runnable
                           ? "Ready"
                           : browserStatus.data.enabled
-                            ? "Blocked"
+                            ? "Enabled but blocked"
                             : "Disabled"
                         : "Unknown"}
                     </div>
-                    <div className="tcp-subtle text-xs">
-                      Headless default: {browserStatus.data?.headless_default ? "yes" : "no"}
+                  </div>
+                  <div className="tcp-list-item">
+                    <div className="font-medium">Theme</div>
+                    <div className="tcp-subtle mt-1 text-xs">
+                      {themes.find((theme: any) => theme.id === themeId)?.name || themeId}
                     </div>
                   </div>
                   <div className="tcp-list-item">
-                    <div className="text-sm font-medium">Sidecar</div>
-                    <div className="mt-1 break-all text-sm">
-                      {browserStatus.data?.sidecar?.path || "Not found"}
-                    </div>
-                    <div className="tcp-subtle text-xs">
-                      {browserStatus.data?.sidecar?.version || "No version detected"}
+                    <div className="font-medium">MCP</div>
+                    <div className="tcp-subtle mt-1 text-xs">
+                      {connectedMcpCount} connected, {mcpToolIds.length} discovered tools
                     </div>
                   </div>
                   <div className="tcp-list-item">
-                    <div className="text-sm font-medium">Browser</div>
-                    <div className="mt-1 break-all text-sm">
-                      {browserStatus.data?.browser?.path || "Not found"}
+                    <div className="font-medium">Bug monitor</div>
+                    <div className="tcp-subtle mt-1 text-xs">
+                      {failureReporterStatus.readiness?.runtime_ready
+                        ? "Ready"
+                        : failureReporterEnabled
+                          ? "Enabled but blocked"
+                          : "Disabled"}
+                      {" · "}
+                      {Number(failureReporterStatus.pending_drafts || 0)} pending drafts
                     </div>
-                    <div className="tcp-subtle text-xs">
-                      {browserStatus.data?.browser?.version ||
-                        browserStatus.data?.browser?.channel ||
-                        "No version detected"}
+                  </div>
+                  <div className="tcp-list-item">
+                    <div className="font-medium">Channels</div>
+                    <div className="tcp-subtle mt-1 text-xs">
+                      {connectedChannelCount} connected, {channelNames.length} available
                     </div>
                   </div>
                 </div>
+              </PanelCard>
+
+              <PanelCard title="Quick access" subtitle="Jump straight to the section you need.">
+                <div className="grid gap-2">
+                  {sectionTabs.map((section) => (
+                    <button
+                      key={section.id}
+                      className="tcp-list-item flex items-center justify-between text-left"
+                      onClick={() => setActiveSection(section.id)}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <i data-lucide={section.icon}></i>
+                        {section.label}
+                      </span>
+                      {activeSection === section.id ? <Badge tone="ok">open</Badge> : null}
+                    </button>
+                  ))}
+                </div>
+              </PanelCard>
+            </div>
+          }
+        />
+
+        <DetailDrawer
+          open={githubMcpGuideOpen}
+          onClose={() => setGithubMcpGuideOpen(false)}
+          title="Official GitHub MCP guide"
+        >
+          <div className="grid gap-3">
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+              Recommended for Bug Monitor: use the official GitHub MCP endpoint instead of a
+              third-party wrapper when you want stable issue read/write operations.
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="tcp-list-item">
+                <div className="text-sm font-medium">Transport URL</div>
+                <div className="mt-1 break-all text-sm">https://api.githubcopilot.com/mcp/</div>
+                <div className="tcp-subtle text-xs">
+                  Use this as the MCP server transport in Tandem Settings.
+                </div>
+              </div>
+              <div className="tcp-list-item">
+                <div className="text-sm font-medium">Auth mode</div>
+                <div className="mt-1 text-sm">Authorization Bearer</div>
+                <div className="tcp-subtle text-xs">
+                  Paste a GitHub token in the MCP server dialog and use bearer auth.
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <div className="text-sm font-medium">Recommended setup</div>
+              <div className="tcp-list-item text-sm">
+                1. Open `Add MCP server`.
+                <br />
+                2. Name it `github` or another stable name.
+                <br />
+                3. Set transport to `https://api.githubcopilot.com/mcp/`.
+                <br />
+                4. Set auth mode to `Authorization Bearer`.
+                <br />
+                5. Paste a GitHub Personal Access Token.
+                <br />
+                6. Save, connect, then select that MCP server in Bug Monitor settings.
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <div className="text-sm font-medium">Token guidance</div>
+              <div className="tcp-list-item text-sm">
+                For failure reporting, the token needs issue read/write access on the target
+                repository so the runtime can create issues and add comments.
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <div className="text-sm font-medium">Direct links</div>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  className="tcp-btn"
+                  href="https://github.com/github/github-mcp-server?tab=readme-ov-file"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <i data-lucide="external-link"></i>
+                  GitHub MCP README
+                </a>
+                <a
+                  className="tcp-btn"
+                  href="https://docs.github.com/en/copilot/how-tos/provide-context/use-mcp/use-the-github-mcp-server"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <i data-lucide="external-link"></i>
+                  GitHub Docs
+                </a>
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <div className="text-sm font-medium">Issue tools to expect</div>
+              <div className="tcp-list-item text-sm">
+                The reporter should be able to resolve issue-list, issue-read, issue-create, and
+                issue-comment operations from the selected GitHub MCP server. If readiness still
+                fails, compare the discovered MCP tools shown in Settings against those issue
+                operations.
+              </div>
+            </div>
+          </div>
+        </DetailDrawer>
+
+        <AnimatePresence>
+          {failureReporterWorkspaceBrowserOpen ? (
+            <motion.div
+              className="tcp-confirm-overlay"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <button
+                type="button"
+                className="tcp-confirm-backdrop"
+                aria-label="Close Bug Monitor workspace dialog"
+                onClick={() => {
+                  setFailureReporterWorkspaceBrowserOpen(false);
+                  setFailureReporterWorkspaceBrowserSearch("");
+                }}
+              />
+              <motion.div
+                className="tcp-confirm-dialog max-w-2xl"
+                initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 6, scale: 0.98 }}
+              >
+                <h3 className="tcp-confirm-title">Select Bug Monitor Directory</h3>
+                <p className="tcp-confirm-message">
+                  Current: {failureReporterCurrentBrowseDir || "n/a"}
+                </p>
+                <div className="mb-2 flex flex-wrap gap-2">
+                  <button
+                    className="tcp-btn"
+                    onClick={() => {
+                      if (!failureReporterWorkspaceParentDir) return;
+                      setFailureReporterWorkspaceBrowserDir(failureReporterWorkspaceParentDir);
+                    }}
+                    disabled={!failureReporterWorkspaceParentDir}
+                  >
+                    <i data-lucide="arrow-up-circle"></i>
+                    Up
+                  </button>
+                  <button
+                    className="tcp-btn-primary"
+                    onClick={() => {
+                      if (!failureReporterCurrentBrowseDir) return;
+                      setFailureReporterWorkspaceRoot(failureReporterCurrentBrowseDir);
+                      setFailureReporterWorkspaceBrowserOpen(false);
+                      setFailureReporterWorkspaceBrowserSearch("");
+                      toast(
+                        "ok",
+                        `Bug Monitor directory selected: ${failureReporterCurrentBrowseDir}`
+                      );
+                    }}
+                  >
+                    <i data-lucide="badge-check"></i>
+                    Select This Folder
+                  </button>
+                  <button
+                    className="tcp-btn"
+                    onClick={() => {
+                      setFailureReporterWorkspaceBrowserOpen(false);
+                      setFailureReporterWorkspaceBrowserSearch("");
+                    }}
+                  >
+                    <i data-lucide="x"></i>
+                    Close
+                  </button>
+                </div>
+                <div className="mb-2">
+                  <input
+                    className="tcp-input"
+                    placeholder="Type to filter folders..."
+                    value={failureReporterWorkspaceBrowserSearch}
+                    onInput={(e) =>
+                      setFailureReporterWorkspaceBrowserSearch((e.target as HTMLInputElement).value)
+                    }
+                  />
+                </div>
+                <div className="max-h-[360px] overflow-auto rounded-lg border border-slate-700/60 bg-slate-900/20 p-2">
+                  {filteredFailureReporterWorkspaceDirectories.length ? (
+                    filteredFailureReporterWorkspaceDirectories.map((entry: any) => (
+                      <button
+                        key={String(entry?.path || entry?.name)}
+                        className="tcp-list-item mb-1 w-full text-left"
+                        onClick={() =>
+                          setFailureReporterWorkspaceBrowserDir(String(entry?.path || ""))
+                        }
+                      >
+                        <i data-lucide="folder-open"></i>
+                        {String(entry?.name || entry?.path || "")}
+                      </button>
+                    ))
+                  ) : (
+                    <EmptyState
+                      text={
+                        failureReporterWorkspaceSearchQuery
+                          ? "No folders match your search."
+                          : "No subdirectories in this folder."
+                      }
+                    />
+                  )}
+                </div>
+              </motion.div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+
+        <DetailDrawer
+          open={diagnosticsOpen}
+          onClose={() => setDiagnosticsOpen(false)}
+          title="Browser diagnostics"
+        >
+          <div className="grid gap-3">
+            <div className="grid gap-2 md:grid-cols-3">
+              <div className="tcp-list-item">
+                <div className="text-sm font-medium">Status</div>
+                <div className="mt-1 text-sm">
+                  {browserStatus.data
+                    ? browserStatus.data.runnable
+                      ? "Ready"
+                      : browserStatus.data.enabled
+                        ? "Blocked"
+                        : "Disabled"
+                    : "Unknown"}
+                </div>
+                <div className="tcp-subtle text-xs">
+                  Headless default: {browserStatus.data?.headless_default ? "yes" : "no"}
+                </div>
+              </div>
+              <div className="tcp-list-item">
+                <div className="text-sm font-medium">Sidecar</div>
+                <div className="mt-1 break-all text-sm">
+                  {browserStatus.data?.sidecar?.path || "Not found"}
+                </div>
+                <div className="tcp-subtle text-xs">
+                  {browserStatus.data?.sidecar?.version || "No version detected"}
+                </div>
+              </div>
+              <div className="tcp-list-item">
+                <div className="text-sm font-medium">Browser</div>
+                <div className="mt-1 break-all text-sm">
+                  {browserStatus.data?.browser?.path || "Not found"}
+                </div>
+                <div className="tcp-subtle text-xs">
+                  {browserStatus.data?.browser?.version ||
+                    browserStatus.data?.browser?.channel ||
+                    "No version detected"}
+                </div>
+              </div>
+            </div>
+
+            <Toolbar>
+              <button className="tcp-btn" onClick={() => void browserStatus.refetch()}>
+                <i data-lucide="refresh-cw"></i>
+                Refresh browser status
+              </button>
+              <button
+                className="tcp-btn"
+                onClick={() => installBrowserMutation.mutate()}
+                disabled={installBrowserMutation.isPending}
+              >
+                <i data-lucide="download"></i>
+                {installBrowserMutation.isPending ? "Installing sidecar..." : "Install sidecar"}
+              </button>
+              <button
+                className="tcp-btn"
+                onClick={() => smokeTestBrowserMutation.mutate()}
+                disabled={smokeTestBrowserMutation.isPending}
+              >
+                <i data-lucide="globe"></i>
+                {smokeTestBrowserMutation.isPending ? "Running smoke test..." : "Run smoke test"}
+              </button>
+              <button
+                className="tcp-btn"
+                onClick={() =>
+                  api("/api/engine/browser/status", { method: "GET" })
+                    .then(() => toast("ok", "Browser diagnostics refreshed."))
+                    .catch((error) =>
+                      toast("err", error instanceof Error ? error.message : String(error))
+                    )
+                }
+              >
+                <i data-lucide="activity"></i>
+                Re-run diagnostics
+              </button>
+            </Toolbar>
+
+            {browserStatus.isLoading ? (
+              <EmptyState text="Loading browser diagnostics..." />
+            ) : browserStatus.data ? (
+              <>
                 {browserIssues.length ? (
-                  <div className="mt-3 grid gap-2">
+                  <div className="grid gap-2">
+                    <div className="text-sm font-medium">Blocking issues</div>
                     {browserIssues.map((issue, index) => (
                       <div key={`${issue.code || "issue"}-${index}`} className="tcp-list-item">
                         <div className="text-sm font-medium">{issue.code || "browser_issue"}</div>
@@ -2366,727 +3062,350 @@ export function SettingsPage({
                       </div>
                     ))}
                   </div>
-                ) : null}
-                {browserSmokeResult ? (
-                  <div className="mt-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
-                    <div className="font-medium">
-                      Smoke test passed
-                      {browserSmokeResult.title ? `: ${browserSmokeResult.title}` : ""}
-                    </div>
-                    <div className="tcp-subtle mt-1 text-xs">
-                      {browserSmokeResult.final_url || browserSmokeResult.url || "No URL returned"}
-                    </div>
-                    <div className="tcp-subtle text-xs">
-                      Load state: {browserSmokeResult.load_state || "unknown"} · elements:{" "}
-                      {String(browserSmokeResult.element_count ?? 0)} · closed:{" "}
-                      {browserSmokeResult.closed ? "yes" : "no"}
-                    </div>
-                    {browserSmokeResult.excerpt ? (
-                      <pre className="tcp-code mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words">
-                        {browserSmokeResult.excerpt}
-                      </pre>
-                    ) : null}
-                  </div>
-                ) : null}
-              </PanelCard>
-            ) : null}
-          </StaggerGroup>
-        }
-        aside={
-          <div className="grid gap-4">
-            <PanelCard
-              title="Readiness snapshot"
-              subtitle="High-signal operational summary for this configuration state."
-            >
-              <div className="grid gap-2">
-                <div className="tcp-list-item">
-                  <div className="font-medium">Connected providers</div>
-                  <div className="tcp-subtle mt-1 text-xs">
-                    {String(providersCatalog.data?.connected?.length || 0)} connected, default{" "}
-                    {String(providersConfig.data?.default || "none")}
-                  </div>
-                </div>
-                <div className="tcp-list-item">
-                  <div className="font-medium">Browser automation</div>
-                  <div className="tcp-subtle mt-1 text-xs">
-                    {browserStatus.data
-                      ? browserStatus.data.runnable
-                        ? "Ready"
-                        : browserStatus.data.enabled
-                          ? "Enabled but blocked"
-                          : "Disabled"
-                      : "Unknown"}
-                  </div>
-                </div>
-                <div className="tcp-list-item">
-                  <div className="font-medium">Theme</div>
-                  <div className="tcp-subtle mt-1 text-xs">
-                    {themes.find((theme: any) => theme.id === themeId)?.name || themeId}
-                  </div>
-                </div>
-                <div className="tcp-list-item">
-                  <div className="font-medium">MCP</div>
-                  <div className="tcp-subtle mt-1 text-xs">
-                    {connectedMcpCount} connected, {mcpToolIds.length} discovered tools
-                  </div>
-                </div>
-                <div className="tcp-list-item">
-                  <div className="font-medium">Failure reporter</div>
-                  <div className="tcp-subtle mt-1 text-xs">
-                    {failureReporterStatus.readiness?.runtime_ready
-                      ? "Ready"
-                      : failureReporterEnabled
-                        ? "Enabled but blocked"
-                        : "Disabled"}
-                    {" · "}
-                    {Number(failureReporterStatus.pending_drafts || 0)} pending drafts
-                  </div>
-                </div>
-                <div className="tcp-list-item">
-                  <div className="font-medium">Channels</div>
-                  <div className="tcp-subtle mt-1 text-xs">
-                    {connectedChannelCount} connected, {channelNames.length} available
-                  </div>
-                </div>
-              </div>
-            </PanelCard>
-
-            <PanelCard title="Quick access" subtitle="Jump straight to the section you need.">
-              <div className="grid gap-2">
-                {sectionTabs.map((section) => (
-                  <button
-                    key={section.id}
-                    className="tcp-list-item flex items-center justify-between text-left"
-                    onClick={() => setActiveSection(section.id)}
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <i data-lucide={section.icon}></i>
-                      {section.label}
-                    </span>
-                    {activeSection === section.id ? <Badge tone="ok">open</Badge> : null}
-                  </button>
-                ))}
-              </div>
-            </PanelCard>
-          </div>
-        }
-      />
-
-      <DetailDrawer
-        open={githubMcpGuideOpen}
-        onClose={() => setGithubMcpGuideOpen(false)}
-        title="Official GitHub MCP guide"
-      >
-        <div className="grid gap-3">
-          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
-            Recommended for the Failure Reporter: use the official GitHub MCP endpoint instead of a
-            third-party wrapper when you want stable issue read/write operations.
-          </div>
-
-          <div className="grid gap-2 md:grid-cols-2">
-            <div className="tcp-list-item">
-              <div className="text-sm font-medium">Transport URL</div>
-              <div className="mt-1 break-all text-sm">https://api.githubcopilot.com/mcp/</div>
-              <div className="tcp-subtle text-xs">
-                Use this as the MCP server transport in Tandem Settings.
-              </div>
-            </div>
-            <div className="tcp-list-item">
-              <div className="text-sm font-medium">Auth mode</div>
-              <div className="mt-1 text-sm">Authorization Bearer</div>
-              <div className="tcp-subtle text-xs">
-                Paste a GitHub token in the MCP server dialog and use bearer auth.
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-2">
-            <div className="text-sm font-medium">Recommended setup</div>
-            <div className="tcp-list-item text-sm">
-              1. Open `Add MCP server`.
-              <br />
-              2. Name it `github` or another stable name.
-              <br />
-              3. Set transport to `https://api.githubcopilot.com/mcp/`.
-              <br />
-              4. Set auth mode to `Authorization Bearer`.
-              <br />
-              5. Paste a GitHub Personal Access Token.
-              <br />
-              6. Save, connect, then select that MCP server in Failure Reporter settings.
-            </div>
-          </div>
-
-          <div className="grid gap-2">
-            <div className="text-sm font-medium">Token guidance</div>
-            <div className="tcp-list-item text-sm">
-              For failure reporting, the token needs issue read/write access on the target
-              repository so the runtime can create issues and add comments.
-            </div>
-          </div>
-
-          <div className="grid gap-2">
-            <div className="text-sm font-medium">Direct links</div>
-            <div className="flex flex-wrap gap-2">
-              <a
-                className="tcp-btn"
-                href="https://github.com/github/github-mcp-server?tab=readme-ov-file"
-                target="_blank"
-                rel="noreferrer"
-              >
-                <i data-lucide="external-link"></i>
-                GitHub MCP README
-              </a>
-              <a
-                className="tcp-btn"
-                href="https://docs.github.com/en/copilot/how-tos/provide-context/use-mcp/use-the-github-mcp-server"
-                target="_blank"
-                rel="noreferrer"
-              >
-                <i data-lucide="external-link"></i>
-                GitHub Docs
-              </a>
-            </div>
-          </div>
-
-          <div className="grid gap-2">
-            <div className="text-sm font-medium">Issue tools to expect</div>
-            <div className="tcp-list-item text-sm">
-              The reporter should be able to resolve issue-list, issue-read, issue-create, and
-              issue-comment operations from the selected GitHub MCP server. If readiness still
-              fails, compare the discovered MCP tools shown in Settings against those issue
-              operations.
-            </div>
-          </div>
-        </div>
-      </DetailDrawer>
-
-      <AnimatePresence>
-        {failureReporterWorkspaceBrowserOpen ? (
-          <motion.div
-            className="tcp-confirm-overlay"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <button
-              type="button"
-              className="tcp-confirm-backdrop"
-              aria-label="Close failure reporter workspace dialog"
-              onClick={() => {
-                setFailureReporterWorkspaceBrowserOpen(false);
-                setFailureReporterWorkspaceBrowserSearch("");
-              }}
-            />
-            <motion.div
-              className="tcp-confirm-dialog max-w-2xl"
-              initial={{ opacity: 0, y: 8, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 6, scale: 0.98 }}
-            >
-              <h3 className="tcp-confirm-title">Select Failure Reporter Directory</h3>
-              <p className="tcp-confirm-message">
-                Current: {failureReporterCurrentBrowseDir || "n/a"}
-              </p>
-              <div className="mb-2 flex flex-wrap gap-2">
-                <button
-                  className="tcp-btn"
-                  onClick={() => {
-                    if (!failureReporterWorkspaceParentDir) return;
-                    setFailureReporterWorkspaceBrowserDir(failureReporterWorkspaceParentDir);
-                  }}
-                  disabled={!failureReporterWorkspaceParentDir}
-                >
-                  <i data-lucide="arrow-up-circle"></i>
-                  Up
-                </button>
-                <button
-                  className="tcp-btn-primary"
-                  onClick={() => {
-                    if (!failureReporterCurrentBrowseDir) return;
-                    setFailureReporterWorkspaceRoot(failureReporterCurrentBrowseDir);
-                    setFailureReporterWorkspaceBrowserOpen(false);
-                    setFailureReporterWorkspaceBrowserSearch("");
-                    toast(
-                      "ok",
-                      `Failure reporter directory selected: ${failureReporterCurrentBrowseDir}`
-                    );
-                  }}
-                >
-                  <i data-lucide="badge-check"></i>
-                  Select This Folder
-                </button>
-                <button
-                  className="tcp-btn"
-                  onClick={() => {
-                    setFailureReporterWorkspaceBrowserOpen(false);
-                    setFailureReporterWorkspaceBrowserSearch("");
-                  }}
-                >
-                  <i data-lucide="x"></i>
-                  Close
-                </button>
-              </div>
-              <div className="mb-2">
-                <input
-                  className="tcp-input"
-                  placeholder="Type to filter folders..."
-                  value={failureReporterWorkspaceBrowserSearch}
-                  onInput={(e) =>
-                    setFailureReporterWorkspaceBrowserSearch((e.target as HTMLInputElement).value)
-                  }
-                />
-              </div>
-              <div className="max-h-[360px] overflow-auto rounded-lg border border-slate-700/60 bg-slate-900/20 p-2">
-                {filteredFailureReporterWorkspaceDirectories.length ? (
-                  filteredFailureReporterWorkspaceDirectories.map((entry: any) => (
-                    <button
-                      key={String(entry?.path || entry?.name)}
-                      className="tcp-list-item mb-1 w-full text-left"
-                      onClick={() =>
-                        setFailureReporterWorkspaceBrowserDir(String(entry?.path || ""))
-                      }
-                    >
-                      <i data-lucide="folder-open"></i>
-                      {String(entry?.name || entry?.path || "")}
-                    </button>
-                  ))
                 ) : (
-                  <EmptyState
-                    text={
-                      failureReporterWorkspaceSearchQuery
-                        ? "No folders match your search."
-                        : "No subdirectories in this folder."
-                    }
-                  />
-                )}
-              </div>
-            </motion.div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
-
-      <DetailDrawer
-        open={diagnosticsOpen}
-        onClose={() => setDiagnosticsOpen(false)}
-        title="Browser diagnostics"
-      >
-        <div className="grid gap-3">
-          <div className="grid gap-2 md:grid-cols-3">
-            <div className="tcp-list-item">
-              <div className="text-sm font-medium">Status</div>
-              <div className="mt-1 text-sm">
-                {browserStatus.data
-                  ? browserStatus.data.runnable
-                    ? "Ready"
-                    : browserStatus.data.enabled
-                      ? "Blocked"
-                      : "Disabled"
-                  : "Unknown"}
-              </div>
-              <div className="tcp-subtle text-xs">
-                Headless default: {browserStatus.data?.headless_default ? "yes" : "no"}
-              </div>
-            </div>
-            <div className="tcp-list-item">
-              <div className="text-sm font-medium">Sidecar</div>
-              <div className="mt-1 break-all text-sm">
-                {browserStatus.data?.sidecar?.path || "Not found"}
-              </div>
-              <div className="tcp-subtle text-xs">
-                {browserStatus.data?.sidecar?.version || "No version detected"}
-              </div>
-            </div>
-            <div className="tcp-list-item">
-              <div className="text-sm font-medium">Browser</div>
-              <div className="mt-1 break-all text-sm">
-                {browserStatus.data?.browser?.path || "Not found"}
-              </div>
-              <div className="tcp-subtle text-xs">
-                {browserStatus.data?.browser?.version ||
-                  browserStatus.data?.browser?.channel ||
-                  "No version detected"}
-              </div>
-            </div>
-          </div>
-
-          <Toolbar>
-            <button className="tcp-btn" onClick={() => void browserStatus.refetch()}>
-              <i data-lucide="refresh-cw"></i>
-              Refresh browser status
-            </button>
-            <button
-              className="tcp-btn"
-              onClick={() => installBrowserMutation.mutate()}
-              disabled={installBrowserMutation.isPending}
-            >
-              <i data-lucide="download"></i>
-              {installBrowserMutation.isPending ? "Installing sidecar..." : "Install sidecar"}
-            </button>
-            <button
-              className="tcp-btn"
-              onClick={() => smokeTestBrowserMutation.mutate()}
-              disabled={smokeTestBrowserMutation.isPending}
-            >
-              <i data-lucide="globe"></i>
-              {smokeTestBrowserMutation.isPending ? "Running smoke test..." : "Run smoke test"}
-            </button>
-            <button
-              className="tcp-btn"
-              onClick={() =>
-                api("/api/engine/browser/status", { method: "GET" })
-                  .then(() => toast("ok", "Browser diagnostics refreshed."))
-                  .catch((error) =>
-                    toast("err", error instanceof Error ? error.message : String(error))
-                  )
-              }
-            >
-              <i data-lucide="activity"></i>
-              Re-run diagnostics
-            </button>
-          </Toolbar>
-
-          {browserStatus.isLoading ? (
-            <EmptyState text="Loading browser diagnostics..." />
-          ) : browserStatus.data ? (
-            <>
-              {browserIssues.length ? (
-                <div className="grid gap-2">
-                  <div className="text-sm font-medium">Blocking issues</div>
-                  {browserIssues.map((issue, index) => (
-                    <div key={`${issue.code || "issue"}-${index}`} className="tcp-list-item">
-                      <div className="text-sm font-medium">{issue.code || "browser_issue"}</div>
-                      <div className="tcp-subtle text-xs">
-                        {issue.message || "Unknown browser issue."}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
-                  Browser automation is ready on this machine.
-                </div>
-              )}
-
-              {browserSmokeResult ? (
-                <div className="grid gap-2">
-                  <div className="text-sm font-medium">Latest smoke test</div>
-                  <div className="tcp-list-item">
-                    <div className="text-sm font-medium">
-                      {browserSmokeResult.title || "Smoke test"}
-                    </div>
-                    <div className="tcp-subtle text-xs">
-                      {browserSmokeResult.final_url || browserSmokeResult.url || "No URL returned"}
-                    </div>
-                    <div className="tcp-subtle text-xs">
-                      Load state: {browserSmokeResult.load_state || "unknown"} · elements:{" "}
-                      {String(browserSmokeResult.element_count ?? 0)} · closed:{" "}
-                      {browserSmokeResult.closed ? "yes" : "no"}
-                    </div>
-                    {browserSmokeResult.excerpt ? (
-                      <pre className="tcp-code mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words">
-                        {browserSmokeResult.excerpt}
-                      </pre>
-                    ) : null}
+                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+                    Browser automation is ready on this machine.
                   </div>
-                </div>
-              ) : null}
+                )}
 
-              {browserRecommendations.length ? (
-                <div className="grid gap-2">
-                  <div className="text-sm font-medium">Recommendations</div>
-                  {browserRecommendations.map((row, index) => (
-                    <div key={`browser-recommendation-${index}`} className="tcp-list-item text-sm">
-                      {row}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              {browserInstallHints.length ? (
-                <div className="grid gap-2">
-                  <div className="text-sm font-medium">Install hints</div>
-                  {browserInstallHints.map((row, index) => (
-                    <div key={`browser-install-hint-${index}`} className="tcp-list-item text-sm">
-                      {row}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              {browserStatus.data?.last_error ? (
-                <div className="tcp-subtle rounded-lg border border-slate-700/60 bg-slate-900/20 p-3 text-xs">
-                  Last error: {browserStatus.data.last_error}
-                </div>
-              ) : null}
-            </>
-          ) : (
-            <EmptyState text="Browser diagnostics are unavailable." />
-          )}
-        </div>
-      </DetailDrawer>
-
-      <AnimatePresence>
-        {mcpModalOpen ? (
-          <motion.div
-            className="tcp-confirm-overlay"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <button
-              type="button"
-              className="tcp-confirm-backdrop"
-              aria-label="Close MCP server dialog"
-              onClick={() => setMcpModalOpen(false)}
-            />
-            <motion.div
-              className="tcp-confirm-dialog tcp-verification-modal"
-              initial={{ opacity: 0, y: 8, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 6, scale: 0.98 }}
-            >
-              <div className="mb-3 flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="tcp-confirm-title">
-                    {mcpEditingName ? "Edit MCP Server" : "Add MCP Server"}
-                  </h3>
-                  <p className="tcp-confirm-message">
-                    Configure transport and auth without leaving Settings.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  className="tcp-btn h-8 px-2"
-                  onClick={() => setMcpModalOpen(false)}
-                >
-                  <i data-lucide="x"></i>
-                </button>
-              </div>
-
-              <form
-                className="grid gap-3"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  mcpSaveMutation.mutate();
-                }}
-              >
-                <div className="tcp-settings-tabs">
-                  <button
-                    type="button"
-                    className={`tcp-settings-tab tcp-settings-tab-underline ${
-                      mcpModalTab === "catalog" ? "active" : ""
-                    }`}
-                    onClick={() => setMcpModalTab("catalog")}
-                  >
-                    <i data-lucide="blocks"></i>
-                    Built-in packs
-                  </button>
-                  <button
-                    type="button"
-                    className={`tcp-settings-tab tcp-settings-tab-underline ${
-                      mcpModalTab === "manual" ? "active" : ""
-                    }`}
-                    onClick={() => setMcpModalTab("manual")}
-                  >
-                    <i data-lucide="square-pen"></i>
-                    Manual
-                  </button>
-                </div>
-
-                {mcpModalTab === "catalog" ? (
-                  <div className="grid gap-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="tcp-subtle text-sm">
-                        {mcpCatalog.generatedAt
-                          ? `Built-in MCP packs · generated ${mcpCatalog.generatedAt}`
-                          : "Built-in MCP packs"}
+                {browserSmokeResult ? (
+                  <div className="grid gap-2">
+                    <div className="text-sm font-medium">Latest smoke test</div>
+                    <div className="tcp-list-item">
+                      <div className="text-sm font-medium">
+                        {browserSmokeResult.title || "Smoke test"}
                       </div>
-                      <button
-                        type="button"
-                        className="tcp-btn h-8 px-3 text-xs"
-                        onClick={() => void mcpCatalogQuery.refetch()}
-                      >
-                        <i data-lucide="refresh-cw"></i>
-                        Refresh
-                      </button>
+                      <div className="tcp-subtle text-xs">
+                        {browserSmokeResult.final_url ||
+                          browserSmokeResult.url ||
+                          "No URL returned"}
+                      </div>
+                      <div className="tcp-subtle text-xs">
+                        Load state: {browserSmokeResult.load_state || "unknown"} · elements:{" "}
+                        {String(browserSmokeResult.element_count ?? 0)} · closed:{" "}
+                        {browserSmokeResult.closed ? "yes" : "no"}
+                      </div>
+                      {browserSmokeResult.excerpt ? (
+                        <pre className="tcp-code mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words">
+                          {browserSmokeResult.excerpt}
+                        </pre>
+                      ) : null}
                     </div>
-                    <input
-                      className="tcp-input"
-                      value={mcpCatalogSearch}
-                      onInput={(event) =>
-                        setMcpCatalogSearch((event.target as HTMLInputElement).value)
-                      }
-                      placeholder="Search built-in MCP packs"
-                    />
-                    <div className="grid max-h-[26rem] gap-2 overflow-auto pr-1 md:grid-cols-2">
-                      {filteredMcpCatalog.length ? (
-                        filteredMcpCatalog.map((row) => {
-                          const alreadyConfigured = configuredMcpServerNames.has(
-                            String(row.serverConfigName || row.slug || "").toLowerCase()
-                          );
-                          return (
-                            <div key={row.slug} className="tcp-list-item grid gap-2">
-                              <div className="flex flex-wrap items-start justify-between gap-2">
-                                <div>
-                                  <div className="font-semibold">{row.name}</div>
-                                  <div className="tcp-subtle text-xs">
-                                    {row.slug}
-                                    {row.requiresSetup ? " · setup required" : ""}
+                  </div>
+                ) : null}
+
+                {browserRecommendations.length ? (
+                  <div className="grid gap-2">
+                    <div className="text-sm font-medium">Recommendations</div>
+                    {browserRecommendations.map((row, index) => (
+                      <div
+                        key={`browser-recommendation-${index}`}
+                        className="tcp-list-item text-sm"
+                      >
+                        {row}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                {browserInstallHints.length ? (
+                  <div className="grid gap-2">
+                    <div className="text-sm font-medium">Install hints</div>
+                    {browserInstallHints.map((row, index) => (
+                      <div key={`browser-install-hint-${index}`} className="tcp-list-item text-sm">
+                        {row}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                {browserStatus.data?.last_error ? (
+                  <div className="tcp-subtle rounded-lg border border-slate-700/60 bg-slate-900/20 p-3 text-xs">
+                    Last error: {browserStatus.data.last_error}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <EmptyState text="Browser diagnostics are unavailable." />
+            )}
+          </div>
+        </DetailDrawer>
+
+        <AnimatePresence>
+          {mcpModalOpen ? (
+            <motion.div
+              className="tcp-confirm-overlay"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <button
+                type="button"
+                className="tcp-confirm-backdrop"
+                aria-label="Close MCP server dialog"
+                onClick={() => setMcpModalOpen(false)}
+              />
+              <motion.div
+                className="tcp-confirm-dialog tcp-verification-modal"
+                initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 6, scale: 0.98 }}
+              >
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="tcp-confirm-title">
+                      {mcpEditingName ? "Edit MCP Server" : "Add MCP Server"}
+                    </h3>
+                    <p className="tcp-confirm-message">
+                      Configure transport and auth without leaving Settings.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="tcp-btn h-8 px-2"
+                    onClick={() => setMcpModalOpen(false)}
+                  >
+                    <i data-lucide="x"></i>
+                  </button>
+                </div>
+
+                <form
+                  className="grid gap-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    mcpSaveMutation.mutate();
+                  }}
+                >
+                  <div className="tcp-settings-tabs">
+                    <button
+                      type="button"
+                      className={`tcp-settings-tab tcp-settings-tab-underline ${
+                        mcpModalTab === "catalog" ? "active" : ""
+                      }`}
+                      onClick={() => setMcpModalTab("catalog")}
+                    >
+                      <i data-lucide="blocks"></i>
+                      Built-in packs
+                    </button>
+                    <button
+                      type="button"
+                      className={`tcp-settings-tab tcp-settings-tab-underline ${
+                        mcpModalTab === "manual" ? "active" : ""
+                      }`}
+                      onClick={() => setMcpModalTab("manual")}
+                    >
+                      <i data-lucide="square-pen"></i>
+                      Manual
+                    </button>
+                  </div>
+
+                  {mcpModalTab === "catalog" ? (
+                    <div className="grid gap-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="tcp-subtle text-sm">
+                          {mcpCatalog.generatedAt
+                            ? `Built-in MCP packs · generated ${mcpCatalog.generatedAt}`
+                            : "Built-in MCP packs"}
+                        </div>
+                        <button
+                          type="button"
+                          className="tcp-btn h-8 px-3 text-xs"
+                          onClick={() => void mcpCatalogQuery.refetch()}
+                        >
+                          <i data-lucide="refresh-cw"></i>
+                          Refresh
+                        </button>
+                      </div>
+                      <input
+                        className="tcp-input"
+                        value={mcpCatalogSearch}
+                        onInput={(event) =>
+                          setMcpCatalogSearch((event.target as HTMLInputElement).value)
+                        }
+                        placeholder="Search built-in MCP packs"
+                      />
+                      <div className="grid max-h-[26rem] gap-2 overflow-auto pr-1 md:grid-cols-2">
+                        {filteredMcpCatalog.length ? (
+                          filteredMcpCatalog.map((row) => {
+                            const alreadyConfigured = configuredMcpServerNames.has(
+                              String(row.serverConfigName || row.slug || "").toLowerCase()
+                            );
+                            return (
+                              <div key={row.slug} className="tcp-list-item grid gap-2">
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div>
+                                    <div className="font-semibold">{row.name}</div>
+                                    <div className="tcp-subtle text-xs">
+                                      {row.slug}
+                                      {row.requiresSetup ? " · setup required" : ""}
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    <Badge tone="info">{row.toolCount} tools</Badge>
+                                    <Badge tone={row.requiresAuth ? "warn" : "ok"}>
+                                      {row.requiresAuth ? "Auth" : "Authless"}
+                                    </Badge>
                                   </div>
                                 </div>
-                                <div className="flex flex-wrap gap-2">
-                                  <Badge tone="info">{row.toolCount} tools</Badge>
-                                  <Badge tone={row.requiresAuth ? "warn" : "ok"}>
-                                    {row.requiresAuth ? "Auth" : "Authless"}
-                                  </Badge>
+                                <div className="tcp-subtle line-clamp-2 text-xs">
+                                  {row.description || row.transportUrl}
+                                </div>
+                                <div className="tcp-subtle break-all text-xs">
+                                  {row.transportUrl}
+                                </div>
+                                <div className="mt-auto flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    className="tcp-btn h-8 px-3 text-xs"
+                                    onClick={() => {
+                                      setMcpName(
+                                        normalizeMcpName(
+                                          row.serverConfigName || row.slug || row.name
+                                        )
+                                      );
+                                      setMcpTransport(row.transportUrl);
+                                      setMcpModalTab("manual");
+                                      toast(
+                                        "ok",
+                                        `Loaded ${row.name}. Review and save when ready.`
+                                      );
+                                    }}
+                                  >
+                                    Use pack
+                                  </button>
+                                  {row.documentationUrl ? (
+                                    <a
+                                      className="tcp-btn h-8 px-3 text-xs"
+                                      href={row.documentationUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      <i data-lucide="external-link"></i>
+                                      Docs
+                                    </a>
+                                  ) : null}
+                                  {alreadyConfigured ? <Badge tone="ok">added</Badge> : null}
                                 </div>
                               </div>
-                              <div className="tcp-subtle line-clamp-2 text-xs">
-                                {row.description || row.transportUrl}
-                              </div>
-                              <div className="tcp-subtle break-all text-xs">{row.transportUrl}</div>
-                              <div className="mt-auto flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  className="tcp-btn h-8 px-3 text-xs"
-                                  onClick={() => {
-                                    setMcpName(
-                                      normalizeMcpName(row.serverConfigName || row.slug || row.name)
-                                    );
-                                    setMcpTransport(row.transportUrl);
-                                    setMcpModalTab("manual");
-                                    toast("ok", `Loaded ${row.name}. Review and save when ready.`);
-                                  }}
-                                >
-                                  Use pack
-                                </button>
-                                {row.documentationUrl ? (
-                                  <a
-                                    className="tcp-btn h-8 px-3 text-xs"
-                                    href={row.documentationUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    <i data-lucide="external-link"></i>
-                                    Docs
-                                  </a>
-                                ) : null}
-                                {alreadyConfigured ? <Badge tone="ok">added</Badge> : null}
-                              </div>
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <EmptyState text="No built-in MCP packs match this search." />
-                      )}
+                            );
+                          })
+                        ) : (
+                          <EmptyState text="No built-in MCP packs match this search." />
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="grid gap-3 md:grid-cols-2">
+                  ) : (
+                    <>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">Name</label>
+                          <input
+                            className="tcp-input"
+                            value={mcpName}
+                            onInput={(event) =>
+                              setMcpName((event.target as HTMLInputElement).value)
+                            }
+                            placeholder="mcp-server"
+                          />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">Auth mode</label>
+                          <select
+                            className="tcp-select"
+                            value={mcpAuthMode}
+                            onChange={(event) =>
+                              setMcpAuthMode((event.target as HTMLSelectElement).value)
+                            }
+                          >
+                            <option value="none">No Auth Header</option>
+                            <option value="auto">Auto</option>
+                            <option value="x-api-key">x-api-key</option>
+                            <option value="bearer">Authorization Bearer</option>
+                            <option value="custom">Custom Header</option>
+                          </select>
+                        </div>
+                      </div>
+
                       <div className="grid gap-2">
-                        <label className="text-sm font-medium">Name</label>
+                        <label className="text-sm font-medium">Transport URL</label>
                         <input
                           className="tcp-input"
-                          value={mcpName}
-                          onInput={(event) => setMcpName((event.target as HTMLInputElement).value)}
-                          placeholder="mcp-server"
+                          value={mcpTransport}
+                          onInput={(event) => {
+                            const value = (event.target as HTMLInputElement).value;
+                            setMcpTransport(value);
+                            if (!String(mcpName || "").trim() || mcpName === "mcp-server") {
+                              const inferred = inferMcpNameFromTransport(value);
+                              if (inferred) setMcpName(inferred);
+                            }
+                          }}
+                          placeholder="https://example.com/mcp"
                         />
                       </div>
+
+                      {mcpAuthMode === "custom" ? (
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">Custom header name</label>
+                          <input
+                            className="tcp-input"
+                            value={mcpCustomHeader}
+                            onInput={(event) =>
+                              setMcpCustomHeader((event.target as HTMLInputElement).value)
+                            }
+                            placeholder="X-My-Token"
+                          />
+                        </div>
+                      ) : null}
+
                       <div className="grid gap-2">
-                        <label className="text-sm font-medium">Auth mode</label>
-                        <select
-                          className="tcp-select"
-                          value={mcpAuthMode}
+                        <label className="text-sm font-medium">Token</label>
+                        <input
+                          className="tcp-input"
+                          type="password"
+                          value={mcpToken}
+                          onInput={(event) => setMcpToken((event.target as HTMLInputElement).value)}
+                          placeholder="token"
+                        />
+                        <div className="tcp-subtle text-xs">{mcpAuthPreviewText}</div>
+                      </div>
+
+                      <label className="inline-flex items-center gap-2 text-sm text-slate-200">
+                        <input
+                          type="checkbox"
+                          className="accent-slate-400"
+                          checked={mcpConnectAfterAdd}
                           onChange={(event) =>
-                            setMcpAuthMode((event.target as HTMLSelectElement).value)
+                            setMcpConnectAfterAdd((event.target as HTMLInputElement).checked)
                           }
-                        >
-                          <option value="none">No Auth Header</option>
-                          <option value="auto">Auto</option>
-                          <option value="x-api-key">x-api-key</option>
-                          <option value="bearer">Authorization Bearer</option>
-                          <option value="custom">Custom Header</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-2">
-                      <label className="text-sm font-medium">Transport URL</label>
-                      <input
-                        className="tcp-input"
-                        value={mcpTransport}
-                        onInput={(event) => {
-                          const value = (event.target as HTMLInputElement).value;
-                          setMcpTransport(value);
-                          if (!String(mcpName || "").trim() || mcpName === "mcp-server") {
-                            const inferred = inferMcpNameFromTransport(value);
-                            if (inferred) setMcpName(inferred);
-                          }
-                        }}
-                        placeholder="https://example.com/mcp"
-                      />
-                    </div>
-
-                    {mcpAuthMode === "custom" ? (
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Custom header name</label>
-                        <input
-                          className="tcp-input"
-                          value={mcpCustomHeader}
-                          onInput={(event) =>
-                            setMcpCustomHeader((event.target as HTMLInputElement).value)
-                          }
-                          placeholder="X-My-Token"
                         />
-                      </div>
-                    ) : null}
+                        Connect after save
+                      </label>
+                    </>
+                  )}
 
-                    <div className="grid gap-2">
-                      <label className="text-sm font-medium">Token</label>
-                      <input
-                        className="tcp-input"
-                        type="password"
-                        value={mcpToken}
-                        onInput={(event) => setMcpToken((event.target as HTMLInputElement).value)}
-                        placeholder="token"
-                      />
-                      <div className="tcp-subtle text-xs">{mcpAuthPreviewText}</div>
-                    </div>
-
-                    <label className="inline-flex items-center gap-2 text-sm text-slate-200">
-                      <input
-                        type="checkbox"
-                        className="accent-slate-400"
-                        checked={mcpConnectAfterAdd}
-                        onChange={(event) =>
-                          setMcpConnectAfterAdd((event.target as HTMLInputElement).checked)
-                        }
-                      />
-                      Connect after save
-                    </label>
-                  </>
-                )}
-
-                <div className="tcp-confirm-actions mt-2">
-                  <button type="button" className="tcp-btn" onClick={() => setMcpModalOpen(false)}>
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="tcp-btn-primary"
-                    disabled={mcpSaveMutation.isPending}
-                  >
-                    <i data-lucide="save"></i>
-                    Save MCP server
-                  </button>
-                </div>
-              </form>
+                  <div className="tcp-confirm-actions mt-2">
+                    <button
+                      type="button"
+                      className="tcp-btn"
+                      onClick={() => setMcpModalOpen(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="tcp-btn-primary"
+                      disabled={mcpSaveMutation.isPending}
+                    >
+                      <i data-lucide="save"></i>
+                      Save MCP server
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+          ) : null}
+        </AnimatePresence>
+      </div>
     </AnimatedPage>
   );
 }

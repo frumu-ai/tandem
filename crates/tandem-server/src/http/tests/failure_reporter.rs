@@ -1,6 +1,95 @@
 use super::*;
 
 #[tokio::test]
+async fn failure_reporter_runtime_creates_incident_and_draft_from_failure_event() {
+    let state = test_state().await;
+    state
+        .put_failure_reporter_config(crate::FailureReporterConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let task = tokio::spawn(crate::run_failure_reporter(state.clone()));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    state.event_bus.publish(EngineEvent::new(
+        "session.error",
+        json!({
+            "sessionID": "session-123",
+            "runID": "run-123",
+            "reason": "Prompt retry failed",
+            "component": "swarm-orchestrator",
+        }),
+    ));
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let incidents = state.list_failure_reporter_incidents(10).await;
+            let drafts = state.list_failure_reporter_drafts(10).await;
+            if incidents
+                .iter()
+                .any(|row| row.draft_id.is_some() || row.last_error.is_some())
+                || !drafts.is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("incident timeout");
+
+    let incidents = state.list_failure_reporter_incidents(10).await;
+    assert_eq!(incidents.len(), 1);
+    let incident = &incidents[0];
+    assert_eq!(incident.event_type, "session.error");
+    assert_eq!(incident.repo, "acme/platform");
+    assert_eq!(incident.workspace_root, "/tmp/acme");
+    assert!(incident.draft_id.is_some());
+
+    let drafts = state.list_failure_reporter_drafts(10).await;
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(
+        drafts[0].draft_id,
+        incident.draft_id.clone().unwrap_or_default()
+    );
+
+    task.abort();
+}
+
+#[tokio::test]
+async fn paused_failure_reporter_runtime_ignores_failure_events() {
+    let state = test_state().await;
+    state
+        .put_failure_reporter_config(crate::FailureReporterConfig {
+            enabled: true,
+            paused: true,
+            repo: Some("acme/platform".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let task = tokio::spawn(crate::run_failure_reporter(state.clone()));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    state.event_bus.publish(EngineEvent::new(
+        "session.error",
+        json!({
+            "sessionID": "session-456",
+            "reason": "Paused reporter should ignore this",
+        }),
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    assert!(state.list_failure_reporter_incidents(10).await.is_empty());
+    assert!(state.list_failure_reporter_drafts(10).await.is_empty());
+    task.abort();
+}
+
+#[tokio::test]
 async fn failure_reporter_report_creates_and_dedupes_draft() {
     let state = test_state().await;
     state

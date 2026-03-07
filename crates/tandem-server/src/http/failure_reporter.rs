@@ -1,6 +1,6 @@
 use crate::capability_resolver::canonicalize_tool_name;
 use crate::http::AppState;
-use crate::{FailureReporterConfig, FailureReporterSubmission};
+use crate::{FailureReporterConfig, FailureReporterDraftRecord, FailureReporterSubmission};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -28,6 +28,11 @@ pub(super) struct FailureReporterConfigInput {
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct FailureReporterDraftsQuery {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct FailureReporterIncidentsQuery {
     pub limit: Option<usize>,
 }
 
@@ -125,6 +130,37 @@ pub(super) async fn get_failure_reporter_debug(
     }))
 }
 
+pub(super) async fn list_failure_reporter_incidents(
+    State(state): State<AppState>,
+    Query(query): Query<FailureReporterIncidentsQuery>,
+) -> Json<serde_json::Value> {
+    let incidents = state
+        .list_failure_reporter_incidents(query.limit.unwrap_or(50))
+        .await;
+    Json(json!({
+        "incidents": incidents,
+        "count": incidents.len(),
+    }))
+}
+
+pub(super) async fn get_failure_reporter_incident(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.get_failure_reporter_incident(&id).await {
+        Some(incident) => Json(json!({ "incident": incident })).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Failure reporter incident not found",
+                "code": "FAILURE_REPORTER_INCIDENT_NOT_FOUND",
+                "incident_id": id,
+            })),
+        )
+            .into_response(),
+    }
+}
+
 pub(super) async fn list_failure_reporter_drafts(
     State(state): State<AppState>,
     Query(query): Query<FailureReporterDraftsQuery>,
@@ -136,6 +172,88 @@ pub(super) async fn list_failure_reporter_drafts(
         "drafts": drafts,
         "count": drafts.len(),
     }))
+}
+
+pub(super) async fn pause_failure_reporter(State(state): State<AppState>) -> Response {
+    let mut config = state.failure_reporter_config().await;
+    config.paused = true;
+    match state.put_failure_reporter_config(config).await {
+        Ok(saved) => Json(json!({ "ok": true, "failure_reporter": saved })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to pause Failure Reporter",
+                "code": "FAILURE_REPORTER_PAUSE_FAILED",
+                "detail": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn resume_failure_reporter(State(state): State<AppState>) -> Response {
+    let mut config = state.failure_reporter_config().await;
+    config.paused = false;
+    match state.put_failure_reporter_config(config).await {
+        Ok(saved) => Json(json!({ "ok": true, "failure_reporter": saved })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to resume Failure Reporter",
+                "code": "FAILURE_REPORTER_RESUME_FAILED",
+                "detail": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn replay_failure_reporter_incident(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(incident) = state.get_failure_reporter_incident(&id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Failure reporter incident not found",
+                "code": "FAILURE_REPORTER_INCIDENT_NOT_FOUND",
+                "incident_id": id,
+            })),
+        )
+            .into_response();
+    };
+    let Some(draft_id) = incident.draft_id.as_deref() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Failure reporter incident has no associated draft",
+                "code": "FAILURE_REPORTER_INCIDENT_NO_DRAFT",
+                "incident_id": id,
+            })),
+        )
+            .into_response();
+    };
+    match ensure_failure_reporter_triage_run(state, draft_id, true).await {
+        Ok((draft, run, deduped)) => Json(json!({
+            "ok": true,
+            "incident": incident,
+            "draft": draft,
+            "run": run,
+            "deduped": deduped,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to replay Failure Reporter incident",
+                "code": "FAILURE_REPORTER_INCIDENT_REPLAY_FAILED",
+                "incident_id": id,
+                "detail": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 pub(super) async fn get_failure_reporter_draft(
@@ -253,58 +371,69 @@ pub(super) async fn create_failure_reporter_triage_run(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
-    let config = state.failure_reporter_config().await;
-    let draft = match state.get_failure_reporter_draft(&id).await {
-        Some(row) => row,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
+    match ensure_failure_reporter_triage_run(state.clone(), &id, false).await {
+        Ok((draft, run_id, deduped)) => {
+            let run = load_context_run_state(
+                &state,
+                draft.triage_run_id.as_deref().unwrap_or(run_id.as_str()),
+            )
+            .await
+            .ok();
+            Json(json!({
+                "ok": true,
+                "draft": draft,
+                "run": run,
+                "deduped": deduped,
+            }))
+            .into_response()
+        }
+        Err(error) => {
+            let detail = error.to_string();
+            let status = if detail.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if detail.contains("approved") || detail.contains("Denied") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (
+                status,
                 Json(json!({
-                    "error": "Failure Reporter draft not found",
-                    "code": "FAILURE_REPORTER_DRAFT_NOT_FOUND",
+                    "error": "Failed to create Failure Reporter triage run",
+                    "code": "FAILURE_REPORTER_TRIAGE_RUN_CREATE_FAILED",
                     "draft_id": id,
+                    "detail": detail,
                 })),
             )
-                .into_response();
+                .into_response()
         }
-    };
+    }
+}
+
+pub(crate) async fn ensure_failure_reporter_triage_run(
+    state: AppState,
+    id: &str,
+    bypass_approval_gate: bool,
+) -> anyhow::Result<(FailureReporterDraftRecord, String, bool)> {
+    let config = state.failure_reporter_config().await;
+    let draft = state
+        .get_failure_reporter_draft(id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Failure Reporter draft not found"))?;
 
     if draft.status.eq_ignore_ascii_case("denied") {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "Denied Failure Reporter drafts cannot create triage runs",
-                "code": "FAILURE_REPORTER_DRAFT_DENIED",
-                "draft_id": id,
-            })),
-        )
-            .into_response();
+        anyhow::bail!("Denied Failure Reporter drafts cannot create triage runs");
     }
-    if config.require_approval_for_new_issues
+    if !bypass_approval_gate
+        && config.require_approval_for_new_issues
         && draft.status.eq_ignore_ascii_case("approval_required")
     {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "Failure Reporter draft must be approved before triage run creation",
-                "code": "FAILURE_REPORTER_DRAFT_NOT_APPROVED",
-                "draft_id": id,
-            })),
-        )
-            .into_response();
+        anyhow::bail!("Failure Reporter draft must be approved before triage run creation");
     }
 
-    if let Some(existing_run_id) = draft.triage_run_id.as_deref() {
-        match load_context_run_state(&state, existing_run_id).await {
-            Ok(run) => {
-                return Json(json!({
-                    "ok": true,
-                    "deduped": true,
-                    "draft": draft,
-                    "run": run,
-                }))
-                .into_response();
-            }
+    if let Some(existing_run_id) = draft.triage_run_id.clone() {
+        match load_context_run_state(&state, &existing_run_id).await {
+            Ok(_) => return Ok((draft, existing_run_id, true)),
             Err(_) => {}
         }
     }
@@ -367,29 +496,9 @@ pub(super) async fn create_failure_reporter_triage_run(
                 payload.get("run").cloned().unwrap_or_default(),
             ) {
                 Ok(run) => run,
-                Err(_) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({
-                            "error": "Failed to deserialize triage context run",
-                            "code": "FAILURE_REPORTER_TRIAGE_RUN_DECODE_FAILED",
-                            "draft_id": id,
-                        })),
-                    )
-                        .into_response();
-                }
+                Err(_) => anyhow::bail!("Failed to deserialize triage context run"),
             },
-            Err(status) => {
-                return (
-                    status,
-                    Json(json!({
-                        "error": "Failed to create triage context run",
-                        "code": "FAILURE_REPORTER_TRIAGE_RUN_CREATE_FAILED",
-                        "draft_id": id,
-                    })),
-                )
-                    .into_response();
-            }
+            Err(status) => anyhow::bail!("Failed to create triage context run: HTTP {status}"),
         };
 
     let inspect_task_id = format!("triage-inspect-{}", Uuid::new_v4().simple());
@@ -448,16 +557,7 @@ pub(super) async fn create_failure_reporter_triage_run(
     )
     .await;
     if tasks_response.is_err() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "error": "Failed to seed triage tasks",
-                "code": "FAILURE_REPORTER_TRIAGE_TASK_CREATE_FAILED",
-                "draft_id": id,
-                "run_id": run_id,
-            })),
-        )
-            .into_response();
+        anyhow::bail!("Failed to seed triage tasks");
     }
 
     let mut updated_draft = draft.clone();
@@ -467,19 +567,7 @@ pub(super) async fn create_failure_reporter_triage_run(
         let mut drafts = state.failure_reporter_drafts.write().await;
         drafts.insert(updated_draft.draft_id.clone(), updated_draft.clone());
     }
-    if let Err(error) = state.persist_failure_reporter_drafts().await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "error": "Failed to persist Failure Reporter draft triage state",
-                "code": "FAILURE_REPORTER_TRIAGE_PERSIST_FAILED",
-                "detail": error.to_string(),
-                "draft_id": id,
-                "run_id": run_id,
-            })),
-        )
-            .into_response();
-    }
+    state.persist_failure_reporter_drafts().await?;
 
     let mut run = match load_context_run_state(&state, &run_id).await {
         Ok(row) => row,
@@ -488,30 +576,14 @@ pub(super) async fn create_failure_reporter_triage_run(
     run.status = ContextRunStatus::Planning;
     run.why_next_step =
         Some("Inspect the failure report, then validate the failure scope.".to_string());
-    if let Err(status) = ensure_context_run_dir(&state, &run_id).await {
-        return (
-            status,
-            Json(json!({
-                "error": "Failed to finalize triage run workspace",
-                "code": "FAILURE_REPORTER_TRIAGE_RUN_DIR_FAILED",
-                "draft_id": id,
-                "run_id": run_id,
-            })),
-        )
-            .into_response();
-    }
-    if let Err(status) = save_context_run_state(&state, &run).await {
-        return (
-            status,
-            Json(json!({
-                "error": "Failed to finalize triage run state",
-                "code": "FAILURE_REPORTER_TRIAGE_RUN_SAVE_FAILED",
-                "draft_id": id,
-                "run_id": run_id,
-            })),
-        )
-            .into_response();
-    }
+    ensure_context_run_dir(&state, &run_id)
+        .await
+        .map_err(|status| {
+            anyhow::anyhow!("Failed to finalize triage run workspace: HTTP {status}")
+        })?;
+    save_context_run_state(&state, &run)
+        .await
+        .map_err(|status| anyhow::anyhow!("Failed to finalize triage run state: HTTP {status}"))?;
     state.event_bus.publish(tandem_types::EngineEvent::new(
         "failure_reporter.triage_run.created",
         json!({
@@ -521,10 +593,5 @@ pub(super) async fn create_failure_reporter_triage_run(
         }),
     ));
 
-    Json(json!({
-        "ok": true,
-        "draft": updated_draft,
-        "run": run,
-    }))
-    .into_response()
+    Ok((updated_draft, run.run_id, false))
 }

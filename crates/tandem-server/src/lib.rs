@@ -717,6 +717,8 @@ impl Default for FailureReporterProviderPreference {
 pub struct FailureReporterConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub paused: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -739,6 +741,7 @@ impl Default for FailureReporterConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            paused: false,
             workspace_root: None,
             repo: None,
             mcp_server: None,
@@ -766,6 +769,65 @@ pub struct FailureReporterDraftRecord {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FailureReporterIncidentRecord {
+    pub incident_id: String,
+    pub fingerprint: String,
+    pub event_type: String,
+    pub status: String,
+    pub repo: String,
+    pub workspace_root: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub excerpt: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub occurrence_count: u64,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_payload: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FailureReporterRuntimeStatus {
+    #[serde(default)]
+    pub monitoring_active: bool,
+    #[serde(default)]
+    pub paused: bool,
+    #[serde(default)]
+    pub pending_incidents: usize,
+    #[serde(default)]
+    pub total_incidents: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_processed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_incident_event_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_runtime_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -854,6 +916,8 @@ pub struct FailureReporterReadiness {
 pub struct FailureReporterStatus {
     pub config: FailureReporterConfig,
     pub readiness: FailureReporterReadiness,
+    #[serde(default)]
+    pub runtime: FailureReporterRuntimeStatus,
     pub required_capabilities: FailureReporterCapabilityReadiness,
     #[serde(default)]
     pub missing_required_capabilities: Vec<String>,
@@ -948,6 +1012,9 @@ pub struct AppState {
     pub failure_reporter_config: Arc<RwLock<FailureReporterConfig>>,
     pub failure_reporter_drafts:
         Arc<RwLock<std::collections::HashMap<String, FailureReporterDraftRecord>>>,
+    pub failure_reporter_incidents:
+        Arc<RwLock<std::collections::HashMap<String, FailureReporterIncidentRecord>>>,
+    pub failure_reporter_runtime_status: Arc<RwLock<FailureReporterRuntimeStatus>>,
     pub workflows: Arc<RwLock<WorkflowRegistry>>,
     pub workflow_runs: Arc<RwLock<std::collections::HashMap<String, WorkflowRunRecord>>>,
     pub workflow_hook_overrides: Arc<RwLock<std::collections::HashMap<String, bool>>>,
@@ -963,6 +1030,7 @@ pub struct AppState {
     pub automation_v2_runs_path: PathBuf,
     pub failure_reporter_config_path: PathBuf,
     pub failure_reporter_drafts_path: PathBuf,
+    pub failure_reporter_incidents_path: PathBuf,
     pub workflow_runs_path: PathBuf,
     pub workflow_hook_overrides_path: PathBuf,
     pub agent_teams: AgentTeamRuntime,
@@ -1010,6 +1078,10 @@ impl AppState {
             automation_v2_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             failure_reporter_config: Arc::new(RwLock::new(resolve_failure_reporter_env_config())),
             failure_reporter_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            failure_reporter_incidents: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            failure_reporter_runtime_status: Arc::new(RwLock::new(
+                FailureReporterRuntimeStatus::default(),
+            )),
             workflows: Arc::new(RwLock::new(WorkflowRegistry::default())),
             workflow_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_hook_overrides: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -1023,6 +1095,7 @@ impl AppState {
             automation_v2_runs_path: resolve_automation_v2_runs_path(),
             failure_reporter_config_path: resolve_failure_reporter_config_path(),
             failure_reporter_drafts_path: resolve_failure_reporter_drafts_path(),
+            failure_reporter_incidents_path: resolve_failure_reporter_incidents_path(),
             workflow_runs_path: resolve_workflow_runs_path(),
             workflow_hook_overrides_path: resolve_workflow_hook_overrides_path(),
             agent_teams: AgentTeamRuntime::new(resolve_agent_team_audit_path()),
@@ -1170,6 +1243,7 @@ impl AppState {
         let _ = self.load_automation_v2_runs().await;
         let _ = self.load_failure_reporter_config().await;
         let _ = self.load_failure_reporter_drafts().await;
+        let _ = self.load_failure_reporter_incidents().await;
         let _ = self.load_workflow_runs().await;
         let _ = self.load_workflow_hook_overrides().await;
         let _ = self.reload_workflows().await;
@@ -2054,6 +2128,79 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn load_failure_reporter_incidents(&self) -> anyhow::Result<()> {
+        if !self.failure_reporter_incidents_path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&self.failure_reporter_incidents_path).await?;
+        let parsed = serde_json::from_str::<
+            std::collections::HashMap<String, FailureReporterIncidentRecord>,
+        >(&raw)
+        .unwrap_or_default();
+        *self.failure_reporter_incidents.write().await = parsed;
+        Ok(())
+    }
+
+    pub async fn persist_failure_reporter_incidents(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.failure_reporter_incidents_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.failure_reporter_incidents.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.failure_reporter_incidents_path, payload).await?;
+        Ok(())
+    }
+
+    pub async fn list_failure_reporter_incidents(
+        &self,
+        limit: usize,
+    ) -> Vec<FailureReporterIncidentRecord> {
+        let mut rows = self
+            .failure_reporter_incidents
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows.truncate(limit.clamp(1, 200));
+        rows
+    }
+
+    pub async fn get_failure_reporter_incident(
+        &self,
+        incident_id: &str,
+    ) -> Option<FailureReporterIncidentRecord> {
+        self.failure_reporter_incidents
+            .read()
+            .await
+            .get(incident_id)
+            .cloned()
+    }
+
+    pub async fn put_failure_reporter_incident(
+        &self,
+        incident: FailureReporterIncidentRecord,
+    ) -> anyhow::Result<FailureReporterIncidentRecord> {
+        self.failure_reporter_incidents
+            .write()
+            .await
+            .insert(incident.incident_id.clone(), incident.clone());
+        self.persist_failure_reporter_incidents().await?;
+        Ok(incident)
+    }
+
+    pub async fn update_failure_reporter_runtime_status(
+        &self,
+        update: impl FnOnce(&mut FailureReporterRuntimeStatus),
+    ) -> FailureReporterRuntimeStatus {
+        let mut guard = self.failure_reporter_runtime_status.write().await;
+        update(&mut guard);
+        guard.clone()
+    }
+
     pub async fn list_failure_reporter_drafts(
         &self,
         limit: usize,
@@ -2293,15 +2440,32 @@ impl AppState {
         ];
         let config = self.failure_reporter_config().await;
         let drafts = self.failure_reporter_drafts.read().await;
+        let incidents = self.failure_reporter_incidents.read().await;
+        let total_incidents = incidents.len();
+        let pending_incidents = incidents
+            .values()
+            .filter(|row| {
+                matches!(
+                    row.status.as_str(),
+                    "queued" | "draft_created" | "triage_queued" | "analysis_queued"
+                )
+            })
+            .count();
         let pending_drafts = drafts
             .values()
             .filter(|row| row.status.eq_ignore_ascii_case("approval_required"))
             .count();
         let last_activity_at_ms = drafts.values().map(|row| row.created_at_ms).max();
         drop(drafts);
+        drop(incidents);
+        let mut runtime = self.failure_reporter_runtime_status.read().await.clone();
+        runtime.paused = config.paused;
+        runtime.total_incidents = total_incidents;
+        runtime.pending_incidents = pending_incidents;
 
         let mut status = FailureReporterStatus {
             config: config.clone(),
+            runtime,
             pending_drafts,
             last_activity_at_ms,
             ..FailureReporterStatus::default()
@@ -2486,6 +2650,7 @@ impl AppState {
                 && status.required_capabilities.github_comment_on_issue,
             selected_model_ready,
             runtime_ready: config.enabled
+                && !config.paused
                 && repo_valid
                 && selected_server
                     .as_ref()
@@ -2498,7 +2663,9 @@ impl AppState {
                 && selected_model_ready,
         };
         if config.enabled {
-            if !repo_valid {
+            if config.paused {
+                status.last_error = Some("Failure reporter monitoring is paused.".to_string());
+            } else if !repo_valid {
                 status.last_error = Some("Target repo is missing or invalid.".to_string());
             } else if selected_server.is_none() {
                 status.last_error = Some("Selected MCP server is missing.".to_string());
@@ -2520,6 +2687,8 @@ impl AppState {
                 ));
             }
         }
+        status.runtime.monitoring_active =
+            status.config.enabled && !status.config.paused && status.readiness.repo_valid;
         status
     }
 
@@ -3155,6 +3324,7 @@ fn resolve_failure_reporter_env_config() -> FailureReporterConfig {
     };
     FailureReporterConfig {
         enabled: parse_bool_env("TANDEM_FAILURE_REPORTER_ENABLED", false),
+        paused: parse_bool_env("TANDEM_FAILURE_REPORTER_PAUSED", false),
         workspace_root: std::env::var("TANDEM_FAILURE_REPORTER_WORKSPACE_ROOT")
             .ok()
             .map(|v| v.trim().to_string())
@@ -3284,6 +3454,16 @@ fn resolve_failure_reporter_drafts_path() -> PathBuf {
         }
     }
     default_state_dir().join("failure_reporter_drafts.json")
+}
+
+fn resolve_failure_reporter_incidents_path() -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("failure_reporter_incidents.json");
+        }
+    }
+    default_state_dir().join("failure_reporter_incidents.json")
 }
 
 fn resolve_workflow_hook_overrides_path() -> PathBuf {
@@ -4203,6 +4383,85 @@ pub async fn run_agent_team_supervisor(state: AppState) {
     }
 }
 
+pub async fn run_failure_reporter(state: AppState) {
+    if !state.wait_until_ready_or_failed(120, 250).await {
+        tracing::warn!("failure reporter: skipped because runtime did not become ready");
+        return;
+    }
+    state
+        .update_failure_reporter_runtime_status(|runtime| {
+            runtime.monitoring_active = false;
+            runtime.last_runtime_error = None;
+        })
+        .await;
+    let mut rx = state.event_bus.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                if !is_failure_reporter_candidate_event(&event) {
+                    continue;
+                }
+                let status = state.failure_reporter_status().await;
+                if !status.config.enabled || status.config.paused || !status.readiness.repo_valid {
+                    state
+                        .update_failure_reporter_runtime_status(|runtime| {
+                            runtime.monitoring_active = status.config.enabled
+                                && !status.config.paused
+                                && status.readiness.repo_valid;
+                            runtime.paused = status.config.paused;
+                            runtime.last_runtime_error = status.last_error.clone();
+                        })
+                        .await;
+                    continue;
+                }
+                match process_failure_reporter_event(&state, &event, &status.config).await {
+                    Ok(incident) => {
+                        state
+                            .update_failure_reporter_runtime_status(|runtime| {
+                                runtime.monitoring_active = true;
+                                runtime.paused = status.config.paused;
+                                runtime.last_processed_at_ms = Some(now_ms());
+                                runtime.last_incident_event_type =
+                                    Some(incident.event_type.clone());
+                                runtime.last_runtime_error = None;
+                            })
+                            .await;
+                    }
+                    Err(error) => {
+                        let detail = truncate_text(&error.to_string(), 500);
+                        state
+                            .update_failure_reporter_runtime_status(|runtime| {
+                                runtime.monitoring_active = true;
+                                runtime.paused = status.config.paused;
+                                runtime.last_processed_at_ms = Some(now_ms());
+                                runtime.last_incident_event_type = Some(event.event_type.clone());
+                                runtime.last_runtime_error = Some(detail.clone());
+                            })
+                            .await;
+                        state.event_bus.publish(EngineEvent::new(
+                            "failure_reporter.error",
+                            serde_json::json!({
+                                "eventType": event.event_type,
+                                "detail": detail,
+                            }),
+                        ));
+                    }
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                state
+                    .update_failure_reporter_runtime_status(|runtime| {
+                        runtime.last_runtime_error = Some(format!(
+                            "Failure reporter lagged and dropped {count} events."
+                        ));
+                    })
+                    .await;
+            }
+        }
+    }
+}
+
 pub async fn run_usage_aggregator(state: AppState) {
     if !state.wait_until_ready_or_failed(120, 250).await {
         tracing::warn!("usage aggregator: skipped because runtime did not become ready");
@@ -4251,6 +4510,268 @@ pub async fn run_usage_aggregator(state: AppState) {
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
         }
     }
+}
+
+fn is_failure_reporter_candidate_event(event: &EngineEvent) -> bool {
+    if event.event_type.starts_with("failure_reporter.") {
+        return false;
+    }
+    matches!(
+        event.event_type.as_str(),
+        "context.task.failed" | "workflow.run.failed" | "routine.run.failed" | "session.error"
+    )
+}
+
+async fn process_failure_reporter_event(
+    state: &AppState,
+    event: &EngineEvent,
+    config: &FailureReporterConfig,
+) -> anyhow::Result<FailureReporterIncidentRecord> {
+    let submission = build_failure_reporter_submission_from_event(state, config, event).await?;
+    let fingerprint = submission
+        .fingerprint
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("failure reporter submission fingerprint missing"))?;
+    let default_workspace_root = state.workspace_index.snapshot().await.root;
+    let workspace_root = config
+        .workspace_root
+        .clone()
+        .unwrap_or(default_workspace_root);
+    let now = now_ms();
+
+    let existing = state
+        .failure_reporter_incidents
+        .read()
+        .await
+        .values()
+        .find(|row| row.fingerprint == fingerprint)
+        .cloned();
+
+    let mut incident = if let Some(mut row) = existing {
+        row.occurrence_count = row.occurrence_count.saturating_add(1);
+        row.updated_at_ms = now;
+        row.last_seen_at_ms = Some(now);
+        if row.excerpt.is_empty() {
+            row.excerpt = submission.excerpt.clone();
+        }
+        row
+    } else {
+        FailureReporterIncidentRecord {
+            incident_id: format!("failure-incident-{}", uuid::Uuid::new_v4().simple()),
+            fingerprint: fingerprint.clone(),
+            event_type: event.event_type.clone(),
+            status: "queued".to_string(),
+            repo: submission.repo.clone().unwrap_or_default(),
+            workspace_root,
+            title: submission
+                .title
+                .clone()
+                .unwrap_or_else(|| format!("Failure detected in {}", event.event_type)),
+            detail: submission.detail.clone(),
+            excerpt: submission.excerpt.clone(),
+            source: submission.source.clone(),
+            run_id: submission.run_id.clone(),
+            session_id: submission.session_id.clone(),
+            correlation_id: submission.correlation_id.clone(),
+            component: submission.component.clone(),
+            level: submission.level.clone(),
+            occurrence_count: 1,
+            created_at_ms: now,
+            updated_at_ms: now,
+            last_seen_at_ms: Some(now),
+            draft_id: None,
+            triage_run_id: None,
+            last_error: None,
+            event_payload: Some(event.properties.clone()),
+        }
+    };
+    state
+        .put_failure_reporter_incident(incident.clone())
+        .await?;
+
+    let draft = state.submit_failure_reporter_draft(submission).await?;
+    incident.draft_id = Some(draft.draft_id.clone());
+    incident.status = "draft_created".to_string();
+
+    match crate::http::failure_reporter::ensure_failure_reporter_triage_run(
+        state.clone(),
+        &draft.draft_id,
+        true,
+    )
+    .await
+    {
+        Ok((updated_draft, _run_id, _deduped)) => {
+            incident.triage_run_id = updated_draft.triage_run_id.clone();
+            if incident.triage_run_id.is_some() {
+                incident.status = "triage_queued".to_string();
+            }
+            incident.last_error = None;
+        }
+        Err(error) => {
+            incident.status = "draft_created".to_string();
+            incident.last_error = Some(truncate_text(&error.to_string(), 500));
+        }
+    }
+
+    incident.updated_at_ms = now_ms();
+    state
+        .put_failure_reporter_incident(incident.clone())
+        .await?;
+    state.event_bus.publish(EngineEvent::new(
+        "failure_reporter.incident.detected",
+        serde_json::json!({
+            "incident_id": incident.incident_id,
+            "fingerprint": incident.fingerprint,
+            "eventType": incident.event_type,
+            "draft_id": incident.draft_id,
+            "triage_run_id": incident.triage_run_id,
+            "status": incident.status,
+        }),
+    ));
+    Ok(incident)
+}
+
+async fn build_failure_reporter_submission_from_event(
+    state: &AppState,
+    config: &FailureReporterConfig,
+    event: &EngineEvent,
+) -> anyhow::Result<FailureReporterSubmission> {
+    let repo = config
+        .repo
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Failure Reporter repo is not configured"))?;
+    let default_workspace_root = state.workspace_index.snapshot().await.root;
+    let workspace_root = config
+        .workspace_root
+        .clone()
+        .unwrap_or(default_workspace_root);
+    let reason = first_string(
+        &event.properties,
+        &["reason", "error", "detail", "message", "summary"],
+    );
+    let run_id = first_string(&event.properties, &["runID", "run_id"]);
+    let session_id = first_string(&event.properties, &["sessionID", "session_id"]);
+    let correlation_id = first_string(
+        &event.properties,
+        &["correlationID", "correlation_id", "commandID", "command_id"],
+    );
+    let component = first_string(
+        &event.properties,
+        &[
+            "component",
+            "routineID",
+            "routine_id",
+            "workflowID",
+            "workflow_id",
+            "task",
+            "title",
+        ],
+    );
+    let mut excerpt = collect_failure_reporter_excerpt(state, &event.properties).await;
+    if excerpt.is_empty() {
+        if let Some(reason) = reason.as_ref() {
+            excerpt.push(reason.clone());
+        }
+    }
+    let serialized = serde_json::to_string(&event.properties).unwrap_or_default();
+    let fingerprint = sha256_hex(&[
+        repo.as_str(),
+        workspace_root.as_str(),
+        event.event_type.as_str(),
+        reason.as_deref().unwrap_or(""),
+        run_id.as_deref().unwrap_or(""),
+        session_id.as_deref().unwrap_or(""),
+        correlation_id.as_deref().unwrap_or(""),
+        component.as_deref().unwrap_or(""),
+        serialized.as_str(),
+    ]);
+    let title = if let Some(component) = component.as_ref() {
+        format!("{} failure in {}", event.event_type, component)
+    } else {
+        format!("{} detected", event.event_type)
+    };
+    let mut detail_lines = vec![
+        format!("event_type: {}", event.event_type),
+        format!("workspace_root: {}", workspace_root),
+    ];
+    if let Some(reason) = reason.as_ref() {
+        detail_lines.push(format!("reason: {reason}"));
+    }
+    if let Some(run_id) = run_id.as_ref() {
+        detail_lines.push(format!("run_id: {run_id}"));
+    }
+    if let Some(session_id) = session_id.as_ref() {
+        detail_lines.push(format!("session_id: {session_id}"));
+    }
+    if let Some(correlation_id) = correlation_id.as_ref() {
+        detail_lines.push(format!("correlation_id: {correlation_id}"));
+    }
+    if let Some(component) = component.as_ref() {
+        detail_lines.push(format!("component: {component}"));
+    }
+    if !serialized.trim().is_empty() {
+        detail_lines.push(String::new());
+        detail_lines.push("payload:".to_string());
+        detail_lines.push(truncate_text(&serialized, 2_000));
+    }
+
+    Ok(FailureReporterSubmission {
+        repo: Some(repo),
+        title: Some(title),
+        detail: Some(detail_lines.join("\n")),
+        source: Some("tandem_events".to_string()),
+        run_id,
+        session_id,
+        correlation_id,
+        file_name: None,
+        process: Some("tandem-engine".to_string()),
+        component,
+        event: Some(event.event_type.clone()),
+        level: Some("error".to_string()),
+        excerpt,
+        fingerprint: Some(fingerprint),
+    })
+}
+
+async fn collect_failure_reporter_excerpt(state: &AppState, properties: &Value) -> Vec<String> {
+    let mut excerpt = Vec::new();
+    if let Some(reason) = first_string(properties, &["reason", "error", "detail", "message"]) {
+        excerpt.push(reason);
+    }
+    if let Some(title) = first_string(properties, &["title", "task"]) {
+        if !excerpt.iter().any(|row| row == &title) {
+            excerpt.push(title);
+        }
+    }
+    let logs = state.logs.read().await;
+    for entry in logs.iter().rev().take(3) {
+        if let Some(message) = entry.get("message").and_then(|row| row.as_str()) {
+            excerpt.push(truncate_text(message, 240));
+        }
+    }
+    excerpt.truncate(8);
+    excerpt
+}
+
+fn first_string(properties: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = properties.get(*key).and_then(|row| row.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn sha256_hex(parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update([0u8]);
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 pub async fn run_routine_scheduler(state: AppState) {

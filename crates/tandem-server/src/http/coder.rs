@@ -1,13 +1,15 @@
 use super::context_runs::{
-    context_run_create, context_run_tasks_create, ensure_context_run_dir, load_context_blackboard,
-    load_context_run_state, save_context_run_state,
+    context_run_create, context_run_engine, context_run_tasks_create, ensure_context_run_dir,
+    load_context_blackboard, load_context_run_state, save_context_run_state,
 };
 use super::context_types::{
-    ContextBlackboardTaskStatus, ContextRunCreateInput, ContextRunState, ContextRunStatus,
-    ContextTaskCreateBatchInput, ContextTaskCreateInput, ContextWorkspaceLease,
+    ContextBlackboardArtifact, ContextBlackboardPatchOp, ContextBlackboardTaskStatus,
+    ContextRunCreateInput, ContextRunState, ContextRunStatus, ContextTaskCreateBatchInput,
+    ContextTaskCreateInput, ContextWorkspaceLease,
 };
 use super::*;
 use axum::extract::Path;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -102,6 +104,25 @@ pub(super) struct CoderRunListQuery {
     pub(super) limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CoderMemoryCandidateKind {
+    TriageMemory,
+    FailurePattern,
+    RunOutcome,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct CoderMemoryCandidateCreateInput {
+    pub(super) kind: CoderMemoryCandidateKind,
+    #[serde(default)]
+    pub(super) task_id: Option<String>,
+    #[serde(default)]
+    pub(super) summary: Option<String>,
+    #[serde(default)]
+    pub(super) payload: Value,
+}
+
 fn coder_runs_root(state: &AppState) -> PathBuf {
     state
         .shared_resources_path
@@ -112,6 +133,18 @@ fn coder_runs_root(state: &AppState) -> PathBuf {
 
 fn coder_run_path(state: &AppState, coder_run_id: &str) -> PathBuf {
     coder_runs_root(state).join(format!("{coder_run_id}.json"))
+}
+
+fn coder_memory_candidates_dir(state: &AppState, linked_context_run_id: &str) -> PathBuf {
+    super::context_runs::context_run_dir(state, linked_context_run_id).join("coder_memory")
+}
+
+fn coder_memory_candidate_path(
+    state: &AppState,
+    linked_context_run_id: &str,
+    candidate_id: &str,
+) -> PathBuf {
+    coder_memory_candidates_dir(state, linked_context_run_id).join(format!("{candidate_id}.json"))
 }
 
 async fn ensure_coder_runs_dir(state: &AppState) -> Result<(), StatusCode> {
@@ -176,6 +209,122 @@ fn project_coder_phase(run: &ContextRunState) -> &'static str {
         }
     }
     "analysis"
+}
+
+async fn coder_issue_triage_readiness(
+    state: &AppState,
+    input: &CoderRunCreateInput,
+) -> Result<CapabilityReadinessOutput, StatusCode> {
+    let required_capabilities = vec![
+        "github.list_issues".to_string(),
+        "github.get_issue".to_string(),
+    ];
+    let bindings = state
+        .capability_resolver
+        .list_bindings()
+        .await
+        .unwrap_or_default();
+    let mut missing_required_capabilities = Vec::new();
+    for capability_id in &required_capabilities {
+        let has_binding = bindings
+            .bindings
+            .iter()
+            .any(|row| row.capability_id == *capability_id);
+        if !has_binding {
+            missing_required_capabilities.push(capability_id.clone());
+        }
+    }
+    let unbound_capabilities = missing_required_capabilities.clone();
+    let mcp_servers = state.mcp.list().await;
+    let enabled_servers = mcp_servers
+        .values()
+        .filter(|server| server.enabled)
+        .collect::<Vec<_>>();
+    let connected_servers = enabled_servers
+        .iter()
+        .filter(|server| server.connected)
+        .map(|server| server.name.to_ascii_lowercase())
+        .collect::<std::collections::HashSet<_>>();
+    let provider_preference = input
+        .mcp_servers
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| row.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let mut missing_servers = Vec::new();
+    let mut disconnected_servers = Vec::new();
+    for provider in &provider_preference {
+        let any_enabled = enabled_servers
+            .iter()
+            .any(|server| server.name.eq_ignore_ascii_case(provider));
+        if !any_enabled {
+            missing_servers.push(provider.clone());
+            continue;
+        }
+        if !connected_servers.contains(provider) {
+            disconnected_servers.push(provider.clone());
+        }
+    }
+    let mut blocking_issues = Vec::<CapabilityBlockingIssue>::new();
+    if !missing_required_capabilities.is_empty() {
+        blocking_issues.push(CapabilityBlockingIssue {
+            code: "missing_required_capabilities".to_string(),
+            message: "Some required capabilities do not have any bindings.".to_string(),
+            capability_ids: missing_required_capabilities.clone(),
+            providers: Vec::new(),
+            tools: Vec::new(),
+        });
+    }
+    if !unbound_capabilities.is_empty() {
+        let providers = unbound_capabilities
+            .iter()
+            .flat_map(|capability_id| {
+                crate::capability_resolver::providers_for_capability(&bindings, capability_id)
+            })
+            .collect::<Vec<_>>();
+        blocking_issues.push(CapabilityBlockingIssue {
+            code: "unbound_capabilities".to_string(),
+            message: "Some required capabilities have bindings, but no available runtime tools."
+                .to_string(),
+            capability_ids: unbound_capabilities.clone(),
+            providers,
+            tools: Vec::new(),
+        });
+    }
+    if !missing_servers.is_empty() {
+        blocking_issues.push(CapabilityBlockingIssue {
+            code: "missing_mcp_servers".to_string(),
+            message: "Preferred MCP servers are not configured.".to_string(),
+            capability_ids: Vec::new(),
+            providers: missing_servers.clone(),
+            tools: Vec::new(),
+        });
+    }
+    if !disconnected_servers.is_empty() {
+        blocking_issues.push(CapabilityBlockingIssue {
+            code: "disconnected_mcp_servers".to_string(),
+            message: "Preferred MCP servers are configured but disconnected.".to_string(),
+            capability_ids: Vec::new(),
+            providers: disconnected_servers.clone(),
+            tools: Vec::new(),
+        });
+    }
+    Ok(CapabilityReadinessOutput {
+        workflow_id: "coder_issue_triage".to_string(),
+        runnable: blocking_issues.is_empty(),
+        resolved: Vec::new(),
+        missing_required_capabilities,
+        unbound_capabilities,
+        missing_optional_capabilities: Vec::new(),
+        missing_servers,
+        disconnected_servers,
+        auth_pending_tools: Vec::new(),
+        missing_secret_refs: Vec::new(),
+        considered_bindings: bindings.bindings.len(),
+        recommendations: Vec::new(),
+        blocking_issues,
+    })
 }
 
 fn compose_issue_triage_objective(input: &CoderRunCreateInput) -> String {
@@ -359,7 +508,7 @@ fn coder_run_payload(record: &CoderRunRecord, context_run: &ContextRunState) -> 
 pub(super) async fn coder_run_create(
     State(state): State<AppState>,
     Json(input): Json<CoderRunCreateInput>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Response, StatusCode> {
     if input.repo_binding.project_id.trim().is_empty()
         || input.repo_binding.workspace_id.trim().is_empty()
         || input.repo_binding.workspace_root.trim().is_empty()
@@ -374,6 +523,20 @@ pub(super) async fn coder_run_create(
         )
     {
         return Err(StatusCode::BAD_REQUEST);
+    }
+    if matches!(input.workflow_mode, CoderWorkflowMode::IssueTriage) {
+        let readiness = coder_issue_triage_readiness(&state, &input).await?;
+        if !readiness.runnable {
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "Coder issue triage is not ready to run",
+                    "code": "CODER_READINESS_BLOCKED",
+                    "readiness": readiness,
+                })),
+            )
+                .into_response());
+        }
     }
 
     let now = crate::now_ms();
@@ -442,7 +605,8 @@ pub(super) async fn coder_run_create(
         "ok": true,
         "coder_run": coder_run_payload(&record, &final_run),
         "run": final_run,
-    })))
+    }))
+    .into_response())
 }
 
 pub(super) async fn coder_run_list(
@@ -522,5 +686,74 @@ pub(super) async fn coder_run_artifacts(
         "coder_run_id": record.coder_run_id,
         "linked_context_run_id": record.linked_context_run_id,
         "artifacts": blackboard.artifacts,
+    })))
+}
+
+pub(super) async fn coder_memory_candidate_create(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<CoderMemoryCandidateCreateInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let record = load_coder_run_record(&state, &id).await?;
+    if !matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let candidate_id = format!("memcand-{}", Uuid::new_v4().simple());
+    let path = coder_memory_candidate_path(&state, &record.linked_context_run_id, &candidate_id);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    let now = crate::now_ms();
+    let payload = json!({
+        "candidate_id": candidate_id,
+        "coder_run_id": record.coder_run_id,
+        "linked_context_run_id": record.linked_context_run_id,
+        "workflow_mode": record.workflow_mode,
+        "kind": input.kind,
+        "task_id": input.task_id,
+        "summary": input.summary,
+        "payload": input.payload,
+        "repo_binding": record.repo_binding,
+        "github_ref": record.github_ref,
+        "created_at_ms": now,
+    });
+    let raw =
+        serde_json::to_string_pretty(&payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::write(&path, raw)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let artifact = ContextBlackboardArtifact {
+        id: candidate_id.clone(),
+        ts_ms: now,
+        path: path.to_string_lossy().to_string(),
+        artifact_type: "coder_memory_candidate".to_string(),
+        step_id: None,
+        source_event_id: None,
+    };
+    context_run_engine()
+        .commit_blackboard_patch(
+            &state,
+            &record.linked_context_run_id,
+            ContextBlackboardPatchOp::AddArtifact,
+            serde_json::to_value(&artifact).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        )
+        .await?;
+    state.event_bus.publish(EngineEvent::new(
+        "coder.memory.candidate_added",
+        json!({
+            "coder_run_id": record.coder_run_id,
+            "linked_context_run_id": record.linked_context_run_id,
+            "candidate_id": candidate_id,
+            "kind": input.kind,
+            "artifact_path": path,
+        }),
+    ));
+    Ok(Json(json!({
+        "ok": true,
+        "candidate_id": candidate_id,
+        "artifact": artifact,
     })))
 }

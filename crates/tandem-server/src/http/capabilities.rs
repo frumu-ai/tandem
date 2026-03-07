@@ -30,6 +30,34 @@ pub(super) async fn capabilities_bindings_put(
     Ok(Json(json!({ "ok": true })))
 }
 
+pub(super) async fn capabilities_bindings_refresh_builtins(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    let summary = state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .map_err(|err| {
+            tracing::warn!("capability bindings refresh failed: {}", err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(json!({ "ok": true, "summary": summary })))
+}
+
+pub(super) async fn capabilities_bindings_reset_to_builtins(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    let summary = state
+        .capability_resolver
+        .reset_to_builtin_bindings()
+        .await
+        .map_err(|err| {
+            tracing::warn!("capability bindings reset failed: {}", err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(json!({ "ok": true, "summary": summary })))
+}
+
 pub(super) async fn capabilities_discovery(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, StatusCode> {
