@@ -8,9 +8,15 @@ use ratatui::{
 use std::time::Instant;
 
 pub mod components;
+pub mod diff_render;
+pub mod exec_cell;
+pub mod external_editor;
+pub mod file_search;
+pub mod get_git_diff;
 pub mod markdown;
 pub mod markdown_stream;
 pub mod matrix;
+pub mod pager_overlay;
 pub mod spinner;
 use crate::app::{
     AgentStatus, App, AppState, ChatMessage, ContentBlock, ModalState, PendingRequestKind,
@@ -775,13 +781,72 @@ fn draw_chat(f: &mut Frame, app: &App) {
         f.render_widget(status_widget, status_chunk);
 
         if let Some(modal_state) = modal {
+            if matches!(modal_state, ModalState::FileSearch) {
+                let area = centered_rect(70, 60, f.area());
+                f.render_widget(Clear, area);
+                let mut lines: Vec<Line> = Vec::new();
+                lines.push(Line::from(format!("Query: {}", app.file_search.query)));
+                lines.push(Line::from(""));
+                if app.file_search.matches.is_empty() {
+                    lines.push(Line::from("No files matched."));
+                } else {
+                    for (idx, item) in app.file_search.matches.iter().take(20).enumerate() {
+                        let marker = if idx == app.file_search.cursor {
+                            ">"
+                        } else {
+                            " "
+                        };
+                        lines.push(Line::from(format!("{marker} {}", item)));
+                    }
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(
+                    "Keys: type to search, Backspace, Up/Down, Enter insert @path, Esc close",
+                ));
+                let popup = Paragraph::new(Text::from(lines))
+                    .wrap(Wrap { trim: true })
+                    .block(
+                        Block::default()
+                            .title(" File Search ")
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Yellow)),
+                    );
+                f.render_widget(popup, area);
+                return;
+            }
+            if matches!(modal_state, ModalState::Pager) {
+                if let Some(overlay) = &app.pager_overlay {
+                    let area = centered_rect(85, 80, f.area());
+                    f.render_widget(Clear, area);
+                    let styled_lines: Vec<Line<'static>> = if overlay.is_diff {
+                        overlay
+                            .lines
+                            .iter()
+                            .map(|line| crate::ui::diff_render::style_diff_line(line))
+                            .collect()
+                    } else {
+                        overlay
+                            .lines
+                            .iter()
+                            .map(|line| Line::from(line.to_string()))
+                            .collect()
+                    };
+                    crate::ui::pager_overlay::draw_overlay(
+                        f,
+                        overlay,
+                        area,
+                        Text::from(styled_lines),
+                    );
+                }
+                return;
+            }
             if matches!(modal_state, ModalState::RequestCenter) {
                 return;
             }
             let area = centered_rect(58, 34, f.area());
             f.render_widget(Clear, area);
             let text = match modal_state {
-                ModalState::Help => "Keys:\nF1 Help\nTab/Shift+Tab switch agent\nAlt+1..9 jump agent\nCtrl+N new agent\nCtrl+W close agent\nCtrl+C cancel run / double-tap quit\nCtrl+Y copy latest assistant message\nCtrl+V (or Shift+Insert) paste as token\nEnter send prompt\nShift+Enter or Alt+Enter newline\nLeft/Right/Home/End move cursor\nCtrl+Up/Down move cursor line\nDelete/Backspace edit\nAlt+M cycle mode\nAlt+G toggle grid\nAlt+R open request center\nCtrl+E expand/collapse request panel\nAlt+I queue steering interrupt\nEnter while busy queues follow-up\nAlt+S / Alt+B demo streams\nEsc close modal/input\nCtrl+X quit\n\nMarkdown colors:\nHeading=yellow, Quote=green, List=blue, Code=gray",
+                ModalState::Help => "Keys:\nF1 Help\nTab/Shift+Tab switch agent\nAlt+1..9 jump agent\nCtrl+N new agent\nCtrl+W close agent\nCtrl+C cancel run / double-tap quit\nCtrl+Y copy latest assistant message\nCtrl+V (or Shift+Insert) paste as token\nEnter send prompt\nShift+Enter or Alt+Enter newline\nLeft/Right/Home/End move cursor\nCtrl+Up/Down move cursor line\nDelete/Backspace edit\nAlt+M cycle mode\nAlt+G toggle grid\nAlt+R open request center\nAlt+P open file search\nAlt+D open diff overlay\nAlt+E open external editor\nCtrl+E expand/collapse request panel\nAlt+I queue steering interrupt\nEnter while busy queues follow-up\nAlt+S / Alt+B demo streams\nEsc close modal/input\nCtrl+X quit\n\nMarkdown colors:\nHeading=yellow, Quote=green, List=blue, Code=gray",
                 ModalState::ConfirmCloseAgent { target_agent_id } => {
                     if target_agent_id.is_empty() {
                         "Close active agent and discard draft? (Y/N)"
@@ -798,6 +863,8 @@ fn draw_chat(f: &mut Frame, app: &App) {
                         "Start multiple agents to execute the approved plan? (Y/N)"
                     }
                 }
+                ModalState::FileSearch => "File Search",
+                ModalState::Pager => "Pager",
             };
             let popup_block = Block::default()
                 .title(" Modal ")

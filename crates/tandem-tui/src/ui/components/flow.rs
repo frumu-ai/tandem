@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
 use crate::app::{ChatMessage, ContentBlock, MessageRole};
+use crate::ui::exec_cell::{tool_call_lines, tool_result_lines};
 use crate::ui::markdown::render_markdown_lines;
 
 #[derive(Default)]
@@ -173,22 +174,38 @@ fn render_message_lines(msg: &ChatMessage, max_width: usize) -> Vec<Line<'static
                 );
             }
             ContentBlock::ToolCall(info) => {
-                push_wrapped_line(
-                    &mut lines,
-                    "     ",
-                    &format!("> Tool Call: {}({})", info.name, info.args),
-                    Style::default().fg(Color::Magenta),
-                    max_width,
-                );
+                for line in tool_call_lines(&info.name, &info.args) {
+                    let text = line
+                        .spans
+                        .iter()
+                        .map(|span| span.content.to_string())
+                        .collect::<Vec<_>>()
+                        .join("");
+                    push_wrapped_line(
+                        &mut lines,
+                        "     ",
+                        &text,
+                        Style::default().fg(Color::Magenta),
+                        max_width,
+                    );
+                }
             }
             ContentBlock::ToolResult(output) => {
-                push_wrapped_line(
-                    &mut lines,
-                    "     ",
-                    &format!("> Tool Result: {}", output),
-                    Style::default().fg(Color::DarkGray),
-                    max_width,
-                );
+                for line in tool_result_lines(output) {
+                    let text = line
+                        .spans
+                        .iter()
+                        .map(|span| span.content.to_string())
+                        .collect::<Vec<_>>()
+                        .join("");
+                    push_wrapped_line(
+                        &mut lines,
+                        "     ",
+                        &text,
+                        Style::default().fg(Color::DarkGray),
+                        max_width,
+                    );
+                }
             }
         }
     }

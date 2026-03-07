@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tandem TUI coding-agent workflow UX**:
+  - added coding-focused shortcuts:
+    - `Alt+P` opens workspace file search and inserts `@path` references into the active composer
+    - `Alt+D` opens a scrollable git diff overlay for quick workspace-change review
+    - `Alt+E` opens the active composer content in `$VISUAL` / `$EDITOR` and returns edited text back into the TUI
+  - added matching slash commands:
+    - `/files [query]`
+    - `/diff`
+    - `/edit`
+  - added modal infrastructure for coding workflows:
+    - file-search modal with keyboard navigation/confirm
+    - pager overlay with up/down/page scrolling
+  - improved tool-call/tool-result transcript rendering into multi-line execution cells for better readability during coding runs
+  - updated Tandem TUI docs and help content to surface the new coding workflow shortcuts and commands
+
 - **Desktop orchestrator and command-center stability improvements**:
   - fixed orchestrator resume behavior so paused/failed runs with no planned tasks trigger planning (`start`) instead of attempting to execute an empty plan
   - improved run listing compatibility by merging engine context runs with legacy local orchestrator runs, preventing sessions from disappearing in mixed-storage scenarios

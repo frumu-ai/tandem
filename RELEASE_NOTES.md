@@ -4,6 +4,21 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
 ## v0.4.2 (Unreleased)
 
+- Tandem TUI coding-agent workflow upgrades
+  - Added coding-first keyboard shortcuts:
+    - `Alt+P` opens workspace file search and inserts `@path` references into the active composer.
+    - `Alt+D` opens a scrollable git diff overlay for reviewing local changes in-place.
+    - `Alt+E` opens the active composer text in `$VISUAL` / `$EDITOR` and writes edited content back into the TUI.
+  - Added matching slash commands:
+    - `/files [query]`
+    - `/diff`
+    - `/edit`
+  - Added dedicated coding workflow overlays:
+    - file-search modal with keyboard navigation and quick insert
+    - pager modal with line/page scrolling for long content
+  - Improved tool-call and tool-result transcript rendering to show clearer multi-line execution cells during coding sessions.
+  - Updated Tandem TUI docs/help surfaces with the new coding workflow keys and commands.
+
 - Desktop orchestrator + command center stabilization
   - Fixed orchestrator resume so runs with no tasks re-enter planning instead of getting stuck trying to execute an empty plan.
   - Restored run-list visibility across mixed storage by merging context runs with legacy local orchestrator runs.

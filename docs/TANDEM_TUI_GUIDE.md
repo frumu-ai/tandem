@@ -83,6 +83,9 @@ The chat interface is where you interact with agents.
 - **F1**: Show Help Modal.
 - **F2**: Open SDK Documentation.
 - **Alt + R**: Open the **Request Center** (for pending permissions and questions).
+- **Alt + P**: Open workspace file search and insert selected file as `@path`.
+- **Alt + D**: Open a structured git diff pager overlay.
+- **Alt + E**: Open current draft in external editor (`$VISUAL`/`$EDITOR`).
 - **Alt + M**: Cycle through Tandem Modes (Ask, Coder, Explore, etc.).
 
 ### Request Center (Permissions/Questions)
@@ -115,6 +118,9 @@ Assistant markdown in the transcript uses a visual style map:
 | **Tab / BackTab** | Switch Agents                 |
 | **Alt + G**       | Toggle Grid View              |
 | **Alt + R**       | Open Request Center           |
+| **Alt + P**       | Open File Search Overlay      |
+| **Alt + D**       | Open Diff Overlay             |
+| **Alt + E**       | Open External Editor          |
 | **Alt + I**       | Queue Steering Interrupt      |
 | **Alt + M**       | Cycle Mode                    |
 | **F1**            | Help                          |

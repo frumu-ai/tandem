@@ -13,6 +13,12 @@ TTTTT   A   N   N DDDD  EEEEE M   M
 `tandem-tui` is the Rust crate for the terminal client binary.  
 It connects to `tandem-engine` and provides a keyboard-first chat + agent workflow UI in the terminal.
 
+Coding workflow helpers:
+
+- `Alt+P` / `/files [query]`: fuzzy file search and `@path` insertion
+- `Alt+D` / `/diff`: structured git diff pager overlay
+- `Alt+E` / `/edit`: edit current draft in `$VISUAL`/`$EDITOR`
+
 ## Build
 
 From the workspace root:

@@ -119,7 +119,19 @@ pub enum Action {
     ShowHelpModal,
     CloseModal,
     OpenRequestCenter,
+    OpenFileSearch,
+    OpenDiffOverlay,
+    OpenExternalEditor,
     ToggleRequestPanelExpand,
+    OverlayScrollUp,
+    OverlayScrollDown,
+    OverlayPageUp,
+    OverlayPageDown,
+    FileSearchInput(char),
+    FileSearchBackspace,
+    FileSearchSelectNext,
+    FileSearchSelectPrev,
+    FileSearchConfirm,
     RequestSelectNext,
     RequestSelectPrev,
     RequestOptionNext,
@@ -274,6 +286,43 @@ mod tests {
         assert_eq!(
             app.handle_key_event(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::ALT)),
             Some(Action::QueueSteeringFromComposer)
+        );
+    }
+
+    #[test]
+    fn keymap_coding_overlay_shortcuts() {
+        let app = chat_app();
+        assert_eq!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT)),
+            Some(Action::OpenFileSearch)
+        );
+        assert_eq!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT)),
+            Some(Action::OpenDiffOverlay)
+        );
+        assert_eq!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT)),
+            Some(Action::OpenExternalEditor)
+        );
+    }
+
+    #[test]
+    fn keymap_file_search_modal_controls() {
+        let mut app = chat_app();
+        if let AppState::Chat { modal, .. } = &mut app.state {
+            *modal = Some(ModalState::FileSearch);
+        }
+        assert_eq!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            Some(Action::FileSearchSelectNext)
+        );
+        assert_eq!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+            Some(Action::FileSearchBackspace)
+        );
+        assert_eq!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Action::FileSearchConfirm)
         );
     }
 
@@ -706,7 +755,7 @@ mod tests {
         let rendered = render_to_text(&app);
         assert!(rendered.contains("Guided feedback for newly proposed plan tasks"));
         assert!(rendered.contains("Task preview:"));
-        assert!(rendered.contains("TEST modal=PlanFeedbackWizard"));
+        assert!(rendered.contains("Plan name (optional):"));
     }
 
     #[test]
@@ -751,8 +800,9 @@ mod tests {
         }
         let rendered = render_to_text(&app);
         assert!(rendered.contains("AI asks: Proceed with plan execution?"));
-        assert!(rendered.contains("Keys: Up/Down option"));
-        assert!(rendered.contains("TEST modal=RequestCenter"));
+        assert!(rendered.contains("Choices:"));
+        assert!(rendered.contains("1. Yes Continue"));
+        assert!(rendered.contains("Answer:"));
     }
 
     #[tokio::test]
@@ -961,6 +1011,23 @@ pub enum ModalState {
     RequestCenter,
     PlanFeedbackWizard,
     StartPlanAgents { count: usize },
+    FileSearch,
+    Pager,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PagerOverlayState {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub scroll: usize,
+    pub is_diff: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileSearchState {
+    pub query: String,
+    pub matches: Vec<String>,
+    pub cursor: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1222,6 +1289,8 @@ pub struct App {
     pub quit_armed_at: Option<Instant>,
     pub paste_activity_until: Option<Instant>,
     pub malformed_question_retries: HashSet<String>,
+    pub pager_overlay: Option<PagerOverlayState>,
+    pub file_search: FileSearchState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1552,6 +1621,9 @@ impl App {
 
     pub const COMMAND_HELP: &'static [(&'static str, &'static str)] = &[
         ("help", "Show available commands"),
+        ("diff", "Show workspace git diff overlay"),
+        ("files", "Search workspace files and insert @path"),
+        ("edit", "Open external editor for current draft"),
         ("workspace", "Show/switch workspace directory"),
         ("engine", "Engine status / restart"),
         ("sessions", "List all sessions"),
@@ -1731,6 +1803,8 @@ impl App {
             quit_armed_at: None,
             paste_activity_until: None,
             malformed_question_retries: HashSet::new(),
+            pager_overlay: None,
+            file_search: FileSearchState::default(),
         }
     }
 
@@ -1754,6 +1828,78 @@ impl App {
             live_tool_calls: HashMap::new(),
             delegated_worker: false,
             delegated_team_name: None,
+        }
+    }
+
+    fn open_file_search_modal(&mut self, initial_query: Option<&str>) {
+        if let Some(query) = initial_query {
+            self.file_search.query = query.to_string();
+        }
+        self.refresh_file_search_matches();
+        if let AppState::Chat { modal, .. } = &mut self.state {
+            *modal = Some(ModalState::FileSearch);
+        }
+    }
+
+    fn refresh_file_search_matches(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        self.file_search.matches =
+            crate::ui::file_search::search_workspace_files(&cwd, &self.file_search.query, 80);
+        if self.file_search.matches.is_empty() {
+            self.file_search.cursor = 0;
+        } else if self.file_search.cursor >= self.file_search.matches.len() {
+            self.file_search.cursor = self.file_search.matches.len().saturating_sub(1);
+        }
+    }
+
+    fn open_pager_overlay(&mut self, title: impl Into<String>, lines: Vec<String>, is_diff: bool) {
+        self.pager_overlay = Some(PagerOverlayState {
+            title: title.into(),
+            lines,
+            scroll: 0,
+            is_diff,
+        });
+        if let AppState::Chat { modal, .. } = &mut self.state {
+            *modal = Some(ModalState::Pager);
+        }
+    }
+
+    async fn open_diff_overlay(&mut self) -> String {
+        match crate::ui::get_git_diff::get_git_diff().await {
+            Ok((false, _)) => {
+                "Cannot show diff: current directory is not a git repository.".to_string()
+            }
+            Ok((true, diff_text)) => {
+                if diff_text.trim().is_empty() {
+                    self.open_pager_overlay("Diff", vec!["No changes detected.".to_string()], true);
+                } else {
+                    self.open_pager_overlay(
+                        "Diff",
+                        diff_text.lines().map(|line| line.to_string()).collect(),
+                        true,
+                    );
+                }
+                "Opened structured diff overlay.".to_string()
+            }
+            Err(err) => format!("Failed to compute diff: {}", err),
+        }
+    }
+
+    async fn open_external_editor_for_active_input(&mut self) -> String {
+        let seed = if let AppState::Chat { command_input, .. } = &self.state {
+            command_input.text().to_string()
+        } else {
+            String::new()
+        };
+        match crate::ui::external_editor::run_editor(&seed).await {
+            Ok(edited) => {
+                if let AppState::Chat { command_input, .. } = &mut self.state {
+                    command_input.set_text(edited);
+                }
+                self.sync_active_agent_from_chat();
+                "Loaded edited draft from external editor.".to_string()
+            }
+            Err(err) => format!("External editor failed: {}", err),
         }
     }
 
@@ -3189,6 +3335,44 @@ impl App {
                         } else {
                             return match key.code {
                                 KeyCode::Esc => Some(Action::CloseModal),
+                                KeyCode::Up if matches!(active_modal, ModalState::FileSearch) => {
+                                    Some(Action::FileSearchSelectPrev)
+                                }
+                                KeyCode::Down if matches!(active_modal, ModalState::FileSearch) => {
+                                    Some(Action::FileSearchSelectNext)
+                                }
+                                KeyCode::Enter
+                                    if matches!(active_modal, ModalState::FileSearch) =>
+                                {
+                                    Some(Action::FileSearchConfirm)
+                                }
+                                KeyCode::Backspace
+                                    if matches!(active_modal, ModalState::FileSearch) =>
+                                {
+                                    Some(Action::FileSearchBackspace)
+                                }
+                                KeyCode::Char('\u{8}') | KeyCode::Char('\u{7f}')
+                                    if matches!(active_modal, ModalState::FileSearch) =>
+                                {
+                                    Some(Action::FileSearchBackspace)
+                                }
+                                KeyCode::Char(c)
+                                    if matches!(active_modal, ModalState::FileSearch) =>
+                                {
+                                    Some(Action::FileSearchInput(c))
+                                }
+                                KeyCode::Up if matches!(active_modal, ModalState::Pager) => {
+                                    Some(Action::OverlayScrollUp)
+                                }
+                                KeyCode::Down if matches!(active_modal, ModalState::Pager) => {
+                                    Some(Action::OverlayScrollDown)
+                                }
+                                KeyCode::PageUp if matches!(active_modal, ModalState::Pager) => {
+                                    Some(Action::OverlayPageUp)
+                                }
+                                KeyCode::PageDown if matches!(active_modal, ModalState::Pager) => {
+                                    Some(Action::OverlayPageDown)
+                                }
                                 KeyCode::Enter
                                     if matches!(active_modal, ModalState::RequestCenter) =>
                                 {
@@ -3416,6 +3600,21 @@ impl App {
                             if key.modifiers.contains(KeyModifiers::ALT) =>
                         {
                             Some(Action::QueueSteeringFromComposer)
+                        }
+                        KeyCode::Char('p') | KeyCode::Char('P')
+                            if key.modifiers.contains(KeyModifiers::ALT) =>
+                        {
+                            Some(Action::OpenFileSearch)
+                        }
+                        KeyCode::Char('d') | KeyCode::Char('D')
+                            if key.modifiers.contains(KeyModifiers::ALT) =>
+                        {
+                            Some(Action::OpenDiffOverlay)
+                        }
+                        KeyCode::Char('e') | KeyCode::Char('E')
+                            if key.modifiers.contains(KeyModifiers::ALT) =>
+                        {
+                            Some(Action::OpenExternalEditor)
                         }
                         KeyCode::Char('s') | KeyCode::Char('S')
                             if key.modifiers.contains(KeyModifiers::ALT) =>
@@ -4285,12 +4484,38 @@ impl App {
             }
             Action::CloseModal => {
                 if let AppState::Chat { modal, .. } = &mut self.state {
+                    if matches!(*modal, Some(ModalState::Pager)) {
+                        self.pager_overlay = None;
+                    }
                     *modal = None;
                 }
                 self.open_queued_plan_agent_prompt();
             }
             Action::OpenRequestCenter => {
                 self.open_request_center_if_needed();
+            }
+            Action::OpenFileSearch => {
+                self.open_file_search_modal(None);
+            }
+            Action::OpenDiffOverlay => {
+                let status = self.open_diff_overlay().await;
+                if let AppState::Chat { messages, .. } = &mut self.state {
+                    messages.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: vec![ContentBlock::Text(status)],
+                    });
+                }
+                self.sync_active_agent_from_chat();
+            }
+            Action::OpenExternalEditor => {
+                let status = self.open_external_editor_for_active_input().await;
+                if let AppState::Chat { messages, .. } = &mut self.state {
+                    messages.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: vec![ContentBlock::Text(status)],
+                    });
+                }
+                self.sync_active_agent_from_chat();
             }
             Action::ToggleRequestPanelExpand => {
                 if let AppState::Chat {
@@ -4389,6 +4614,43 @@ impl App {
                             }
                         }
                     }
+                }
+            }
+            Action::FileSearchInput(c) => {
+                self.file_search.query.push(c);
+                self.refresh_file_search_matches();
+            }
+            Action::FileSearchBackspace => {
+                self.file_search.query.pop();
+                self.refresh_file_search_matches();
+            }
+            Action::FileSearchSelectNext => {
+                if !self.file_search.matches.is_empty() {
+                    self.file_search.cursor =
+                        (self.file_search.cursor + 1) % self.file_search.matches.len();
+                }
+            }
+            Action::FileSearchSelectPrev => {
+                if !self.file_search.matches.is_empty() {
+                    self.file_search.cursor = if self.file_search.cursor == 0 {
+                        self.file_search.matches.len().saturating_sub(1)
+                    } else {
+                        self.file_search.cursor.saturating_sub(1)
+                    };
+                }
+            }
+            Action::FileSearchConfirm => {
+                if let Some(selected) = self.file_search.matches.get(self.file_search.cursor) {
+                    if let AppState::Chat { command_input, .. } = &mut self.state {
+                        if !command_input.text().is_empty() {
+                            command_input.insert_char(' ');
+                        }
+                        command_input.insert_str(&format!("@{}", selected));
+                    }
+                    if let AppState::Chat { modal, .. } = &mut self.state {
+                        *modal = None;
+                    }
+                    self.sync_active_agent_from_chat();
                 }
             }
             Action::RequestToggleCurrent => {
@@ -5430,6 +5692,26 @@ impl App {
                 }
             }
 
+            Action::OverlayScrollUp => {
+                if let Some(overlay) = &mut self.pager_overlay {
+                    overlay.scroll = overlay.scroll.saturating_sub(1);
+                }
+            }
+            Action::OverlayScrollDown => {
+                if let Some(overlay) = &mut self.pager_overlay {
+                    overlay.scroll = overlay.scroll.saturating_add(1);
+                }
+            }
+            Action::OverlayPageUp => {
+                if let Some(overlay) = &mut self.pager_overlay {
+                    overlay.scroll = overlay.scroll.saturating_sub(SCROLL_PAGE_STEP as usize);
+                }
+            }
+            Action::OverlayPageDown => {
+                if let Some(overlay) = &mut self.pager_overlay {
+                    overlay.scroll = overlay.scroll.saturating_add(SCROLL_PAGE_STEP as usize);
+                }
+            }
             Action::ScrollUp => {
                 if let AppState::Chat {
                     scroll_from_bottom, ..
@@ -6753,6 +7035,9 @@ BASICS:
   /engine token show Show full engine API token
   /browser status    Show browser readiness from the engine
   /browser doctor    Show browser diagnostics and install hints
+  /diff              Show current workspace git diff in pager overlay
+  /files [query]     Open file-search overlay and insert selected path as @mention
+  /edit              Edit current draft in external $EDITOR/$VISUAL
 
 SESSIONS:
   /sessions          List all sessions
@@ -6882,6 +7167,9 @@ MULTI-AGENT KEYS:
   Alt+M              Cycle mode
   Alt+G              Toggle Focus/Grid
   Alt+R              Open request center
+  Alt+P              Open file search overlay
+  Alt+D              Open diff overlay
+  Alt+E              Open external editor for current draft
   Alt+I              Queue steering interrupt (and cancel active run)
   [ / ]              Prev/next grid page
   Alt+S / Alt+B      Demo stream controls (dev)
@@ -6892,6 +7180,21 @@ MULTI-AGENT KEYS:
   Ctrl+X             Quit"#;
                 help_text.to_string()
             }
+            "diff" => self.open_diff_overlay().await,
+            "files" => {
+                let query = if args.is_empty() {
+                    None
+                } else {
+                    Some(args.join(" "))
+                };
+                self.open_file_search_modal(query.as_deref());
+                if let Some(q) = query {
+                    format!("Opened file search for query: {}", q)
+                } else {
+                    "Opened file search overlay.".to_string()
+                }
+            }
+            "edit" => self.open_external_editor_for_active_input().await,
 
             "workspace" => match args.first().copied() {
                 Some("show") | None => {
