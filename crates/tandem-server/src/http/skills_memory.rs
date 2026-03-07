@@ -1969,8 +1969,7 @@ pub(super) async fn memory_search(
             detail: (!blocked_scopes.is_empty()).then(|| {
                 format!(
                     "requested_scopes={} blocked_scopes={}",
-                    request
-                        .read_scopes
+                    requested_scopes
                         .iter()
                         .map(|scope| scope.to_string())
                         .collect::<Vec<_>>()
@@ -1992,7 +1991,7 @@ pub(super) async fn memory_search(
             "runID": request.run_id,
             "partitionKey": request.partition.key(),
             "resultCount": results.len(),
-            "requestedScopes": request.read_scopes.clone(),
+            "requestedScopes": requested_scopes,
             "scopesUsed": scopes_used.clone(),
             "blockedScopes": blocked_scopes.clone(),
             "status": search_status,

@@ -34,6 +34,7 @@ async fn memory_put_enforces_default_write_scope() {
 async fn memory_put_then_search_in_session_scope() {
     let state = test_state().await;
     let app = app_router(state.clone());
+    let mut rx = state.event_bus.subscribe();
     let artifact_refs = vec![
         Value::from("artifact://run-2/task-1/patch.diff"),
         Value::from("artifact://run-2/task-2/validation.json"),
@@ -116,6 +117,23 @@ async fn memory_put_then_search_in_session_scope() {
     assert_eq!(
         first_result.get("artifact_refs").and_then(Value::as_array),
         Some(&artifact_refs)
+    );
+    let search_event = next_event_of_type(&mut rx, "memory.search").await;
+    assert_eq!(
+        search_event
+            .properties
+            .get("requestedScopes")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
+        Some(vec!["session"])
+    );
+    assert_eq!(
+        search_event
+            .properties
+            .get("scopesUsed")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
+        Some(vec!["session"])
     );
 }
 
