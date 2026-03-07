@@ -1686,6 +1686,51 @@ async fn finalize_coder_workflow_run(
     Ok(run)
 }
 
+async fn bootstrap_coder_workflow_run(
+    state: &AppState,
+    record: &CoderRunRecord,
+    completed_workflow_node_ids: &[&str],
+    runnable_workflow_node_ids: &[&str],
+    next_reason: &str,
+) -> Result<ContextRunState, StatusCode> {
+    let mut run = load_context_run_state(state, &record.linked_context_run_id).await?;
+    let now = crate::now_ms();
+    let completed_nodes: HashSet<&str> = completed_workflow_node_ids.iter().copied().collect();
+    let runnable_nodes: HashSet<&str> = runnable_workflow_node_ids.iter().copied().collect();
+    for task in &mut run.tasks {
+        if task
+            .workflow_node_id
+            .as_deref()
+            .is_some_and(|node_id| completed_nodes.contains(node_id))
+        {
+            task.status = ContextBlackboardTaskStatus::Done;
+            task.lease_owner = None;
+            task.lease_token = None;
+            task.lease_expires_at_ms = None;
+            task.updated_ts = now;
+            task.task_rev = task.task_rev.saturating_add(1);
+            continue;
+        }
+        if task
+            .workflow_node_id
+            .as_deref()
+            .is_some_and(|node_id| runnable_nodes.contains(node_id))
+            && matches!(task.status, ContextBlackboardTaskStatus::Pending)
+        {
+            task.status = ContextBlackboardTaskStatus::Runnable;
+            task.updated_ts = now;
+            task.task_rev = task.task_rev.saturating_add(1);
+        }
+    }
+    run.status = ContextRunStatus::Running;
+    run.started_at_ms.get_or_insert(now);
+    run.updated_at_ms = now;
+    run.why_next_step = Some(next_reason.to_string());
+    ensure_context_run_dir(state, &record.linked_context_run_id).await?;
+    save_context_run_state(state, &run).await?;
+    Ok(run)
+}
+
 fn coder_event_base(record: &CoderRunRecord) -> serde_json::Map<String, Value> {
     let mut payload = serde_json::Map::new();
     payload.insert("coder_run_id".to_string(), json!(record.coder_run_id));
@@ -2727,7 +2772,7 @@ pub(super) async fn coder_run_create(
         serde_json::from_value(created.0.get("run").cloned().unwrap_or_default())
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let record = CoderRunRecord {
+    let mut record = CoderRunRecord {
         coder_run_id: coder_run_id.clone(),
         workflow_mode: input.workflow_mode.clone(),
         linked_context_run_id: linked_context_run_id.clone(),
@@ -2808,14 +2853,16 @@ pub(super) async fn coder_run_create(
                     },
                 );
             }
-            let mut run = load_context_run_state(&state, &linked_context_run_id).await?;
-            run.status = ContextRunStatus::Planning;
-            run.why_next_step = Some(
-                "Normalize the issue reference, retrieve relevant memory, then inspect the repo."
-                    .to_string(),
-            );
-            ensure_context_run_dir(&state, &linked_context_run_id).await?;
-            save_context_run_state(&state, &run).await?;
+            let run = bootstrap_coder_workflow_run(
+                &state,
+                &record,
+                &["ingest_reference", "retrieve_memory"],
+                &["inspect_repo"],
+                "Inspect the repo, then attempt reproduction.",
+            )
+            .await?;
+            record.updated_at_ms = run.updated_at_ms;
+            save_coder_run_record(&state, &record).await?;
         }
         CoderWorkflowMode::IssueFix => {
             seed_issue_fix_tasks(state.clone(), &record).await?;
@@ -2846,14 +2893,16 @@ pub(super) async fn coder_run_create(
                 );
                 extra
             });
-            let mut run = load_context_run_state(&state, &linked_context_run_id).await?;
-            run.status = ContextRunStatus::Planning;
-            run.why_next_step = Some(
-                "Inspect the issue context, retrieve fix memory, then prepare and validate a constrained patch."
-                    .to_string(),
-            );
-            ensure_context_run_dir(&state, &linked_context_run_id).await?;
-            save_context_run_state(&state, &run).await?;
+            let run = bootstrap_coder_workflow_run(
+                &state,
+                &record,
+                &["retrieve_memory"],
+                &[],
+                "Inspect the issue context, then prepare and validate a constrained patch.",
+            )
+            .await?;
+            record.updated_at_ms = run.updated_at_ms;
+            save_coder_run_record(&state, &record).await?;
         }
         CoderWorkflowMode::PrReview => {
             seed_pr_review_tasks(state.clone(), &record).await?;
@@ -2884,13 +2933,16 @@ pub(super) async fn coder_run_create(
                 );
                 extra
             });
-            let mut run = load_context_run_state(&state, &linked_context_run_id).await?;
-            run.status = ContextRunStatus::Planning;
-            run.why_next_step = Some(
-                "Inspect the pull request, retrieve review memory, then analyze risk.".to_string(),
-            );
-            ensure_context_run_dir(&state, &linked_context_run_id).await?;
-            save_context_run_state(&state, &run).await?;
+            let run = bootstrap_coder_workflow_run(
+                &state,
+                &record,
+                &["retrieve_memory"],
+                &[],
+                "Inspect the pull request, then analyze risk and requested changes.",
+            )
+            .await?;
+            record.updated_at_ms = run.updated_at_ms;
+            save_coder_run_record(&state, &record).await?;
         }
         CoderWorkflowMode::MergeRecommendation => {
             seed_merge_recommendation_tasks(state.clone(), &record).await?;
@@ -2924,14 +2976,16 @@ pub(super) async fn coder_run_create(
                 );
                 extra
             });
-            let mut run = load_context_run_state(&state, &linked_context_run_id).await?;
-            run.status = ContextRunStatus::Planning;
-            run.why_next_step = Some(
-                "Inspect the pull request, retrieve merge memory, then assess readiness."
-                    .to_string(),
-            );
-            ensure_context_run_dir(&state, &linked_context_run_id).await?;
-            save_context_run_state(&state, &run).await?;
+            let run = bootstrap_coder_workflow_run(
+                &state,
+                &record,
+                &["retrieve_memory"],
+                &[],
+                "Inspect the pull request, then assess merge readiness.",
+            )
+            .await?;
+            record.updated_at_ms = run.updated_at_ms;
+            save_coder_run_record(&state, &record).await?;
         }
     }
 

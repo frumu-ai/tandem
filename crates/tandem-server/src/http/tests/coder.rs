@@ -59,7 +59,7 @@ async fn coder_issue_triage_run_create_get_and_list() {
             .get("coder_run")
             .and_then(|row| row.get("phase"))
             .and_then(Value::as_str),
-        Some("bootstrapping")
+        Some("repo_inspection")
     );
     let linked_context_run_id = create_payload
         .get("coder_run")
@@ -91,7 +91,7 @@ async fn coder_issue_triage_run_create_get_and_list() {
             .get("run")
             .and_then(|row| row.get("status"))
             .and_then(Value::as_str),
-        Some("planning")
+        Some("running")
     );
     assert_eq!(
         get_payload
@@ -100,6 +100,38 @@ async fn coder_issue_triage_run_create_get_and_list() {
             .and_then(Value::as_array)
             .map(|rows| rows.len()),
         Some(5)
+    );
+    let tasks = get_payload
+        .get("run")
+        .and_then(|row| row.get("tasks"))
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("tasks");
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|row| row.get("workflow_node_id").and_then(Value::as_str)
+                == Some("ingest_reference"))
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("done")
+    );
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|row| row.get("workflow_node_id").and_then(Value::as_str)
+                == Some("retrieve_memory"))
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("done")
+    );
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|row| row.get("workflow_node_id").and_then(Value::as_str) == Some("inspect_repo"))
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("runnable")
     );
     assert!(get_payload
         .get("artifacts")
@@ -195,7 +227,7 @@ async fn coder_issue_triage_run_create_get_and_list() {
             .properties
             .get("phase")
             .and_then(Value::as_str),
-        Some("bootstrapping")
+        Some("repo_inspection")
     );
 }
 
@@ -276,6 +308,37 @@ async fn coder_pr_review_run_create_gets_seeded_review_tasks() {
             .and_then(Value::as_str),
         Some("coder_pr_review")
     );
+    assert_eq!(
+        get_payload
+            .get("run")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("running")
+    );
+    let tasks = get_payload
+        .get("run")
+        .and_then(|row| row.get("tasks"))
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("tasks");
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|row| row.get("workflow_node_id").and_then(Value::as_str)
+                == Some("retrieve_memory"))
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("done")
+    );
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|row| row.get("workflow_node_id").and_then(Value::as_str)
+                == Some("inspect_pull_request"))
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("runnable")
+    );
     assert!(get_payload
         .get("artifacts")
         .and_then(Value::as_array)
@@ -320,7 +383,7 @@ async fn coder_pr_review_run_create_gets_seeded_review_tasks() {
             .get("coder_run")
             .and_then(|row| row.get("phase"))
             .and_then(Value::as_str),
-        Some("bootstrapping")
+        Some("repo_inspection")
     );
     assert_eq!(
         get_payload
@@ -407,6 +470,37 @@ async fn coder_issue_fix_run_create_gets_seeded_fix_tasks() {
             .and_then(|row| row.get("run_type"))
             .and_then(Value::as_str),
         Some("coder_issue_fix")
+    );
+    assert_eq!(
+        get_payload
+            .get("run")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("running")
+    );
+    let tasks = get_payload
+        .get("run")
+        .and_then(|row| row.get("tasks"))
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("tasks");
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|row| row.get("workflow_node_id").and_then(Value::as_str)
+                == Some("retrieve_memory"))
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("done")
+    );
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|row| row.get("workflow_node_id").and_then(Value::as_str)
+                == Some("inspect_issue_context"))
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("runnable")
     );
     assert!(get_payload
         .get("run")
@@ -1473,6 +1567,37 @@ async fn coder_merge_recommendation_run_create_gets_seeded_tasks() {
             .and_then(|row| row.get("run_type"))
             .and_then(Value::as_str),
         Some("coder_merge_recommendation")
+    );
+    assert_eq!(
+        get_payload
+            .get("run")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("running")
+    );
+    let tasks = get_payload
+        .get("run")
+        .and_then(|row| row.get("tasks"))
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("tasks");
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|row| row.get("workflow_node_id").and_then(Value::as_str)
+                == Some("retrieve_memory"))
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("done")
+    );
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|row| row.get("workflow_node_id").and_then(Value::as_str)
+                == Some("inspect_pull_request"))
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("runnable")
     );
     assert!(get_payload
         .get("run")
