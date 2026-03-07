@@ -414,6 +414,50 @@ async fn write_coder_artifact(
     Ok(artifact)
 }
 
+async fn write_coder_memory_candidate_artifact(
+    state: &AppState,
+    record: &CoderRunRecord,
+    kind: CoderMemoryCandidateKind,
+    summary: Option<String>,
+    task_id: Option<String>,
+    payload: Value,
+) -> Result<(String, ContextBlackboardArtifact), StatusCode> {
+    let candidate_id = format!("memcand-{}", Uuid::new_v4().simple());
+    let stored_payload = json!({
+        "candidate_id": candidate_id,
+        "coder_run_id": record.coder_run_id,
+        "linked_context_run_id": record.linked_context_run_id,
+        "workflow_mode": record.workflow_mode,
+        "kind": kind,
+        "task_id": task_id,
+        "summary": summary,
+        "payload": payload,
+        "repo_binding": record.repo_binding,
+        "github_ref": record.github_ref,
+        "created_at_ms": crate::now_ms(),
+    });
+    let artifact = write_coder_artifact(
+        state,
+        &record.linked_context_run_id,
+        &candidate_id,
+        "coder_memory_candidate",
+        &format!("coder_memory/{candidate_id}.json"),
+        &stored_payload,
+    )
+    .await?;
+    state.event_bus.publish(EngineEvent::new(
+        "coder.memory.candidate_added",
+        json!({
+            "coder_run_id": record.coder_run_id,
+            "linked_context_run_id": record.linked_context_run_id,
+            "candidate_id": candidate_id,
+            "kind": kind,
+            "artifact_path": artifact.path,
+        }),
+    ));
+    Ok((candidate_id, artifact))
+}
+
 fn project_coder_phase(run: &ContextRunState) -> &'static str {
     if matches!(
         run.status,
@@ -1026,41 +1070,15 @@ pub(super) async fn coder_memory_candidate_create(
     if !matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let candidate_id = format!("memcand-{}", Uuid::new_v4().simple());
-    let now = crate::now_ms();
-    let payload = json!({
-        "candidate_id": candidate_id,
-        "coder_run_id": record.coder_run_id,
-        "linked_context_run_id": record.linked_context_run_id,
-        "workflow_mode": record.workflow_mode,
-        "kind": input.kind,
-        "task_id": input.task_id,
-        "summary": input.summary,
-        "payload": input.payload,
-        "repo_binding": record.repo_binding,
-        "github_ref": record.github_ref,
-        "created_at_ms": now,
-    });
-    let path = format!("coder_memory/{candidate_id}.json");
-    let artifact = write_coder_artifact(
+    let (candidate_id, artifact) = write_coder_memory_candidate_artifact(
         &state,
-        &record.linked_context_run_id,
-        &candidate_id,
-        "coder_memory_candidate",
-        &path,
-        &payload,
+        &record,
+        input.kind,
+        input.summary,
+        input.task_id,
+        input.payload,
     )
     .await?;
-    state.event_bus.publish(EngineEvent::new(
-        "coder.memory.candidate_added",
-        json!({
-            "coder_run_id": record.coder_run_id,
-            "linked_context_run_id": record.linked_context_run_id,
-            "candidate_id": candidate_id,
-            "kind": input.kind,
-            "artifact_path": artifact.path,
-        }),
-    ));
     Ok(Json(json!({
         "ok": true,
         "candidate_id": candidate_id,
@@ -1112,8 +1130,78 @@ pub(super) async fn coder_triage_summary_create(
             "artifact_path": artifact.path,
         }),
     ));
+    let triage_summary = input
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|row| !row.is_empty())
+        .map(ToString::to_string);
+    let mut generated_candidates = Vec::<Value>::new();
+    if let Some(summary_text) = triage_summary.clone() {
+        let (triage_memory_id, triage_memory_artifact) = write_coder_memory_candidate_artifact(
+            &state,
+            &record,
+            CoderMemoryCandidateKind::TriageMemory,
+            Some(summary_text.clone()),
+            Some("write_triage_artifact".to_string()),
+            json!({
+                "summary": summary_text,
+                "confidence": input.confidence,
+                "affected_files": input.affected_files,
+                "duplicate_candidates": input.duplicate_candidates,
+                "memory_hits_used": input.memory_hits_used,
+                "reproduction": input.reproduction,
+                "notes": input.notes,
+                "summary_artifact_path": artifact.path,
+            }),
+        )
+        .await?;
+        generated_candidates.push(json!({
+            "candidate_id": triage_memory_id,
+            "kind": "triage_memory",
+            "artifact_path": triage_memory_artifact.path,
+        }));
+
+        let outcome = if input.duplicate_candidates.is_empty() {
+            "triaged"
+        } else {
+            "triaged_duplicate_candidate"
+        };
+        let (run_outcome_id, run_outcome_artifact) = write_coder_memory_candidate_artifact(
+            &state,
+            &record,
+            CoderMemoryCandidateKind::RunOutcome,
+            Some(format!("Issue triage completed: {outcome}")),
+            Some("write_triage_artifact".to_string()),
+            json!({
+                "workflow_mode": "issue_triage",
+                "result": outcome,
+                "summary": summary_text,
+                "successful_strategies": ["memory_retrieval", "repo_inspection"],
+                "validations_attempted": [{
+                    "kind": "reproduction",
+                    "outcome": input
+                        .reproduction
+                        .as_ref()
+                        .and_then(|row| row.get("outcome"))
+                        .cloned()
+                        .unwrap_or_else(|| json!("unknown"))
+                }],
+                "follow_up_recommended": true,
+                "follow_up_mode": "issue_fix",
+                "summary_artifact_path": artifact.path,
+            }),
+        )
+        .await?;
+        generated_candidates.push(json!({
+            "candidate_id": run_outcome_id,
+            "kind": "run_outcome",
+            "artifact_path": run_outcome_artifact.path,
+        }));
+    }
     Ok(Json(json!({
         "ok": true,
         "artifact": artifact,
+        "generated_candidates": generated_candidates,
     })))
 }

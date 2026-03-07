@@ -619,6 +619,17 @@ async fn coder_triage_summary_write_adds_summary_artifact() {
         .await
         .expect("summary response");
     assert_eq!(summary_resp.status(), StatusCode::OK);
+    let summary_body = to_bytes(summary_resp.into_body(), usize::MAX)
+        .await
+        .expect("summary body");
+    let summary_payload: Value = serde_json::from_slice(&summary_body).expect("summary json");
+    assert_eq!(
+        summary_payload
+            .get("generated_candidates")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(2)
+    );
 
     let artifacts_req = Request::builder()
         .method("GET")
@@ -656,4 +667,32 @@ async fn coder_triage_summary_write_adds_summary_artifact() {
         })
         .unwrap_or(false);
     assert!(contains_memory_hits);
+
+    let candidates_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-run-summary/memory-candidates")
+        .body(Body::empty())
+        .expect("candidates request");
+    let candidates_resp = app
+        .clone()
+        .oneshot(candidates_req)
+        .await
+        .expect("candidates response");
+    assert_eq!(candidates_resp.status(), StatusCode::OK);
+    let candidates_body = to_bytes(candidates_resp.into_body(), usize::MAX)
+        .await
+        .expect("candidates body");
+    let candidates_payload: Value =
+        serde_json::from_slice(&candidates_body).expect("candidates json");
+    let kinds = candidates_payload
+        .get("candidates")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("kind").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(kinds.contains(&"triage_memory"));
+    assert!(kinds.contains(&"run_outcome"));
 }
