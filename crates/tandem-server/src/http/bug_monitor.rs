@@ -1699,6 +1699,18 @@ pub(super) async fn publish_bug_monitor_draft(
             } else {
                 None
             };
+            let triage_summary_artifact =
+                outcome
+                    .draft
+                    .triage_run_id
+                    .as_deref()
+                    .and_then(|triage_run_id| {
+                        latest_bug_monitor_artifact(
+                            &state,
+                            triage_run_id,
+                            "bug_monitor_triage_summary",
+                        )
+                    });
             let issue_draft_artifact =
                 outcome
                     .draft
@@ -1716,6 +1728,7 @@ pub(super) async fn publish_bug_monitor_draft(
                 "draft": outcome.draft,
                 "action": outcome.action,
                 "issue_draft": issue_draft,
+                "triage_summary_artifact": triage_summary_artifact,
                 "issue_draft_artifact": issue_draft_artifact,
                 "post": outcome.post,
             }))
@@ -1734,6 +1747,12 @@ pub(super) async fn publish_bug_monitor_draft(
             } else {
                 None
             };
+            let triage_summary_artifact = draft
+                .as_ref()
+                .and_then(|row| row.triage_run_id.as_deref())
+                .and_then(|triage_run_id| {
+                    latest_bug_monitor_artifact(&state, triage_run_id, "bug_monitor_triage_summary")
+                });
             let issue_draft_artifact = draft
                 .as_ref()
                 .and_then(|row| row.triage_run_id.as_deref())
@@ -1748,6 +1767,7 @@ pub(super) async fn publish_bug_monitor_draft(
                     "draft_id": id,
                     "draft": draft,
                     "issue_draft": issue_draft,
+                    "triage_summary_artifact": triage_summary_artifact,
                     "issue_draft_artifact": issue_draft_artifact,
                     "detail": error.to_string(),
                 })),
@@ -1771,6 +1791,18 @@ pub(super) async fn recheck_bug_monitor_draft_match(
     .await
     {
         Ok(outcome) => {
+            let triage_summary_artifact =
+                outcome
+                    .draft
+                    .triage_run_id
+                    .as_deref()
+                    .and_then(|triage_run_id| {
+                        latest_bug_monitor_artifact(
+                            &state,
+                            triage_run_id,
+                            "bug_monitor_triage_summary",
+                        )
+                    });
             let issue_draft_artifact =
                 outcome
                     .draft
@@ -1787,6 +1819,7 @@ pub(super) async fn recheck_bug_monitor_draft_match(
                 "ok": true,
                 "draft": outcome.draft,
                 "action": outcome.action,
+                "triage_summary_artifact": triage_summary_artifact,
                 "issue_draft_artifact": issue_draft_artifact,
                 "post": outcome.post,
             }))
@@ -1794,6 +1827,12 @@ pub(super) async fn recheck_bug_monitor_draft_match(
         }
         Err(error) => {
             let draft = state.get_bug_monitor_draft(&id).await.or(existing_draft);
+            let triage_summary_artifact = draft
+                .as_ref()
+                .and_then(|row| row.triage_run_id.as_deref())
+                .and_then(|triage_run_id| {
+                    latest_bug_monitor_artifact(&state, triage_run_id, "bug_monitor_triage_summary")
+                });
             let issue_draft_artifact = draft
                 .as_ref()
                 .and_then(|row| row.triage_run_id.as_deref())
@@ -1807,6 +1846,7 @@ pub(super) async fn recheck_bug_monitor_draft_match(
                     "code": "BUG_MONITOR_DRAFT_RECHECK_FAILED",
                     "draft_id": id,
                     "draft": draft,
+                    "triage_summary_artifact": triage_summary_artifact,
                     "issue_draft_artifact": issue_draft_artifact,
                     "detail": error.to_string(),
                 })),

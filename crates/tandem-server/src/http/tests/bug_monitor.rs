@@ -1025,6 +1025,13 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
         .is_some_and(|body| body.contains("Build failure in CI")));
     assert_eq!(
         publish_payload
+            .get("triage_summary_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_triage_summary")
+    );
+    assert_eq!(
+        publish_payload
             .get("issue_draft_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
@@ -1058,6 +1065,13 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
             .and_then(|row| row.get("draft_id"))
             .and_then(Value::as_str),
         Some(draft_id.as_str())
+    );
+    assert_eq!(
+        recheck_payload
+            .get("triage_summary_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_triage_summary")
     );
     assert_eq!(
         recheck_payload
