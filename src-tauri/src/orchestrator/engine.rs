@@ -1700,16 +1700,31 @@ impl OrchestratorEngine {
                             t.state = TaskState::Done;
                             t.error_message = None;
                         } else {
+                            let validator_feedback = t
+                                .validation_result
+                                .as_ref()
+                                .map(|v| v.feedback.trim())
+                                .filter(|v| !v.is_empty())
+                                .map(|v| v.to_string());
                             t.retry_count += 1;
+
+                            if validator_feedback
+                                .as_deref()
+                                .map(Self::validator_feedback_indicates_missing_workspace_changes)
+                                .unwrap_or(false)
+                                && !matches!(
+                                    t.execution_mode,
+                                    Some(TaskExecutionMode::StrictNonwriting)
+                                )
+                            {
+                                // Escalate retries into strict-write mode when validator proves
+                                // no file-change evidence exists for a task that likely intended
+                                // to create/update artifacts.
+                                t.execution_mode = Some(TaskExecutionMode::StrictWrite);
+                            }
 
                             if t.retry_count >= max_retries {
                                 t.state = TaskState::Failed;
-                                let validator_feedback = t
-                                    .validation_result
-                                    .as_ref()
-                                    .map(|v| v.feedback.trim())
-                                    .filter(|v| !v.is_empty())
-                                    .map(|v| v.to_string());
                                 t.error_message = Some(match validator_feedback {
                                     Some(feedback) => {
                                         format!(
@@ -3134,12 +3149,6 @@ Attempt {attempt}/{max_attempts} did not persist workspace changes.\n\
         if matches!(task.task_kind, Some(TaskKind::Implementation)) {
             return true;
         }
-        if matches!(
-            task.task_kind,
-            Some(TaskKind::Inspection | TaskKind::Research | TaskKind::Validation)
-        ) {
-            return false;
-        }
         if task
             .output_target
             .as_ref()
@@ -3245,6 +3254,21 @@ Attempt {attempt}/{max_attempts} did not persist workspace changes.\n\
         }
 
         false
+    }
+
+    fn validator_feedback_indicates_missing_workspace_changes(feedback: &str) -> bool {
+        let lowered = feedback.to_lowercase();
+        [
+            "no changed-file evidence",
+            "no changed file evidence",
+            "workspace changes:0 created,0 updated,0 deleted",
+            "workspace changes: 0 created, 0 updated, 0 deleted",
+            "no actual file creation or modification is proven",
+            "without a corresponding diff",
+            "cannot be validated as complete because there is no changed-file evidence",
+        ]
+        .iter()
+        .any(|needle| lowered.contains(needle))
     }
 
     fn extract_target_file_hints(task: &Task) -> Vec<String> {

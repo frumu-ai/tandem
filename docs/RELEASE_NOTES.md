@@ -11,6 +11,7 @@
   - tuned planner guidance so non-trivial report/objective requests avoid collapsing into a single task
   - reduced terminal log spam by suppressing duplicate in-flight `tool.lifecycle.start` events for the same tool part even when provider args stream updates
   - fixed command-center action visibility so selected runs reliably expose pause/cancel/continue/delete controls
+  - fixed validator/retry mismatch where write-intended tasks could be treated as non-writing and loop into `Max retries exceeded` with `no changed-file evidence`; retries now escalate to strict-write when validator feedback proves no workspace changes
 
 - **Bug Monitor settings foundation and runtime config surface**:
   - added persisted bug-monitor config/state in `tandem-server` with explicit repo, MCP server, provider preference, and dedicated `model_policy.default_model` routing for the reporter agent

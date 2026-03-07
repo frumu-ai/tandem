@@ -13,6 +13,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Tuned planner guidance so non-trivial report/objective requests avoid collapsing into a single task.
   - Reduced terminal log spam by suppressing duplicate in-flight `tool.lifecycle.start` events for the same tool part even when provider args stream updates.
   - Fixed command center action visibility so selected runs reliably expose pause/cancel/continue/delete controls.
+  - Fixed validator/retry mismatch where write-intended tasks could be treated as non-writing and loop into `Max retries exceeded` with `no changed-file evidence`; retries now escalate to strict-write when validator feedback proves no workspace changes.
 
 - Bug Monitor settings foundation and server config/status surface
   - Added persisted bug-monitor config in `tandem-server` for repo, selected MCP server, provider preference, and dedicated `model_policy.default_model` routing.

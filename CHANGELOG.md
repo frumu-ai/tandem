@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - updated planner guidance to avoid over-collapsing non-trivial report/objective requests into a single task, restoring multi-task decomposition behavior
   - reduced `tool.lifecycle.start` log spam by suppressing duplicate in-flight `ToolStart` events for the same logical tool call even when providers stream arg updates
   - fixed command center run action visibility to rely on selected run identity directly, preventing cases where a selected running run looked stuck with no available controls
+  - fixed validator/retry mismatch where write-intended tasks classified as `Research`/`Inspection`/`Validation` could bypass strict-write enforcement and loop into `Max retries exceeded` with `no changed-file evidence`; retries now auto-escalate to strict-write when validator feedback proves no workspace changes
 
 - **Bug Monitor settings foundation and server config/status surface**:
   - added persisted bug-monitor config and status state in `tandem-server`, including repo, MCP server, provider preference, and dedicated `model_policy.default_model` routing for the reporter agent
