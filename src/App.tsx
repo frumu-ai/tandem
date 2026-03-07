@@ -14,6 +14,7 @@ import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
 import { OrchestratorPanel } from "@/components/orchestrate/OrchestratorPanel";
 import { CommandCenterPage } from "@/components/command-center/CommandCenterPage";
 import { AgentAutomationPage } from "@/components/agent-automation/AgentAutomationPage";
+import { DeveloperRunViewer } from "@/components/developer/DeveloperRunViewer";
 import { type RunSummary } from "@/components/orchestrate/types";
 import { PacksPanel } from "@/components/packs";
 import { AppUpdateOverlay } from "@/components/updates/AppUpdateOverlay";
@@ -82,6 +83,7 @@ import {
   Bot,
   Blocks,
   Loader2,
+  Workflow,
 } from "lucide-react";
 const RELEASES_BASE_URL = "https://github.com/frumu-ai/tandem/releases";
 
@@ -97,6 +99,7 @@ type View =
   | "chat"
   | "command-center"
   | "agent-automation"
+  | "developer"
   | "extensions"
   | "settings"
   | "about"
@@ -676,7 +679,8 @@ function App() {
             view !== "packs" &&
             view !== "extensions" &&
             view !== "command-center" &&
-            view !== "agent-automation"
+            view !== "agent-automation" &&
+            view !== "developer"
           ? "onboarding"
           : view;
 
@@ -1573,6 +1577,17 @@ function App() {
                 <Sparkles className="h-5 w-5" />
               </button>
               <button
+                onClick={() => setView("developer")}
+                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                  effectiveView === "developer"
+                    ? "bg-primary/20 text-primary"
+                    : "text-text-muted hover:bg-surface-elevated hover:text-text"
+                }`}
+                title="Developer mode"
+              >
+                <Workflow className="h-5 w-5" />
+              </button>
+              <button
                 onClick={() => setView("extensions")}
                 className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
                   effectiveView === "extensions"
@@ -1897,6 +1912,22 @@ function App() {
                 onManageProjects={handleManageProjects}
                 projectSwitcherLoading={projectSwitcherLoading}
                 onOpenMcpExtensions={() => {
+                  setExtensionsInitialTab("mcp");
+                  setView("extensions");
+                }}
+              />
+            </motion.div>
+          ) : effectiveView === "developer" ? (
+            <motion.div
+              key="developer"
+              className="h-full w-full app-background"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+            >
+              <DeveloperRunViewer
+                onOpenMcpSettings={() => {
                   setExtensionsInitialTab("mcp");
                   setView("extensions");
                 }}

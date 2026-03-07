@@ -5749,80 +5749,145 @@ pub async fn capability_readiness(
 }
 
 #[tauri::command]
-pub async fn failure_reporter_get_config(state: State<'_, AppState>) -> Result<serde_json::Value> {
-    state.sidecar.failure_reporter_get_config().await
+pub async fn bug_monitor_get_config(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    state.sidecar.bug_monitor_get_config().await
 }
 
 #[tauri::command]
-pub async fn failure_reporter_patch_config(
+pub async fn bug_monitor_patch_config(
     state: State<'_, AppState>,
     config: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    state.sidecar.failure_reporter_patch_config(config).await
+    state.sidecar.bug_monitor_patch_config(config).await
 }
 
 #[tauri::command]
-pub async fn failure_reporter_get_status(state: State<'_, AppState>) -> Result<serde_json::Value> {
-    state.sidecar.failure_reporter_get_status().await
+pub async fn bug_monitor_get_status(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    state.sidecar.bug_monitor_get_status().await
 }
 
 #[tauri::command]
-pub async fn failure_reporter_list_drafts(
+pub async fn bug_monitor_list_drafts(
     state: State<'_, AppState>,
     limit: Option<usize>,
 ) -> Result<serde_json::Value> {
-    state.sidecar.failure_reporter_list_drafts(limit).await
+    state.sidecar.bug_monitor_list_drafts(limit).await
 }
 
 #[tauri::command]
-pub async fn failure_reporter_get_draft(
+pub async fn bug_monitor_get_draft(
     state: State<'_, AppState>,
     draft_id: String,
 ) -> Result<serde_json::Value> {
-    state.sidecar.failure_reporter_get_draft(&draft_id).await
+    state.sidecar.bug_monitor_get_draft(&draft_id).await
 }
 
 #[tauri::command]
-pub async fn failure_reporter_report(
+pub async fn bug_monitor_report(
     state: State<'_, AppState>,
     report: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    state.sidecar.failure_reporter_report(report).await
+    state.sidecar.bug_monitor_report(report).await
 }
 
 #[tauri::command]
-pub async fn failure_reporter_approve_draft(
+pub async fn bug_monitor_approve_draft(
     state: State<'_, AppState>,
     draft_id: String,
     reason: Option<String>,
 ) -> Result<serde_json::Value> {
     state
         .sidecar
-        .failure_reporter_approve_draft(&draft_id, reason)
+        .bug_monitor_approve_draft(&draft_id, reason)
         .await
 }
 
 #[tauri::command]
-pub async fn failure_reporter_deny_draft(
+pub async fn bug_monitor_deny_draft(
     state: State<'_, AppState>,
     draft_id: String,
     reason: Option<String>,
 ) -> Result<serde_json::Value> {
     state
         .sidecar
-        .failure_reporter_deny_draft(&draft_id, reason)
+        .bug_monitor_deny_draft(&draft_id, reason)
         .await
 }
 
 #[tauri::command]
-pub async fn failure_reporter_create_triage_run(
+pub async fn bug_monitor_create_triage_run(
     state: State<'_, AppState>,
     draft_id: String,
 ) -> Result<serde_json::Value> {
+    state.sidecar.bug_monitor_create_triage_run(&draft_id).await
+}
+
+#[tauri::command]
+pub async fn coder_list_runs(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+    workflow_mode: Option<String>,
+    repo_slug: Option<String>,
+) -> Result<serde_json::Value> {
     state
         .sidecar
-        .failure_reporter_create_triage_run(&draft_id)
+        .coder_list_runs(limit, workflow_mode, repo_slug)
         .await
+}
+
+#[tauri::command]
+pub async fn coder_get_run(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<serde_json::Value> {
+    state.sidecar.coder_get_run(&run_id).await
+}
+
+#[tauri::command]
+pub async fn coder_list_artifacts(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<serde_json::Value> {
+    state.sidecar.coder_list_artifacts(&run_id).await
+}
+
+#[tauri::command]
+pub async fn coder_get_memory_hits(
+    state: State<'_, AppState>,
+    run_id: String,
+    query: Option<String>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .coder_get_memory_hits(&run_id, query, limit)
+        .await
+}
+
+#[tauri::command]
+pub async fn coder_list_memory_candidates(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<serde_json::Value> {
+    state.sidecar.coder_list_memory_candidates(&run_id).await
+}
+
+#[tauri::command]
+pub async fn coder_approve_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    reason: Option<String>,
+) -> Result<serde_json::Value> {
+    state.sidecar.coder_approve_run(&run_id, reason).await
+}
+
+#[tauri::command]
+pub async fn coder_cancel_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    reason: Option<String>,
+) -> Result<serde_json::Value> {
+    state.sidecar.coder_cancel_run(&run_id, reason).await
 }
 
 #[tauri::command]

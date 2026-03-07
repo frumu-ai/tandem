@@ -1091,6 +1091,51 @@ export interface FailureReporterSubmission {
   fingerprint?: string | null;
 }
 
+export interface CoderRepoBinding {
+  project_id: string;
+  workspace_id: string;
+  workspace_root: string;
+  repo_slug: string;
+  default_branch?: string | null;
+}
+
+export interface CoderGithubRef {
+  kind: "issue" | "pull_request" | string;
+  number: number;
+  url?: string | null;
+}
+
+export interface CoderRunRecord {
+  coder_run_id: string;
+  workflow_mode: string;
+  linked_context_run_id: string;
+  repo_binding: CoderRepoBinding;
+  github_ref?: CoderGithubRef | null;
+  source_client?: string | null;
+  status?: string;
+  phase?: string;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface CoderArtifactRecord {
+  id: string;
+  ts_ms: number;
+  path: string;
+  artifact_type: string;
+  step_id?: string | null;
+  source_event_id?: string | null;
+}
+
+export interface CoderMemoryCandidateRecord {
+  candidate_id: string;
+  kind: string;
+  summary?: string | null;
+  payload: Record<string, unknown>;
+  artifact?: CoderArtifactRecord | null;
+  created_at_ms?: number;
+}
+
 export async function getFailureReporterConfig(): Promise<{
   failure_reporter: FailureReporterConfig;
 }> {
@@ -1140,15 +1185,69 @@ export async function denyFailureReporterDraft(
   return invoke("failure_reporter_deny_draft", { draftId, reason });
 }
 
-export async function createFailureReporterTriageRun(
-  draftId: string
-): Promise<{
+export async function createFailureReporterTriageRun(draftId: string): Promise<{
   ok: boolean;
   deduped?: boolean;
   draft: FailureReporterDraftRecord;
   run: FailureReporterTriageRunRecord;
 }> {
   return invoke("failure_reporter_create_triage_run", { draftId });
+}
+
+export async function listCoderRuns(params?: {
+  limit?: number;
+  workflowMode?: string;
+  repoSlug?: string;
+}): Promise<{ runs: CoderRunRecord[] }> {
+  return invoke("coder_list_runs", {
+    limit: params?.limit,
+    workflowMode: params?.workflowMode,
+    repoSlug: params?.repoSlug,
+  });
+}
+
+export async function getCoderRun(runId: string): Promise<{
+  coder_run: CoderRunRecord;
+  run: Record<string, unknown>;
+}> {
+  return invoke("coder_get_run", { runId });
+}
+
+export async function listCoderArtifacts(runId: string): Promise<{
+  artifacts: CoderArtifactRecord[];
+}> {
+  return invoke("coder_list_artifacts", { runId });
+}
+
+export async function getCoderMemoryHits(
+  runId: string,
+  params?: { query?: string; limit?: number }
+): Promise<{ hits: Record<string, unknown>[] }> {
+  return invoke("coder_get_memory_hits", {
+    runId,
+    query: params?.query,
+    limit: params?.limit,
+  });
+}
+
+export async function listCoderMemoryCandidates(runId: string): Promise<{
+  candidates: CoderMemoryCandidateRecord[];
+}> {
+  return invoke("coder_list_memory_candidates", { runId });
+}
+
+export async function approveCoderRun(
+  runId: string,
+  reason?: string
+): Promise<Record<string, unknown>> {
+  return invoke("coder_approve_run", { runId, reason });
+}
+
+export async function cancelCoderRun(
+  runId: string,
+  reason?: string
+): Promise<Record<string, unknown>> {
+  return invoke("coder_cancel_run", { runId, reason });
 }
 
 export type PackBuilderStatus =

@@ -4465,23 +4465,23 @@ impl SidecarManager {
         self.handle_response(response).await
     }
 
-    pub async fn failure_reporter_get_config(&self) -> Result<serde_json::Value> {
+    pub async fn bug_monitor_get_config(&self) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/config/failure-reporter", self.base_url().await?);
+        let url = format!("{}/config/bug-monitor", self.base_url().await?);
         let response = self.http_client.get(&url).send().await.map_err(|e| {
-            TandemError::Sidecar(format!("Failed to load Failure Reporter config: {}", e))
+            TandemError::Sidecar(format!("Failed to load Bug Monitor config: {}", e))
         })?;
         self.handle_response(response).await
     }
 
-    pub async fn failure_reporter_patch_config(
+    pub async fn bug_monitor_patch_config(
         &self,
         config: serde_json::Value,
     ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/config/failure-reporter", self.base_url().await?);
+        let url = format!("{}/config/bug-monitor", self.base_url().await?);
         let body = serde_json::json!({
-            "failure_reporter": config,
+            "bug_monitor": config,
         });
         let response = self
             .http_client
@@ -4490,55 +4490,51 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| {
-                TandemError::Sidecar(format!("Failed to save Failure Reporter config: {}", e))
+                TandemError::Sidecar(format!("Failed to save Bug Monitor config: {}", e))
             })?;
         self.handle_response(response).await
     }
 
-    pub async fn failure_reporter_get_status(&self) -> Result<serde_json::Value> {
+    pub async fn bug_monitor_get_status(&self) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/failure-reporter/status", self.base_url().await?);
+        let url = format!("{}/bug-monitor/status", self.base_url().await?);
         let response = self.http_client.get(&url).send().await.map_err(|e| {
-            TandemError::Sidecar(format!("Failed to load Failure Reporter status: {}", e))
+            TandemError::Sidecar(format!("Failed to load Bug Monitor status: {}", e))
         })?;
         self.handle_response(response).await
     }
 
-    pub async fn failure_reporter_list_drafts(
+    pub async fn bug_monitor_list_drafts(
         &self,
         limit: Option<usize>,
     ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/failure-reporter/drafts", self.base_url().await?);
+        let url = format!("{}/bug-monitor/drafts", self.base_url().await?);
         let mut request = self.http_client.get(&url);
         if let Some(limit) = limit {
             request = request.query(&[("limit", limit)]);
         }
         let response = request.send().await.map_err(|e| {
-            TandemError::Sidecar(format!("Failed to load Failure Reporter drafts: {}", e))
+            TandemError::Sidecar(format!("Failed to load Bug Monitor drafts: {}", e))
         })?;
         self.handle_response(response).await
     }
 
-    pub async fn failure_reporter_get_draft(&self, draft_id: &str) -> Result<serde_json::Value> {
+    pub async fn bug_monitor_get_draft(&self, draft_id: &str) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!(
-            "{}/failure-reporter/drafts/{}",
-            self.base_url().await?,
-            draft_id
-        );
+        let url = format!("{}/bug-monitor/drafts/{}", self.base_url().await?, draft_id);
         let response = self.http_client.get(&url).send().await.map_err(|e| {
-            TandemError::Sidecar(format!("Failed to load Failure Reporter draft: {}", e))
+            TandemError::Sidecar(format!("Failed to load Bug Monitor draft: {}", e))
         })?;
         self.handle_response(response).await
     }
 
-    pub async fn failure_reporter_report(
+    pub async fn bug_monitor_report(
         &self,
         report: serde_json::Value,
     ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/failure-reporter/report", self.base_url().await?);
+        let url = format!("{}/bug-monitor/report", self.base_url().await?);
         let body = serde_json::json!({
             "report": report,
         });
@@ -4549,22 +4545,18 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| {
-                TandemError::Sidecar(format!("Failed to submit Failure Reporter draft: {}", e))
+                TandemError::Sidecar(format!("Failed to submit Bug Monitor draft: {}", e))
             })?;
         self.handle_response(response).await
     }
 
-    pub async fn failure_reporter_approve_draft(
+    pub async fn bug_monitor_approve_draft(
         &self,
         draft_id: &str,
         reason: Option<String>,
     ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!(
-            "{}/failure-reporter/drafts/{}/approve",
-            self.base_url().await?,
-            draft_id
-        );
+        let url = format!("{}/bug-monitor/drafts/{}/approve", self.base_url().await?, draft_id);
         let response = self
             .http_client
             .post(&url)
@@ -4572,22 +4564,18 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| {
-                TandemError::Sidecar(format!("Failed to approve Failure Reporter draft: {}", e))
+                TandemError::Sidecar(format!("Failed to approve Bug Monitor draft: {}", e))
             })?;
         self.handle_response(response).await
     }
 
-    pub async fn failure_reporter_deny_draft(
+    pub async fn bug_monitor_deny_draft(
         &self,
         draft_id: &str,
         reason: Option<String>,
     ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!(
-            "{}/failure-reporter/drafts/{}/deny",
-            self.base_url().await?,
-            draft_id
-        );
+        let url = format!("{}/bug-monitor/drafts/{}/deny", self.base_url().await?, draft_id);
         let response = self
             .http_client
             .post(&url)
@@ -4595,27 +4583,147 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| {
-                TandemError::Sidecar(format!("Failed to deny Failure Reporter draft: {}", e))
+                TandemError::Sidecar(format!("Failed to deny Bug Monitor draft: {}", e))
             })?;
         self.handle_response(response).await
     }
 
-    pub async fn failure_reporter_create_triage_run(
+    pub async fn bug_monitor_create_triage_run(
         &self,
         draft_id: &str,
     ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!(
-            "{}/failure-reporter/drafts/{}/triage-run",
-            self.base_url().await?,
-            draft_id
-        );
+        let url = format!("{}/bug-monitor/drafts/{}/triage-run", self.base_url().await?, draft_id);
         let response = self.http_client.post(&url).send().await.map_err(|e| {
-            TandemError::Sidecar(format!(
-                "Failed to create Failure Reporter triage run: {}",
-                e
-            ))
+            TandemError::Sidecar(format!("Failed to create Bug Monitor triage run: {}", e))
         })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn coder_list_runs(
+        &self,
+        limit: Option<usize>,
+        workflow_mode: Option<String>,
+        repo_slug: Option<String>,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/coder/runs", self.base_url().await?);
+        let mut request = self.http_client.get(&url);
+        let mut pairs: Vec<(&str, String)> = Vec::new();
+        if let Some(limit) = limit {
+            pairs.push(("limit", limit.to_string()));
+        }
+        if let Some(workflow_mode) = workflow_mode {
+            pairs.push(("workflow_mode", workflow_mode));
+        }
+        if let Some(repo_slug) = repo_slug {
+            pairs.push(("repo_slug", repo_slug));
+        }
+        if !pairs.is_empty() {
+            request = request.query(&pairs);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to list coder runs: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn coder_get_run(&self, run_id: &str) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/coder/runs/{}", self.base_url().await?, run_id);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to get coder run: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn coder_list_artifacts(&self, run_id: &str) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/coder/runs/{}/artifacts", self.base_url().await?, run_id);
+        let response =
+            self.http_client.get(&url).send().await.map_err(|e| {
+                TandemError::Sidecar(format!("Failed to list coder artifacts: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn coder_get_memory_hits(
+        &self,
+        run_id: &str,
+        query: Option<String>,
+        limit: Option<usize>,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/coder/runs/{}/memory-hits",
+            self.base_url().await?,
+            run_id
+        );
+        let mut request = self.http_client.get(&url);
+        let mut pairs: Vec<(&str, String)> = Vec::new();
+        if let Some(query) = query {
+            pairs.push(("q", query));
+        }
+        if let Some(limit) = limit {
+            pairs.push(("limit", limit.to_string()));
+        }
+        if !pairs.is_empty() {
+            request = request.query(&pairs);
+        }
+        let response = request.send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to load coder memory hits: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn coder_list_memory_candidates(&self, run_id: &str) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/coder/runs/{}/memory-candidates",
+            self.base_url().await?,
+            run_id
+        );
+        let response = self.http_client.get(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to list coder memory candidates: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn coder_approve_run(
+        &self,
+        run_id: &str,
+        reason: Option<String>,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/coder/runs/{}/approve", self.base_url().await?, run_id);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&serde_json::json!({ "reason": reason }))
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to approve coder run: {}", e)))?;
+        self.handle_response(response).await
+    }
+
+    pub async fn coder_cancel_run(
+        &self,
+        run_id: &str,
+        reason: Option<String>,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/coder/runs/{}/cancel", self.base_url().await?, run_id);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&serde_json::json!({ "reason": reason }))
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to cancel coder run: {}", e)))?;
         self.handle_response(response).await
     }
 
