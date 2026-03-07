@@ -1057,6 +1057,44 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                           ? `${selectedRun.github_ref.kind} #${selectedRun.github_ref.number}`
                           : "no GitHub ref"}
                       </CardDescription>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {selectedDuplicateMatches.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setDetailTab("artifacts")}
+                            className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-amber-100 transition-colors hover:bg-amber-500/15"
+                          >
+                            {selectedDuplicateMatches.length} duplicate matches
+                          </button>
+                        ) : null}
+                        {selectedValidationSummary?.validationsAttempted ? (
+                          <button
+                            type="button"
+                            onClick={() => setDetailTab("validation")}
+                            className="rounded-full border border-violet-500/20 bg-violet-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-200 transition-colors hover:bg-violet-500/15"
+                          >
+                            {selectedValidationSummary.validationsAttempted} validation checks
+                          </button>
+                        ) : null}
+                        {memoryHits.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setDetailTab("memory")}
+                            className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-emerald-200 transition-colors hover:bg-emerald-500/15"
+                          >
+                            {memoryHits.length} memory hits
+                          </button>
+                        ) : null}
+                        {memoryCandidates.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setDetailTab("memory")}
+                            className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-sky-200 transition-colors hover:bg-sky-500/15"
+                          >
+                            {memoryCandidates.length} candidates
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <Button
@@ -1909,6 +1947,23 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                                 </span>
                               ) : null}
                             </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {selectedDuplicateMatches.length > 0 ? (
+                              <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-amber-100">
+                                {selectedDuplicateMatches.length} duplicate matches
+                              </span>
+                            ) : null}
+                            {selectedValidationSummary?.outcome ? (
+                              <span className="rounded-full border border-violet-500/20 bg-violet-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-200">
+                                {selectedValidationSummary.outcome}
+                              </span>
+                            ) : null}
+                            {selectedValidationSummary?.validationsAttempted ? (
+                              <span className="rounded-full border border-violet-500/20 bg-violet-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-200">
+                                {selectedValidationSummary.validationsAttempted} checks
+                              </span>
+                            ) : null}
                           </div>
 
                           {selectedDuplicateMatches.length > 0 ? (
