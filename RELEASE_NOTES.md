@@ -22,6 +22,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Added a Tauri bridge for reporter config, status, draft listing, draft lookup, and manual draft submission.
   - Added `POST /failure-reporter/report` so desktop logs and failed orchestrator runs can create deduped local issue drafts through the engine.
   - Fixed the desktop sidecar reporter config path to use the canonical `GET/PATCH /config/failure-reporter` route.
+  - Added engine-backed draft approval/deny actions at `POST /failure-reporter/drafts/{id}/approve` and `POST /failure-reporter/drafts/{id}/deny`, and surfaced those actions in desktop Settings.
 
 ## v0.4.1 (2026-03-07)
 

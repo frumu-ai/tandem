@@ -27,6 +27,12 @@ pub(super) struct FailureReporterSubmissionInput {
     pub report: Option<FailureReporterSubmission>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct FailureReporterDecisionInput {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 pub(super) async fn get_failure_reporter_config(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
@@ -126,11 +132,7 @@ pub(super) async fn get_failure_reporter_draft(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
-    let draft = state
-        .list_failure_reporter_drafts(200)
-        .await
-        .into_iter()
-        .find(|row| row.draft_id == id);
+    let draft = state.get_failure_reporter_draft(&id).await;
     match draft {
         Some(draft) => Json(json!({ "draft": draft })).into_response(),
         None => (
@@ -141,6 +143,43 @@ pub(super) async fn get_failure_reporter_draft(
             })),
         )
             .into_response(),
+    }
+}
+
+fn map_failure_reporter_draft_update_error(
+    draft_id: String,
+    error: anyhow::Error,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let detail = error.to_string();
+    if detail.contains("not found") {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Failure Reporter draft not found",
+                "code": "FAILURE_REPORTER_DRAFT_NOT_FOUND",
+                "draft_id": draft_id,
+            })),
+        )
+    } else if detail.contains("not waiting for approval") {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Failure Reporter draft is not waiting for approval",
+                "code": "FAILURE_REPORTER_DRAFT_NOT_PENDING_APPROVAL",
+                "draft_id": draft_id,
+                "detail": detail,
+            })),
+        )
+    } else {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Failed to update Failure Reporter draft",
+                "code": "FAILURE_REPORTER_DRAFT_UPDATE_FAILED",
+                "draft_id": draft_id,
+                "detail": detail,
+            })),
+        )
     }
 }
 
@@ -169,5 +208,33 @@ pub(super) async fn report_failure_reporter_issue(
             })),
         )
             .into_response(),
+    }
+}
+
+pub(super) async fn approve_failure_reporter_draft(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<FailureReporterDecisionInput>,
+) -> Response {
+    match state
+        .update_failure_reporter_draft_status(&id, "draft_ready", input.reason.as_deref())
+        .await
+    {
+        Ok(draft) => Json(json!({ "ok": true, "draft": draft })).into_response(),
+        Err(error) => map_failure_reporter_draft_update_error(id, error).into_response(),
+    }
+}
+
+pub(super) async fn deny_failure_reporter_draft(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<FailureReporterDecisionInput>,
+) -> Response {
+    match state
+        .update_failure_reporter_draft_status(&id, "denied", input.reason.as_deref())
+        .await
+    {
+        Ok(draft) => Json(json!({ "ok": true, "draft": draft })).into_response(),
+        Err(error) => map_failure_reporter_draft_update_error(id, error).into_response(),
     }
 }

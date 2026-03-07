@@ -689,6 +689,8 @@ pub fn run() {
             commands::failure_reporter_list_drafts,
             commands::failure_reporter_get_draft,
             commands::failure_reporter_report,
+            commands::failure_reporter_approve_draft,
+            commands::failure_reporter_deny_draft,
             commands::setup_understand,
             commands::pack_builder_preview,
             commands::pack_builder_apply,

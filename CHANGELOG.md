@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - fixed the desktop sidecar Failure Reporter config path to use the engine’s canonical `GET/PATCH /config/failure-reporter` route instead of a non-existent `/failure-reporter/config` path
   - added `POST /failure-reporter/report` so desktop and future clients can submit structured failure context through the engine and receive a deduped local draft record
   - desktop logs and failed orchestrator runs can now create Failure Reporter drafts directly without implementing issue logic in the frontend
+  - added engine-owned Failure Reporter draft approval endpoints:
+    - `POST /failure-reporter/drafts/{id}/approve`
+    - `POST /failure-reporter/drafts/{id}/deny`
+  - desktop Settings can now approve or deny `approval_required` Failure Reporter drafts directly from the recent-drafts list
 
 - **Setup-understanding across channels and chat surfaces**:
   - added a shared deterministic setup-intent resolver at `POST /setup/understand` in `tandem-server`

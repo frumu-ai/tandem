@@ -24,6 +24,14 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             get(get_failure_reporter_draft),
         )
         .route(
+            "/failure-reporter/drafts/{id}/approve",
+            post(approve_failure_reporter_draft),
+        )
+        .route(
+            "/failure-reporter/drafts/{id}/deny",
+            post(deny_failure_reporter_draft),
+        )
+        .route(
             "/failure-reporter/report",
             post(report_failure_reporter_issue),
         )

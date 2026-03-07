@@ -1117,6 +1117,20 @@ export async function reportFailureReporterIssue(
   return invoke("failure_reporter_report", { report });
 }
 
+export async function approveFailureReporterDraft(
+  draftId: string,
+  reason?: string
+): Promise<{ ok: boolean; draft: FailureReporterDraftRecord }> {
+  return invoke("failure_reporter_approve_draft", { draftId, reason });
+}
+
+export async function denyFailureReporterDraft(
+  draftId: string,
+  reason?: string
+): Promise<{ ok: boolean; draft: FailureReporterDraftRecord }> {
+  return invoke("failure_reporter_deny_draft", { draftId, reason });
+}
+
 export type PackBuilderStatus =
   | "preview_pending"
   | "apply_blocked_missing_secrets"

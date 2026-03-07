@@ -5,6 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 import {
+  approveFailureReporterDraft,
+  denyFailureReporterDraft,
   getFailureReporterConfig,
   getFailureReporterStatus,
   listFailureReporterDrafts,
@@ -57,6 +59,7 @@ export function FailureReporterSettings({
   const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [actingDraftId, setActingDraftId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -145,6 +148,26 @@ export function FailureReporterSettings({
       setError(err instanceof Error ? err.message : "Failed to save Failure Reporter settings");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDraftDecision = async (draftId: string, decision: "approve" | "deny") => {
+    setActingDraftId(draftId);
+    setError(null);
+    setNotice(null);
+    try {
+      if (decision === "approve") {
+        await approveFailureReporterDraft(draftId, "approved from desktop settings");
+        setNotice(`Failure Reporter draft ${draftId} approved.`);
+      } else {
+        await denyFailureReporterDraft(draftId, "denied from desktop settings");
+        setNotice(`Failure Reporter draft ${draftId} denied.`);
+      }
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to ${decision} Failure Reporter draft`);
+    } finally {
+      setActingDraftId(null);
     }
   };
 
@@ -388,6 +411,25 @@ export function FailureReporterSettings({
                   </p>
                   {draft.detail ? (
                     <p className="mt-2 text-sm text-text-muted">{draft.detail}</p>
+                  ) : null}
+                  {draft.status === "approval_required" ? (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => void handleDraftDecision(draft.draft_id, "approve")}
+                        disabled={actingDraftId === draft.draft_id}
+                      >
+                        {actingDraftId === draft.draft_id ? "Updating..." : "Approve"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => void handleDraftDecision(draft.draft_id, "deny")}
+                        disabled={actingDraftId === draft.draft_id}
+                      >
+                        Deny
+                      </Button>
+                    </div>
                   ) : null}
                 </div>
               ))}

@@ -5791,6 +5791,30 @@ pub async fn failure_reporter_report(
 }
 
 #[tauri::command]
+pub async fn failure_reporter_approve_draft(
+    state: State<'_, AppState>,
+    draft_id: String,
+    reason: Option<String>,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .failure_reporter_approve_draft(&draft_id, reason)
+        .await
+}
+
+#[tauri::command]
+pub async fn failure_reporter_deny_draft(
+    state: State<'_, AppState>,
+    draft_id: String,
+    reason: Option<String>,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .failure_reporter_deny_draft(&draft_id, reason)
+        .await
+}
+
+#[tauri::command]
 pub async fn pack_builder_preview(
     state: State<'_, AppState>,
     request: serde_json::Value,

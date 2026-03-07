@@ -4554,6 +4554,52 @@ impl SidecarManager {
         self.handle_response(response).await
     }
 
+    pub async fn failure_reporter_approve_draft(
+        &self,
+        draft_id: &str,
+        reason: Option<String>,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/failure-reporter/drafts/{}/approve",
+            self.base_url().await?,
+            draft_id
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&serde_json::json!({ "reason": reason }))
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to approve Failure Reporter draft: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn failure_reporter_deny_draft(
+        &self,
+        draft_id: &str,
+        reason: Option<String>,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/failure-reporter/drafts/{}/deny",
+            self.base_url().await?,
+            draft_id
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&serde_json::json!({ "reason": reason }))
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to deny Failure Reporter draft: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
     pub async fn pack_builder_preview(
         &self,
         request: serde_json::Value,

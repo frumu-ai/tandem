@@ -28,6 +28,7 @@
   - added a Tauri bridge for Failure Reporter config, status, draft listing, draft lookup, and manual draft submission
   - added `POST /failure-reporter/report` so desktop logs and failed orchestrator runs can create deduped local failure drafts through the engine
   - fixed the desktop sidecar reporter config path to use the canonical `GET/PATCH /config/failure-reporter` route
+  - added engine-backed draft approval/deny actions at `POST /failure-reporter/drafts/{id}/approve` and `POST /failure-reporter/drafts/{id}/deny`, and surfaced those actions in desktop Settings
 
 - **Setup understanding now routes setup asks instead of treating them as ordinary chat**:
   - added a shared backend setup-understanding endpoint at `POST /setup/understand`

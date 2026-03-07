@@ -2068,6 +2068,17 @@ impl AppState {
         rows
     }
 
+    pub async fn get_failure_reporter_draft(
+        &self,
+        draft_id: &str,
+    ) -> Option<FailureReporterDraftRecord> {
+        self.failure_reporter_drafts
+            .read()
+            .await
+            .get(draft_id)
+            .cloned()
+    }
+
     pub async fn submit_failure_reporter_draft(
         &self,
         mut submission: FailureReporterSubmission,
@@ -2217,6 +2228,57 @@ impl AppState {
         drop(drafts);
         self.persist_failure_reporter_drafts().await?;
         Ok(draft)
+    }
+
+    pub async fn update_failure_reporter_draft_status(
+        &self,
+        draft_id: &str,
+        next_status: &str,
+        reason: Option<&str>,
+    ) -> anyhow::Result<FailureReporterDraftRecord> {
+        let normalized_status = next_status.trim().to_ascii_lowercase();
+        if normalized_status != "draft_ready" && normalized_status != "denied" {
+            anyhow::bail!("unsupported Failure Reporter draft status");
+        }
+
+        let mut drafts = self.failure_reporter_drafts.write().await;
+        let Some(draft) = drafts.get_mut(draft_id) else {
+            anyhow::bail!("Failure Reporter draft not found");
+        };
+        if !draft.status.eq_ignore_ascii_case("approval_required") {
+            anyhow::bail!("Failure Reporter draft is not waiting for approval");
+        }
+        draft.status = normalized_status.clone();
+        if let Some(reason) = reason
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            let next_detail = if let Some(detail) = draft.detail.as_ref() {
+                format!("{detail}\n\noperator_note: {reason}")
+            } else {
+                format!("operator_note: {reason}")
+            };
+            draft.detail = Some(next_detail);
+        }
+        let updated = draft.clone();
+        drop(drafts);
+        self.persist_failure_reporter_drafts().await?;
+
+        let event_name = if normalized_status == "draft_ready" {
+            "failure_reporter.draft.approved"
+        } else {
+            "failure_reporter.draft.denied"
+        };
+        self.event_bus.publish(EngineEvent::new(
+            event_name,
+            serde_json::json!({
+                "draft_id": updated.draft_id,
+                "repo": updated.repo,
+                "status": updated.status,
+                "reason": reason,
+            }),
+        ));
+        Ok(updated)
     }
 
     pub async fn failure_reporter_status(&self) -> FailureReporterStatus {
