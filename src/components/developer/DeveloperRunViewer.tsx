@@ -310,6 +310,7 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [acting, setActing] = useState<"approve" | "cancel" | null>(null);
+  const [copiedContextRun, setCopiedContextRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const kanbanRef = useRef<HTMLDivElement | null>(null);
   const blackboardRef = useRef<HTMLDivElement | null>(null);
@@ -801,6 +802,19 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     [loadRunDetail, loadRuns, selectedRunId]
   );
 
+  const copyContextRunId = useCallback(async () => {
+    const value = selectedRun?.linked_context_run_id?.trim();
+    const clipboard = globalThis.navigator?.clipboard;
+    if (!value || !clipboard?.writeText) return;
+    try {
+      await clipboard.writeText(value);
+      setCopiedContextRun(true);
+      globalThis.setTimeout(() => setCopiedContextRun(false), 1500);
+    } catch {
+      // Ignore clipboard failures; the id is still visible in the UI.
+    }
+  }, [selectedRun?.linked_context_run_id]);
+
   const focusOverviewSection = useCallback(
     (section: "kanban" | "blackboard" | "timeline" | "memory") => {
       const target =
@@ -1153,20 +1167,48 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                 </CardHeader>
                 <CardContent className="grid gap-3 md:grid-cols-4">
                   {[
-                    ["Status", selectedRun.status ?? "unknown"],
-                    ["Phase", selectedRun.phase ?? "analysis"],
-                    ["Context Run", selectedRun.linked_context_run_id],
-                    ["Updated", formatTimestamp(selectedRun.updated_at_ms)],
-                  ].map(([label, value]) => (
-                    <div
+                    {
+                      label: "Status",
+                      value: selectedRun.status ?? "unknown",
+                      onClick: () => {
+                        const status = selectedRun.status ?? "unknown";
+                        setStatusFilter(status);
+                        setRunSortMode(
+                          status === "awaiting_approval"
+                            ? "approval"
+                            : runNeedsAttention(selectedRun)
+                              ? "attention"
+                              : "updated"
+                        );
+                      },
+                    },
+                    {
+                      label: "Phase",
+                      value: selectedRun.phase ?? "analysis",
+                      onClick: () => setDetailTab("overview"),
+                    },
+                    {
+                      label: "Context Run",
+                      value: copiedContextRun ? "Copied" : selectedRun.linked_context_run_id,
+                      onClick: () => void copyContextRunId(),
+                    },
+                    {
+                      label: "Updated",
+                      value: formatTimestamp(selectedRun.updated_at_ms),
+                      onClick: () => selectedRunId && void loadRunDetail(selectedRunId),
+                    },
+                  ].map(({ label, value, onClick }) => (
+                    <button
                       key={label}
-                      className="rounded-2xl border border-border bg-surface-elevated/50 p-3"
+                      type="button"
+                      onClick={onClick}
+                      className="rounded-2xl border border-border bg-surface-elevated/50 p-3 text-left transition-colors hover:bg-surface-elevated"
                     >
                       <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
                         {label}
                       </p>
                       <p className="mt-1 text-sm font-medium text-text">{value}</p>
-                    </div>
+                    </button>
                   ))}
                 </CardContent>
                 <CardContent className="pt-0">
