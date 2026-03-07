@@ -1896,11 +1896,11 @@ pub(super) async fn memory_search(
     };
     let mut scopes_used = Vec::new();
     let mut blocked_scopes = Vec::new();
-    for scope in requested_scopes {
-        if capability.memory.read_tiers.contains(&scope) {
-            scopes_used.push(scope);
+    for scope in &requested_scopes {
+        if capability.memory.read_tiers.contains(scope) {
+            scopes_used.push(scope.clone());
         } else {
-            blocked_scopes.push(scope);
+            blocked_scopes.push(scope.clone());
         }
     }
     let allow_private_results = scopes_used

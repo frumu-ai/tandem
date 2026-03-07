@@ -2784,6 +2784,135 @@ async fn coder_issue_triage_seeds_ranked_memory_hits() {
 }
 
 #[tokio::test]
+async fn coder_triage_reproduction_report_advances_triage_run() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-triage-repro",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 96
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let linked_context_run_id = create_payload
+        .get("coder_run")
+        .and_then(|row| row.get("linked_context_run_id"))
+        .and_then(Value::as_str)
+        .expect("linked context run id")
+        .to_string();
+
+    let repro_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-triage-repro/triage-reproduction-report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "summary": "Reproduced the capability-readiness issue when bindings are missing.",
+                "outcome": "reproduced",
+                "steps": [
+                    "Disconnect GitHub MCP bindings",
+                    "Create issue_triage coder run"
+                ],
+                "observed_logs": [
+                    "capabilities readiness failed closed"
+                ],
+                "affected_files": ["crates/tandem-server/src/http/coder.rs"],
+                "memory_hits_used": ["memory-hit-triage-repro-1"]
+            })
+            .to_string(),
+        ))
+        .expect("repro request");
+    let repro_resp = app
+        .clone()
+        .oneshot(repro_req)
+        .await
+        .expect("repro response");
+    assert_eq!(repro_resp.status(), StatusCode::OK);
+    let repro_payload: Value = serde_json::from_slice(
+        &to_bytes(repro_resp.into_body(), usize::MAX)
+            .await
+            .expect("repro body"),
+    )
+    .expect("repro json");
+    assert_eq!(
+        repro_payload
+            .get("artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("coder_reproduction_report")
+    );
+    assert_eq!(
+        repro_payload
+            .get("run")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("running")
+    );
+    assert_eq!(
+        repro_payload
+            .get("coder_run")
+            .and_then(|row| row.get("phase"))
+            .and_then(Value::as_str),
+        Some("artifact_write")
+    );
+
+    let run = load_context_run_state(&state, &linked_context_run_id)
+        .await
+        .expect("context run state");
+    assert_eq!(run.status, ContextRunStatus::Running);
+    for workflow_node_id in ["inspect_repo", "attempt_reproduction"] {
+        assert_eq!(
+            run.tasks
+                .iter()
+                .find(|task| task.workflow_node_id.as_deref() == Some(workflow_node_id))
+                .map(|task| &task.status),
+            Some(&ContextBlackboardTaskStatus::Done),
+            "expected {workflow_node_id} to be done"
+        );
+    }
+    assert_eq!(
+        run.tasks
+            .iter()
+            .find(|task| task.workflow_node_id.as_deref() == Some("write_triage_artifact"))
+            .map(|task| &task.status),
+        Some(&ContextBlackboardTaskStatus::Runnable)
+    );
+}
+
+#[tokio::test]
 async fn coder_memory_hits_endpoint_returns_ranked_hits() {
     let state = test_state().await;
     state

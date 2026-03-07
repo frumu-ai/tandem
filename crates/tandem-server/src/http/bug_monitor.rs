@@ -1337,7 +1337,7 @@ pub(super) async fn replay_bug_monitor_incident(
         )
             .into_response();
     };
-    match ensure_bug_monitor_triage_run(state, draft_id, true).await {
+    match ensure_bug_monitor_triage_run(state.clone(), draft_id, true).await {
         Ok((draft, run, deduped)) => {
             let triage_run_id = draft.triage_run_id.as_deref().unwrap_or(run.as_str());
             let run = load_context_run_state(&state, triage_run_id).await.ok();
