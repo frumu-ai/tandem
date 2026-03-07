@@ -19,10 +19,12 @@ import {
   listCoderArtifacts,
   listCoderMemoryCandidates,
   listCoderRuns,
+  readFileText,
   type CoderArtifactRecord,
   type CoderMemoryCandidateRecord,
   type CoderRunRecord,
 } from "@/lib/tauri";
+import { DiffViewer } from "@/components/plan/DiffViewer";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { cn } from "@/lib/utils";
@@ -91,6 +93,9 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
   const [artifacts, setArtifacts] = useState<CoderArtifactRecord[]>([]);
   const [memoryHits, setMemoryHits] = useState<Record<string, unknown>[]>([]);
   const [memoryCandidates, setMemoryCandidates] = useState<CoderMemoryCandidateRecord[]>([]);
+  const [selectedArtifactPath, setSelectedArtifactPath] = useState<string | null>(null);
+  const [selectedArtifactContent, setSelectedArtifactContent] = useState<string>("");
+  const [loadingArtifact, setLoadingArtifact] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [acting, setActing] = useState<"approve" | "cancel" | null>(null);
@@ -125,6 +130,7 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       setArtifacts(asArray(artifactsPayload.artifacts));
       setMemoryHits(asArray(memoryHitsPayload.hits));
       setMemoryCandidates(asArray(memoryCandidatesPayload.candidates));
+      setSelectedArtifactPath((current) => current ?? artifactsPayload.artifacts[0]?.path ?? null);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -148,10 +154,41 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       setArtifacts([]);
       setMemoryHits([]);
       setMemoryCandidates([]);
+      setSelectedArtifactPath(null);
+      setSelectedArtifactContent("");
       return;
     }
     void loadRunDetail(selectedRunId);
   }, [loadRunDetail, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedArtifactPath) {
+      setSelectedArtifactContent("");
+      return;
+    }
+    let cancelled = false;
+    const loadArtifact = async () => {
+      setLoadingArtifact(true);
+      try {
+        const content = await readFileText(selectedArtifactPath, 512 * 1024, 120_000);
+        if (!cancelled) {
+          setSelectedArtifactContent(content);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setSelectedArtifactContent(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingArtifact(false);
+        }
+      }
+    };
+    void loadArtifact();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedArtifactPath]);
 
   const selectedTaskRows = useMemo(() => {
     const tasks = runState?.tasks;
@@ -216,6 +253,31 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
       );
     });
   }, [artifacts]);
+
+  const artifactPreview = useMemo(() => {
+    if (!selectedArtifactContent) return null;
+    try {
+      const parsed = JSON.parse(selectedArtifactContent) as Record<string, unknown>;
+      const oldValue =
+        typeof parsed.old === "string"
+          ? parsed.old
+          : typeof parsed.before === "string"
+            ? parsed.before
+            : null;
+      const newValue =
+        typeof parsed.new === "string"
+          ? parsed.new
+          : typeof parsed.after === "string"
+            ? parsed.after
+            : null;
+      if (oldValue !== null && newValue !== null) {
+        return { kind: "diff" as const, oldValue, newValue };
+      }
+      return { kind: "raw" as const, value: selectedArtifactContent };
+    } catch {
+      return { kind: "raw" as const, value: selectedArtifactContent };
+    }
+  }, [selectedArtifactContent]);
 
   const handleAction = useCallback(
     async (action: "approve" | "cancel") => {
@@ -544,9 +606,16 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                     ) : (
                       (artifactHighlights.length > 0 ? artifactHighlights : artifacts).map(
                         (artifact) => (
-                          <div
+                          <button
                             key={artifact.id}
-                            className="rounded-2xl border border-border bg-surface-elevated/40 p-3"
+                            type="button"
+                            onClick={() => setSelectedArtifactPath(artifact.path)}
+                            className={cn(
+                              "w-full rounded-2xl border p-3 text-left",
+                              selectedArtifactPath === artifact.path
+                                ? "border-primary/40 bg-primary/10"
+                                : "border-border bg-surface-elevated/40"
+                            )}
                           >
                             <div className="flex items-center justify-between gap-3">
                               <p className="text-sm font-medium text-text">
@@ -559,9 +628,50 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
                             <p className="mt-2 break-all font-mono text-[11px] text-text-muted">
                               {artifact.path}
                             </p>
-                          </div>
+                          </button>
                         )
                       )
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Database className="h-4 w-4" />
+                      Artifact Inspector
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {selectedArtifactPath ? (
+                      <>
+                        <div className="rounded-2xl border border-border bg-surface-elevated/40 p-3">
+                          <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">
+                            Selected
+                          </p>
+                          <p className="mt-2 break-all font-mono text-[11px] text-text-muted">
+                            {selectedArtifactPath}
+                          </p>
+                        </div>
+                        {loadingArtifact ? (
+                          <p className="text-sm text-text-muted">Loading artifact preview…</p>
+                        ) : artifactPreview?.kind === "diff" ? (
+                          <DiffViewer
+                            oldValue={artifactPreview.oldValue}
+                            newValue={artifactPreview.newValue}
+                            oldTitle="Before"
+                            newTitle="After"
+                          />
+                        ) : (
+                          <pre className="max-h-[420px] overflow-auto rounded-2xl border border-border bg-surface-elevated/40 p-3 text-[11px] text-text-muted">
+                            {artifactPreview?.value ?? "No artifact preview available."}
+                          </pre>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-sm text-text-muted">
+                        Select an artifact to inspect its contents.
+                      </p>
                     )}
                   </CardContent>
                 </Card>
