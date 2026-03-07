@@ -29,6 +29,7 @@ function formatCompactNumber(value: number) {
 export function DashboardPage(props: AppPageProps) {
   const { api, client, navigate, providerStatus } = props;
   const [selectedWorkflowContextRunId, setSelectedWorkflowContextRunId] = useState("");
+  const visibleContextRunTypes = new Set(["workflow", "failure_reporter_triage"]);
 
   const health = useQuery({
     queryKey: ["dashboard", "health"],
@@ -52,8 +53,7 @@ export function DashboardPage(props: AppPageProps) {
   });
   const workflowContexts = useQuery({
     queryKey: ["dashboard", "workflow-context-runs"],
-    queryFn: () =>
-      api("/api/engine/context/runs?run_type=workflow&limit=6").catch(() => ({ runs: [] })),
+    queryFn: () => api("/api/engine/context/runs?limit=12").catch(() => ({ runs: [] })),
     refetchInterval: 6000,
   });
   const workflowContextDetail = useQuery({
@@ -75,7 +75,13 @@ export function DashboardPage(props: AppPageProps) {
 
   const sessionRows = toArray(sessions.data, "sessions");
   const routineRows = toArray(routines.data, "routines");
-  const workflowContextRows = toArray(workflowContexts.data, "runs");
+  const workflowContextRows = toArray(workflowContexts.data, "runs").filter((run: any) =>
+    visibleContextRunTypes.has(
+      String(run?.run_type || "")
+        .trim()
+        .toLowerCase()
+    )
+  );
   const healthy = !!(health.data?.engine?.ready || health.data?.engine?.healthy);
   const swarmStatus = String(swarm.data?.status || "unknown");
   const swarmRunning = ["planning", "awaiting_approval", "running", "executing"].includes(
@@ -117,11 +123,12 @@ export function DashboardPage(props: AppPageProps) {
       },
       {
         label: "Workflow contexts",
+        label: "Context runs",
         value: workflowContextRows.length,
         tone: activeWorkflowContexts.length ? ("warn" as const) : ("info" as const),
         helper: activeWorkflowContexts.length
           ? `${activeWorkflowContexts.length} active`
-          : "Recent workflow visibility",
+          : "Workflow + triage visibility",
       },
     ],
     [
@@ -268,8 +275,8 @@ export function DashboardPage(props: AppPageProps) {
         aside={
           <div className="grid gap-4">
             <PanelCard
-              title="Workflow visibility"
-              subtitle="Recent workflow-derived context runs and their current projection state."
+              title="Context visibility"
+              subtitle="Recent workflow and failure-triage context runs with their current projection state."
             >
               <Toolbar className="mb-3">
                 <Badge tone={activeWorkflowContexts.length ? "warn" : "info"}>
@@ -292,23 +299,26 @@ export function DashboardPage(props: AppPageProps) {
                     >
                       <div className="mb-1 flex items-center justify-between gap-2">
                         <div className="font-medium">
-                          {String(run?.objective || run?.run_id || "Workflow context")}
+                          {String(run?.objective || run?.run_id || "Context run")}
                         </div>
-                        <Badge
-                          tone={
-                            ["failed", "cancelled"].includes(
-                              String(run?.status || "").toLowerCase()
-                            )
-                              ? "err"
-                              : ["running", "queued", "planning"].includes(
-                                    String(run?.status || "").toLowerCase()
-                                  )
-                                ? "warn"
-                                : "ok"
-                          }
-                        >
-                          {String(run?.status || "unknown")}
-                        </Badge>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge tone="ghost">{String(run?.run_type || "context")}</Badge>
+                          <Badge
+                            tone={
+                              ["failed", "cancelled"].includes(
+                                String(run?.status || "").toLowerCase()
+                              )
+                                ? "err"
+                                : ["running", "queued", "planning"].includes(
+                                      String(run?.status || "").toLowerCase()
+                                    )
+                                  ? "warn"
+                                  : "ok"
+                            }
+                          >
+                            {String(run?.status || "unknown")}
+                          </Badge>
+                        </div>
                       </div>
                       <div className="tcp-subtle text-xs">{String(run?.run_id || "")}</div>
                       <div className="tcp-subtle mt-1 text-xs">
@@ -318,7 +328,7 @@ export function DashboardPage(props: AppPageProps) {
                     </button>
                   ))
                 ) : (
-                  <EmptyState text="Workflow context runs will appear here once hooks or workflow steps execute." />
+                  <EmptyState text="Workflow and failure-triage context runs will appear here once they execute." />
                 )}
               </div>
             </PanelCard>

@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `POST /failure-reporter/drafts/{id}/triage-run`
   - triage-run creation now seeds a minimal `failure_reporter_triage` context run with inspection and validation blackboard tasks, plus draft-to-run dedupe through `triage_run_id`
   - desktop and control-panel Settings can now promote approved Failure Reporter drafts into triage context runs without frontend-owned run orchestration
+  - control-panel Dashboard context-run visibility now includes `failure_reporter_triage` runs in the existing context-run drawer so the handoff can be inspected without a new page
 
 - **Setup-understanding across channels and chat surfaces**:
   - added a shared deterministic setup-intent resolver at `POST /setup/understand` in `tandem-server`

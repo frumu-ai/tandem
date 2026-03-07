@@ -26,6 +26,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Control-panel Settings now uses those same draft approval endpoints, keeping Failure Reporter decisions consistent across desktop and web surfaces.
   - Added `POST /failure-reporter/drafts/{id}/triage-run`, which promotes an approved draft into a minimal engine-owned `failure_reporter_triage` context run with seeded inspection and validation tasks.
   - Desktop and control-panel Settings can now create those triage runs directly from approved Failure Reporter drafts.
+  - Control-panel Dashboard now includes those `failure_reporter_triage` context runs in the existing context-run visibility drawer.
 
 ## v0.4.1 (2026-03-07)
 
