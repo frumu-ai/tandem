@@ -962,6 +962,21 @@ export function DeveloperRunViewer({ repoSlug, onOpenMcpSettings }: DeveloperRun
     [openArtifactRecordContext, selectedArtifactRecord]
   );
 
+  const openBlackboardContext = useCallback(
+    (target: "task" | "event", stepId?: string | null, sourceEventId?: string | null) => {
+      if (target === "task") {
+        if (!stepId) return;
+        focusOverviewSection("kanban");
+        return;
+      }
+      if (!sourceEventId) return;
+      setEventTypeFilter("all");
+      setEventQuery(sourceEventId);
+      focusOverviewSection("timeline");
+    },
+    [focusOverviewSection]
+  );
+
   return (
     <div className="h-full w-full overflow-hidden app-background">
       <div className="grid h-full grid-cols-[340px_minmax(0,1fr)] gap-4 p-4">
