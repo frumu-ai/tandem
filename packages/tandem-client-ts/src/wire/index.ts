@@ -1161,6 +1161,25 @@ export interface WorkflowPlan {
   [key: string]: unknown;
 }
 
+export interface WorkflowPlanPackBuilderExportRequest {
+  enabled?: boolean;
+  session_id?: string;
+  thread_key?: string;
+  auto_apply?: boolean;
+}
+
+export interface WorkflowPlanPackBuilderExportResult {
+  status?: string;
+  error?: string;
+  http_status?: number;
+  plan_id?: string;
+  session_id?: string;
+  thread_key?: string;
+  auto_apply_requested?: boolean;
+  auto_apply_ready?: boolean;
+  [key: string]: unknown;
+}
+
 export interface WorkflowPlanChatMessage {
   role: string;
   text: string;

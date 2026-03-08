@@ -1373,6 +1373,34 @@ export interface WorkflowPlan {
   [key: string]: unknown;
 }
 
+export interface WorkflowPlanPackBuilderExportRequest {
+  enabled?: boolean;
+  sessionId?: string;
+  session_id?: string;
+  threadKey?: string;
+  thread_key?: string;
+  autoApply?: boolean;
+  auto_apply?: boolean;
+}
+
+export interface WorkflowPlanPackBuilderExportResult {
+  status?: string;
+  error?: string;
+  httpStatus?: number;
+  http_status?: number;
+  planId?: string;
+  plan_id?: string;
+  sessionId?: string;
+  session_id?: string;
+  threadKey?: string;
+  thread_key?: string;
+  autoApplyRequested?: boolean;
+  auto_apply_requested?: boolean;
+  autoApplyReady?: boolean;
+  auto_apply_ready?: boolean;
+  [key: string]: unknown;
+}
+
 export interface WorkflowPlanChatMessage {
   role: string;
   text: string;

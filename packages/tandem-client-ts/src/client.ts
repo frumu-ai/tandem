@@ -117,6 +117,8 @@ import type {
   AutomationV2RunRecord,
   WorkflowPlan,
   WorkflowPlanConversation,
+  WorkflowPlanPackBuilderExportRequest,
+  WorkflowPlanPackBuilderExportResult,
   MissionCreateInput,
   MissionCreateResponse,
   MissionListResponse,
@@ -2209,19 +2211,19 @@ class WorkflowPlans {
     plan?: WorkflowPlan;
     creatorId?: string;
     creator_id?: string;
-    packBuilderExport?: JsonObject;
-    pack_builder_export?: JsonObject;
+    packBuilderExport?: WorkflowPlanPackBuilderExportRequest;
+    pack_builder_export?: WorkflowPlanPackBuilderExportRequest;
   }): Promise<{
     ok?: boolean;
     plan?: WorkflowPlan;
     automation?: JsonObject;
-    pack_builder_export?: JsonObject;
+    pack_builder_export?: WorkflowPlanPackBuilderExportResult;
   }> {
     return this.req<{
       ok?: boolean;
       plan?: WorkflowPlan;
       automation?: JsonObject;
-      pack_builder_export?: JsonObject;
+      pack_builder_export?: WorkflowPlanPackBuilderExportResult;
     }>("/workflow-plans/apply", {
       method: "POST",
       body: JSON.stringify({
