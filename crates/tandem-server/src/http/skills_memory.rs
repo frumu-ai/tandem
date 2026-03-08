@@ -1018,6 +1018,49 @@ async fn emit_blocked_memory_promote_guardrail(
     Ok(())
 }
 
+async fn emit_blocked_memory_put_guardrail(
+    state: &AppState,
+    request: &MemoryPutRequest,
+    actor: String,
+    detail: &str,
+) -> Result<(), StatusCode> {
+    let audit_id = Uuid::new_v4().to_string();
+    let partition_key = request.partition.key();
+    append_memory_audit(
+        state,
+        crate::MemoryAuditEvent {
+            audit_id: audit_id.clone(),
+            action: "memory_put".to_string(),
+            run_id: request.run_id.clone(),
+            memory_id: None,
+            source_memory_id: None,
+            to_tier: Some(request.partition.tier),
+            partition_key: partition_key.clone(),
+            actor,
+            status: "blocked".to_string(),
+            detail: Some(detail.to_string()),
+            created_at_ms: crate::now_ms(),
+        },
+    )
+    .await?;
+    state.event_bus.publish(EngineEvent::new(
+        "memory.put",
+        json!({
+            "runID": request.run_id,
+            "kind": memory_kind_for_request(request.kind.clone()),
+            "classification": request.classification,
+            "artifactRefs": request.artifact_refs.clone(),
+            "visibility": Value::Null,
+            "tier": request.partition.tier,
+            "partitionKey": partition_key,
+            "status": "blocked",
+            "detail": detail,
+            "auditID": audit_id,
+        }),
+    ));
+    Ok(())
+}
+
 fn memory_promote_metadata(
     metadata: Option<&Value>,
     request: &MemoryPromoteRequest,
@@ -1794,6 +1837,13 @@ pub(super) async fn memory_put_impl(
         .write_tiers
         .contains(&request.partition.tier)
     {
+        emit_blocked_memory_put_guardrail(
+            state,
+            &request,
+            capability.subject.clone(),
+            "write tier not allowed by capability",
+        )
+        .await?;
         return Err(StatusCode::FORBIDDEN);
     }
     let id = Uuid::new_v4().to_string();

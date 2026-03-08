@@ -4,6 +4,7 @@ use super::*;
 async fn memory_put_enforces_default_write_scope() {
     let state = test_state().await;
     let app = app_router(state.clone());
+    let mut rx = state.event_bus.subscribe();
 
     let req = Request::builder()
         .method("POST")
@@ -26,8 +27,77 @@ async fn memory_put_enforces_default_write_scope() {
         ))
         .expect("request");
 
-    let resp = app.oneshot(req).await.expect("response");
+    let resp = app.clone().oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let blocked_event = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        next_event_of_type(&mut rx, "memory.put"),
+    )
+    .await
+    .expect("blocked memory.put event");
+    assert_eq!(
+        blocked_event.properties.get("kind").and_then(Value::as_str),
+        Some("note")
+    );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("classification")
+            .and_then(Value::as_str),
+        Some("internal")
+    );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("status")
+            .and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert!(blocked_event
+        .properties
+        .get("visibility")
+        .is_some_and(Value::is_null));
+    assert_eq!(
+        blocked_event.properties.get("tier").and_then(Value::as_str),
+        Some("project")
+    );
+    assert!(blocked_event
+        .properties
+        .get("detail")
+        .and_then(Value::as_str)
+        .is_some_and(|detail| detail.contains("write tier not allowed")));
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit?run_id=run-1")
+        .body(Body::empty())
+        .expect("audit request");
+    let audit_resp = app
+        .clone()
+        .oneshot(audit_req)
+        .await
+        .expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    let blocked_put_exists = audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                row.get("action").and_then(Value::as_str) == Some("memory_put")
+                    && row.get("status").and_then(Value::as_str) == Some("blocked")
+                    && row
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .is_some_and(|detail| detail.contains("write tier not allowed"))
+            })
+        })
+        .unwrap_or(false);
+    assert!(blocked_put_exists);
 }
 
 #[tokio::test]
