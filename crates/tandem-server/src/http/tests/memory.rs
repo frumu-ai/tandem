@@ -1881,6 +1881,56 @@ async fn memory_list_and_delete_admin_routes_work() {
 }
 
 #[tokio::test]
+async fn memory_delete_missing_memory_writes_not_found_audit() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let del_req = Request::builder()
+        .method("DELETE")
+        .uri("/memory/missing-delete-memory")
+        .body(Body::empty())
+        .expect("memory delete request");
+    let del_resp = app
+        .clone()
+        .oneshot(del_req)
+        .await
+        .expect("memory delete response");
+    assert_eq!(del_resp.status(), StatusCode::NOT_FOUND);
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit")
+        .body(Body::empty())
+        .expect("memory audit request");
+    let audit_resp = app
+        .clone()
+        .oneshot(audit_req)
+        .await
+        .expect("memory audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("memory audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("memory audit json");
+    let delete_audit_exists = audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                row.get("action").and_then(Value::as_str) == Some("memory_delete")
+                    && row.get("status").and_then(Value::as_str) == Some("not_found")
+                    && row.get("memory_id").and_then(Value::as_str) == Some("missing-delete-memory")
+                    && row
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .is_some_and(|detail| detail.contains("memory not found"))
+            })
+        })
+        .unwrap_or(false);
+    assert!(delete_audit_exists);
+}
+
+#[tokio::test]
 async fn memory_demote_hides_item_from_search_results() {
     let state = test_state().await;
     let app = app_router(state.clone());

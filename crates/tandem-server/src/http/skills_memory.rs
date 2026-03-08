@@ -1253,6 +1253,30 @@ async fn emit_missing_memory_demote_audit(
     .await
 }
 
+async fn emit_missing_memory_delete_audit(
+    state: &AppState,
+    memory_id: &str,
+    detail: &str,
+) -> Result<(), StatusCode> {
+    append_memory_audit(
+        state,
+        crate::MemoryAuditEvent {
+            audit_id: Uuid::new_v4().to_string(),
+            action: "memory_delete".to_string(),
+            run_id: "unknown".to_string(),
+            memory_id: Some(memory_id.to_string()),
+            source_memory_id: None,
+            to_tier: None,
+            partition_key: "global".to_string(),
+            actor: "admin".to_string(),
+            status: "not_found".to_string(),
+            detail: Some(detail.to_string()),
+            created_at_ms: crate::now_ms(),
+        },
+    )
+    .await
+}
+
 fn memory_promote_metadata(
     metadata: Option<&Value>,
     request: &MemoryPromoteRequest,
@@ -2692,6 +2716,7 @@ pub(super) async fn memory_delete(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(record) = record else {
+        emit_missing_memory_delete_audit(&state, &id, "memory not found").await?;
         return Err(StatusCode::NOT_FOUND);
     };
     let deleted = db
@@ -2699,6 +2724,7 @@ pub(super) async fn memory_delete(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !deleted {
+        emit_missing_memory_delete_audit(&state, &id, "memory not found").await?;
         return Err(StatusCode::NOT_FOUND);
     }
     let now = crate::now_ms();
