@@ -829,6 +829,18 @@ function Step3Mode({
   onOpenMcpSettings,
   workspaceRootError,
   plannerModelError,
+  workspaceBrowserOpen,
+  workspaceBrowserDir,
+  workspaceBrowserSearch,
+  onWorkspaceBrowserSearchChange,
+  onOpenWorkspaceBrowser,
+  onCloseWorkspaceBrowser,
+  onBrowseWorkspaceParent,
+  onBrowseWorkspaceDirectory,
+  onSelectWorkspaceDirectory,
+  workspaceBrowserParentDir,
+  workspaceCurrentBrowseDir,
+  filteredWorkspaceDirectories,
 }: {
   selected: ExecutionMode;
   onSelect: (mode: ExecutionMode) => void;
@@ -854,9 +866,24 @@ function Step3Mode({
   onOpenMcpSettings: () => void;
   workspaceRootError: string;
   plannerModelError: string;
+  workspaceBrowserOpen: boolean;
+  workspaceBrowserDir: string;
+  workspaceBrowserSearch: string;
+  onWorkspaceBrowserSearchChange: (value: string) => void;
+  onOpenWorkspaceBrowser: () => void;
+  onCloseWorkspaceBrowser: () => void;
+  onBrowseWorkspaceParent: () => void;
+  onBrowseWorkspaceDirectory: (path: string) => void;
+  onSelectWorkspaceDirectory: () => void;
+  workspaceBrowserParentDir: string;
+  workspaceCurrentBrowseDir: string;
+  filteredWorkspaceDirectories: any[];
 }) {
   const modelOptions = providerOptions.find((p) => p.id === providerId)?.models || [];
   const plannerModelOptions = providerOptions.find((p) => p.id === plannerProviderId)?.models || [];
+  const workspaceSearchQuery = String(workspaceBrowserSearch || "")
+    .trim()
+    .toLowerCase();
   return (
     <div className="grid gap-4">
       <p className="text-sm text-slate-400">
@@ -908,12 +935,25 @@ function Step3Mode({
         <div className="text-xs uppercase tracking-wide text-slate-500">Execution Directory</div>
         <div className="grid gap-1">
           <label className="text-xs text-slate-400">Workspace root</label>
-          <input
-            className={`tcp-input text-sm ${workspaceRootError ? "border-red-500/70 text-red-100" : ""}`}
-            value={workspaceRoot}
-            onInput={(e) => onWorkspaceRootChange((e.target as HTMLInputElement).value)}
-            placeholder="/absolute/path/to/project"
-          />
+          <div className="grid gap-2 md:grid-cols-[auto_1fr_auto]">
+            <button className="tcp-btn" type="button" onClick={onOpenWorkspaceBrowser}>
+              Browse
+            </button>
+            <input
+              className={`tcp-input text-sm ${workspaceRootError ? "border-red-500/70 text-red-100" : ""}`}
+              value={workspaceRoot}
+              readOnly
+              placeholder="No local directory selected. Use Browse."
+            />
+            <button
+              className="tcp-btn"
+              type="button"
+              onClick={() => onWorkspaceRootChange("")}
+              disabled={!workspaceRoot}
+            >
+              Clear
+            </button>
+          </div>
           <div className="text-xs text-slate-500">
             Tandem will run this automation from this workspace directory.
           </div>
@@ -922,6 +962,85 @@ function Step3Mode({
           ) : null}
         </div>
       </div>
+      <AnimatePresence>
+        {workspaceBrowserOpen ? (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <button
+              type="button"
+              className="tcp-confirm-backdrop"
+              aria-label="Close workspace directory dialog"
+              onClick={onCloseWorkspaceBrowser}
+            />
+            <motion.div
+              className="tcp-confirm-dialog max-w-2xl"
+              initial={{ opacity: 0, y: 8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 6, scale: 0.98 }}
+            >
+              <h3 className="tcp-confirm-title">Select Workspace Folder</h3>
+              <p className="tcp-confirm-message">Current: {workspaceCurrentBrowseDir || "n/a"}</p>
+              <div className="mb-2 flex flex-wrap gap-2">
+                <button
+                  className="tcp-btn"
+                  type="button"
+                  onClick={onBrowseWorkspaceParent}
+                  disabled={!workspaceBrowserParentDir}
+                >
+                  Up
+                </button>
+                <button
+                  className="tcp-btn-primary"
+                  type="button"
+                  onClick={onSelectWorkspaceDirectory}
+                  disabled={!workspaceCurrentBrowseDir}
+                >
+                  Select This Folder
+                </button>
+                <button className="tcp-btn" type="button" onClick={onCloseWorkspaceBrowser}>
+                  Close
+                </button>
+              </div>
+              <div className="mb-2">
+                <input
+                  className="tcp-input"
+                  placeholder="Type to filter folders..."
+                  value={workspaceBrowserSearch}
+                  onInput={(e) =>
+                    onWorkspaceBrowserSearchChange((e.target as HTMLInputElement).value)
+                  }
+                />
+              </div>
+              <div className="max-h-[360px] overflow-auto rounded-lg border border-slate-700/60 bg-slate-900/20 p-2">
+                {filteredWorkspaceDirectories.length ? (
+                  filteredWorkspaceDirectories.map((entry: any) => (
+                    <button
+                      key={String(entry?.path || entry?.name)}
+                      className="tcp-list-item mb-1 w-full text-left"
+                      type="button"
+                      onClick={() => onBrowseWorkspaceDirectory(String(entry?.path || ""))}
+                    >
+                      {String(entry?.name || entry?.path || "")}
+                    </button>
+                  ))
+                ) : (
+                  <EmptyState
+                    text={
+                      workspaceSearchQuery
+                        ? "No folders match your search."
+                        : "No subdirectories in this folder."
+                    }
+                  />
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
       <div className="grid gap-2 rounded-xl border border-slate-700/50 bg-slate-900/30 p-3">
         <div className="text-xs uppercase tracking-wide text-slate-500">Model Selection</div>
         <div className="grid gap-2 sm:grid-cols-2">
@@ -1442,12 +1561,14 @@ function Step4Review({
 
 function CreateWizard({
   client,
+  api,
   toast,
   navigate,
   defaultProvider,
   defaultModel,
 }: {
   client: any;
+  api: (path: string, init?: RequestInit) => Promise<any>;
   toast: any;
   navigate: (route: string) => void;
   defaultProvider: string;
@@ -1463,6 +1584,9 @@ function CreateWizard({
   const [planningConversation, setPlanningConversation] = useState<any>(null);
   const [planningChangeSummary, setPlanningChangeSummary] = useState<string[]>([]);
   const [plannerError, setPlannerError] = useState<string>("");
+  const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false);
+  const [workspaceBrowserDir, setWorkspaceBrowserDir] = useState("");
+  const [workspaceBrowserSearch, setWorkspaceBrowserSearch] = useState("");
   const [validationBadge, setValidationBadge] = useState<string>("");
   const [generatedSkill, setGeneratedSkill] = useState<any>(null);
   const [showArtifactPreview, setShowArtifactPreview] = useState<boolean>(false);
@@ -1513,6 +1637,14 @@ function CreateWizard({
     queryFn: () => client.health().catch(() => ({})),
     refetchInterval: 30000,
   });
+  const workspaceBrowserQuery = useQuery({
+    queryKey: ["automations", "workspace-browser", workspaceBrowserDir],
+    enabled: workspaceBrowserOpen && !!workspaceBrowserDir,
+    queryFn: () =>
+      api(`/api/orchestrator/workspaces/list?dir=${encodeURIComponent(workspaceBrowserDir)}`, {
+        method: "GET",
+      }),
+  });
 
   const providerOptions = useMemo(() => {
     const rows = Array.isArray(providersCatalogQuery.data?.all)
@@ -1531,6 +1663,25 @@ function CreateWizard({
     () => normalizeMcpServers(mcpServersQuery.data),
     [mcpServersQuery.data]
   );
+  const workspaceDirectories = Array.isArray(workspaceBrowserQuery.data?.directories)
+    ? workspaceBrowserQuery.data.directories
+    : [];
+  const workspaceParentDir = String(workspaceBrowserQuery.data?.parent || "").trim();
+  const workspaceCurrentBrowseDir = String(
+    workspaceBrowserQuery.data?.dir || workspaceBrowserDir || ""
+  ).trim();
+  const workspaceSearchQuery = String(workspaceBrowserSearch || "")
+    .trim()
+    .toLowerCase();
+  const filteredWorkspaceDirectories = useMemo(() => {
+    if (!workspaceSearchQuery) return workspaceDirectories;
+    return workspaceDirectories.filter((entry: any) => {
+      const name = String(entry?.name || entry?.path || "")
+        .trim()
+        .toLowerCase();
+      return name.includes(workspaceSearchQuery);
+    });
+  }, [workspaceDirectories, workspaceSearchQuery]);
   useEffect(() => {
     const configDefaultProvider = String(
       providersConfigQuery.data?.default || defaultProvider || ""
@@ -2049,6 +2200,40 @@ function CreateWizard({
               onOpenMcpSettings={() => navigate("mcp")}
               workspaceRootError={workspaceRootError}
               plannerModelError={plannerModelError}
+              workspaceBrowserOpen={workspaceBrowserOpen}
+              workspaceBrowserDir={workspaceBrowserDir}
+              workspaceBrowserSearch={workspaceBrowserSearch}
+              onWorkspaceBrowserSearchChange={setWorkspaceBrowserSearch}
+              onOpenWorkspaceBrowser={() => {
+                const seed = String(
+                  wizard.workspaceRoot ||
+                    (healthQuery.data as any)?.workspaceRoot ||
+                    (healthQuery.data as any)?.workspace_root ||
+                    "/"
+                ).trim();
+                setWorkspaceBrowserDir(seed || "/");
+                setWorkspaceBrowserSearch("");
+                setWorkspaceBrowserOpen(true);
+              }}
+              onCloseWorkspaceBrowser={() => {
+                setWorkspaceBrowserOpen(false);
+                setWorkspaceBrowserSearch("");
+              }}
+              onBrowseWorkspaceParent={() => {
+                if (!workspaceParentDir) return;
+                setWorkspaceBrowserDir(workspaceParentDir);
+              }}
+              onBrowseWorkspaceDirectory={(path) => setWorkspaceBrowserDir(path)}
+              onSelectWorkspaceDirectory={() => {
+                if (!workspaceCurrentBrowseDir) return;
+                setWizard((s) => ({ ...s, workspaceRoot: workspaceCurrentBrowseDir }));
+                setWorkspaceBrowserOpen(false);
+                setWorkspaceBrowserSearch("");
+                toast("ok", `Workspace selected: ${workspaceCurrentBrowseDir}`);
+              }}
+              workspaceBrowserParentDir={workspaceParentDir}
+              workspaceCurrentBrowseDir={workspaceCurrentBrowseDir}
+              filteredWorkspaceDirectories={filteredWorkspaceDirectories}
             />
           ) : (
             <Step4Review
@@ -3583,7 +3768,7 @@ function SpawnApprovals({ client, toast }: { client: any; toast: any }) {
 
 // ─── Main Page ──────────────────────────────────────────────────────────────
 
-export function AutomationsPage({ client, toast, navigate, providerStatus }: AppPageProps) {
+export function AutomationsPage({ client, api, toast, navigate, providerStatus }: AppPageProps) {
   const [tab, setTab] = useState<ActiveTab>("create");
 
   const tabs: { id: ActiveTab; label: string; icon: string }[] = [
@@ -3629,6 +3814,7 @@ export function AutomationsPage({ client, toast, navigate, providerStatus }: App
             >
               <CreateWizard
                 client={client}
+                api={api}
                 toast={toast}
                 navigate={navigate}
                 defaultProvider={providerStatus.defaultProvider}
