@@ -5772,6 +5772,127 @@ async fn coder_project_run_create_uses_saved_binding_and_requires_it() {
 }
 
 #[tokio::test]
+async fn coder_project_run_list_filters_to_project_and_sorts_newest_first() {
+    let (endpoint, server) = spawn_fake_github_mcp_server().await;
+    let state = test_state().await;
+    state
+        .mcp
+        .add_or_update(
+            "github".to_string(),
+            endpoint,
+            std::collections::HashMap::new(),
+            true,
+        )
+        .await;
+    assert!(state.mcp.connect("github").await);
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    for (coder_run_id, project_id, workflow_mode, number) in [
+        (
+            "coder-project-runs-triage",
+            "proj-engine",
+            "issue_triage",
+            51_u64,
+        ),
+        ("coder-project-runs-fix", "proj-engine", "issue_fix", 52_u64),
+        (
+            "coder-project-runs-review",
+            "proj-other",
+            "pr_review",
+            53_u64,
+        ),
+    ] {
+        let kind = if workflow_mode == "pr_review" {
+            "pull_request"
+        } else {
+            "issue"
+        };
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/coder/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "coder_run_id": coder_run_id,
+                    "workflow_mode": workflow_mode,
+                    "repo_binding": {
+                        "project_id": project_id,
+                        "workspace_id": format!("ws-{project_id}"),
+                        "workspace_root": format!("/tmp/{project_id}"),
+                        "repo_slug": format!("evan/{project_id}")
+                    },
+                    "github_ref": {
+                        "kind": kind,
+                        "number": number
+                    },
+                    "mcp_servers": ["github"]
+                })
+                .to_string(),
+            ))
+            .expect("create request");
+        let create_resp = app
+            .clone()
+            .oneshot(create_req)
+            .await
+            .expect("create response");
+        assert_eq!(create_resp.status(), StatusCode::OK);
+    }
+
+    let list_req = Request::builder()
+        .method("GET")
+        .uri("/coder/projects/proj-engine/runs?limit=10")
+        .body(Body::empty())
+        .expect("list request");
+    let list_resp = app.clone().oneshot(list_req).await.expect("list response");
+    server.abort();
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let list_payload: Value = serde_json::from_slice(
+        &to_bytes(list_resp.into_body(), usize::MAX)
+            .await
+            .expect("list body"),
+    )
+    .expect("list json");
+    assert_eq!(
+        list_payload.get("project_id").and_then(Value::as_str),
+        Some("proj-engine")
+    );
+    let runs = list_payload
+        .get("runs")
+        .and_then(Value::as_array)
+        .expect("runs");
+    assert_eq!(runs.len(), 2);
+    assert_eq!(
+        runs.first()
+            .and_then(|row| row.get("coder_run"))
+            .and_then(|row| row.get("workflow_mode"))
+            .and_then(Value::as_str),
+        Some("issue_fix")
+    );
+    assert_eq!(
+        runs.get(1)
+            .and_then(|row| row.get("coder_run"))
+            .and_then(|row| row.get("workflow_mode"))
+            .and_then(Value::as_str),
+        Some("issue_triage")
+    );
+    assert!(
+        runs.iter().all(|row| {
+            row.get("coder_run")
+                .and_then(|coder_run| coder_run.get("repo_binding"))
+                .and_then(|binding| binding.get("project_id"))
+                .and_then(Value::as_str)
+                == Some("proj-engine")
+        }),
+        "expected only proj-engine runs"
+    );
+}
+
+#[tokio::test]
 async fn coder_status_summarizes_active_and_approval_runs() {
     let (endpoint, server) = spawn_fake_github_mcp_server().await;
     let state = test_state().await;
@@ -9307,6 +9428,185 @@ async fn coder_triage_summary_writes_run_outcome_without_summary_text() {
     assert_eq!(
         run_outcome_payload.get("summary").and_then(Value::as_str),
         Some("Issue triage reproduction outcome: failed_to_reproduce")
+    );
+}
+
+#[tokio::test]
+async fn coder_triage_summary_infers_duplicate_and_memory_fields_from_bootstrap_hits() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_seed_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-run-triage-seed",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 601
+                }
+            })
+            .to_string(),
+        ))
+        .expect("seed create request");
+    let create_seed_resp = app
+        .clone()
+        .oneshot(create_seed_req)
+        .await
+        .expect("seed create response");
+    assert_eq!(create_seed_resp.status(), StatusCode::OK);
+
+    let seed_candidate_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-run-triage-seed/memory-candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "kind": "failure_pattern",
+                "task_id": "attempt_reproduction",
+                "summary": "Seeded startup recovery failure pattern",
+                "payload": {
+                    "workflow_mode": "issue_triage",
+                    "summary": "Seeded startup recovery failure pattern",
+                    "fingerprint": "seeded-startup-recovery-fingerprint",
+                    "canonical_markers": ["startup recovery", "panic"],
+                    "linked_issue_numbers": [601],
+                    "affected_components": ["crates/tandem-server/src/http/coder.rs"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("seed candidate request");
+    let seed_candidate_resp = app
+        .clone()
+        .oneshot(seed_candidate_req)
+        .await
+        .expect("seed candidate response");
+    assert_eq!(seed_candidate_resp.status(), StatusCode::OK);
+    let seed_candidate_payload: Value = serde_json::from_slice(
+        &to_bytes(seed_candidate_resp.into_body(), usize::MAX)
+            .await
+            .expect("seed candidate body"),
+    )
+    .expect("seed candidate json");
+    let seeded_candidate_id = seed_candidate_payload
+        .get("candidate_id")
+        .and_then(Value::as_str)
+        .expect("seeded candidate id")
+        .to_string();
+
+    let create_target_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-run-triage-auto-fields",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 601
+                }
+            })
+            .to_string(),
+        ))
+        .expect("target create request");
+    let create_target_resp = app
+        .clone()
+        .oneshot(create_target_req)
+        .await
+        .expect("target create response");
+    assert_eq!(create_target_resp.status(), StatusCode::OK);
+    let create_target_payload: Value = serde_json::from_slice(
+        &to_bytes(create_target_resp.into_body(), usize::MAX)
+            .await
+            .expect("target create body"),
+    )
+    .expect("target create json");
+    let target_context_run_id = create_target_payload
+        .get("coder_run")
+        .and_then(|row| row.get("linked_context_run_id"))
+        .and_then(Value::as_str)
+        .expect("target linked context run id")
+        .to_string();
+
+    let summary_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-run-triage-auto-fields/triage-summary")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "summary": "Automatically infer duplicate and memory provenance fields.",
+                "confidence": "high"
+            })
+            .to_string(),
+        ))
+        .expect("summary request");
+    let summary_resp = app
+        .clone()
+        .oneshot(summary_req)
+        .await
+        .expect("summary response");
+    assert_eq!(summary_resp.status(), StatusCode::OK);
+
+    let triage_summary_path = load_context_blackboard(&state, &target_context_run_id)
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_type == "coder_triage_summary")
+        .map(|artifact| artifact.path.clone())
+        .expect("triage summary artifact path");
+    let triage_summary_payload: Value = serde_json::from_str(
+        &tokio::fs::read_to_string(&triage_summary_path)
+            .await
+            .expect("read triage summary artifact"),
+    )
+    .expect("parse triage summary artifact");
+    assert_eq!(
+        triage_summary_payload
+            .get("memory_hits_used")
+            .and_then(Value::as_array)
+            .map(|rows| rows
+                .iter()
+                .any(|row| row.as_str() == Some(seeded_candidate_id.as_str()))),
+        Some(true)
+    );
+    assert_eq!(
+        triage_summary_payload
+            .get("prior_runs_considered")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter().any(|row| {
+                    row.get("coder_run_id").and_then(Value::as_str) == Some("coder-run-triage-seed")
+                })
+            }),
+        Some(true)
+    );
+    assert_eq!(
+        triage_summary_payload
+            .get("duplicate_candidates")
+            .and_then(Value::as_array)
+            .map(|rows| !rows.is_empty()),
+        Some(true)
     );
 }
 

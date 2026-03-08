@@ -559,7 +559,7 @@ pub enum AutomationV2ScheduleType {
     Manual,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AutomationV2Schedule {
     #[serde(rename = "type")]
     pub schedule_type: AutomationV2ScheduleType,

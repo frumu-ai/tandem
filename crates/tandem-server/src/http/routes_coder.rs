@@ -11,7 +11,7 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route("/coder/projects/{project_id}", get(coder_project_get))
         .route(
             "/coder/projects/{project_id}/runs",
-            post(coder_project_run_create),
+            get(coder_project_run_list).post(coder_project_run_create),
         )
         .route(
             "/coder/projects/{project_id}/bindings",

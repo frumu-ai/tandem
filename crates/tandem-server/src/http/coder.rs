@@ -161,6 +161,12 @@ pub(super) struct CoderRunListQuery {
     pub(super) limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct CoderProjectRunListQuery {
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum CoderMemoryCandidateKind {
@@ -4837,6 +4843,146 @@ async fn load_latest_coder_artifact_payload(
     serde_json::from_str::<Value>(&raw).ok()
 }
 
+fn infer_triage_memory_hit_ids_from_hits(hits: &[Value], limit: usize) -> Vec<String> {
+    let mut ids = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+    for hit in hits {
+        let Some(id) =
+            value_string(hit.get("candidate_id")).or_else(|| value_string(hit.get("memory_id")))
+        else {
+            continue;
+        };
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        ids.push(id);
+        if ids.len() >= limit.clamp(1, 20) {
+            break;
+        }
+    }
+    ids
+}
+
+fn infer_triage_prior_runs_from_hits(hits: &[Value], limit: usize) -> Vec<Value> {
+    let mut rows = Vec::<Value>::new();
+    let mut seen = HashSet::<String>::new();
+    for hit in hits {
+        let coder_run_id = value_string(hit.get("source_coder_run_id"));
+        let run_id = value_string(hit.get("run_id"));
+        let identity = coder_run_id
+            .clone()
+            .or_else(|| run_id.clone())
+            .or_else(|| value_string(hit.get("candidate_id")))
+            .or_else(|| value_string(hit.get("memory_id")));
+        let Some(identity) = identity else {
+            continue;
+        };
+        if !seen.insert(identity) {
+            continue;
+        }
+        let mut row = serde_json::Map::new();
+        if let Some(value) = coder_run_id {
+            row.insert("coder_run_id".to_string(), json!(value));
+        }
+        if let Some(value) = run_id {
+            row.insert("linked_context_run_id".to_string(), json!(value));
+        }
+        if let Some(kind) = memory_hit_kind(hit) {
+            row.insert("kind".to_string(), json!(kind));
+        }
+        if let Some(source) = value_string(hit.get("source")) {
+            row.insert("source".to_string(), json!(source));
+        }
+        if let Some(candidate_id) = value_string(hit.get("candidate_id")) {
+            row.insert("candidate_id".to_string(), json!(candidate_id));
+        }
+        if let Some(memory_id) = value_string(hit.get("memory_id")) {
+            row.insert("memory_id".to_string(), json!(memory_id));
+        }
+        if !row.is_empty() {
+            rows.push(Value::Object(row));
+        }
+        if rows.len() >= limit.clamp(1, 20) {
+            break;
+        }
+    }
+    rows
+}
+
+fn fallback_failure_pattern_duplicates_from_hits(hits: &[Value], limit: usize) -> Vec<Value> {
+    let mut rows = Vec::<Value>::new();
+    let mut seen = HashSet::<String>::new();
+    for hit in hits {
+        if memory_hit_kind(hit).as_deref() != Some("failure_pattern") {
+            continue;
+        }
+        let identity = value_string(hit.get("candidate_id"))
+            .or_else(|| value_string(hit.get("memory_id")))
+            .or_else(|| value_string(hit.get("summary")))
+            .or_else(|| value_string(hit.get("content")));
+        let Some(identity) = identity else {
+            continue;
+        };
+        if !seen.insert(identity) {
+            continue;
+        }
+        rows.push(json!({
+            "kind": "failure_pattern",
+            "source": hit.get("source").cloned().unwrap_or(Value::Null),
+            "match_reason": "historical_failure_pattern",
+            "score": hit.get("score").cloned().unwrap_or_else(|| json!(0)),
+            "summary": hit.get("summary").cloned().unwrap_or_else(|| hit.get("content").cloned().unwrap_or(Value::Null)),
+            "candidate_id": hit.get("candidate_id").cloned().unwrap_or(Value::Null),
+            "memory_id": hit.get("memory_id").cloned().unwrap_or(Value::Null),
+            "artifact_path": hit.get("path").cloned().unwrap_or(Value::Null),
+            "run_id": hit.get("run_id").cloned().unwrap_or_else(|| hit.get("source_coder_run_id").cloned().unwrap_or(Value::Null)),
+        }));
+        if rows.len() >= limit.clamp(1, 8) {
+            break;
+        }
+    }
+    rows
+}
+
+async fn infer_triage_summary_enrichment(
+    state: &AppState,
+    record: &CoderRunRecord,
+) -> (Vec<Value>, Vec<Value>, Vec<String>) {
+    let memory_hits_payload =
+        load_latest_coder_artifact_payload(state, record, "coder_memory_hits")
+            .await
+            .unwrap_or(Value::Null);
+    let hits = memory_hits_payload
+        .get("hits")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let duplicate_matches_payload =
+        load_latest_coder_artifact_payload(state, record, "coder_duplicate_matches").await;
+    let mut duplicate_candidates = duplicate_matches_payload
+        .as_ref()
+        .and_then(|payload| payload.get("matches"))
+        .and_then(Value::as_array)
+        .cloned()
+        .or_else(|| {
+            memory_hits_payload
+                .get("duplicate_candidates")
+                .and_then(Value::as_array)
+                .cloned()
+        })
+        .unwrap_or_else(|| derive_failure_pattern_duplicate_matches(&hits, None, 3));
+    if duplicate_candidates.is_empty() {
+        duplicate_candidates = fallback_failure_pattern_duplicates_from_hits(&hits, 3);
+    }
+    let prior_runs_considered = infer_triage_prior_runs_from_hits(&hits, 8);
+    let memory_hits_used = infer_triage_memory_hit_ids_from_hits(&hits, 8);
+    (
+        duplicate_candidates,
+        prior_runs_considered,
+        memory_hits_used,
+    )
+}
+
 fn latest_coder_artifact(
     state: &AppState,
     record: &CoderRunRecord,
@@ -8398,6 +8544,66 @@ pub(super) async fn coder_project_binding_get(
     })))
 }
 
+pub(super) async fn coder_project_run_list(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Query(query): Query<CoderProjectRunListQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    ensure_coder_runs_dir(&state).await?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let mut rows = Vec::<Value>::new();
+    let mut dir = tokio::fs::read_dir(coder_runs_root(&state))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    while let Ok(Some(entry)) = dir.next_entry().await {
+        if !entry
+            .file_type()
+            .await
+            .map(|row| row.is_file())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let raw = tokio::fs::read_to_string(entry.path())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let Ok(record) = serde_json::from_str::<CoderRunRecord>(&raw) else {
+            continue;
+        };
+        if record.repo_binding.project_id != project_id {
+            continue;
+        }
+        let Ok(run) = load_context_run_state(&state, &record.linked_context_run_id).await else {
+            continue;
+        };
+        rows.push(json!({
+            "coder_run": coder_run_payload(&record, &run),
+            "execution_policy": coder_execution_policy_summary(&state, &record).await?,
+            "merge_submit_policy": coder_merge_submit_policy_summary(&state, &record).await?,
+            "run": run,
+        }));
+    }
+    rows.sort_by(|a, b| {
+        b.get("coder_run")
+            .and_then(|row| row.get("updated_at_ms"))
+            .and_then(Value::as_u64)
+            .cmp(
+                &a.get("coder_run")
+                    .and_then(|row| row.get("updated_at_ms"))
+                    .and_then(Value::as_u64),
+            )
+    });
+    rows.truncate(limit);
+    Ok(Json(json!({
+        "project_id": project_id,
+        "runs": rows,
+    })))
+}
+
 pub(super) async fn coder_project_binding_put(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
@@ -9185,6 +9391,23 @@ pub(super) async fn coder_triage_summary_create(
         return Err(StatusCode::BAD_REQUEST);
     }
     let summary_id = format!("triage-summary-{}", Uuid::new_v4().simple());
+    let (inferred_duplicate_candidates, inferred_prior_runs_considered, inferred_memory_hits_used) =
+        infer_triage_summary_enrichment(&state, &record).await;
+    let duplicate_candidates = if input.duplicate_candidates.is_empty() {
+        inferred_duplicate_candidates
+    } else {
+        input.duplicate_candidates.clone()
+    };
+    let prior_runs_considered = if input.prior_runs_considered.is_empty() {
+        inferred_prior_runs_considered
+    } else {
+        input.prior_runs_considered.clone()
+    };
+    let memory_hits_used = if input.memory_hits_used.is_empty() {
+        inferred_memory_hits_used
+    } else {
+        input.memory_hits_used.clone()
+    };
     let payload = json!({
         "coder_run_id": record.coder_run_id,
         "linked_context_run_id": record.linked_context_run_id,
@@ -9194,9 +9417,9 @@ pub(super) async fn coder_triage_summary_create(
         "summary": input.summary,
         "confidence": input.confidence,
         "affected_files": input.affected_files,
-        "duplicate_candidates": input.duplicate_candidates,
-        "prior_runs_considered": input.prior_runs_considered,
-        "memory_hits_used": input.memory_hits_used,
+        "duplicate_candidates": duplicate_candidates.clone(),
+        "prior_runs_considered": prior_runs_considered.clone(),
+        "memory_hits_used": memory_hits_used.clone(),
         "reproduction": input.reproduction,
         "notes": input.notes,
         "created_at_ms": crate::now_ms(),
@@ -9241,9 +9464,9 @@ pub(super) async fn coder_triage_summary_create(
                 "summary": summary_text,
                 "confidence": input.confidence,
                 "affected_files": input.affected_files,
-                "duplicate_candidates": input.duplicate_candidates,
-                "prior_runs_considered": input.prior_runs_considered,
-                "memory_hits_used": input.memory_hits_used,
+                "duplicate_candidates": duplicate_candidates.clone(),
+                "prior_runs_considered": prior_runs_considered.clone(),
+                "memory_hits_used": memory_hits_used.clone(),
                 "reproduction": input.reproduction,
                 "notes": input.notes,
                 "summary_artifact_path": artifact.path,
@@ -9267,7 +9490,7 @@ pub(super) async fn coder_triage_summary_create(
                 &artifact.path,
                 &summary_text,
                 &input.affected_files,
-                &input.duplicate_candidates,
+                &duplicate_candidates,
                 input.notes.as_deref(),
             ),
         )
@@ -9278,7 +9501,7 @@ pub(super) async fn coder_triage_summary_create(
             "artifact_path": failure_pattern_artifact.path,
         }));
     }
-    let outcome = if input.duplicate_candidates.is_empty() {
+    let outcome = if duplicate_candidates.is_empty() {
         "triaged"
     } else {
         "triaged_duplicate_candidate"
@@ -9310,7 +9533,7 @@ pub(super) async fn coder_triage_summary_create(
                 "result": outcome,
                 "summary": summary_text,
                 "successful_strategies": ["memory_retrieval", "repo_inspection"],
-                "prior_runs_considered": input.prior_runs_considered,
+                "prior_runs_considered": prior_runs_considered.clone(),
                 "validations_attempted": [{
                     "kind": "reproduction",
                     "outcome": input

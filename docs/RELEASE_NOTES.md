@@ -81,6 +81,7 @@
     - `GET /coder/status`
     - `GET /coder/projects`
     - `GET /coder/projects/{project_id}`
+    - `GET /coder/projects/{project_id}/runs`
     - `POST /coder/projects/{project_id}/runs`
     - `GET /coder/projects/{project_id}/bindings`
     - `PUT /coder/projects/{project_id}/bindings`
@@ -93,6 +94,7 @@
   - `GET /coder/status` now summarizes total runs, active/awaiting-approval counts, workflow distribution, run-status distribution, project count, and the latest coder run directly from engine-owned run state
   - `GET /coder/projects` now summarizes known repo bindings, workflow coverage, latest run metadata, and project-level coder policy from existing engine-owned run state
   - `GET /coder/projects/{project_id}` now returns project policy, explicit binding, and recent run state in one engine-backed payload
+  - `GET /coder/projects/{project_id}/runs` now returns project-scoped coder runs with execution policy and merge policy summaries already attached
   - `POST /coder/projects/{project_id}/runs` now creates coder runs from a saved project binding and fails closed with `CODER_PROJECT_BINDING_REQUIRED` until that binding exists
   - explicit project bindings can now be stored independently of runs, and `/coder/projects` now prefers those saved bindings over derived run bindings when both exist
   - added structured intermediate and final artifacts for triage inspection/reproduction, issue-fix validation and patch evidence, PR review evidence, and merge readiness

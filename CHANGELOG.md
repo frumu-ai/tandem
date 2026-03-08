@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added engine-owned coder workflow runtime control through:
     - `GET /coder/status`
     - `GET /coder/projects/{project_id}`
+    - `GET /coder/projects/{project_id}/runs`
     - `POST /coder/projects/{project_id}/runs`
     - `GET /coder/projects/{project_id}/bindings`
     - `PUT /coder/projects/{project_id}/bindings`
@@ -46,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `GET /coder/status` now summarizes total runs, active/awaiting-approval counts, workflow distribution, run-status distribution, project count, and the latest coder run directly from engine-owned run state
   - added `GET /coder/projects`, which summarizes known repo bindings, workflow coverage, latest run metadata, and project-level coder policy from existing engine-owned run state
   - added `GET /coder/projects/{project_id}`, which returns project policy, explicit binding, and recent run state in one engine-backed payload
+  - added `GET /coder/projects/{project_id}/runs`, which returns project-scoped coder runs with execution policy and merge policy summaries already attached
   - added `POST /coder/projects/{project_id}/runs`, which creates coder runs from a saved project binding and fails closed with `CODER_PROJECT_BINDING_REQUIRED` when that binding has not been configured
   - explicit project bindings can now be stored independently of runs, and `/coder/projects` now prefers those saved bindings over derived run bindings when both exist
   - merge-ready `merge_recommendation` runs now stop in `awaiting_approval`, emit `coder.approval.required`, and complete cleanly on `/coder/runs/{id}/approve` instead of bouncing back into `running`
