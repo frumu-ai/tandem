@@ -98,6 +98,7 @@
   - `POST /coder/projects/{project_id}/runs` now creates coder runs from a saved project binding and fails closed with `CODER_PROJECT_BINDING_REQUIRED` until that binding exists
   - Shared coder memory retrieval is now explicit in the engine contract: run detail and `GET /coder/runs/{id}/memory-hits` now include `retrieval_policy`, and the underlying helper now combines repo candidates, project memory, and governed memory with workflow-specific ranking
   - Real issue-fix PR submit now writes `duplicate_linkage` memory linking issue and pull-request numbers, returns that candidate in submit responses/events/artifacts, and makes it reusable in follow-on PR review retrieval
+  - Generic terminal coder transitions now backfill a reusable `run_outcome` candidate for failed and cancelled runs when no richer workflow-specific outcome already exists, and return that generated candidate directly from the transition response
   - explicit project bindings can now be stored independently of runs, and `/coder/projects` now prefers those saved bindings over derived run bindings when both exist
   - added structured intermediate and final artifacts for triage inspection/reproduction, issue-fix validation and patch evidence, PR review evidence, and merge readiness
   - added governed-memory-aware retrieval and reusable coder memory outputs across `issue_triage`, `issue_fix`, `pr_review`, and `merge_recommendation`

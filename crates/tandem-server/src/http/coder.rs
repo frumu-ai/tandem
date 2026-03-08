@@ -5055,6 +5055,100 @@ async fn load_latest_coder_artifact_payload(
     serde_json::from_str::<Value>(&raw).ok()
 }
 
+async fn coder_run_has_run_outcome_candidate(state: &AppState, record: &CoderRunRecord) -> bool {
+    let blackboard = load_context_blackboard(state, &record.linked_context_run_id);
+    for artifact in blackboard.artifacts.iter().rev() {
+        if artifact.artifact_type != "coder_memory_candidate" {
+            continue;
+        }
+        let Ok(raw) = tokio::fs::read_to_string(&artifact.path).await else {
+            continue;
+        };
+        let Ok(payload) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        if payload.get("coder_run_id").and_then(Value::as_str) != Some(record.coder_run_id.as_str())
+        {
+            continue;
+        }
+        if payload.get("kind").and_then(Value::as_str) == Some("run_outcome") {
+            return true;
+        }
+    }
+    false
+}
+
+fn coder_workflow_mode_label(mode: &CoderWorkflowMode) -> &'static str {
+    match mode {
+        CoderWorkflowMode::IssueTriage => "Issue triage",
+        CoderWorkflowMode::IssueFix => "Issue fix",
+        CoderWorkflowMode::PrReview => "PR review",
+        CoderWorkflowMode::MergeRecommendation => "Merge recommendation",
+    }
+}
+
+async fn ensure_terminal_run_outcome_candidate(
+    state: &AppState,
+    record: &CoderRunRecord,
+    run: &ContextRunState,
+    event_type: &str,
+    reason: Option<&str>,
+) -> Result<Option<Value>, StatusCode> {
+    if !matches!(
+        run.status,
+        ContextRunStatus::Completed | ContextRunStatus::Failed | ContextRunStatus::Cancelled
+    ) {
+        return Ok(None);
+    }
+    if coder_run_has_run_outcome_candidate(state, record).await {
+        return Ok(None);
+    }
+    let result = match run.status {
+        ContextRunStatus::Completed => "completed",
+        ContextRunStatus::Failed => "failed",
+        ContextRunStatus::Cancelled => "cancelled",
+        _ => return Ok(None),
+    };
+    let summary = reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "{} {} via {}",
+                coder_workflow_mode_label(&record.workflow_mode),
+                result,
+                event_type
+            )
+        });
+    let (candidate_id, artifact) = write_coder_memory_candidate_artifact(
+        state,
+        record,
+        CoderMemoryCandidateKind::RunOutcome,
+        Some(format!(
+            "{} {}",
+            coder_workflow_mode_label(&record.workflow_mode),
+            result
+        )),
+        None,
+        json!({
+            "workflow_mode": record.workflow_mode,
+            "result": result,
+            "summary": summary,
+            "event_type": event_type,
+            "final_status": run.status,
+            "final_phase": project_coder_phase(run),
+            "reason": reason,
+        }),
+    )
+    .await?;
+    Ok(Some(json!({
+        "candidate_id": candidate_id,
+        "kind": "run_outcome",
+        "artifact_path": artifact.path,
+    })))
+}
+
 fn infer_triage_memory_hit_ids_from_hits(hits: &[Value], limit: usize) -> Vec<String> {
     let mut ids = Vec::<String>::new();
     let mut seen = HashSet::<String>::new();
@@ -9237,6 +9331,9 @@ async fn coder_run_transition(
         )
         .await?;
     let run = load_context_run_state(state, &record.linked_context_run_id).await?;
+    let generated_candidate =
+        ensure_terminal_run_outcome_candidate(state, record, &run, event_type, reason.as_deref())
+            .await?;
     publish_coder_run_event(
         state,
         "coder.run.phase_changed",
@@ -9252,6 +9349,9 @@ async fn coder_run_transition(
     Ok(json!({
         "ok": true,
         "event": outcome.event,
+        "generated_candidates": generated_candidate
+            .into_iter()
+            .collect::<Vec<_>>(),
         "coder_run": coder_run_payload(record, &run),
         "run": run,
     }))

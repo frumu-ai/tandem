@@ -8046,6 +8046,54 @@ async fn coder_run_approve_and_cancel_project_context_run_controls() {
             .and_then(Value::as_str),
         Some("cancelled")
     );
+    assert_eq!(
+        cancel_payload
+            .get("generated_candidates")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("run_outcome")
+    );
+
+    let candidates_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-run-controls/memory-candidates")
+        .body(Body::empty())
+        .expect("candidates request");
+    let candidates_resp = app
+        .clone()
+        .oneshot(candidates_req)
+        .await
+        .expect("candidates response");
+    assert_eq!(candidates_resp.status(), StatusCode::OK);
+    let candidates_body = to_bytes(candidates_resp.into_body(), usize::MAX)
+        .await
+        .expect("candidates body");
+    let candidates_payload: Value =
+        serde_json::from_slice(&candidates_body).expect("candidates json");
+    let run_outcome = candidates_payload
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("kind").and_then(Value::as_str) == Some("run_outcome"))
+        })
+        .expect("run outcome candidate");
+    assert_eq!(
+        run_outcome
+            .get("payload")
+            .and_then(|row| row.get("result"))
+            .and_then(Value::as_str),
+        Some("cancelled")
+    );
+    assert_eq!(
+        run_outcome
+            .get("payload")
+            .and_then(|row| row.get("reason"))
+            .and_then(Value::as_str),
+        Some("stop this coder run")
+    );
 }
 
 #[tokio::test]
