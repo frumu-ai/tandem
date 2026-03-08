@@ -810,6 +810,22 @@ fn default_spine_bindings() -> Vec<CapabilityBinding> {
             ],
         ),
         make_binding(
+            "github.merge_pull_request",
+            "composio",
+            "mcp.composio.github_merge_pull_request",
+            &["mcp.composio.github.merge_pull_request"],
+        ),
+        make_binding(
+            "github.merge_pull_request",
+            "mcp",
+            "mcp.github.merge_pull_request",
+            &[
+                "mcp.github_merge_pull_request",
+                "github_merge_pull_request",
+                "merge_pull_request",
+            ],
+        ),
+        make_binding(
             "github.list_repositories",
             "composio",
             "mcp.composio.github_list_repositories",

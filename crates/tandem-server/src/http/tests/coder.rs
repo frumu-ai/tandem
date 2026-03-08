@@ -50,6 +50,11 @@ async fn spawn_fake_github_mcp_server() -> (String, tokio::task::JoinHandle<()>)
                             "name": "mcp.github.create_pull_request",
                             "description": "Create a GitHub pull request",
                             "inputSchema": {"type":"object"}
+                        },
+                        {
+                            "name": "mcp.github.merge_pull_request",
+                            "description": "Merge a GitHub pull request",
+                            "inputSchema": {"type":"object"}
                         }
                     ]
                 }),
@@ -74,6 +79,22 @@ async fn spawn_fake_github_mcp_server() -> (String, tokio::task::JoinHandle<()>)
                                 "html_url": "https://github.com/evan/tandem/pull/314",
                                 "head": {"ref": "coder/issue-313-fix"},
                                 "base": {"ref": "main"}
+                            }
+                        }),
+                        "mcp.github.merge_pull_request" => json!({
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "merged pull request #314"
+                                }
+                            ],
+                            "merged": true,
+                            "sha": "abc123def456",
+                            "message": "Pull request successfully merged",
+                            "pull_request": {
+                                "number": 314,
+                                "state": "merged",
+                                "html_url": "https://github.com/evan/tandem/pull/314"
                             }
                         }),
                         _ => json!({
@@ -4583,6 +4604,165 @@ async fn coder_merge_recommendation_summary_ready_to_merge_awaits_approval() {
             .get("recommendation")
             .and_then(Value::as_str),
         Some("merge")
+    );
+}
+
+#[tokio::test]
+async fn coder_merge_submit_real_submit_writes_merge_artifact() {
+    let (endpoint, server) = spawn_fake_github_mcp_server().await;
+
+    let state = test_state().await;
+    state
+        .mcp
+        .add_or_update(
+            "github".to_string(),
+            endpoint,
+            std::collections::HashMap::new(),
+            true,
+        )
+        .await;
+    assert!(state.mcp.connect("github").await);
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let mut rx = state.event_bus.subscribe();
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-merge-submit-real",
+                "workflow_mode": "merge_recommendation",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "pull_request",
+                    "number": 314
+                },
+                "mcp_servers": ["github"]
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let summary_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-merge-submit-real/merge-recommendation-summary")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "recommendation": "merge",
+                "summary": "Checks and approvals are complete.",
+                "risk_level": "low",
+                "blockers": [],
+                "required_checks": [],
+                "required_approvals": []
+            })
+            .to_string(),
+        ))
+        .expect("summary request");
+    let summary_resp = app
+        .clone()
+        .oneshot(summary_req)
+        .await
+        .expect("summary response");
+    assert_eq!(summary_resp.status(), StatusCode::OK);
+
+    let approve_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-merge-submit-real/approve")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "reason": "Operator approved merge execution."
+            })
+            .to_string(),
+        ))
+        .expect("approve request");
+    let approve_resp = app
+        .clone()
+        .oneshot(approve_req)
+        .await
+        .expect("approve response");
+    assert_eq!(approve_resp.status(), StatusCode::OK);
+
+    let submit_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-merge-submit-real/merge-submit")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "approved_by": "evan",
+                "reason": "Execute the approved merge",
+                "dry_run": false,
+                "mcp_server": "github"
+            })
+            .to_string(),
+        ))
+        .expect("submit request");
+    let submit_resp = app
+        .clone()
+        .oneshot(submit_req)
+        .await
+        .expect("submit response");
+    server.abort();
+
+    assert_eq!(submit_resp.status(), StatusCode::OK);
+    let submit_payload: Value = serde_json::from_slice(
+        &to_bytes(submit_resp.into_body(), usize::MAX)
+            .await
+            .expect("submit body"),
+    )
+    .expect("submit json");
+    assert_eq!(
+        submit_payload.get("submitted").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        submit_payload
+            .get("merged_github_ref")
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("pull_request")
+    );
+    assert_eq!(
+        submit_payload
+            .get("merge_result")
+            .and_then(|row| row.get("merged"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        submit_payload
+            .get("artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("coder_merge_submission")
+    );
+
+    let merge_submit_event = next_event_of_type(&mut rx, "coder.merge.submitted").await;
+    assert_eq!(
+        merge_submit_event
+            .properties
+            .get("merged_github_ref")
+            .and_then(|row| row.get("number"))
+            .and_then(Value::as_u64),
+        Some(314)
     );
 }
 

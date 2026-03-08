@@ -66,6 +66,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             post(coder_merge_recommendation_summary_create),
         )
         .route(
+            "/coder/runs/{id}/merge-submit",
+            post(super::coder::coder_merge_submit),
+        )
+        .route(
             "/coder/runs/{id}/memory-candidates",
             get(coder_memory_candidate_list).post(coder_memory_candidate_create),
         )

@@ -357,6 +357,18 @@ pub(super) struct CoderMergeRecommendationSummaryCreateInput {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct CoderMergeSubmitInput {
+    #[serde(default)]
+    pub(super) approved_by: Option<String>,
+    #[serde(default)]
+    pub(super) reason: Option<String>,
+    #[serde(default)]
+    pub(super) mcp_server: Option<String>,
+    #[serde(default)]
+    pub(super) dry_run: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct CoderMergeReadinessReportCreateInput {
     #[serde(default)]
     pub(super) recommendation: Option<String>,
@@ -3631,6 +3643,70 @@ async fn coder_pr_submit_readiness(
     Ok(readiness)
 }
 
+async fn coder_merge_submit_readiness(
+    state: &AppState,
+    preferred_server: Option<&str>,
+) -> Result<CapabilityReadinessOutput, StatusCode> {
+    let provider_preference = preferred_server
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| vec![value.to_ascii_lowercase()])
+        .unwrap_or_default();
+    let mut readiness = super::capabilities::evaluate_capability_readiness(
+        state,
+        &CapabilityReadinessInput {
+            workflow_id: Some("coder_merge_submit".to_string()),
+            required_capabilities: vec!["github.merge_pull_request".to_string()],
+            optional_capabilities: Vec::new(),
+            provider_preference,
+            available_tools: Vec::new(),
+            allow_unbound: false,
+        },
+    )
+    .await?;
+    if let Some(server_name) = preferred_server
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+    {
+        let servers = state.mcp.list().await;
+        match servers
+            .values()
+            .find(|server| server.name.eq_ignore_ascii_case(&server_name))
+        {
+            None => {
+                readiness.blocking_issues.push(CapabilityBlockingIssue {
+                    code: "missing_mcp_servers".to_string(),
+                    message: "Preferred MCP server is not configured.".to_string(),
+                    capability_ids: Vec::new(),
+                    providers: vec![server_name.clone()],
+                    tools: Vec::new(),
+                });
+                readiness.missing_servers.push(server_name);
+            }
+            Some(server) if !server.connected => {
+                readiness.blocking_issues.push(CapabilityBlockingIssue {
+                    code: "disconnected_mcp_servers".to_string(),
+                    message: "Preferred MCP server is configured but disconnected.".to_string(),
+                    capability_ids: Vec::new(),
+                    providers: vec![server.name.to_ascii_lowercase()],
+                    tools: Vec::new(),
+                });
+                readiness
+                    .disconnected_servers
+                    .push(server.name.to_ascii_lowercase());
+            }
+            Some(_) => {}
+        }
+    }
+    readiness.missing_servers.sort();
+    readiness.missing_servers.dedup();
+    readiness.disconnected_servers.sort();
+    readiness.disconnected_servers.dedup();
+    readiness.runnable = readiness.blocking_issues.is_empty();
+    Ok(readiness)
+}
+
 fn compose_issue_triage_objective(input: &CoderRunCreateInput) -> String {
     if let Some(objective) = input
         .objective
@@ -5337,6 +5413,67 @@ async fn resolve_github_create_pr_tool(
     Err(StatusCode::CONFLICT)
 }
 
+async fn resolve_github_merge_pr_tool(
+    state: &AppState,
+    preferred_server: Option<&str>,
+) -> Result<(String, String), StatusCode> {
+    let mut server_candidates = if let Some(server_name) = preferred_server
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        vec![server_name.to_string()]
+    } else {
+        let mut servers = state
+            .mcp
+            .list()
+            .await
+            .into_values()
+            .filter(|server| server.enabled && server.connected)
+            .map(|server| server.name)
+            .collect::<Vec<_>>();
+        servers.sort();
+        servers
+    };
+    if server_candidates.is_empty() {
+        return Err(StatusCode::CONFLICT);
+    }
+    for server_name in server_candidates.drain(..) {
+        let server_tools = state.mcp.server_tools(&server_name).await;
+        if server_tools.is_empty() {
+            continue;
+        }
+        let discovered = state
+            .capability_resolver
+            .discover_from_runtime(server_tools.clone(), Vec::new())
+            .await;
+        let resolved = state
+            .capability_resolver
+            .resolve(
+                crate::capability_resolver::CapabilityResolveInput {
+                    workflow_id: Some("coder_merge_submit".to_string()),
+                    required_capabilities: vec!["github.merge_pull_request".to_string()],
+                    optional_capabilities: Vec::new(),
+                    provider_preference: vec!["mcp".to_string()],
+                    available_tools: discovered,
+                },
+                Vec::new(),
+            )
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let Some(namespaced) = resolved
+            .resolved
+            .iter()
+            .find(|row| row.capability_id == "github.merge_pull_request")
+            .map(|row| row.tool_name.clone())
+        else {
+            continue;
+        };
+        let raw_tool = map_namespaced_to_raw_tool(&server_tools, &namespaced)?;
+        return Ok((server_name, raw_tool));
+    }
+    Err(StatusCode::CONFLICT)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct GithubPullRequestSummary {
     number: u64,
@@ -5366,6 +5503,22 @@ fn extract_pull_requests_from_tool_result(
         collect_pull_requests(&candidate, &mut out);
     }
     dedupe_pull_requests(out)
+}
+
+fn extract_merge_result_from_tool_result(result: &tandem_types::ToolResult) -> Value {
+    for candidate in tool_result_values(result) {
+        if candidate.is_object()
+            && (candidate.get("merged").is_some()
+                || candidate.get("sha").is_some()
+                || candidate.get("message").is_some())
+        {
+            return candidate;
+        }
+    }
+    json!({
+        "output": result.output,
+        "metadata": result.metadata,
+    })
 }
 
 fn collect_pull_requests(value: &Value, out: &mut Vec<GithubPullRequestSummary>) {
@@ -5623,6 +5776,36 @@ async fn call_create_pull_request(
         "base": base_branch,
         "head": head_branch,
         "draft": true,
+    });
+    let first = state.mcp.call_tool(server_name, tool_name, preferred).await;
+    match first {
+        Ok(result) => Ok(result),
+        Err(_) => state
+            .mcp
+            .call_tool(server_name, tool_name, fallback)
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY),
+    }
+}
+
+async fn call_merge_pull_request(
+    state: &AppState,
+    server_name: &str,
+    tool_name: &str,
+    owner: &str,
+    repo: &str,
+    pull_number: u64,
+) -> Result<tandem_types::ToolResult, StatusCode> {
+    let preferred = json!({
+        "owner": owner,
+        "repo": repo,
+        "pull_number": pull_number,
+        "merge_method": "squash",
+    });
+    let fallback = json!({
+        "owner": owner,
+        "repo": repo,
+        "number": pull_number,
     });
     let first = state.mcp.call_tool(server_name, tool_name, preferred).await;
     match first {
@@ -6075,6 +6258,158 @@ pub(super) async fn coder_issue_fix_pr_submit(
             .get("skipped_follow_on_runs")
             .cloned()
             .unwrap_or_else(|| json!([])),
+        "coder_run": coder_run_payload(&record, &run),
+        "run": run,
+    })))
+}
+
+pub(super) async fn coder_merge_submit(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<CoderMergeSubmitInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let record = load_coder_run_record(&state, &id).await?;
+    if !matches!(record.workflow_mode, CoderWorkflowMode::MergeRecommendation) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let approved_by = input
+        .approved_by
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let readiness = coder_merge_submit_readiness(&state, input.mcp_server.as_deref()).await?;
+    if !readiness.runnable {
+        return Ok(Json(json!({
+            "ok": false,
+            "code": "CODER_MERGE_SUBMIT_BLOCKED",
+            "readiness": readiness,
+        })));
+    }
+    let merge_request_payload =
+        load_latest_coder_artifact_payload(&state, &record, "coder_merge_execution_request")
+            .await
+            .ok_or(StatusCode::CONFLICT)?;
+    let github_ref = record.github_ref.clone().ok_or(StatusCode::CONFLICT)?;
+    if !matches!(github_ref.kind, CoderGithubRefKind::PullRequest) {
+        return Err(StatusCode::CONFLICT);
+    }
+    let dry_run = input.dry_run.unwrap_or(true);
+    let (owner, repo_name) = split_owner_repo(&record.repo_binding.repo_slug)?;
+    let mut submission_payload = json!({
+        "coder_run_id": record.coder_run_id,
+        "linked_context_run_id": record.linked_context_run_id,
+        "workflow_mode": record.workflow_mode,
+        "repo_binding": record.repo_binding,
+        "github_ref": record.github_ref,
+        "approved_by": approved_by,
+        "approval_reason": input.reason,
+        "dry_run": dry_run,
+        "owner": owner,
+        "repo": repo_name,
+        "pull_number": github_ref.number,
+        "merge_execution_request": merge_request_payload,
+        "merged_github_ref": Value::Null,
+        "created_at_ms": crate::now_ms(),
+        "readiness": readiness,
+    });
+    if !dry_run {
+        let (server_name, tool_name) =
+            resolve_github_merge_pr_tool(&state, input.mcp_server.as_deref()).await?;
+        let result = call_merge_pull_request(
+            &state,
+            &server_name,
+            &tool_name,
+            owner,
+            repo_name,
+            github_ref.number,
+        )
+        .await?;
+        let merge_result = extract_merge_result_from_tool_result(&result);
+        if let Some(obj) = submission_payload.as_object_mut() {
+            obj.insert("server_name".to_string(), json!(server_name));
+            obj.insert("tool_name".to_string(), json!(tool_name));
+            obj.insert("submitted".to_string(), json!(true));
+            obj.insert("merged_github_ref".to_string(), json!(github_ref));
+            obj.insert("merge_result".to_string(), merge_result);
+            obj.insert(
+                "tool_result".to_string(),
+                json!({
+                    "output": result.output,
+                    "metadata": result.metadata,
+                }),
+            );
+        }
+    } else if let Some(obj) = submission_payload.as_object_mut() {
+        obj.insert("submitted".to_string(), json!(false));
+        obj.insert(
+            "dry_run_preview".to_string(),
+            json!({
+                "owner": owner,
+                "repo": repo_name,
+                "pull_number": github_ref.number,
+            }),
+        );
+    }
+    let artifact = write_coder_artifact(
+        &state,
+        &record.linked_context_run_id,
+        &format!("merge-submit-{}", Uuid::new_v4().simple()),
+        "coder_merge_submission",
+        "artifacts/merge_recommendation.merge_submission.json",
+        &submission_payload,
+    )
+    .await?;
+    publish_coder_artifact_added(&state, &record, &artifact, Some("approval"), {
+        let mut extra = serde_json::Map::new();
+        extra.insert("kind".to_string(), json!("merge_submission"));
+        extra.insert("dry_run".to_string(), json!(dry_run));
+        extra.insert(
+            "submitted".to_string(),
+            json!(submission_payload
+                .get("submitted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)),
+        );
+        extra
+    });
+    if !dry_run {
+        publish_coder_run_event(
+            &state,
+            "coder.merge.submitted",
+            &record,
+            Some("approval"),
+            {
+                let mut extra = serde_json::Map::new();
+                extra.insert("artifact_id".to_string(), json!(artifact.id));
+                extra.insert(
+                    "merged_github_ref".to_string(),
+                    submission_payload
+                        .get("merged_github_ref")
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                );
+                extra
+            },
+        );
+    }
+    let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "artifact": artifact,
+        "submitted": submission_payload
+            .get("submitted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "dry_run": dry_run,
+        "merged_github_ref": submission_payload
+            .get("merged_github_ref")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "merge_result": submission_payload
+            .get("merge_result")
+            .cloned()
+            .unwrap_or(Value::Null),
         "coder_run": coder_run_payload(&record, &run),
         "run": run,
     })))
