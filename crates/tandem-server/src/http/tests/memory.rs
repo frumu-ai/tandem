@@ -1017,8 +1017,8 @@ async fn memory_promote_missing_source_emits_blocked_event_shape() {
     let blocked_promote_exists = audit_payload
         .get("events")
         .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter().any(|row| {
+        .and_then(|rows| {
+            rows.iter().find(|row| {
                 row.get("action").and_then(Value::as_str) == Some("memory_promote")
                     && row.get("status").and_then(Value::as_str) == Some("blocked")
                     && row.get("source_memory_id").and_then(Value::as_str)
@@ -1033,8 +1033,17 @@ async fn memory_promote_missing_source_emits_blocked_event_shape() {
                         })
             })
         })
-        .unwrap_or(false);
-    assert!(blocked_promote_exists);
+        .cloned()
+        .expect("missing source promote audit row");
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        blocked_promote_exists
+            .get("audit_id")
+            .and_then(Value::as_str)
+    );
 }
 
 #[tokio::test]
