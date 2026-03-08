@@ -844,6 +844,133 @@ async fn coder_issue_fix_validation_report_advances_fix_run() {
 }
 
 #[tokio::test]
+async fn coder_issue_fix_failed_validation_writes_regression_signal() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-issue-fix-validation-failed",
+                "workflow_mode": "issue_fix",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 80
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let validation_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-issue-fix-validation-failed/issue-fix-validation-report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "summary": "Guarded the startup recovery path, but one regression still failed.",
+                "root_cause": "Startup recovery skipped the config fallback branch.",
+                "fix_strategy": "guard fallback branch",
+                "changed_files": ["crates/tandem-server/src/http/coder.rs"],
+                "validation_steps": ["cargo test -p tandem-server coder_issue_fix_failed_validation_writes_regression_signal -- --test-threads=1"],
+                "validation_results": [{
+                    "kind": "test",
+                    "status": "failed",
+                    "summary": "targeted startup recovery regression still fails"
+                }],
+                "memory_hits_used": ["memory-hit-fix-validation-failure-1"]
+            })
+            .to_string(),
+        ))
+        .expect("validation request");
+    let validation_resp = app
+        .clone()
+        .oneshot(validation_req)
+        .await
+        .expect("validation response");
+    assert_eq!(validation_resp.status(), StatusCode::OK);
+    let validation_payload: Value = serde_json::from_slice(
+        &to_bytes(validation_resp.into_body(), usize::MAX)
+            .await
+            .expect("validation body"),
+    )
+    .expect("validation json");
+    assert_eq!(
+        validation_payload
+            .get("generated_candidates")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().any(|row| {
+                row.get("kind").and_then(Value::as_str) == Some("regression_signal")
+            })),
+        Some(true)
+    );
+
+    let candidates_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-issue-fix-validation-failed/memory-candidates")
+        .body(Body::empty())
+        .expect("candidates request");
+    let candidates_resp = app
+        .clone()
+        .oneshot(candidates_req)
+        .await
+        .expect("candidates response");
+    assert_eq!(candidates_resp.status(), StatusCode::OK);
+    let candidates_payload: Value = serde_json::from_slice(
+        &to_bytes(candidates_resp.into_body(), usize::MAX)
+            .await
+            .expect("candidates body"),
+    )
+    .expect("candidates json");
+    let regression_signal = candidates_payload
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("kind").and_then(Value::as_str) == Some("regression_signal"))
+        })
+        .and_then(|row| row.get("payload"))
+        .cloned()
+        .expect("regression signal payload");
+    assert_eq!(
+        regression_signal
+            .get("regression_signals")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("failed")
+    );
+    assert_eq!(
+        regression_signal
+            .get("validation_artifact_path")
+            .and_then(Value::as_str)
+            .is_some(),
+        true
+    );
+}
+
+#[tokio::test]
 async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
     let state = test_state().await;
     state

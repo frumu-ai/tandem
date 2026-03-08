@@ -3803,6 +3803,12 @@ async fn write_issue_fix_validation_outputs(
         })
         .unwrap_or_else(|| "Validation evidence captured for issue fix.".to_string());
     let mut generated_candidates = Vec::<Value>::new();
+    let has_failed_validation = validation_results.iter().any(|row| {
+        row.get("status")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|status| matches!(status, "failed" | "error" | "timed_out"))
+    });
     let (validation_memory_id, validation_memory_artifact) = write_coder_memory_candidate_artifact(
         state,
         record,
@@ -3829,6 +3835,54 @@ async fn write_issue_fix_validation_outputs(
         "kind": "validation_memory",
         "artifact_path": validation_memory_artifact.path,
     }));
+    if has_failed_validation {
+        let (regression_signal_id, regression_signal_artifact) =
+            write_coder_memory_candidate_artifact(
+                state,
+                record,
+                CoderMemoryCandidateKind::RegressionSignal,
+                Some(format!("Issue fix validation failed: {validation_summary}")),
+                Some("validate_fix".to_string()),
+                json!({
+                    "workflow_mode": "issue_fix",
+                    "summary": summary,
+                    "root_cause": root_cause,
+                    "fix_strategy": fix_strategy,
+                    "changed_files": changed_files,
+                    "validation_steps": validation_steps,
+                    "validation_results": validation_results,
+                    "regression_signals": validation_results
+                        .iter()
+                        .filter(|row| {
+                            row.get("status")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .is_some_and(|status| matches!(status, "failed" | "error" | "timed_out"))
+                        })
+                        .map(|row| {
+                            json!({
+                                "kind": row.get("kind").and_then(Value::as_str).unwrap_or("validation_failure"),
+                                "status": row.get("status").cloned().unwrap_or_else(|| json!("failed")),
+                                "summary": row
+                                    .get("summary")
+                                    .cloned()
+                                    .unwrap_or_else(|| json!(validation_summary)),
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                    "memory_hits_used": memory_hits_used,
+                    "notes": notes,
+                    "summary_artifact_path": summary_artifact_path,
+                    "validation_artifact_path": validation_artifact.path,
+                }),
+            )
+            .await?;
+        generated_candidates.push(json!({
+            "candidate_id": regression_signal_id,
+            "kind": "regression_signal",
+            "artifact_path": regression_signal_artifact.path,
+        }));
+    }
     Ok((Some(validation_artifact), generated_candidates))
 }
 
