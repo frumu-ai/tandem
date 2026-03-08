@@ -86,6 +86,8 @@ pub(super) struct CoderRunRecord {
     pub(super) origin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) origin_artifact_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) origin_policy: Option<Value>,
     pub(super) created_at_ms: u64,
     pub(super) updated_at_ms: u64,
 }
@@ -116,6 +118,8 @@ pub(super) struct CoderRunCreateInput {
     pub(super) origin: Option<String>,
     #[serde(default)]
     pub(super) origin_artifact_type: Option<String>,
+    #[serde(default)]
+    pub(super) origin_policy: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -5482,6 +5486,7 @@ fn build_follow_on_run_create_input(
     parent_coder_run_id: Option<String>,
     origin: Option<String>,
     origin_artifact_type: Option<String>,
+    origin_policy: Option<Value>,
 ) -> CoderRunCreateInput {
     CoderRunCreateInput {
         coder_run_id: None,
@@ -5497,6 +5502,7 @@ fn build_follow_on_run_create_input(
         parent_coder_run_id,
         origin,
         origin_artifact_type,
+        origin_policy,
     }
 }
 
@@ -5844,6 +5850,14 @@ pub(super) async fn coder_issue_fix_pr_submit(
                     Some(record.coder_run_id.clone()),
                     Some("issue_fix_pr_submit_auto".to_string()),
                     Some("coder_pr_submission".to_string()),
+                    Some(json!({
+                        "source": "issue_fix_pr_submit",
+                        "spawn_mode": "auto",
+                        "allow_auto_merge_recommendation": allow_auto_merge_recommendation,
+                        "requested_follow_on_runs": requested_follow_on_modes,
+                        "effective_auto_spawn_runs": auto_spawn_follow_on_modes,
+                        "skipped_follow_on_runs": skipped_follow_on_runs,
+                    })),
                 );
                 let response = coder_run_create(State(state.clone()), Json(create_input)).await?;
                 let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -6003,6 +6017,34 @@ pub(super) async fn coder_follow_on_run_create(
             Some(record.coder_run_id.clone()),
             Some("issue_fix_pr_submit_manual_follow_on".to_string()),
             Some("coder_pr_submission".to_string()),
+            Some(json!({
+                "source": "issue_fix_pr_submit",
+                "spawn_mode": "manual",
+                "allow_auto_merge_recommendation": submission_payload
+                    .get("allow_auto_merge_recommendation")
+                    .cloned()
+                    .unwrap_or_else(|| json!(false)),
+                "requested_follow_on_runs": submission_payload
+                    .get("requested_spawn_follow_on_runs")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+                "effective_auto_spawn_runs": submission_payload
+                    .get("spawned_follow_on_runs")
+                    .and_then(Value::as_array)
+                    .map(|rows| {
+                        rows.iter()
+                            .filter_map(|row| row.get("coder_run"))
+                            .filter_map(|row| row.get("workflow_mode"))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .map(Value::from)
+                    .unwrap_or_else(|| json!([])),
+                "skipped_follow_on_runs": submission_payload
+                    .get("skipped_follow_on_runs")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+            })),
         )
     };
     coder_run_create(State(state), Json(create_input)).await
@@ -6361,6 +6403,7 @@ fn coder_run_payload(record: &CoderRunRecord, context_run: &ContextRunState) -> 
         "parent_coder_run_id": record.parent_coder_run_id,
         "origin": record.origin,
         "origin_artifact_type": record.origin_artifact_type,
+        "origin_policy": record.origin_policy,
         "status": context_run.status,
         "phase": project_coder_phase(context_run),
         "created_at_ms": record.created_at_ms,
@@ -6503,6 +6546,7 @@ pub(super) async fn coder_run_create(
         parent_coder_run_id: input.parent_coder_run_id,
         origin: normalize_source_client(input.origin.as_deref()),
         origin_artifact_type: normalize_source_client(input.origin_artifact_type.as_deref()),
+        origin_policy: input.origin_policy,
         created_at_ms: now,
         updated_at_ms: now,
     };

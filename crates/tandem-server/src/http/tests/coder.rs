@@ -1775,6 +1775,17 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
     );
     assert_eq!(
         submit_payload
+            .get("spawned_follow_on_runs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("coder_run"))
+            .and_then(|row| row.get("origin_policy"))
+            .and_then(|row| row.get("spawn_mode"))
+            .and_then(Value::as_str),
+        Some("auto")
+    );
+    assert_eq!(
+        submit_payload
             .get("artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
@@ -1919,6 +1930,14 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
             .and_then(|row| row.get("origin_artifact_type"))
             .and_then(Value::as_str),
         Some("coder_pr_submission")
+    );
+    assert_eq!(
+        follow_on_payload
+            .get("coder_run")
+            .and_then(|row| row.get("origin_policy"))
+            .and_then(|row| row.get("spawn_mode"))
+            .and_then(Value::as_str),
+        Some("manual")
     );
 
     let submitted_event = next_event_of_type(&mut rx, "coder.pr.submitted").await;
@@ -2112,6 +2131,17 @@ async fn coder_issue_fix_pr_submit_merge_auto_spawn_requires_opt_in() {
             .and_then(|row| row.get("origin"))
             .and_then(Value::as_str),
         Some("issue_fix_pr_submit_auto")
+    );
+    assert_eq!(
+        submit_payload
+            .get("spawned_follow_on_runs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("coder_run"))
+            .and_then(|row| row.get("origin_policy"))
+            .and_then(|row| row.get("allow_auto_merge_recommendation"))
+            .and_then(Value::as_bool),
+        Some(false)
     );
     assert_eq!(
         submit_payload
