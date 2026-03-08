@@ -1209,7 +1209,7 @@ async fn emit_blocked_memory_search_guardrail(
         "artifact_refs": [],
     });
     let search_detail = format!(
-        "query={} result_count=0 result_ids= result_kinds= requested_scopes={} scopes_used= blocked_scopes={} detail={}",
+        "query={} result_count=0 result_ids= result_kinds= requested_scopes={} scopes_used= blocked_scopes={} detail={}{}",
         request.query,
         requested_scopes
             .iter()
@@ -1221,7 +1221,8 @@ async fn emit_blocked_memory_search_guardrail(
             .map(|scope| scope.to_string())
             .collect::<Vec<_>>()
             .join(","),
-        detail
+        detail,
+        memory_linkage_detail(&linkage)
     );
     append_memory_audit(
         state,
@@ -2661,7 +2662,7 @@ pub(super) async fn memory_search(
         "ok"
     };
     let search_detail = format!(
-        "query={} result_count={} result_ids={} result_kinds={} requested_scopes={} scopes_used={} blocked_scopes={}",
+        "query={} result_count={} result_ids={} result_kinds={} requested_scopes={} scopes_used={} blocked_scopes={}{}",
         request.query,
         results.len(),
         result_ids.join(","),
@@ -2680,7 +2681,8 @@ pub(super) async fn memory_search(
             .iter()
             .map(|scope| scope.to_string())
             .collect::<Vec<_>>()
-            .join(",")
+            .join(","),
+        memory_linkage_detail(&linkage)
     );
     append_memory_audit(
         &state,
