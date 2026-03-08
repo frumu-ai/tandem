@@ -1650,6 +1650,46 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
         .expect("config");
 
     let app = app_router(state.clone());
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "desktop_logs",
+                    "title": "Build failure in CI",
+                    "fingerprint": "manual-artifact-fingerprint-source",
+                    "excerpt": ["Build failure in CI"],
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let draft_fingerprint = create_payload
+        .get("draft")
+        .and_then(|row| row.get("fingerprint"))
+        .and_then(Value::as_str)
+        .expect("draft fingerprint")
+        .to_string();
+    let draft_id = create_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
     let seed_run_req = Request::builder()
         .method("POST")
         .uri("/coder/runs")
@@ -1690,7 +1730,7 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
                 "payload": {
                     "type": "failure.pattern",
                     "repo_slug": "acme/platform",
-                    "fingerprint": "manual-artifact-fingerprint",
+                    "fingerprint": draft_fingerprint,
                     "symptoms": ["Build failure in CI"],
                     "canonical_markers": ["Build failure in CI"],
                     "linked_issue_numbers": [302],
@@ -1708,41 +1748,6 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
         .await
         .expect("candidate response");
     assert_eq!(candidate_resp.status(), StatusCode::OK);
-
-    let create_req = Request::builder()
-        .method("POST")
-        .uri("/bug-monitor/report")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "report": {
-                    "source": "desktop_logs",
-                    "title": "Build failure in CI",
-                    "fingerprint": "manual-artifact-fingerprint",
-                    "excerpt": ["Build failure in CI"],
-                }
-            })
-            .to_string(),
-        ))
-        .expect("create request");
-    let create_resp = app
-        .clone()
-        .oneshot(create_req)
-        .await
-        .expect("create response");
-    assert_eq!(create_resp.status(), StatusCode::OK);
-    let create_payload: Value = serde_json::from_slice(
-        &to_bytes(create_resp.into_body(), usize::MAX)
-            .await
-            .expect("create body"),
-    )
-    .expect("create json");
-    let draft_id = create_payload
-        .get("draft")
-        .and_then(|row| row.get("draft_id"))
-        .and_then(Value::as_str)
-        .expect("draft id")
-        .to_string();
     let draft_status = create_payload
         .get("draft")
         .and_then(|row| row.get("status"))
@@ -1794,6 +1799,96 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
         Some("failure_duplicate_matches")
     );
     assert!(triage_payload
+        .get("duplicate_matches_artifact")
+        .and_then(|row| row.get("path"))
+        .and_then(Value::as_str)
+        .is_some_and(|path| path.ends_with("/artifacts/failure_duplicate_matches.json")));
+
+    let issue_draft_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/issue-draft"))
+        .body(Body::empty())
+        .expect("issue draft request");
+    let issue_draft_resp = app
+        .clone()
+        .oneshot(issue_draft_req)
+        .await
+        .expect("issue draft response");
+    assert_eq!(issue_draft_resp.status(), StatusCode::OK);
+    let issue_draft_payload: Value = serde_json::from_slice(
+        &to_bytes(issue_draft_resp.into_body(), usize::MAX)
+            .await
+            .expect("issue draft body"),
+    )
+    .expect("issue draft json");
+    assert_eq!(
+        issue_draft_payload
+            .get("duplicate_matches_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("failure_duplicate_matches")
+    );
+    assert!(issue_draft_payload
+        .get("duplicate_matches_artifact")
+        .and_then(|row| row.get("path"))
+        .and_then(Value::as_str)
+        .is_some_and(|path| path.ends_with("/artifacts/failure_duplicate_matches.json")));
+
+    let publish_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/publish"))
+        .body(Body::empty())
+        .expect("publish request");
+    let publish_resp = app
+        .clone()
+        .oneshot(publish_req)
+        .await
+        .expect("publish response");
+    assert_eq!(publish_resp.status(), StatusCode::BAD_REQUEST);
+    let publish_payload: Value = serde_json::from_slice(
+        &to_bytes(publish_resp.into_body(), usize::MAX)
+            .await
+            .expect("publish body"),
+    )
+    .expect("publish json");
+    assert_eq!(
+        publish_payload
+            .get("duplicate_matches_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("failure_duplicate_matches")
+    );
+    assert!(publish_payload
+        .get("duplicate_matches_artifact")
+        .and_then(|row| row.get("path"))
+        .and_then(Value::as_str)
+        .is_some_and(|path| path.ends_with("/artifacts/failure_duplicate_matches.json")));
+
+    let recheck_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/recheck-match"))
+        .body(Body::empty())
+        .expect("recheck request");
+    let recheck_resp = app
+        .clone()
+        .oneshot(recheck_req)
+        .await
+        .expect("recheck response");
+    assert_eq!(recheck_resp.status(), StatusCode::BAD_REQUEST);
+    let recheck_payload: Value = serde_json::from_slice(
+        &to_bytes(recheck_resp.into_body(), usize::MAX)
+            .await
+            .expect("recheck body"),
+    )
+    .expect("recheck json");
+    assert_eq!(
+        recheck_payload
+            .get("duplicate_matches_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("failure_duplicate_matches")
+    );
+    assert!(recheck_payload
         .get("duplicate_matches_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
