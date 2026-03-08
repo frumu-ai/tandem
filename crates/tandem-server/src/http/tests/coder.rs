@@ -1192,6 +1192,136 @@ async fn coder_issue_fix_summary_create_writes_artifact() {
 }
 
 #[tokio::test]
+async fn coder_issue_fix_pr_draft_create_writes_artifact() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-issue-fix-pr-draft",
+                "workflow_mode": "issue_fix",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 312
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let summary_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-issue-fix-pr-draft/issue-fix-summary")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "summary": "Guard startup recovery config loading.",
+                "root_cause": "Recovery skipped the nil-config fallback branch.",
+                "fix_strategy": "restore the fallback guard and add a regression test",
+                "changed_files": [
+                    "crates/tandem-server/src/http/coder.rs",
+                    "crates/tandem-server/src/http/tests/coder.rs"
+                ],
+                "validation_results": [{
+                    "kind": "test",
+                    "status": "passed",
+                    "summary": "targeted issue-fix regression passed"
+                }]
+            })
+            .to_string(),
+        ))
+        .expect("summary request");
+    let summary_resp = app
+        .clone()
+        .oneshot(summary_req)
+        .await
+        .expect("summary response");
+    assert_eq!(summary_resp.status(), StatusCode::OK);
+
+    let draft_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-issue-fix-pr-draft/pr-draft")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "base_branch": "main"
+            })
+            .to_string(),
+        ))
+        .expect("draft request");
+    let draft_resp = app
+        .clone()
+        .oneshot(draft_req)
+        .await
+        .expect("draft response");
+    assert_eq!(draft_resp.status(), StatusCode::OK);
+    let draft_payload: Value = serde_json::from_slice(
+        &to_bytes(draft_resp.into_body(), usize::MAX)
+            .await
+            .expect("draft body"),
+    )
+    .expect("draft json");
+    assert_eq!(
+        draft_payload
+            .get("artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("coder_pr_draft")
+    );
+    assert_eq!(
+        draft_payload
+            .get("approval_required")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let artifact_path = draft_payload
+        .get("artifact")
+        .and_then(|row| row.get("path"))
+        .and_then(Value::as_str)
+        .expect("draft artifact path");
+    let artifact_payload: Value = serde_json::from_str(
+        &tokio::fs::read_to_string(artifact_path)
+            .await
+            .expect("read draft artifact"),
+    )
+    .expect("parse draft artifact");
+    assert_eq!(
+        artifact_payload.get("title").and_then(Value::as_str),
+        Some("Guard startup recovery config loading.")
+    );
+    assert!(artifact_payload
+        .get("body")
+        .and_then(Value::as_str)
+        .is_some_and(|body| body.contains("Closes #312")));
+    assert!(artifact_payload
+        .get("body")
+        .and_then(Value::as_str)
+        .is_some_and(|body| body.contains("coder.rs")));
+}
+
+#[tokio::test]
 async fn coder_issue_fix_summary_writes_patch_summary_without_changed_files() {
     let state = test_state().await;
     state

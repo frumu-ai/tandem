@@ -286,6 +286,24 @@ pub(super) struct CoderIssueFixValidationReportCreateInput {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct CoderIssueFixPrDraftCreateInput {
+    #[serde(default)]
+    pub(super) title: Option<String>,
+    #[serde(default)]
+    pub(super) body: Option<String>,
+    #[serde(default)]
+    pub(super) base_branch: Option<String>,
+    #[serde(default)]
+    pub(super) head_branch: Option<String>,
+    #[serde(default)]
+    pub(super) changed_files: Vec<String>,
+    #[serde(default)]
+    pub(super) memory_hits_used: Vec<String>,
+    #[serde(default)]
+    pub(super) notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct CoderMergeRecommendationSummaryCreateInput {
     #[serde(default)]
     pub(super) recommendation: Option<String>,
@@ -4252,6 +4270,293 @@ async fn write_issue_fix_patch_summary_artifact(
         extra
     });
     Ok(Some(artifact))
+}
+
+fn build_issue_fix_pr_draft_title(
+    record: &CoderRunRecord,
+    input_title: Option<&str>,
+    summary_payload: Option<&Value>,
+) -> String {
+    if let Some(title) = input_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+    {
+        return title;
+    }
+    if let Some(summary) = summary_payload
+        .and_then(|payload| payload.get("summary"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return crate::truncate_text(summary, 120);
+    }
+    let issue_number = record
+        .github_ref
+        .as_ref()
+        .map(|row| row.number)
+        .unwrap_or_default();
+    format!(
+        "Fix issue #{issue_number} in {}",
+        record.repo_binding.repo_slug
+    )
+}
+
+fn build_issue_fix_pr_draft_body(
+    record: &CoderRunRecord,
+    input_body: Option<&str>,
+    summary_payload: Option<&Value>,
+    patch_summary_payload: Option<&Value>,
+    validation_payload: Option<&Value>,
+    changed_files_override: &[String],
+    notes: Option<&str>,
+) -> String {
+    if let Some(body) = input_body
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+    {
+        return body;
+    }
+    let issue_number = record
+        .github_ref
+        .as_ref()
+        .map(|row| row.number)
+        .unwrap_or_default();
+    let summary = summary_payload
+        .and_then(|payload| payload.get("summary"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("No fix summary was recorded.");
+    let root_cause = summary_payload
+        .and_then(|payload| payload.get("root_cause"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Not recorded.");
+    let fix_strategy = summary_payload
+        .and_then(|payload| payload.get("fix_strategy"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Not recorded.");
+    let changed_files = if !changed_files_override.is_empty() {
+        changed_files_override.to_vec()
+    } else {
+        patch_summary_payload
+            .and_then(|payload| payload.get("changed_files"))
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let validation_lines = validation_payload
+        .and_then(|payload| payload.get("validation_results"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let status = row.get("status").and_then(Value::as_str)?;
+                    let summary = row
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or(status);
+                    Some(format!("- {status}: {summary}"))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let changed_files_block = if changed_files.is_empty() {
+        "- No changed files were recorded.".to_string()
+    } else {
+        changed_files
+            .iter()
+            .map(|path| format!("- `{path}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let validation_block = if validation_lines.is_empty() {
+        "- No validation results were recorded.".to_string()
+    } else {
+        validation_lines.join("\n")
+    };
+    let notes_block = notes
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "None.".to_string());
+    format!(
+        concat!(
+            "## Summary\n",
+            "{summary}\n\n",
+            "## Root Cause\n",
+            "{root_cause}\n\n",
+            "## Fix Strategy\n",
+            "{fix_strategy}\n\n",
+            "## Changed Files\n",
+            "{changed_files}\n\n",
+            "## Validation\n",
+            "{validation}\n\n",
+            "## Notes\n",
+            "{notes}\n\n",
+            "Closes #{issue_number}\n"
+        ),
+        summary = summary,
+        root_cause = root_cause,
+        fix_strategy = fix_strategy,
+        changed_files = changed_files_block,
+        validation = validation_block,
+        notes = notes_block,
+        issue_number = issue_number,
+    )
+}
+
+pub(super) async fn coder_issue_fix_pr_draft_create(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<CoderIssueFixPrDraftCreateInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let record = load_coder_run_record(&state, &id).await?;
+    if !matches!(record.workflow_mode, CoderWorkflowMode::IssueFix) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let summary_payload =
+        load_latest_coder_artifact_payload(&state, &record, "coder_issue_fix_summary").await;
+    let patch_summary_payload =
+        load_latest_coder_artifact_payload(&state, &record, "coder_patch_summary").await;
+    let validation_payload =
+        load_latest_coder_artifact_payload(&state, &record, "coder_validation_report").await;
+    let title =
+        build_issue_fix_pr_draft_title(&record, input.title.as_deref(), summary_payload.as_ref());
+    let body = build_issue_fix_pr_draft_body(
+        &record,
+        input.body.as_deref(),
+        summary_payload.as_ref(),
+        patch_summary_payload.as_ref(),
+        validation_payload.as_ref(),
+        &input.changed_files,
+        input.notes.as_deref(),
+    );
+    let head_branch = input
+        .head_branch
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "coder/issue-{}-fix",
+                record
+                    .github_ref
+                    .as_ref()
+                    .map(|row| row.number)
+                    .unwrap_or_default()
+            )
+        });
+    let base_branch = input
+        .base_branch
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "main".to_string());
+    let changed_files = if !input.changed_files.is_empty() {
+        input.changed_files.clone()
+    } else {
+        patch_summary_payload
+            .as_ref()
+            .and_then(|payload| payload.get("changed_files"))
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let payload = json!({
+        "coder_run_id": record.coder_run_id,
+        "linked_context_run_id": record.linked_context_run_id,
+        "workflow_mode": record.workflow_mode,
+        "repo_binding": record.repo_binding,
+        "github_ref": record.github_ref,
+        "title": title,
+        "body": body,
+        "base_branch": base_branch,
+        "head_branch": head_branch,
+        "changed_files": changed_files,
+        "memory_hits_used": input.memory_hits_used,
+        "approval_required": true,
+        "summary_artifact_path": summary_payload
+            .as_ref()
+            .and_then(|_| load_context_blackboard(&state, &record.linked_context_run_id)
+                .artifacts
+                .iter()
+                .rev()
+                .find(|artifact| artifact.artifact_type == "coder_issue_fix_summary")
+                .map(|artifact| artifact.path.clone())),
+        "patch_summary_artifact_path": patch_summary_payload
+            .as_ref()
+            .and_then(|_| load_context_blackboard(&state, &record.linked_context_run_id)
+                .artifacts
+                .iter()
+                .rev()
+                .find(|artifact| artifact.artifact_type == "coder_patch_summary")
+                .map(|artifact| artifact.path.clone())),
+        "validation_artifact_path": validation_payload
+            .as_ref()
+            .and_then(|_| load_context_blackboard(&state, &record.linked_context_run_id)
+                .artifacts
+                .iter()
+                .rev()
+                .find(|artifact| artifact.artifact_type == "coder_validation_report")
+                .map(|artifact| artifact.path.clone())),
+        "created_at_ms": crate::now_ms(),
+    });
+    let artifact = write_coder_artifact(
+        &state,
+        &record.linked_context_run_id,
+        &format!("issue-fix-pr-draft-{}", Uuid::new_v4().simple()),
+        "coder_pr_draft",
+        "artifacts/issue_fix.pr_draft.json",
+        &payload,
+    )
+    .await?;
+    publish_coder_artifact_added(&state, &record, &artifact, Some("approval"), {
+        let mut extra = serde_json::Map::new();
+        extra.insert("kind".to_string(), json!("pr_draft"));
+        extra.insert("title".to_string(), json!(payload["title"]));
+        extra.insert("approval_required".to_string(), json!(true));
+        extra
+    });
+    publish_coder_run_event(
+        &state,
+        "coder.approval.required",
+        &record,
+        Some("approval"),
+        {
+            let mut extra = serde_json::Map::new();
+            extra.insert("event_type".to_string(), json!("pr_draft_ready"));
+            extra.insert("artifact_id".to_string(), json!(artifact.id));
+            extra.insert("title".to_string(), json!(payload["title"]));
+            extra
+        },
+    );
+    Ok(Json(json!({
+        "ok": true,
+        "artifact": artifact,
+        "approval_required": true,
+        "coder_run": coder_run_payload(
+            &record,
+            &load_context_run_state(&state, &record.linked_context_run_id).await?,
+        ),
+        "run": load_context_run_state(&state, &record.linked_context_run_id).await?,
+    })))
 }
 
 async fn run_issue_fix_worker_session(
