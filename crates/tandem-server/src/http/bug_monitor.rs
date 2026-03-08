@@ -549,6 +549,125 @@ async fn persist_bug_monitor_failure_pattern_memory(
     }))
 }
 
+async fn persist_bug_monitor_regression_signal_memory(
+    state: &AppState,
+    draft: &BugMonitorDraftRecord,
+    triage_run_id: &str,
+    triage_summary: &Value,
+    summary_artifact_path: &str,
+) -> Result<Value, StatusCode> {
+    let what_happened = triage_summary
+        .get("what_happened")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Bug Monitor detected a post-failure regression signal.");
+    let expected_behavior = triage_summary
+        .get("expected_behavior")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("The affected flow should complete without the observed failure.");
+    let steps_to_reproduce = triage_summary
+        .get("steps_to_reproduce")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let environment = triage_summary
+        .get("environment")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let logs = triage_summary
+        .get("logs")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let content = format!("{what_happened}\nExpected: {expected_behavior}");
+    let recurrence_count = if let Some(count) =
+        bug_monitor_max_occurrence_count_for_draft(state, &draft.draft_id).await
+    {
+        count
+    } else {
+        bug_monitor_failure_recurrence_count(state, &draft.repo, &draft.fingerprint).await
+    };
+    let linked_issue_numbers = bug_monitor_linked_issue_numbers(draft);
+    let partition = MemoryPartition {
+        org_id: draft.repo.clone(),
+        workspace_id: draft.repo.clone(),
+        project_id: draft.repo.clone(),
+        tier: GovernedMemoryTier::Session,
+    };
+    let capability = Some(super::skills_memory::issue_run_memory_capability(
+        triage_run_id,
+        Some("bug_monitor"),
+        &partition,
+        super::skills_memory::RunMemoryCapabilityPolicy::CoderWorkflow,
+    ));
+    let metadata = json!({
+        "kind": "regression_signal",
+        "repo_slug": draft.repo,
+        "linked_issue_numbers": linked_issue_numbers,
+        "recurrence_count": recurrence_count,
+        "draft_id": draft.draft_id,
+        "triage_run_id": triage_run_id,
+        "source": "bug_monitor",
+        "what_happened": what_happened,
+        "expected_behavior": expected_behavior,
+        "steps_to_reproduce": steps_to_reproduce,
+        "environment": environment,
+        "logs": logs,
+        "artifact_refs": [summary_artifact_path],
+    });
+    let put_response = super::skills_memory::memory_put_impl(
+        state,
+        MemoryPutRequest {
+            run_id: triage_run_id.to_string(),
+            partition: partition.clone(),
+            kind: MemoryContentKind::Fact,
+            content,
+            artifact_refs: vec![summary_artifact_path.to_string()],
+            classification: MemoryClassification::Internal,
+            metadata: Some(metadata.clone()),
+        },
+        capability,
+    )
+    .await?;
+    Ok(json!({
+        "stored": true,
+        "memory_id": put_response.id,
+        "content": format!("{what_happened}\nExpected: {expected_behavior}"),
+        "metadata": metadata,
+        "partition": {
+            "org_id": partition.org_id,
+            "workspace_id": partition.workspace_id,
+            "project_id": partition.project_id,
+            "tier": partition.tier,
+        },
+    }))
+}
+
 async fn persist_bug_monitor_failure_pattern_from_approved_draft(
     state: &AppState,
     draft: &BugMonitorDraftRecord,
@@ -1154,6 +1273,39 @@ pub(super) async fn create_bug_monitor_triage_summary(
         }
         Err(_) => None,
     };
+    let regression_signal_memory = match persist_bug_monitor_regression_signal_memory(
+        &state,
+        &draft,
+        &triage_run_id,
+        &payload,
+        &summary_artifact_path,
+    )
+    .await
+    {
+        Ok(memory) => {
+            if memory
+                .get("stored")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let memory_artifact_id = format!(
+                    "bug-monitor-regression-signal-memory-{}",
+                    Uuid::new_v4().simple()
+                );
+                let _ = write_bug_monitor_artifact(
+                    &state,
+                    &triage_run_id,
+                    &memory_artifact_id,
+                    "bug_monitor_regression_signal_memory",
+                    "artifacts/bug_monitor.regression_signal_memory.json",
+                    &memory,
+                )
+                .await;
+            }
+            Some(memory)
+        }
+        Err(_) => None,
+    };
 
     draft.github_status = Some("triage_summary_ready".to_string());
     if draft.status.eq_ignore_ascii_case("triage_queued") {
@@ -1183,6 +1335,7 @@ pub(super) async fn create_bug_monitor_triage_summary(
             "triage_summary": payload,
             "triage_summary_artifact": triage_summary_artifact,
             "failure_pattern_memory": failure_pattern_memory,
+            "regression_signal_memory": regression_signal_memory,
             "issue_draft": issue_draft,
             "issue_draft_artifact": issue_draft_artifact,
             "duplicate_matches_artifact": duplicate_matches_artifact,
@@ -1197,6 +1350,7 @@ pub(super) async fn create_bug_monitor_triage_summary(
                 "triage_summary": payload,
                 "triage_summary_artifact": triage_summary_artifact,
                 "failure_pattern_memory": failure_pattern_memory,
+                "regression_signal_memory": regression_signal_memory,
                 "duplicate_matches_artifact": duplicate_matches_artifact,
                 "detail": error.to_string(),
             })),

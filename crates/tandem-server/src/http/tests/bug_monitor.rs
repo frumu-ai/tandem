@@ -2270,6 +2270,51 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
             .and_then(Value::as_u64),
         Some(3)
     );
+    let regression_signal_payload = summary_payload
+        .get("regression_signal_memory")
+        .cloned()
+        .expect("regression signal memory");
+    assert_eq!(
+        regression_signal_payload
+            .get("stored")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        regression_signal_payload
+            .get("metadata")
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("regression_signal")
+    );
+    assert_eq!(
+        regression_signal_payload
+            .get("metadata")
+            .and_then(|row| row.get("repo_slug"))
+            .and_then(Value::as_str),
+        Some("acme/platform")
+    );
+    assert_eq!(
+        regression_signal_payload
+            .get("metadata")
+            .and_then(|row| row.get("expected_behavior"))
+            .and_then(Value::as_str),
+        Some("The run should complete successfully.")
+    );
+    let triage_run_id = summary_payload
+        .get("draft")
+        .and_then(|row| row.get("triage_run_id"))
+        .and_then(Value::as_str)
+        .expect("triage run id");
+    let regression_signal_artifact = load_context_blackboard(&state, triage_run_id)
+        .artifacts
+        .into_iter()
+        .find(|artifact| artifact.artifact_type == "bug_monitor_regression_signal_memory")
+        .expect("regression signal artifact");
+    assert!(regression_signal_artifact
+        .path
+        .ends_with("/artifacts/bug_monitor.regression_signal_memory.json"));
+
     let duplicate_report_req = Request::builder()
         .method("POST")
         .uri("/bug-monitor/report")
