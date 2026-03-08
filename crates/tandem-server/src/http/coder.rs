@@ -5425,6 +5425,12 @@ fn build_follow_on_run_templates(
     .map(|workflow_mode| {
         let requires_explicit_auto_spawn =
             matches!(workflow_mode, CoderWorkflowMode::MergeRecommendation);
+        let required_completed_workflow_modes =
+            if matches!(workflow_mode, CoderWorkflowMode::MergeRecommendation) {
+                vec![json!("pr_review")]
+            } else {
+                Vec::new()
+            };
         json!({
             "workflow_mode": workflow_mode,
             "repo_binding": record.repo_binding,
@@ -5444,9 +5450,11 @@ fn build_follow_on_run_templates(
                 "skipped_follow_on_runs": skipped_follow_on_runs,
                 "template_workflow_mode": workflow_mode,
                 "requires_explicit_auto_spawn": requires_explicit_auto_spawn,
+                "required_completed_workflow_modes": required_completed_workflow_modes,
             },
             "auto_spawn_allowed_by_default": !requires_explicit_auto_spawn,
             "requires_explicit_auto_spawn": requires_explicit_auto_spawn,
+            "required_completed_workflow_modes": required_completed_workflow_modes,
         })
     })
     .collect::<Vec<_>>()
@@ -6021,11 +6029,12 @@ pub(super) async fn coder_follow_on_run_create(
     if !matches!(submitted_github_ref.kind, CoderGithubRefKind::PullRequest) {
         return Err(StatusCode::CONFLICT);
     }
+    let follow_on_workflow_mode = input.workflow_mode.clone();
     let create_input = CoderRunCreateInput {
         coder_run_id: input.coder_run_id,
         ..build_follow_on_run_create_input(
             &record,
-            input.workflow_mode,
+            follow_on_workflow_mode.clone(),
             submitted_github_ref,
             normalize_source_client(input.source_client.as_deref())
                 .or_else(|| record.source_client.clone()),
@@ -6065,6 +6074,14 @@ pub(super) async fn coder_follow_on_run_create(
                     .get("skipped_follow_on_runs")
                     .cloned()
                     .unwrap_or_else(|| json!([])),
+                "required_completed_workflow_modes": if matches!(
+                    follow_on_workflow_mode,
+                    CoderWorkflowMode::MergeRecommendation
+                ) {
+                    json!(["pr_review"])
+                } else {
+                    json!([])
+                },
             })),
         )
     };

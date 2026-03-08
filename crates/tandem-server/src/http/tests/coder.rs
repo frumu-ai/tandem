@@ -1757,6 +1757,16 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
     );
     assert_eq!(
         submit_payload
+            .get("follow_on_runs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.get(1))
+            .and_then(|row| row.get("required_completed_workflow_modes"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
+        Some(vec!["pr_review"])
+    );
+    assert_eq!(
+        submit_payload
             .get("spawned_follow_on_runs")
             .and_then(Value::as_array)
             .map(|rows| rows.len()),
@@ -1967,6 +1977,15 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
             .and_then(|row| row.get("spawn_mode"))
             .and_then(Value::as_str),
         Some("manual")
+    );
+    assert_eq!(
+        follow_on_payload
+            .get("coder_run")
+            .and_then(|row| row.get("origin_policy"))
+            .and_then(|row| row.get("required_completed_workflow_modes"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
+        Some(Vec::<&str>::new())
     );
 
     let submitted_event = next_event_of_type(&mut rx, "coder.pr.submitted").await;
@@ -2378,6 +2397,33 @@ async fn coder_merge_follow_on_execution_waits_for_completed_review() {
             .and_then(|row| row.get("reason"))
             .and_then(Value::as_str),
         Some("requires_completed_pr_review_follow_on")
+    );
+
+    let merge_run_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-follow-on-merge")
+        .body(Body::empty())
+        .expect("merge get request");
+    let merge_run_resp = app
+        .clone()
+        .oneshot(merge_run_req)
+        .await
+        .expect("merge get response");
+    assert_eq!(merge_run_resp.status(), StatusCode::OK);
+    let merge_run_payload: Value = serde_json::from_slice(
+        &to_bytes(merge_run_resp.into_body(), usize::MAX)
+            .await
+            .expect("merge get body"),
+    )
+    .expect("merge get json");
+    assert_eq!(
+        merge_run_payload
+            .get("coder_run")
+            .and_then(|row| row.get("origin_policy"))
+            .and_then(|row| row.get("required_completed_workflow_modes"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
+        Some(vec!["pr_review"])
     );
 
     let review_follow_on_req = Request::builder()
