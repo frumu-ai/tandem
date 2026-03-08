@@ -1938,6 +1938,326 @@ async fn workflow_plan_chat_message_returns_provider_hint_for_unconfigured_plann
 }
 
 #[tokio::test]
+async fn workflow_plan_chat_message_uses_llm_revision_when_planner_model_is_configured() {
+    let state = test_state().await;
+    let mut providers = std::collections::HashMap::new();
+    providers.insert(
+        "openai".to_string(),
+        tandem_providers::ProviderConfig {
+            api_key: None,
+            url: Some("http://127.0.0.1:9/v1".to_string()),
+            default_model: Some("gpt-5.1".to_string()),
+        },
+    );
+    state
+        .providers
+        .reload(tandem_providers::AppConfig {
+            providers,
+            default_provider: Some("openai".to_string()),
+        })
+        .await;
+    let app = app_router(state);
+    let previous = std::env::var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE").ok();
+    std::env::set_var(
+        "TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE",
+        json!({
+            "action": "revise",
+            "assistant_text": "Updated the plan to a comparison workflow.",
+            "change_summary": ["updated workflow shape", "updated title"],
+            "plan": {
+                "plan_id": "ignored",
+                "planner_version": "ignored",
+                "plan_source": "ignored",
+                "original_prompt": "ignored",
+                "normalized_prompt": "ignored",
+                "confidence": "high",
+                "title": "Comparison Workflow",
+                "description": "Collect inputs, compare them, and produce a report.",
+                "schedule": {
+                    "type": "manual",
+                    "timezone": "UTC",
+                    "misfire_policy": {
+                        "type": "run_once"
+                    }
+                },
+                "execution_target": "automation_v2",
+                "workspace_root": "/tmp/initial-workspace",
+                "steps": [
+                    {
+                        "step_id": "collect_inputs",
+                        "kind": "collect",
+                        "objective": "Gather the inputs needed for comparison.",
+                        "depends_on": [],
+                        "agent_role": "researcher",
+                        "input_refs": [],
+                        "output_contract": {
+                            "kind": "structured_json"
+                        }
+                    },
+                    {
+                        "step_id": "compare_results",
+                        "kind": "compare",
+                        "objective": "Compare the gathered inputs and identify the important differences.",
+                        "depends_on": ["collect_inputs"],
+                        "agent_role": "analyst",
+                        "input_refs": [
+                            {
+                                "from_step_id": "collect_inputs",
+                                "alias": "comparison_inputs"
+                            }
+                        ],
+                        "output_contract": {
+                            "kind": "structured_json"
+                        }
+                    },
+                    {
+                        "step_id": "generate_report",
+                        "kind": "report",
+                        "objective": "Generate the final report from the comparison findings.",
+                        "depends_on": ["compare_results"],
+                        "agent_role": "writer",
+                        "input_refs": [
+                            {
+                                "from_step_id": "compare_results",
+                                "alias": "comparison_findings"
+                            }
+                        ],
+                        "output_contract": {
+                            "kind": "report_markdown"
+                        }
+                    }
+                ],
+                "requires_integrations": [],
+                "allowed_mcp_servers": [],
+                "operator_preferences": {
+                    "role_models": {
+                        "planner": {
+                            "provider_id": "openai",
+                            "model_id": "gpt-5.1"
+                        }
+                    }
+                },
+                "save_options": {
+                    "can_export_pack": true,
+                    "can_save_skill": true
+                }
+            }
+        })
+        .to_string(),
+    );
+
+    let start_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/start")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "prompt": "Research the market and generate a report",
+                "plan_source": "automations_page",
+                "workspace_root": "/tmp/initial-workspace",
+                "operator_preferences": {
+                    "role_models": {
+                        "planner": {
+                            "provider_id": "openai",
+                            "model_id": "gpt-5.1"
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        ))
+        .expect("start request");
+    let start_resp = app
+        .clone()
+        .oneshot(start_req)
+        .await
+        .expect("start response");
+    assert_eq!(start_resp.status(), StatusCode::OK);
+    let start_body = to_bytes(start_resp.into_body(), usize::MAX)
+        .await
+        .expect("start body");
+    let start_payload: Value = serde_json::from_slice(&start_body).expect("start json");
+    let plan_id = start_payload
+        .get("plan")
+        .and_then(|row| row.get("plan_id"))
+        .and_then(Value::as_str)
+        .expect("plan id")
+        .to_string();
+
+    let message_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/message")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "plan_id": plan_id,
+                "message": "Turn this into a comparison workflow."
+            })
+            .to_string(),
+        ))
+        .expect("message request");
+    let message_resp = app
+        .clone()
+        .oneshot(message_req)
+        .await
+        .expect("message response");
+    assert_eq!(message_resp.status(), StatusCode::OK);
+    let message_body = to_bytes(message_resp.into_body(), usize::MAX)
+        .await
+        .expect("message body");
+    let message_payload: Value = serde_json::from_slice(&message_body).expect("message json");
+    assert_eq!(
+        message_payload
+            .get("plan")
+            .and_then(|row| row.get("title"))
+            .and_then(Value::as_str),
+        Some("Comparison Workflow")
+    );
+    let step_ids = message_payload
+        .get("plan")
+        .and_then(|row| row.get("steps"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("step_id").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+        })
+        .expect("step ids");
+    assert_eq!(
+        step_ids,
+        vec!["collect_inputs", "compare_results", "generate_report"]
+    );
+    assert_eq!(
+        message_payload
+            .get("assistant_message")
+            .and_then(|row| row.get("text"))
+            .and_then(Value::as_str),
+        Some("Updated the plan to a comparison workflow.")
+    );
+
+    if let Some(value) = previous {
+        std::env::set_var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE", value);
+    } else {
+        std::env::remove_var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE");
+    }
+}
+
+#[tokio::test]
+async fn workflow_plan_chat_message_falls_back_to_deterministic_revision_when_llm_response_is_invalid(
+) {
+    let state = test_state().await;
+    let mut providers = std::collections::HashMap::new();
+    providers.insert(
+        "openai".to_string(),
+        tandem_providers::ProviderConfig {
+            api_key: None,
+            url: Some("http://127.0.0.1:9/v1".to_string()),
+            default_model: Some("gpt-5.1".to_string()),
+        },
+    );
+    state
+        .providers
+        .reload(tandem_providers::AppConfig {
+            providers,
+            default_provider: Some("openai".to_string()),
+        })
+        .await;
+    let app = app_router(state);
+    let previous = std::env::var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE").ok();
+    std::env::set_var(
+        "TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE",
+        r#"{"action":"revise","plan":{"steps":[{"step_id":"custom_step"}]}}"#,
+    );
+
+    let start_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/start")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "prompt": "Send me a daily competitor digest",
+                "plan_source": "automations_page",
+                "workspace_root": "/tmp/initial-workspace",
+                "operator_preferences": {
+                    "role_models": {
+                        "planner": {
+                            "provider_id": "openai",
+                            "model_id": "gpt-5.1"
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        ))
+        .expect("start request");
+    let start_resp = app
+        .clone()
+        .oneshot(start_req)
+        .await
+        .expect("start response");
+    assert_eq!(start_resp.status(), StatusCode::OK);
+    let start_body = to_bytes(start_resp.into_body(), usize::MAX)
+        .await
+        .expect("start body");
+    let start_payload: Value = serde_json::from_slice(&start_body).expect("start json");
+    let plan_id = start_payload
+        .get("plan")
+        .and_then(|row| row.get("plan_id"))
+        .and_then(Value::as_str)
+        .expect("plan id")
+        .to_string();
+
+    let message_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/message")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "plan_id": plan_id,
+                "message": "Make this weekly."
+            })
+            .to_string(),
+        ))
+        .expect("message request");
+    let message_resp = app
+        .clone()
+        .oneshot(message_req)
+        .await
+        .expect("message response");
+    assert_eq!(message_resp.status(), StatusCode::OK);
+    let message_body = to_bytes(message_resp.into_body(), usize::MAX)
+        .await
+        .expect("message body");
+    let message_payload: Value = serde_json::from_slice(&message_body).expect("message json");
+    assert_eq!(
+        message_payload
+            .get("change_summary")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            }),
+        Some(vec!["updated schedule".to_string()])
+    );
+    assert_eq!(
+        message_payload
+            .get("plan")
+            .and_then(|row| row.get("schedule"))
+            .and_then(|row| row.get("type"))
+            .and_then(Value::as_str),
+        Some("cron")
+    );
+
+    if let Some(value) = previous {
+        std::env::set_var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE", value);
+    } else {
+        std::env::remove_var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE");
+    }
+}
+
+#[tokio::test]
 async fn workflow_plan_chat_message_updates_execution_mode_preferences() {
     let state = test_state().await;
     let app = app_router(state.clone());

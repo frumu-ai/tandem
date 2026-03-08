@@ -81,10 +81,9 @@ It is not a wishlist for future planner features.
 - [x] Bound planner LLM fallback with a backend timeout and return a specific clarifier when broader planner revision cannot produce a valid workflow update
 - [x] Fast-fail planner LLM fallback when the requested planner-model provider is not configured on the engine, with a specific clarifier instead of entering the runtime path
 - [x] Show broader planner-revision availability explicitly in review instead of leaving it implicit in planner-model fields and clarifiers
+- [x] Promote planner chat to a true engine-owned LLM-backed revision loop when a planner model is configured, with validated deterministic fallback as the safety net
 
 ## Deferred After This Slice
-- [~] Replace deterministic planner-chat rules with a true LLM-backed revision loop
-- Current state: planner chat now has an engine-owned LLM fallback path for unsupported general revisions when explicit planner model preferences are present, and the control panel exposes a dedicated planner-model override. Deterministic revisions still remain the primary path and provider-backed coverage is not yet in place.
 - [~] Add optional export/persistence to Pack Builder after planning
 - Current state: `POST /workflow-plans/apply` accepts optional `pack_builder_export` and can persist a Pack Builder preview for pending/apply follow-ups.
 - [ ] Expand planner-chat semantics beyond the current safe deterministic field set
@@ -97,10 +96,10 @@ It is not a wishlist for future planner features.
 - [ ] Replacing legacy `/automations` all at once
 
 ## Risks
-- The current planner-chat layer is still deterministic and limited, even though the contract is now stable.
+- The current planner-chat layer now has a true LLM-backed revision path, but its deterministic safety net still covers a bounded field and shape set.
 - We ran targeted backend verification for this slice, but not an exhaustive full-suite sweep.
 
 ## Notes
 - New work should only enter `Ship Blockers` if it blocks the current engine-first migration slice from shipping.
 - Everything else belongs in `Deferred After This Slice` or a separate future-planning document.
-- Current status: the engine-first automation creation slice is ready for handoff; remaining items are deferred follow-up work.
+- Current status: the engine-first automation creation slice is ready for handoff; remaining items are deferred follow-up work around planner breadth, not planner ownership or contract shape.

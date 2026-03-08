@@ -226,54 +226,14 @@ pub(super) async fn workflow_plan_chat_message(
     };
     draft.conversation.updated_at_ms = user_message.created_at_ms;
     draft.conversation.messages.push(user_message);
-    let (mut revised_plan, mut assistant_text, mut change_summary, mut clarifier) =
-        revise_workflow_plan_from_message(&draft.current_plan, message);
-    if change_summary.is_empty()
-        && clarifier
-            .get("field")
-            .and_then(Value::as_str)
-            .is_some_and(|field| field == "general")
-    {
-        if let Some(model) = planner_model_spec(draft.current_plan.operator_preferences.as_ref()) {
-            if !planner_model_provider_is_configured(&state, &model).await {
-                clarifier = json!({
-                    "field": "general",
-                    "question": planner_llm_provider_unconfigured_hint(&model.provider_id),
-                });
-                assistant_text = format!(
-                    "I kept the current plan. Clarification needed: {}",
-                    planner_llm_provider_unconfigured_hint(&model.provider_id)
-                );
-            } else {
-                if let Some(llm_revision) =
-                    try_llm_revise_workflow_plan(&state, &draft.current_plan, message).await
-                {
-                    revised_plan = llm_revision.plan;
-                    assistant_text = llm_revision.assistant_text;
-                    change_summary = llm_revision.change_summary;
-                    clarifier = llm_revision.clarifier;
-                } else {
-                    clarifier = json!({
-                        "field": "general",
-                        "question": planner_llm_attempt_failed_hint(),
-                    });
-                    assistant_text = format!(
-                        "I kept the current plan. Clarification needed: {}",
-                        planner_llm_attempt_failed_hint()
-                    );
-                }
-            }
-        } else {
-            clarifier = json!({
-                "field": "general",
-                "question": planner_llm_unavailable_hint(),
-            });
-            assistant_text = format!(
-                "I kept the current plan. Clarification needed: {}",
-                planner_llm_unavailable_hint()
-            );
-        }
-    }
+    let (revised_plan, assistant_text, change_summary, clarifier) =
+        revise_workflow_plan_with_planner_loop(
+            &state,
+            &draft.current_plan,
+            &draft.conversation,
+            message,
+        )
+        .await;
     draft.current_plan = revised_plan.clone();
     draft
         .conversation
@@ -302,6 +262,60 @@ struct LlmPlannerRevisionResult {
     assistant_text: String,
     change_summary: Vec<String>,
     clarifier: Value,
+}
+
+async fn revise_workflow_plan_with_planner_loop(
+    state: &AppState,
+    current_plan: &crate::WorkflowPlan,
+    conversation: &crate::WorkflowPlanConversation,
+    message: &str,
+) -> (crate::WorkflowPlan, String, Vec<String>, Value) {
+    if let Some(model) = planner_model_spec(current_plan.operator_preferences.as_ref()) {
+        if !planner_model_provider_is_configured(state, &model).await {
+            let question = planner_llm_provider_unconfigured_hint(&model.provider_id);
+            return (
+                current_plan.clone(),
+                format!("I kept the current plan. Clarification needed: {question}"),
+                Vec::new(),
+                json!({
+                    "field": "general",
+                    "question": question,
+                }),
+            );
+        }
+        if let Some(llm_revision) =
+            try_llm_revise_workflow_plan(state, current_plan, conversation, message).await
+        {
+            return (
+                llm_revision.plan,
+                llm_revision.assistant_text,
+                llm_revision.change_summary,
+                llm_revision.clarifier,
+            );
+        }
+    }
+
+    let (revised_plan, assistant_text, change_summary, clarifier) =
+        revise_workflow_plan_from_message(current_plan, message);
+    if change_summary.is_empty()
+        && clarifier
+            .get("field")
+            .and_then(Value::as_str)
+            .is_some_and(|field| field == "general")
+        && planner_model_spec(current_plan.operator_preferences.as_ref()).is_none()
+    {
+        let question = planner_llm_unavailable_hint();
+        return (
+            revised_plan,
+            format!("I kept the current plan. Clarification needed: {question}"),
+            Vec::new(),
+            json!({
+                "field": "general",
+                "question": question,
+            }),
+        );
+    }
+    (revised_plan, assistant_text, change_summary, clarifier)
 }
 
 pub(super) async fn workflow_plan_chat_reset(
@@ -920,10 +934,6 @@ fn supported_planner_revision_hint() -> &'static str {
 
 fn planner_llm_unavailable_hint() -> &'static str {
     "This revision needs planner model settings before Tandem can attempt a broader workflow rewrite. Add planner model preferences or revise using the supported deterministic edits in this slice."
-}
-
-fn planner_llm_attempt_failed_hint() -> &'static str {
-    "Tandem tried a broader planner-model revision but could not produce a valid workflow update. Try a more specific planning note or use the supported deterministic edits in this slice."
 }
 
 fn planner_llm_provider_unconfigured_hint(provider_id: &str) -> String {
@@ -1555,9 +1565,13 @@ fn allowed_workflow_step_ids() -> std::collections::HashSet<&'static str> {
 async fn try_llm_revise_workflow_plan(
     state: &AppState,
     current_plan: &crate::WorkflowPlan,
+    conversation: &crate::WorkflowPlanConversation,
     message: &str,
 ) -> Option<LlmPlannerRevisionResult> {
     let model = planner_model_spec(current_plan.operator_preferences.as_ref())?;
+    if let Some(payload) = planner_test_override_payload() {
+        return parse_llm_revision_payload(current_plan, payload);
+    }
     let workspace_root = resolve_workspace_root(state, Some(&current_plan.workspace_root))
         .await
         .ok()?;
@@ -1571,7 +1585,7 @@ async fn try_llm_revise_workflow_plan(
 
     let request = SendMessageRequest {
         parts: vec![MessagePartInput::Text {
-            text: build_llm_workflow_revision_prompt(current_plan, message),
+            text: build_llm_workflow_revision_prompt(current_plan, conversation, message),
         }],
         model: Some(model),
         agent: None,
@@ -1594,6 +1608,13 @@ async fn try_llm_revise_workflow_plan(
     let session = state.storage.get_session(&session_id).await?;
     let output = extract_planner_session_text_output(&session);
     let payload = extract_json_value_from_text(&output)?;
+    parse_llm_revision_payload(current_plan, payload)
+}
+
+fn parse_llm_revision_payload(
+    current_plan: &crate::WorkflowPlan,
+    payload: Value,
+) -> Option<LlmPlannerRevisionResult> {
     let action = payload
         .get("action")
         .and_then(Value::as_str)
@@ -1678,6 +1699,14 @@ async fn try_llm_revise_workflow_plan(
     })
 }
 
+fn planner_test_override_payload() -> Option<Value> {
+    let raw = std::env::var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE").ok()?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    extract_json_value_from_text(&raw)
+}
+
 fn planner_revision_timeout_ms() -> u64 {
     std::env::var("TANDEM_WORKFLOW_PLANNER_REVISION_TIMEOUT_MS")
         .ok()
@@ -1735,21 +1764,45 @@ async fn planner_model_provider_is_configured(
         .any(|provider| provider.id == model.provider_id)
 }
 
-fn build_llm_workflow_revision_prompt(current_plan: &crate::WorkflowPlan, message: &str) -> String {
+fn build_llm_workflow_revision_prompt(
+    current_plan: &crate::WorkflowPlan,
+    conversation: &crate::WorkflowPlanConversation,
+    message: &str,
+) -> String {
+    let transcript = conversation
+        .messages
+        .iter()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|entry| format!("{}: {}", entry.role, entry.text.trim()))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         concat!(
             "You are revising a Tandem automation workflow plan.\n",
             "You may only use these step ids: collect_inputs, research_sources, analyze_findings, generate_report, compare_results, notify_user, execute_goal.\n",
             "Keep execution_target as automation_v2.\n",
             "Do not invent custom step ids.\n",
+            "Keep workspace_root as a non-empty absolute path.\n",
+            "You may revise title, description, schedule, workspace_root, allowed_mcp_servers, operator_preferences, and steps.\n",
+            "If you cannot satisfy the request safely, return clarify.\n",
             "Return JSON only with one of these shapes:\n",
             "{{\"action\":\"revise\",\"assistant_text\":\"...\",\"change_summary\":[\"...\"],\"plan\":{{...full WorkflowPlan...}}}}\n",
             "{{\"action\":\"clarify\",\"assistant_text\":\"...\",\"clarifier\":{{\"field\":\"general\",\"question\":\"...\"}}}}\n",
             "{{\"action\":\"keep\",\"assistant_text\":\"...\"}}\n\n",
             "Current plan JSON:\n{}\n\n",
+            "Recent planning conversation:\n{}\n\n",
             "User revision request:\n{}\n"
         ),
         serde_json::to_string_pretty(current_plan).unwrap_or_else(|_| "{}".to_string()),
+        if transcript.trim().is_empty() {
+            "(none yet)".to_string()
+        } else {
+            transcript
+        },
         message.trim()
     )
 }
