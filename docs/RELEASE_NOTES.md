@@ -99,6 +99,7 @@
   - auto-follow-on merge chaining now normalizes through review first, so requesting `merge_recommendation` auto-spawn implicitly schedules `pr_review` ahead of merge instead of trusting the client to order those runs correctly
   - merge auto-follow-ons now require explicit `allow_auto_merge_recommendation` opt-in; otherwise submit auto-spawns review only, records the skipped merge follow-on with a deterministic reason, and emits that policy outcome in the submit response, artifact, and `coder.pr.submitted` event
   - spawned and manual follow-on coder runs now persist `parent_coder_run_id`, `origin`, and `origin_artifact_type`, so downstream review and merge runs can be traced back to the issue-fix PR submission that created them
+  - `pr_review` now uses the real coder worker-session bridge during `review_pull_request`, persists `coder_pr_review_worker_session`, and feeds parsed worker output into the existing review-evidence and final summary artifacts instead of fabricating review text inline
   - coder runs now persist as thin metadata records linked to engine context runs instead of a frontend-owned workflow store
   - creating an `issue_triage` coder run now seeds a deterministic context-run task graph for issue normalization, memory retrieval, repo inspection, reproduction, and triage artifact writing
   - added initial `coder.run.created` engine event emission and backend regression coverage for coder create/get/list/artifact behavior
