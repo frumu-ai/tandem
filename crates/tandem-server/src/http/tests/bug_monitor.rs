@@ -437,6 +437,31 @@ async fn bug_monitor_report_surfaces_duplicate_failure_patterns() {
         Some(vec![Value::from(301_u64)])
     );
     assert_eq!(
+        duplicate_summary
+            .get("best_match")
+            .and_then(|value| value.get("artifact_refs"))
+            .and_then(Value::as_array)
+            .cloned(),
+        Some(vec![Value::from(
+            "artifact://ctx/manual/triage.summary.json"
+        )])
+    );
+    assert_eq!(
+        duplicate_summary
+            .get("best_match")
+            .and_then(|value| value.get("candidate_id"))
+            .and_then(Value::as_str),
+        duplicate_summary
+            .get("best_match")
+            .and_then(|value| value.get("candidate_id"))
+            .and_then(Value::as_str)
+    );
+    assert!(duplicate_summary
+        .get("best_match")
+        .and_then(|value| value.get("candidate_id"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.starts_with("memcand-")));
+    assert_eq!(
         report_payload
             .get("duplicate_matches")
             .and_then(Value::as_array)
@@ -587,6 +612,39 @@ async fn bug_monitor_runtime_suppresses_duplicate_failure_patterns() {
             .cloned(),
         Some(vec![Value::from(401_u64)])
     );
+    assert_eq!(
+        incident
+            .duplicate_summary
+            .as_ref()
+            .and_then(|value| value.get("best_match"))
+            .and_then(|value| value.get("artifact_refs"))
+            .and_then(Value::as_array)
+            .cloned(),
+        Some(vec![Value::from(
+            "artifact://ctx/manual/triage.summary.json"
+        )])
+    );
+    assert_eq!(
+        incident
+            .duplicate_summary
+            .as_ref()
+            .and_then(|value| value.get("best_match"))
+            .and_then(|value| value.get("candidate_id"))
+            .and_then(Value::as_str),
+        incident
+            .duplicate_summary
+            .as_ref()
+            .and_then(|value| value.get("best_match"))
+            .and_then(|value| value.get("candidate_id"))
+            .and_then(Value::as_str)
+    );
+    assert!(incident
+        .duplicate_summary
+        .as_ref()
+        .and_then(|value| value.get("best_match"))
+        .and_then(|value| value.get("candidate_id"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.starts_with("memcand-")));
     let duplicate_matches = incident.duplicate_matches.clone().unwrap_or_default();
     assert_eq!(duplicate_matches.len(), 1);
     assert_eq!(

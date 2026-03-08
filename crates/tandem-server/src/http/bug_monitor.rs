@@ -776,6 +776,17 @@ pub(crate) fn build_bug_monitor_duplicate_summary(matches: &[Value]) -> Value {
                 "linked_issue_numbers": row.get("linked_issue_numbers").cloned().unwrap_or_else(|| json!([])),
                 "run_id": row.get("run_id").cloned().unwrap_or(Value::Null),
                 "memory_id": row.get("memory_id").cloned().unwrap_or(Value::Null),
+                "artifact_refs": row.get("artifact_refs").cloned().unwrap_or_else(|| json!([])),
+                "artifact_path": row.get("artifact_path").cloned().unwrap_or(Value::Null),
+                "candidate_id": row.get("candidate_id").cloned().unwrap_or(Value::Null),
+                "linked_context_run_id": row
+                    .get("linked_context_run_id")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "source_coder_run_id": row
+                    .get("source_coder_run_id")
+                    .cloned()
+                    .unwrap_or_else(|| row.get("coder_run_id").cloned().unwrap_or(Value::Null)),
             })
         })
         .collect::<Vec<_>>();
