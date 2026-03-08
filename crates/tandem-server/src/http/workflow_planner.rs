@@ -608,6 +608,25 @@ fn revise_workflow_plan_from_message(
         }
     }
 
+    let wants_add_analysis = text.contains("add analysis")
+        || text.contains("add an analysis step")
+        || text.contains("analyze findings")
+        || text.contains("analyze before reporting")
+        || text.contains("analyze before report")
+        || text.contains("split analysis");
+    if wants_add_analysis && ensure_analysis_step(&mut revised) {
+        changes.push("added analysis step".to_string());
+    }
+
+    let wants_remove_analysis = text.contains("remove analysis")
+        || text.contains("skip analysis")
+        || text.contains("without analysis")
+        || text.contains("no analysis")
+        || text.contains("report directly");
+    if wants_remove_analysis && remove_analysis_step(&mut revised) {
+        changes.push("removed analysis step".to_string());
+    }
+
     if let Some(updated_preferences) =
         revise_operator_preferences(revised.operator_preferences.clone(), &text)
     {
@@ -700,16 +719,20 @@ fn revise_workflow_plan_from_message(
         || text.contains("remove notify")
         || text.contains("remove notification");
     if wants_no_notify {
-        let original_len = revised.steps.len();
-        revised.steps.retain(|step| step.step_id != "notify_user");
-        for step in &mut revised.steps {
-            step.depends_on.retain(|dep| dep != "notify_user");
-            step.input_refs
-                .retain(|input| input.from_step_id != "notify_user");
-        }
-        if revised.steps.len() != original_len {
+        if remove_notify_step(&mut revised) {
             changes.push("removed notification step".to_string());
         }
+    }
+
+    let wants_add_notify = text.contains("notify me")
+        || text.contains("send notification")
+        || text.contains("add notification")
+        || text.contains("add notify")
+        || text.contains("post notification")
+        || text.contains("send alert")
+        || text.contains("notify user");
+    if wants_add_notify && ensure_notify_step(&mut revised) {
+        changes.push("added notification step".to_string());
     }
 
     if changes.is_empty() {
@@ -742,7 +765,143 @@ fn revise_workflow_plan_from_message(
 }
 
 fn supported_planner_revision_hint() -> &'static str {
-    "Supported edits in this slice: title, schedule, workspace root, MCP servers, execution mode, model overrides, and removing notifications."
+    "Supported edits in this slice: title, schedule, workspace root, MCP servers, execution mode, model overrides, adding or removing analysis, and adding or removing notifications."
+}
+
+fn ensure_analysis_step(plan: &mut crate::WorkflowPlan) -> bool {
+    if plan
+        .steps
+        .iter()
+        .any(|step| step.step_id == "analyze_findings")
+    {
+        return false;
+    }
+    let Some(report_index) = plan
+        .steps
+        .iter()
+        .position(|step| step.step_id == "generate_report")
+    else {
+        return false;
+    };
+    let report_input = plan.steps[report_index]
+        .input_refs
+        .first()
+        .map(|row| row.from_step_id.clone())
+        .or_else(|| plan.steps[report_index].depends_on.first().cloned())
+        .unwrap_or_else(|| "research_sources".to_string());
+    let analysis_input_alias = match report_input.as_str() {
+        "collect_inputs" => "collected_inputs",
+        "compare_results" => "comparison_findings",
+        _ => "source_findings",
+    };
+    let analysis_step = plan_step_with_dep(
+        "analyze_findings",
+        "analyze",
+        "Analyze the collected findings and identify the important takeaways.",
+        "analyst",
+        &[report_input.as_str()],
+        vec![input_ref(&report_input, analysis_input_alias)],
+        Some("structured_json"),
+    );
+    plan.steps.insert(report_index, analysis_step);
+    if let Some(report_step) = plan
+        .steps
+        .iter_mut()
+        .find(|step| step.step_id == "generate_report")
+    {
+        report_step.depends_on = vec!["analyze_findings".to_string()];
+        report_step.input_refs = vec![input_ref("analyze_findings", "analysis")];
+    }
+    true
+}
+
+fn remove_analysis_step(plan: &mut crate::WorkflowPlan) -> bool {
+    let Some(analysis_index) = plan
+        .steps
+        .iter()
+        .position(|step| step.step_id == "analyze_findings")
+    else {
+        return false;
+    };
+    let analysis_step = plan.steps.remove(analysis_index);
+    let fallback_dep = analysis_step
+        .depends_on
+        .first()
+        .cloned()
+        .or_else(|| {
+            analysis_step
+                .input_refs
+                .first()
+                .map(|row| row.from_step_id.clone())
+        })
+        .unwrap_or_else(|| "research_sources".to_string());
+    let fallback_alias = match fallback_dep.as_str() {
+        "collect_inputs" => "report_inputs",
+        "compare_results" => "comparison_findings",
+        _ => "source_findings",
+    };
+    if let Some(report_step) = plan
+        .steps
+        .iter_mut()
+        .find(|step| step.step_id == "generate_report")
+    {
+        if report_step.depends_on == vec!["analyze_findings".to_string()] {
+            report_step.depends_on = vec![fallback_dep.clone()];
+            report_step.input_refs = vec![input_ref(&fallback_dep, fallback_alias)];
+        } else {
+            report_step
+                .depends_on
+                .retain(|dep| dep != "analyze_findings");
+            report_step
+                .input_refs
+                .retain(|input| input.from_step_id != "analyze_findings");
+        }
+    }
+    for step in &mut plan.steps {
+        step.depends_on.retain(|dep| dep != "analyze_findings");
+        step.input_refs
+            .retain(|input| input.from_step_id != "analyze_findings");
+    }
+    true
+}
+
+fn remove_notify_step(plan: &mut crate::WorkflowPlan) -> bool {
+    let original_len = plan.steps.len();
+    plan.steps.retain(|step| step.step_id != "notify_user");
+    for step in &mut plan.steps {
+        step.depends_on.retain(|dep| dep != "notify_user");
+        step.input_refs
+            .retain(|input| input.from_step_id != "notify_user");
+    }
+    plan.steps.len() != original_len
+}
+
+fn ensure_notify_step(plan: &mut crate::WorkflowPlan) -> bool {
+    if plan.steps.iter().any(|step| step.step_id == "notify_user") {
+        return false;
+    }
+    let Some(last_step) = plan.steps.last() else {
+        return false;
+    };
+    let (source_step_id, source_alias) = match last_step.step_id.as_str() {
+        "generate_report" => ("generate_report", "report"),
+        "compare_results" => ("compare_results", "comparison_findings"),
+        "analyze_findings" => ("analyze_findings", "analysis"),
+        "collect_inputs" => ("collect_inputs", "notification_inputs"),
+        "research_sources" => ("research_sources", "notification_inputs"),
+        "execute_goal" => ("execute_goal", "execution_output"),
+        _ => (last_step.step_id.as_str(), "notification_inputs"),
+    };
+    plan.steps.push(plan_step_with_dep(
+        "notify_user",
+        "notify",
+        "Prepare the final notification using the upstream workflow output.",
+        "writer",
+        &[source_step_id],
+        vec![input_ref(source_step_id, source_alias)],
+        Some("text_summary"),
+    ));
+    true
 }
 
 fn extract_title_from_revision_message(message: &str) -> Option<String> {

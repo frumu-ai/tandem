@@ -62,14 +62,17 @@ It is not a wishlist for future planner features.
   - switching back to manual execution
   - title updates
   - workspace root updates
+  - analysis-step add/remove
   - MCP add/remove/clear
   - MCP `only` narrowing semantics
-  - notification-step removal
+  - notification-step add/remove
   - execution mode / max parallel updates
   - model override set/clear
 
 ## Deferred After This Slice
 - [ ] Replace deterministic planner-chat rules with a true LLM-backed revision loop
+- [~] Add optional export/persistence to Pack Builder after planning
+- Current state: `POST /workflow-plans/apply` accepts optional `pack_builder_export` and can persist a Pack Builder preview for pending/apply follow-ups.
 - [ ] Expand planner-chat semantics beyond the current deterministic field set
 - [ ] Optionally relocate or further polish the reusable-skill export UI if Step 1 remains confusing
 
