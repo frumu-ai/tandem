@@ -71,6 +71,7 @@ It is not a wishlist for future planner features.
   - notification-step add/remove
   - execution mode / max parallel updates
   - model override set/clear
+  - planner model override set/clear
 
 ## Deferred After This Slice
 - [~] Replace deterministic planner-chat rules with a true LLM-backed revision loop

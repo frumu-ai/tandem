@@ -731,6 +731,174 @@ async fn workflow_plan_chat_message_updates_title() {
 }
 
 #[tokio::test]
+async fn workflow_plan_chat_message_updates_planner_model_override() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let start_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/start")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "prompt": "Send me a daily competitor digest",
+                "plan_source": "automations_page",
+                "workspace_root": "/tmp/initial-workspace",
+                "operator_preferences": {
+                    "model_provider": "openai",
+                    "model_id": "gpt-5.1"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("start request");
+    let start_resp = app
+        .clone()
+        .oneshot(start_req)
+        .await
+        .expect("start response");
+    assert_eq!(start_resp.status(), StatusCode::OK);
+    let start_body = to_bytes(start_resp.into_body(), usize::MAX)
+        .await
+        .expect("start body");
+    let start_payload: Value = serde_json::from_slice(&start_body).expect("start json");
+    let plan_id = start_payload
+        .get("plan")
+        .and_then(|row| row.get("plan_id"))
+        .and_then(Value::as_str)
+        .expect("plan id")
+        .to_string();
+
+    let message_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/message")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "plan_id": plan_id,
+                "message": "Use anthropic claude-sonnet-4 for planning."
+            })
+            .to_string(),
+        ))
+        .expect("message request");
+    let message_resp = app
+        .clone()
+        .oneshot(message_req)
+        .await
+        .expect("message response");
+    assert_eq!(message_resp.status(), StatusCode::OK);
+    let message_body = to_bytes(message_resp.into_body(), usize::MAX)
+        .await
+        .expect("message body");
+    let message_payload: Value = serde_json::from_slice(&message_body).expect("message json");
+    assert_eq!(
+        message_payload
+            .get("plan")
+            .and_then(|row| row.get("operator_preferences"))
+            .and_then(|row| row.get("role_models"))
+            .and_then(|row| row.get("planner"))
+            .and_then(|row| row.get("provider_id"))
+            .and_then(Value::as_str),
+        Some("anthropic")
+    );
+    assert_eq!(
+        message_payload
+            .get("plan")
+            .and_then(|row| row.get("operator_preferences"))
+            .and_then(|row| row.get("role_models"))
+            .and_then(|row| row.get("planner"))
+            .and_then(|row| row.get("model_id"))
+            .and_then(Value::as_str),
+        Some("claude-sonnet-4")
+    );
+    assert!(message_payload
+        .get("change_summary")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows
+            .iter()
+            .any(|row| row.as_str() == Some("updated planner model override"))));
+}
+
+#[tokio::test]
+async fn workflow_plan_chat_message_clears_planner_model_override() {
+    let state = test_state().await;
+    let app = app_router(state);
+
+    let start_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/start")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "prompt": "Send me a daily competitor digest",
+                "plan_source": "automations_page",
+                "workspace_root": "/tmp/initial-workspace",
+                "operator_preferences": {
+                    "role_models": {
+                        "planner": {
+                            "provider_id": "anthropic",
+                            "model_id": "claude-sonnet-4"
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        ))
+        .expect("start request");
+    let start_resp = app
+        .clone()
+        .oneshot(start_req)
+        .await
+        .expect("start response");
+    assert_eq!(start_resp.status(), StatusCode::OK);
+    let start_body = to_bytes(start_resp.into_body(), usize::MAX)
+        .await
+        .expect("start body");
+    let start_payload: Value = serde_json::from_slice(&start_body).expect("start json");
+    let plan_id = start_payload
+        .get("plan")
+        .and_then(|row| row.get("plan_id"))
+        .and_then(Value::as_str)
+        .expect("plan id")
+        .to_string();
+
+    let message_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/message")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "plan_id": plan_id,
+                "message": "Use the default planner model."
+            })
+            .to_string(),
+        ))
+        .expect("message request");
+    let message_resp = app
+        .clone()
+        .oneshot(message_req)
+        .await
+        .expect("message response");
+    assert_eq!(message_resp.status(), StatusCode::OK);
+    let message_body = to_bytes(message_resp.into_body(), usize::MAX)
+        .await
+        .expect("message body");
+    let message_payload: Value = serde_json::from_slice(&message_body).expect("message json");
+    assert!(message_payload
+        .get("plan")
+        .and_then(|row| row.get("operator_preferences"))
+        .and_then(|row| row.get("role_models"))
+        .and_then(|row| row.get("planner"))
+        .is_none());
+    assert!(message_payload
+        .get("change_summary")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows
+            .iter()
+            .any(|row| row.as_str() == Some("updated planner model override"))));
+}
+
+#[tokio::test]
 async fn workflow_plan_chat_message_adds_analysis_step_and_rewires_report() {
     let state = test_state().await;
     let app = app_router(state);

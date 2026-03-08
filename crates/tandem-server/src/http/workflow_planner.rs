@@ -718,6 +718,14 @@ fn revise_workflow_plan_from_message(
                 .as_ref()
                 .and_then(|prefs| prefs.get("model_id"))
                 != updated_preferences.get("model_id");
+            let planner_model_changed = revised
+                .operator_preferences
+                .as_ref()
+                .and_then(|prefs| prefs.get("role_models"))
+                .and_then(|prefs| prefs.get("planner"))
+                != updated_preferences
+                    .get("role_models")
+                    .and_then(|prefs| prefs.get("planner"));
             revised.operator_preferences = Some(updated_preferences);
             if execution_mode_changed {
                 changes.push("updated execution mode".to_string());
@@ -727,6 +735,9 @@ fn revise_workflow_plan_from_message(
             }
             if model_provider_changed || model_id_changed {
                 changes.push("updated model override".to_string());
+            }
+            if planner_model_changed {
+                changes.push("updated planner model override".to_string());
             }
         }
     }
@@ -1110,6 +1121,8 @@ fn revise_operator_preferences(current: Option<Value>, text: &str) -> Option<Val
 
     let provider = extract_model_provider(text);
     let model_id = extract_model_id(text);
+    let planner_model_provider = extract_planner_model_provider(text);
+    let planner_model_id = extract_planner_model_id(text);
     let clear_model_override = text.contains("use default model")
         || text.contains("use the default model")
         || text.contains("use workspace default model")
@@ -1124,6 +1137,23 @@ fn revise_operator_preferences(current: Option<Value>, text: &str) -> Option<Val
         map.remove("role_models");
         touched = true;
     }
+    let clear_planner_model_override = text.contains("use default planner model")
+        || text.contains("use the default planner model")
+        || text.contains("use workspace default planner model")
+        || text.contains("use the workspace default planner model")
+        || text.contains("clear planner model")
+        || text.contains("clear planner model override")
+        || text.contains("remove planner model")
+        || text.contains("remove planner model override");
+    if clear_planner_model_override {
+        if let Some(role_models) = map.get_mut("role_models").and_then(Value::as_object_mut) {
+            role_models.remove("planner");
+            if role_models.is_empty() {
+                map.remove("role_models");
+            }
+        }
+        touched = true;
+    }
     if let Some(provider) = provider {
         map.insert("model_provider".to_string(), Value::String(provider));
         touched = true;
@@ -1132,8 +1162,50 @@ fn revise_operator_preferences(current: Option<Value>, text: &str) -> Option<Val
         map.insert("model_id".to_string(), Value::String(model_id));
         touched = true;
     }
+    if planner_model_provider.is_some() || planner_model_id.is_some() {
+        let role_models = map
+            .entry("role_models".to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(role_models_map) = role_models.as_object_mut() {
+            let planner_model = role_models_map
+                .entry("planner".to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(planner_map) = planner_model.as_object_mut() {
+                if let Some(provider) = planner_model_provider {
+                    planner_map.insert("provider_id".to_string(), Value::String(provider));
+                    touched = true;
+                }
+                if let Some(model_id) = planner_model_id {
+                    planner_map.insert("model_id".to_string(), Value::String(model_id));
+                    touched = true;
+                }
+            }
+        }
+    }
 
     touched.then_some(prefs)
+}
+
+fn extract_planner_model_provider(text: &str) -> Option<String> {
+    if !(text.contains("planner model")
+        || text.contains("for planning")
+        || text.contains("planner should use")
+        || text.contains("planning should use"))
+    {
+        return None;
+    }
+    extract_model_provider(text)
+}
+
+fn extract_planner_model_id(text: &str) -> Option<String> {
+    if !(text.contains("planner model")
+        || text.contains("for planning")
+        || text.contains("planner should use")
+        || text.contains("planning should use"))
+    {
+        return None;
+    }
+    extract_model_id(text)
 }
 
 fn extract_max_parallel_agents(text: &str) -> Option<u64> {
