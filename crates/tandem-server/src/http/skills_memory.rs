@@ -967,6 +967,32 @@ fn memory_put_provenance(
     })
 }
 
+fn memory_linkage(record: &GlobalMemoryRecord) -> Value {
+    let artifact_refs = memory_artifact_refs(record.metadata.as_ref());
+    let provenance = record.provenance.as_ref();
+    json!({
+        "run_id": record.run_id,
+        "project_id": record.project_tag,
+        "origin_event_type": provenance
+            .and_then(|row| row.get("origin_event_type"))
+            .and_then(Value::as_str),
+        "origin_run_id": provenance
+            .and_then(|row| row.get("origin_run_id"))
+            .and_then(Value::as_str)
+            .or(Some(record.run_id.as_str())),
+        "origin_session_id": provenance
+            .and_then(|row| row.get("origin_session_id"))
+            .and_then(Value::as_str),
+        "origin_message_id": provenance
+            .and_then(|row| row.get("origin_message_id"))
+            .and_then(Value::as_str),
+        "partition_key": provenance
+            .and_then(|row| row.get("partition_key"))
+            .and_then(Value::as_str),
+        "artifact_refs": artifact_refs,
+    })
+}
+
 fn memory_kind_label(source_type: &str) -> &str {
     match source_type {
         "solution_capsule" => "solution_capsule",
@@ -1669,7 +1695,7 @@ pub(super) async fn memory_put_impl(
         id: id.clone(),
         user_id,
         source_type,
-        content: request.content,
+        content: request.content.clone(),
         content_hash: String::new(),
         run_id: request.run_id.clone(),
         session_id: None,
@@ -1963,6 +1989,7 @@ pub(super) async fn memory_search(
                 "run_id": hit.record.run_id,
                 "visibility": hit.record.visibility,
                 "artifact_refs": memory_artifact_refs(hit.record.metadata.as_ref()),
+                "linkage": memory_linkage(&hit.record),
                 "metadata": hit.record.metadata,
                 "provenance": hit.record.provenance,
             })
@@ -2115,6 +2142,7 @@ pub(super) async fn memory_list(
                     "source_type": row.source_type,
                     "content": row.content,
                     "artifact_refs": memory_artifact_refs(row.metadata.as_ref()),
+                    "linkage": memory_linkage(&row),
                     "metadata": row.metadata,
                     "provenance": row.provenance,
                     "created_at_ms": row.created_at_ms,
