@@ -6432,6 +6432,87 @@ fn coder_run_payload(record: &CoderRunRecord, context_run: &ContextRunState) -> 
     })
 }
 
+fn same_coder_github_ref(left: Option<&CoderGithubRef>, right: Option<&CoderGithubRef>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left.kind == right.kind && left.number == right.number,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+async fn has_completed_follow_on_pr_review(
+    state: &AppState,
+    record: &CoderRunRecord,
+) -> Result<bool, StatusCode> {
+    let Some(parent_coder_run_id) = record.parent_coder_run_id.as_deref() else {
+        return Ok(false);
+    };
+    ensure_coder_runs_dir(state).await?;
+    let mut dir = tokio::fs::read_dir(coder_runs_root(state))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    while let Ok(Some(entry)) = dir.next_entry().await {
+        if !entry
+            .file_type()
+            .await
+            .map(|row| row.is_file())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let raw = tokio::fs::read_to_string(entry.path())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let Ok(candidate) = serde_json::from_str::<CoderRunRecord>(&raw) else {
+            continue;
+        };
+        if candidate.coder_run_id == record.coder_run_id
+            || candidate.parent_coder_run_id.as_deref() != Some(parent_coder_run_id)
+            || candidate.workflow_mode != CoderWorkflowMode::PrReview
+            || !same_coder_github_ref(candidate.github_ref.as_ref(), record.github_ref.as_ref())
+        {
+            continue;
+        }
+        let Ok(run) = load_context_run_state(state, &candidate.linked_context_run_id).await else {
+            continue;
+        };
+        if matches!(run.status, ContextRunStatus::Completed) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn coder_execution_policy_block(
+    state: &AppState,
+    record: &CoderRunRecord,
+) -> Result<Option<Value>, StatusCode> {
+    if record.workflow_mode != CoderWorkflowMode::MergeRecommendation {
+        return Ok(None);
+    }
+    let source = record
+        .origin_policy
+        .as_ref()
+        .and_then(|row| row.get("source"))
+        .and_then(Value::as_str);
+    if source != Some("issue_fix_pr_submit") {
+        return Ok(None);
+    }
+    if has_completed_follow_on_pr_review(state, record).await? {
+        return Ok(None);
+    }
+    Ok(Some(json!({
+        "ok": false,
+        "error": "merge recommendation is blocked until a sibling pr_review run completes",
+        "code": "CODER_EXECUTION_POLICY_BLOCKED",
+        "policy": {
+            "reason": "requires_completed_pr_review_follow_on",
+            "required_workflow_mode": "pr_review",
+            "parent_coder_run_id": record.parent_coder_run_id,
+        }
+    })))
+}
+
 pub(super) async fn coder_run_create(
     State(state): State<AppState>,
     Json(input): Json<CoderRunCreateInput>,
@@ -6984,6 +7065,9 @@ pub(super) async fn coder_run_execute_next(
     Json(input): Json<CoderRunExecuteNextInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let mut record = load_coder_run_record(&state, &id).await?;
+    if let Some(blocked) = coder_execution_policy_block(&state, &record).await? {
+        return Ok(Json(blocked));
+    }
     let agent_id = default_coder_worker_agent_id(input.agent_id.as_deref());
     Ok(Json(
         execute_coder_run_step(state, &mut record, &agent_id).await?,
@@ -6996,6 +7080,9 @@ pub(super) async fn coder_run_execute_all(
     Json(input): Json<CoderRunExecuteAllInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let mut record = load_coder_run_record(&state, &id).await?;
+    if let Some(blocked) = coder_execution_policy_block(&state, &record).await? {
+        return Ok(Json(blocked));
+    }
     let agent_id = default_coder_worker_agent_id(input.agent_id.as_deref());
     let max_steps = input.max_steps.unwrap_or(16).clamp(1, 64);
     let mut steps = Vec::<Value>::new();

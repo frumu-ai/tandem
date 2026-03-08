@@ -2218,6 +2218,243 @@ async fn coder_issue_fix_pr_submit_merge_auto_spawn_requires_opt_in() {
 }
 
 #[tokio::test]
+async fn coder_merge_follow_on_execution_waits_for_completed_review() {
+    let (endpoint, server) = spawn_fake_github_mcp_server().await;
+
+    let state = test_state().await;
+    state
+        .mcp
+        .add_or_update(
+            "github".to_string(),
+            endpoint,
+            std::collections::HashMap::new(),
+            true,
+        )
+        .await;
+    assert!(state.mcp.connect("github").await);
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-follow-on-policy-parent",
+                "workflow_mode": "issue_fix",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 313
+                },
+                "mcp_servers": ["github"]
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let summary_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-follow-on-policy-parent/issue-fix-summary")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "summary": "Add missing fallback to startup recovery.",
+                "root_cause": "Recovery skipped the nil-config guard.",
+                "fix_strategy": "restore startup fallback and add a targeted regression",
+                "changed_files": [
+                    "crates/tandem-server/src/http/coder.rs"
+                ],
+                "validation_results": [{
+                    "kind": "test",
+                    "status": "passed",
+                    "summary": "startup recovery regression passed"
+                }]
+            })
+            .to_string(),
+        ))
+        .expect("summary request");
+    let summary_resp = app
+        .clone()
+        .oneshot(summary_req)
+        .await
+        .expect("summary response");
+    assert_eq!(summary_resp.status(), StatusCode::OK);
+
+    let draft_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-follow-on-policy-parent/pr-draft")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({}).to_string()))
+        .expect("draft request");
+    let draft_resp = app
+        .clone()
+        .oneshot(draft_req)
+        .await
+        .expect("draft response");
+    assert_eq!(draft_resp.status(), StatusCode::OK);
+
+    let submit_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-follow-on-policy-parent/pr-submit")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "approved_by": "evan",
+                "reason": "Open the draft PR",
+                "dry_run": false,
+                "mcp_server": "github"
+            })
+            .to_string(),
+        ))
+        .expect("submit request");
+    let submit_resp = app
+        .clone()
+        .oneshot(submit_req)
+        .await
+        .expect("submit response");
+    assert_eq!(submit_resp.status(), StatusCode::OK);
+
+    let merge_follow_on_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-follow-on-policy-parent/follow-on-run")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "workflow_mode": "merge_recommendation",
+                "coder_run_id": "coder-follow-on-merge"
+            })
+            .to_string(),
+        ))
+        .expect("merge follow-on request");
+    let merge_follow_on_resp = app
+        .clone()
+        .oneshot(merge_follow_on_req)
+        .await
+        .expect("merge follow-on response");
+    assert_eq!(merge_follow_on_resp.status(), StatusCode::OK);
+
+    let blocked_execute_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-follow-on-merge/execute-next")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({}).to_string()))
+        .expect("blocked execute request");
+    let blocked_execute_resp = app
+        .clone()
+        .oneshot(blocked_execute_req)
+        .await
+        .expect("blocked execute response");
+    assert_eq!(blocked_execute_resp.status(), StatusCode::OK);
+    let blocked_execute_payload: Value = serde_json::from_slice(
+        &to_bytes(blocked_execute_resp.into_body(), usize::MAX)
+            .await
+            .expect("blocked execute body"),
+    )
+    .expect("blocked execute json");
+    assert_eq!(
+        blocked_execute_payload.get("code").and_then(Value::as_str),
+        Some("CODER_EXECUTION_POLICY_BLOCKED")
+    );
+    assert_eq!(
+        blocked_execute_payload
+            .get("policy")
+            .and_then(|row| row.get("reason"))
+            .and_then(Value::as_str),
+        Some("requires_completed_pr_review_follow_on")
+    );
+
+    let review_follow_on_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-follow-on-policy-parent/follow-on-run")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "workflow_mode": "pr_review",
+                "coder_run_id": "coder-follow-on-review"
+            })
+            .to_string(),
+        ))
+        .expect("review follow-on request");
+    let review_follow_on_resp = app
+        .clone()
+        .oneshot(review_follow_on_req)
+        .await
+        .expect("review follow-on response");
+    assert_eq!(review_follow_on_resp.status(), StatusCode::OK);
+
+    let review_summary_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-follow-on-review/pr-review-summary")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "verdict": "approve",
+                "summary": "Looks good after targeted review.",
+                "risk_level": "low",
+                "changed_files": ["crates/tandem-server/src/http/coder.rs"],
+                "blockers": [],
+                "requested_changes": []
+            })
+            .to_string(),
+        ))
+        .expect("review summary request");
+    let review_summary_resp = app
+        .clone()
+        .oneshot(review_summary_req)
+        .await
+        .expect("review summary response");
+    assert_eq!(review_summary_resp.status(), StatusCode::OK);
+
+    let allowed_execute_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-follow-on-merge/execute-next")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({}).to_string()))
+        .expect("allowed execute request");
+    let allowed_execute_resp = app
+        .clone()
+        .oneshot(allowed_execute_req)
+        .await
+        .expect("allowed execute response");
+    server.abort();
+
+    assert_eq!(allowed_execute_resp.status(), StatusCode::OK);
+    let allowed_execute_payload: Value = serde_json::from_slice(
+        &to_bytes(allowed_execute_resp.into_body(), usize::MAX)
+            .await
+            .expect("allowed execute body"),
+    )
+    .expect("allowed execute json");
+    assert_eq!(
+        allowed_execute_payload.get("ok").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        allowed_execute_payload
+            .get("dispatched")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
 async fn coder_issue_fix_summary_writes_patch_summary_without_changed_files() {
     let state = test_state().await;
     state
