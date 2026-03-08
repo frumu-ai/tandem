@@ -1,10 +1,12 @@
 import { defineConfig } from "vite";
 import preact from "@preact/preset-vite";
+import path from "node:path";
 
 export default defineConfig({
   plugins: [preact()],
   resolve: {
     alias: {
+      "@frumu/tandem-client": path.resolve(__dirname, "../tandem-client-ts/src/index.ts"),
       react: "preact/compat",
       "react-dom": "preact/compat",
       "react-dom/client": "preact/compat",
