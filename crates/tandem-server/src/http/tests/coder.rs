@@ -2442,6 +2442,29 @@ async fn coder_merge_follow_on_execution_waits_for_completed_review() {
             .and_then(Value::as_str),
         Some("requires_completed_pr_review_follow_on")
     );
+    assert_eq!(
+        merge_follow_on_payload
+            .get("merge_submit_policy")
+            .and_then(|row| row.get("auto_execute_policy_enabled"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        merge_follow_on_payload
+            .get("merge_submit_policy")
+            .and_then(|row| row.get("auto_execute_block_reason"))
+            .and_then(Value::as_str),
+        Some("preferred_submit_mode_manual")
+    );
+    assert_eq!(
+        merge_follow_on_payload
+            .get("merge_submit_policy")
+            .and_then(|row| row.get("manual"))
+            .and_then(|row| row.get("policy"))
+            .and_then(|row| row.get("reason"))
+            .and_then(Value::as_str),
+        Some("requires_merge_execution_request")
+    );
 
     let blocked_execute_req = Request::builder()
         .method("POST")
@@ -7948,6 +7971,12 @@ async fn coder_triage_summary_write_adds_summary_artifact() {
                 "summary": "Likely duplicate in capabilities flow",
                 "confidence": "medium",
                 "affected_files": ["crates/tandem-server/src/http/coder.rs"],
+                "prior_runs_considered": [{
+                    "coder_run_id": "coder-run-prior-a",
+                    "linked_context_run_id": "ctx-coder-run-prior-a",
+                    "kind": "failure_pattern",
+                    "tier": "project"
+                }],
                 "memory_hits_used": ["memcand-1"]
             })
             .to_string(),
@@ -8016,6 +8045,25 @@ async fn coder_triage_summary_write_adds_summary_artifact() {
             .and_then(Value::as_u64),
         Some(91)
     );
+    let triage_memory_payload = candidates_payload
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("kind").and_then(Value::as_str) == Some("triage_memory"))
+        })
+        .and_then(|row| row.get("payload"))
+        .cloned()
+        .expect("triage memory payload");
+    assert_eq!(
+        triage_memory_payload
+            .get("prior_runs_considered")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("coder_run_id"))
+            .and_then(Value::as_str),
+        Some("coder-run-prior-a")
+    );
     assert_eq!(
         summary_payload
             .get("generated_candidates")
@@ -8056,6 +8104,27 @@ async fn coder_triage_summary_write_adds_summary_artifact() {
         })
         .unwrap_or(false);
     assert!(contains_summary);
+    let summary_path = load_context_blackboard(&state, &linked_context_run_id)
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_type == "coder_triage_summary")
+        .map(|artifact| artifact.path.clone())
+        .expect("triage summary artifact path");
+    let summary_artifact_payload: Value = serde_json::from_str(
+        &tokio::fs::read_to_string(&summary_path)
+            .await
+            .expect("read triage summary artifact"),
+    )
+    .expect("triage summary artifact json");
+    assert_eq!(
+        summary_artifact_payload
+            .get("prior_runs_considered")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("coder_run_id"))
+            .and_then(Value::as_str),
+        Some("coder-run-prior-a")
+    );
 
     let contains_memory_hits = artifacts_payload
         .get("artifacts")

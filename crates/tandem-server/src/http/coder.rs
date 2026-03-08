@@ -179,6 +179,8 @@ pub(super) struct CoderTriageSummaryCreateInput {
     #[serde(default)]
     pub(super) duplicate_candidates: Vec<Value>,
     #[serde(default)]
+    pub(super) prior_runs_considered: Vec<Value>,
+    #[serde(default)]
     pub(super) memory_hits_used: Vec<String>,
     #[serde(default)]
     pub(super) reproduction: Option<Value>,
@@ -2393,6 +2395,8 @@ async fn dispatch_issue_triage_task(
         }
         Some("write_triage_artifact") => {
             let memory_hits_used = summarize_workflow_memory_hits(record, &run, "retrieve_memory");
+            let prior_runs_considered =
+                summarize_workflow_prior_runs_considered(record, &run, "retrieve_memory");
             let worker_payload = load_latest_coder_artifact_payload(
                 &state,
                 record,
@@ -2433,6 +2437,7 @@ async fn dispatch_issue_triage_task(
                         })
                         .unwrap_or_default(),
                     duplicate_candidates: Vec::new(),
+                    prior_runs_considered,
                     memory_hits_used,
                     reproduction: Some(json!({
                         "outcome": parsed_triage
@@ -4914,6 +4919,41 @@ fn parse_bulleted_lines(section: Option<String>) -> Vec<String> {
                 .map(|line| line.trim_start_matches("-").trim())
                 .filter(|line| !line.is_empty())
                 .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn summarize_workflow_prior_runs_considered(
+    _record: &CoderRunRecord,
+    run: &ContextRunState,
+    workflow_node_id: &str,
+) -> Vec<Value> {
+    let mut seen = std::collections::HashSet::<String>::new();
+    run.tasks
+        .iter()
+        .find(|task| task.workflow_node_id.as_deref() == Some(workflow_node_id))
+        .and_then(|task| task.payload.get("memory_hits"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let run_id = row
+                        .get("source_coder_run_id")
+                        .or_else(|| row.get("run_id"))
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())?;
+                    if !seen.insert(run_id.to_string()) {
+                        return None;
+                    }
+                    Some(json!({
+                        "coder_run_id": run_id,
+                        "linked_context_run_id": row.get("linked_context_run_id").cloned().unwrap_or(Value::Null),
+                        "kind": row.get("kind").cloned().unwrap_or(Value::Null),
+                        "tier": row.get("tier").cloned().unwrap_or(Value::Null),
+                    }))
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
@@ -7748,6 +7788,7 @@ pub(super) async fn coder_run_create(
         "ok": true,
         "coder_run": coder_run_payload(&record, &final_run),
         "execution_policy": coder_execution_policy_summary(&state, &record).await?,
+        "merge_submit_policy": coder_merge_submit_policy_summary(&state, &record).await?,
         "run": final_run,
     }))
     .into_response())
@@ -8533,6 +8574,7 @@ pub(super) async fn coder_triage_summary_create(
         "confidence": input.confidence,
         "affected_files": input.affected_files,
         "duplicate_candidates": input.duplicate_candidates,
+        "prior_runs_considered": input.prior_runs_considered,
         "memory_hits_used": input.memory_hits_used,
         "reproduction": input.reproduction,
         "notes": input.notes,
@@ -8571,6 +8613,7 @@ pub(super) async fn coder_triage_summary_create(
                 "confidence": input.confidence,
                 "affected_files": input.affected_files,
                 "duplicate_candidates": input.duplicate_candidates,
+                "prior_runs_considered": input.prior_runs_considered,
                 "memory_hits_used": input.memory_hits_used,
                 "reproduction": input.reproduction,
                 "notes": input.notes,
@@ -8622,6 +8665,7 @@ pub(super) async fn coder_triage_summary_create(
                 "result": outcome,
                 "summary": summary_text,
                 "successful_strategies": ["memory_retrieval", "repo_inspection"],
+                "prior_runs_considered": input.prior_runs_considered,
                 "validations_attempted": [{
                     "kind": "reproduction",
                     "outcome": input
