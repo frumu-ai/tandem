@@ -2327,6 +2327,11 @@ function MyAutomations({
 }) {
   const queryClient = useQueryClient();
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    automationId: string;
+    family: "legacy" | "v2";
+    title: string;
+  } | null>(null);
   const [editDraft, setEditDraft] = useState<{
     automationId: string;
     name: string;
@@ -2873,10 +2878,12 @@ function MyAutomations({
                         <button
                           className="tcp-btn-danger h-7 px-2 text-xs"
                           onClick={() =>
-                            automationActionMutation.mutate({
-                              action: "delete",
+                            setDeleteConfirm({
                               automationId: id,
                               family: "legacy",
+                              title: String(
+                                automation?.name || automation?.label || id || "automation"
+                              ),
                             })
                           }
                           disabled={!id || automationActionMutation.isPending}
@@ -2955,10 +2962,10 @@ function MyAutomations({
                     <button
                       className="tcp-btn-danger h-7 px-2 text-xs"
                       onClick={() =>
-                        automationActionMutation.mutate({
-                          action: "delete",
+                        setDeleteConfirm({
                           automationId: id,
                           family: "v2",
+                          title: String(automation?.name || id || "workflow automation"),
                         })
                       }
                       disabled={!id || automationActionMutation.isPending}
@@ -3680,6 +3687,53 @@ function MyAutomations({
                 >
                   <i data-lucide="check"></i>
                   Save
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+        {deleteConfirm ? (
+          <motion.div
+            className="tcp-confirm-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setDeleteConfirm(null)}
+          >
+            <motion.div
+              className="tcp-confirm-dialog w-[min(34rem,96vw)]"
+              initial={{ opacity: 0, y: 8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 6, scale: 0.98 }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h3 className="tcp-confirm-title">Delete automation</h3>
+              <p className="tcp-confirm-message">
+                This will permanently remove <strong>{deleteConfirm.title}</strong>.
+              </p>
+              <div className="tcp-confirm-actions mt-3">
+                <button className="tcp-btn" onClick={() => setDeleteConfirm(null)}>
+                  <i data-lucide="x"></i>
+                  Cancel
+                </button>
+                <button
+                  className="tcp-btn-danger"
+                  disabled={automationActionMutation.isPending}
+                  onClick={() =>
+                    automationActionMutation.mutate(
+                      {
+                        action: "delete",
+                        automationId: deleteConfirm.automationId,
+                        family: deleteConfirm.family,
+                      },
+                      {
+                        onSettled: () => setDeleteConfirm(null),
+                      }
+                    )
+                  }
+                >
+                  <i data-lucide="trash-2"></i>
+                  {automationActionMutation.isPending ? "Deleting..." : "Delete automation"}
                 </button>
               </div>
             </motion.div>
