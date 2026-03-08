@@ -1408,21 +1408,23 @@ pub(super) async fn replay_bug_monitor_incident(
         Ok((draft, run, deduped)) => {
             let triage_run_id = draft.triage_run_id.as_deref().unwrap_or(run.as_str());
             let run = load_context_run_state(&state, triage_run_id).await.ok();
+            let triage_summary =
+                load_bug_monitor_triage_summary_artifact(&state, triage_run_id).await;
             let issue_draft = ensure_bug_monitor_issue_draft(state.clone(), draft_id, true)
                 .await
                 .ok();
             let (duplicate_summary, duplicate_matches) =
                 bug_monitor_duplicate_match_context(&state, Some(triage_run_id)).await;
-            let issue_draft_artifact =
-                latest_bug_monitor_artifact(&state, triage_run_id, "bug_monitor_issue_draft");
-            let duplicate_matches_artifact =
-                latest_bug_monitor_artifact(&state, triage_run_id, "failure_duplicate_matches");
+            let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
+                bug_monitor_triage_artifacts(&state, Some(triage_run_id));
             Json(json!({
                 "ok": true,
                 "incident": incident,
                 "draft": draft,
                 "run": run,
                 "deduped": deduped,
+                "triage_summary": triage_summary,
+                "triage_summary_artifact": triage_summary_artifact,
                 "issue_draft": issue_draft,
                 "issue_draft_artifact": issue_draft_artifact,
                 "duplicate_summary": duplicate_summary,
@@ -1705,18 +1707,22 @@ pub(super) async fn create_bug_monitor_triage_run(
         Ok((draft, run_id, deduped)) => {
             let triage_run_id = draft.triage_run_id.as_deref().unwrap_or(run_id.as_str());
             let run = load_context_run_state(&state, triage_run_id).await.ok();
+            let triage_summary =
+                load_bug_monitor_triage_summary_artifact(&state, triage_run_id).await;
             let issue_draft = ensure_bug_monitor_issue_draft(state.clone(), &id, true)
                 .await
                 .ok();
             let (duplicate_summary, duplicate_matches) =
                 bug_monitor_duplicate_match_context(&state, Some(triage_run_id)).await;
-            let (_, issue_draft_artifact, duplicate_matches_artifact) =
+            let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
                 bug_monitor_triage_artifacts(&state, Some(triage_run_id));
             Json(json!({
                 "ok": true,
                 "draft": draft,
                 "run": run,
                 "deduped": deduped,
+                "triage_summary": triage_summary,
+                "triage_summary_artifact": triage_summary_artifact,
                 "issue_draft": issue_draft,
                 "issue_draft_artifact": issue_draft_artifact,
                 "duplicate_summary": duplicate_summary,

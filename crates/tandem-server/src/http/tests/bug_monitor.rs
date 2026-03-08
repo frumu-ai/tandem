@@ -1511,6 +1511,20 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
             .and_then(Value::as_str),
         Some("triage_queued")
     );
+    assert_eq!(
+        triage_payload
+            .get("triage_summary")
+            .and_then(|row| row.get("suggested_title"))
+            .and_then(Value::as_str),
+        Some("Bug Monitor issue")
+    );
+    assert_eq!(
+        triage_payload
+            .get("triage_summary_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_triage_summary")
+    );
     assert!(triage_payload
         .get("issue_draft")
         .and_then(|row| row.get("rendered_body"))
@@ -1691,6 +1705,20 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
         Some("bug_monitor_issue_draft")
+    );
+    assert_eq!(
+        replay_payload
+            .get("triage_summary")
+            .and_then(|row| row.get("suggested_title"))
+            .and_then(Value::as_str),
+        Some("Bug Monitor issue")
+    );
+    assert_eq!(
+        replay_payload
+            .get("triage_summary_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_triage_summary")
     );
     assert_eq!(
         replay_payload
