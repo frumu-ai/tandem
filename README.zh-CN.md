@@ -13,7 +13,22 @@
   </p>
 </div>
 
+## Tandem
+
 **Tandem 是一个面向协调自治工作流的引擎主导型（engine-owned）运行时。**
+
+当前 AI Agent 领域充斥着“对话优先助手（chat-first assistants）”，但这些基于对话流由的模型在处理复杂任务时，不可避免地会遭遇上下文膨胀与并发盲区的瓶颈。
+
+Tandem 采取了截然不同的方法来应对工程化 Agent 的复杂现实。我们将自治执行视为一个**分布式系统问题**，优先维护稳健的引擎状态，而不是脆弱的对话记录。
+
+它提供了持久化、坚固的协调原语——例如黑板（blackboards）、工作板（workboards）、显式任务认领、操作性记忆积累和检查点（checkpoints）——允许多个 Agent 并发地执行复杂且长时间运行的工程或自动化任务，彻底阻绝冲突碰撞。
+
+- **多客户端，单一引擎：** 桌面端应用、TUI 以及无头 API 全部基于完全一致的具象化状态真相运作。
+- **引擎主导的编排机制：** 共享的任务状态、全局流重放（replay）、审核流以及确定性的工作流投影，从原生层面解决了协调失效问题。
+- **提供商无绑定：** 支持 OpenRouter、Anthropic、OpenAI、OpenCode Zen，或通过 Ollama 本地轻松运行模型。
+
+`持久状态 → 工作板 → 智能体 Swarm → 结构化产物`
+
 可作为桌面应用运行、在 VPS 上以无头服务运行，或通过 HTTP + SSE API 从任意语言接入。
 
 ```bash
@@ -25,14 +40,6 @@ git clone https://github.com/frumu-ai/tandem.git
 cd tandem/examples/agent-quickstart
 sudo bash setup-agent.sh
 ```
-
-它提供了持久化、坚固的协调原语——例如黑板（blackboards）、工作板（workboards）、显式任务认领、记忆积累和检查点（checkpoints）——允许多个 Agent 并发地执行复杂且长时间运行的工程或自动化任务，彻底阻绝冲突碰撞。
-
-- **多客户端，单一引擎：** 桌面端应用、TUI 以及无头 API 全部基于同一个事实来源运作。
-- **引擎主导的编排机制：** 共享的任务状态、全局流重放（replay）、审核流以及确定性的工作流投影。
-- **提供商无绑定：** 支持 OpenRouter、OpenCode Zen、Anthropic、OpenAI，或通过 Ollama 本地运行模型。
-
-`持久状态 → 工作板 → 智能体 Swarm → 结构化产物`
 
 ```mermaid
 graph TD

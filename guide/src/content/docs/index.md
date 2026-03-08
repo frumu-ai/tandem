@@ -4,7 +4,7 @@ description: Welcome to the Tandem documentation hub. Choose your path based on 
 template: doc
 ---
 
-Welcome to the **Tandem Engine Documentation**. Tandem is an **engine-owned workflow runtime** for coordinated autonomous work, designed to be operated in multiple configurations.
+Welcome to the **Tandem Engine Documentation**. Tandem is an **engine-owned workflow runtime** for coordinated autonomous work, built to scale beyond the limitations of chat-first AI assistants and operate in multiple highly-concurrent configurations.
 
 To help you find what you need quickly, please select the path that best describes how you plan to use Tandem:
 

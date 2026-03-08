@@ -17,13 +17,15 @@
 
 Tandem is an **engine-owned workflow runtime** for coordinated autonomous work.
 
-While most agent projects are built as chat-first assistants, Tandem is built for execution that survives beyond a single transcript.
+While the current landscape of AI agents is flooded with "chat-first assistants," these conversational routing models inevitably fail at scale due to context bloat and concurrency blindness.
 
-It provides durable coordination primitives—blackboards, workboards, explicit task claiming, memory accumulation, and checkpoints—allowing multiple agents to work on complex, long-running engineering and automation tasks concurrently without colliding.
+Tandem takes a fundamentally different approach to tackle the complex realities of agentic engineering. We treat autonomous execution as a distributed systems problem, prioritizing robust engine state over fragile chat transcripts.
 
-- **Multiple clients, one engine:** The desktop app, TUI, and headless APIs all operate on the same truth.
-- **Engine-owned orchestration:** Shared task state, replay, approvals, and deterministic workflow projections.
-- **Provider agnostic:** Use OpenRouter, OpenCode Zen, Anthropic, OpenAI, or local Ollama endpoints.
+It provides durable coordination primitives—blackboards, workboards, explicit task claiming, operational memory accumulation, and checkpoints—allowing multiple agents to work concurrently on complex, long-running software engineering and automation tasks without colliding.
+
+- **Multiple clients, one engine:** The desktop app, TUI, and headless APIs all operate on the exact same materialized state truth.
+- **Engine-owned orchestration:** Shared task state, replay, approvals, and deterministic workflow projections natively solve coordination failures.
+- **Provider agnostic:** Use OpenRouter, Anthropic, OpenAI, OpenCode Zen, or local Ollama endpoints effortlessly.
 
 `Durable State → Workboards → Agent Swarm → Artifacts`
 
