@@ -2022,6 +2022,11 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
         Some(1)
     );
     assert!(recheck_payload
+        .get("issue_draft")
+        .and_then(|row| row.get("rendered_body"))
+        .and_then(Value::as_str)
+        .is_some_and(|body| body.contains("Historical duplicate")));
+    assert!(recheck_payload
         .get("duplicate_matches_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
