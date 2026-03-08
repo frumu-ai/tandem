@@ -4589,6 +4589,25 @@ async fn coder_merge_recommendation_summary_ready_to_merge_awaits_approval() {
             .and_then(Value::as_str),
         Some("coder_merge_execution_request")
     );
+    let merge_execution_artifact_path = approve_payload
+        .get("merge_execution_artifact")
+        .and_then(|row| row.get("path"))
+        .and_then(Value::as_str)
+        .expect("merge execution artifact path");
+    let merge_execution_artifact_payload: Value = serde_json::from_str(
+        &tokio::fs::read_to_string(merge_execution_artifact_path)
+            .await
+            .expect("read merge execution artifact"),
+    )
+    .expect("parse merge execution artifact");
+    assert_eq!(
+        merge_execution_artifact_payload
+            .get("merge_submit_policy_preview")
+            .and_then(|row| row.get("manual"))
+            .and_then(|row| row.get("blocked"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
     assert_eq!(
         approve_payload
             .get("merge_submit_policy")
@@ -4629,6 +4648,15 @@ async fn coder_merge_recommendation_summary_ready_to_merge_awaits_approval() {
             .get("recommendation")
             .and_then(Value::as_str),
         Some("merge")
+    );
+    assert_eq!(
+        merge_event
+            .properties
+            .get("merge_submit_policy")
+            .and_then(|row| row.get("auto"))
+            .and_then(|row| row.get("blocked"))
+            .and_then(Value::as_bool),
+        Some(true)
     );
 }
 

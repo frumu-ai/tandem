@@ -8007,6 +8007,24 @@ pub(super) async fn coder_run_approve(
             &merge_execution_payload,
         )
         .await?;
+        let merge_submit_policy = coder_merge_submit_policy_summary(&state, &record).await?;
+        if !matches!(merge_submit_policy, Value::Null) {
+            let mut payload = merge_execution_payload
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            payload.insert(
+                "merge_submit_policy_preview".to_string(),
+                merge_submit_policy.clone(),
+            );
+            tokio::fs::write(
+                &artifact.path,
+                serde_json::to_string_pretty(&Value::Object(payload))
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            )
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
         publish_coder_artifact_added(&state, &record, &artifact, Some("approval"), {
             let mut extra = serde_json::Map::new();
             extra.insert("kind".to_string(), json!("merge_execution_request"));
@@ -8026,6 +8044,10 @@ pub(super) async fn coder_run_approve(
                 );
                 extra.insert("artifact_id".to_string(), json!(artifact.id));
                 extra.insert("recommendation".to_string(), recommendation);
+                extra.insert(
+                    "merge_submit_policy".to_string(),
+                    merge_submit_policy.clone(),
+                );
                 extra
             },
         );
@@ -8049,10 +8071,7 @@ pub(super) async fn coder_run_approve(
                 merge_execution_payload,
             );
             obj.insert("merge_execution_artifact".to_string(), json!(artifact));
-            obj.insert(
-                "merge_submit_policy".to_string(),
-                coder_merge_submit_policy_summary(&state, &record).await?,
-            );
+            obj.insert("merge_submit_policy".to_string(), merge_submit_policy);
         }
         return Ok(Json(response));
     }
