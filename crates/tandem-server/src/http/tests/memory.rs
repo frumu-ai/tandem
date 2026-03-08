@@ -118,6 +118,27 @@ async fn memory_put_then_search_in_session_scope() {
         first_result.get("artifact_refs").and_then(Value::as_array),
         Some(&artifact_refs)
     );
+    assert_eq!(
+        first_result
+            .get("provenance")
+            .and_then(|row| row.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-2")
+    );
+    assert_eq!(
+        first_result
+            .get("provenance")
+            .and_then(|row| row.get("partition_key"))
+            .and_then(Value::as_str),
+        Some("org-1/ws-1/proj-1/session")
+    );
+    assert_eq!(
+        first_result
+            .get("provenance")
+            .and_then(|row| row.get("artifact_refs"))
+            .and_then(Value::as_array),
+        Some(&artifact_refs)
+    );
     let search_event = next_event_of_type(&mut rx, "memory.search").await;
     assert_eq!(
         search_event
@@ -673,6 +694,17 @@ async fn memory_list_and_delete_admin_routes_work() {
                     && row.get("tier").and_then(Value::as_str) == Some("session")
                     && row.get("kind").and_then(Value::as_str) == Some("fact")
                     && row.get("artifact_refs").and_then(Value::as_array) == Some(&artifact_refs)
+                    && row
+                        .get("provenance")
+                        .and_then(|v| v.get("origin_run_id"))
+                        .and_then(Value::as_str)
+                        == Some("run-4")
+                    && row
+                        .get("provenance")
+                        .and_then(|v| v.get("partition"))
+                        .and_then(|v| v.get("project_id"))
+                        .and_then(Value::as_str)
+                        == Some("proj-1")
             })
         })
         .unwrap_or(false);

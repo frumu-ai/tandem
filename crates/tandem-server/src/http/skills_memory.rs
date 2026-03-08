@@ -948,6 +948,25 @@ fn memory_artifact_refs(metadata: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn memory_put_provenance(
+    request: &MemoryPutRequest,
+    partition_key: &str,
+    artifact_refs: &[String],
+) -> Value {
+    json!({
+        "origin_event_type": "memory.put",
+        "origin_run_id": request.run_id,
+        "partition_key": partition_key,
+        "partition": {
+            "org_id": request.partition.org_id,
+            "workspace_id": request.partition.workspace_id,
+            "project_id": request.partition.project_id,
+            "tier": request.partition.tier,
+        },
+        "artifact_refs": artifact_refs,
+    })
+}
+
 fn memory_kind_label(source_type: &str) -> &str {
     match source_type {
         "solution_capsule" => "solution_capsule",
@@ -1638,6 +1657,7 @@ pub(super) async fn memory_put_impl(
     let db = open_global_memory_db()
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let artifact_refs = request.artifact_refs.clone();
     let source_type = match request.kind {
         tandem_memory::MemoryContentKind::SolutionCapsule => "solution_capsule",
         tandem_memory::MemoryContentKind::Note => "note",
@@ -1660,13 +1680,14 @@ pub(super) async fn memory_put_impl(
         host_tag: None,
         metadata: memory_metadata_with_storage_fields(
             request.metadata.clone(),
-            &request.artifact_refs,
+            &artifact_refs,
             request.classification,
         ),
-        provenance: Some(json!({
-            "origin_event_type": "memory.put",
-            "partition_key": partition_key,
-        })),
+        provenance: Some(memory_put_provenance(
+            &request,
+            &partition_key,
+            &artifact_refs,
+        )),
         redaction_status: "passed".to_string(),
         redaction_count: 0,
         visibility: "private".to_string(),
