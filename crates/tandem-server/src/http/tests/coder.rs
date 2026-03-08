@@ -3671,6 +3671,19 @@ async fn coder_merge_recommendation_execute_next_drives_task_runtime_to_completi
         .await
         .expect("context run state");
     assert_eq!(run.status, ContextRunStatus::Completed);
+    let blackboard = load_context_blackboard(&state, &linked_context_run_id);
+    assert!(blackboard
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.artifact_type == "coder_merge_recommendation_worker_session"));
+    assert!(blackboard
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.artifact_type == "coder_merge_readiness_report"));
+    assert!(blackboard
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.artifact_type == "coder_merge_recommendation_summary"));
     for workflow_node_id in [
         "inspect_pull_request",
         "retrieve_memory",

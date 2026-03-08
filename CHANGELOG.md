@@ -55,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - merge auto-follow-ons are now explicit opt-in at submit time: requesting merge auto-spawn without `allow_auto_merge_recommendation` only auto-spawns `pr_review`, records the skipped merge follow-on with a machine-readable reason, and includes both spawned and skipped follow-on lists in the submission artifact and `coder.pr.submitted` event payload
   - spawned and manual follow-on coder runs now persist explicit `parent_coder_run_id`, `origin`, and `origin_artifact_type` metadata so review and merge runs can be traced back to the issue-fix PR submission that created them
   - `pr_review` now uses the real coder worker-session bridge during `review_pull_request`, persists `coder_pr_review_worker_session`, and feeds the parsed worker output into the existing review-evidence and final summary artifact flow instead of synthesizing review text inline
+  - `merge_recommendation` now uses the real coder worker-session bridge during `assess_merge_readiness`, persists `coder_merge_recommendation_worker_session`, and feeds parsed worker output into the existing readiness and final summary artifact flow instead of hardcoded merge guidance
 
 - **Bug Monitor settings foundation and server config/status surface**:
   - added persisted bug-monitor config and status state in `tandem-server`, including repo, MCP server, provider preference, and dedicated `model_policy.default_model` routing for the reporter agent
