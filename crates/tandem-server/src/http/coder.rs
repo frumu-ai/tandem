@@ -384,6 +384,21 @@ pub(super) struct CoderRunExecuteAllInput {
     pub(super) max_steps: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct CoderFollowOnRunCreateInput {
+    pub(super) workflow_mode: CoderWorkflowMode,
+    #[serde(default)]
+    pub(super) coder_run_id: Option<String>,
+    #[serde(default)]
+    pub(super) source_client: Option<String>,
+    #[serde(default)]
+    pub(super) model_provider: Option<String>,
+    #[serde(default)]
+    pub(super) model_id: Option<String>,
+    #[serde(default)]
+    pub(super) mcp_servers: Option<Vec<String>>,
+}
+
 fn coder_runs_root(state: &AppState) -> PathBuf {
     state
         .shared_resources_path
@@ -4704,6 +4719,22 @@ fn github_ref_from_pull_request(pull: &GithubPullRequestSummary) -> Value {
     })
 }
 
+fn parse_coder_github_ref(value: &Value) -> Option<CoderGithubRef> {
+    let kind = match value.get("kind").and_then(Value::as_str)? {
+        "issue" => CoderGithubRefKind::Issue,
+        "pull_request" => CoderGithubRefKind::PullRequest,
+        _ => return None,
+    };
+    Some(CoderGithubRef {
+        kind,
+        number: value.get("number").and_then(Value::as_u64)?,
+        url: value
+            .get("url")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+    })
+}
+
 async fn call_create_pull_request(
     state: &AppState,
     server_name: &str,
@@ -5042,6 +5073,52 @@ pub(super) async fn coder_issue_fix_pr_submit(
         "coder_run": coder_run_payload(&record, &run),
         "run": run,
     })))
+}
+
+pub(super) async fn coder_follow_on_run_create(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<CoderFollowOnRunCreateInput>,
+) -> Result<Response, StatusCode> {
+    let record = load_coder_run_record(&state, &id).await?;
+    if !matches!(record.workflow_mode, CoderWorkflowMode::IssueFix) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !matches!(
+        input.workflow_mode,
+        CoderWorkflowMode::PrReview | CoderWorkflowMode::MergeRecommendation
+    ) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let submission_payload =
+        load_latest_coder_artifact_payload(&state, &record, "coder_pr_submission")
+            .await
+            .ok_or(StatusCode::CONFLICT)?;
+    let submitted_github_ref = submission_payload
+        .get("submitted_github_ref")
+        .and_then(parse_coder_github_ref)
+        .ok_or(StatusCode::CONFLICT)?;
+    if !matches!(submitted_github_ref.kind, CoderGithubRefKind::PullRequest) {
+        return Err(StatusCode::CONFLICT);
+    }
+    let create_input = CoderRunCreateInput {
+        coder_run_id: input.coder_run_id,
+        workflow_mode: input.workflow_mode,
+        repo_binding: record.repo_binding.clone(),
+        github_ref: Some(submitted_github_ref),
+        objective: None,
+        source_client: normalize_source_client(input.source_client.as_deref())
+            .or_else(|| record.source_client.clone()),
+        workspace: None,
+        model_provider: normalize_source_client(input.model_provider.as_deref())
+            .or_else(|| record.model_provider.clone()),
+        model_id: normalize_source_client(input.model_id.as_deref())
+            .or_else(|| record.model_id.clone()),
+        mcp_servers: input
+            .mcp_servers
+            .or_else(|| Some(vec!["github".to_string()])),
+    };
+    coder_run_create(State(state), Json(create_input)).await
 }
 
 async fn run_issue_fix_worker_session(

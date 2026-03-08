@@ -1725,6 +1725,54 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
         artifact_payload.get("repo").and_then(Value::as_str),
         Some("tandem")
     );
+
+    let follow_on_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-issue-fix-pr-submit-real/follow-on-run")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "workflow_mode": "pr_review",
+                "coder_run_id": "coder-follow-on-pr-review"
+            })
+            .to_string(),
+        ))
+        .expect("follow-on request");
+    let follow_on_resp = app
+        .clone()
+        .oneshot(follow_on_req)
+        .await
+        .expect("follow-on response");
+    assert_eq!(follow_on_resp.status(), StatusCode::OK);
+    let follow_on_payload: Value = serde_json::from_slice(
+        &to_bytes(follow_on_resp.into_body(), usize::MAX)
+            .await
+            .expect("follow-on body"),
+    )
+    .expect("follow-on json");
+    assert_eq!(
+        follow_on_payload
+            .get("coder_run")
+            .and_then(|row| row.get("workflow_mode"))
+            .and_then(Value::as_str),
+        Some("pr_review")
+    );
+    assert_eq!(
+        follow_on_payload
+            .get("coder_run")
+            .and_then(|row| row.get("github_ref"))
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("pull_request")
+    );
+    assert_eq!(
+        follow_on_payload
+            .get("coder_run")
+            .and_then(|row| row.get("github_ref"))
+            .and_then(|row| row.get("number"))
+            .and_then(Value::as_u64),
+        Some(314)
+    );
 }
 
 #[tokio::test]
