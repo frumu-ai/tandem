@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `regression_signal` now requires structured regression entries plus supporting review/summary evidence
     - generic terminal `run_outcome` backfills can no longer be promoted without workflow evidence artifacts
   - broadened duplicate-linkage memory beyond PR submit so PR review and merge follow-on runs now persist their own issue↔PR linkage candidates from parent issue-fix runs
+  - broadened post-failure regression learning beyond Bug Monitor by writing `regression_signal` candidates when issue-triage reproduction fails
     - `GET /coder/projects/{project_id}`
     - `GET /coder/projects/{project_id}/runs`
     - `POST /coder/projects/{project_id}/runs`

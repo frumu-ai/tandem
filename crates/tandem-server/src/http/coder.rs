@@ -10187,6 +10187,34 @@ pub(super) async fn coder_triage_reproduction_report_create(
                     .map(ToString::to_string)
             })
             .unwrap_or_else(|| format!("Issue triage reproduction outcome: {outcome_text}"));
+        let (regression_signal_id, regression_signal_artifact) =
+            write_coder_memory_candidate_artifact(
+                &state,
+                &record,
+                CoderMemoryCandidateKind::RegressionSignal,
+                Some(format!("Issue triage regression signal: {outcome_text}")),
+                Some("attempt_reproduction".to_string()),
+                json!({
+                    "workflow_mode": "issue_triage",
+                    "result": "triage_reproduction_failed",
+                    "summary": summary_text,
+                    "regression_signals": [{
+                        "kind": "triage_reproduction_failed",
+                        "summary": summary_text,
+                        "observed_logs": input.observed_logs,
+                        "steps": input.steps,
+                    }],
+                    "affected_files": input.affected_files,
+                    "memory_hits_used": memory_hits_used,
+                    "reproduction_artifact_path": artifact.path,
+                }),
+            )
+            .await?;
+        generated_candidates.push(json!({
+            "candidate_id": regression_signal_id,
+            "kind": "regression_signal",
+            "artifact_path": regression_signal_artifact.path,
+        }));
         let (run_outcome_id, run_outcome_artifact) = write_coder_memory_candidate_artifact(
             &state,
             &record,

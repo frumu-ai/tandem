@@ -45,6 +45,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - `regression_signal` promotion now requires structured regression entries plus supporting evidence artifacts.
   - Generic terminal `run_outcome` backfills are no longer promotable without workflow evidence artifacts.
   - PR review and merge follow-on runs now persist their own `duplicate_linkage` candidates from parent issue-fix runs instead of relying only on the original PR submit artifact.
+  - Failed issue-triage reproduction now also emits `regression_signal` memory, so post-failure analysis is not limited to Bug Monitor triage.
     - `PATCH /config/bug-monitor`
     - `GET /bug-monitor/status`
     - `GET /bug-monitor/drafts`

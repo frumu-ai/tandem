@@ -8979,6 +8979,15 @@ async fn coder_triage_reproduction_failed_writes_run_outcome_candidate() {
                 .any(|row| row.get("kind").and_then(Value::as_str) == Some("run_outcome"))),
         Some(true)
     );
+    assert_eq!(
+        repro_payload
+            .get("generated_candidates")
+            .and_then(Value::as_array)
+            .map(|rows| rows
+                .iter()
+                .any(|row| row.get("kind").and_then(Value::as_str) == Some("regression_signal"))),
+        Some(true)
+    );
 
     let candidates_req = Request::builder()
         .method("GET")
@@ -9017,6 +9026,31 @@ async fn coder_triage_reproduction_failed_writes_run_outcome_candidate() {
             .and_then(|row| row.get("outcome"))
             .and_then(Value::as_str),
         Some("failed_to_reproduce")
+    );
+    let regression_signal_payload = candidates_payload
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("kind").and_then(Value::as_str) == Some("regression_signal"))
+        })
+        .and_then(|row| row.get("payload"))
+        .cloned()
+        .expect("regression signal payload");
+    assert_eq!(
+        regression_signal_payload
+            .get("result")
+            .and_then(Value::as_str),
+        Some("triage_reproduction_failed")
+    );
+    assert_eq!(
+        regression_signal_payload
+            .get("regression_signals")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("triage_reproduction_failed")
     );
 }
 
