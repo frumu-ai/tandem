@@ -981,6 +981,18 @@ async fn emit_blocked_memory_promote_guardrail(
         request.partition.project_id,
         request.to_tier
     );
+    let linkage = json!({
+        "run_id": request.run_id,
+        "project_id": request.partition.project_id,
+        "origin_event_type": Value::Null,
+        "origin_run_id": request.run_id,
+        "origin_session_id": Value::Null,
+        "origin_message_id": Value::Null,
+        "partition_key": partition_key,
+        "promote_run_id": Value::Null,
+        "approval_id": request.review.approval_id,
+        "artifact_refs": [],
+    });
     append_memory_audit(
         state,
         crate::MemoryAuditEvent {
@@ -993,7 +1005,7 @@ async fn emit_blocked_memory_promote_guardrail(
             partition_key: partition_key.clone(),
             actor,
             status: "blocked".to_string(),
-            detail: Some(detail.to_string()),
+            detail: Some(format!("{detail}{}", memory_linkage_detail(&linkage))),
             created_at_ms: crate::now_ms(),
         },
     )
@@ -1011,6 +1023,7 @@ async fn emit_blocked_memory_promote_guardrail(
             "artifactRefs": [],
             "visibility": Value::Null,
             "scrubStatus": Value::Null,
+            "linkage": linkage,
             "detail": detail,
             "auditID": audit_id,
         }),
@@ -2307,6 +2320,18 @@ pub(super) async fn memory_promote_impl(
             request.partition.project_id,
             request.to_tier
         );
+        let linkage = json!({
+            "run_id": request.run_id,
+            "project_id": request.partition.project_id,
+            "origin_event_type": Value::Null,
+            "origin_run_id": request.run_id,
+            "origin_session_id": Value::Null,
+            "origin_message_id": Value::Null,
+            "partition_key": partition_key,
+            "promote_run_id": Value::Null,
+            "approval_id": request.review.approval_id,
+            "artifact_refs": [],
+        });
         append_memory_audit(
             &state,
             crate::MemoryAuditEvent {
@@ -2319,7 +2344,10 @@ pub(super) async fn memory_promote_impl(
                 partition_key: partition_key.clone(),
                 actor: capability.subject,
                 status: "blocked".to_string(),
-                detail: scrub_report.block_reason.clone(),
+                detail: scrub_report
+                    .block_reason
+                    .as_ref()
+                    .map(|detail| format!("{detail}{}", memory_linkage_detail(&linkage))),
                 created_at_ms: crate::now_ms(),
             },
         )
@@ -2337,6 +2365,7 @@ pub(super) async fn memory_promote_impl(
                 "artifactRefs": [],
                 "visibility": Value::Null,
                 "scrubStatus": scrub_report.status,
+                "linkage": linkage,
                 "detail": scrub_report.block_reason.clone(),
                 "auditID": audit_id,
             }),

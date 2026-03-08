@@ -796,6 +796,22 @@ async fn memory_promote_missing_source_emits_blocked_event_shape() {
             .and_then(Value::as_str),
         Some("blocked")
     );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-missing")
+    );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("project_id"))
+            .and_then(Value::as_str),
+        Some("proj-1")
+    );
     assert!(blocked_event
         .properties
         .get("kind")
@@ -899,6 +915,22 @@ async fn memory_promote_requires_review_and_emits_blocked_audit() {
             .and_then(Value::as_str),
         Some("blocked")
     );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-review")
+    );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("project_id"))
+            .and_then(Value::as_str),
+        Some("proj-1")
+    );
     assert!(blocked_event
         .properties
         .get("kind")
@@ -956,7 +988,11 @@ async fn memory_promote_requires_review_and_emits_blocked_audit() {
                     && row
                         .get("detail")
                         .and_then(Value::as_str)
-                        .is_some_and(|detail| detail.contains("review approval required"))
+                        .is_some_and(|detail| {
+                            detail.contains("review approval required")
+                                && detail.contains("origin_run_id=run-3-review")
+                                && detail.contains("project_id=proj-1")
+                        })
             })
         })
         .unwrap_or(false);
@@ -1032,6 +1068,22 @@ async fn memory_promote_rejects_disallowed_target_and_emits_blocked_audit() {
             .and_then(Value::as_str),
         Some("blocked")
     );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-target")
+    );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("project_id"))
+            .and_then(Value::as_str),
+        Some("proj-1")
+    );
     assert!(blocked_event
         .properties
         .get("detail")
@@ -1065,7 +1117,11 @@ async fn memory_promote_rejects_disallowed_target_and_emits_blocked_audit() {
                     && row
                         .get("detail")
                         .and_then(Value::as_str)
-                        .is_some_and(|detail| detail.contains("promotion target not allowed"))
+                        .is_some_and(|detail| {
+                            detail.contains("promotion target not allowed")
+                                && detail.contains("origin_run_id=run-3-target")
+                                && detail.contains("project_id=proj-1")
+                        })
             })
         })
         .unwrap_or(false);
@@ -1137,6 +1193,22 @@ async fn memory_promote_rejects_mismatched_capability_and_emits_blocked_audit() 
             .and_then(Value::as_str),
         Some("blocked")
     );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-cap-mismatch")
+    );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("project_id"))
+            .and_then(Value::as_str),
+        Some("proj-1")
+    );
     assert!(blocked_event
         .properties
         .get("detail")
@@ -1168,7 +1240,11 @@ async fn memory_promote_rejects_mismatched_capability_and_emits_blocked_audit() 
                     && row
                         .get("detail")
                         .and_then(Value::as_str)
-                        .is_some_and(|detail| detail.contains("capability context mismatch"))
+                        .is_some_and(|detail| {
+                            detail.contains("capability context mismatch")
+                                && detail.contains("origin_run_id=run-3-cap-mismatch")
+                                && detail.contains("project_id=proj-1")
+                        })
             })
         })
         .unwrap_or(false);
