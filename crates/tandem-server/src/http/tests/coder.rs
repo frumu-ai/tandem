@@ -1,5 +1,114 @@
 use super::*;
 use tandem_memory::types::GlobalMemoryRecord;
+use tokio::net::TcpListener;
+
+async fn spawn_fake_github_mcp_server() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake github mcp listener");
+    let addr = listener.local_addr().expect("fake github mcp addr");
+    let app = axum::Router::new().route(
+        "/",
+        axum::routing::post(|axum::Json(request): axum::Json<Value>| async move {
+            let id = request.get("id").cloned().unwrap_or(Value::Null);
+            let method = request
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let result = match method {
+                "initialize" => json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "serverInfo": {
+                        "name": "github",
+                        "version": "test"
+                    }
+                }),
+                "tools/list" => json!({
+                    "tools": [
+                        {
+                            "name": "list_repository_issues",
+                            "description": "List repository issues",
+                            "inputSchema": {"type":"object"}
+                        },
+                        {
+                            "name": "get_issue",
+                            "description": "Get a GitHub issue",
+                            "inputSchema": {"type":"object"}
+                        },
+                        {
+                            "name": "mcp.github.list_pull_requests",
+                            "description": "List repository pull requests",
+                            "inputSchema": {"type":"object"}
+                        },
+                        {
+                            "name": "mcp.github.get_pull_request",
+                            "description": "Get a GitHub pull request",
+                            "inputSchema": {"type":"object"}
+                        },
+                        {
+                            "name": "mcp.github.create_pull_request",
+                            "description": "Create a GitHub pull request",
+                            "inputSchema": {"type":"object"}
+                        }
+                    ]
+                }),
+                "tools/call" => {
+                    let name = request
+                        .get("params")
+                        .and_then(|row| row.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    match name {
+                        "mcp.github.create_pull_request" => json!({
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "created pull request #314"
+                                }
+                            ],
+                            "pull_request": {
+                                "number": 314,
+                                "title": "Guard startup recovery config loading.",
+                                "state": "open",
+                                "html_url": "https://github.com/evan/tandem/pull/314",
+                                "head": {"ref": "coder/issue-313-fix"},
+                                "base": {"ref": "main"}
+                            }
+                        }),
+                        _ => json!({
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": format!("handled {name}")
+                                }
+                            ]
+                        }),
+                    }
+                }
+                other => json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": format!("unsupported method {other}")
+                        }
+                    ]
+                }),
+            };
+            axum::Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result,
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve fake github mcp");
+    });
+    (format!("http://{addr}"), server)
+}
 
 #[tokio::test]
 async fn coder_issue_triage_run_create_get_and_list() {
@@ -1440,6 +1549,181 @@ async fn coder_issue_fix_pr_submit_dry_run_writes_submission_artifact() {
     assert_eq!(
         submit_payload.get("dry_run").and_then(Value::as_bool),
         Some(true)
+    );
+}
+
+#[tokio::test]
+async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
+    let (endpoint, server) = spawn_fake_github_mcp_server().await;
+
+    let state = test_state().await;
+    state
+        .mcp
+        .add_or_update(
+            "github".to_string(),
+            endpoint,
+            std::collections::HashMap::new(),
+            true,
+        )
+        .await;
+    assert!(state.mcp.connect("github").await);
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-issue-fix-pr-submit-real",
+                "workflow_mode": "issue_fix",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 313
+                },
+                "mcp_servers": ["github"]
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let summary_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-issue-fix-pr-submit-real/issue-fix-summary")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "summary": "Add missing fallback to startup recovery.",
+                "root_cause": "Recovery skipped the nil-config guard.",
+                "fix_strategy": "restore startup fallback and add a targeted regression",
+                "changed_files": [
+                    "crates/tandem-server/src/http/coder.rs"
+                ],
+                "validation_results": [{
+                    "kind": "test",
+                    "status": "passed",
+                    "summary": "startup recovery regression passed"
+                }]
+            })
+            .to_string(),
+        ))
+        .expect("summary request");
+    let summary_resp = app
+        .clone()
+        .oneshot(summary_req)
+        .await
+        .expect("summary response");
+    assert_eq!(summary_resp.status(), StatusCode::OK);
+
+    let draft_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-issue-fix-pr-submit-real/pr-draft")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({}).to_string()))
+        .expect("draft request");
+    let draft_resp = app
+        .clone()
+        .oneshot(draft_req)
+        .await
+        .expect("draft response");
+    assert_eq!(draft_resp.status(), StatusCode::OK);
+
+    let submit_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-issue-fix-pr-submit-real/pr-submit")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "approved_by": "evan",
+                "reason": "Ready to open the draft PR",
+                "dry_run": false,
+                "mcp_server": "github"
+            })
+            .to_string(),
+        ))
+        .expect("submit request");
+    let submit_resp = app
+        .clone()
+        .oneshot(submit_req)
+        .await
+        .expect("submit response");
+    server.abort();
+
+    assert_eq!(submit_resp.status(), StatusCode::OK);
+    let submit_payload: Value = serde_json::from_slice(
+        &to_bytes(submit_resp.into_body(), usize::MAX)
+            .await
+            .expect("submit body"),
+    )
+    .expect("submit json");
+    assert_eq!(
+        submit_payload.get("submitted").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        submit_payload
+            .get("artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("coder_pr_submission")
+    );
+
+    let artifact_path = submit_payload
+        .get("artifact")
+        .and_then(|row| row.get("path"))
+        .and_then(Value::as_str)
+        .expect("submit artifact path");
+    let artifact_payload: Value = serde_json::from_str(
+        &tokio::fs::read_to_string(artifact_path)
+            .await
+            .expect("read submit artifact"),
+    )
+    .expect("parse submit artifact");
+    assert_eq!(
+        artifact_payload
+            .get("submitted_github_ref")
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("pull_request")
+    );
+    assert_eq!(
+        artifact_payload
+            .get("submitted_github_ref")
+            .and_then(|row| row.get("number"))
+            .and_then(Value::as_u64),
+        Some(314)
+    );
+    assert_eq!(
+        artifact_payload
+            .get("pull_request")
+            .and_then(|row| row.get("number"))
+            .and_then(Value::as_u64),
+        Some(314)
+    );
+    assert_eq!(
+        artifact_payload.get("owner").and_then(Value::as_str),
+        Some("evan")
+    );
+    assert_eq!(
+        artifact_payload.get("repo").and_then(Value::as_str),
+        Some("tandem")
     );
 }
 

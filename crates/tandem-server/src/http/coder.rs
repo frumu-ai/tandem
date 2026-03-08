@@ -4514,11 +4514,14 @@ fn split_owner_repo(repo: &str) -> Result<(&str, &str), StatusCode> {
 
 fn map_namespaced_to_raw_tool(
     tools: &[McpRemoteTool],
-    namespaced_name: &str,
+    namespaced_name_or_raw_tool: &str,
 ) -> Result<String, StatusCode> {
     tools
         .iter()
-        .find(|row| row.namespaced_name == namespaced_name)
+        .find(|row| {
+            row.namespaced_name == namespaced_name_or_raw_tool
+                || row.tool_name == namespaced_name_or_raw_tool
+        })
         .map(|row| row.tool_name.clone())
         .ok_or(StatusCode::BAD_GATEWAY)
 }
