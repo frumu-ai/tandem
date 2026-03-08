@@ -1945,8 +1945,8 @@ async fn memory_delete_missing_memory_writes_not_found_audit() {
     let delete_audit_exists = audit_payload
         .get("events")
         .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter().any(|row| {
+        .and_then(|rows| {
+            rows.iter().find(|row| {
                 row.get("action").and_then(Value::as_str) == Some("memory_delete")
                     && row.get("status").and_then(Value::as_str) == Some("not_found")
                     && row.get("memory_id").and_then(Value::as_str) == Some("missing-delete-memory")
@@ -1956,8 +1956,15 @@ async fn memory_delete_missing_memory_writes_not_found_audit() {
                         .is_some_and(|detail| detail.contains("memory not found"))
             })
         })
-        .unwrap_or(false);
-    assert!(delete_audit_exists);
+        .cloned()
+        .expect("missing delete audit row");
+    assert_eq!(
+        delete_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        delete_audit_exists.get("audit_id").and_then(Value::as_str)
+    );
 }
 
 #[tokio::test]
@@ -2290,8 +2297,8 @@ async fn memory_demote_missing_memory_writes_not_found_audit() {
     let demote_audit_exists = audit_payload
         .get("events")
         .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter().any(|row| {
+        .and_then(|rows| {
+            rows.iter().find(|row| {
                 row.get("action").and_then(Value::as_str) == Some("memory_demote")
                     && row.get("memory_id").and_then(Value::as_str) == Some("missing-demote-memory")
                     && row.get("status").and_then(Value::as_str) == Some("not_found")
@@ -2301,8 +2308,15 @@ async fn memory_demote_missing_memory_writes_not_found_audit() {
                         .is_some_and(|detail| detail.contains("memory not found"))
             })
         })
-        .unwrap_or(false);
-    assert!(demote_audit_exists);
+        .cloned()
+        .expect("missing demote audit row");
+    assert_eq!(
+        demote_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        demote_audit_exists.get("audit_id").and_then(Value::as_str)
+    );
 }
 
 #[tokio::test]
