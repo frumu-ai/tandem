@@ -87,6 +87,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - PR submit artifacts now preserve stable repo context plus a canonical `submitted_github_ref`, and GitHub/MCP result parsing now accepts minimal number-only PR result shapes so downstream review and merge flows have a stable PR handoff target.
   - Fixed PR submit MCP tool resolution so builtin raw tool names and runtime namespaced tool names both resolve correctly, and added real HTTP-backed regression coverage for non-dry-run PR submission.
   - Added `POST /coder/runs/{id}/follow-on-run`, which can spawn `pr_review` or `merge_recommendation` runs directly from the canonical submitted PR ref on an issue-fix submit artifact.
+  - PR submit artifacts now also include machine-readable `follow_on_runs` templates so later review/merge workflows can be chained from the engine-owned submission payload without reconstructing run inputs in the UI.
   - `issue_triage` coder run creation now seeds a deterministic context-run task template for issue normalization, memory retrieval, repo inspection, reproduction, and triage artifact writing.
   - Added initial `coder.run.created` engine event emission and backend regression coverage for coder create/get/list/artifact behavior.
   - `issue_triage` now has a first real worker bridge: `execute-next` claims the next runnable context task through the shared lease/claim runtime and dispatches deterministic inspection, reproduction, and final summary actions so the run can complete end to end without frontend-owned orchestration.

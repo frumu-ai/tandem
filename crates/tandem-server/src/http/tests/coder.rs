@@ -1550,6 +1550,18 @@ async fn coder_issue_fix_pr_submit_dry_run_writes_submission_artifact() {
         submit_payload.get("dry_run").and_then(Value::as_bool),
         Some(true)
     );
+    assert_eq!(
+        submit_payload
+            .get("artifact")
+            .and_then(|row| row.get("path"))
+            .and_then(Value::as_str)
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|body| serde_json::from_str::<Value>(&body).ok())
+            .and_then(|payload| payload.get("follow_on_runs").cloned())
+            .and_then(|rows| rows.as_array().cloned())
+            .map(|rows| rows.len()),
+        Some(0)
+    );
 }
 
 #[tokio::test]
@@ -1724,6 +1736,22 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
     assert_eq!(
         artifact_payload.get("repo").and_then(Value::as_str),
         Some("tandem")
+    );
+    assert_eq!(
+        artifact_payload
+            .get("follow_on_runs")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(2)
+    );
+    assert_eq!(
+        artifact_payload
+            .get("follow_on_runs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("workflow_mode"))
+            .and_then(Value::as_str),
+        Some("pr_review")
     );
 
     let follow_on_req = Request::builder()

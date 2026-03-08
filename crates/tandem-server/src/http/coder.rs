@@ -4735,6 +4735,30 @@ fn parse_coder_github_ref(value: &Value) -> Option<CoderGithubRef> {
     })
 }
 
+fn build_follow_on_run_templates(
+    record: &CoderRunRecord,
+    github_ref: &CoderGithubRef,
+    mcp_servers: &[String],
+) -> Vec<Value> {
+    [
+        CoderWorkflowMode::PrReview,
+        CoderWorkflowMode::MergeRecommendation,
+    ]
+    .into_iter()
+    .map(|workflow_mode| {
+        json!({
+            "workflow_mode": workflow_mode,
+            "repo_binding": record.repo_binding,
+            "github_ref": github_ref,
+            "source_client": record.source_client,
+            "model_provider": record.model_provider,
+            "model_id": record.model_id,
+            "mcp_servers": mcp_servers,
+        })
+    })
+    .collect::<Vec<_>>()
+}
+
 async fn call_create_pull_request(
     state: &AppState,
     server_name: &str,
@@ -5002,15 +5026,21 @@ pub(super) async fn coder_issue_fix_pr_submit(
             .into_iter()
             .next()
             .ok_or(StatusCode::BAD_GATEWAY)?;
+        let submitted_github_ref =
+            parse_coder_github_ref(&github_ref_from_pull_request(&pull_request))
+                .ok_or(StatusCode::BAD_GATEWAY)?;
+        let follow_on_templates =
+            build_follow_on_run_templates(&record, &submitted_github_ref, &[server_name.clone()]);
         if let Some(obj) = submission_payload.as_object_mut() {
             obj.insert("server_name".to_string(), json!(server_name));
             obj.insert("tool_name".to_string(), json!(tool_name));
             obj.insert("submitted".to_string(), json!(true));
             obj.insert(
                 "submitted_github_ref".to_string(),
-                github_ref_from_pull_request(&pull_request),
+                json!(submitted_github_ref),
             );
             obj.insert("pull_request".to_string(), json!(pull_request));
+            obj.insert("follow_on_runs".to_string(), json!(follow_on_templates));
             obj.insert(
                 "tool_result".to_string(),
                 json!({
@@ -5021,6 +5051,7 @@ pub(super) async fn coder_issue_fix_pr_submit(
         }
     } else if let Some(obj) = submission_payload.as_object_mut() {
         obj.insert("submitted".to_string(), json!(false));
+        obj.insert("follow_on_runs".to_string(), json!([]));
         obj.insert(
             "dry_run_preview".to_string(),
             json!({
