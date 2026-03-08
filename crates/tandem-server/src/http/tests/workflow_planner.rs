@@ -2502,6 +2502,255 @@ async fn workflow_plan_chat_message_uses_llm_for_mixed_graph_revision_beyond_det
 }
 
 #[tokio::test]
+async fn workflow_plan_chat_message_uses_llm_for_extended_step_catalog_revision() {
+    let state = test_state().await;
+    let mut providers = std::collections::HashMap::new();
+    providers.insert(
+        "openai".to_string(),
+        tandem_providers::ProviderConfig {
+            api_key: None,
+            url: Some("http://127.0.0.1:9/v1".to_string()),
+            default_model: Some("gpt-5.1".to_string()),
+        },
+    );
+    state
+        .providers
+        .reload(tandem_providers::AppConfig {
+            providers,
+            default_provider: Some("openai".to_string()),
+        })
+        .await;
+    let app = app_router(state);
+    let previous = std::env::var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE").ok();
+    std::env::set_var(
+        "TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE",
+        json!({
+            "action": "revise",
+            "assistant_text": "Updated the plan to research sources, extract pain points, cluster topics, compare them with Tandem features, and generate a report.",
+            "change_summary": [
+                "updated workflow graph",
+                "updated title"
+            ],
+            "plan": {
+                "plan_id": "ignored",
+                "planner_version": "ignored",
+                "plan_source": "ignored",
+                "original_prompt": "ignored",
+                "normalized_prompt": "ignored",
+                "confidence": "high",
+                "title": "Weekly market research gap report",
+                "description": "Research sources, extract pain points, cluster them, compare them with Tandem features, and generate a report.",
+                "schedule": {
+                    "type": "manual",
+                    "timezone": "UTC",
+                    "misfire_policy": {
+                        "type": "run_once"
+                    }
+                },
+                "execution_target": "automation_v2",
+                "workspace_root": "/tmp/initial-workspace",
+                "steps": [
+                    {
+                        "step_id": "research_sources",
+                        "kind": "research",
+                        "objective": "Research source material about customer pain points.",
+                        "depends_on": [],
+                        "agent_role": "researcher",
+                        "input_refs": [],
+                        "output_contract": {
+                            "kind": "structured_json"
+                        }
+                    },
+                    {
+                        "step_id": "extract_pain_points",
+                        "kind": "extract",
+                        "objective": "Extract the recurring pain points from the research.",
+                        "depends_on": ["research_sources"],
+                        "agent_role": "analyst",
+                        "input_refs": [
+                            {
+                                "from_step_id": "research_sources",
+                                "alias": "source_findings"
+                            }
+                        ],
+                        "output_contract": {
+                            "kind": "structured_json"
+                        }
+                    },
+                    {
+                        "step_id": "cluster_topics",
+                        "kind": "cluster",
+                        "objective": "Cluster the extracted pain points into recurring themes.",
+                        "depends_on": ["extract_pain_points"],
+                        "agent_role": "analyst",
+                        "input_refs": [
+                            {
+                                "from_step_id": "extract_pain_points",
+                                "alias": "pain_points"
+                            }
+                        ],
+                        "output_contract": {
+                            "kind": "structured_json"
+                        }
+                    },
+                    {
+                        "step_id": "compare_with_features",
+                        "kind": "compare",
+                        "objective": "Compare the clustered topics with Tandem features and identify gaps.",
+                        "depends_on": ["cluster_topics"],
+                        "agent_role": "analyst",
+                        "input_refs": [
+                            {
+                                "from_step_id": "cluster_topics",
+                                "alias": "topic_clusters"
+                            }
+                        ],
+                        "output_contract": {
+                            "kind": "structured_json"
+                        }
+                    },
+                    {
+                        "step_id": "generate_report",
+                        "kind": "report",
+                        "objective": "Generate the final markdown report from the feature-gap comparison.",
+                        "depends_on": ["compare_with_features"],
+                        "agent_role": "writer",
+                        "input_refs": [
+                            {
+                                "from_step_id": "compare_with_features",
+                                "alias": "feature_gap_analysis"
+                            }
+                        ],
+                        "output_contract": {
+                            "kind": "report_markdown"
+                        }
+                    }
+                ],
+                "requires_integrations": [],
+                "allowed_mcp_servers": [],
+                "operator_preferences": {
+                    "role_models": {
+                        "planner": {
+                            "provider_id": "openai",
+                            "model_id": "gpt-5.1"
+                        }
+                    }
+                },
+                "save_options": {
+                    "can_export_pack": true,
+                    "can_save_skill": true
+                }
+            }
+        })
+        .to_string(),
+    );
+
+    let start_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/start")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "prompt": "Research the market and compare it with Tandem features",
+                "plan_source": "automations_page",
+                "workspace_root": "/tmp/initial-workspace",
+                "operator_preferences": {
+                    "role_models": {
+                        "planner": {
+                            "provider_id": "openai",
+                            "model_id": "gpt-5.1"
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        ))
+        .expect("start request");
+    let start_resp = app
+        .clone()
+        .oneshot(start_req)
+        .await
+        .expect("start response");
+    assert_eq!(start_resp.status(), StatusCode::OK);
+    let start_body = to_bytes(start_resp.into_body(), usize::MAX)
+        .await
+        .expect("start body");
+    let start_payload: Value = serde_json::from_slice(&start_body).expect("start json");
+    let plan_id = start_payload
+        .get("plan")
+        .and_then(|row| row.get("plan_id"))
+        .and_then(Value::as_str)
+        .expect("plan id")
+        .to_string();
+
+    let message_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/message")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "plan_id": plan_id,
+                "message": "Research sources, extract pain points, cluster the topics, compare them with Tandem features, and then generate a markdown report."
+            })
+            .to_string(),
+        ))
+        .expect("message request");
+    let message_resp = app
+        .clone()
+        .oneshot(message_req)
+        .await
+        .expect("message response");
+    assert_eq!(message_resp.status(), StatusCode::OK);
+    let message_body = to_bytes(message_resp.into_body(), usize::MAX)
+        .await
+        .expect("message body");
+    let message_payload: Value = serde_json::from_slice(&message_body).expect("message json");
+    let step_ids = message_payload
+        .get("plan")
+        .and_then(|row| row.get("steps"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("step_id").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+        })
+        .expect("step ids");
+    assert_eq!(
+        step_ids,
+        vec![
+            "research_sources",
+            "extract_pain_points",
+            "cluster_topics",
+            "compare_with_features",
+            "generate_report"
+        ]
+    );
+    assert_eq!(
+        message_payload
+            .get("plan")
+            .and_then(|row| row.get("title"))
+            .and_then(Value::as_str),
+        Some("Weekly market research gap report")
+    );
+    assert_eq!(
+        message_payload
+            .get("plan")
+            .and_then(|row| row.get("steps"))
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.get(3))
+            .and_then(|row| row.get("step_id"))
+            .and_then(Value::as_str),
+        Some("compare_with_features")
+    );
+
+    if let Some(value) = previous {
+        std::env::set_var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE", value);
+    } else {
+        std::env::remove_var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE");
+    }
+}
+
+#[tokio::test]
 async fn workflow_plan_chat_message_updates_execution_mode_preferences() {
     let state = test_state().await;
     let app = app_router(state.clone());

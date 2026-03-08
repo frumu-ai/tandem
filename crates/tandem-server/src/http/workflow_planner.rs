@@ -1552,9 +1552,12 @@ fn allowed_workflow_step_ids() -> std::collections::HashSet<&'static str> {
     [
         "collect_inputs",
         "research_sources",
+        "extract_pain_points",
+        "cluster_topics",
         "analyze_findings",
         "generate_report",
         "compare_results",
+        "compare_with_features",
         "notify_user",
         "execute_goal",
     ]
@@ -1783,7 +1786,7 @@ fn build_llm_workflow_revision_prompt(
     format!(
         concat!(
             "You are revising a Tandem automation workflow plan.\n",
-            "You may only use these step ids: collect_inputs, research_sources, analyze_findings, generate_report, compare_results, notify_user, execute_goal.\n",
+            "You may only use these step ids: collect_inputs, research_sources, extract_pain_points, cluster_topics, analyze_findings, generate_report, compare_results, compare_with_features, notify_user, execute_goal.\n",
             "Keep execution_target as automation_v2.\n",
             "Do not invent custom step ids.\n",
             "Keep workspace_root as a non-empty absolute path.\n",
