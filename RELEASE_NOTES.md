@@ -114,6 +114,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - `merge-submit` now defaults to `submit_mode = manual` and blocks `submit_mode = auto` unless the follow-on run's origin policy explicitly opted into auto merge execution, keeping merge execution manual-by-default even after recommendation approval.
   - `merge-submit` now also requires an approving sibling `pr_review` for issue-fix follow-on merge runs, so merge execution is blocked if the completed review still reports blockers or requested changes.
   - `merge-submit` now evaluates the latest completed sibling `pr_review`, so a newer review with requested changes overrides an older approval instead of whichever completed review is discovered first.
+  - Merge-ready approval responses and `GET /coder/runs/{id}` for merge runs now expose a dynamic `merge_submit_policy` summary, so clients can see whether manual or auto merge-submit is currently blocked before attempting the merge call.
   - Auto-follow-on merge chaining now normalizes through review first, so requesting `merge_recommendation` auto-spawn implicitly schedules `pr_review` ahead of merge instead of trusting the client to order those runs correctly.
   - `issue_triage` coder run creation now seeds a deterministic context-run task template for issue normalization, memory retrieval, repo inspection, reproduction, and triage artifact writing.
   - Added initial `coder.run.created` engine event emission and backend regression coverage for coder create/get/list/artifact behavior.

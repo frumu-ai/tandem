@@ -2493,7 +2493,6 @@ async fn coder_merge_follow_on_execution_waits_for_completed_review() {
             .and_then(Value::as_str),
         Some("running")
     );
-    let mut rx = state.event_bus.subscribe();
     let blocked_event = loop {
         let event = next_event_of_type(&mut rx, "coder.run.phase_changed").await;
         if event.properties.get("event_type").and_then(Value::as_str)
@@ -4589,6 +4588,31 @@ async fn coder_merge_recommendation_summary_ready_to_merge_awaits_approval() {
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
         Some("coder_merge_execution_request")
+    );
+    assert_eq!(
+        approve_payload
+            .get("merge_submit_policy")
+            .and_then(|row| row.get("manual"))
+            .and_then(|row| row.get("blocked"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        approve_payload
+            .get("merge_submit_policy")
+            .and_then(|row| row.get("auto"))
+            .and_then(|row| row.get("blocked"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        approve_payload
+            .get("merge_submit_policy")
+            .and_then(|row| row.get("auto"))
+            .and_then(|row| row.get("policy"))
+            .and_then(|row| row.get("reason"))
+            .and_then(Value::as_str),
+        Some("requires_explicit_auto_merge_submit_opt_in")
     );
 
     let merge_event = next_event_of_type(&mut rx, "coder.merge.recommended").await;

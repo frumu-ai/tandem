@@ -6320,35 +6320,11 @@ pub(super) async fn coder_merge_submit(
         load_latest_coder_artifact_payload(&state, &record, "coder_merge_execution_request")
             .await
             .ok_or(StatusCode::CONFLICT)?;
-    let recommendation = merge_request_payload
-        .get("recommendation")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let has_blockers = merge_request_payload
-        .get("blockers")
-        .and_then(Value::as_array)
-        .is_some_and(|rows| !rows.is_empty());
-    let has_required_checks = merge_request_payload
-        .get("required_checks")
-        .and_then(Value::as_array)
-        .is_some_and(|rows| !rows.is_empty());
-    let has_required_approvals = merge_request_payload
-        .get("required_approvals")
-        .and_then(Value::as_array)
-        .is_some_and(|rows| !rows.is_empty());
-    if recommendation != "merge" || has_blockers || has_required_checks || has_required_approvals {
+    if let Some(policy) = merge_submit_request_readiness_block(&merge_request_payload) {
         return Ok(Json(json!({
             "ok": false,
             "code": "CODER_MERGE_SUBMIT_POLICY_BLOCKED",
-            "policy": {
-                "reason": "merge_execution_request_not_merge_ready",
-                "recommendation": merge_request_payload.get("recommendation").cloned().unwrap_or(Value::Null),
-                "has_blockers": has_blockers,
-                "has_required_checks": has_required_checks,
-                "has_required_approvals": has_required_approvals,
-            }
+            "policy": policy,
         })));
     }
     if let Some(review_policy) = merge_submit_review_policy_block(&state, &record).await? {
@@ -7064,6 +7040,120 @@ async fn merge_submit_review_policy_block(
     })))
 }
 
+fn merge_submit_auto_mode_policy_block(record: &CoderRunRecord) -> Option<Value> {
+    if record
+        .origin_policy
+        .as_ref()
+        .and_then(|row| row.get("merge_auto_spawn_opted_in"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    Some(json!({
+        "reason": "requires_explicit_auto_merge_submit_opt_in",
+        "submit_mode": "auto",
+        "merge_auto_spawn_opted_in": false,
+    }))
+}
+
+fn merge_submit_request_readiness_block(merge_request_payload: &Value) -> Option<Value> {
+    let recommendation = merge_request_payload
+        .get("recommendation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let has_blockers = merge_request_payload
+        .get("blockers")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| !rows.is_empty());
+    let has_required_checks = merge_request_payload
+        .get("required_checks")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| !rows.is_empty());
+    let has_required_approvals = merge_request_payload
+        .get("required_approvals")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| !rows.is_empty());
+    if recommendation == "merge" && !has_blockers && !has_required_checks && !has_required_approvals
+    {
+        return None;
+    }
+    Some(json!({
+        "reason": "merge_execution_request_not_merge_ready",
+        "recommendation": merge_request_payload.get("recommendation").cloned().unwrap_or(Value::Null),
+        "has_blockers": has_blockers,
+        "has_required_checks": has_required_checks,
+        "has_required_approvals": has_required_approvals,
+    }))
+}
+
+fn blocked_merge_submit_policy(mode: &str, policy: Value) -> Value {
+    json!({
+        "blocked": true,
+        "code": "CODER_MERGE_SUBMIT_POLICY_BLOCKED",
+        "submit_mode": mode,
+        "policy": policy,
+    })
+}
+
+async fn coder_merge_submit_policy_summary(
+    state: &AppState,
+    record: &CoderRunRecord,
+) -> Result<Value, StatusCode> {
+    if record.workflow_mode != CoderWorkflowMode::MergeRecommendation {
+        return Ok(Value::Null);
+    }
+    let Some(merge_request_payload) =
+        load_latest_coder_artifact_payload(state, record, "coder_merge_execution_request").await
+    else {
+        return Ok(json!({
+            "manual": blocked_merge_submit_policy("manual", json!({
+                "reason": "requires_merge_execution_request",
+            })),
+            "auto": blocked_merge_submit_policy("auto", json!({
+                "reason": "requires_merge_execution_request",
+                "merge_auto_spawn_opted_in": record
+                    .origin_policy
+                    .as_ref()
+                    .and_then(|row| row.get("merge_auto_spawn_opted_in"))
+                    .cloned()
+                    .unwrap_or_else(|| json!(false)),
+            })),
+        }));
+    };
+    if let Some(policy) = merge_submit_request_readiness_block(&merge_request_payload) {
+        return Ok(json!({
+            "manual": blocked_merge_submit_policy("manual", policy.clone()),
+            "auto": blocked_merge_submit_policy("auto", policy),
+        }));
+    }
+    if let Some(policy) = merge_submit_review_policy_block(state, record).await? {
+        let auto_policy =
+            merge_submit_auto_mode_policy_block(record).unwrap_or_else(|| policy.clone());
+        return Ok(json!({
+            "manual": blocked_merge_submit_policy("manual", policy),
+            "auto": blocked_merge_submit_policy("auto", auto_policy),
+        }));
+    }
+    let auto = if let Some(policy) = merge_submit_auto_mode_policy_block(record) {
+        blocked_merge_submit_policy("auto", policy)
+    } else {
+        json!({
+            "blocked": false,
+            "submit_mode": "auto",
+        })
+    };
+    Ok(json!({
+        "manual": {
+            "blocked": false,
+            "submit_mode": "manual",
+        },
+        "auto": auto,
+    }))
+}
+
 async fn coder_execution_policy_block(
     state: &AppState,
     record: &CoderRunRecord,
@@ -7619,6 +7709,7 @@ pub(super) async fn coder_run_get(
     Ok(Json(json!({
         "coder_run": coder_run_payload(&record, &run),
         "execution_policy": coder_execution_policy_summary(&state, &record).await?,
+        "merge_submit_policy": coder_merge_submit_policy_summary(&state, &record).await?,
         "run": run,
         "artifacts": blackboard.artifacts,
         "coder_artifacts": serialized_artifacts,
@@ -7958,6 +8049,10 @@ pub(super) async fn coder_run_approve(
                 merge_execution_payload,
             );
             obj.insert("merge_execution_artifact".to_string(), json!(artifact));
+            obj.insert(
+                "merge_submit_policy".to_string(),
+                coder_merge_submit_policy_summary(&state, &record).await?,
+            );
         }
         return Ok(Json(response));
     }
