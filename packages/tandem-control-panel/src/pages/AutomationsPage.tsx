@@ -1115,6 +1115,7 @@ function Step4Review({
       ? effectivePlannerRoleModel?.model_id || effectivePlannerRoleModel?.modelId || ""
       : wizard.plannerModelId || ""
   ).trim();
+  const plannerFallbackEnabled = !!(effectivePlannerModelProvider && effectivePlannerModelId);
   const effectiveWorkspaceRoot = String(
     planPreview?.workspace_root || planPreview?.workspaceRoot || wizard.workspaceRoot || ""
   ).trim();
@@ -1179,6 +1180,16 @@ function Step4Review({
             </span>
           </div>
         ) : null}
+        <div className="grid gap-1">
+          <span className="text-xs text-slate-500 uppercase tracking-wide">
+            Broader Planner Revisions
+          </span>
+          <span className="text-sm font-medium text-slate-200">
+            {plannerFallbackEnabled
+              ? "Enabled when the selected planner-model provider is configured on the engine"
+              : "Disabled unless a planner model is configured"}
+          </span>
+        </div>
         <div className="grid gap-1">
           <span className="text-xs text-slate-500 uppercase tracking-wide">Workspace Root</span>
           <code className="rounded bg-slate-800/60 px-2 py-1 text-xs text-slate-300">

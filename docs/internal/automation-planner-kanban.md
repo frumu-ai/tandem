@@ -77,6 +77,7 @@ It is not a wishlist for future planner features.
   - planner model override set/clear
 - [x] Bound planner LLM fallback with a backend timeout and return a specific clarifier when broader planner revision cannot produce a valid workflow update
 - [x] Fast-fail planner LLM fallback when the requested planner-model provider is not configured on the engine, with a specific clarifier instead of entering the runtime path
+- [x] Show broader planner-revision availability explicitly in review instead of leaving it implicit in planner-model fields and clarifiers
 
 ## Deferred After This Slice
 - [~] Replace deterministic planner-chat rules with a true LLM-backed revision loop
