@@ -1376,8 +1376,32 @@ async fn try_llm_revise_workflow_plan(
     })
 }
 
-fn planner_model_spec(operator_preferences: Option<&Value>) -> Option<tandem_types::ModelSpec> {
+pub(crate) fn planner_model_spec(
+    operator_preferences: Option<&Value>,
+) -> Option<tandem_types::ModelSpec> {
     let prefs = operator_preferences?;
+    if let Some(planner_model) = prefs
+        .get("role_models")
+        .and_then(|row| row.get("planner"))
+        .and_then(Value::as_object)
+    {
+        let provider_id = planner_model
+            .get("provider_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let model_id = planner_model
+            .get("model_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let (Some(provider_id), Some(model_id)) = (provider_id, model_id) {
+            return Some(tandem_types::ModelSpec {
+                provider_id: provider_id.to_string(),
+                model_id: model_id.to_string(),
+            });
+        }
+    }
     let provider_id = prefs.get("model_provider").and_then(Value::as_str)?.trim();
     let model_id = prefs.get("model_id").and_then(Value::as_str)?.trim();
     if provider_id.is_empty() || model_id.is_empty() {

@@ -1209,6 +1209,23 @@ async fn workflow_plan_extract_json_value_from_fenced_text() {
 }
 
 #[tokio::test]
+async fn workflow_plan_planner_model_spec_prefers_planner_role_model() {
+    let spec = crate::http::workflow_planner::planner_model_spec(Some(&json!({
+        "model_provider": "openai",
+        "model_id": "gpt-5.1",
+        "role_models": {
+            "planner": {
+                "provider_id": "anthropic",
+                "model_id": "claude-sonnet-4"
+            }
+        }
+    })))
+    .expect("planner model");
+    assert_eq!(spec.provider_id, "anthropic");
+    assert_eq!(spec.model_id, "claude-sonnet-4");
+}
+
+#[tokio::test]
 async fn workflow_plan_chat_message_updates_execution_mode_preferences() {
     let state = test_state().await;
     let app = app_router(state.clone());
