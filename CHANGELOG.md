@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `merge_recommendation` now uses the real coder worker-session bridge during `assess_merge_readiness`, persists `coder_merge_recommendation_worker_session`, and feeds parsed worker output into the existing readiness and final summary artifact flow instead of hardcoded merge guidance
   - `issue_triage` now uses the real coder worker-session bridge during repo inspection, persists `coder_issue_triage_worker_session`, and reuses parsed worker output for inspection, reproduction, and final summary artifacts instead of synthetic triage step payloads
   - follow-on review and merge runs now persist structured `origin_policy` metadata so downstream runs know whether they were manual vs auto-spawned and whether merge auto-spawn had been explicitly opted in at submit time
+  - PR-submit `follow_on_runs` templates now carry the same parent/origin policy context that spawned review and merge runs use, so clients can preview engine chaining policy before creating any downstream runs
 
 - **Bug Monitor settings foundation and server config/status surface**:
   - added persisted bug-monitor config and status state in `tandem-server`, including repo, MCP server, provider preference, and dedicated `model_policy.default_model` routing for the reporter agent

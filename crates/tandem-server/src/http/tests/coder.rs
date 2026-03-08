@@ -1738,6 +1738,25 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
     );
     assert_eq!(
         submit_payload
+            .get("follow_on_runs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("parent_coder_run_id"))
+            .and_then(Value::as_str),
+        Some("coder-issue-fix-pr-submit-real")
+    );
+    assert_eq!(
+        submit_payload
+            .get("follow_on_runs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("origin_policy"))
+            .and_then(|row| row.get("spawn_mode"))
+            .and_then(Value::as_str),
+        Some("template")
+    );
+    assert_eq!(
+        submit_payload
             .get("spawned_follow_on_runs")
             .and_then(Value::as_array)
             .map(|rows| rows.len()),
@@ -1838,6 +1857,16 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
             .and_then(Value::as_array)
             .map(|rows| rows.len()),
         Some(2)
+    );
+    assert_eq!(
+        artifact_payload
+            .get("follow_on_runs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("origin_policy"))
+            .and_then(|row| row.get("spawn_mode"))
+            .and_then(Value::as_str),
+        Some("template")
     );
     assert_eq!(
         artifact_payload

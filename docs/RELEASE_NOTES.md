@@ -103,6 +103,7 @@
   - `merge_recommendation` now uses the real coder worker-session bridge during `assess_merge_readiness`, persists `coder_merge_recommendation_worker_session`, and feeds parsed worker output into the existing readiness and final summary artifacts instead of hardcoded merge guidance
   - `issue_triage` now uses the real coder worker-session bridge during repo inspection, persists `coder_issue_triage_worker_session`, and reuses parsed worker output for inspection, reproduction, and final summary artifacts instead of synthetic triage step payloads
   - follow-on review and merge runs now persist structured `origin_policy` metadata, so downstream runs know whether they were manual vs auto-spawned and whether merge auto-spawn had been explicitly opted in at submit time
+  - PR-submit `follow_on_runs` templates now carry the same parent/origin policy context that spawned review and merge runs use, so clients can preview engine chaining policy before creating any downstream runs
   - coder runs now persist as thin metadata records linked to engine context runs instead of a frontend-owned workflow store
   - creating an `issue_triage` coder run now seeds a deterministic context-run task graph for issue normalization, memory retrieval, repo inspection, reproduction, and triage artifact writing
   - added initial `coder.run.created` engine event emission and backend regression coverage for coder create/get/list/artifact behavior

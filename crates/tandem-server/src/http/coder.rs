@@ -5413,6 +5413,9 @@ fn build_follow_on_run_templates(
     record: &CoderRunRecord,
     github_ref: &CoderGithubRef,
     mcp_servers: &[String],
+    requested_follow_on_runs: &[CoderWorkflowMode],
+    allow_auto_merge_recommendation: bool,
+    skipped_follow_on_runs: &[Value],
 ) -> Vec<Value> {
     [
         CoderWorkflowMode::PrReview,
@@ -5430,6 +5433,18 @@ fn build_follow_on_run_templates(
             "model_provider": record.model_provider,
             "model_id": record.model_id,
             "mcp_servers": mcp_servers,
+            "parent_coder_run_id": record.coder_run_id,
+            "origin": "issue_fix_pr_submit_template",
+            "origin_artifact_type": "coder_pr_submission",
+            "origin_policy": {
+                "source": "issue_fix_pr_submit",
+                "spawn_mode": "template",
+                "merge_auto_spawn_opted_in": allow_auto_merge_recommendation,
+                "requested_follow_on_runs": requested_follow_on_runs,
+                "skipped_follow_on_runs": skipped_follow_on_runs,
+                "template_workflow_mode": workflow_mode,
+                "requires_explicit_auto_spawn": requires_explicit_auto_spawn,
+            },
             "auto_spawn_allowed_by_default": !requires_explicit_auto_spawn,
             "requires_explicit_auto_spawn": requires_explicit_auto_spawn,
         })
@@ -5795,8 +5810,14 @@ pub(super) async fn coder_issue_fix_pr_submit(
         let submitted_github_ref =
             parse_coder_github_ref(&github_ref_from_pull_request(&pull_request))
                 .ok_or(StatusCode::BAD_GATEWAY)?;
-        let follow_on_templates =
-            build_follow_on_run_templates(&record, &submitted_github_ref, &[server_name.clone()]);
+        let follow_on_templates = build_follow_on_run_templates(
+            &record,
+            &submitted_github_ref,
+            &[server_name.clone()],
+            &requested_follow_on_modes,
+            allow_auto_merge_recommendation,
+            &skipped_follow_on_runs,
+        );
         if let Some(obj) = submission_payload.as_object_mut() {
             obj.insert("server_name".to_string(), json!(server_name));
             obj.insert("tool_name".to_string(), json!(tool_name));
