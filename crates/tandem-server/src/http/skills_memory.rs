@@ -1419,6 +1419,25 @@ fn memory_kind_label(source_type: &str) -> &str {
     }
 }
 
+fn memory_linkage_detail(linkage: &Value) -> String {
+    let origin_run_id = linkage
+        .get("origin_run_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let project_id = linkage
+        .get("project_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let promote_run_id = linkage
+        .get("promote_run_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    format!(
+        " origin_run_id={} project_id={} promote_run_id={}",
+        origin_run_id, project_id, promote_run_id
+    )
+}
+
 fn memory_kind_for_request(kind: tandem_memory::MemoryContentKind) -> &'static str {
     match kind {
         tandem_memory::MemoryContentKind::SolutionCapsule => "solution_capsule",
@@ -2144,12 +2163,13 @@ pub(super) async fn memory_put_impl(
         expires_at_ms: None,
     };
     let put_detail = format!(
-        "kind={} classification={} artifact_refs={} visibility=private tier={} partition_key={}",
+        "kind={} classification={} artifact_refs={} visibility=private tier={} partition_key={}{}",
         kind,
         memory_classification_label(record.metadata.as_ref()),
         artifact_ref_labels,
         request.partition.tier,
-        partition_key
+        partition_key,
+        memory_linkage_detail(&linkage)
     );
     let linkage = memory_linkage_from_parts(
         &request.run_id,
@@ -2382,14 +2402,20 @@ pub(super) async fn memory_promote_impl(
         .join(",");
     let kind = memory_kind_label(&source.source_type);
     let promote_detail = format!(
-        "kind={} classification={} artifact_refs={} visibility=shared tier={} partition_key={} source_memory_id={} approval_id={}",
+        "kind={} classification={} artifact_refs={} visibility=shared tier={} partition_key={} source_memory_id={} approval_id={}{}",
         kind,
         classification,
         artifact_ref_labels,
         request.to_tier,
         partition_key,
         source_memory_id,
-        request.review.approval_id.clone().unwrap_or_default()
+        request.review.approval_id.clone().unwrap_or_default(),
+        memory_linkage_detail(&memory_linkage_from_parts(
+            &source.run_id,
+            source.project_tag.as_deref(),
+            next_metadata.as_ref(),
+            Some(&next_provenance),
+        ))
     );
     db.update_global_memory_context(
         &new_id,
@@ -2656,7 +2682,7 @@ pub(super) async fn memory_demote(
         .unwrap_or("demoted")
         .to_string();
     let demote_detail = format!(
-        "kind={} classification={} artifact_refs={} visibility=private tier={} partition_key={} demoted=true",
+        "kind={} classification={} artifact_refs={} visibility=private tier={} partition_key={} demoted=true{}",
         memory_kind_label(&record.source_type),
         memory_classification_label(record.metadata.as_ref()),
         memory_artifact_refs(record.metadata.as_ref())
@@ -2665,7 +2691,8 @@ pub(super) async fn memory_demote(
             .collect::<Vec<_>>()
             .join(","),
         tandem_memory::GovernedMemoryTier::Session,
-        partition_key
+        partition_key,
+        memory_linkage_detail(&memory_linkage(&record))
     );
     let audit_id = Uuid::new_v4().to_string();
     append_memory_audit(
@@ -2798,7 +2825,7 @@ pub(super) async fn memory_delete(
     let audit_id = Uuid::new_v4().to_string();
     let run_id = record.run_id.clone();
     let delete_detail = format!(
-        "kind={} classification={} artifact_refs={} visibility={} tier={} partition_key={} demoted={}",
+        "kind={} classification={} artifact_refs={} visibility={} tier={} partition_key={} demoted={}{}",
         memory_kind_label(&record.source_type),
         memory_classification_label(record.metadata.as_ref()),
         memory_artifact_refs(record.metadata.as_ref())
@@ -2812,7 +2839,8 @@ pub(super) async fn memory_delete(
             .get("partition_key")
             .and_then(Value::as_str)
             .unwrap_or_default(),
-        record.demoted
+        record.demoted,
+        memory_linkage_detail(&memory_linkage(&record))
     );
     append_memory_audit(
         &state,
