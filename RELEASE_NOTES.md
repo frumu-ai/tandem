@@ -98,6 +98,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - `issue_triage` now uses the real coder worker-session bridge during repo inspection, persists `coder_issue_triage_worker_session`, and reuses parsed worker output for inspection, reproduction, and final summary artifacts instead of synthetic triage step payloads.
   - Follow-on review and merge runs now persist structured `origin_policy` metadata, so downstream runs know whether they were manual vs auto-spawned and whether merge auto-spawn had been explicitly opted in at submit time.
   - PR-submit `follow_on_runs` templates now carry the same parent/origin policy context that spawned review and merge runs use, so clients can preview engine chaining policy before creating any downstream runs.
+  - Follow-on run `origin_policy` now consistently uses `merge_auto_spawn_opted_in` for both templates and spawned/manual runs, avoiding two names for the same merge auto-spawn decision.
   - Auto-follow-on merge chaining now normalizes through review first, so requesting `merge_recommendation` auto-spawn implicitly schedules `pr_review` ahead of merge instead of trusting the client to order those runs correctly.
   - `issue_triage` coder run creation now seeds a deterministic context-run task template for issue normalization, memory retrieval, repo inspection, reproduction, and triage artifact writing.
   - Added initial `coder.run.created` engine event emission and backend regression coverage for coder create/get/list/artifact behavior.

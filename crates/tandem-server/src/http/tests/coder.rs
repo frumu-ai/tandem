@@ -2168,7 +2168,7 @@ async fn coder_issue_fix_pr_submit_merge_auto_spawn_requires_opt_in() {
             .and_then(|rows| rows.first())
             .and_then(|row| row.get("coder_run"))
             .and_then(|row| row.get("origin_policy"))
-            .and_then(|row| row.get("allow_auto_merge_recommendation"))
+            .and_then(|row| row.get("merge_auto_spawn_opted_in"))
             .and_then(Value::as_bool),
         Some(false)
     );

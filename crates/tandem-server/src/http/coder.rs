@@ -5874,7 +5874,7 @@ pub(super) async fn coder_issue_fix_pr_submit(
                     Some(json!({
                         "source": "issue_fix_pr_submit",
                         "spawn_mode": "auto",
-                        "allow_auto_merge_recommendation": allow_auto_merge_recommendation,
+                        "merge_auto_spawn_opted_in": allow_auto_merge_recommendation,
                         "requested_follow_on_runs": requested_follow_on_modes,
                         "effective_auto_spawn_runs": auto_spawn_follow_on_modes,
                         "skipped_follow_on_runs": skipped_follow_on_runs,
@@ -6041,7 +6041,7 @@ pub(super) async fn coder_follow_on_run_create(
             Some(json!({
                 "source": "issue_fix_pr_submit",
                 "spawn_mode": "manual",
-                "allow_auto_merge_recommendation": submission_payload
+                "merge_auto_spawn_opted_in": submission_payload
                     .get("allow_auto_merge_recommendation")
                     .cloned()
                     .unwrap_or_else(|| json!(false)),
