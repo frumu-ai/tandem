@@ -1543,6 +1543,171 @@ async fn coder_issue_fix_execute_all_runs_to_completion() {
 }
 
 #[tokio::test]
+async fn coder_pr_review_execute_all_runs_to_completion() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-pr-review-execute-all",
+                "workflow_mode": "pr_review",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem",
+                    "default_branch": "main"
+                },
+                "github_ref": {
+                    "kind": "pull_request",
+                    "number": 300
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let execute_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-pr-review-execute-all/execute-all")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "agent_id": "coder_engine_worker_test",
+                "max_steps": 8
+            })
+            .to_string(),
+        ))
+        .expect("execute-all request");
+    let execute_resp = app
+        .clone()
+        .oneshot(execute_req)
+        .await
+        .expect("execute-all response");
+    assert_eq!(execute_resp.status(), StatusCode::OK);
+    let execute_payload: Value = serde_json::from_slice(
+        &to_bytes(execute_resp.into_body(), usize::MAX)
+            .await
+            .expect("execute-all body"),
+    )
+    .expect("execute-all json");
+    assert_eq!(
+        execute_payload
+            .get("run")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(
+        execute_payload
+            .get("stopped_reason")
+            .and_then(Value::as_str),
+        Some("run_completed")
+    );
+    assert!(execute_payload
+        .get("executed_steps")
+        .and_then(Value::as_u64)
+        .is_some_and(|count| count >= 3));
+}
+
+#[tokio::test]
+async fn coder_merge_recommendation_execute_all_runs_to_completion() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-merge-execute-all",
+                "workflow_mode": "merge_recommendation",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "pull_request",
+                    "number": 301
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let execute_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-merge-execute-all/execute-all")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "agent_id": "coder_engine_worker_test",
+                "max_steps": 8
+            })
+            .to_string(),
+        ))
+        .expect("execute-all request");
+    let execute_resp = app
+        .clone()
+        .oneshot(execute_req)
+        .await
+        .expect("execute-all response");
+    assert_eq!(execute_resp.status(), StatusCode::OK);
+    let execute_payload: Value = serde_json::from_slice(
+        &to_bytes(execute_resp.into_body(), usize::MAX)
+            .await
+            .expect("execute-all body"),
+    )
+    .expect("execute-all json");
+    assert_eq!(
+        execute_payload
+            .get("run")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(
+        execute_payload
+            .get("stopped_reason")
+            .and_then(Value::as_str),
+        Some("run_completed")
+    );
+    assert!(execute_payload
+        .get("executed_steps")
+        .and_then(Value::as_u64)
+        .is_some_and(|count| count >= 3));
+}
+
+#[tokio::test]
 async fn coder_issue_fix_summary_create_writes_artifact() {
     let state = test_state().await;
     state

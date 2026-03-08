@@ -1145,7 +1145,7 @@ async fn invoke_planner_llm(
         Some(workspace_root.clone()),
     );
     let session_id = session.id.clone();
-    session.workspace_root = Some(workspace_root);
+    session.workspace_root = Some(workspace_root.clone());
     state.storage.save_session(session).await.ok()?;
     let request = SendMessageRequest {
         parts: vec![MessagePartInput::Text { text: prompt }],
@@ -1156,17 +1156,46 @@ async fn invoke_planner_llm(
         context_mode: None,
         write_required: None,
     };
-    tokio::time::timeout(
+    let run_result = tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
         state
             .engine_loop
-            .run_prompt_async_with_context(session_id.clone(), request, Some(run_key)),
+            .run_prompt_async_with_context(session_id.clone(), request, Some(run_key.clone())),
     )
-    .await
-    .ok()?
-    .ok()?;
+    .await;
+    match run_result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(
+                session_id = %session_id,
+                run_key = %run_key,
+                workspace_root = %workspace_root,
+                "workflow planner llm call failed: {error}"
+            );
+            return None;
+        }
+        Err(_) => {
+            let _ = state.cancellations.cancel(&session_id).await;
+            tracing::warn!(
+                session_id = %session_id,
+                run_key = %run_key,
+                timeout_ms,
+                workspace_root = %workspace_root,
+                "workflow planner llm call timed out before completion"
+            );
+            return None;
+        }
+    }
     let session = state.storage.get_session(&session_id).await?;
     let output = extract_planner_session_text_output(&session);
+    if output.trim().is_empty() {
+        tracing::warn!(
+            session_id = %session_id,
+            run_key = %run_key,
+            "workflow planner llm completed without persisted assistant text"
+        );
+        return None;
+    }
     extract_json_value_from_text(&output)
 }
 
@@ -1253,7 +1282,7 @@ fn planner_build_timeout_ms() -> u64 {
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map(|value| value.clamp(250, 60_000))
-        .unwrap_or(5_000)
+        .unwrap_or(30_000)
 }
 
 fn planner_revision_timeout_ms() -> u64 {
@@ -1261,7 +1290,7 @@ fn planner_revision_timeout_ms() -> u64 {
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map(|value| value.clamp(250, 60_000))
-        .unwrap_or(5_000)
+        .unwrap_or(20_000)
 }
 
 pub(crate) fn planner_model_spec(
