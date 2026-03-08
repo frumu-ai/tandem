@@ -3788,6 +3788,14 @@ fn normalize_changed_file_path(raw: &str) -> Option<String> {
     Some(trimmed.replace('\\', "/"))
 }
 
+fn change_preview_from_value(value: Option<&Value>) -> Option<String> {
+    let text = value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(crate::truncate_text(text, 240))
+}
+
 fn extract_changed_files_from_value(value: &Value, out: &mut BTreeSet<String>) {
     match value {
         Value::String(text) => {
@@ -3814,8 +3822,9 @@ fn extract_changed_files_from_value(value: &Value, out: &mut BTreeSet<String>) {
     }
 }
 
-fn extract_session_changed_files(session: &Session) -> Vec<String> {
-    let mut out = BTreeSet::<String>::new();
+fn extract_session_change_evidence(session: &Session) -> Vec<Value> {
+    let mut out = Vec::<Value>::new();
+    let mut seen = BTreeSet::<String>::new();
     for message in &session.messages {
         for part in &message.parts {
             let MessagePart::ToolInvocation {
@@ -3829,14 +3838,47 @@ fn extract_session_changed_files(session: &Session) -> Vec<String> {
                 normalized_tool.as_str(),
                 "write" | "edit" | "patch" | "apply_patch" | "str_replace"
             ) {
-                extract_changed_files_from_value(args, &mut out);
+                let mut paths = BTreeSet::<String>::new();
+                extract_changed_files_from_value(args, &mut paths);
                 if let Some(result) = result {
-                    extract_changed_files_from_value(result, &mut out);
+                    extract_changed_files_from_value(result, &mut paths);
+                }
+                for path in paths {
+                    if !seen.insert(format!("{normalized_tool}:{path}")) {
+                        continue;
+                    }
+                    let preview = if normalized_tool == "write" {
+                        change_preview_from_value(args.get("content"))
+                    } else if matches!(normalized_tool.as_str(), "edit" | "str_replace") {
+                        change_preview_from_value(args.get("new_string"))
+                            .or_else(|| change_preview_from_value(args.get("replacement")))
+                    } else {
+                        change_preview_from_value(args.get("patch"))
+                            .or_else(|| change_preview_from_value(args.get("diff")))
+                    };
+                    out.push(json!({
+                        "path": path,
+                        "tool": normalized_tool,
+                        "preview": preview,
+                        "has_result": result.is_some(),
+                    }));
                 }
             }
         }
     }
-    out.into_iter().collect()
+    out
+}
+
+#[cfg(test)]
+fn extract_session_changed_files(session: &Session) -> Vec<String> {
+    extract_session_change_evidence(session)
+        .into_iter()
+        .filter_map(|row| {
+            row.get("path")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect()
 }
 
 async fn load_latest_coder_artifact_payload(
@@ -4049,6 +4091,7 @@ async fn write_issue_fix_changed_file_evidence_artifact(
         "repo_binding": record.repo_binding,
         "github_ref": record.github_ref,
         "changed_files": changed_files,
+        "entries": worker_payload.get("changed_file_entries").cloned().unwrap_or_else(|| json!([])),
         "worker_session_id": worker_payload.get("session_id").cloned(),
         "worker_session_run_id": worker_payload.get("session_run_id").cloned(),
         "created_at_ms": crate::now_ms(),
@@ -4105,6 +4148,10 @@ async fn write_issue_fix_patch_summary_artifact(
         "root_cause": root_cause,
         "fix_strategy": fix_strategy,
         "changed_files": changed_files,
+        "changed_file_entries": worker_session
+            .and_then(|payload| payload.get("changed_file_entries"))
+            .cloned()
+            .unwrap_or_else(|| json!([])),
         "validation_results": validation_results,
         "worker_session_id": worker_session.and_then(|payload| payload.get("session_id")).cloned(),
         "worker_session_run_id": worker_session.and_then(|payload| payload.get("session_run_id")).cloned(),
@@ -4231,7 +4278,15 @@ async fn run_issue_fix_worker_session(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let assistant_text = latest_assistant_session_text(&session);
     let tool_invocation_count = count_session_tool_invocations(&session);
-    let changed_files = extract_session_changed_files(&session);
+    let changed_file_entries = extract_session_change_evidence(&session);
+    let changed_files = changed_file_entries
+        .iter()
+        .filter_map(|row| {
+            row.get("path")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
     let payload = json!({
         "coder_run_id": record.coder_run_id,
         "linked_context_run_id": record.linked_context_run_id,
@@ -4248,6 +4303,7 @@ async fn run_issue_fix_worker_session(
         "assistant_text": assistant_text,
         "tool_invocation_count": tool_invocation_count,
         "changed_files": changed_files,
+        "changed_file_entries": changed_file_entries,
         "message_count": session.messages.len(),
         "messages": compact_session_messages(&session),
         "error": run_result.as_ref().err().map(|error| crate::truncate_text(&error.to_string(), 500)),
@@ -5548,6 +5604,20 @@ mod tests {
                 "src/components/View.tsx".to_string(),
             ]
         );
+        let evidence = extract_session_change_evidence(&session);
+        assert_eq!(evidence.len(), 3);
+        assert_eq!(
+            evidence
+                .first()
+                .and_then(|row| row.get("tool"))
+                .and_then(Value::as_str),
+            Some("write")
+        );
+        assert!(evidence
+            .first()
+            .and_then(|row| row.get("preview"))
+            .and_then(Value::as_str)
+            .is_some_and(|preview| preview.contains("fn main()")));
     }
 }
 

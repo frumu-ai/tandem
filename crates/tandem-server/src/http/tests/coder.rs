@@ -729,6 +729,7 @@ async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
         .and_then(Value::as_str)
         .expect("linked context run id")
         .to_string();
+    let mut changed_file_artifact_path: Option<String> = None;
 
     for expected in [
         "inspect_issue_context",
@@ -806,6 +807,29 @@ async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
                 .and_then(|row| row.get("assistant_text"))
                 .and_then(Value::as_str)
                 .is_some_and(|text| text.contains("Echo:")));
+            let changed_file_entries = execute_payload
+                .get("dispatch_result")
+                .and_then(|row| row.get("worker_session"))
+                .and_then(|row| row.get("changed_file_entries"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if !changed_file_entries.is_empty() {
+                assert_eq!(
+                    execute_payload
+                        .get("dispatch_result")
+                        .and_then(|row| row.get("changed_file_artifact"))
+                        .and_then(|row| row.get("artifact_type"))
+                        .and_then(Value::as_str),
+                    Some("coder_changed_file_evidence")
+                );
+                changed_file_artifact_path = execute_payload
+                    .get("dispatch_result")
+                    .and_then(|row| row.get("changed_file_artifact"))
+                    .and_then(|row| row.get("path"))
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+            }
         } else if expected == "validate_fix" {
             assert_eq!(
                 execute_payload
@@ -855,6 +879,44 @@ async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
         .artifacts
         .iter()
         .any(|artifact| { artifact.artifact_type == "coder_patch_summary" }));
+    if let Some(changed_file_artifact_path) = changed_file_artifact_path {
+        let changed_file_payload: Value = serde_json::from_str(
+            &tokio::fs::read_to_string(&changed_file_artifact_path)
+                .await
+                .expect("read changed file artifact"),
+        )
+        .expect("parse changed file artifact");
+        assert!(changed_file_payload
+            .get("entries")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| rows.iter().any(|row| {
+                row.get("path").and_then(Value::as_str)
+                    == Some("crates/tandem-server/src/http/coder.rs")
+                    && row
+                        .get("preview")
+                        .and_then(Value::as_str)
+                        .is_some_and(|preview| preview.contains("Summary:"))
+            })));
+        let patch_summary_path = blackboard
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_type == "coder_patch_summary")
+            .map(|artifact| artifact.path.clone())
+            .expect("patch summary path");
+        let patch_summary_payload: Value = serde_json::from_str(
+            &tokio::fs::read_to_string(&patch_summary_path)
+                .await
+                .expect("read patch summary artifact"),
+        )
+        .expect("parse patch summary artifact");
+        assert!(patch_summary_payload
+            .get("changed_file_entries")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| rows.iter().any(|row| {
+                row.get("path").and_then(Value::as_str)
+                    == Some("crates/tandem-server/src/http/coder.rs")
+            })));
+    }
 }
 
 #[tokio::test]
