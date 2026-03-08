@@ -1148,6 +1148,11 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
             .and_then(Value::as_str),
         Some(draft_id.as_str())
     );
+    assert!(recheck_payload
+        .get("issue_draft")
+        .and_then(|row| row.get("rendered_body"))
+        .and_then(Value::as_str)
+        .is_some_and(|body| body.contains("Build failure in CI")));
     assert_eq!(
         recheck_payload
             .get("triage_summary_artifact")
@@ -1914,6 +1919,20 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
             .and_then(Value::as_str),
         Some("failure_duplicate_matches")
     );
+    assert_eq!(
+        issue_draft_payload
+            .get("duplicate_summary")
+            .and_then(|row| row.get("match_count"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        issue_draft_payload
+            .get("duplicate_matches")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(1)
+    );
     assert!(issue_draft_payload
         .get("duplicate_matches_artifact")
         .and_then(|row| row.get("path"))
@@ -1944,6 +1963,20 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
             .and_then(Value::as_str),
         Some("failure_duplicate_matches")
     );
+    assert_eq!(
+        publish_payload
+            .get("duplicate_summary")
+            .and_then(|row| row.get("match_count"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        publish_payload
+            .get("duplicate_matches")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(1)
+    );
     assert!(publish_payload
         .get("duplicate_matches_artifact")
         .and_then(|row| row.get("path"))
@@ -1973,6 +2006,20 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
         Some("failure_duplicate_matches")
+    );
+    assert_eq!(
+        recheck_payload
+            .get("duplicate_summary")
+            .and_then(|row| row.get("match_count"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        recheck_payload
+            .get("duplicate_matches")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(1)
     );
     assert!(recheck_payload
         .get("duplicate_matches_artifact")

@@ -1655,11 +1655,15 @@ pub(super) async fn draft_bug_monitor_issue(
     match ensure_bug_monitor_issue_draft(state.clone(), &id, true).await {
         Ok(issue_draft) => {
             let triage_run_id = issue_draft.get("triage_run_id").and_then(Value::as_str);
+            let (duplicate_summary, duplicate_matches) =
+                bug_monitor_duplicate_match_context(&state, triage_run_id).await;
             let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
                 bug_monitor_triage_artifacts(&state, triage_run_id);
             Json(json!({
                 "ok": true,
                 "issue_draft": issue_draft,
+                "duplicate_summary": duplicate_summary,
+                "duplicate_matches": duplicate_matches,
                 "triage_summary_artifact": triage_summary_artifact,
                 "issue_draft_artifact": issue_draft_artifact,
                 "duplicate_matches_artifact": duplicate_matches_artifact,
@@ -1765,6 +1769,9 @@ pub(super) async fn publish_bug_monitor_draft(
             } else {
                 None
             };
+            let (duplicate_summary, duplicate_matches) =
+                bug_monitor_duplicate_match_context(&state, outcome.draft.triage_run_id.as_deref())
+                    .await;
             let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
                 bug_monitor_triage_artifacts(&state, outcome.draft.triage_run_id.as_deref());
             Json(json!({
@@ -1772,6 +1779,8 @@ pub(super) async fn publish_bug_monitor_draft(
                 "draft": outcome.draft,
                 "action": outcome.action,
                 "issue_draft": issue_draft,
+                "duplicate_summary": duplicate_summary,
+                "duplicate_matches": duplicate_matches,
                 "triage_summary_artifact": triage_summary_artifact,
                 "issue_draft_artifact": issue_draft_artifact,
                 "duplicate_matches_artifact": duplicate_matches_artifact,
@@ -1792,6 +1801,11 @@ pub(super) async fn publish_bug_monitor_draft(
             } else {
                 None
             };
+            let (duplicate_summary, duplicate_matches) = bug_monitor_duplicate_match_context(
+                &state,
+                draft.as_ref().and_then(|row| row.triage_run_id.as_deref()),
+            )
+            .await;
             let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
                 bug_monitor_triage_artifacts(
                     &state,
@@ -1805,6 +1819,8 @@ pub(super) async fn publish_bug_monitor_draft(
                     "draft_id": id,
                     "draft": draft,
                     "issue_draft": issue_draft,
+                    "duplicate_summary": duplicate_summary,
+                    "duplicate_matches": duplicate_matches,
                     "triage_summary_artifact": triage_summary_artifact,
                     "issue_draft_artifact": issue_draft_artifact,
                     "duplicate_matches_artifact": duplicate_matches_artifact,
@@ -1830,12 +1846,25 @@ pub(super) async fn recheck_bug_monitor_draft_match(
     .await
     {
         Ok(outcome) => {
+            let issue_draft = if outcome.draft.triage_run_id.is_some() {
+                ensure_bug_monitor_issue_draft(state.clone(), &outcome.draft.draft_id, false)
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            let (duplicate_summary, duplicate_matches) =
+                bug_monitor_duplicate_match_context(&state, outcome.draft.triage_run_id.as_deref())
+                    .await;
             let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
                 bug_monitor_triage_artifacts(&state, outcome.draft.triage_run_id.as_deref());
             Json(json!({
                 "ok": true,
                 "draft": outcome.draft,
                 "action": outcome.action,
+                "issue_draft": issue_draft,
+                "duplicate_summary": duplicate_summary,
+                "duplicate_matches": duplicate_matches,
                 "triage_summary_artifact": triage_summary_artifact,
                 "issue_draft_artifact": issue_draft_artifact,
                 "duplicate_matches_artifact": duplicate_matches_artifact,
@@ -1845,6 +1874,22 @@ pub(super) async fn recheck_bug_monitor_draft_match(
         }
         Err(error) => {
             let draft = state.get_bug_monitor_draft(&id).await.or(existing_draft);
+            let issue_draft = if draft
+                .as_ref()
+                .and_then(|row| row.triage_run_id.as_ref())
+                .is_some()
+            {
+                ensure_bug_monitor_issue_draft(state.clone(), &id, false)
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            let (duplicate_summary, duplicate_matches) = bug_monitor_duplicate_match_context(
+                &state,
+                draft.as_ref().and_then(|row| row.triage_run_id.as_deref()),
+            )
+            .await;
             let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
                 bug_monitor_triage_artifacts(
                     &state,
@@ -1857,6 +1902,9 @@ pub(super) async fn recheck_bug_monitor_draft_match(
                     "code": "BUG_MONITOR_DRAFT_RECHECK_FAILED",
                     "draft_id": id,
                     "draft": draft,
+                    "issue_draft": issue_draft,
+                    "duplicate_summary": duplicate_summary,
+                    "duplicate_matches": duplicate_matches,
                     "triage_summary_artifact": triage_summary_artifact,
                     "issue_draft_artifact": issue_draft_artifact,
                     "duplicate_matches_artifact": duplicate_matches_artifact,
