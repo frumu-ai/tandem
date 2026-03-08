@@ -131,6 +131,7 @@
   - `POST /coder/runs` now also returns `merge_submit_policy` for merge-recommendation runs, so manual and spawned merge follow-on creation responses surface project auto-merge policy and merge-submit prerequisites immediately instead of forcing a follow-up run read
   - `merge_submit_policy.auto_execute_block_reason` now reports the earliest real blocker (`requires_merge_execution_request`, `requires_completed_pr_review_follow_on`, `requires_approved_pr_review_follow_on`, etc.) instead of collapsing those states back to a generic `preferred_submit_mode_manual`
   - PR-submit `follow_on_runs` templates now also carry `merge_submit_policy_preview` for merge follow-ons, so clients can see project auto-merge policy and merge-submit prerequisites before the merge run even exists
+  - merge-ready `coder.approval.required` events and `merge-recommendation-summary` responses now also carry `merge_submit_policy`, so streaming clients can see merge-submit readiness and project auto-merge policy without fetching the run
   - coder runs now persist as thin metadata records linked to engine context runs instead of a frontend-owned workflow store
   - creating an `issue_triage` coder run now seeds a deterministic context-run task graph for issue normalization, memory retrieval, repo inspection, reproduction, and triage artifact writing
   - added initial `coder.run.created` engine event emission and backend regression coverage for coder create/get/list/artifact behavior
