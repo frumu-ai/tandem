@@ -1,6 +1,6 @@
 {
   "name": "@frumu/tandem",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Tandem Engine binary distribution",
   "homepage": "https://tandem.frumu.ai",
   "bin": {
