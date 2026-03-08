@@ -1162,6 +1162,20 @@ async fn bug_monitor_issue_draft_renders_repo_template() {
         .unwrap_or_default();
     assert_eq!(
         issue_draft_payload
+            .get("draft")
+            .and_then(|row| row.get("draft_id"))
+            .and_then(Value::as_str),
+        Some(draft_id.as_str())
+    );
+    assert_eq!(
+        issue_draft_payload
+            .get("triage_summary")
+            .and_then(|row| row.get("suggested_title"))
+            .and_then(Value::as_str),
+        Some("Bug Monitor issue")
+    );
+    assert_eq!(
+        issue_draft_payload
             .get("triage_summary_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),

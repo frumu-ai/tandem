@@ -1663,12 +1663,22 @@ pub(super) async fn draft_bug_monitor_issue(
     match ensure_bug_monitor_issue_draft(state.clone(), &id, true).await {
         Ok(issue_draft) => {
             let triage_run_id = issue_draft.get("triage_run_id").and_then(Value::as_str);
+            let draft = state.get_bug_monitor_draft(&id).await;
+            let triage_summary = triage_run_id.map(|run_id| async {
+                load_bug_monitor_triage_summary_artifact(&state, run_id).await
+            });
             let (duplicate_summary, duplicate_matches) =
                 bug_monitor_duplicate_match_context(&state, triage_run_id).await;
             let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
                 bug_monitor_triage_artifacts(&state, triage_run_id);
+            let triage_summary = match triage_summary {
+                Some(loader) => loader.await,
+                None => None,
+            };
             Json(json!({
                 "ok": true,
+                "draft": draft,
+                "triage_summary": triage_summary,
                 "issue_draft": issue_draft,
                 "duplicate_summary": duplicate_summary,
                 "duplicate_matches": duplicate_matches,
