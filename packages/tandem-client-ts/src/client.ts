@@ -2191,8 +2191,18 @@ class WorkflowPlans {
     workspace_root?: string;
     operatorPreferences?: JsonObject;
     operator_preferences?: JsonObject;
-  }): Promise<{ plan: WorkflowPlan }> {
-    return this.req<{ plan: WorkflowPlan }>("/workflow-plans/preview", {
+  }): Promise<{
+    plan: WorkflowPlan;
+    clarifier?: JsonObject | null;
+    assistant_message?: JsonObject;
+    planner_diagnostics?: JsonObject | null;
+  }> {
+    return this.req<{
+      plan: WorkflowPlan;
+      clarifier?: JsonObject | null;
+      assistant_message?: JsonObject;
+      planner_diagnostics?: JsonObject | null;
+    }>("/workflow-plans/preview", {
       method: "POST",
       body: JSON.stringify({
         prompt: options.prompt,
@@ -2247,28 +2257,33 @@ class WorkflowPlans {
     operatorPreferences?: JsonObject;
     operator_preferences?: JsonObject;
   }): Promise<{ plan: WorkflowPlan; conversation: WorkflowPlanConversation }> {
-    return this.req<{ plan: WorkflowPlan; conversation: WorkflowPlanConversation }>(
-      "/workflow-plans/chat/start",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          prompt: options.prompt,
-          schedule: options.schedule,
-          plan_source: options.plan_source ?? options.planSource,
-          allowed_mcp_servers: options.allowed_mcp_servers ?? options.allowedMcpServers,
-          workspace_root: options.workspace_root ?? options.workspaceRoot,
-          operator_preferences: options.operator_preferences ?? options.operatorPreferences,
-        }),
-      }
-    );
+    return this.req<{
+      plan: WorkflowPlan;
+      conversation: WorkflowPlanConversation;
+      planner_diagnostics?: JsonObject | null;
+    }>("/workflow-plans/chat/start", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: options.prompt,
+        schedule: options.schedule,
+        plan_source: options.plan_source ?? options.planSource,
+        allowed_mcp_servers: options.allowed_mcp_servers ?? options.allowedMcpServers,
+        workspace_root: options.workspace_root ?? options.workspaceRoot,
+        operator_preferences: options.operator_preferences ?? options.operatorPreferences,
+      }),
+    });
   }
 
-  async get(
-    planId: string
-  ): Promise<{ plan: WorkflowPlan; conversation: WorkflowPlanConversation }> {
-    return this.req<{ plan: WorkflowPlan; conversation: WorkflowPlanConversation }>(
-      `/workflow-plans/${encodeURIComponent(planId)}`
-    );
+  async get(planId: string): Promise<{
+    plan: WorkflowPlan;
+    conversation: WorkflowPlanConversation;
+    planner_diagnostics?: JsonObject | null;
+  }> {
+    return this.req<{
+      plan: WorkflowPlan;
+      conversation: WorkflowPlanConversation;
+      planner_diagnostics?: JsonObject | null;
+    }>(`/workflow-plans/${encodeURIComponent(planId)}`);
   }
 
   async chatMessage(options: { planId?: string; plan_id?: string; message: string }): Promise<{
@@ -2284,6 +2299,7 @@ class WorkflowPlans {
       assistant_message?: JsonObject;
       change_summary?: string[];
       clarifier?: JsonObject | null;
+      planner_diagnostics?: JsonObject | null;
     }>("/workflow-plans/chat/message", {
       method: "POST",
       body: JSON.stringify({
@@ -2296,16 +2312,18 @@ class WorkflowPlans {
   async chatReset(options: { planId?: string; plan_id?: string }): Promise<{
     plan: WorkflowPlan;
     conversation: WorkflowPlanConversation;
+    planner_diagnostics?: JsonObject | null;
   }> {
-    return this.req<{ plan: WorkflowPlan; conversation: WorkflowPlanConversation }>(
-      "/workflow-plans/chat/reset",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          plan_id: options.plan_id ?? options.planId,
-        }),
-      }
-    );
+    return this.req<{
+      plan: WorkflowPlan;
+      conversation: WorkflowPlanConversation;
+      planner_diagnostics?: JsonObject | null;
+    }>("/workflow-plans/chat/reset", {
+      method: "POST",
+      body: JSON.stringify({
+        plan_id: options.plan_id ?? options.planId,
+      }),
+    });
   }
 }
 

@@ -25,7 +25,8 @@
     --color-glass-border: rgba(255, 255, 255, 0.08);
     --font-sans: "Manrope", "Geist Sans", "Inter", system-ui, -apple-system, sans-serif;
     --font-display: "Rubik", "Geist Sans", "Inter", system-ui, -apple-system, sans-serif;
-    --font-mono: "JetBrains Mono", "Geist Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --font-mono:
+      "JetBrains Mono", "Geist Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
     --tcp-glow-a: rgba(245, 158, 11, 0.16);
     --tcp-glow-b: rgba(239, 68, 68, 0.12);
   }
@@ -60,9 +61,21 @@
     min-height: 100vh;
     overflow: clip;
     background:
-      radial-gradient(circle at top left, color-mix(in srgb, var(--tcp-glow-a) 70%, transparent), transparent 32%),
-      radial-gradient(circle at 82% 18%, color-mix(in srgb, var(--tcp-glow-b) 72%, transparent), transparent 28%),
-      linear-gradient(180deg, color-mix(in srgb, var(--color-background) 94%, black 6%), color-mix(in srgb, var(--color-background) 100%, black 0%));
+      radial-gradient(
+        circle at top left,
+        color-mix(in srgb, var(--tcp-glow-a) 70%, transparent),
+        transparent 32%
+      ),
+      radial-gradient(
+        circle at 82% 18%,
+        color-mix(in srgb, var(--tcp-glow-b) 72%, transparent),
+        transparent 28%
+      ),
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--color-background) 94%, black 6%),
+        color-mix(in srgb, var(--color-background) 100%, black 0%)
+      );
   }
 
   @screen lg {
@@ -158,7 +171,10 @@
     height: 2.9rem;
     border-radius: 1rem;
     color: var(--color-text-muted);
-    transition: transform 180ms ease, color 180ms ease, border-color 180ms ease;
+    transition:
+      transform 180ms ease,
+      color 180ms ease,
+      border-color 180ms ease;
     border: 1px solid transparent;
     background: transparent;
   }
@@ -213,7 +229,10 @@
     color: var(--color-text-muted);
     border: 1px solid color-mix(in srgb, var(--color-border-subtle) 88%, transparent);
     background: color-mix(in srgb, var(--color-surface-elevated) 88%, #000 12%);
-    transition: transform 160ms ease, border-color 160ms ease, color 160ms ease;
+    transition:
+      transform 160ms ease,
+      border-color 160ms ease,
+      color 160ms ease;
   }
 
   .tcp-icon-btn:hover {
@@ -261,8 +280,16 @@
 
   .tcp-context-hero-glow {
     background:
-      radial-gradient(circle at top right, color-mix(in srgb, var(--tcp-glow-a) 48%, transparent), transparent 42%),
-      linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 10%, transparent), transparent 42%);
+      radial-gradient(
+        circle at top right,
+        color-mix(in srgb, var(--tcp-glow-a) 48%, transparent),
+        transparent 42%
+      ),
+      linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--color-primary) 10%, transparent),
+        transparent 42%
+      );
   }
 
   .tcp-context-section {
@@ -291,7 +318,11 @@
     border: 1px solid transparent;
     background: transparent;
     color: var(--color-text-muted);
-    transition: transform 160ms ease, border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+    transition:
+      transform 160ms ease,
+      border-color 160ms ease,
+      background-color 160ms ease,
+      color 160ms ease;
   }
 
   .tcp-context-link:hover {
@@ -512,8 +543,16 @@
 
   .tcp-page-header-glow {
     background:
-      radial-gradient(circle at top right, color-mix(in srgb, var(--tcp-glow-a) 46%, transparent), transparent 36%),
-      radial-gradient(circle at bottom left, color-mix(in srgb, var(--tcp-glow-b) 34%, transparent), transparent 42%);
+      radial-gradient(
+        circle at top right,
+        color-mix(in srgb, var(--tcp-glow-a) 46%, transparent),
+        transparent 36%
+      ),
+      radial-gradient(
+        circle at bottom left,
+        color-mix(in srgb, var(--tcp-glow-b) 34%, transparent),
+        transparent 42%
+      );
   }
 
   .tcp-status-pulse {
@@ -662,7 +701,10 @@
     @apply min-w-0 overflow-hidden rounded-xl p-3;
     border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
     background: color-mix(in srgb, var(--color-surface-elevated) 86%, #000 14%);
-    transition: transform 160ms ease, border-color 160ms ease, background-color 160ms ease;
+    transition:
+      transform 160ms ease,
+      border-color 160ms ease,
+      background-color 160ms ease;
   }
 
   .tcp-list-item:hover {
@@ -683,7 +725,7 @@
     color: var(--color-text-muted);
   }
 
-.nav-item.active {
+  .nav-item.active {
     color: var(--color-text);
     border-color: color-mix(in srgb, var(--color-primary) 52%, transparent);
     background: color-mix(in srgb, var(--color-primary) 18%, var(--color-surface-elevated) 82%);
@@ -733,7 +775,11 @@
     width: 7rem;
     height: 7rem;
     border-radius: 9999px;
-    background: radial-gradient(circle, color-mix(in srgb, var(--tcp-glow-a) 72%, transparent), transparent 70%);
+    background: radial-gradient(
+      circle,
+      color-mix(in srgb, var(--tcp-glow-a) 72%, transparent),
+      transparent 70%
+    );
     filter: blur(12px);
     opacity: 0.65;
   }
@@ -755,7 +801,10 @@
     color: var(--color-text-muted);
     border: 1px solid color-mix(in srgb, var(--color-border-subtle) 88%, transparent);
     background: color-mix(in srgb, var(--color-surface-elevated) 90%, #000 10%);
-    transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease;
+    transition:
+      color 160ms ease,
+      border-color 160ms ease,
+      background-color 160ms ease;
   }
 
   .tcp-filter-chip.active {
@@ -1000,12 +1049,11 @@
 }
 
 .tcp-shell-glass {
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--color-surface) 95%, transparent),
-      color-mix(in srgb, var(--color-surface-elevated) 90%, #000 10%)
-    );
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface) 95%, transparent),
+    color-mix(in srgb, var(--color-surface-elevated) 90%, #000 10%)
+  );
   backdrop-filter: blur(12px);
 }
 
@@ -1175,6 +1223,15 @@
   );
 }
 
+.tcp-run-debugger-modal {
+  width: min(148rem, 99vw);
+  max-width: min(148rem, 99vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 1.1rem;
+}
+
 .tcp-verification-content {
   min-height: 0;
   overflow-y: auto;
@@ -1336,7 +1393,9 @@
   color: color-mix(in srgb, var(--color-primary) 88%, var(--color-text) 12%);
   text-decoration: none;
   border-bottom: 1px dashed color-mix(in srgb, var(--color-primary) 45%, transparent);
-  transition: color 120ms ease, border-color 120ms ease;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease;
 }
 
 .tcp-markdown a:hover {
@@ -1389,7 +1448,11 @@
   border-radius: 0.2rem;
   padding: 0.2rem 0 0.2rem 0.7rem;
   color: var(--color-text-muted);
-  background: linear-gradient(90deg, var(--md-accent-soft, rgba(148, 163, 184, 0.16)), transparent 65%);
+  background: linear-gradient(
+    90deg,
+    var(--md-accent-soft, rgba(148, 163, 184, 0.16)),
+    transparent 65%
+  );
 }
 
 .tcp-markdown strong {
@@ -2129,7 +2192,10 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   font-size: 0.78rem;
   line-height: 1;
   padding: 0.45rem 0.8rem;
-  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
 .agents-tab-btn:hover {
@@ -2246,7 +2312,9 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0.01em;
-  transition: color 140ms ease, border-color 140ms ease;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease;
 }
 
 .tcp-settings-tab:hover {
@@ -2294,7 +2362,10 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   font-size: 0.75rem;
   line-height: 1;
   padding: 0.34rem 0.7rem;
-  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease,
+    background-color 120ms ease;
 }
 
 .theme-swatch:hover {

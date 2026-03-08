@@ -737,6 +737,8 @@ pub struct WorkflowPlanDraftRecord {
     pub initial_plan: WorkflowPlan,
     pub current_plan: WorkflowPlan,
     pub conversation: WorkflowPlanConversation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_diagnostics: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5424,6 +5426,10 @@ pub async fn run_routine_executor(state: AppState) {
             .engine_loop
             .set_session_allowed_tools(&session_id, run.allowed_tools.clone())
             .await;
+        state
+            .engine_loop
+            .set_session_auto_approve_permissions(&session_id, true)
+            .await;
 
         let (selected_model, model_source) = resolve_routine_model_spec_for_run(&state, &run).await;
         if let Some(spec) = selected_model.as_ref() {
@@ -5467,6 +5473,10 @@ pub async fn run_routine_executor(state: AppState) {
         state
             .engine_loop
             .clear_session_allowed_tools(&session_id)
+            .await;
+        state
+            .engine_loop
+            .clear_session_auto_approve_permissions(&session_id)
             .await;
 
         match run_result {
@@ -5617,6 +5627,11 @@ fn render_automation_v2_prompt(
             ));
         }
     }
+    if node.node_id == "notify_user" || node.objective.to_ascii_lowercase().contains("email") {
+        prompt.push_str(
+            "\n\nDelivery rules:\n- Prefer inline email body delivery by default.\n- Only include an email attachment when upstream inputs contain a concrete attachment artifact with a non-empty s3key or upload result.\n- Never send an attachment parameter with an empty or null s3key.\n- If no attachment artifact exists, omit the attachment parameter entirely.",
+        );
+    }
     prompt.push_str(
         "\n\nReturn a concise completion. If you produce structured content, keep it valid JSON inside the response body.",
     );
@@ -5755,6 +5770,10 @@ async fn execute_automation_v2_node(
         .engine_loop
         .set_session_allowed_tools(&session_id, normalize_allowed_tools(allowlist))
         .await;
+    state
+        .engine_loop
+        .set_session_auto_approve_permissions(&session_id, true)
+        .await;
 
     let model = agent
         .model_policy
@@ -5783,6 +5802,10 @@ async fn execute_automation_v2_node(
     state
         .engine_loop
         .clear_session_allowed_tools(&session_id)
+        .await;
+    state
+        .engine_loop
+        .clear_session_auto_approve_permissions(&session_id)
         .await;
     state.clear_automation_v2_session(run_id, &session_id).await;
 

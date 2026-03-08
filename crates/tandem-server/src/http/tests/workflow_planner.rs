@@ -265,6 +265,13 @@ async fn workflow_plan_preview_uses_fallback_when_planner_provider_unconfigured(
         .and_then(|row| row.get("question"))
         .and_then(Value::as_str)
         .is_some_and(|text| text.contains("provider `openai`") && text.contains("not configured")));
+    assert_eq!(
+        payload
+            .get("planner_diagnostics")
+            .and_then(|row| row.get("fallback_reason"))
+            .and_then(Value::as_str),
+        Some("provider_unconfigured")
+    );
 }
 
 #[tokio::test]
@@ -383,6 +390,13 @@ async fn workflow_plan_preview_rejects_invalid_llm_step_id_and_uses_fallback() {
                     .collect::<Vec<_>>()
             }),
         Some(vec!["execute_goal"])
+    );
+    assert_eq!(
+        payload
+            .get("planner_diagnostics")
+            .and_then(|row| row.get("fallback_reason"))
+            .and_then(Value::as_str),
+        Some("validation_rejected")
     );
 }
 
@@ -561,11 +575,124 @@ async fn workflow_plan_apply_persists_automation_v2_with_planner_metadata() {
             .and_then(Value::as_str),
         Some("automations_page")
     );
+    let operator_agent = stored
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id == "agent_writer")
+        .expect("writer agent");
+    assert!(operator_agent
+        .tool_policy
+        .allowlist
+        .contains(&"mcp.github.*".to_string()));
+    assert!(operator_agent
+        .tool_policy
+        .allowlist
+        .contains(&"mcp.slack.*".to_string()));
     assert!(stored
         .flow
         .nodes
         .iter()
         .any(|node| !node.input_refs.is_empty()));
+}
+
+#[tokio::test]
+async fn workflow_plan_apply_normalizes_mcp_server_prefixes_into_tool_allowlist() {
+    let state = test_state().await;
+    configure_openai_provider(&state).await;
+    let app = app_router(state.clone());
+    let _guard = PlannerEnvGuard::new(&[
+        "TANDEM_WORKFLOW_PLANNER_TEST_BUILD_RESPONSE",
+        "TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE",
+    ]);
+    _guard.set(
+        "TANDEM_WORKFLOW_PLANNER_TEST_BUILD_RESPONSE",
+        json!({
+            "action": "build",
+            "plan": llm_plan_json(
+                "Delivery Workflow",
+                "Write a report and email it.",
+                manual_schedule_json(),
+                "/tmp/ignored",
+                vec![
+                    step_json("generate_report", "report", "Generate the report.", &[], "writer", json!([]), "report_markdown"),
+                    step_json("notify_user", "notify", "Send the report by email.", &["generate_report"], "operator", json!([
+                        {"from_step_id":"generate_report","alias":"final_report"}
+                    ]), "text_summary")
+                ],
+                Some(json!({
+                    "model_provider": "openai",
+                    "model_id": "gpt-5.1"
+                }))
+            )
+        })
+        .to_string(),
+    );
+
+    let preview_resp = app
+        .clone()
+        .oneshot(preview_request(json!({
+            "prompt": "Generate a report and send it by email",
+            "plan_source": "automations_page",
+            "allowed_mcp_servers": ["composio-1"],
+            "workspace_root": "/tmp/custom-workspace",
+            "operator_preferences": {
+                "model_provider": "openai",
+                "model_id": "gpt-5.1"
+            }
+        })))
+        .await
+        .expect("preview response");
+    assert_eq!(preview_resp.status(), StatusCode::OK);
+    let preview_body = to_bytes(preview_resp.into_body(), usize::MAX)
+        .await
+        .expect("preview body");
+    let preview_payload: Value = serde_json::from_slice(&preview_body).expect("preview json");
+    let plan_id = preview_payload
+        .get("plan")
+        .and_then(|plan| plan.get("plan_id"))
+        .and_then(Value::as_str)
+        .expect("plan id");
+
+    let apply_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/apply")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "plan_id": plan_id,
+                "creator_id": "control-panel"
+            })
+            .to_string(),
+        ))
+        .expect("apply request");
+    let apply_resp = app
+        .clone()
+        .oneshot(apply_req)
+        .await
+        .expect("apply response");
+    assert_eq!(apply_resp.status(), StatusCode::OK);
+    let apply_body = to_bytes(apply_resp.into_body(), usize::MAX)
+        .await
+        .expect("apply body");
+    let apply_payload: Value = serde_json::from_slice(&apply_body).expect("apply json");
+    let automation_id = apply_payload
+        .get("automation")
+        .and_then(|row| row.get("automation_id"))
+        .and_then(Value::as_str)
+        .expect("automation id");
+    let stored = state
+        .get_automation_v2(automation_id)
+        .await
+        .expect("stored automation");
+    let operator_agent = stored
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id == "agent_operator")
+        .expect("operator agent");
+    assert!(operator_agent
+        .tool_policy
+        .allowlist
+        .contains(&"mcp.composio_1.*".to_string()));
 }
 
 #[tokio::test]

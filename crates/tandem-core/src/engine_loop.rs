@@ -138,6 +138,7 @@ pub struct EngineLoop {
     host_runtime_context: HostRuntimeContext,
     workspace_overrides: std::sync::Arc<RwLock<HashMap<String, u64>>>,
     session_allowed_tools: std::sync::Arc<RwLock<HashMap<String, Vec<String>>>>,
+    session_auto_approve_permissions: std::sync::Arc<RwLock<HashMap<String, bool>>>,
     spawn_agent_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn SpawnAgentHook>>>>,
     tool_policy_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn ToolPolicyHook>>>>,
     prompt_context_hook: std::sync::Arc<RwLock<Option<std::sync::Arc<dyn PromptContextHook>>>>,
@@ -168,6 +169,7 @@ impl EngineLoop {
             host_runtime_context,
             workspace_overrides: std::sync::Arc::new(RwLock::new(HashMap::new())),
             session_allowed_tools: std::sync::Arc::new(RwLock::new(HashMap::new())),
+            session_auto_approve_permissions: std::sync::Arc::new(RwLock::new(HashMap::new())),
             spawn_agent_hook: std::sync::Arc::new(RwLock::new(None)),
             tool_policy_hook: std::sync::Arc::new(RwLock::new(None)),
             prompt_context_hook: std::sync::Arc::new(RwLock::new(None)),
@@ -200,6 +202,27 @@ impl EngineLoop {
 
     pub async fn clear_session_allowed_tools(&self, session_id: &str) {
         self.session_allowed_tools.write().await.remove(session_id);
+    }
+
+    pub async fn set_session_auto_approve_permissions(&self, session_id: &str, enabled: bool) {
+        if enabled {
+            self.session_auto_approve_permissions
+                .write()
+                .await
+                .insert(session_id.to_string(), true);
+        } else {
+            self.session_auto_approve_permissions
+                .write()
+                .await
+                .remove(session_id);
+        }
+    }
+
+    pub async fn clear_session_auto_approve_permissions(&self, session_id: &str) {
+        self.session_auto_approve_permissions
+            .write()
+            .await
+            .remove(session_id);
     }
 
     pub async fn grant_workspace_override_for_session(
@@ -1898,98 +1921,117 @@ impl EngineLoop {
 
         let mut effective_args = args.clone();
         if matches!(rule, PermissionAction::Ask) {
-            let pending = self
-                .permissions
-                .ask_for_session_with_context(
-                    Some(session_id),
-                    &tool,
-                    args.clone(),
-                    Some(crate::PermissionArgsContext {
-                        args_source: normalized.args_source.clone(),
-                        args_integrity: normalized.args_integrity.clone(),
-                        query: normalized.query.clone(),
-                    }),
-                )
-                .await;
-            let mut pending_part = WireMessagePart::tool_invocation(
-                session_id,
-                message_id,
-                tool.clone(),
-                args.clone(),
-            );
-            pending_part.id = Some(pending.id.clone());
-            tool_call_id = Some(pending.id.clone());
-            pending_part.state = Some("pending".to_string());
-            self.event_bus.publish(EngineEvent::new(
-                "message.part.updated",
-                json!({"part": pending_part}),
-            ));
-            let reply = self
-                .permissions
-                .wait_for_reply_with_timeout(
-                    &pending.id,
-                    cancel.clone(),
-                    Some(Duration::from_millis(permission_wait_timeout_ms() as u64)),
-                )
-                .await;
-            let (reply, timed_out) = reply;
-            if cancel.is_cancelled() {
-                return Ok(None);
-            }
-            if timed_out {
-                let timeout_ms = permission_wait_timeout_ms();
+            let auto_approve_permissions = self
+                .session_auto_approve_permissions
+                .read()
+                .await
+                .get(session_id)
+                .copied()
+                .unwrap_or(false);
+            if auto_approve_permissions {
                 self.event_bus.publish(EngineEvent::new(
-                    "permission.wait.timeout",
+                    "permission.auto_approved",
                     json!({
                         "sessionID": session_id,
                         "messageID": message_id,
                         "tool": tool,
-                        "requestID": pending.id,
-                        "timeoutMs": timeout_ms,
                     }),
                 ));
-                let mut timeout_part = WireMessagePart::tool_result(
+                effective_args = args;
+            } else {
+                let pending = self
+                    .permissions
+                    .ask_for_session_with_context(
+                        Some(session_id),
+                        &tool,
+                        args.clone(),
+                        Some(crate::PermissionArgsContext {
+                            args_source: normalized.args_source.clone(),
+                            args_integrity: normalized.args_integrity.clone(),
+                            query: normalized.query.clone(),
+                        }),
+                    )
+                    .await;
+                let mut pending_part = WireMessagePart::tool_invocation(
                     session_id,
                     message_id,
                     tool.clone(),
-                    Some(args.clone()),
-                    json!(null),
+                    args.clone(),
                 );
-                timeout_part.id = Some(pending.id);
-                timeout_part.state = Some("failed".to_string());
-                timeout_part.error = Some(format!(
-                    "Permission request timed out after {} ms",
-                    timeout_ms
-                ));
+                pending_part.id = Some(pending.id.clone());
+                tool_call_id = Some(pending.id.clone());
+                pending_part.state = Some("pending".to_string());
                 self.event_bus.publish(EngineEvent::new(
                     "message.part.updated",
-                    json!({"part": timeout_part}),
+                    json!({"part": pending_part}),
                 ));
-                return Ok(Some(format!(
-                    "Permission request for tool `{tool}` timed out after {timeout_ms} ms."
-                )));
+                let reply = self
+                    .permissions
+                    .wait_for_reply_with_timeout(
+                        &pending.id,
+                        cancel.clone(),
+                        Some(Duration::from_millis(permission_wait_timeout_ms() as u64)),
+                    )
+                    .await;
+                let (reply, timed_out) = reply;
+                if cancel.is_cancelled() {
+                    return Ok(None);
+                }
+                if timed_out {
+                    let timeout_ms = permission_wait_timeout_ms();
+                    self.event_bus.publish(EngineEvent::new(
+                        "permission.wait.timeout",
+                        json!({
+                            "sessionID": session_id,
+                            "messageID": message_id,
+                            "tool": tool,
+                            "requestID": pending.id,
+                            "timeoutMs": timeout_ms,
+                        }),
+                    ));
+                    let mut timeout_part = WireMessagePart::tool_result(
+                        session_id,
+                        message_id,
+                        tool.clone(),
+                        Some(args.clone()),
+                        json!(null),
+                    );
+                    timeout_part.id = Some(pending.id);
+                    timeout_part.state = Some("failed".to_string());
+                    timeout_part.error = Some(format!(
+                        "Permission request timed out after {} ms",
+                        timeout_ms
+                    ));
+                    self.event_bus.publish(EngineEvent::new(
+                        "message.part.updated",
+                        json!({"part": timeout_part}),
+                    ));
+                    return Ok(Some(format!(
+                        "Permission request for tool `{tool}` timed out after {timeout_ms} ms."
+                    )));
+                }
+                let approved = matches!(reply.as_deref(), Some("once" | "always" | "allow"));
+                if !approved {
+                    let mut denied_part = WireMessagePart::tool_result(
+                        session_id,
+                        message_id,
+                        tool.clone(),
+                        Some(args.clone()),
+                        json!(null),
+                    );
+                    denied_part.id = Some(pending.id);
+                    denied_part.state = Some("denied".to_string());
+                    denied_part.error = Some("Permission denied by user".to_string());
+                    self.event_bus.publish(EngineEvent::new(
+                        "message.part.updated",
+                        json!({"part": denied_part}),
+                    ));
+                    return Ok(Some(format!(
+                        "Permission denied for tool `{tool}` by user."
+                    )));
+                }
+                effective_args = args;
             }
-            let approved = matches!(reply.as_deref(), Some("once" | "always" | "allow"));
-            if !approved {
-                let mut denied_part = WireMessagePart::tool_result(
-                    session_id,
-                    message_id,
-                    tool.clone(),
-                    Some(args.clone()),
-                    json!(null),
-                );
-                denied_part.id = Some(pending.id);
-                denied_part.state = Some("denied".to_string());
-                denied_part.error = Some("Permission denied by user".to_string());
-                self.event_bus.publish(EngineEvent::new(
-                    "message.part.updated",
-                    json!({"part": denied_part}),
-                ));
-                return Ok(Some(format!(
-                    "Permission denied for tool `{tool}` by user."
-                )));
-            }
-            effective_args = args;
         }
 
         let mut args = self.plugins.inject_tool_args(&tool, effective_args).await;
@@ -3429,6 +3471,7 @@ fn normalize_tool_args_with_mode(
     write_path_recovery_mode: WritePathRecoveryMode,
 ) -> NormalizedToolArgs {
     let normalized_tool = normalize_tool_name(tool_name);
+    let original_args = raw_args.clone();
     let mut args = raw_args;
     let mut args_source = if args.is_string() {
         "provider_string".to_string()
@@ -3591,6 +3634,13 @@ fn normalize_tool_args_with_mode(
             missing_terminal_reason = Some("PACK_BUILDER_GOAL_MISSING".to_string());
         }
         args = ensure_pack_builder_default_mode(args);
+    } else if is_email_delivery_tool_name(&normalized_tool) {
+        let sanitized = sanitize_email_attachment_args(args);
+        if sanitized != original_args {
+            args_source = "sanitized_attachment".to_string();
+            args_integrity = "recovered".to_string();
+        }
+        args = sanitized;
     }
 
     NormalizedToolArgs {
@@ -3663,6 +3713,50 @@ fn is_shell_tool_name(tool_name: &str) -> bool {
         tool_name.trim().to_ascii_lowercase().as_str(),
         "bash" | "shell" | "powershell" | "cmd"
     )
+}
+
+fn is_email_delivery_tool_name(tool_name: &str) -> bool {
+    matches!(
+        normalize_tool_name(tool_name).as_str(),
+        "mcp.composio_1.gmail_send_email"
+            | "mcp.composio_1.gmail_send_draft"
+            | "mcp.composio.gmail_send_email"
+            | "mcp.composio.gmail_send_draft"
+    ) || tool_name.ends_with(".gmail_send_email")
+        || tool_name.ends_with(".gmail_send_draft")
+}
+
+fn sanitize_email_attachment_args(args: Value) -> Value {
+    let mut obj = match args {
+        Value::Object(map) => map,
+        other => return other,
+    };
+    if let Some(Value::Object(attachment)) = obj.get("attachment") {
+        let s3key = attachment
+            .get("s3key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if s3key.is_empty() {
+            obj.remove("attachment");
+        }
+    } else if obj.get("attachment").is_some() && obj.get("attachment").is_some_and(Value::is_null) {
+        obj.remove("attachment");
+    }
+    if let Some(Value::Array(attachments)) = obj.get_mut("attachments") {
+        attachments.retain(|entry| {
+            entry
+                .get("s3key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .map(|value| !value.is_empty())
+                .unwrap_or(false)
+        });
+        if attachments.is_empty() {
+            obj.remove("attachments");
+        }
+    }
+    Value::Object(obj)
 }
 
 fn set_file_path_arg(args: Value, path: String) -> Value {
@@ -6732,6 +6826,50 @@ Call: todowrite(task_id=3, status="in_progress")
         assert_eq!(
             normalized.missing_terminal_reason.as_deref(),
             Some("WRITE_CONTENT_MISSING")
+        );
+    }
+
+    #[test]
+    fn normalize_tool_args_gmail_send_email_omits_empty_attachment() {
+        let normalized = normalize_tool_args(
+            "mcp.composio_1.gmail_send_email",
+            json!({
+                "to": "evan@example.com",
+                "subject": "Test",
+                "body": "Hello",
+                "attachment": {
+                    "s3key": ""
+                }
+            }),
+            "",
+            "",
+        );
+        assert!(normalized.args.get("attachment").is_none());
+        assert_eq!(normalized.args_source, "sanitized_attachment");
+    }
+
+    #[test]
+    fn normalize_tool_args_gmail_send_email_keeps_valid_attachment() {
+        let normalized = normalize_tool_args(
+            "mcp.composio_1.gmail_send_email",
+            json!({
+                "to": "evan@example.com",
+                "subject": "Test",
+                "body": "Hello",
+                "attachment": {
+                    "s3key": "file_123"
+                }
+            }),
+            "",
+            "",
+        );
+        assert_eq!(
+            normalized
+                .args
+                .get("attachment")
+                .and_then(|value| value.get("s3key"))
+                .and_then(|value| value.as_str()),
+            Some("file_123")
         );
     }
 

@@ -364,6 +364,38 @@ function normalizeTimestamp(raw: any) {
   return value < 1_000_000_000_000 ? value * 1000 : value;
 }
 
+function shortText(raw: any, max = 88) {
+  const text = String(raw || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+function runObjectiveText(run: any) {
+  return String(
+    run?.mission_snapshot?.objective || run?.mission?.objective || run?.objective || run?.name || ""
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function runDisplayTitle(run: any) {
+  const explicitName = String(run?.name || "").trim();
+  if (explicitName) return explicitName;
+  const objective = runObjectiveText(run);
+  if (objective) return shortText(objective, 96);
+  const automationId = String(run?.automation_id || run?.routine_id || "").trim();
+  if (automationId) return automationId;
+  return "Run";
+}
+
+function formatRunDateTime(raw: any) {
+  const value = Number(raw || 0);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  return new Date(normalizeTimestamp(value)).toLocaleString();
+}
+
 function extractSessionIdsFromRun(run: any) {
   const direct = Array.isArray(run?.active_session_ids)
     ? run.active_session_ids
@@ -374,13 +406,38 @@ function extractSessionIdsFromRun(run: any) {
     String(run?.latest_session_id || "").trim(),
     String(run?.latestSessionId || "").trim(),
   ].filter(Boolean);
+  const nodeOutputSessionIds = Object.values(
+    run?.checkpoint?.node_outputs || run?.checkpoint?.nodeOutputs || {}
+  )
+    .map((entry: any) => {
+      const content = entry?.content || {};
+      return String(content?.session_id || content?.sessionId || "").trim();
+    })
+    .filter(Boolean);
   return Array.from(
     new Set(
-      [...latest, ...direct.map((row: any) => String(row || "").trim()).filter(Boolean)].filter(
-        Boolean
-      )
+      [
+        ...latest,
+        ...direct.map((row: any) => String(row || "").trim()).filter(Boolean),
+        ...nodeOutputSessionIds,
+      ].filter(Boolean)
     )
   );
+}
+
+function extractRunNodeOutputs(run: any) {
+  const outputs = run?.checkpoint?.node_outputs || run?.checkpoint?.nodeOutputs || {};
+  return Object.entries(outputs).map(([nodeId, value]) => ({
+    nodeId,
+    value,
+  }));
+}
+
+function nodeOutputText(value: any) {
+  const summary = String(value?.summary || "").trim();
+  const content = value?.content || {};
+  const text = String(content?.text || content?.raw_text || "").trim();
+  return [summary, text].filter(Boolean).join("\n").trim();
 }
 
 function sessionMessageText(message: any) {
@@ -478,6 +535,27 @@ function buildRunBlockers(run: any, sessionEvents: any[], runEvents: any[]) {
       "This run does not expose a linked session transcript, so only telemetry/history are available.",
       "run"
     );
+  }
+  for (const output of extractRunNodeOutputs(run)) {
+    const body = nodeOutputText(output.value);
+    if (!body) continue;
+    const lower = body.toLowerCase();
+    if (
+      lower.includes("could not complete") ||
+      lower.includes("invalid attachment") ||
+      lower.includes("timed out") ||
+      lower.includes("blocked") ||
+      lower.includes("no email delivery tool") ||
+      lower.includes("auth was not approved")
+    ) {
+      push(
+        `node-output-${output.nodeId}`,
+        `Node issue: ${output.nodeId}`,
+        shortText(body, 360),
+        output.nodeId,
+        Number(output.value?.created_at_ms || output.value?.createdAtMs || 0)
+      );
+    }
   }
 
   [...sessionEvents, ...runEvents].forEach((row: any) => {
@@ -1180,6 +1258,7 @@ function Step4Review({
   onResetPlanningChat,
   isResettingPlanningChat,
   plannerError,
+  plannerDiagnostics,
   generatedSkill,
   installStatus,
 }: {
@@ -1196,6 +1275,7 @@ function Step4Review({
   onResetPlanningChat: () => void;
   isResettingPlanningChat: boolean;
   plannerError: string;
+  plannerDiagnostics: any;
   generatedSkill: any;
   installStatus: string;
 }) {
@@ -1264,6 +1344,10 @@ function Step4Review({
     ? formatAutomationV2ScheduleLabel(planPreview.schedule)
     : wizardSchedule;
   const effectivePlanTitle = String(planPreview?.title || "").trim();
+  const plannerFallbackReason = String(
+    plannerDiagnostics?.fallback_reason || plannerDiagnostics?.fallbackReason || ""
+  ).trim();
+  const plannerFallbackDetail = String(plannerDiagnostics?.detail || "").trim();
 
   return (
     <div className="grid gap-4">
@@ -1428,6 +1512,20 @@ function Step4Review({
       {plannerError ? (
         <div className="rounded-xl border border-red-500/40 bg-red-950/30 p-3 text-sm text-red-200">
           {plannerError}
+        </div>
+      ) : null}
+
+      {plannerFallbackReason ? (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 p-3 text-sm text-amber-100">
+          <div className="font-medium text-amber-200">Planner fallback</div>
+          <div className="mt-1">
+            Reason: <code className="text-xs">{plannerFallbackReason}</code>
+          </div>
+          {plannerFallbackDetail ? (
+            <div className="mt-2 text-xs text-amber-200/90 whitespace-pre-wrap">
+              {plannerFallbackDetail}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -1596,6 +1694,7 @@ function CreateWizard({
   const [planningConversation, setPlanningConversation] = useState<any>(null);
   const [planningChangeSummary, setPlanningChangeSummary] = useState<string[]>([]);
   const [plannerError, setPlannerError] = useState<string>("");
+  const [plannerDiagnostics, setPlannerDiagnostics] = useState<any>(null);
   const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false);
   const [workspaceBrowserDir, setWorkspaceBrowserDir] = useState("");
   const [workspaceBrowserSearch, setWorkspaceBrowserSearch] = useState("");
@@ -1765,12 +1864,14 @@ function CreateWizard({
       setPlanningConversation(res?.conversation || null);
       setPlanningChangeSummary([]);
       setPlannerError("");
+      setPlannerDiagnostics(res?.planner_diagnostics || res?.plannerDiagnostics || null);
     },
     onError: (error) => {
       setPlanPreview(null);
       setPlanningConversation(null);
       setPlanningChangeSummary([]);
       setPlannerError(error instanceof Error ? error.message : String(error));
+      setPlannerDiagnostics(null);
     },
   });
 
@@ -1795,6 +1896,7 @@ function CreateWizard({
       setPlannerError(
         typeof res?.clarifier?.question === "string" ? String(res.clarifier.question) : ""
       );
+      setPlannerDiagnostics(res?.planner_diagnostics || res?.plannerDiagnostics || null);
     },
     onError: (error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -1817,6 +1919,7 @@ function CreateWizard({
       setPlanningConversation(res?.conversation || null);
       setPlanningChangeSummary([]);
       setPlannerError("");
+      setPlannerDiagnostics(res?.planner_diagnostics || res?.plannerDiagnostics || null);
     },
     onError: (error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -2274,6 +2377,7 @@ function CreateWizard({
               }}
               isResettingPlanningChat={planningResetMutation.isPending}
               plannerError={plannerError}
+              plannerDiagnostics={plannerDiagnostics}
               generatedSkill={generatedSkill}
               installStatus={installStatus}
             />
@@ -2354,6 +2458,7 @@ function MyAutomations({
   );
   const sessionLogRef = useRef<HTMLDivElement | null>(null);
   const [sessionLogPinnedToBottom, setSessionLogPinnedToBottom] = useState(true);
+  const isWorkflowRun = selectedRunId.startsWith("automation-v2-run-");
 
   const automationsQuery = useQuery({
     queryKey: ["automations", "list"],
@@ -2379,12 +2484,16 @@ function MyAutomations({
   const runDetailQuery = useQuery({
     queryKey: ["automations", "run", selectedRunId],
     enabled: !!selectedRunId,
-    queryFn: () => client?.automations?.getRun?.(selectedRunId).catch(() => ({ run: null })),
+    queryFn: () =>
+      (isWorkflowRun
+        ? client?.automationsV2?.getRun?.(selectedRunId)
+        : client?.automations?.getRun?.(selectedRunId)
+      )?.catch(() => ({ run: null })) ?? Promise.resolve({ run: null }),
     refetchInterval: selectedRunId ? 5000 : false,
   });
   const runArtifactsQuery = useQuery({
     queryKey: ["automations", "run", "artifacts", selectedRunId],
-    enabled: !!selectedRunId,
+    enabled: !!selectedRunId && !isWorkflowRun,
     queryFn: () =>
       client?.automations?.listArtifacts?.(selectedRunId).catch(() => ({ artifacts: [] })),
     refetchInterval: selectedRunId ? 8000 : false,
@@ -3000,16 +3109,26 @@ function MyAutomations({
             </div>
             {activeRuns.slice(0, 14).map((run: any, index: number) => {
               const runId = String(run?.run_id || run?.id || index).trim();
+              const startedAt =
+                run?.started_at_ms || run?.startedAtMs || run?.created_at_ms || run?.createdAtMs;
               return (
                 <div key={runId || index} className="tcp-list-item">
                   <div className="flex items-center justify-between gap-2">
                     <div className="grid gap-0.5">
-                      <span className="font-medium text-sm">
-                        {String(run?.name || run?.automation_id || run?.routine_id || "Run")}
-                      </span>
+                      <span className="font-medium text-sm">{runDisplayTitle(run)}</span>
                       <span className="tcp-subtle text-xs">
                         {runId || "unknown run"} · running for {runTimeLabel(run)}
                       </span>
+                      {formatRunDateTime(startedAt) ? (
+                        <span className="tcp-subtle text-xs">
+                          Started: {formatRunDateTime(startedAt)}
+                        </span>
+                      ) : null}
+                      {runObjectiveText(run) ? (
+                        <span className="text-xs text-slate-400">
+                          {shortText(runObjectiveText(run), 160)}
+                        </span>
+                      ) : null}
                     </div>
                     <span className={statusColor(run?.status)}>
                       {String(run?.status || "unknown")}
@@ -3063,13 +3182,36 @@ function MyAutomations({
           {runs.slice(0, 12).map((run: any, index: number) => (
             <div key={String(run?.run_id || run?.id || index)} className="tcp-list-item">
               <div className="flex items-center justify-between gap-2">
-                <span className="font-medium text-sm">
-                  {String(run?.name || run?.automation_id || run?.routine_id || "Run")}
-                </span>
+                <span className="font-medium text-sm">{runDisplayTitle(run)}</span>
                 <span className={statusColor(run?.status)}>{String(run?.status || "unknown")}</span>
               </div>
               <div className="mt-1 flex items-center justify-between gap-2">
-                <span className="tcp-subtle text-xs">{String(run?.run_id || run?.id || "")}</span>
+                <div className="grid gap-0.5">
+                  <span className="tcp-subtle text-xs">{String(run?.run_id || run?.id || "")}</span>
+                  {formatRunDateTime(
+                    run?.started_at_ms || run?.startedAtMs || run?.created_at_ms || run?.createdAtMs
+                  ) ? (
+                    <span className="tcp-subtle text-xs">
+                      Started:{" "}
+                      {formatRunDateTime(
+                        run?.started_at_ms ||
+                          run?.startedAtMs ||
+                          run?.created_at_ms ||
+                          run?.createdAtMs
+                      )}
+                    </span>
+                  ) : null}
+                  {run?.finished_at_ms || run?.finishedAtMs ? (
+                    <span className="tcp-subtle text-xs">
+                      Finished: {formatRunDateTime(run?.finished_at_ms || run?.finishedAtMs)}
+                    </span>
+                  ) : null}
+                  {runObjectiveText(run) ? (
+                    <span className="text-xs text-slate-400">
+                      {shortText(runObjectiveText(run), 160)}
+                    </span>
+                  ) : null}
+                </div>
                 <button
                   className="tcp-btn h-7 px-2 text-xs"
                   onClick={() => {
@@ -3102,7 +3244,7 @@ function MyAutomations({
             onClick={() => onSelectRunId("")}
           >
             <motion.div
-              className="tcp-confirm-dialog max-h-[88vh] w-[min(110rem,97vw)] overflow-hidden"
+              className="tcp-confirm-dialog tcp-run-debugger-modal overflow-hidden"
               initial={{ opacity: 0, y: 8, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 6, scale: 0.98 }}
@@ -3117,6 +3259,18 @@ function MyAutomations({
                     {" · "}run: {selectedRunId}
                     {" · "}running for {runTimeLabel(selectedRun)}
                   </div>
+                  {isWorkflowRun ? (
+                    <div className="tcp-subtle text-xs">
+                      completed nodes:{" "}
+                      {Array.isArray(selectedRun?.checkpoint?.completed_nodes)
+                        ? selectedRun.checkpoint.completed_nodes.length
+                        : 0}
+                      {" · "}active sessions:{" "}
+                      {Array.isArray(selectedRun?.active_session_ids)
+                        ? selectedRun.active_session_ids.length
+                        : 0}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className={statusColor(selectedRun?.status)}>

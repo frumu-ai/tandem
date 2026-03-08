@@ -1,8 +1,14 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
+use tandem_providers::{ChatMessage, StreamChunk, TokenUsage};
+use tandem_types::{Message, MessagePart, MessageRole, ToolMode};
+use tokio_util::sync::CancellationToken;
+use tracing::Level;
 use uuid::Uuid;
 
 use super::*;
@@ -117,12 +123,17 @@ pub(super) async fn workflow_plan_preview(
         )
     })?;
     let plan = build.plan;
+    let planner_diagnostics = build.planner_diagnostics.clone();
     state
-        .put_workflow_plan_draft(workflow_plan_draft_from_plan(plan.clone()))
+        .put_workflow_plan_draft(workflow_plan_draft_from_plan(
+            plan.clone(),
+            planner_diagnostics.clone(),
+        ))
         .await;
     Ok(Json(json!({
         "plan": plan,
         "clarifier": build.clarifier,
+        "planner_diagnostics": planner_diagnostics,
         "assistant_message": build.assistant_text.map(|text| json!({
             "role": "assistant",
             "text": text,
@@ -175,7 +186,7 @@ pub(super) async fn workflow_plan_chat_start(
         )
     })?;
     let plan = build.plan;
-    let mut draft = workflow_plan_draft_from_plan(plan.clone());
+    let mut draft = workflow_plan_draft_from_plan(plan.clone(), build.planner_diagnostics.clone());
     if let Some(text) = build.assistant_text.clone() {
         draft
             .conversation
@@ -191,6 +202,7 @@ pub(super) async fn workflow_plan_chat_start(
     Ok(Json(json!({
         "plan": draft.current_plan,
         "conversation": draft.conversation,
+        "planner_diagnostics": draft.planner_diagnostics,
         "clarifier": build.clarifier,
         "assistant_message": build.assistant_text.map(|text| json!({
             "role": "assistant",
@@ -216,6 +228,7 @@ pub(super) async fn workflow_plan_get(
     Ok(Json(json!({
         "plan": draft.current_plan,
         "conversation": draft.conversation,
+        "planner_diagnostics": draft.planner_diagnostics,
     })))
 }
 
@@ -279,6 +292,7 @@ pub(super) async fn workflow_plan_chat_message(
         },
         "change_summary": change_summary,
         "clarifier": clarifier,
+        "planner_diagnostics": draft.planner_diagnostics,
     })))
 }
 
@@ -320,6 +334,7 @@ pub(super) async fn workflow_plan_chat_reset(
     Ok(Json(json!({
         "plan": draft.current_plan,
         "conversation": draft.conversation,
+        "planner_diagnostics": draft.planner_diagnostics,
     })))
 }
 
@@ -572,7 +587,10 @@ fn normalize_string_list(raw: Vec<String>) -> Vec<String> {
     values
 }
 
-fn workflow_plan_draft_from_plan(plan: crate::WorkflowPlan) -> crate::WorkflowPlanDraftRecord {
+fn workflow_plan_draft_from_plan(
+    plan: crate::WorkflowPlan,
+    planner_diagnostics: Option<Value>,
+) -> crate::WorkflowPlanDraftRecord {
     let now = crate::now_ms();
     crate::WorkflowPlanDraftRecord {
         initial_plan: plan.clone(),
@@ -584,6 +602,7 @@ fn workflow_plan_draft_from_plan(plan: crate::WorkflowPlan) -> crate::WorkflowPl
             updated_at_ms: now,
             messages: Vec::new(),
         },
+        planner_diagnostics,
     }
 }
 
@@ -591,6 +610,7 @@ struct WorkflowPlanBuildOutput {
     plan: crate::WorkflowPlan,
     assistant_text: Option<String>,
     clarifier: Value,
+    planner_diagnostics: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -639,6 +659,26 @@ struct PlannerRevisionPayload {
     plan: Option<Value>,
 }
 
+#[derive(Debug, Clone)]
+struct PlannerInvocationFailure {
+    reason: String,
+    detail: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct PlannerCapabilitySummary {
+    built_in_capabilities: Vec<String>,
+    mcp_servers: Vec<PlannerMcpServerCapabilitySummary>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct PlannerMcpServerCapabilitySummary {
+    server: String,
+    tool_count: usize,
+    capabilities: Vec<String>,
+    sample_tools: Vec<String>,
+}
+
 enum PlannerPlanMode {
     Create,
     Revise,
@@ -655,6 +695,17 @@ struct PlannerPlanNormalizationContext<'a> {
     explicit_schedule: Option<&'a crate::AutomationV2Schedule>,
     request_allowed_mcp_servers: &'a [String],
     request_operator_preferences: Option<&'a Value>,
+}
+
+fn planner_diagnostics(reason: impl Into<String>, detail: Option<String>) -> Option<Value> {
+    let reason = reason.into();
+    if reason.trim().is_empty() {
+        return None;
+    }
+    Some(json!({
+        "fallback_reason": reason,
+        "detail": detail.filter(|value| !value.trim().is_empty()),
+    }))
 }
 
 async fn build_workflow_plan(
@@ -690,7 +741,7 @@ async fn build_workflow_plan(
 
     if let Some(model) = planner_model_spec(operator_preferences.as_ref()) {
         if planner_model_provider_is_configured(state, &model).await {
-            if let Some(payload) = try_llm_build_workflow_plan(
+            match try_llm_build_workflow_plan(
                 state,
                 &model,
                 prompt,
@@ -703,19 +754,73 @@ async fn build_workflow_plan(
             )
             .await
             {
-                match payload.action {
+                Ok(payload) => match payload.action {
                     PlannerBuildAction::Build => {
                         if let Some(candidate) = payload.plan.and_then(decode_planner_plan_value) {
-                            if let Ok(plan) =
-                                normalize_and_validate_planner_plan(candidate, &normalization_ctx)
+                            match normalize_and_validate_planner_plan(candidate, &normalization_ctx)
                             {
-                                return Ok(WorkflowPlanBuildOutput {
-                                    plan,
-                                    assistant_text: payload.assistant_text,
-                                    clarifier: Value::Null,
-                                });
+                                Ok(plan) => {
+                                    return Ok(WorkflowPlanBuildOutput {
+                                        plan,
+                                        assistant_text: payload.assistant_text,
+                                        clarifier: Value::Null,
+                                        planner_diagnostics: None,
+                                    });
+                                }
+                                Err(error) => {
+                                    let detail = truncate_text(&error, 500);
+                                    tracing::warn!(
+                                        plan_id = %plan_id,
+                                        plan_source = %plan_source,
+                                        "workflow planner llm output rejected by validation: {detail}"
+                                    );
+                                    return Ok(WorkflowPlanBuildOutput {
+                                        plan: build_minimal_fallback_plan(
+                                            &plan_id,
+                                            &planner_version,
+                                            plan_source,
+                                            prompt,
+                                            &normalized_prompt,
+                                            title.clone(),
+                                            workspace_root.clone(),
+                                            fallback_schedule.clone(),
+                                            allowed_mcp_servers.clone(),
+                                            operator_preferences.clone(),
+                                            Some("Planner fallback draft. The planner returned a workflow that Tandem could not validate.".to_string()),
+                                        ),
+                                        assistant_text: payload.assistant_text.or(Some(
+                                            "The planner returned a workflow Tandem could not validate. Tandem used a minimal fallback plan instead.".to_string(),
+                                        )),
+                                        clarifier: Value::Null,
+                                        planner_diagnostics: planner_diagnostics(
+                                            "validation_rejected",
+                                            Some(detail),
+                                        ),
+                                    });
+                                }
                             }
                         }
+                        return Ok(WorkflowPlanBuildOutput {
+                            plan: build_minimal_fallback_plan(
+                                &plan_id,
+                                &planner_version,
+                                plan_source,
+                                prompt,
+                                &normalized_prompt,
+                                title.clone(),
+                                workspace_root.clone(),
+                                fallback_schedule.clone(),
+                                allowed_mcp_servers.clone(),
+                                operator_preferences.clone(),
+                                Some("Planner fallback draft. The planner returned an invalid JSON plan.".to_string()),
+                            ),
+                            assistant_text: payload.assistant_text.or(Some(
+                                "The planner returned a response Tandem could not parse into a valid workflow plan."
+                                    .to_string(),
+                            )),
+                            clarifier: Value::Null,
+                            planner_diagnostics: planner_diagnostics("invalid_json", None),
+                        });
                     }
                     PlannerBuildAction::Clarify => {
                         let question = payload
@@ -753,8 +858,40 @@ async fn build_workflow_plan(
                                 "field": field,
                                 "question": question,
                             }),
+                            planner_diagnostics: planner_diagnostics(
+                                "clarification_needed",
+                                None,
+                            ),
                         });
                     }
+                },
+                Err(failure) => {
+                    return Ok(WorkflowPlanBuildOutput {
+                        plan: build_minimal_fallback_plan(
+                            &plan_id,
+                            &planner_version,
+                            plan_source,
+                            prompt,
+                            &normalized_prompt,
+                            title.clone(),
+                            workspace_root.clone(),
+                            fallback_schedule.clone(),
+                            allowed_mcp_servers.clone(),
+                            operator_preferences.clone(),
+                            Some("Planner fallback draft. Tandem could not complete a provider-safe planning call for this model.".to_string()),
+                        ),
+                        assistant_text: Some(
+                            failure
+                                .detail
+                                .clone()
+                                .unwrap_or_else(|| "The planner could not complete a valid provider call. Tandem used a minimal fallback workflow instead.".to_string()),
+                        ),
+                        clarifier: Value::Null,
+                        planner_diagnostics: planner_diagnostics(
+                            failure.reason,
+                            failure.detail,
+                        ),
+                    });
                 }
             }
         } else {
@@ -778,6 +915,7 @@ async fn build_workflow_plan(
                     "field": "general",
                     "question": question,
                 }),
+                planner_diagnostics: planner_diagnostics("provider_unconfigured", None),
             });
         }
     }
@@ -801,6 +939,7 @@ async fn build_workflow_plan(
         ),
         assistant_text: None,
         clarifier: Value::Null,
+        planner_diagnostics: planner_diagnostics("no_planner_model", None),
     })
 }
 
@@ -1213,7 +1352,8 @@ async fn try_llm_build_workflow_plan(
     workspace_root: &str,
     allowed_mcp_servers: &[String],
     operator_preferences: Option<&Value>,
-) -> Option<PlannerBuildPayload> {
+) -> Result<PlannerBuildPayload, PlannerInvocationFailure> {
+    let capability_summary = build_planner_capability_summary(state, allowed_mcp_servers).await;
     let payload = invoke_planner_llm(
         state,
         "Workflow Planner Create",
@@ -1227,13 +1367,17 @@ async fn try_llm_build_workflow_plan(
             workspace_root,
             allowed_mcp_servers,
             operator_preferences,
+            &capability_summary,
         ),
         format!("workflow-plan-build:{plan_source}"),
         planner_build_timeout_ms(),
         "TANDEM_WORKFLOW_PLANNER_TEST_BUILD_RESPONSE",
     )
     .await?;
-    serde_json::from_value(payload).ok()
+    serde_json::from_value(payload).map_err(|error| PlannerInvocationFailure {
+        reason: "invalid_json".to_string(),
+        detail: Some(truncate_text(&error.to_string(), 500)),
+    })
 }
 
 async fn try_llm_revise_workflow_plan(
@@ -1242,19 +1386,29 @@ async fn try_llm_revise_workflow_plan(
     current_plan: &crate::WorkflowPlan,
     conversation: &crate::WorkflowPlanConversation,
     message: &str,
-) -> Option<PlannerRevisionPayload> {
+) -> Result<PlannerRevisionPayload, PlannerInvocationFailure> {
+    let capability_summary =
+        build_planner_capability_summary(state, &current_plan.allowed_mcp_servers).await;
     let payload = invoke_planner_llm(
         state,
         "Workflow Planner Revision",
         &current_plan.workspace_root,
         model.clone(),
-        build_llm_workflow_revision_prompt(current_plan, conversation, message),
+        build_llm_workflow_revision_prompt(
+            current_plan,
+            conversation,
+            message,
+            &capability_summary,
+        ),
         format!("workflow-plan-revision:{}", current_plan.plan_id),
         planner_revision_timeout_ms(),
         "TANDEM_WORKFLOW_PLANNER_TEST_REVISION_RESPONSE",
     )
     .await?;
-    serde_json::from_value(payload).ok()
+    serde_json::from_value(payload).map_err(|error| PlannerInvocationFailure {
+        reason: "invalid_json".to_string(),
+        detail: Some(truncate_text(&error.to_string(), 500)),
+    })
 }
 
 async fn invoke_planner_llm(
@@ -1263,75 +1417,314 @@ async fn invoke_planner_llm(
     workspace_root: &str,
     model: tandem_types::ModelSpec,
     prompt: String,
-    run_key: String,
+    _run_key: String,
     timeout_ms: u64,
     override_env: &str,
-) -> Option<Value> {
+) -> Result<Value, PlannerInvocationFailure> {
     if let Some(payload) = planner_test_override_payload(override_env, true) {
-        return Some(payload);
+        return Ok(payload);
     }
     let workspace_root = resolve_workspace_root(state, Some(workspace_root))
         .await
-        .ok()?;
+        .map_err(|error| PlannerInvocationFailure {
+            reason: "invalid_workspace_root".to_string(),
+            detail: Some(error),
+        })?;
     let mut session = Session::new(
         Some(session_title.to_string()),
         Some(workspace_root.clone()),
     );
     let session_id = session.id.clone();
     session.workspace_root = Some(workspace_root.clone());
-    state.storage.save_session(session).await.ok()?;
-    let request = SendMessageRequest {
-        parts: vec![MessagePartInput::Text { text: prompt }],
-        model: Some(model),
-        agent: None,
-        tool_mode: None,
-        tool_allowlist: None,
-        context_mode: None,
-        write_required: None,
+    state
+        .storage
+        .save_session(session)
+        .await
+        .map_err(|error| PlannerInvocationFailure {
+            reason: "storage_error".to_string(),
+            detail: Some(truncate_text(&error.to_string(), 500)),
+        })?;
+    state
+        .storage
+        .append_message(
+            &session_id,
+            Message::new(
+                MessageRole::User,
+                vec![MessagePart::Text {
+                    text: prompt.clone(),
+                }],
+            ),
+        )
+        .await
+        .map_err(|error| PlannerInvocationFailure {
+            reason: "storage_error".to_string(),
+            detail: Some(truncate_text(&error.to_string(), 500)),
+        })?;
+
+    let cancel = CancellationToken::new();
+    emit_event(
+        Level::INFO,
+        ProcessKind::Engine,
+        ObservabilityEvent {
+            event: "provider.call.start",
+            component: "workflow.planner",
+            correlation_id: None,
+            session_id: Some(&session_id),
+            run_id: None,
+            message_id: None,
+            provider_id: Some(model.provider_id.as_str()),
+            model_id: Some(model.model_id.as_str()),
+            status: Some("dispatch"),
+            error_code: None,
+            detail: Some("planner provider dispatch"),
+        },
+    );
+
+    let planner_future = async {
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: prompt,
+            attachments: Vec::new(),
+        }];
+        let stream = state
+            .providers
+            .stream_for_provider(
+                Some(model.provider_id.as_str()),
+                Some(model.model_id.as_str()),
+                messages,
+                ToolMode::None,
+                None,
+                cancel.clone(),
+            )
+            .await
+            .map_err(|error| PlannerInvocationFailure {
+                reason: classify_planner_provider_failure_reason(&error.to_string()).to_string(),
+                detail: Some(truncate_text(&error.to_string(), 500)),
+            })?;
+        tokio::pin!(stream);
+        let mut output = String::new();
+        let mut saw_first_delta = false;
+        let mut usage: Option<TokenUsage> = None;
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(StreamChunk::TextDelta(delta)) => {
+                    if !saw_first_delta && !delta.trim().is_empty() {
+                        saw_first_delta = true;
+                        emit_event(
+                            Level::INFO,
+                            ProcessKind::Engine,
+                            ObservabilityEvent {
+                                event: "provider.call.first_byte",
+                                component: "workflow.planner",
+                                correlation_id: None,
+                                session_id: Some(&session_id),
+                                run_id: None,
+                                message_id: None,
+                                provider_id: Some(model.provider_id.as_str()),
+                                model_id: Some(model.model_id.as_str()),
+                                status: Some("streaming"),
+                                error_code: None,
+                                detail: Some("first text delta"),
+                            },
+                        );
+                    }
+                    output.push_str(&delta);
+                }
+                Ok(StreamChunk::ReasoningDelta(delta)) => {
+                    output.push_str(&delta);
+                }
+                Ok(StreamChunk::Done {
+                    finish_reason: _,
+                    usage: provider_usage,
+                }) => {
+                    usage = provider_usage;
+                    break;
+                }
+                Ok(StreamChunk::ToolCallStart { .. })
+                | Ok(StreamChunk::ToolCallDelta { .. })
+                | Ok(StreamChunk::ToolCallEnd { .. }) => {}
+                Err(error) => {
+                    return Err(PlannerInvocationFailure {
+                        reason: classify_planner_provider_failure_reason(&error.to_string())
+                            .to_string(),
+                        detail: Some(truncate_text(&error.to_string(), 500)),
+                    });
+                }
+            }
+        }
+        Ok::<(String, Option<TokenUsage>), PlannerInvocationFailure>((output, usage))
     };
-    let run_result = tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        state.engine_loop.run_prompt_async_with_context(
-            session_id.clone(),
-            request,
-            Some(run_key.clone()),
-        ),
-    )
-    .await;
-    match run_result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            tracing::warn!(
-                session_id = %session_id,
-                run_key = %run_key,
-                workspace_root = %workspace_root,
-                "workflow planner llm call failed: {error}"
-            );
-            return None;
-        }
-        Err(_) => {
-            let _ = state.cancellations.cancel(&session_id).await;
-            tracing::warn!(
-                session_id = %session_id,
-                run_key = %run_key,
-                timeout_ms,
-                workspace_root = %workspace_root,
-                "workflow planner llm call timed out before completion"
-            );
-            return None;
-        }
-    }
-    let session = state.storage.get_session(&session_id).await?;
-    let output = extract_planner_session_text_output(&session);
+
+    let output =
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), planner_future)
+            .await
+        {
+            Ok(Ok((output, usage))) => {
+                let finish_detail = usage
+                    .as_ref()
+                    .map(|value| {
+                        format!(
+                            "planner stream complete (prompt={}, completion={})",
+                            value.prompt_tokens, value.completion_tokens
+                        )
+                    })
+                    .unwrap_or_else(|| "planner stream complete".to_string());
+                emit_event(
+                    Level::INFO,
+                    ProcessKind::Engine,
+                    ObservabilityEvent {
+                        event: "provider.call.finish",
+                        component: "workflow.planner",
+                        correlation_id: None,
+                        session_id: Some(&session_id),
+                        run_id: None,
+                        message_id: None,
+                        provider_id: Some(model.provider_id.as_str()),
+                        model_id: Some(model.model_id.as_str()),
+                        status: Some("completed"),
+                        error_code: None,
+                        detail: Some(&finish_detail),
+                    },
+                );
+                output
+            }
+            Ok(Err(error)) => {
+                emit_event(
+                    Level::ERROR,
+                    ProcessKind::Engine,
+                    ObservabilityEvent {
+                        event: "provider.call.error",
+                        component: "workflow.planner",
+                        correlation_id: None,
+                        session_id: Some(&session_id),
+                        run_id: None,
+                        message_id: None,
+                        provider_id: Some(model.provider_id.as_str()),
+                        model_id: Some(model.model_id.as_str()),
+                        status: Some("failed"),
+                        error_code: Some(error.reason.as_str()),
+                        detail: error.detail.as_deref(),
+                    },
+                );
+                return Err(error);
+            }
+            Err(_) => {
+                cancel.cancel();
+                emit_event(
+                    Level::WARN,
+                    ProcessKind::Engine,
+                    ObservabilityEvent {
+                        event: "provider.call.error",
+                        component: "workflow.planner",
+                        correlation_id: None,
+                        session_id: Some(&session_id),
+                        run_id: None,
+                        message_id: None,
+                        provider_id: Some(model.provider_id.as_str()),
+                        model_id: Some(model.model_id.as_str()),
+                        status: Some("failed"),
+                        error_code: Some("timeout"),
+                        detail: Some("workflow planner llm call timed out before completion"),
+                    },
+                );
+                return Err(PlannerInvocationFailure {
+                    reason: "timeout".to_string(),
+                    detail: Some("Workflow planner timed out before completion.".to_string()),
+                });
+            }
+        };
+
     if output.trim().is_empty() {
-        tracing::warn!(
-            session_id = %session_id,
-            run_key = %run_key,
-            "workflow planner llm completed without persisted assistant text"
-        );
-        return None;
+        return Err(PlannerInvocationFailure {
+            reason: "empty_output".to_string(),
+            detail: Some("Workflow planner completed without assistant text.".to_string()),
+        });
     }
-    extract_json_value_from_text(&output)
+    state
+        .storage
+        .append_message(
+            &session_id,
+            Message::new(
+                MessageRole::Assistant,
+                vec![MessagePart::Text {
+                    text: output.clone(),
+                }],
+            ),
+        )
+        .await
+        .map_err(|error| PlannerInvocationFailure {
+            reason: "storage_error".to_string(),
+            detail: Some(truncate_text(&error.to_string(), 500)),
+        })?;
+    extract_json_value_from_text(&output).ok_or_else(|| PlannerInvocationFailure {
+        reason: "invalid_json".to_string(),
+        detail: Some("Workflow planner returned text without valid JSON.".to_string()),
+    })
+}
+
+fn classify_planner_provider_failure_reason(error: &str) -> &'static str {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("array too long") || lower.contains("maximum length 128") {
+        "tool_schema_too_large"
+    } else if lower.contains("invalid function name")
+        || lower.contains("function_declarations")
+        || lower.contains("tools[0]")
+    {
+        "provider_tool_schema_invalid"
+    } else {
+        "provider_request_failed"
+    }
+}
+
+async fn build_planner_capability_summary(
+    state: &AppState,
+    allowed_mcp_servers: &[String],
+) -> Value {
+    let mut servers = Vec::new();
+    for server in allowed_mcp_servers {
+        let tools = state.mcp.server_tools(server).await;
+        let mut capabilities = std::collections::BTreeSet::new();
+        let mut sample_tools = Vec::new();
+        for tool in tools.iter().take(8) {
+            let tool_name = tool.namespaced_name.trim().to_string();
+            if !tool_name.is_empty() {
+                sample_tools.push(tool_name.clone());
+            }
+            let lower = tool.tool_name.to_ascii_lowercase();
+            if lower.contains("gmail_send_email") || lower.contains("send_email") {
+                capabilities.insert("email_send".to_string());
+            }
+            if lower.contains("gmail_send_draft") || lower.contains("send_draft") {
+                capabilities.insert("email_draft".to_string());
+            }
+            if lower.contains("reddit") {
+                capabilities.insert("reddit_research".to_string());
+            }
+            if lower.contains("search") {
+                capabilities.insert("search".to_string());
+            }
+            if lower.contains("docs") || lower.contains("document") {
+                capabilities.insert("docs".to_string());
+            }
+            if lower.contains("slack") {
+                capabilities.insert("slack_delivery".to_string());
+            }
+        }
+        servers.push(PlannerMcpServerCapabilitySummary {
+            server: server.to_string(),
+            tool_count: tools.len(),
+            capabilities: capabilities.into_iter().collect(),
+            sample_tools,
+        });
+    }
+    json!(PlannerCapabilitySummary {
+        built_in_capabilities: vec![
+            "web_research".to_string(),
+            "web_fetch".to_string(),
+            "workspace_read".to_string(),
+        ],
+        mcp_servers: servers,
+    })
 }
 
 fn parse_llm_revision_payload(
@@ -1485,6 +1878,7 @@ fn build_llm_workflow_creation_prompt(
     workspace_root: &str,
     allowed_mcp_servers: &[String],
     operator_preferences: Option<&Value>,
+    capability_summary: &Value,
 ) -> String {
     format!(
         concat!(
@@ -1518,6 +1912,11 @@ fn build_llm_workflow_creation_prompt(
             "- explicit_schedule: {}\n",
             "- allowed_mcp_servers: {}\n",
             "- operator_preferences: {}\n",
+            "Planner capability summary (use this instead of inventing tools):\n{}\n",
+            "Delivery rule:\n",
+            "- plan email delivery only when the capability summary shows email_send or email_draft\n",
+            "- default email delivery to inline body content\n",
+            "- only plan an attachment when a workflow step is expected to produce a concrete attachment artifact such as an upload result or valid s3key\n",
             "Return one of:\n",
             "{{\"action\":\"build\",\"assistant_text\":\"...\",\"plan\":{{...full WorkflowPlan...}}}}\n",
             "{{\"action\":\"clarify\",\"assistant_text\":\"...\",\"clarifier\":{{\"field\":\"general\",\"question\":\"...\"}}}}\n",
@@ -1530,6 +1929,7 @@ fn build_llm_workflow_creation_prompt(
         serde_json::to_string_pretty(&explicit_schedule).unwrap_or_else(|_| "null".to_string()),
         serde_json::to_string_pretty(&allowed_mcp_servers).unwrap_or_else(|_| "[]".to_string()),
         serde_json::to_string_pretty(&operator_preferences).unwrap_or_else(|_| "null".to_string()),
+        serde_json::to_string_pretty(capability_summary).unwrap_or_else(|_| "{}".to_string()),
         prompt.trim(),
         normalized_prompt,
     )
@@ -1539,6 +1939,7 @@ fn build_llm_workflow_revision_prompt(
     current_plan: &crate::WorkflowPlan,
     conversation: &crate::WorkflowPlanConversation,
     message: &str,
+    capability_summary: &Value,
 ) -> String {
     let transcript = conversation
         .messages
@@ -1576,6 +1977,10 @@ fn build_llm_workflow_revision_prompt(
             "- max_parallel_agents: 1..16\n",
             "- model_provider + model_id\n",
             "- role_models.planner.provider_id + role_models.planner.model_id\n",
+            "Planner capability summary (use this instead of inventing tools):\n{}\n",
+            "Delivery rule:\n",
+            "- keep email delivery inline by default\n",
+            "- only preserve or add attachment behavior when the workflow has a concrete attachment artifact with a valid s3key/upload result\n",
             "Return one of:\n",
             "{{\"action\":\"revise\",\"assistant_text\":\"...\",\"change_summary\":[\"...\"],\"plan\":{{...full WorkflowPlan...}}}}\n",
             "{{\"action\":\"clarify\",\"assistant_text\":\"...\",\"clarifier\":{{\"field\":\"general\",\"question\":\"...\"}}}}\n",
@@ -1586,6 +1991,7 @@ fn build_llm_workflow_revision_prompt(
             "User revision request:\n{}\n"
         ),
         ALLOWED_WORKFLOW_STEP_IDS.join(", "),
+        serde_json::to_string_pretty(capability_summary).unwrap_or_else(|_| "{}".to_string()),
         current_plan.original_prompt.trim(),
         serde_json::to_string_pretty(current_plan).unwrap_or_else(|_| "{}".to_string()),
         if transcript.trim().is_empty() {
@@ -1595,28 +2001,6 @@ fn build_llm_workflow_revision_prompt(
         },
         message.trim(),
     )
-}
-
-fn extract_planner_session_text_output(session: &Session) -> String {
-    session
-        .messages
-        .iter()
-        .rev()
-        .find(|message| matches!(message.role, MessageRole::Assistant))
-        .map(|message| {
-            message
-                .parts
-                .iter()
-                .filter_map(|part| match part {
-                    MessagePart::Text { text } | MessagePart::Reasoning { text } => {
-                        Some(text.as_str())
-                    }
-                    MessagePart::ToolInvocation { .. } => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
 }
 
 pub(crate) fn extract_json_value_from_text(text: &str) -> Option<Value> {
@@ -1831,6 +2215,7 @@ fn compile_plan_to_automation_v2(
         })
         .or(Some(1));
     let model_policy = compile_operator_model_policy(plan.operator_preferences.as_ref());
+    let tool_allowlist = compile_workflow_agent_tool_allowlist(&plan.allowed_mcp_servers);
     let agent_roles = plan
         .steps
         .iter()
@@ -1846,7 +2231,7 @@ fn compile_plan_to_automation_v2(
             model_policy: model_policy.clone(),
             skills: Vec::new(),
             tool_policy: crate::AutomationAgentToolPolicy {
-                allowlist: vec!["read".to_string()],
+                allowlist: tool_allowlist.clone(),
                 denylist: Vec::new(),
             },
             mcp_policy: crate::AutomationAgentMcpPolicy {
@@ -1903,6 +2288,40 @@ fn compile_plan_to_automation_v2(
         })),
         next_fire_at_ms: None,
         last_fired_at_ms: None,
+    }
+}
+
+fn compile_workflow_agent_tool_allowlist(allowed_mcp_servers: &[String]) -> Vec<String> {
+    let mut allowlist = vec![
+        "read".to_string(),
+        "websearch".to_string(),
+        "webfetch".to_string(),
+        "webfetch_html".to_string(),
+    ];
+    for server in allowed_mcp_servers {
+        let namespace = normalize_mcp_server_namespace(server);
+        allowlist.push(format!("mcp.{namespace}.*"));
+    }
+    crate::normalize_allowed_tools(allowlist)
+}
+
+fn normalize_mcp_server_namespace(raw: &str) -> String {
+    let mut out = String::new();
+    let mut previous_underscore = false;
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            previous_underscore = false;
+        } else if !previous_underscore {
+            out.push('_');
+            previous_underscore = true;
+        }
+    }
+    let cleaned = out.trim_matches('_');
+    if cleaned.is_empty() {
+        "server".to_string()
+    } else {
+        cleaned.to_string()
     }
 }
 
