@@ -1082,6 +1082,69 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
             .and_then(Value::as_str),
         Some("appr-1")
     );
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit?run_id=run-3-ok")
+        .body(Body::empty())
+        .expect("audit request");
+    let audit_resp = app
+        .clone()
+        .oneshot(audit_req)
+        .await
+        .expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    let put_audit_exists = audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                row.get("action").and_then(Value::as_str) == Some("memory_put")
+                    && row.get("audit_id").and_then(Value::as_str) == Some(put_audit_id.as_str())
+                    && row
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .is_some_and(|detail| {
+                            detail.contains("kind=solution_capsule")
+                                && detail.contains("classification=internal")
+                                && detail.contains("artifact_refs=artifact://run-3/task-1/fix.json")
+                                && detail.contains("visibility=private")
+                                && detail.contains("tier=session")
+                                && detail.contains("partition_key=org-1/ws-1/proj-1/session")
+                        })
+            })
+        })
+        .unwrap_or(false);
+    assert!(put_audit_exists);
+    let promote_audit_exists = audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                row.get("action").and_then(Value::as_str) == Some("memory_promote")
+                    && row.get("audit_id").and_then(Value::as_str)
+                        == Some(promote_audit_id.as_str())
+                    && row
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .is_some_and(|detail| {
+                            detail.contains("kind=solution_capsule")
+                                && detail.contains("classification=internal")
+                                && detail.contains("artifact_refs=artifact://run-3/task-1/fix.json")
+                                && detail.contains("visibility=shared")
+                                && detail.contains("tier=project")
+                                && detail.contains("partition_key=org-1/ws-1/proj-1/project")
+                                && detail.contains("source_memory_id=")
+                                && detail.contains("approval_id=appr-1")
+                        })
+            })
+        })
+        .unwrap_or(false);
+    assert!(promote_audit_exists);
 }
 
 #[tokio::test]
@@ -1287,6 +1350,19 @@ async fn memory_list_and_delete_admin_routes_work() {
                     && row.get("status").and_then(Value::as_str) == Some("ok")
                     && row.get("memory_id").and_then(Value::as_str) == Some(memory_id.as_str())
                     && row.get("audit_id").and_then(Value::as_str) == Some(delete_audit_id.as_str())
+                    && row
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .is_some_and(|detail| {
+                            detail.contains("kind=fact")
+                                && detail.contains("classification=internal")
+                                && detail
+                                    .contains("artifact_refs=artifact://run-4/task-1/admin.json")
+                                && detail.contains("visibility=private")
+                                && detail.contains("tier=session")
+                                && detail.contains("partition_key=org-1/ws-1/proj-1/session")
+                                && detail.contains("demoted=false")
+                        })
             })
         })
         .unwrap_or(false);
@@ -1525,6 +1601,19 @@ async fn memory_demote_hides_item_from_search_results() {
                 row.get("action").and_then(Value::as_str) == Some("memory_demote")
                     && row.get("memory_id").and_then(Value::as_str) == Some(memory_id.as_str())
                     && row.get("status").and_then(Value::as_str) == Some("ok")
+                    && row.get("audit_id").and_then(Value::as_str) == Some(demote_audit_id.as_str())
+                    && row
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .is_some_and(|detail| {
+                            detail.contains("kind=fact")
+                                && detail.contains("classification=internal")
+                                && detail.contains("artifact_refs=")
+                                && detail.contains("visibility=private")
+                                && detail.contains("tier=session")
+                                && detail.contains("partition_key=org-1/ws-1/proj-1/session")
+                                && detail.contains("demoted=true")
+                        })
             })
         })
         .unwrap_or(false);

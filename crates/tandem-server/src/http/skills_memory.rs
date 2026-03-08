@@ -1754,6 +1754,11 @@ pub(super) async fn memory_put_impl(
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let artifact_refs = request.artifact_refs.clone();
+    let artifact_ref_labels = artifact_refs
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
     let source_type = match request.kind {
         tandem_memory::MemoryContentKind::SolutionCapsule => "solution_capsule",
         tandem_memory::MemoryContentKind::Note => "note",
@@ -1793,6 +1798,14 @@ pub(super) async fn memory_put_impl(
         updated_at_ms: now,
         expires_at_ms: None,
     };
+    let put_detail = format!(
+        "kind={} classification={} artifact_refs={} visibility=private tier={} partition_key={}",
+        kind,
+        memory_classification_label(record.metadata.as_ref()),
+        artifact_ref_labels,
+        request.partition.tier,
+        partition_key
+    );
     persist_global_memory_record(&state, &db, record).await;
     append_memory_audit(
         &state,
@@ -1806,7 +1819,7 @@ pub(super) async fn memory_put_impl(
             partition_key: partition_key.clone(),
             actor: capability.subject,
             status: "ok".to_string(),
-            detail: None,
+            detail: Some(put_detail),
             created_at_ms: now,
         },
     )
@@ -1994,7 +2007,22 @@ pub(super) async fn memory_promote_impl(
         memory_promote_provenance(source.provenance.as_ref(), &request, &partition_key, now);
     let classification = memory_classification_label(next_metadata.as_ref());
     let artifact_refs = memory_artifact_refs(next_metadata.as_ref());
+    let artifact_ref_labels = artifact_refs
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
     let kind = memory_kind_label(&source.source_type);
+    let promote_detail = format!(
+        "kind={} classification={} artifact_refs={} visibility=shared tier={} partition_key={} source_memory_id={} approval_id={}",
+        kind,
+        classification,
+        artifact_ref_labels,
+        request.to_tier,
+        partition_key,
+        source_memory_id,
+        request.review.approval_id.clone().unwrap_or_default()
+    );
     db.update_global_memory_context(
         &new_id,
         "shared",
@@ -2022,7 +2050,7 @@ pub(super) async fn memory_promote_impl(
             ),
             actor: capability.subject,
             status: "ok".to_string(),
-            detail: None,
+            detail: Some(promote_detail),
             created_at_ms: now,
         },
     )
@@ -2242,6 +2270,18 @@ pub(super) async fn memory_demote(
         .and_then(Value::as_str)
         .unwrap_or("demoted")
         .to_string();
+    let demote_detail = format!(
+        "kind={} classification={} artifact_refs={} visibility=private tier={} partition_key={} demoted=true",
+        memory_kind_label(&record.source_type),
+        memory_classification_label(record.metadata.as_ref()),
+        memory_artifact_refs(record.metadata.as_ref())
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(","),
+        tandem_memory::GovernedMemoryTier::Session,
+        partition_key
+    );
     let audit_id = Uuid::new_v4().to_string();
     append_memory_audit(
         &state,
@@ -2255,7 +2295,7 @@ pub(super) async fn memory_demote(
             partition_key: partition_key.clone(),
             actor: "system".to_string(),
             status: "ok".to_string(),
-            detail: None,
+            detail: Some(demote_detail),
             created_at_ms: crate::now_ms(),
         },
     )
@@ -2369,6 +2409,23 @@ pub(super) async fn memory_delete(
     let now = crate::now_ms();
     let audit_id = Uuid::new_v4().to_string();
     let run_id = record.run_id.clone();
+    let delete_detail = format!(
+        "kind={} classification={} artifact_refs={} visibility={} tier={} partition_key={} demoted={}",
+        memory_kind_label(&record.source_type),
+        memory_classification_label(record.metadata.as_ref()),
+        memory_artifact_refs(record.metadata.as_ref())
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(","),
+        record.visibility,
+        memory_tier_for_visibility(&record.visibility),
+        memory_linkage(&record)
+            .get("partition_key")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        record.demoted
+    );
     append_memory_audit(
         &state,
         crate::MemoryAuditEvent {
@@ -2384,7 +2441,7 @@ pub(super) async fn memory_delete(
                 .unwrap_or_else(|| "global".to_string()),
             actor: "admin".to_string(),
             status: "ok".to_string(),
-            detail: None,
+            detail: Some(delete_detail),
             created_at_ms: now,
         },
     )
