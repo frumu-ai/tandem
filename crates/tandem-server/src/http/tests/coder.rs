@@ -1755,6 +1755,26 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
     );
     assert_eq!(
         submit_payload
+            .get("spawned_follow_on_runs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("coder_run"))
+            .and_then(|row| row.get("parent_coder_run_id"))
+            .and_then(Value::as_str),
+        Some("coder-issue-fix-pr-submit-real")
+    );
+    assert_eq!(
+        submit_payload
+            .get("spawned_follow_on_runs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("coder_run"))
+            .and_then(|row| row.get("origin"))
+            .and_then(Value::as_str),
+        Some("issue_fix_pr_submit_auto")
+    );
+    assert_eq!(
+        submit_payload
             .get("artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
@@ -1878,6 +1898,27 @@ async fn coder_issue_fix_pr_submit_real_submit_writes_canonical_pr_identity() {
             .and_then(|row| row.get("number"))
             .and_then(Value::as_u64),
         Some(314)
+    );
+    assert_eq!(
+        follow_on_payload
+            .get("coder_run")
+            .and_then(|row| row.get("parent_coder_run_id"))
+            .and_then(Value::as_str),
+        Some("coder-issue-fix-pr-submit-real")
+    );
+    assert_eq!(
+        follow_on_payload
+            .get("coder_run")
+            .and_then(|row| row.get("origin"))
+            .and_then(Value::as_str),
+        Some("issue_fix_pr_submit_manual_follow_on")
+    );
+    assert_eq!(
+        follow_on_payload
+            .get("coder_run")
+            .and_then(|row| row.get("origin_artifact_type"))
+            .and_then(Value::as_str),
+        Some("coder_pr_submission")
     );
 
     let submitted_event = next_event_of_type(&mut rx, "coder.pr.submitted").await;
@@ -2061,6 +2102,16 @@ async fn coder_issue_fix_pr_submit_merge_auto_spawn_requires_opt_in() {
             .and_then(|row| row.get("workflow_mode"))
             .and_then(Value::as_str),
         Some("pr_review")
+    );
+    assert_eq!(
+        submit_payload
+            .get("spawned_follow_on_runs")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("coder_run"))
+            .and_then(|row| row.get("origin"))
+            .and_then(Value::as_str),
+        Some("issue_fix_pr_submit_auto")
     );
     assert_eq!(
         submit_payload

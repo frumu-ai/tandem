@@ -80,6 +80,12 @@ pub(super) struct CoderRunRecord {
     pub(super) model_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) parent_coder_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) origin_artifact_type: Option<String>,
     pub(super) created_at_ms: u64,
     pub(super) updated_at_ms: u64,
 }
@@ -104,6 +110,12 @@ pub(super) struct CoderRunCreateInput {
     pub(super) model_id: Option<String>,
     #[serde(default)]
     pub(super) mcp_servers: Option<Vec<String>>,
+    #[serde(default)]
+    pub(super) parent_coder_run_id: Option<String>,
+    #[serde(default)]
+    pub(super) origin: Option<String>,
+    #[serde(default)]
+    pub(super) origin_artifact_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -4813,6 +4825,9 @@ fn build_follow_on_run_create_input(
     model_provider: Option<String>,
     model_id: Option<String>,
     mcp_servers: Option<Vec<String>>,
+    parent_coder_run_id: Option<String>,
+    origin: Option<String>,
+    origin_artifact_type: Option<String>,
 ) -> CoderRunCreateInput {
     CoderRunCreateInput {
         coder_run_id: None,
@@ -4825,6 +4840,9 @@ fn build_follow_on_run_create_input(
         model_provider,
         model_id,
         mcp_servers,
+        parent_coder_run_id,
+        origin,
+        origin_artifact_type,
     }
 }
 
@@ -5169,6 +5187,9 @@ pub(super) async fn coder_issue_fix_pr_submit(
                         .as_ref()
                         .map(|server| vec![server.clone()])
                         .or_else(|| Some(vec!["github".to_string()])),
+                    Some(record.coder_run_id.clone()),
+                    Some("issue_fix_pr_submit_auto".to_string()),
+                    Some("coder_pr_submission".to_string()),
                 );
                 let response = coder_run_create(State(state.clone()), Json(create_input)).await?;
                 let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -5325,6 +5346,9 @@ pub(super) async fn coder_follow_on_run_create(
             input
                 .mcp_servers
                 .or_else(|| Some(vec!["github".to_string()])),
+            Some(record.coder_run_id.clone()),
+            Some("issue_fix_pr_submit_manual_follow_on".to_string()),
+            Some("coder_pr_submission".to_string()),
         )
     };
     coder_run_create(State(state), Json(create_input)).await
@@ -5608,6 +5632,9 @@ fn coder_run_payload(record: &CoderRunRecord, context_run: &ContextRunState) -> 
         "source_client": record.source_client,
         "model_provider": record.model_provider,
         "model_id": record.model_id,
+        "parent_coder_run_id": record.parent_coder_run_id,
+        "origin": record.origin,
+        "origin_artifact_type": record.origin_artifact_type,
         "status": context_run.status,
         "phase": project_coder_phase(context_run),
         "created_at_ms": record.created_at_ms,
@@ -5747,6 +5774,9 @@ pub(super) async fn coder_run_create(
             .or_else(|| Some("coder_api".to_string())),
         model_provider: normalize_source_client(input.model_provider.as_deref()),
         model_id: normalize_source_client(input.model_id.as_deref()),
+        parent_coder_run_id: input.parent_coder_run_id,
+        origin: normalize_source_client(input.origin.as_deref()),
+        origin_artifact_type: normalize_source_client(input.origin_artifact_type.as_deref()),
         created_at_ms: now,
         updated_at_ms: now,
     };
