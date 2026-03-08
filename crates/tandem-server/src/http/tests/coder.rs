@@ -11250,6 +11250,188 @@ async fn coder_memory_candidate_promote_stores_governed_memory() {
 }
 
 #[tokio::test]
+async fn coder_issue_triage_reuses_promoted_fix_pattern_memory_hits() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_fix_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-triage-fix-history-a",
+                "workflow_mode": "issue_fix",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem",
+                    "default_branch": "main"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 96,
+                    "url": "https://github.com/evan/tandem/issues/96"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create fix request");
+    let create_fix_resp = app
+        .clone()
+        .oneshot(create_fix_req)
+        .await
+        .expect("create fix response");
+    assert_eq!(create_fix_resp.status(), StatusCode::OK);
+
+    let fix_summary_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-triage-fix-history-a/issue-fix-summary")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "summary": "Add the startup fallback guard and keep the service booting when config is absent.",
+                "root_cause": "Startup recovery skipped the nil-config fallback path.",
+                "fix_strategy": "add startup fallback guard",
+                "changed_files": ["crates/tandem-server/src/http/coder.rs"],
+                "validation_results": [{
+                    "kind": "test",
+                    "status": "passed",
+                    "summary": "startup fallback regression stays covered"
+                }]
+            })
+            .to_string(),
+        ))
+        .expect("fix summary request");
+    let fix_summary_resp = app
+        .clone()
+        .oneshot(fix_summary_req)
+        .await
+        .expect("fix summary response");
+    assert_eq!(fix_summary_resp.status(), StatusCode::OK);
+    let fix_summary_payload: Value = serde_json::from_slice(
+        &to_bytes(fix_summary_resp.into_body(), usize::MAX)
+            .await
+            .expect("fix summary body"),
+    )
+    .expect("fix summary json");
+    let fix_pattern_candidate_id = fix_summary_payload
+        .get("generated_candidates")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter().find_map(|row| {
+                (row.get("kind").and_then(Value::as_str) == Some("fix_pattern")).then(|| {
+                    row.get("candidate_id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                })?
+            })
+        })
+        .expect("fix pattern candidate id");
+
+    let promote_fix_req = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/coder/runs/coder-triage-fix-history-a/memory-candidates/{fix_pattern_candidate_id}/promote"
+        ))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "to_tier": "project",
+                "reviewer_id": "reviewer-1",
+                "approval_id": "approval-96",
+                "reason": "approved reusable fix pattern for future triage"
+            })
+            .to_string(),
+        ))
+        .expect("promote fix request");
+    let promote_fix_resp = app
+        .clone()
+        .oneshot(promote_fix_req)
+        .await
+        .expect("promote fix response");
+    assert_eq!(promote_fix_resp.status(), StatusCode::OK);
+    let promote_fix_payload: Value = serde_json::from_slice(
+        &to_bytes(promote_fix_resp.into_body(), usize::MAX)
+            .await
+            .expect("promote fix body"),
+    )
+    .expect("promote fix json");
+
+    let create_triage_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-triage-fix-history-b",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem",
+                    "default_branch": "main"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 96,
+                    "url": "https://github.com/evan/tandem/issues/96"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create triage request");
+    let create_triage_resp = app
+        .clone()
+        .oneshot(create_triage_req)
+        .await
+        .expect("create triage response");
+    assert_eq!(create_triage_resp.status(), StatusCode::OK);
+
+    let hits_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-triage-fix-history-b/memory-hits")
+        .body(Body::empty())
+        .expect("hits request");
+    let hits_resp = app.clone().oneshot(hits_req).await.expect("hits response");
+    assert_eq!(hits_resp.status(), StatusCode::OK);
+    let hits_payload: Value = serde_json::from_slice(
+        &to_bytes(hits_resp.into_body(), usize::MAX)
+            .await
+            .expect("hits body"),
+    )
+    .expect("hits json");
+    assert_eq!(
+        hits_payload.get("query").and_then(Value::as_str),
+        Some("evan/tandem issue #96")
+    );
+    assert!(hits_payload
+        .get("policy")
+        .and_then(|row| row.get("prioritized_kinds"))
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().any(|row| row.as_str() == Some("fix_pattern")))
+        .unwrap_or(false));
+    assert!(hits_payload
+        .get("hits")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().any(|row| {
+            row.get("memory_id").and_then(Value::as_str)
+                == promote_fix_payload.get("memory_id").and_then(Value::as_str)
+                && row.get("kind").and_then(Value::as_str) == Some("fix_pattern")
+                && row.get("source").and_then(Value::as_str) == Some("governed_memory")
+                && row.get("same_issue").and_then(Value::as_bool) == Some(true)
+        }))
+        .unwrap_or(false));
+}
+
+#[tokio::test]
 async fn coder_promoted_merge_memory_reuses_policy_history_across_pull_requests() {
     let state = test_state().await;
     state

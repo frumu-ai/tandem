@@ -1440,6 +1440,7 @@ fn coder_memory_retrieval_policy(record: &CoderRunRecord, query: &str, limit: us
                 "failure_pattern",
                 "duplicate_linkage",
                 "triage_memory",
+                "fix_pattern",
                 "run_outcome",
             ]
         }
@@ -1553,6 +1554,9 @@ fn compare_coder_memory_hits(record: &CoderRunRecord, a: &Value, b: &Value) -> s
         }
         Some("triage_memory") if matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) => {
             3_u8
+        }
+        Some("fix_pattern") if matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) => {
+            2_u8
         }
         Some("run_outcome")
             if matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage)
@@ -3979,7 +3983,7 @@ async fn write_issue_fix_validation_outputs(
         state,
         record,
         CoderMemoryCandidateKind::ValidationMemory,
-        Some(validation_summary),
+        Some(validation_summary.clone()),
         Some("validate_fix".to_string()),
         json!({
             "workflow_mode": "issue_fix",
