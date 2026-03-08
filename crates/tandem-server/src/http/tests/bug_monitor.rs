@@ -1,4 +1,167 @@
 use super::*;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio::sync::RwLock;
+
+async fn spawn_fake_bug_monitor_github_mcp_server() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake bug monitor github mcp listener");
+    let addr = listener
+        .local_addr()
+        .expect("fake bug monitor github mcp addr");
+    let issues = Arc::new(RwLock::new(Vec::<Value>::new()));
+    let comments = Arc::new(RwLock::new(Vec::<Value>::new()));
+    let app = axum::Router::new().route(
+        "/",
+        axum::routing::post({
+            let issues = issues.clone();
+            let comments = comments.clone();
+            move |axum::Json(request): axum::Json<Value>| {
+                let issues = issues.clone();
+                let comments = comments.clone();
+                async move {
+                    let id = request.get("id").cloned().unwrap_or(Value::Null);
+                    let method = request
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let result = match method {
+                        "initialize" => json!({
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {},
+                            "serverInfo": {
+                                "name": "github",
+                                "version": "test"
+                            }
+                        }),
+                        "tools/list" => json!({
+                            "tools": [
+                                {
+                                    "name": "list_repository_issues",
+                                    "description": "List repository issues",
+                                    "inputSchema": {"type":"object"}
+                                },
+                                {
+                                    "name": "get_issue",
+                                    "description": "Get a GitHub issue",
+                                    "inputSchema": {"type":"object"}
+                                },
+                                {
+                                    "name": "mcp.github.create_issue",
+                                    "description": "Create a GitHub issue",
+                                    "inputSchema": {"type":"object"}
+                                },
+                                {
+                                    "name": "mcp.github.create_issue_comment",
+                                    "description": "Create a GitHub issue comment",
+                                    "inputSchema": {"type":"object"}
+                                }
+                            ]
+                        }),
+                        "tools/call" => {
+                            let name = request
+                                .get("params")
+                                .and_then(|row| row.get("name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            let arguments = request
+                                .get("params")
+                                .and_then(|row| row.get("arguments"))
+                                .cloned()
+                                .unwrap_or(Value::Null);
+                            match name {
+                                "list_repository_issues" => {
+                                    let snapshot = issues.read().await.clone();
+                                    json!({ "issues": snapshot })
+                                }
+                                "get_issue" => {
+                                    let issue_number = arguments
+                                        .get("issue_number")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or_default();
+                                    let issue = issues
+                                        .read()
+                                        .await
+                                        .iter()
+                                        .find(|row| {
+                                            row.get("number").and_then(Value::as_u64)
+                                                == Some(issue_number)
+                                        })
+                                        .cloned()
+                                        .unwrap_or_else(|| {
+                                            json!({
+                                                "number": issue_number,
+                                                "title": "missing",
+                                                "body": "",
+                                                "state": "closed",
+                                                "html_url": format!("https://github.com/acme/platform/issues/{issue_number}")
+                                            })
+                                        });
+                                    json!({ "issue": issue })
+                                }
+                                "mcp.github.create_issue" => {
+                                    let mut issue_rows = issues.write().await;
+                                    let issue_number = (issue_rows.len() as u64) + 101;
+                                    let issue = json!({
+                                        "number": issue_number,
+                                        "title": arguments.get("title").and_then(Value::as_str).unwrap_or("Bug Monitor issue"),
+                                        "body": arguments.get("body").and_then(Value::as_str).unwrap_or(""),
+                                        "state": "open",
+                                        "html_url": format!("https://github.com/acme/platform/issues/{issue_number}")
+                                    });
+                                    issue_rows.push(issue.clone());
+                                    json!({ "issue": issue })
+                                }
+                                "mcp.github.create_issue_comment" => {
+                                    let mut comment_rows = comments.write().await;
+                                    let comment_id = format!("comment-{}", comment_rows.len() + 1);
+                                    let issue_number = arguments
+                                        .get("issue_number")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or_default();
+                                    let comment = json!({
+                                        "id": comment_id,
+                                        "html_url": format!("https://github.com/acme/platform/issues/{issue_number}#issuecomment-{}", comment_rows.len() + 1)
+                                    });
+                                    comment_rows.push(comment.clone());
+                                    json!({ "comment": comment })
+                                }
+                                other => json!({
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": format!("unsupported tool {other}")
+                                        }
+                                    ]
+                                }),
+                            }
+                        }
+                        other => json!({
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": format!("unsupported method {other}")
+                                }
+                            ]
+                        }),
+                    };
+                    axum::Json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result,
+                    }))
+                }
+            }
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve fake bug monitor github mcp");
+    });
+    (format!("http://{addr}"), server)
+}
 
 #[tokio::test]
 async fn bug_monitor_runtime_creates_incident_and_draft_from_failure_event() {
@@ -1121,6 +1284,13 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
         .is_some_and(|body| body.contains("Build failure in CI")));
     assert_eq!(
         publish_payload
+            .get("triage_summary")
+            .and_then(|row| row.get("suggested_title"))
+            .and_then(Value::as_str),
+        Some("Bug Monitor issue")
+    );
+    assert_eq!(
+        publish_payload
             .get("triage_summary_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
@@ -1169,6 +1339,13 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
         .is_some_and(|body| body.contains("Build failure in CI")));
     assert_eq!(
         recheck_payload
+            .get("triage_summary")
+            .and_then(|row| row.get("suggested_title"))
+            .and_then(Value::as_str),
+        Some("Bug Monitor issue")
+    );
+    assert_eq!(
+        recheck_payload
             .get("triage_summary_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
@@ -1181,6 +1358,210 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
             .and_then(Value::as_str),
         Some("bug_monitor_issue_draft")
     );
+}
+
+#[tokio::test]
+async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
+    let (endpoint, server) = spawn_fake_bug_monitor_github_mcp_server().await;
+
+    let state = test_state().await;
+    state
+        .mcp
+        .add_or_update(
+            "github".to_string(),
+            endpoint,
+            std::collections::HashMap::new(),
+            true,
+        )
+        .await;
+    assert!(state.mcp.connect("github").await);
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            mcp_server: Some("github".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "desktop_logs",
+                    "title": "Build failure in CI",
+                    "detail": "event: orchestrator.run_failed\nprocess: tandem-engine\ncomponent: orchestrator",
+                    "excerpt": ["boom", "stack trace"],
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let create_resp = app.clone().oneshot(create_req).await.expect("response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let draft_id = create_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
+
+    let triage_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/triage-run"))
+        .body(Body::empty())
+        .expect("triage request");
+    let triage_resp = app
+        .clone()
+        .oneshot(triage_req)
+        .await
+        .expect("triage response");
+    assert_eq!(triage_resp.status(), StatusCode::OK);
+
+    let publish_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/publish"))
+        .body(Body::empty())
+        .expect("publish request");
+    let publish_resp = app
+        .clone()
+        .oneshot(publish_req)
+        .await
+        .expect("publish response");
+    assert_eq!(publish_resp.status(), StatusCode::OK);
+    let publish_payload: Value = serde_json::from_slice(
+        &to_bytes(publish_resp.into_body(), usize::MAX)
+            .await
+            .expect("publish body"),
+    )
+    .expect("publish json");
+    assert_eq!(
+        publish_payload.get("ok").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        publish_payload.get("action").and_then(Value::as_str),
+        Some("create_issue")
+    );
+    assert_eq!(
+        publish_payload
+            .get("post")
+            .and_then(|row| row.get("operation"))
+            .and_then(Value::as_str),
+        Some("create_issue")
+    );
+    assert_eq!(
+        publish_payload
+            .get("triage_summary")
+            .and_then(|row| row.get("suggested_title"))
+            .and_then(Value::as_str),
+        Some("Bug Monitor issue")
+    );
+    assert_eq!(
+        publish_payload
+            .get("triage_summary_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_triage_summary")
+    );
+    assert!(publish_payload
+        .get("issue_draft")
+        .and_then(|row| row.get("rendered_body"))
+        .and_then(Value::as_str)
+        .is_some_and(|body| body.contains("Build failure in CI")));
+    assert_eq!(
+        publish_payload
+            .get("issue_draft_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_issue_draft")
+    );
+    assert_eq!(
+        publish_payload
+            .get("duplicate_matches")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(0)
+    );
+
+    let recheck_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/recheck-match"))
+        .body(Body::empty())
+        .expect("recheck request");
+    let recheck_resp = app
+        .clone()
+        .oneshot(recheck_req)
+        .await
+        .expect("recheck response");
+    assert_eq!(recheck_resp.status(), StatusCode::OK);
+    let recheck_payload: Value = serde_json::from_slice(
+        &to_bytes(recheck_resp.into_body(), usize::MAX)
+            .await
+            .expect("recheck body"),
+    )
+    .expect("recheck json");
+    assert_eq!(
+        recheck_payload.get("ok").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        recheck_payload.get("action").and_then(Value::as_str),
+        Some("matched_open")
+    );
+    assert!(recheck_payload.get("post").is_some_and(Value::is_null));
+    assert_eq!(
+        recheck_payload
+            .get("triage_summary")
+            .and_then(|row| row.get("suggested_title"))
+            .and_then(Value::as_str),
+        Some("Bug Monitor issue")
+    );
+    assert_eq!(
+        recheck_payload
+            .get("triage_summary_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_triage_summary")
+    );
+    assert!(recheck_payload
+        .get("issue_draft")
+        .and_then(|row| row.get("rendered_body"))
+        .and_then(Value::as_str)
+        .is_some_and(|body| body.contains("Build failure in CI")));
+    assert_eq!(
+        recheck_payload
+            .get("issue_draft_artifact")
+            .and_then(|row| row.get("artifact_type"))
+            .and_then(Value::as_str),
+        Some("bug_monitor_issue_draft")
+    );
+    assert_eq!(
+        recheck_payload
+            .get("duplicate_matches")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(0)
+    );
+
+    server.abort();
 }
 
 #[tokio::test]
