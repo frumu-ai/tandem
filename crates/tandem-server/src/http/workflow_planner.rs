@@ -861,6 +861,12 @@ fn revise_workflow_plan_from_message(
         changes.push("added notification step".to_string());
     }
 
+    if let Some(updated_output_contract) = output_contract_from_revision_message(&text) {
+        if set_terminal_output_contract(&mut revised, updated_output_contract) {
+            changes.push("updated output contract".to_string());
+        }
+    }
+
     if changes.is_empty() {
         if clarifier.is_object() {
             let assistant = clarifier
@@ -891,7 +897,7 @@ fn revise_workflow_plan_from_message(
 }
 
 fn supported_planner_revision_hint() -> &'static str {
-    "Supported edits in this slice: title, schedule, workspace root, MCP servers, execution mode, model overrides, switching between safe workflow shapes, adding or removing analysis, and adding or removing notifications."
+    "Supported edits in this slice: title, schedule, workspace root, MCP servers, execution mode, model overrides, switching between safe workflow shapes, adding or removing analysis, adding or removing notifications, and changing the terminal output style (JSON, markdown, summary, URLs, citations)."
 }
 
 fn planner_llm_unavailable_hint() -> &'static str {
@@ -1082,6 +1088,80 @@ fn ensure_notify_step(plan: &mut crate::WorkflowPlan) -> bool {
         Some("text_summary"),
     ));
     true
+}
+
+fn output_contract_from_revision_message(text: &str) -> Option<&'static str> {
+    if text.contains("structured json")
+        || text.contains("json output")
+        || text.contains("return json")
+        || text.contains("output json")
+    {
+        Some("structured_json")
+    } else if text.contains("markdown report")
+        || text.contains("markdown output")
+        || text.contains("return markdown")
+        || text.contains("output markdown")
+    {
+        Some("report_markdown")
+    } else if text.contains("text summary")
+        || text.contains("summary only")
+        || text.contains("plain summary")
+        || text.contains("brief summary")
+    {
+        Some("text_summary")
+    } else if text.contains("return urls")
+        || text.contains("list urls")
+        || text.contains("urls only")
+        || text.contains("output urls")
+    {
+        Some("urls")
+    } else if text.contains("include citations")
+        || text.contains("with citations")
+        || text.contains("return citations")
+        || text.contains("output citations")
+    {
+        Some("citations")
+    } else {
+        None
+    }
+}
+
+fn set_terminal_output_contract(plan: &mut crate::WorkflowPlan, kind: &str) -> bool {
+    let Some(step) = plan.steps.last_mut() else {
+        return false;
+    };
+    let current_kind = step
+        .output_contract
+        .as_ref()
+        .map(|contract| contract.kind.as_str())
+        .unwrap_or("structured_json");
+    let next_objective = terminal_output_objective(step.step_id.as_str(), kind);
+    let objective_changed = step.objective != next_objective;
+    let contract_changed = current_kind != kind;
+    if !objective_changed && !contract_changed {
+        return false;
+    }
+    step.objective = next_objective;
+    step.output_contract = Some(crate::AutomationFlowOutputContract {
+        kind: kind.to_string(),
+    });
+    true
+}
+
+fn terminal_output_objective(step_id: &str, kind: &str) -> String {
+    let suffix = match kind {
+        "report_markdown" => "Return the final result as a polished markdown report.",
+        "text_summary" => "Return the final result as a concise text summary.",
+        "urls" => "Return the final result as a concise list of relevant URLs.",
+        "citations" => "Return the final result with concise supporting citations.",
+        _ => "Return the final result as structured JSON.",
+    };
+    match step_id {
+        "notify_user" => format!("Prepare the final notification using the upstream workflow output. {suffix}"),
+        "execute_goal" => format!("Execute the requested automation goal directly. {suffix}"),
+        "generate_report" => format!("Generate the final workflow result from the upstream inputs. {suffix}"),
+        _ => suffix.to_string(),
+    }
 }
 
 fn extract_title_from_revision_message(message: &str) -> Option<String> {

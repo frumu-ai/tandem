@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - added `GET /coder/projects/{project_id}`, which returns project policy, explicit binding, and recent run state in one engine-backed payload
   - added `GET /coder/projects/{project_id}/runs`, which returns project-scoped coder runs with execution policy and merge policy summaries already attached
   - added `POST /coder/projects/{project_id}/runs`, which creates coder runs from a saved project binding and fails closed with `CODER_PROJECT_BINDING_REQUIRED` when that binding has not been configured
+  - added an explicit shared coder memory retrieval helper and surfaced its `retrieval_policy` on run detail and `GET /coder/runs/{id}/memory-hits`, so workflow-specific ranking is now part of the engine contract instead of an implicit triage-only implementation detail
   - explicit project bindings can now be stored independently of runs, and `/coder/projects` now prefers those saved bindings over derived run bindings when both exist
   - merge-ready `merge_recommendation` runs now stop in `awaiting_approval`, emit `coder.approval.required`, and complete cleanly on `/coder/runs/{id}/approve` instead of bouncing back into `running`
   - approving a merge-ready recommendation now also writes an engine-owned `coder_merge_execution_request` artifact and emits `coder.merge.recommended`, so the post-approval merge handoff is explicit even before a real GitHub merge capability is wired

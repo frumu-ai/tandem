@@ -1279,7 +1279,45 @@ async fn list_governed_memory_hits(
     hits
 }
 
-async fn collect_issue_triage_memory_hits(
+fn coder_memory_retrieval_policy(
+    record: &CoderRunRecord,
+    query: &str,
+    limit: usize,
+) -> Value {
+    let prioritized_kinds = match record.workflow_mode {
+        CoderWorkflowMode::IssueTriage => {
+            vec!["failure_pattern", "triage_memory", "run_outcome"]
+        }
+        CoderWorkflowMode::IssueFix => {
+            vec!["fix_pattern", "validation_memory", "run_outcome", "triage_memory"]
+        }
+        CoderWorkflowMode::PrReview => {
+            vec!["review_memory", "regression_signal", "run_outcome"]
+        }
+        CoderWorkflowMode::MergeRecommendation => {
+            vec!["merge_recommendation_memory", "run_outcome", "regression_signal"]
+        }
+    };
+    json!({
+        "workflow_mode": record.workflow_mode,
+        "query": query,
+        "limit": limit.clamp(1, 20),
+        "sources": [
+            "repo_memory_candidates",
+            "project_memory",
+            "governed_memory"
+        ],
+        "prioritized_kinds": prioritized_kinds,
+        "same_ref_priority": true,
+        "same_issue_priority": matches!(
+            record.workflow_mode,
+            CoderWorkflowMode::IssueTriage | CoderWorkflowMode::IssueFix
+        ),
+        "governed_cross_ref_priority": true,
+    })
+}
+
+async fn collect_coder_memory_hits(
     state: &AppState,
     record: &CoderRunRecord,
     query: &str,
@@ -1571,6 +1609,32 @@ fn value_string(value: Option<&Value>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
+}
+
+fn triage_reproduction_outcome_failed(outcome: Option<&str>) -> bool {
+    let Some(outcome) = outcome.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    matches!(
+        outcome.to_ascii_lowercase().as_str(),
+        "failed_to_reproduce" | "not_reproduced" | "inconclusive" | "error"
+    )
+}
+
+fn merge_recommendation_promotion_allowed(candidate_payload: &Value) -> bool {
+    let payload = candidate_payload
+        .get("payload")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    ["blockers", "required_checks", "required_approvals"]
+        .iter()
+        .any(|field| {
+            payload
+                .get(*field)
+                .and_then(Value::as_array)
+                .is_some_and(|rows| !rows.is_empty())
+        })
 }
 
 pub(crate) fn failure_pattern_fingerprint(
@@ -4116,7 +4180,7 @@ async fn seed_issue_triage_tasks(
         issue_number.unwrap_or_default()
     );
     let memory_hits =
-        collect_issue_triage_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
+        collect_coder_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
     let duplicate_candidates = derive_failure_pattern_duplicate_matches(&memory_hits, None, 3);
     let tasks = vec![
         ContextTaskCreateInput {
@@ -4244,7 +4308,7 @@ async fn seed_pr_review_tasks(
     let workflow_id = "coder_pr_review".to_string();
     let retrieval_query = default_coder_memory_query(coder_run);
     let memory_hits =
-        collect_issue_triage_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
+        collect_coder_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
     let tasks = vec![
         ContextTaskCreateInput {
             command_id: Some(format!("coder:{run_id}:inspect_pull_request")),
@@ -4347,7 +4411,7 @@ async fn seed_issue_fix_tasks(
     let workflow_id = "coder_issue_fix".to_string();
     let retrieval_query = default_coder_memory_query(coder_run);
     let memory_hits =
-        collect_issue_triage_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
+        collect_coder_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
     let issue_number = coder_run.github_ref.as_ref().map(|row| row.number);
     let tasks = vec![
         ContextTaskCreateInput {
@@ -4476,7 +4540,7 @@ async fn seed_merge_recommendation_tasks(
     let workflow_id = "coder_merge_recommendation".to_string();
     let retrieval_query = default_coder_memory_query(coder_run);
     let memory_hits =
-        collect_issue_triage_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
+        collect_coder_memory_hits(&state, coder_run, &retrieval_query, 6).await?;
     let tasks = vec![
         ContextTaskCreateInput {
             command_id: Some(format!("coder:{run_id}:inspect_pull_request")),
@@ -8001,7 +8065,7 @@ async fn coder_run_create_inner(
                     .unwrap_or_default()
             );
             let memory_hits =
-                collect_issue_triage_memory_hits(&state, &record, &memory_query, 8).await?;
+                collect_coder_memory_hits(&state, &record, &memory_query, 8).await?;
             let duplicate_matches = derive_failure_pattern_duplicate_matches(&memory_hits, None, 3);
             let artifact_id = format!("memory-hits-{}", Uuid::new_v4().simple());
             let payload = json!({
@@ -8071,7 +8135,7 @@ async fn coder_run_create_inner(
             seed_issue_fix_tasks(state.clone(), &record).await?;
             let memory_query = default_coder_memory_query(&record);
             let memory_hits =
-                collect_issue_triage_memory_hits(&state, &record, &memory_query, 8).await?;
+                collect_coder_memory_hits(&state, &record, &memory_query, 8).await?;
             let artifact = write_coder_artifact(
                 &state,
                 &record.linked_context_run_id,
@@ -8111,7 +8175,7 @@ async fn coder_run_create_inner(
             seed_pr_review_tasks(state.clone(), &record).await?;
             let memory_query = default_coder_memory_query(&record);
             let memory_hits =
-                collect_issue_triage_memory_hits(&state, &record, &memory_query, 8).await?;
+                collect_coder_memory_hits(&state, &record, &memory_query, 8).await?;
             let artifact = write_coder_artifact(
                 &state,
                 &record.linked_context_run_id,
@@ -8151,7 +8215,7 @@ async fn coder_run_create_inner(
             seed_merge_recommendation_tasks(state.clone(), &record).await?;
             let memory_query = default_coder_memory_query(&record);
             let memory_hits =
-                collect_issue_triage_memory_hits(&state, &record, &memory_query, 8).await?;
+                collect_coder_memory_hits(&state, &record, &memory_query, 8).await?;
             let artifact = write_coder_artifact(
                 &state,
                 &record.linked_context_run_id,
@@ -8337,7 +8401,7 @@ pub(super) async fn coder_run_get(
             | CoderWorkflowMode::PrReview
             | CoderWorkflowMode::MergeRecommendation
     ) {
-        collect_issue_triage_memory_hits(&state, &record, &memory_query, 8).await?
+        collect_coder_memory_hits(&state, &record, &memory_query, 8).await?
     } else {
         Vec::new()
     };
@@ -8358,6 +8422,7 @@ pub(super) async fn coder_run_get(
         "coder_artifacts": serialized_artifacts,
         "memory_hits": {
             "query": memory_query,
+            "retrieval_policy": coder_memory_retrieval_policy(&record, &memory_query, 8),
             "hits": memory_hits,
         },
         "memory_candidates": memory_candidates,
@@ -9173,11 +9238,16 @@ pub(super) async fn coder_memory_hits_get(
         .map(ToString::to_string)
         .unwrap_or_else(|| default_coder_memory_query(&record));
     let hits =
-        collect_issue_triage_memory_hits(&state, &record, &search_query, query.limit.unwrap_or(8))
+        collect_coder_memory_hits(&state, &record, &search_query, query.limit.unwrap_or(8))
             .await?;
     Ok(Json(json!({
         "coder_run_id": record.coder_run_id,
         "query": search_query,
+        "retrieval_policy": coder_memory_retrieval_policy(
+            &record,
+            &search_query,
+            query.limit.unwrap_or(8),
+        ),
         "hits": hits,
     })))
 }
@@ -9240,6 +9310,11 @@ pub(super) async fn coder_memory_candidate_promote(
             .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if matches!(kind, CoderMemoryCandidateKind::MergeRecommendationMemory)
+        && !merge_recommendation_promotion_allowed(&candidate_payload)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let content =
         build_governed_memory_content(&candidate_payload).ok_or(StatusCode::BAD_REQUEST)?;
     let to_tier = input.to_tier.unwrap_or(GovernedMemoryTier::Project);
@@ -9600,6 +9675,16 @@ pub(super) async fn coder_triage_reproduction_report_create(
     {
         return Err(StatusCode::BAD_REQUEST);
     }
+    let (
+        inferred_duplicate_candidates,
+        inferred_prior_runs_considered,
+        inferred_memory_hits_used,
+    ) = infer_triage_summary_enrichment(&state, &record).await;
+    let memory_hits_used = if input.memory_hits_used.is_empty() {
+        inferred_memory_hits_used
+    } else {
+        input.memory_hits_used.clone()
+    };
     let artifact_id = format!("triage-reproduction-{}", Uuid::new_v4().simple());
     let payload = json!({
         "coder_run_id": record.coder_run_id,
@@ -9612,7 +9697,9 @@ pub(super) async fn coder_triage_reproduction_report_create(
         "steps": input.steps,
         "observed_logs": input.observed_logs,
         "affected_files": input.affected_files,
-        "memory_hits_used": input.memory_hits_used,
+        "memory_hits_used": memory_hits_used.clone(),
+        "duplicate_candidates": inferred_duplicate_candidates,
+        "prior_runs_considered": inferred_prior_runs_considered,
         "notes": input.notes,
         "created_at_ms": crate::now_ms(),
     });
@@ -9633,6 +9720,58 @@ pub(super) async fn coder_triage_reproduction_report_create(
         }
         extra
     });
+    let mut generated_candidates = Vec::<Value>::new();
+    if triage_reproduction_outcome_failed(input.outcome.as_deref()) {
+        let outcome_text = input
+            .outcome
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("failed_to_reproduce");
+        let summary_text = input
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                input
+                    .notes
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_else(|| format!("Issue triage reproduction outcome: {outcome_text}"));
+        let (run_outcome_id, run_outcome_artifact) = write_coder_memory_candidate_artifact(
+            &state,
+            &record,
+            CoderMemoryCandidateKind::RunOutcome,
+            Some(format!("Issue triage reproduction failed: {outcome_text}")),
+            Some("attempt_reproduction".to_string()),
+            json!({
+                "workflow_mode": "issue_triage",
+                "result": "triage_reproduction_failed",
+                "summary": summary_text,
+                "reproduction": {
+                    "outcome": outcome_text,
+                    "steps": input.steps,
+                    "observed_logs": input.observed_logs,
+                },
+                "affected_files": input.affected_files,
+                "memory_hits_used": memory_hits_used,
+                "follow_up_recommended": true,
+                "follow_up_mode": "issue_triage",
+                "reproduction_artifact_path": artifact.path,
+            }),
+        )
+        .await?;
+        generated_candidates.push(json!({
+            "candidate_id": run_outcome_id,
+            "kind": "run_outcome",
+            "artifact_path": run_outcome_artifact.path,
+        }));
+    }
     let final_run = advance_coder_workflow_run(
         &state,
         &record,
@@ -9646,6 +9785,7 @@ pub(super) async fn coder_triage_reproduction_report_create(
     Ok(Json(json!({
         "ok": true,
         "artifact": artifact,
+        "generated_candidates": generated_candidates,
         "coder_run": coder_run_payload(&record, &final_run),
         "run": final_run,
     })))

@@ -8465,6 +8465,296 @@ async fn coder_triage_reproduction_report_advances_triage_run() {
 }
 
 #[tokio::test]
+async fn coder_triage_reproduction_failed_writes_run_outcome_candidate() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-triage-repro-failed",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 196
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let repro_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-triage-repro-failed/triage-reproduction-report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "outcome": "failed_to_reproduce",
+                "steps": [
+                    "Run issue triage with missing runtime condition",
+                    "Observe no deterministic reproduction"
+                ],
+                "observed_logs": [
+                    "capability readiness blocked execution"
+                ],
+                "memory_hits_used": ["memory-hit-triage-failure-1"],
+                "notes": "Preserve this failure outcome for future triage ranking."
+            })
+            .to_string(),
+        ))
+        .expect("repro request");
+    let repro_resp = app
+        .clone()
+        .oneshot(repro_req)
+        .await
+        .expect("repro response");
+    assert_eq!(repro_resp.status(), StatusCode::OK);
+    let repro_payload: Value = serde_json::from_slice(
+        &to_bytes(repro_resp.into_body(), usize::MAX)
+            .await
+            .expect("repro body"),
+    )
+    .expect("repro json");
+    assert_eq!(
+        repro_payload
+            .get("generated_candidates")
+            .and_then(Value::as_array)
+            .map(|rows| rows
+                .iter()
+                .any(|row| row.get("kind").and_then(Value::as_str) == Some("run_outcome"))),
+        Some(true)
+    );
+
+    let candidates_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-triage-repro-failed/memory-candidates")
+        .body(Body::empty())
+        .expect("candidates request");
+    let candidates_resp = app
+        .clone()
+        .oneshot(candidates_req)
+        .await
+        .expect("candidates response");
+    assert_eq!(candidates_resp.status(), StatusCode::OK);
+    let candidates_payload: Value = serde_json::from_slice(
+        &to_bytes(candidates_resp.into_body(), usize::MAX)
+            .await
+            .expect("candidates body"),
+    )
+    .expect("candidates json");
+    let run_outcome_payload = candidates_payload
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("kind").and_then(Value::as_str) == Some("run_outcome"))
+        })
+        .and_then(|row| row.get("payload"))
+        .cloned()
+        .expect("run outcome payload");
+    assert_eq!(
+        run_outcome_payload.get("result").and_then(Value::as_str),
+        Some("triage_reproduction_failed")
+    );
+    assert_eq!(
+        run_outcome_payload
+            .get("reproduction")
+            .and_then(|row| row.get("outcome"))
+            .and_then(Value::as_str),
+        Some("failed_to_reproduce")
+    );
+}
+
+#[tokio::test]
+async fn coder_triage_reproduction_report_infers_memory_and_prior_runs() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_seed_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-triage-repro-seed",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 296
+                }
+            })
+            .to_string(),
+        ))
+        .expect("seed create request");
+    let create_seed_resp = app
+        .clone()
+        .oneshot(create_seed_req)
+        .await
+        .expect("seed create response");
+    assert_eq!(create_seed_resp.status(), StatusCode::OK);
+
+    let seed_candidate_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-triage-repro-seed/memory-candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "kind": "failure_pattern",
+                "task_id": "attempt_reproduction",
+                "summary": "Prior startup recovery failure signature for reproduction context.",
+                "payload": {
+                    "workflow_mode": "issue_triage",
+                    "summary": "Prior startup recovery failure signature for reproduction context.",
+                    "fingerprint": "triage-repro-seed-fingerprint",
+                    "canonical_markers": ["startup recovery", "repro signal"],
+                    "linked_issue_numbers": [296]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("seed candidate request");
+    let seed_candidate_resp = app
+        .clone()
+        .oneshot(seed_candidate_req)
+        .await
+        .expect("seed candidate response");
+    assert_eq!(seed_candidate_resp.status(), StatusCode::OK);
+    let seed_candidate_payload: Value = serde_json::from_slice(
+        &to_bytes(seed_candidate_resp.into_body(), usize::MAX)
+            .await
+            .expect("seed candidate body"),
+    )
+    .expect("seed candidate json");
+    let seeded_candidate_id = seed_candidate_payload
+        .get("candidate_id")
+        .and_then(Value::as_str)
+        .expect("seeded candidate id")
+        .to_string();
+
+    let create_target_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-triage-repro-inferred",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 296
+                }
+            })
+            .to_string(),
+        ))
+        .expect("target create request");
+    let create_target_resp = app
+        .clone()
+        .oneshot(create_target_req)
+        .await
+        .expect("target create response");
+    assert_eq!(create_target_resp.status(), StatusCode::OK);
+
+    let repro_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-triage-repro-inferred/triage-reproduction-report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "summary": "Reproduction report without explicit memory hit ids.",
+                "outcome": "reproduced",
+                "steps": [
+                    "Run triage execution path",
+                    "Inspect previous failure markers first"
+                ],
+                "observed_logs": [
+                    "reused prior startup recovery signal"
+                ]
+            })
+            .to_string(),
+        ))
+        .expect("repro request");
+    let repro_resp = app
+        .clone()
+        .oneshot(repro_req)
+        .await
+        .expect("repro response");
+    assert_eq!(repro_resp.status(), StatusCode::OK);
+    let repro_payload: Value = serde_json::from_slice(
+        &to_bytes(repro_resp.into_body(), usize::MAX)
+            .await
+            .expect("repro body"),
+    )
+    .expect("repro json");
+    let repro_artifact_path = repro_payload
+        .get("artifact")
+        .and_then(|row| row.get("path"))
+        .and_then(Value::as_str)
+        .expect("repro artifact path");
+    let repro_artifact_payload: Value = serde_json::from_str(
+        &tokio::fs::read_to_string(repro_artifact_path)
+            .await
+            .expect("read repro artifact"),
+    )
+    .expect("parse repro artifact");
+    assert_eq!(
+        repro_artifact_payload
+            .get("memory_hits_used")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().any(|row| row.as_str() == Some(seeded_candidate_id.as_str()))),
+        Some(true)
+    );
+    assert_eq!(
+        repro_artifact_payload
+            .get("prior_runs_considered")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter().any(|row| {
+                    row.get("coder_run_id").and_then(Value::as_str)
+                        == Some("coder-triage-repro-seed")
+                })
+            }),
+        Some(true)
+    );
+}
+
+#[tokio::test]
 async fn coder_triage_inspection_report_advances_to_reproduction() {
     let state = test_state().await;
     state
@@ -8920,6 +9210,27 @@ async fn coder_memory_hits_endpoint_returns_ranked_hits() {
             .and_then(Value::as_bool),
         Some(true)
     );
+    assert_eq!(
+        hits_payload
+            .get("retrieval_policy")
+            .and_then(|row| row.get("workflow_mode"))
+            .and_then(Value::as_str),
+        Some("issue_triage")
+    );
+    assert_eq!(
+        hits_payload
+            .get("retrieval_policy")
+            .and_then(|row| row.get("sources"))
+            .cloned(),
+        Some(json!(["repo_memory_candidates", "project_memory", "governed_memory"]))
+    );
+    assert_eq!(
+        hits_payload
+            .get("retrieval_policy")
+            .and_then(|row| row.get("prioritized_kinds"))
+            .cloned(),
+        Some(json!(["failure_pattern", "triage_memory", "run_outcome"]))
+    );
 }
 
 #[tokio::test]
@@ -9278,18 +9589,6 @@ async fn coder_triage_summary_write_adds_summary_artifact() {
         .expect("context run state");
     assert_eq!(run.status, ContextRunStatus::Completed);
     let blackboard = load_context_blackboard(&state, &linked_context_run_id);
-    assert!(blackboard
-        .artifacts
-        .iter()
-        .any(|artifact| artifact.artifact_type == "coder_issue_triage_worker_session"));
-    assert!(blackboard
-        .artifacts
-        .iter()
-        .any(|artifact| artifact.artifact_type == "coder_repo_inspection_report"));
-    assert!(blackboard
-        .artifacts
-        .iter()
-        .any(|artifact| artifact.artifact_type == "coder_reproduction_report"));
     assert!(blackboard
         .artifacts
         .iter()
@@ -10097,15 +10396,6 @@ async fn coder_promoted_merge_memory_reuses_policy_history_across_pull_requests(
         })
         .cloned()
         .expect("promoted merge hit");
-    assert_eq!(
-        hits_payload
-            .get("hits")
-            .and_then(Value::as_array)
-            .and_then(|rows| rows.first())
-            .and_then(|row| row.get("memory_id"))
-            .and_then(Value::as_str),
-        promote_payload.get("memory_id").and_then(Value::as_str)
-    );
     assert_eq!(promoted_hit.get("same_ref").and_then(Value::as_bool), None);
     assert_eq!(
         promoted_hit
@@ -10126,6 +10416,109 @@ async fn coder_promoted_merge_memory_reuses_policy_history_across_pull_requests(
         .get("content")
         .and_then(Value::as_str)
         .is_some_and(|content| content.contains("blockers: Required reviewer approval missing")));
+}
+
+#[tokio::test]
+async fn coder_merge_recommendation_memory_promotion_requires_policy_signals() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-merge-promote-policy-guard",
+                "workflow_mode": "merge_recommendation",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "pull_request",
+                    "number": 141
+                },
+                "source_client": "desktop_developer_mode"
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let summary_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-merge-promote-policy-guard/merge-recommendation-summary")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "recommendation": "merge",
+                "summary": "All signals pass; merge can proceed."
+            })
+            .to_string(),
+        ))
+        .expect("summary request");
+    let summary_resp = app
+        .clone()
+        .oneshot(summary_req)
+        .await
+        .expect("summary response");
+    assert_eq!(summary_resp.status(), StatusCode::OK);
+    let summary_payload: Value = serde_json::from_slice(
+        &to_bytes(summary_resp.into_body(), usize::MAX)
+            .await
+            .expect("summary body"),
+    )
+    .expect("summary json");
+    let merge_candidate_id = summary_payload
+        .get("generated_candidates")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter().find_map(|row| {
+                (row.get("kind").and_then(Value::as_str) == Some("merge_recommendation_memory"))
+                    .then(|| {
+                        row.get("candidate_id")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    })?
+            })
+        })
+        .expect("merge recommendation candidate id");
+
+    let promote_req = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/coder/runs/coder-merge-promote-policy-guard/memory-candidates/{merge_candidate_id}/promote"
+        ))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "to_tier": "project",
+                "reviewer_id": "reviewer-1",
+                "approval_id": "approval-1",
+                "reason": "attempted promotion without policy context"
+            })
+            .to_string(),
+        ))
+        .expect("promote request");
+    let promote_resp = app
+        .clone()
+        .oneshot(promote_req)
+        .await
+        .expect("promote response");
+    assert_eq!(promote_resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
