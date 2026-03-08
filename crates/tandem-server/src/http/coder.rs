@@ -6290,23 +6290,14 @@ pub(super) async fn coder_merge_submit(
     if !matches!(submit_mode.as_str(), "manual" | "auto") {
         return Err(StatusCode::BAD_REQUEST);
     }
-    if submit_mode == "auto"
-        && !record
-            .origin_policy
-            .as_ref()
-            .and_then(|row| row.get("merge_auto_spawn_opted_in"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    {
-        return Ok(Json(json!({
-            "ok": false,
-            "code": "CODER_MERGE_SUBMIT_POLICY_BLOCKED",
-            "policy": {
-                "reason": "requires_explicit_auto_merge_submit_opt_in",
-                "submit_mode": submit_mode,
-                "merge_auto_spawn_opted_in": false,
-            }
-        })));
+    if submit_mode == "auto" {
+        if let Some(policy) = merge_submit_auto_mode_policy_block(&record) {
+            return Ok(Json(json!({
+                "ok": false,
+                "code": "CODER_MERGE_SUBMIT_POLICY_BLOCKED",
+                "policy": policy,
+            })));
+        }
     }
     let readiness = coder_merge_submit_readiness(&state, input.mcp_server.as_deref()).await?;
     if !readiness.runnable {
@@ -7041,20 +7032,33 @@ async fn merge_submit_review_policy_block(
 }
 
 fn merge_submit_auto_mode_policy_block(record: &CoderRunRecord) -> Option<Value> {
-    if record
-        .origin_policy
-        .as_ref()
+    let origin_policy = record.origin_policy.as_ref();
+    let merge_auto_spawn_opted_in = origin_policy
         .and_then(|row| row.get("merge_auto_spawn_opted_in"))
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return None;
+        .unwrap_or(false);
+    if !merge_auto_spawn_opted_in {
+        return Some(json!({
+            "reason": "requires_explicit_auto_merge_submit_opt_in",
+            "submit_mode": "auto",
+            "merge_auto_spawn_opted_in": false,
+        }));
     }
-    Some(json!({
-        "reason": "requires_explicit_auto_merge_submit_opt_in",
-        "submit_mode": "auto",
-        "merge_auto_spawn_opted_in": false,
-    }))
+    let spawn_mode = origin_policy
+        .and_then(|row| row.get("spawn_mode"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown");
+    if spawn_mode != "auto" {
+        return Some(json!({
+            "reason": "requires_auto_spawned_merge_follow_on",
+            "submit_mode": "auto",
+            "merge_auto_spawn_opted_in": true,
+            "spawn_mode": spawn_mode,
+        }));
+    }
+    None
 }
 
 fn merge_submit_request_readiness_block(merge_request_payload: &Value) -> Option<Value> {

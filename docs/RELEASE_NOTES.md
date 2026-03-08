@@ -122,6 +122,7 @@
   - `merge-submit` now evaluates the latest completed sibling `pr_review`, so a newer review with requested changes overrides an older approval instead of whichever completed review is discovered first
   - merge-ready approval responses and `GET /coder/runs/{id}` for merge runs now expose a dynamic `merge_submit_policy` summary, so clients can see whether manual or auto merge-submit is currently blocked before attempting the merge call
   - `coder_merge_execution_request` artifacts and `coder.merge.recommended` events now also carry a `merge_submit_policy_preview`, so streaming and artifact-driven clients receive the same merge-submit policy context without a follow-up read
+  - `merge-submit` now also requires the merge run itself to be an auto-spawned follow-on before `submit_mode = auto` is eligible, so a manual follow-on merge run cannot escalate into auto merge execution even if the parent PR submit opted into auto merge recommendation
   - coder runs now persist as thin metadata records linked to engine context runs instead of a frontend-owned workflow store
   - creating an `issue_triage` coder run now seeds a deterministic context-run task graph for issue normalization, memory retrieval, repo inspection, reproduction, and triage artifact writing
   - added initial `coder.run.created` engine event emission and backend regression coverage for coder create/get/list/artifact behavior
