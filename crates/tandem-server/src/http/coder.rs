@@ -2725,7 +2725,50 @@ async fn dispatch_issue_triage_task(
         Some("inspect_repo") => {
             let memory_hits_used = summarize_workflow_memory_hits(record, &run, "retrieve_memory");
             let (worker_artifact, worker_payload) =
-                run_issue_triage_worker(&state, record, &run).await?;
+                match run_issue_triage_worker(&state, record, &run).await {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let detail = format!(
+                        "Issue-triage worker session failed during inspect_repo with status {}.",
+                        error
+                    );
+                        let generated_candidate = write_worker_failure_run_outcome_candidate(
+                            &state,
+                            record,
+                            "inspect_repo",
+                            "coder_issue_triage_worker_session",
+                            "issue_triage_inspection_failed",
+                            &detail,
+                        )
+                        .await?;
+                        fail_claimed_coder_task(
+                            &state,
+                            record.linked_context_run_id.clone(),
+                            task,
+                            agent_id,
+                            &detail,
+                        )
+                        .await?;
+                        let failed = coder_run_transition(
+                            &state,
+                            record,
+                            "run_failed",
+                            ContextRunStatus::Failed,
+                            Some(detail.clone()),
+                        )
+                        .await?;
+                        return Ok(json!({
+                            "ok": false,
+                            "error": detail,
+                            "code": "CODER_WORKER_SESSION_FAILED",
+                            "generated_candidates": generated_candidate
+                                .map(|candidate| vec![candidate])
+                                .unwrap_or_default(),
+                            "run": failed.get("run").cloned().unwrap_or(Value::Null),
+                            "coder_run": failed.get("coder_run").cloned().unwrap_or(Value::Null),
+                        }));
+                    }
+                };
             let parsed_triage = parse_issue_triage_from_worker_payload(&worker_payload);
             let response = coder_triage_inspection_report_create(
                 State(state),
@@ -3341,8 +3384,52 @@ async fn dispatch_pr_review_task(
         }
         Some("review_pull_request") => {
             let memory_hits_used = summarize_workflow_memory_hits(record, &run, "retrieve_memory");
-            let (worker_artifact, worker_payload) =
-                run_pr_review_worker(&state, record, &run).await?;
+            let (worker_artifact, worker_payload) = match run_pr_review_worker(&state, record, &run)
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    let detail = format!(
+                        "PR-review worker session failed during review_pull_request with status {}.",
+                        error
+                    );
+                    let generated_candidate = write_worker_failure_run_outcome_candidate(
+                        &state,
+                        record,
+                        "review_pull_request",
+                        "coder_pr_review_worker_session",
+                        "pr_review_failed",
+                        &detail,
+                    )
+                    .await?;
+                    fail_claimed_coder_task(
+                        &state,
+                        record.linked_context_run_id.clone(),
+                        task,
+                        "coder_pr_review_worker",
+                        &detail,
+                    )
+                    .await?;
+                    let failed = coder_run_transition(
+                        &state,
+                        record,
+                        "run_failed",
+                        ContextRunStatus::Failed,
+                        Some(detail.clone()),
+                    )
+                    .await?;
+                    return Ok(json!({
+                        "ok": false,
+                        "error": detail,
+                        "code": "CODER_WORKER_SESSION_FAILED",
+                        "generated_candidates": generated_candidate
+                            .map(|candidate| vec![candidate])
+                            .unwrap_or_default(),
+                        "run": failed.get("run").cloned().unwrap_or(Value::Null),
+                        "coder_run": failed.get("coder_run").cloned().unwrap_or(Value::Null),
+                    }));
+                }
+            };
             let parsed_review = parse_pr_review_from_worker_payload(&worker_payload);
             let response = coder_pr_review_evidence_create(
                 State(state),
@@ -3582,8 +3669,54 @@ async fn dispatch_merge_recommendation_task(
         }
         Some("assess_merge_readiness") => {
             let memory_hits_used = summarize_workflow_memory_hits(record, &run, "retrieve_memory");
-            let (worker_artifact, worker_payload) =
-                run_merge_recommendation_worker(&state, record, &run).await?;
+            let (worker_artifact, worker_payload) = match run_merge_recommendation_worker(
+                &state, record, &run,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    let detail = format!(
+                            "Merge-recommendation worker session failed during assess_merge_readiness with status {}.",
+                            error
+                        );
+                    let generated_candidate = write_worker_failure_run_outcome_candidate(
+                        &state,
+                        record,
+                        "assess_merge_readiness",
+                        "coder_merge_recommendation_worker_session",
+                        "merge_recommendation_failed",
+                        &detail,
+                    )
+                    .await?;
+                    fail_claimed_coder_task(
+                        &state,
+                        record.linked_context_run_id.clone(),
+                        task,
+                        "coder_merge_recommendation_worker",
+                        &detail,
+                    )
+                    .await?;
+                    let failed = coder_run_transition(
+                        &state,
+                        record,
+                        "run_failed",
+                        ContextRunStatus::Failed,
+                        Some(detail.clone()),
+                    )
+                    .await?;
+                    return Ok(json!({
+                        "ok": false,
+                        "error": detail,
+                        "code": "CODER_WORKER_SESSION_FAILED",
+                        "generated_candidates": generated_candidate
+                            .map(|candidate| vec![candidate])
+                            .unwrap_or_default(),
+                        "run": failed.get("run").cloned().unwrap_or(Value::Null),
+                        "coder_run": failed.get("coder_run").cloned().unwrap_or(Value::Null),
+                    }));
+                }
+            };
             let parsed_merge = parse_merge_recommendation_from_worker_payload(&worker_payload);
             let response = coder_merge_readiness_report_create(
                 State(state),

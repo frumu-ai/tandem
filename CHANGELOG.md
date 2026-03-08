@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - broadened post-failure regression learning beyond Bug Monitor by writing `regression_signal` candidates when issue-triage reproduction fails
   - issue-fix validation failures now also emit `regression_signal` memory with failed validation evidence
   - issue-fix worker-session failures now also emit rich `run_outcome` memory instead of relying only on generic terminal backfill
+  - triage, review, and merge worker-session failures now also fail runs truthfully and emit rich `run_outcome` memory with worker artifact/session context
     - `GET /coder/projects/{project_id}`
     - `GET /coder/projects/{project_id}/runs`
     - `POST /coder/projects/{project_id}/runs`

@@ -48,6 +48,7 @@
   - failed issue-triage reproduction now also emits `regression_signal` memory, so post-failure analysis is not limited to Bug Monitor triage
   - failed issue-fix validation now also emits `regression_signal` memory with the failing validation evidence
   - issue-fix worker-session failures now also emit rich `run_outcome` memory with worker artifact and session context
+  - issue-triage, PR-review, and merge-recommendation worker-session failures now also emit rich `run_outcome` memory with worker artifact and session context
     - `GET /config/bug-monitor`
     - `PATCH /config/bug-monitor`
     - `GET /bug-monitor/status`
