@@ -9840,6 +9840,11 @@ pub(super) async fn coder_merge_recommendation_summary_create(
         completion_reason,
     )
     .await?;
+    let merge_submit_policy = if approval_required {
+        coder_merge_submit_policy_summary(&state, &record).await?
+    } else {
+        Value::Null
+    };
     if approval_required {
         publish_coder_run_event(
             &state,
@@ -9856,6 +9861,12 @@ pub(super) async fn coder_merge_recommendation_summary_create(
                 if let Some(recommendation) = input.recommendation.clone() {
                     extra.insert("recommendation".to_string(), json!(recommendation));
                 }
+                if !matches!(merge_submit_policy, Value::Null) {
+                    extra.insert(
+                        "merge_submit_policy".to_string(),
+                        merge_submit_policy.clone(),
+                    );
+                }
                 extra
             },
         );
@@ -9869,6 +9880,7 @@ pub(super) async fn coder_merge_recommendation_summary_create(
         "generated_candidates": generated_candidates,
         "approval_required": approval_required,
         "coder_run": coder_run_payload(&record, &final_run),
+        "merge_submit_policy": merge_submit_policy,
         "run": final_run,
     })))
 }

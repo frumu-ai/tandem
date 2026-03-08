@@ -4606,6 +4606,22 @@ async fn coder_merge_recommendation_summary_ready_to_merge_awaits_approval() {
             .and_then(Value::as_str),
         Some("merge")
     );
+    assert_eq!(
+        approval_event
+            .properties
+            .get("merge_submit_policy")
+            .and_then(|row| row.get("auto_execute_policy_enabled"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        approval_event
+            .properties
+            .get("merge_submit_policy")
+            .and_then(|row| row.get("auto_execute_block_reason"))
+            .and_then(Value::as_str),
+        Some("requires_merge_execution_request")
+    );
 
     let approve_req = Request::builder()
         .method("POST")
@@ -7611,6 +7627,62 @@ async fn coder_issue_triage_execute_next_drives_task_runtime_to_completion() {
         .await
         .expect("refresh builtin bindings");
     let app = app_router(state.clone());
+
+    let seed_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-triage-execute-seed",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 197
+                }
+            })
+            .to_string(),
+        ))
+        .expect("seed request");
+    let seed_resp = app.clone().oneshot(seed_req).await.expect("seed response");
+    assert_eq!(seed_resp.status(), StatusCode::OK);
+
+    let candidate_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-triage-execute-seed/memory-candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "kind": "failure_pattern",
+                "summary": "Known startup recovery duplicate",
+                "payload": {
+                    "type": "failure.pattern",
+                    "repo_slug": "evan/tandem",
+                    "fingerprint": "triage-execute-duplicate",
+                    "symptoms": ["startup recovery", "issue triage"],
+                    "canonical_markers": ["startup recovery", "issue triage", "evan/tandem issue #198"],
+                    "linked_issue_numbers": [198],
+                    "recurrence_count": 2,
+                    "linked_pr_numbers": [],
+                    "affected_components": ["coder"],
+                    "artifact_refs": ["artifact://ctx/manual/triage.summary.json"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("candidate request");
+    let candidate_resp = app
+        .clone()
+        .oneshot(candidate_req)
+        .await
+        .expect("candidate response");
+    assert_eq!(candidate_resp.status(), StatusCode::OK);
 
     let create_req = Request::builder()
         .method("POST")
