@@ -464,6 +464,126 @@ async fn memory_promote_blocks_sensitive_content_and_emits_audit() {
 }
 
 #[tokio::test]
+async fn memory_promote_missing_source_emits_blocked_event_shape() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let mut rx = state.event_bus.subscribe();
+
+    let capability = json!({
+        "run_id": "run-3-missing",
+        "subject": "reviewer-user",
+        "org_id": "org-1",
+        "workspace_id": "ws-1",
+        "project_id": "proj-1",
+        "memory": {
+            "read_tiers": ["session", "project"],
+            "write_tiers": ["session"],
+            "promote_targets": ["project"],
+            "require_review_for_promote": true,
+            "allow_auto_use_tiers": ["curated"]
+        },
+        "expires_at": 9999999999999u64
+    });
+
+    let promote_req = Request::builder()
+        .method("POST")
+        .uri("/memory/promote")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "run-3-missing",
+                "source_memory_id": "missing-memory-id",
+                "from_tier": "session",
+                "to_tier": "project",
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "reason": "missing source promote test",
+                "review": {
+                    "required": true,
+                    "reviewer_id": "user-1",
+                    "approval_id": "appr-missing-1"
+                },
+                "capability": capability
+            })
+            .to_string(),
+        ))
+        .expect("promote request");
+    let promote_resp = app
+        .clone()
+        .oneshot(promote_req)
+        .await
+        .expect("promote response");
+    assert_eq!(promote_resp.status(), StatusCode::OK);
+    let promote_body = to_bytes(promote_resp.into_body(), usize::MAX)
+        .await
+        .expect("promote body");
+    let promote_payload: Value = serde_json::from_slice(&promote_body).expect("promote json");
+    assert_eq!(
+        promote_payload.get("promoted").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        promote_payload
+            .get("scrub_report")
+            .and_then(|v| v.get("status"))
+            .and_then(|v| v.as_str()),
+        Some("blocked")
+    );
+
+    let blocked_event = next_event_of_type(&mut rx, "memory.promote").await;
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("sourceMemoryID")
+            .and_then(Value::as_str),
+        Some("missing-memory-id")
+    );
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("status")
+            .and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert!(blocked_event
+        .properties
+        .get("kind")
+        .is_some_and(Value::is_null));
+    assert!(blocked_event
+        .properties
+        .get("classification")
+        .is_some_and(Value::is_null));
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("artifactRefs")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(0)
+    );
+    assert!(blocked_event
+        .properties
+        .get("visibility")
+        .is_some_and(Value::is_null));
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("scrubStatus")
+            .and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert!(blocked_event
+        .properties
+        .get("detail")
+        .and_then(Value::as_str)
+        .is_some_and(|detail| detail.contains("source memory missing")));
+}
+
+#[tokio::test]
 async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
     let state = test_state().await;
     let app = app_router(state.clone());
