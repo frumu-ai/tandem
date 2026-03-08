@@ -867,8 +867,8 @@ async fn memory_promote_blocks_sensitive_content_and_emits_audit() {
     let blocked_promote_exists = audit_payload
         .get("events")
         .and_then(|v| v.as_array())
-        .map(|events| {
-            events.iter().any(|event| {
+        .and_then(|events| {
+            events.iter().find(|event| {
                 event.get("action").and_then(|v| v.as_str()) == Some("memory_promote")
                     && event.get("status").and_then(|v| v.as_str()) == Some("blocked")
                     && event
@@ -881,8 +881,17 @@ async fn memory_promote_blocks_sensitive_content_and_emits_audit() {
                         })
             })
         })
-        .unwrap_or(false);
-    assert!(blocked_promote_exists);
+        .cloned()
+        .expect("scrub-blocked memory_promote audit row");
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        blocked_promote_exists
+            .get("audit_id")
+            .and_then(Value::as_str)
+    );
 }
 
 #[tokio::test]
@@ -1200,8 +1209,8 @@ async fn memory_promote_requires_review_and_emits_blocked_audit() {
     let blocked_promote_exists = audit_payload
         .get("events")
         .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter().any(|row| {
+        .and_then(|rows| {
+            rows.iter().find(|row| {
                 row.get("action").and_then(Value::as_str) == Some("memory_promote")
                     && row.get("status").and_then(Value::as_str) == Some("blocked")
                     && row.get("source_memory_id").and_then(Value::as_str)
@@ -1216,8 +1225,17 @@ async fn memory_promote_requires_review_and_emits_blocked_audit() {
                         })
             })
         })
-        .unwrap_or(false);
-    assert!(blocked_promote_exists);
+        .cloned()
+        .expect("review-blocked memory_promote audit row");
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        blocked_promote_exists
+            .get("audit_id")
+            .and_then(Value::as_str)
+    );
 }
 
 #[tokio::test]
@@ -1329,8 +1347,8 @@ async fn memory_promote_rejects_disallowed_target_and_emits_blocked_audit() {
     let blocked_promote_exists = audit_payload
         .get("events")
         .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter().any(|row| {
+        .and_then(|rows| {
+            rows.iter().find(|row| {
                 row.get("action").and_then(Value::as_str) == Some("memory_promote")
                     && row.get("status").and_then(Value::as_str) == Some("blocked")
                     && row.get("source_memory_id").and_then(Value::as_str)
@@ -1345,8 +1363,17 @@ async fn memory_promote_rejects_disallowed_target_and_emits_blocked_audit() {
                         })
             })
         })
-        .unwrap_or(false);
-    assert!(blocked_promote_exists);
+        .cloned()
+        .expect("target-blocked memory_promote audit row");
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        blocked_promote_exists
+            .get("audit_id")
+            .and_then(Value::as_str)
+    );
 }
 
 #[tokio::test]
@@ -1454,8 +1481,8 @@ async fn memory_promote_rejects_mismatched_capability_and_emits_blocked_audit() 
     let blocked_promote_exists = audit_payload
         .get("events")
         .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter().any(|row| {
+        .and_then(|rows| {
+            rows.iter().find(|row| {
                 row.get("action").and_then(Value::as_str) == Some("memory_promote")
                     && row.get("status").and_then(Value::as_str) == Some("blocked")
                     && row
@@ -1468,8 +1495,17 @@ async fn memory_promote_rejects_mismatched_capability_and_emits_blocked_audit() 
                         })
             })
         })
-        .unwrap_or(false);
-    assert!(blocked_promote_exists);
+        .cloned()
+        .expect("mismatched memory_promote audit row");
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        blocked_promote_exists
+            .get("audit_id")
+            .and_then(Value::as_str)
+    );
 }
 
 #[tokio::test]
@@ -1577,8 +1613,8 @@ async fn memory_promote_rejects_expired_capability_and_emits_blocked_audit() {
     let blocked_promote_exists = audit_payload
         .get("events")
         .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter().any(|row| {
+        .and_then(|rows| {
+            rows.iter().find(|row| {
                 row.get("action").and_then(Value::as_str) == Some("memory_promote")
                     && row.get("status").and_then(Value::as_str) == Some("blocked")
                     && row
@@ -1591,8 +1627,17 @@ async fn memory_promote_rejects_expired_capability_and_emits_blocked_audit() {
                         })
             })
         })
-        .unwrap_or(false);
-    assert!(blocked_promote_exists);
+        .cloned()
+        .expect("expired memory_promote audit row");
+    assert_eq!(
+        blocked_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        blocked_promote_exists
+            .get("audit_id")
+            .and_then(Value::as_str)
+    );
 }
 
 #[tokio::test]
