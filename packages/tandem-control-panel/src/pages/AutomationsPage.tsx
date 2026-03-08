@@ -33,6 +33,7 @@ interface WizardState {
   modelId: string;
   roleModelsJson: string;
   selectedMcpServers: string[];
+  exportPackDraft: boolean;
   advancedMode: boolean;
   customSkillName: string;
   customSkillDescription: string;
@@ -962,6 +963,7 @@ function Step3Mode({
 
 function Step4Review({
   wizard,
+  onToggleExportPackDraft,
   onSubmit,
   isPending,
   planPreview,
@@ -975,6 +977,7 @@ function Step4Review({
   plannerError,
 }: {
   wizard: WizardState;
+  onToggleExportPackDraft: () => void;
   onSubmit: () => void;
   isPending: boolean;
   planPreview: any;
@@ -1248,6 +1251,24 @@ function Step4Review({
       </div>
 
       <div className="rounded-xl border border-slate-700/40 bg-slate-800/20 p-3 text-xs text-slate-400">
+        <label className="flex items-start gap-3 rounded-lg border border-slate-700/50 bg-slate-900/30 p-3 text-sm text-slate-300">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={wizard.exportPackDraft}
+            onChange={onToggleExportPackDraft}
+          />
+          <span className="grid gap-1">
+            <span className="font-medium text-slate-200">Also export a reusable pack draft</span>
+            <span className="text-xs text-slate-400">
+              After creating the automation, Tandem will also create a Pack Builder draft so this
+              workflow can be saved and reused later.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div className="rounded-xl border border-slate-700/40 bg-slate-800/20 p-3 text-xs text-slate-400">
         💡 Tandem will save this automation and schedule a{" "}
         <strong className="text-slate-300">{modeInfo?.label || effectiveMode}</strong> that runs{" "}
         <strong className="text-slate-300">{effectiveSchedule}</strong>. You can pause, edit or
@@ -1308,6 +1329,7 @@ function CreateWizard({
     modelId: String(defaultModel || ""),
     roleModelsJson: "",
     selectedMcpServers: [],
+    exportPackDraft: false,
     advancedMode: false,
     customSkillName: "",
     customSkillDescription: "",
@@ -1584,10 +1606,26 @@ function CreateWizard({
       return client.workflowPlans.apply({
         plan: nextPlan,
         creator_id: "control-panel",
+        ...(wizard.exportPackDraft
+          ? {
+              pack_builder_export: {
+                enabled: true,
+                auto_apply: false,
+              },
+            }
+          : {}),
       });
     },
-    onSuccess: async () => {
-      toast("ok", "🎉 Automation created! Check 'My Automations' to see it running.");
+    onSuccess: async (res) => {
+      const exportStatus = res?.pack_builder_export?.status;
+      if (exportStatus === "preview_pending") {
+        toast(
+          "ok",
+          "🎉 Automation created and reusable pack draft exported. Check Pack Builder to continue."
+        );
+      } else {
+        toast("ok", "🎉 Automation created! Check 'My Automations' to see it running.");
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["automations"] }),
         queryClient.invalidateQueries({ queryKey: ["mcp"] }),
@@ -1609,6 +1647,7 @@ function CreateWizard({
         modelId: String(defaultModel || ""),
         roleModelsJson: "",
         selectedMcpServers: [],
+        exportPackDraft: false,
         advancedMode: false,
         customSkillName: "",
         customSkillDescription: "",
@@ -1843,6 +1882,9 @@ function CreateWizard({
           ) : (
             <Step4Review
               wizard={wizard}
+              onToggleExportPackDraft={() =>
+                setWizard((s) => ({ ...s, exportPackDraft: !s.exportPackDraft }))
+              }
               onSubmit={() => deployMutation.mutate()}
               isPending={deployMutation.isPending}
               planPreview={planPreview}
