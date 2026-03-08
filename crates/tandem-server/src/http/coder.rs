@@ -6530,6 +6530,24 @@ async fn coder_execution_policy_block(
     })))
 }
 
+async fn coder_execution_policy_summary(
+    state: &AppState,
+    record: &CoderRunRecord,
+) -> Result<Value, StatusCode> {
+    if let Some(blocked) = coder_execution_policy_block(state, record).await? {
+        let policy = blocked.get("policy").cloned().unwrap_or_else(|| json!({}));
+        return Ok(json!({
+            "blocked": true,
+            "code": blocked.get("code").cloned().unwrap_or_else(|| json!("CODER_EXECUTION_POLICY_BLOCKED")),
+            "error": blocked.get("error").cloned().unwrap_or_else(|| json!("coder execution blocked by policy")),
+            "policy": policy,
+        }));
+    }
+    Ok(json!({
+        "blocked": false,
+    }))
+}
+
 pub(super) async fn coder_run_create(
     State(state): State<AppState>,
     Json(input): Json<CoderRunCreateInput>,
@@ -6936,7 +6954,14 @@ pub(super) async fn coder_run_list(
         let Ok(run) = load_context_run_state(&state, &record.linked_context_run_id).await else {
             continue;
         };
-        rows.push(coder_run_payload(&record, &run));
+        let mut row = coder_run_payload(&record, &run);
+        if let Some(obj) = row.as_object_mut() {
+            obj.insert(
+                "execution_policy".to_string(),
+                coder_execution_policy_summary(&state, &record).await?,
+            );
+        }
+        rows.push(row);
     }
     rows.sort_by(|a, b| {
         b.get("updated_at_ms")
@@ -6975,6 +7000,7 @@ pub(super) async fn coder_run_get(
     .await?;
     Ok(Json(json!({
         "coder_run": coder_run_payload(&record, &run),
+        "execution_policy": coder_execution_policy_summary(&state, &record).await?,
         "run": run,
         "artifacts": blackboard.artifacts,
         "memory_hits": {

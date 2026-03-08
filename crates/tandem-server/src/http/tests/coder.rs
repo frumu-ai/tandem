@@ -2425,6 +2425,21 @@ async fn coder_merge_follow_on_execution_waits_for_completed_review() {
             .map(|rows| rows.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
         Some(vec!["pr_review"])
     );
+    assert_eq!(
+        merge_run_payload
+            .get("execution_policy")
+            .and_then(|row| row.get("blocked"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        merge_run_payload
+            .get("execution_policy")
+            .and_then(|row| row.get("policy"))
+            .and_then(|row| row.get("reason"))
+            .and_then(Value::as_str),
+        Some("requires_completed_pr_review_follow_on")
+    );
 
     let review_follow_on_req = Request::builder()
         .method("POST")

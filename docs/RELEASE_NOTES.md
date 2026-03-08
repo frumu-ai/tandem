@@ -107,6 +107,7 @@
   - follow-on run `origin_policy` now consistently uses `merge_auto_spawn_opted_in` for both templates and spawned/manual runs, avoiding two names for the same merge auto-spawn decision
   - merge-recommendation follow-on runs created from PR submission are now execution-gated until a sibling `pr_review` run completes, so merge assessment cannot run ahead of review even when the follow-on run already exists
   - PR-submit follow-on templates and merge follow-on run metadata now expose `required_completed_workflow_modes`, so clients can surface the review-before-merge prerequisite without inferring policy locally
+  - `GET /coder/runs` and `GET /coder/runs/{id}` now return engine-owned `execution_policy` summaries for coder runs, so clients can tell when a merge follow-on is blocked by review policy before attempting execution
   - coder runs now persist as thin metadata records linked to engine context runs instead of a frontend-owned workflow store
   - creating an `issue_triage` coder run now seeds a deterministic context-run task graph for issue normalization, memory retrieval, repo inspection, reproduction, and triage artifact writing
   - added initial `coder.run.created` engine event emission and backend regression coverage for coder create/get/list/artifact behavior

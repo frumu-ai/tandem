@@ -62,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - follow-on run `origin_policy` now consistently uses `merge_auto_spawn_opted_in` for both templates and spawned/manual runs, avoiding two names for the same merge auto-spawn decision
   - merge-recommendation follow-on runs created from PR submission are now execution-gated until a sibling `pr_review` run completes, so merge assessment cannot run ahead of review even when the follow-on run already exists
   - PR-submit follow-on templates and merge follow-on run metadata now expose `required_completed_workflow_modes`, so clients can surface the review-before-merge prerequisite without inferring policy locally
+  - `GET /coder/runs` and `GET /coder/runs/{id}` now return engine-owned `execution_policy` summaries for coder runs, so clients can tell when a merge follow-on is blocked by review policy before attempting execution
 
 - **Bug Monitor settings foundation and server config/status surface**:
   - added persisted bug-monitor config and status state in `tandem-server`, including repo, MCP server, provider preference, and dedicated `model_policy.default_model` routing for the reporter agent
