@@ -1754,6 +1754,10 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
             .and_then(Value::as_str),
         Some("proj-1")
     );
+    assert_eq!(
+        put_event.properties.get("auditID").and_then(Value::as_str),
+        Some(put_audit_id.as_str())
+    );
     let put_updated_event = next_event_of_type(&mut rx, "memory.updated").await;
     assert_eq!(
         put_updated_event
@@ -1994,6 +1998,13 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
             .and_then(|v| v.get("promote_run_id"))
             .and_then(Value::as_str),
         Some("run-3-ok")
+    );
+    assert_eq!(
+        promote_event
+            .properties
+            .get("auditID")
+            .and_then(Value::as_str),
+        Some(promote_audit_id.as_str())
     );
     let promote_updated_event = next_event_of_type(&mut rx, "memory.updated").await;
     assert_eq!(
