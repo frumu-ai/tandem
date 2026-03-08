@@ -97,7 +97,7 @@ pub(super) async fn workflow_plan_preview(
             )
         })?;
     }
-    let plan = build_workflow_plan(
+    let build = build_workflow_plan(
         &state,
         prompt,
         input.schedule.as_ref(),
@@ -116,10 +116,18 @@ pub(super) async fn workflow_plan_preview(
             })),
         )
     })?;
+    let plan = build.plan;
     state
         .put_workflow_plan_draft(workflow_plan_draft_from_plan(plan.clone()))
         .await;
-    Ok(Json(json!({ "plan": plan })))
+    Ok(Json(json!({
+        "plan": plan,
+        "clarifier": build.clarifier,
+        "assistant_message": build.assistant_text.map(|text| json!({
+            "role": "assistant",
+            "text": text,
+        })),
+    })))
 }
 
 pub(super) async fn workflow_plan_chat_start(
@@ -147,7 +155,7 @@ pub(super) async fn workflow_plan_chat_start(
             )
         })?;
     }
-    let plan = build_workflow_plan(
+    let build = build_workflow_plan(
         &state,
         prompt,
         input.schedule.as_ref(),
@@ -166,11 +174,28 @@ pub(super) async fn workflow_plan_chat_start(
             })),
         )
     })?;
-    let draft = workflow_plan_draft_from_plan(plan.clone());
+    let plan = build.plan;
+    let mut draft = workflow_plan_draft_from_plan(plan.clone());
+    if let Some(text) = build.assistant_text.clone() {
+        draft
+            .conversation
+            .messages
+            .push(crate::WorkflowPlanChatMessage {
+                role: "assistant".to_string(),
+                text,
+                created_at_ms: crate::now_ms(),
+            });
+        draft.conversation.updated_at_ms = crate::now_ms();
+    }
     state.put_workflow_plan_draft(draft.clone()).await;
     Ok(Json(json!({
         "plan": draft.current_plan,
         "conversation": draft.conversation,
+        "clarifier": build.clarifier,
+        "assistant_message": build.assistant_text.map(|text| json!({
+            "role": "assistant",
+            "text": text,
+        })),
     })))
 }
 
@@ -255,67 +280,6 @@ pub(super) async fn workflow_plan_chat_message(
         "change_summary": change_summary,
         "clarifier": clarifier,
     })))
-}
-
-struct LlmPlannerRevisionResult {
-    plan: crate::WorkflowPlan,
-    assistant_text: String,
-    change_summary: Vec<String>,
-    clarifier: Value,
-}
-
-async fn revise_workflow_plan_with_planner_loop(
-    state: &AppState,
-    current_plan: &crate::WorkflowPlan,
-    conversation: &crate::WorkflowPlanConversation,
-    message: &str,
-) -> (crate::WorkflowPlan, String, Vec<String>, Value) {
-    if let Some(model) = planner_model_spec(current_plan.operator_preferences.as_ref()) {
-        if !planner_model_provider_is_configured(state, &model).await {
-            let question = planner_llm_provider_unconfigured_hint(&model.provider_id);
-            return (
-                current_plan.clone(),
-                format!("I kept the current plan. Clarification needed: {question}"),
-                Vec::new(),
-                json!({
-                    "field": "general",
-                    "question": question,
-                }),
-            );
-        }
-        if let Some(llm_revision) =
-            try_llm_revise_workflow_plan(state, current_plan, conversation, message).await
-        {
-            return (
-                llm_revision.plan,
-                llm_revision.assistant_text,
-                llm_revision.change_summary,
-                llm_revision.clarifier,
-            );
-        }
-    }
-
-    let (revised_plan, assistant_text, change_summary, clarifier) =
-        revise_workflow_plan_from_message(current_plan, message);
-    if change_summary.is_empty()
-        && clarifier
-            .get("field")
-            .and_then(Value::as_str)
-            .is_some_and(|field| field == "general")
-        && planner_model_spec(current_plan.operator_preferences.as_ref()).is_none()
-    {
-        let question = planner_llm_unavailable_hint();
-        return (
-            revised_plan,
-            format!("I kept the current plan. Clarification needed: {question}"),
-            Vec::new(),
-            json!({
-                "field": "general",
-                "question": question,
-            }),
-        );
-    }
-    (revised_plan, assistant_text, change_summary, clarifier)
 }
 
 pub(super) async fn workflow_plan_chat_reset(
@@ -483,43 +447,6 @@ fn pack_builder_schedule_from_plan(schedule: &crate::AutomationV2Schedule) -> Va
     }
 }
 
-async fn build_workflow_plan(
-    state: &AppState,
-    prompt: &str,
-    explicit_schedule: Option<&Value>,
-    plan_source: &str,
-    allowed_mcp_servers: Vec<String>,
-    workspace_root: Option<&str>,
-    operator_preferences: Option<Value>,
-) -> Result<crate::WorkflowPlan, String> {
-    let normalized_prompt = normalize_prompt(prompt);
-    let schedule = normalize_schedule(explicit_schedule, prompt);
-    let (confidence, steps, description) = choose_plan_shape(&normalized_prompt);
-    let title = plan_title(prompt, &schedule.schedule_type);
-    let workspace_root = resolve_workspace_root(state, workspace_root).await?;
-    Ok(crate::WorkflowPlan {
-        plan_id: format!("wfplan-{}", Uuid::new_v4()),
-        planner_version: "v1".to_string(),
-        plan_source: plan_source.to_string(),
-        original_prompt: prompt.trim().to_string(),
-        normalized_prompt,
-        confidence: confidence.to_string(),
-        title,
-        description: Some(description),
-        schedule,
-        execution_target: "automation_v2".to_string(),
-        workspace_root,
-        steps,
-        requires_integrations: Vec::new(),
-        allowed_mcp_servers: normalize_string_list(allowed_mcp_servers),
-        operator_preferences: normalize_operator_preferences(operator_preferences),
-        save_options: json!({
-            "can_export_pack": true,
-            "can_save_skill": true,
-        }),
-    })
-}
-
 fn normalize_operator_preferences(raw: Option<Value>) -> Option<Value> {
     let Some(mut prefs) = raw else {
         return None;
@@ -660,854 +587,432 @@ fn workflow_plan_draft_from_plan(plan: crate::WorkflowPlan) -> crate::WorkflowPl
     }
 }
 
-fn revise_workflow_plan_from_message(
-    current_plan: &crate::WorkflowPlan,
-    message: &str,
-) -> (crate::WorkflowPlan, String, Vec<String>, Value) {
-    let text = message.trim().to_ascii_lowercase();
-    let mut revised = current_plan.clone();
-    let mut changes = Vec::new();
-    let mut clarifier = Value::Null;
-
-    if let Some(schedule) = schedule_from_revision_message(message) {
-        if revised.schedule.schedule_type != schedule.schedule_type
-            || revised.schedule.cron_expression != schedule.cron_expression
-            || revised.schedule.interval_seconds != schedule.interval_seconds
-        {
-            revised.schedule = schedule;
-            changes.push("updated schedule".to_string());
-        }
-    }
-
-    if let Some(path) = extract_workspace_root(message) {
-        match crate::normalize_absolute_workspace_root(&path) {
-            Ok(normalized) => {
-                if revised.workspace_root != normalized {
-                    revised.workspace_root = normalized;
-                    changes.push("updated workspace root".to_string());
-                }
-            }
-            Err(error) => {
-                clarifier = json!({
-                    "field": "workspace_root",
-                    "question": error,
-                });
-            }
-        }
-    }
-
-    if let Some(updated_title) = extract_title_from_revision_message(message) {
-        if revised.title != updated_title {
-            revised.title = updated_title;
-            changes.push("updated title".to_string());
-        }
-    }
-
-    let requested_shape = if text.contains("single step")
-        || text.contains("one step")
-        || text.contains("single-step")
-        || text.contains("collapse this workflow")
-        || text.contains("simplify this workflow")
-        || text.contains("make this simpler")
-    {
-        Some(WorkflowPlanShape::Single)
-    } else if text.contains("notification workflow")
-        || text.contains("notify workflow")
-        || text.contains("alert workflow")
-        || text.contains("collect and notify")
-        || text.contains("notify instead of reporting")
-    {
-        Some(WorkflowPlanShape::Notify)
-    } else if text.contains("compare workflow")
-        || text.contains("comparison workflow")
-        || text.contains("compare and report")
-    {
-        Some(WorkflowPlanShape::Compare)
-    } else if text.contains("research workflow")
-        || text.contains("research and report")
-        || text.contains("monitor workflow")
-    {
-        Some(WorkflowPlanShape::Research)
-    } else {
-        None
-    };
-    if let Some(shape) = requested_shape {
-        if apply_plan_shape(&mut revised, shape) {
-            changes.push("updated workflow shape".to_string());
-        }
-    }
-
-    let wants_add_analysis = text.contains("add analysis")
-        || text.contains("add an analysis step")
-        || text.contains("analyze findings")
-        || text.contains("analyze before reporting")
-        || text.contains("analyze before report")
-        || text.contains("split analysis");
-    if wants_add_analysis && ensure_analysis_step(&mut revised) {
-        changes.push("added analysis step".to_string());
-    }
-
-    let wants_remove_analysis = text.contains("remove analysis")
-        || text.contains("skip analysis")
-        || text.contains("without analysis")
-        || text.contains("no analysis")
-        || text.contains("report directly");
-    if wants_remove_analysis && remove_analysis_step(&mut revised) {
-        changes.push("removed analysis step".to_string());
-    }
-
-    let wants_add_collect_inputs = text.contains("add input collection")
-        || text.contains("add collect inputs")
-        || text.contains("collect inputs first")
-        || text.contains("gather inputs first")
-        || text.contains("start by collecting inputs");
-    if wants_add_collect_inputs && ensure_collect_inputs_step(&mut revised) {
-        changes.push("added input collection step".to_string());
-    }
-
-    let wants_remove_collect_inputs = text.contains("remove input collection")
-        || text.contains("remove collect inputs")
-        || text.contains("skip input collection")
-        || text.contains("without collecting inputs")
-        || text.contains("do not collect inputs first");
-    if wants_remove_collect_inputs && remove_collect_inputs_step(&mut revised) {
-        changes.push("removed input collection step".to_string());
-    }
-
-    if let Some(updated_preferences) =
-        revise_operator_preferences(revised.operator_preferences.clone(), &text)
-    {
-        if revised.operator_preferences.as_ref() != Some(&updated_preferences) {
-            let execution_mode_changed = revised
-                .operator_preferences
-                .as_ref()
-                .and_then(|prefs| prefs.get("execution_mode"))
-                != updated_preferences.get("execution_mode");
-            let max_parallel_changed = revised
-                .operator_preferences
-                .as_ref()
-                .and_then(|prefs| prefs.get("max_parallel_agents"))
-                != updated_preferences.get("max_parallel_agents");
-            let model_provider_changed = revised
-                .operator_preferences
-                .as_ref()
-                .and_then(|prefs| prefs.get("model_provider"))
-                != updated_preferences.get("model_provider");
-            let model_id_changed = revised
-                .operator_preferences
-                .as_ref()
-                .and_then(|prefs| prefs.get("model_id"))
-                != updated_preferences.get("model_id");
-            let planner_model_changed = revised
-                .operator_preferences
-                .as_ref()
-                .and_then(|prefs| prefs.get("role_models"))
-                .and_then(|prefs| prefs.get("planner"))
-                != updated_preferences
-                    .get("role_models")
-                    .and_then(|prefs| prefs.get("planner"));
-            revised.operator_preferences = Some(updated_preferences);
-            if execution_mode_changed {
-                changes.push("updated execution mode".to_string());
-            }
-            if max_parallel_changed {
-                changes.push("updated max parallel agents".to_string());
-            }
-            if model_provider_changed || model_id_changed {
-                changes.push("updated model override".to_string());
-            }
-            if planner_model_changed {
-                changes.push("updated planner model override".to_string());
-            }
-        }
-    }
-
-    let clear_mcp_servers = text.contains("remove all mcp")
-        || text.contains("clear mcp")
-        || text.contains("no mcp")
-        || text.contains("without mcp")
-        || text.contains("disable mcp");
-    if clear_mcp_servers
-        || text.contains("github")
-        || text.contains("slack")
-        || text.contains("notion")
-    {
-        let github_only = text.contains("github only");
-        let slack_only = text.contains("slack only");
-        let notion_only = text.contains("notion only");
-        let mut servers = if github_only {
-            vec!["github".to_string()]
-        } else if slack_only {
-            vec!["slack".to_string()]
-        } else if notion_only {
-            vec!["notion".to_string()]
-        } else {
-            revised.allowed_mcp_servers.clone()
-        };
-        if clear_mcp_servers {
-            servers.clear();
-        }
-        if text.contains("use github") || github_only || text.contains("github and") {
-            servers.push("github".to_string());
-        }
-        if text.contains("use slack") || slack_only || text.contains("slack and") {
-            servers.push("slack".to_string());
-        }
-        if text.contains("use notion") || notion_only || text.contains("notion and") {
-            servers.push("notion".to_string());
-        }
-        if text.contains("remove github") {
-            servers.retain(|server| server != "github");
-        }
-        if text.contains("remove slack") {
-            servers.retain(|server| server != "slack");
-        }
-        if text.contains("remove notion") {
-            servers.retain(|server| server != "notion");
-        }
-        let normalized = normalize_string_list(servers);
-        if normalized != revised.allowed_mcp_servers {
-            revised.allowed_mcp_servers = normalized;
-            changes.push("updated allowed MCP servers".to_string());
-        }
-    }
-
-    let wants_no_notify = text.contains("don't notify")
-        || text.contains("do not notify")
-        || text.contains("remove notify")
-        || text.contains("remove notification");
-    if wants_no_notify {
-        if remove_notify_step(&mut revised) {
-            changes.push("removed notification step".to_string());
-        }
-    }
-
-    let wants_add_notify = text.contains("notify me")
-        || text.contains("send notification")
-        || text.contains("add notification")
-        || text.contains("add notify")
-        || text.contains("post notification")
-        || text.contains("send alert")
-        || text.contains("notify user");
-    if wants_add_notify && ensure_notify_step(&mut revised) {
-        changes.push("added notification step".to_string());
-    }
-
-    if let Some(updated_output_contract) = output_contract_from_revision_message(&text) {
-        if set_terminal_output_contract(&mut revised, updated_output_contract) {
-            changes.push("updated output contract".to_string());
-        }
-    }
-
-    if changes.is_empty() {
-        if clarifier.is_object() {
-            let assistant = clarifier
-                .get("question")
-                .and_then(Value::as_str)
-                .map(|question| {
-                    format!("I kept the current plan. Clarification needed: {question}")
-                })
-                .unwrap_or_else(|| {
-                    "I kept the current plan because the revision request needs clarification."
-                        .to_string()
-                });
-            return (revised, assistant, Vec::new(), clarifier);
-        }
-        let clarifier = json!({
-            "field": "general",
-            "question": supported_planner_revision_hint(),
-        });
-        let assistant = format!(
-            "I kept the current plan. Clarification needed: {}",
-            supported_planner_revision_hint()
-        );
-        return (revised, assistant, Vec::new(), clarifier);
-    }
-
-    let assistant = format!("Updated the plan: {}.", changes.join(", "));
-    (revised, assistant, changes, clarifier)
+struct WorkflowPlanBuildOutput {
+    plan: crate::WorkflowPlan,
+    assistant_text: Option<String>,
+    clarifier: Value,
 }
 
-fn supported_planner_revision_hint() -> &'static str {
-    "Supported edits in this slice: title, schedule, workspace root, MCP servers, execution mode, model overrides, switching between safe workflow shapes, adding or removing input collection, adding or removing analysis, adding or removing notifications, and changing the terminal output style (JSON, markdown, summary, URLs, citations)."
+#[derive(Debug, Deserialize)]
+struct PlannerClarifier {
+    #[serde(default)]
+    field: Option<String>,
+    question: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PlannerBuildAction {
+    Build,
+    Clarify,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlannerBuildPayload {
+    action: PlannerBuildAction,
+    #[serde(default)]
+    assistant_text: Option<String>,
+    #[serde(default)]
+    clarifier: Option<PlannerClarifier>,
+    #[serde(default)]
+    plan: Option<crate::WorkflowPlan>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PlannerRevisionAction {
+    Revise,
+    Clarify,
+    Keep,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlannerRevisionPayload {
+    action: PlannerRevisionAction,
+    #[serde(default)]
+    assistant_text: Option<String>,
+    #[serde(default)]
+    change_summary: Vec<String>,
+    #[serde(default)]
+    clarifier: Option<PlannerClarifier>,
+    #[serde(default)]
+    plan: Option<crate::WorkflowPlan>,
+}
+
+enum PlannerPlanMode {
+    Create,
+    Revise,
+}
+
+struct PlannerPlanNormalizationContext<'a> {
+    mode: PlannerPlanMode,
+    plan_id: &'a str,
+    planner_version: &'a str,
+    plan_source: &'a str,
+    original_prompt: &'a str,
+    normalized_prompt: &'a str,
+    resolved_workspace_root: &'a str,
+    explicit_schedule: Option<&'a crate::AutomationV2Schedule>,
+    request_allowed_mcp_servers: &'a [String],
+    request_operator_preferences: Option<&'a Value>,
+}
+
+async fn build_workflow_plan(
+    state: &AppState,
+    prompt: &str,
+    explicit_schedule: Option<&Value>,
+    plan_source: &str,
+    allowed_mcp_servers: Vec<String>,
+    workspace_root: Option<&str>,
+    operator_preferences: Option<Value>,
+) -> Result<WorkflowPlanBuildOutput, String> {
+    let normalized_prompt = normalize_prompt(prompt);
+    let explicit_schedule = explicit_schedule.and_then(schedule_from_value);
+    let fallback_schedule = explicit_schedule.clone().unwrap_or_else(manual_schedule);
+    let title = plan_title(prompt, &fallback_schedule.schedule_type);
+    let workspace_root = resolve_workspace_root(state, workspace_root).await?;
+    let allowed_mcp_servers = normalize_string_list(allowed_mcp_servers);
+    let operator_preferences = normalize_operator_preferences(operator_preferences);
+    let plan_id = format!("wfplan-{}", Uuid::new_v4());
+    let planner_version = "v1".to_string();
+    let normalization_ctx = PlannerPlanNormalizationContext {
+        mode: PlannerPlanMode::Create,
+        plan_id: &plan_id,
+        planner_version: &planner_version,
+        plan_source,
+        original_prompt: prompt.trim(),
+        normalized_prompt: &normalized_prompt,
+        resolved_workspace_root: &workspace_root,
+        explicit_schedule: explicit_schedule.as_ref(),
+        request_allowed_mcp_servers: &allowed_mcp_servers,
+        request_operator_preferences: operator_preferences.as_ref(),
+    };
+
+    if let Some(model) = planner_model_spec(operator_preferences.as_ref()) {
+        if planner_model_provider_is_configured(state, &model).await {
+            if let Some(payload) = try_llm_build_workflow_plan(
+                state,
+                &model,
+                prompt,
+                &normalized_prompt,
+                explicit_schedule.as_ref(),
+                plan_source,
+                &workspace_root,
+                &allowed_mcp_servers,
+                operator_preferences.as_ref(),
+            )
+            .await
+            {
+                match payload.action {
+                    PlannerBuildAction::Build => {
+                        if let Some(candidate) = payload.plan {
+                            if let Ok(plan) =
+                                normalize_and_validate_planner_plan(candidate, &normalization_ctx)
+                            {
+                                return Ok(WorkflowPlanBuildOutput {
+                                    plan,
+                                    assistant_text: payload.assistant_text,
+                                    clarifier: Value::Null,
+                                });
+                            }
+                        }
+                    }
+                    PlannerBuildAction::Clarify => {
+                        let question = payload
+                            .clarifier
+                            .as_ref()
+                            .map(|row| row.question.trim())
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("The request is ambiguous. Clarify the workflow goal or constraints.");
+                        let field = payload
+                            .clarifier
+                            .as_ref()
+                            .and_then(|row| row.field.as_deref())
+                            .filter(|value| !value.trim().is_empty())
+                            .unwrap_or("general");
+                        return Ok(WorkflowPlanBuildOutput {
+                            plan: build_minimal_fallback_plan(
+                                &plan_id,
+                                &planner_version,
+                                plan_source,
+                                prompt,
+                                &normalized_prompt,
+                                title.clone(),
+                                workspace_root.clone(),
+                                fallback_schedule.clone(),
+                                allowed_mcp_servers.clone(),
+                                operator_preferences.clone(),
+                                Some("Planner fallback draft. Clarification is needed before Tandem can generate a richer workflow.".to_string()),
+                            ),
+                            assistant_text: Some(
+                                payload
+                                    .assistant_text
+                                    .unwrap_or_else(|| question.to_string()),
+                            ),
+                            clarifier: json!({
+                                "field": field,
+                                "question": question,
+                            }),
+                        });
+                    }
+                }
+            }
+        } else {
+            let question = planner_llm_provider_unconfigured_hint(&model.provider_id);
+            return Ok(WorkflowPlanBuildOutput {
+                plan: build_minimal_fallback_plan(
+                    &plan_id,
+                    &planner_version,
+                    plan_source,
+                    prompt,
+                    &normalized_prompt,
+                    title.clone(),
+                    workspace_root.clone(),
+                    fallback_schedule.clone(),
+                    allowed_mcp_servers.clone(),
+                    operator_preferences.clone(),
+                    Some("Planner fallback draft. Configure the planner provider for richer workflow generation.".to_string()),
+                ),
+                assistant_text: Some(question.clone()),
+                clarifier: json!({
+                    "field": "general",
+                    "question": question,
+                }),
+            });
+        }
+    }
+
+    Ok(WorkflowPlanBuildOutput {
+        plan: build_minimal_fallback_plan(
+            &plan_id,
+            &planner_version,
+            plan_source,
+            prompt,
+            &normalized_prompt,
+            title,
+            workspace_root,
+            fallback_schedule,
+            allowed_mcp_servers,
+            operator_preferences,
+            Some(
+                "Planner fallback draft. Configure a planner model for richer workflow planning."
+                    .to_string(),
+            ),
+        ),
+        assistant_text: None,
+        clarifier: Value::Null,
+    })
+}
+
+async fn revise_workflow_plan_with_planner_loop(
+    state: &AppState,
+    current_plan: &crate::WorkflowPlan,
+    conversation: &crate::WorkflowPlanConversation,
+    message: &str,
+) -> (crate::WorkflowPlan, String, Vec<String>, Value) {
+    let Some(model) = planner_model_spec(current_plan.operator_preferences.as_ref()) else {
+        let question = planner_llm_unavailable_hint();
+        return (
+            current_plan.clone(),
+            format!("I kept the current plan. Clarification needed: {question}"),
+            Vec::new(),
+            json!({
+                "field": "general",
+                "question": question,
+            }),
+        );
+    };
+    if !planner_model_provider_is_configured(state, &model).await {
+        let question = planner_llm_provider_unconfigured_hint(&model.provider_id);
+        return (
+            current_plan.clone(),
+            format!("I kept the current plan. Clarification needed: {question}"),
+            Vec::new(),
+            json!({
+                "field": "general",
+                "question": question,
+            }),
+        );
+    }
+    let normalization_ctx = PlannerPlanNormalizationContext {
+        mode: PlannerPlanMode::Revise,
+        plan_id: &current_plan.plan_id,
+        planner_version: &current_plan.planner_version,
+        plan_source: &current_plan.plan_source,
+        original_prompt: &current_plan.original_prompt,
+        normalized_prompt: &current_plan.normalized_prompt,
+        resolved_workspace_root: &current_plan.workspace_root,
+        explicit_schedule: None,
+        request_allowed_mcp_servers: &current_plan.allowed_mcp_servers,
+        request_operator_preferences: current_plan.operator_preferences.as_ref(),
+    };
+    if let Some(payload) =
+        try_llm_revise_workflow_plan(state, &model, current_plan, conversation, message).await
+    {
+        return parse_llm_revision_payload(current_plan, payload, &normalization_ctx)
+            .unwrap_or_else(|| {
+                let question = planner_llm_invalid_response_hint();
+                (
+                    current_plan.clone(),
+                    format!("I kept the current plan. Clarification needed: {question}"),
+                    Vec::new(),
+                    json!({
+                        "field": "general",
+                        "question": question,
+                    }),
+                )
+            });
+    }
+    let question = planner_llm_invalid_response_hint();
+    (
+        current_plan.clone(),
+        format!("I kept the current plan. Clarification needed: {question}"),
+        Vec::new(),
+        json!({
+            "field": "general",
+            "question": question,
+        }),
+    )
 }
 
 fn planner_llm_unavailable_hint() -> &'static str {
-    "This revision needs planner model settings before Tandem can attempt a broader workflow rewrite. Add planner model preferences or revise using the supported deterministic edits in this slice."
+    "This workflow needs planner model settings before Tandem can revise it. Configure a planner model and try again."
 }
 
 fn planner_llm_provider_unconfigured_hint(provider_id: &str) -> String {
     format!(
-        "The configured planner model uses provider `{provider_id}`, but that provider is not configured on this engine. Configure the provider first or revise using the supported deterministic edits in this slice."
+        "The configured planner model uses provider `{provider_id}`, but that provider is not configured on this engine. Configure the provider first and try again."
     )
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum WorkflowPlanShape {
-    Single,
-    Notify,
-    Compare,
-    Research,
+fn planner_llm_invalid_response_hint() -> &'static str {
+    "The planner could not produce a valid workflow revision. Keep the current plan or try a more specific request."
 }
 
-fn apply_plan_shape(plan: &mut crate::WorkflowPlan, shape: WorkflowPlanShape) -> bool {
-    let (next_confidence, next_steps, next_description) = match shape {
-        WorkflowPlanShape::Single => single_shape_definition(),
-        WorkflowPlanShape::Notify => notify_shape_definition(),
-        WorkflowPlanShape::Compare => compare_shape_definition(),
-        WorkflowPlanShape::Research => research_shape_definition(),
-    };
-    let changed = plan.confidence != next_confidence
-        || plan.description.as_deref() != Some(next_description.as_str())
-        || !workflow_steps_equal(&plan.steps, &next_steps);
-    if changed {
-        plan.confidence = next_confidence.to_string();
-        plan.description = Some(next_description);
-        plan.steps = next_steps;
-    }
-    changed
+fn plan_save_options() -> Value {
+    json!({
+        "can_export_pack": true,
+        "can_save_skill": true,
+    })
 }
 
-fn workflow_steps_equal(
-    left: &[crate::WorkflowPlanStep],
-    right: &[crate::WorkflowPlanStep],
-) -> bool {
-    serde_json::to_value(left).ok() == serde_json::to_value(right).ok()
-}
-
-fn workflow_schedule_equal(
-    left: &crate::AutomationV2Schedule,
-    right: &crate::AutomationV2Schedule,
-) -> bool {
-    serde_json::to_value(left).ok() == serde_json::to_value(right).ok()
-}
-
-fn ensure_analysis_step(plan: &mut crate::WorkflowPlan) -> bool {
-    if plan
-        .steps
-        .iter()
-        .any(|step| step.step_id == "analyze_findings")
-    {
-        return false;
-    }
-    let Some(report_index) = plan
-        .steps
-        .iter()
-        .position(|step| step.step_id == "generate_report")
-    else {
-        return false;
-    };
-    let report_input = plan.steps[report_index]
-        .input_refs
-        .first()
-        .map(|row| row.from_step_id.clone())
-        .or_else(|| plan.steps[report_index].depends_on.first().cloned())
-        .unwrap_or_else(|| "research_sources".to_string());
-    let analysis_input_alias = match report_input.as_str() {
-        "collect_inputs" => "collected_inputs",
-        "compare_results" => "comparison_findings",
-        _ => "source_findings",
-    };
-    let analysis_step = plan_step_with_dep(
-        "analyze_findings",
-        "analyze",
-        "Analyze the collected findings and identify the important takeaways.",
-        "analyst",
-        &[report_input.as_str()],
-        vec![input_ref(&report_input, analysis_input_alias)],
-        Some("structured_json"),
-    );
-    plan.steps.insert(report_index, analysis_step);
-    if let Some(report_step) = plan
-        .steps
-        .iter_mut()
-        .find(|step| step.step_id == "generate_report")
-    {
-        report_step.depends_on = vec!["analyze_findings".to_string()];
-        report_step.input_refs = vec![input_ref("analyze_findings", "analysis")];
-    }
-    true
-}
-
-fn ensure_collect_inputs_step(plan: &mut crate::WorkflowPlan) -> bool {
-    if plan
-        .steps
-        .iter()
-        .any(|step| step.step_id == "collect_inputs")
-    {
-        return false;
-    }
-    let Some(first_step) = plan.steps.first_mut() else {
-        return false;
-    };
-    let alias = match first_step.step_id.as_str() {
-        "research_sources" => "research_inputs",
-        "analyze_findings" => "analysis_inputs",
-        "notify_user" => "notification_inputs",
-        "generate_report" => "report_inputs",
-        "execute_goal" => "goal_inputs",
-        _ => "workflow_inputs",
-    };
-    first_step.depends_on = vec!["collect_inputs".to_string()];
-    first_step.input_refs = vec![input_ref("collect_inputs", alias)];
-    plan.steps.insert(
-        0,
-        plan_step_with_dep(
-            "collect_inputs",
-            "collect",
-            "Collect the initial inputs needed for the workflow.",
-            "researcher",
+fn build_minimal_fallback_plan(
+    plan_id: &str,
+    planner_version: &str,
+    plan_source: &str,
+    prompt: &str,
+    normalized_prompt: &str,
+    title: String,
+    workspace_root: String,
+    schedule: crate::AutomationV2Schedule,
+    allowed_mcp_servers: Vec<String>,
+    operator_preferences: Option<Value>,
+    description: Option<String>,
+) -> crate::WorkflowPlan {
+    crate::WorkflowPlan {
+        plan_id: plan_id.to_string(),
+        planner_version: planner_version.to_string(),
+        plan_source: plan_source.to_string(),
+        original_prompt: prompt.trim().to_string(),
+        normalized_prompt: normalized_prompt.to_string(),
+        confidence: "low".to_string(),
+        title,
+        description,
+        schedule,
+        execution_target: "automation_v2".to_string(),
+        workspace_root,
+        steps: vec![plan_step_with_dep(
+            "execute_goal",
+            "execute",
+            "Execute the requested automation goal directly.",
+            "worker",
             &[],
             Vec::new(),
             Some("structured_json"),
-        ),
-    );
-    true
-}
-
-fn remove_collect_inputs_step(plan: &mut crate::WorkflowPlan) -> bool {
-    let Some(index) = plan
-        .steps
-        .iter()
-        .position(|step| step.step_id == "collect_inputs")
-    else {
-        return false;
-    };
-    plan.steps.remove(index);
-    for step in &mut plan.steps {
-        step.depends_on.retain(|dep| dep != "collect_inputs");
-        step.input_refs
-            .retain(|input| input.from_step_id != "collect_inputs");
-    }
-    true
-}
-
-fn remove_analysis_step(plan: &mut crate::WorkflowPlan) -> bool {
-    let Some(analysis_index) = plan
-        .steps
-        .iter()
-        .position(|step| step.step_id == "analyze_findings")
-    else {
-        return false;
-    };
-    let analysis_step = plan.steps.remove(analysis_index);
-    let fallback_dep = analysis_step
-        .depends_on
-        .first()
-        .cloned()
-        .or_else(|| {
-            analysis_step
-                .input_refs
-                .first()
-                .map(|row| row.from_step_id.clone())
-        })
-        .unwrap_or_else(|| "research_sources".to_string());
-    let fallback_alias = match fallback_dep.as_str() {
-        "collect_inputs" => "report_inputs",
-        "compare_results" => "comparison_findings",
-        _ => "source_findings",
-    };
-    if let Some(report_step) = plan
-        .steps
-        .iter_mut()
-        .find(|step| step.step_id == "generate_report")
-    {
-        if report_step.depends_on == vec!["analyze_findings".to_string()] {
-            report_step.depends_on = vec![fallback_dep.clone()];
-            report_step.input_refs = vec![input_ref(&fallback_dep, fallback_alias)];
-        } else {
-            report_step
-                .depends_on
-                .retain(|dep| dep != "analyze_findings");
-            report_step
-                .input_refs
-                .retain(|input| input.from_step_id != "analyze_findings");
-        }
-    }
-    for step in &mut plan.steps {
-        step.depends_on.retain(|dep| dep != "analyze_findings");
-        step.input_refs
-            .retain(|input| input.from_step_id != "analyze_findings");
-    }
-    true
-}
-
-fn remove_notify_step(plan: &mut crate::WorkflowPlan) -> bool {
-    let original_len = plan.steps.len();
-    plan.steps.retain(|step| step.step_id != "notify_user");
-    for step in &mut plan.steps {
-        step.depends_on.retain(|dep| dep != "notify_user");
-        step.input_refs
-            .retain(|input| input.from_step_id != "notify_user");
-    }
-    plan.steps.len() != original_len
-}
-
-fn ensure_notify_step(plan: &mut crate::WorkflowPlan) -> bool {
-    if plan.steps.iter().any(|step| step.step_id == "notify_user") {
-        return false;
-    }
-    let Some(last_step) = plan.steps.last() else {
-        return false;
-    };
-    let (source_step_id, source_alias) = match last_step.step_id.as_str() {
-        "generate_report" => ("generate_report", "report"),
-        "compare_results" => ("compare_results", "comparison_findings"),
-        "analyze_findings" => ("analyze_findings", "analysis"),
-        "collect_inputs" => ("collect_inputs", "notification_inputs"),
-        "research_sources" => ("research_sources", "notification_inputs"),
-        "execute_goal" => ("execute_goal", "execution_output"),
-        _ => (last_step.step_id.as_str(), "notification_inputs"),
-    };
-    plan.steps.push(plan_step_with_dep(
-        "notify_user",
-        "notify",
-        "Prepare the final notification using the upstream workflow output.",
-        "writer",
-        &[source_step_id],
-        vec![input_ref(source_step_id, source_alias)],
-        Some("text_summary"),
-    ));
-    true
-}
-
-fn output_contract_from_revision_message(text: &str) -> Option<&'static str> {
-    if text.contains("structured json")
-        || text.contains("json output")
-        || text.contains("return json")
-        || text.contains("output json")
-    {
-        Some("structured_json")
-    } else if text.contains("markdown report")
-        || text.contains("markdown output")
-        || text.contains("return markdown")
-        || text.contains("output markdown")
-    {
-        Some("report_markdown")
-    } else if text.contains("text summary")
-        || text.contains("summary only")
-        || text.contains("plain summary")
-        || text.contains("brief summary")
-    {
-        Some("text_summary")
-    } else if text.contains("return urls")
-        || text.contains("list urls")
-        || text.contains("urls only")
-        || text.contains("output urls")
-    {
-        Some("urls")
-    } else if text.contains("include citations")
-        || text.contains("with citations")
-        || text.contains("return citations")
-        || text.contains("output citations")
-    {
-        Some("citations")
-    } else {
-        None
+        )],
+        requires_integrations: Vec::new(),
+        allowed_mcp_servers,
+        operator_preferences,
+        save_options: plan_save_options(),
     }
 }
 
-fn set_terminal_output_contract(plan: &mut crate::WorkflowPlan, kind: &str) -> bool {
-    let Some(step) = plan.steps.last_mut() else {
-        return false;
-    };
-    let current_kind = step
-        .output_contract
-        .as_ref()
-        .map(|contract| contract.kind.as_str())
-        .unwrap_or("structured_json");
-    let next_objective = terminal_output_objective(step.step_id.as_str(), kind);
-    let objective_changed = step.objective != next_objective;
-    let contract_changed = current_kind != kind;
-    if !objective_changed && !contract_changed {
-        return false;
-    }
-    step.objective = next_objective;
-    step.output_contract = Some(crate::AutomationFlowOutputContract {
-        kind: kind.to_string(),
+fn normalize_and_validate_planner_plan(
+    mut candidate: crate::WorkflowPlan,
+    ctx: &PlannerPlanNormalizationContext<'_>,
+) -> Result<crate::WorkflowPlan, String> {
+    candidate.plan_id = ctx.plan_id.to_string();
+    candidate.planner_version = ctx.planner_version.to_string();
+    candidate.plan_source = ctx.plan_source.to_string();
+    candidate.original_prompt = ctx.original_prompt.to_string();
+    candidate.normalized_prompt = ctx.normalized_prompt.to_string();
+    candidate.execution_target = "automation_v2".to_string();
+    candidate.requires_integrations = normalize_string_list(candidate.requires_integrations);
+    candidate.description = candidate.description.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed.to_string())
     });
-    true
-}
-
-fn terminal_output_objective(step_id: &str, kind: &str) -> String {
-    let suffix = match kind {
-        "report_markdown" => "Return the final result as a polished markdown report.",
-        "text_summary" => "Return the final result as a concise text summary.",
-        "urls" => "Return the final result as a concise list of relevant URLs.",
-        "citations" => "Return the final result with concise supporting citations.",
-        _ => "Return the final result as structured JSON.",
+    candidate.confidence = match candidate.confidence.trim().to_ascii_lowercase().as_str() {
+        "low" | "medium" | "high" => candidate.confidence.trim().to_ascii_lowercase(),
+        _ => "medium".to_string(),
     };
-    match step_id {
-        "notify_user" => {
-            format!("Prepare the final notification using the upstream workflow output. {suffix}")
+    candidate.title = {
+        let trimmed = candidate.title.trim();
+        if trimmed.is_empty() {
+            plan_title(ctx.original_prompt, &candidate.schedule.schedule_type)
+        } else {
+            crate::truncate_text(trimmed, 120)
         }
-        "execute_goal" => format!("Execute the requested automation goal directly. {suffix}"),
-        "generate_report" => {
-            format!("Generate the final workflow result from the upstream inputs. {suffix}")
-        }
-        _ => suffix.to_string(),
-    }
-}
+    };
+    candidate.save_options = if candidate.save_options.is_object() {
+        candidate.save_options
+    } else {
+        plan_save_options()
+    };
 
-fn extract_title_from_revision_message(message: &str) -> Option<String> {
-    let lowered = message.to_ascii_lowercase();
-    let markers = [
-        "rename this plan to",
-        "rename this automation to",
-        "rename this to",
-        "rename plan to",
-        "rename automation to",
-        "rename to",
-        "call this plan",
-        "call this automation",
-        "call this",
-        "name this plan",
-        "name this automation",
-        "name this",
-        "title this plan",
-        "title this automation",
-        "title this",
-    ];
-    for marker in markers {
-        let Some(index) = lowered.find(marker) else {
-            continue;
-        };
-        let mut remainder = message[index + marker.len()..].trim();
-        if let Some(stripped) = remainder.strip_prefix("as ") {
-            remainder = stripped.trim();
-        }
-        let remainder_lower = remainder.to_ascii_lowercase();
-        let mut end = remainder.len();
-        for separator in [" and ", ",", ".", ";", "\n"] {
-            if let Some(position) = remainder_lower.find(separator) {
-                end = end.min(position);
+    match ctx.mode {
+        PlannerPlanMode::Create => {
+            candidate.workspace_root = ctx.resolved_workspace_root.to_string();
+            candidate.allowed_mcp_servers = ctx.request_allowed_mcp_servers.to_vec();
+            candidate.operator_preferences = merge_create_operator_preferences(
+                ctx.request_operator_preferences,
+                candidate.operator_preferences.take(),
+            );
+            if let Some(explicit_schedule) = ctx.explicit_schedule {
+                candidate.schedule = explicit_schedule.clone();
             }
         }
-        let candidate = remainder[..end]
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .trim();
-        if candidate.is_empty() {
-            continue;
+        PlannerPlanMode::Revise => {
+            candidate.workspace_root =
+                crate::normalize_absolute_workspace_root(&candidate.workspace_root)?;
+            candidate.allowed_mcp_servers = normalize_string_list(candidate.allowed_mcp_servers);
+            candidate.operator_preferences =
+                normalize_operator_preferences(candidate.operator_preferences.take());
         }
-        return Some(crate::truncate_text(candidate, 120));
     }
-    None
+
+    validate_workflow_plan(&candidate)?;
+    Ok(candidate)
 }
 
-fn revise_operator_preferences(current: Option<Value>, text: &str) -> Option<Value> {
-    let mut prefs = normalize_operator_preferences(current).unwrap_or_else(|| json!({}));
-    let map = prefs.as_object_mut()?;
-    let mut touched = false;
-
-    if text.contains("single agent") || text.contains("single mode") || text.contains("use single")
-    {
-        map.insert(
-            "execution_mode".to_string(),
-            Value::String("single".to_string()),
-        );
-        map.insert(
-            "max_parallel_agents".to_string(),
-            Value::Number(serde_json::Number::from(1)),
-        );
-        touched = true;
-    } else if text.contains("agent team") || text.contains("team mode") || text.contains("use team")
-    {
-        map.insert(
-            "execution_mode".to_string(),
-            Value::String("team".to_string()),
-        );
-        map.insert(
-            "max_parallel_agents".to_string(),
-            Value::Number(serde_json::Number::from(1)),
-        );
-        touched = true;
-    } else if text.contains("swarm mode") || text.contains("use swarm") || text.contains("swarm") {
-        let max_parallel = extract_max_parallel_agents(text).unwrap_or(4);
-        map.insert(
-            "execution_mode".to_string(),
-            Value::String("swarm".to_string()),
-        );
-        map.insert(
-            "max_parallel_agents".to_string(),
-            Value::Number(serde_json::Number::from(max_parallel)),
-        );
-        touched = true;
-    } else if let Some(max_parallel) = extract_max_parallel_agents(text) {
-        map.insert(
-            "max_parallel_agents".to_string(),
-            Value::Number(serde_json::Number::from(max_parallel)),
-        );
-        touched = true;
-    }
-
-    let provider = extract_model_provider(text);
-    let model_id = extract_model_id(text);
-    let planner_model_provider = extract_planner_model_provider(text);
-    let planner_model_id = extract_planner_model_id(text);
-    let clear_model_override = text.contains("use default model")
-        || text.contains("use the default model")
-        || text.contains("use workspace default model")
-        || text.contains("use the workspace default model")
-        || text.contains("clear model override")
-        || text.contains("clear model overrides")
-        || text.contains("remove model override")
-        || text.contains("remove model overrides");
-    if clear_model_override {
-        map.remove("model_provider");
-        map.remove("model_id");
-        map.remove("role_models");
-        touched = true;
-    }
-    let clear_planner_model_override = text.contains("use default planner model")
-        || text.contains("use the default planner model")
-        || text.contains("use workspace default planner model")
-        || text.contains("use the workspace default planner model")
-        || text.contains("clear planner model")
-        || text.contains("clear planner model override")
-        || text.contains("remove planner model")
-        || text.contains("remove planner model override");
-    if clear_planner_model_override {
-        if let Some(role_models) = map.get_mut("role_models").and_then(Value::as_object_mut) {
-            role_models.remove("planner");
-            if role_models.is_empty() {
-                map.remove("role_models");
+fn merge_create_operator_preferences(
+    explicit: Option<&Value>,
+    candidate: Option<Value>,
+) -> Option<Value> {
+    let candidate = normalize_operator_preferences(candidate);
+    let explicit = normalize_operator_preferences(explicit.cloned());
+    match (candidate, explicit) {
+        (None, None) => None,
+        (Some(candidate), None) => Some(candidate),
+        (None, Some(explicit)) => Some(explicit),
+        (Some(candidate), Some(explicit)) => {
+            let mut merged = candidate.as_object().cloned().unwrap_or_default();
+            for (key, value) in explicit.as_object().cloned().unwrap_or_default() {
+                merged.insert(key, value);
             }
-        }
-        touched = true;
-    }
-    if let Some(provider) = provider {
-        map.insert("model_provider".to_string(), Value::String(provider));
-        touched = true;
-    }
-    if let Some(model_id) = model_id {
-        map.insert("model_id".to_string(), Value::String(model_id));
-        touched = true;
-    }
-    if planner_model_provider.is_some() || planner_model_id.is_some() {
-        let role_models = map
-            .entry("role_models".to_string())
-            .or_insert_with(|| Value::Object(serde_json::Map::new()));
-        if let Some(role_models_map) = role_models.as_object_mut() {
-            let planner_model = role_models_map
-                .entry("planner".to_string())
-                .or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if let Some(planner_map) = planner_model.as_object_mut() {
-                if let Some(provider) = planner_model_provider {
-                    planner_map.insert("provider_id".to_string(), Value::String(provider));
-                    touched = true;
-                }
-                if let Some(model_id) = planner_model_id {
-                    planner_map.insert("model_id".to_string(), Value::String(model_id));
-                    touched = true;
-                }
-            }
+            normalize_operator_preferences(Some(Value::Object(merged)))
         }
     }
-
-    touched.then_some(prefs)
-}
-
-fn extract_planner_model_provider(text: &str) -> Option<String> {
-    if !(text.contains("planner model")
-        || text.contains("for planning")
-        || text.contains("planner should use")
-        || text.contains("planning should use"))
-    {
-        return None;
-    }
-    extract_model_provider(text)
-}
-
-fn extract_planner_model_id(text: &str) -> Option<String> {
-    if !(text.contains("planner model")
-        || text.contains("for planning")
-        || text.contains("planner should use")
-        || text.contains("planning should use"))
-    {
-        return None;
-    }
-    extract_model_id(text)
-}
-
-fn extract_max_parallel_agents(text: &str) -> Option<u64> {
-    let tokens = text.split_whitespace().collect::<Vec<_>>();
-    for window in tokens.windows(2) {
-        let Some(number) = window[0].parse::<u64>().ok() else {
-            continue;
-        };
-        let noun = window[1]
-            .trim_matches(|ch: char| !ch.is_ascii_alphabetic())
-            .to_ascii_lowercase();
-        if matches!(noun.as_str(), "agent" | "agents" | "workers") {
-            return Some(number.clamp(1, 16));
-        }
-    }
-    None
-}
-
-fn extract_model_provider(text: &str) -> Option<String> {
-    [
-        "openai",
-        "anthropic",
-        "openrouter",
-        "google",
-        "groq",
-        "xai",
-        "azure",
-    ]
-    .iter()
-    .find(|provider| text.contains(**provider))
-    .map(|provider| (*provider).to_string())
-}
-
-fn extract_model_id(text: &str) -> Option<String> {
-    let tokens = text.split_whitespace().collect::<Vec<_>>();
-    for window in tokens.windows(2) {
-        if window[0] == "model" {
-            let candidate = sanitize_model_token(window[1]);
-            if is_model_token(&candidate) {
-                return Some(candidate);
-            }
-        }
-    }
-    tokens
-        .into_iter()
-        .map(sanitize_model_token)
-        .find(|token| is_model_token(token))
-}
-
-fn sanitize_model_token(token: &str) -> String {
-    token
-        .trim_matches(|ch: char| {
-            matches!(
-                ch,
-                '"' | '\'' | ',' | '.' | ':' | ';' | '(' | ')' | '[' | ']'
-            )
-        })
-        .to_string()
-}
-
-fn is_model_token(token: &str) -> bool {
-    !token.is_empty()
-        && [
-            "gpt", "claude", "gemini", "llama", "qwen", "sonnet", "opus", "haiku", "o1", "o3", "o4",
-        ]
-        .iter()
-        .any(|needle| token.contains(needle))
-}
-
-fn extract_workspace_root(message: &str) -> Option<String> {
-    message
-        .split_whitespace()
-        .find(|token| token.starts_with('/') || (token.contains('/') && !token.contains("://")))
-        .map(|token| {
-            token
-                .trim_matches(|ch: char| matches!(ch, '"' | '\'' | ',' | '.'))
-                .to_string()
-        })
-        .filter(|token| !token.is_empty())
 }
 
 pub(crate) fn validate_workflow_plan(plan: &crate::WorkflowPlan) -> Result<(), String> {
@@ -1548,48 +1053,102 @@ pub(crate) fn validate_workflow_plan(plan: &crate::WorkflowPlan) -> Result<(), S
     Ok(())
 }
 
+const ALLOWED_WORKFLOW_STEP_IDS: &[&str] = &[
+    "collect_inputs",
+    "research_sources",
+    "extract_pain_points",
+    "cluster_topics",
+    "analyze_findings",
+    "generate_report",
+    "compare_results",
+    "compare_with_features",
+    "notify_user",
+    "execute_goal",
+];
+
 fn allowed_workflow_step_ids() -> std::collections::HashSet<&'static str> {
-    [
-        "collect_inputs",
-        "research_sources",
-        "extract_pain_points",
-        "cluster_topics",
-        "analyze_findings",
-        "generate_report",
-        "compare_results",
-        "compare_with_features",
-        "notify_user",
-        "execute_goal",
-    ]
-    .into_iter()
-    .collect()
+    ALLOWED_WORKFLOW_STEP_IDS.iter().copied().collect()
+}
+
+async fn try_llm_build_workflow_plan(
+    state: &AppState,
+    model: &tandem_types::ModelSpec,
+    prompt: &str,
+    normalized_prompt: &str,
+    explicit_schedule: Option<&crate::AutomationV2Schedule>,
+    plan_source: &str,
+    workspace_root: &str,
+    allowed_mcp_servers: &[String],
+    operator_preferences: Option<&Value>,
+) -> Option<PlannerBuildPayload> {
+    let payload = invoke_planner_llm(
+        state,
+        "Workflow Planner Create",
+        workspace_root,
+        model.clone(),
+        build_llm_workflow_creation_prompt(
+            prompt,
+            normalized_prompt,
+            explicit_schedule,
+            plan_source,
+            workspace_root,
+            allowed_mcp_servers,
+            operator_preferences,
+        ),
+        format!("workflow-plan-build:{plan_source}"),
+        planner_build_timeout_ms(),
+        "TANDEM_WORKFLOW_PLANNER_TEST_BUILD_RESPONSE",
+    )
+    .await?;
+    serde_json::from_value(payload).ok()
 }
 
 async fn try_llm_revise_workflow_plan(
     state: &AppState,
+    model: &tandem_types::ModelSpec,
     current_plan: &crate::WorkflowPlan,
     conversation: &crate::WorkflowPlanConversation,
     message: &str,
-) -> Option<LlmPlannerRevisionResult> {
-    let model = planner_model_spec(current_plan.operator_preferences.as_ref())?;
-    if let Some(payload) = planner_test_override_payload() {
-        return parse_llm_revision_payload(current_plan, payload);
+) -> Option<PlannerRevisionPayload> {
+    let payload = invoke_planner_llm(
+        state,
+        "Workflow Planner Revision",
+        &current_plan.workspace_root,
+        model.clone(),
+        build_llm_workflow_revision_prompt(current_plan, conversation, message),
+        format!("workflow-plan-revision:{}", current_plan.plan_id),
+        planner_revision_timeout_ms(),
+        "TANDEM_WORKFLOW_PLANNER_TEST_REVISION_RESPONSE",
+    )
+    .await?;
+    serde_json::from_value(payload).ok()
+}
+
+async fn invoke_planner_llm(
+    state: &AppState,
+    session_title: &str,
+    workspace_root: &str,
+    model: tandem_types::ModelSpec,
+    prompt: String,
+    run_key: String,
+    timeout_ms: u64,
+    override_env: &str,
+) -> Option<Value> {
+    if let Some(payload) = planner_test_override_payload(override_env, true) {
+        return Some(payload);
     }
-    let workspace_root = resolve_workspace_root(state, Some(&current_plan.workspace_root))
+    let workspace_root = resolve_workspace_root(state, Some(workspace_root))
         .await
         .ok()?;
     let mut session = Session::new(
-        Some("Workflow Planner Revision".to_string()),
+        Some(session_title.to_string()),
         Some(workspace_root.clone()),
     );
     let session_id = session.id.clone();
     session.workspace_root = Some(workspace_root);
     state.storage.save_session(session).await.ok()?;
-
     let request = SendMessageRequest {
-        parts: vec![MessagePartInput::Text {
-            text: build_llm_workflow_revision_prompt(current_plan, conversation, message),
-        }],
+        parts: vec![MessagePartInput::Text { text: prompt }],
         model: Some(model),
         agent: None,
         tool_mode: None,
@@ -1598,116 +1157,103 @@ async fn try_llm_revise_workflow_plan(
         write_required: None,
     };
     tokio::time::timeout(
-        std::time::Duration::from_millis(planner_revision_timeout_ms()),
-        state.engine_loop.run_prompt_async_with_context(
-            session_id.clone(),
-            request,
-            Some(format!("workflow-plan-revision:{}", current_plan.plan_id)),
-        ),
+        std::time::Duration::from_millis(timeout_ms),
+        state
+            .engine_loop
+            .run_prompt_async_with_context(session_id.clone(), request, Some(run_key)),
     )
     .await
     .ok()?
     .ok()?;
     let session = state.storage.get_session(&session_id).await?;
     let output = extract_planner_session_text_output(&session);
-    let payload = extract_json_value_from_text(&output)?;
-    parse_llm_revision_payload(current_plan, payload)
+    extract_json_value_from_text(&output)
 }
 
 fn parse_llm_revision_payload(
     current_plan: &crate::WorkflowPlan,
-    payload: Value,
-) -> Option<LlmPlannerRevisionResult> {
-    let action = payload
-        .get("action")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or("keep")
-        .to_ascii_lowercase();
-    if action == "clarify" {
-        let question = payload
-            .get("clarifier")
-            .and_then(|row| row.get("question"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())?;
-        let assistant_text = payload
-            .get("assistant_text")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(question)
-            .to_string();
-        return Some(LlmPlannerRevisionResult {
-            plan: current_plan.clone(),
-            assistant_text,
-            change_summary: Vec::new(),
-            clarifier: json!({
-                "field": payload
-                    .get("clarifier")
-                    .and_then(|row| row.get("field"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("general"),
-                "question": question,
-            }),
-        });
+    payload: PlannerRevisionPayload,
+    ctx: &PlannerPlanNormalizationContext<'_>,
+) -> Option<(crate::WorkflowPlan, String, Vec<String>, Value)> {
+    match payload.action {
+        PlannerRevisionAction::Clarify => {
+            let clarifier = payload.clarifier?;
+            let question = clarifier.question.trim();
+            if question.is_empty() {
+                return None;
+            }
+            let assistant_text = payload
+                .assistant_text
+                .unwrap_or_else(|| question.to_string());
+            Some((
+                current_plan.clone(),
+                assistant_text,
+                Vec::new(),
+                json!({
+                    "field": clarifier.field.unwrap_or_else(|| "general".to_string()),
+                    "question": question,
+                }),
+            ))
+        }
+        PlannerRevisionAction::Keep => Some((
+            current_plan.clone(),
+            payload
+                .assistant_text
+                .unwrap_or_else(|| "I kept the current workflow plan.".to_string()),
+            Vec::new(),
+            Value::Null,
+        )),
+        PlannerRevisionAction::Revise => {
+            let candidate = payload.plan?;
+            let revised_plan = normalize_and_validate_planner_plan(candidate, ctx).ok()?;
+            if workflow_steps_equal(&revised_plan.steps, &current_plan.steps)
+                && revised_plan.title == current_plan.title
+                && revised_plan.description == current_plan.description
+                && workflow_schedule_equal(&revised_plan.schedule, &current_plan.schedule)
+                && revised_plan.workspace_root == current_plan.workspace_root
+                && revised_plan.allowed_mcp_servers == current_plan.allowed_mcp_servers
+                && revised_plan.operator_preferences == current_plan.operator_preferences
+            {
+                return Some((
+                    current_plan.clone(),
+                    payload
+                        .assistant_text
+                        .unwrap_or_else(|| "I kept the current workflow plan.".to_string()),
+                    Vec::new(),
+                    Value::Null,
+                ));
+            }
+            let change_summary = if payload.change_summary.is_empty() {
+                vec!["updated workflow plan".to_string()]
+            } else {
+                payload.change_summary
+            };
+            let assistant_text = payload
+                .assistant_text
+                .unwrap_or_else(|| format!("Updated the plan: {}.", change_summary.join(", ")));
+            Some((revised_plan, assistant_text, change_summary, Value::Null))
+        }
     }
-    if action != "revise" {
-        return None;
-    }
-    let mut revised_plan: crate::WorkflowPlan =
-        serde_json::from_value(payload.get("plan")?.clone()).ok()?;
-    revised_plan.plan_id = current_plan.plan_id.clone();
-    revised_plan.planner_version = current_plan.planner_version.clone();
-    revised_plan.plan_source = current_plan.plan_source.clone();
-    revised_plan.original_prompt = current_plan.original_prompt.clone();
-    revised_plan.normalized_prompt = current_plan.normalized_prompt.clone();
-    revised_plan.execution_target = "automation_v2".to_string();
-    validate_workflow_plan(&revised_plan).ok()?;
-    if workflow_steps_equal(&revised_plan.steps, &current_plan.steps)
-        && revised_plan.title == current_plan.title
-        && revised_plan.description == current_plan.description
-        && workflow_schedule_equal(&revised_plan.schedule, &current_plan.schedule)
-        && revised_plan.workspace_root == current_plan.workspace_root
-        && revised_plan.allowed_mcp_servers == current_plan.allowed_mcp_servers
-        && revised_plan.operator_preferences == current_plan.operator_preferences
-    {
-        return None;
-    }
-    let change_summary = payload
-        .get("change_summary")
-        .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .filter(|rows| !rows.is_empty())
-        .unwrap_or_else(|| vec!["updated workflow plan".to_string()]);
-    let assistant_text = payload
-        .get("assistant_text")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-        .unwrap_or_else(|| format!("Updated the plan: {}.", change_summary.join(", ")));
-    Some(LlmPlannerRevisionResult {
-        plan: revised_plan,
-        assistant_text,
-        change_summary,
-        clarifier: Value::Null,
-    })
 }
 
-fn planner_test_override_payload() -> Option<Value> {
-    let raw = std::env::var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE").ok()?;
+fn planner_test_override_payload(primary_env: &str, include_legacy: bool) -> Option<Value> {
+    let raw = std::env::var(primary_env).ok().or_else(|| {
+        include_legacy
+            .then(|| std::env::var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE").ok())
+            .flatten()
+    })?;
     if raw.trim().is_empty() {
         return None;
     }
     extract_json_value_from_text(&raw)
+}
+
+fn planner_build_timeout_ms() -> u64 {
+    std::env::var("TANDEM_WORKFLOW_PLANNER_BUILD_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|value| value.clamp(250, 60_000))
+        .unwrap_or(5_000)
 }
 
 fn planner_revision_timeout_ms() -> u64 {
@@ -1767,6 +1313,59 @@ async fn planner_model_provider_is_configured(
         .any(|provider| provider.id == model.provider_id)
 }
 
+fn build_llm_workflow_creation_prompt(
+    prompt: &str,
+    normalized_prompt: &str,
+    explicit_schedule: Option<&crate::AutomationV2Schedule>,
+    plan_source: &str,
+    workspace_root: &str,
+    allowed_mcp_servers: &[String],
+    operator_preferences: Option<&Value>,
+) -> String {
+    format!(
+        concat!(
+            "You are creating a Tandem automation workflow plan.\n",
+            "Planner intelligence lives in the model. Return JSON only.\n",
+            "Allowed step ids: {}.\n",
+            "Plan invariants:\n",
+            "- execution_target must be automation_v2\n",
+            "- workspace_root must be a non-empty absolute path\n",
+            "- do not invent unsupported step ids\n",
+            "- keep the graph minimal but sufficient\n",
+            "- steps must form a valid DAG\n",
+            "- input_refs and depends_on must reference existing steps\n",
+            "Schedule schema:\n",
+            "- manual: {{\"type\":\"manual\",\"timezone\":\"UTC\",\"misfire_policy\":{{\"type\":\"run_once\"}}}}\n",
+            "- cron: {{\"type\":\"cron\",\"cron_expression\":\"...\",\"timezone\":\"UTC\",\"misfire_policy\":{{\"type\":\"run_once\"}}}}\n",
+            "- interval: {{\"type\":\"interval\",\"interval_seconds\":3600,\"timezone\":\"UTC\",\"misfire_policy\":{{\"type\":\"run_once\"}}}}\n",
+            "Operator preference schema you may set:\n",
+            "- execution_mode: single | team | swarm\n",
+            "- max_parallel_agents: 1..16\n",
+            "- model_provider + model_id\n",
+            "- role_models.planner.provider_id + role_models.planner.model_id\n",
+            "Explicit inputs that must be preserved exactly if provided:\n",
+            "- workspace_root: {}\n",
+            "- plan_source: {}\n",
+            "- explicit_schedule: {}\n",
+            "- allowed_mcp_servers: {}\n",
+            "- operator_preferences: {}\n",
+            "Return one of:\n",
+            "{{\"action\":\"build\",\"assistant_text\":\"...\",\"plan\":{{...full WorkflowPlan...}}}}\n",
+            "{{\"action\":\"clarify\",\"assistant_text\":\"...\",\"clarifier\":{{\"field\":\"general\",\"question\":\"...\"}}}}\n",
+            "Original prompt:\n{}\n\n",
+            "Normalized prompt:\n{}\n"
+        ),
+        ALLOWED_WORKFLOW_STEP_IDS.join(", "),
+        workspace_root,
+        plan_source,
+        serde_json::to_string_pretty(&explicit_schedule).unwrap_or_else(|_| "null".to_string()),
+        serde_json::to_string_pretty(&allowed_mcp_servers).unwrap_or_else(|_| "[]".to_string()),
+        serde_json::to_string_pretty(&operator_preferences).unwrap_or_else(|_| "null".to_string()),
+        prompt.trim(),
+        normalized_prompt,
+    )
+}
+
 fn build_llm_workflow_revision_prompt(
     current_plan: &crate::WorkflowPlan,
     conversation: &crate::WorkflowPlanConversation,
@@ -1786,30 +1385,41 @@ fn build_llm_workflow_revision_prompt(
     format!(
         concat!(
             "You are revising a Tandem automation workflow plan.\n",
-            "You may only use these step ids: collect_inputs, research_sources, extract_pain_points, cluster_topics, analyze_findings, generate_report, compare_results, compare_with_features, notify_user, execute_goal.\n",
-            "Keep execution_target as automation_v2.\n",
-            "Do not invent custom step ids.\n",
-            "Keep workspace_root as a non-empty absolute path.\n",
-            "You may revise title, description, schedule, workspace_root, allowed_mcp_servers, operator_preferences, and steps.\n",
-            "You may combine the allowed step ids into a new valid DAG; you are not limited to the preset deterministic workflow shapes.\n",
-            "You may revise step objectives, dependencies, input_refs, and output_contracts as long as they stay valid.\n",
-            "Prefer the smallest workflow graph that safely satisfies the user's request.\n",
-            "If you cannot satisfy the request safely, return clarify.\n",
-            "Return JSON only with one of these shapes:\n",
+            "Planner intelligence lives in the model. Return JSON only.\n",
+            "Allowed step ids: {}.\n",
+            "Plan invariants:\n",
+            "- execution_target must remain automation_v2\n",
+            "- workspace_root must remain a non-empty absolute path\n",
+            "- do not invent unsupported step ids\n",
+            "- steps must form a valid DAG\n",
+            "- input_refs and depends_on must reference existing steps\n",
+            "- keep the workflow graph minimal but sufficient\n",
+            "You may revise title, description, schedule, workspace_root, allowed_mcp_servers, operator_preferences, steps, dependencies, input_refs, and output_contracts.\n",
+            "Schedule schema:\n",
+            "- manual | cron | interval using the same shape already present on WorkflowPlan.schedule\n",
+            "Operator preference schema you may set:\n",
+            "- execution_mode: single | team | swarm\n",
+            "- max_parallel_agents: 1..16\n",
+            "- model_provider + model_id\n",
+            "- role_models.planner.provider_id + role_models.planner.model_id\n",
+            "Return one of:\n",
             "{{\"action\":\"revise\",\"assistant_text\":\"...\",\"change_summary\":[\"...\"],\"plan\":{{...full WorkflowPlan...}}}}\n",
             "{{\"action\":\"clarify\",\"assistant_text\":\"...\",\"clarifier\":{{\"field\":\"general\",\"question\":\"...\"}}}}\n",
             "{{\"action\":\"keep\",\"assistant_text\":\"...\"}}\n\n",
+            "Original prompt:\n{}\n\n",
             "Current plan JSON:\n{}\n\n",
             "Recent planning conversation:\n{}\n\n",
             "User revision request:\n{}\n"
         ),
+        ALLOWED_WORKFLOW_STEP_IDS.join(", "),
+        current_plan.original_prompt.trim(),
         serde_json::to_string_pretty(current_plan).unwrap_or_else(|_| "{}".to_string()),
         if transcript.trim().is_empty() {
             "(none yet)".to_string()
         } else {
             transcript
         },
-        message.trim()
+        message.trim(),
     )
 }
 
@@ -1870,17 +1480,14 @@ fn normalize_prompt(prompt: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn normalize_schedule(explicit: Option<&Value>, prompt: &str) -> crate::AutomationV2Schedule {
-    if let Some(schedule) = explicit.and_then(schedule_from_value) {
-        return schedule;
-    }
-    schedule_from_prompt(prompt).unwrap_or(crate::AutomationV2Schedule {
+fn manual_schedule() -> crate::AutomationV2Schedule {
+    crate::AutomationV2Schedule {
         schedule_type: crate::AutomationV2ScheduleType::Manual,
         cron_expression: None,
         interval_seconds: None,
         timezone: "UTC".to_string(),
         misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
-    })
+    }
 }
 
 fn schedule_from_value(value: &Value) -> Option<crate::AutomationV2Schedule> {
@@ -1967,238 +1574,18 @@ fn schedule_from_value(value: &Value) -> Option<crate::AutomationV2Schedule> {
     })
 }
 
-fn schedule_from_prompt(prompt: &str) -> Option<crate::AutomationV2Schedule> {
-    let text = prompt.to_ascii_lowercase();
-    let cron_expression = if text.contains("every morning") {
-        Some("0 9 * * *")
-    } else if text.contains("every evening") {
-        Some("0 18 * * *")
-    } else if text.contains("every hour") || text.contains("hourly") {
-        None
-    } else if text.contains("every day") || text.contains("daily") {
-        Some("0 9 * * *")
-    } else if text.contains("weekly") || text.contains("every monday") {
-        Some("0 9 * * 1")
-    } else {
-        None
-    };
-    if text.contains("every hour") || text.contains("hourly") {
-        return Some(crate::AutomationV2Schedule {
-            schedule_type: crate::AutomationV2ScheduleType::Interval,
-            cron_expression: None,
-            interval_seconds: Some(3600),
-            timezone: "UTC".to_string(),
-            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
-        });
-    }
-    cron_expression.map(|expr| crate::AutomationV2Schedule {
-        schedule_type: crate::AutomationV2ScheduleType::Cron,
-        cron_expression: Some(expr.to_string()),
-        interval_seconds: None,
-        timezone: "UTC".to_string(),
-        misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
-    })
+fn workflow_steps_equal(
+    left: &[crate::WorkflowPlanStep],
+    right: &[crate::WorkflowPlanStep],
+) -> bool {
+    serde_json::to_value(left).ok() == serde_json::to_value(right).ok()
 }
 
-fn schedule_from_revision_message(prompt: &str) -> Option<crate::AutomationV2Schedule> {
-    let text = prompt.to_ascii_lowercase();
-    if text.contains("manual only")
-        || text.contains("run manually")
-        || text.contains("manual schedule")
-        || text.contains("on demand")
-        || text.contains("do not schedule")
-        || text.contains("don't schedule")
-    {
-        return Some(crate::AutomationV2Schedule {
-            schedule_type: crate::AutomationV2ScheduleType::Manual,
-            cron_expression: None,
-            interval_seconds: None,
-            timezone: "UTC".to_string(),
-            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
-        });
-    }
-    schedule_from_prompt(prompt)
-}
-
-fn choose_plan_shape(
-    normalized_prompt: &str,
-) -> (&'static str, Vec<crate::WorkflowPlanStep>, String) {
-    if contains_any(
-        normalized_prompt,
-        &["compare", "versus", "vs ", "difference"],
-    ) {
-        return compare_shape_definition();
-    }
-    if contains_any(
-        normalized_prompt,
-        &[
-            "research",
-            "monitor",
-            "watch",
-            "digest",
-            "summarize",
-            "report",
-        ],
-    ) {
-        return research_shape_definition();
-    }
-    if contains_any(normalized_prompt, &["notify", "alert", "post", "send"]) {
-        return notify_shape_definition();
-    }
-    if normalized_prompt.split_whitespace().count() >= 5 {
-        return single_shape_definition_with_confidence("medium");
-    }
-    single_shape_definition_with_confidence("low")
-}
-
-fn compare_shape_definition() -> (&'static str, Vec<crate::WorkflowPlanStep>, String) {
-    (
-        "high",
-        vec![
-            plan_step(
-                "collect_inputs",
-                "collect",
-                "Gather the inputs needed for comparison.",
-                "researcher",
-            ),
-            plan_step_with_dep(
-                "compare_results",
-                "compare",
-                "Compare the gathered inputs and identify the important differences.",
-                "analyst",
-                &["collect_inputs"],
-                vec![input_ref("collect_inputs", "comparison_inputs")],
-                Some("structured_json"),
-            ),
-            plan_step_with_dep(
-                "generate_report",
-                "report",
-                "Generate the final report from the comparison findings.",
-                "writer",
-                &["compare_results"],
-                vec![input_ref("compare_results", "comparison_findings")],
-                Some("report_markdown"),
-            ),
-        ],
-        "Collect inputs, compare them, and produce a report.".to_string(),
-    )
-}
-
-fn notify_shape_definition() -> (&'static str, Vec<crate::WorkflowPlanStep>, String) {
-    (
-        "medium",
-        vec![
-            plan_step_with_dep(
-                "collect_inputs",
-                "collect",
-                "Collect the inputs needed before sending a notification.",
-                "researcher",
-                &[],
-                Vec::new(),
-                Some("structured_json"),
-            ),
-            plan_step_with_dep(
-                "notify_user",
-                "notify",
-                "Prepare the final notification using the collected inputs.",
-                "writer",
-                &["collect_inputs"],
-                vec![input_ref("collect_inputs", "notification_inputs")],
-                Some("text_summary"),
-            ),
-        ],
-        "Collect the needed inputs and prepare a notification.".to_string(),
-    )
-}
-
-fn research_shape_definition() -> (&'static str, Vec<crate::WorkflowPlanStep>, String) {
-    (
-        "high",
-        vec![
-            plan_step_with_dep(
-                "research_sources",
-                "research",
-                "Collect current source material relevant to the prompt.",
-                "researcher",
-                &[],
-                Vec::new(),
-                Some("structured_json"),
-            ),
-            plan_step_with_dep(
-                "analyze_findings",
-                "analyze",
-                "Analyze the collected findings and identify the important takeaways.",
-                "analyst",
-                &["research_sources"],
-                vec![input_ref("research_sources", "source_findings")],
-                Some("structured_json"),
-            ),
-            plan_step_with_dep(
-                "generate_report",
-                "report",
-                "Generate a concise markdown report from the analyzed findings.",
-                "writer",
-                &["analyze_findings"],
-                vec![input_ref("analyze_findings", "analysis")],
-                Some("report_markdown"),
-            ),
-        ],
-        "Research, analyze, and produce a report.".to_string(),
-    )
-}
-
-fn single_shape_definition() -> (&'static str, Vec<crate::WorkflowPlanStep>, String) {
-    single_shape_definition_with_confidence("medium")
-}
-
-fn single_shape_definition_with_confidence(
-    confidence: &'static str,
-) -> (&'static str, Vec<crate::WorkflowPlanStep>, String) {
-    (
-        confidence,
-        vec![plan_step_with_dep(
-            "execute_goal",
-            "execute",
-            "Execute the requested goal as a single automation step.",
-            "worker",
-            &[],
-            Vec::new(),
-            Some("structured_json"),
-        )],
-        if confidence == "low" {
-            "Use a single-step automation because the prompt is ambiguous.".to_string()
-        } else {
-            "Execute the goal in a single step because the prompt is broad.".to_string()
-        },
-    )
-}
-
-fn contains_any(input: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| input.contains(needle))
-}
-
-fn input_ref(from_step_id: &str, alias: &str) -> crate::AutomationFlowInputRef {
-    crate::AutomationFlowInputRef {
-        from_step_id: from_step_id.to_string(),
-        alias: alias.to_string(),
-    }
-}
-
-fn plan_step(
-    step_id: &str,
-    kind: &str,
-    objective: &str,
-    agent_role: &str,
-) -> crate::WorkflowPlanStep {
-    plan_step_with_dep(
-        step_id,
-        kind,
-        objective,
-        agent_role,
-        &[],
-        Vec::new(),
-        Some("structured_json"),
-    )
+fn workflow_schedule_equal(
+    left: &crate::AutomationV2Schedule,
+    right: &crate::AutomationV2Schedule,
+) -> bool {
+    serde_json::to_value(left).ok() == serde_json::to_value(right).ok()
 }
 
 fn plan_step_with_dep(
