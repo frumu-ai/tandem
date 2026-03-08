@@ -84,7 +84,7 @@ async fn memory_put_then_search_in_session_scope() {
             .to_string(),
         ))
         .expect("search request");
-    let search_resp = app.oneshot(search_req).await.expect("response");
+    let search_resp = app.clone().oneshot(search_req).await.expect("response");
     assert_eq!(search_resp.status(), StatusCode::OK);
     let body = to_bytes(search_resp.into_body(), usize::MAX)
         .await

@@ -80,6 +80,13 @@ pub(super) async fn test_state() -> AppState {
                     "input_schema": {"type":"object"},
                     "fetched_at_ms": 1,
                     "schema_hash": "tool-github-get-pull"
+                },
+                {
+                    "tool_name": "mcp.github.create_pull_request",
+                    "description": "Create a GitHub pull request",
+                    "input_schema": {"type":"object"},
+                    "fetched_at_ms": 1,
+                    "schema_hash": "tool-github-create-pull"
                 }
             ],
             "tools_fetched_at_ms": 1,

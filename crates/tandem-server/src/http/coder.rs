@@ -19,6 +19,7 @@ use tandem_memory::{
     types::MemoryTier, GovernedMemoryTier, MemoryClassification, MemoryContentKind, MemoryManager,
     MemoryPartition, MemoryPromoteRequest, MemoryPutRequest, PromotionReview,
 };
+use tandem_runtime::McpRemoteTool;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -301,6 +302,18 @@ pub(super) struct CoderIssueFixPrDraftCreateInput {
     pub(super) memory_hits_used: Vec<String>,
     #[serde(default)]
     pub(super) notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct CoderIssueFixPrSubmitInput {
+    #[serde(default)]
+    pub(super) approved_by: Option<String>,
+    #[serde(default)]
+    pub(super) reason: Option<String>,
+    #[serde(default)]
+    pub(super) mcp_server: Option<String>,
+    #[serde(default)]
+    pub(super) dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -3131,6 +3144,70 @@ async fn coder_merge_recommendation_readiness(
     Ok(readiness)
 }
 
+async fn coder_pr_submit_readiness(
+    state: &AppState,
+    preferred_server: Option<&str>,
+) -> Result<CapabilityReadinessOutput, StatusCode> {
+    let provider_preference = preferred_server
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| vec![value.to_ascii_lowercase()])
+        .unwrap_or_default();
+    let mut readiness = super::capabilities::evaluate_capability_readiness(
+        state,
+        &CapabilityReadinessInput {
+            workflow_id: Some("coder_issue_fix_pr_submit".to_string()),
+            required_capabilities: vec!["github.create_pull_request".to_string()],
+            optional_capabilities: Vec::new(),
+            provider_preference,
+            available_tools: Vec::new(),
+            allow_unbound: false,
+        },
+    )
+    .await?;
+    if let Some(server_name) = preferred_server
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+    {
+        let servers = state.mcp.list().await;
+        match servers
+            .values()
+            .find(|server| server.name.eq_ignore_ascii_case(&server_name))
+        {
+            None => {
+                readiness.blocking_issues.push(CapabilityBlockingIssue {
+                    code: "missing_mcp_servers".to_string(),
+                    message: "Preferred MCP server is not configured.".to_string(),
+                    capability_ids: Vec::new(),
+                    providers: vec![server_name.clone()],
+                    tools: Vec::new(),
+                });
+                readiness.missing_servers.push(server_name);
+            }
+            Some(server) if !server.connected => {
+                readiness.blocking_issues.push(CapabilityBlockingIssue {
+                    code: "disconnected_mcp_servers".to_string(),
+                    message: "Preferred MCP server is configured but disconnected.".to_string(),
+                    capability_ids: Vec::new(),
+                    providers: vec![server.name.to_ascii_lowercase()],
+                    tools: Vec::new(),
+                });
+                readiness
+                    .disconnected_servers
+                    .push(server.name.to_ascii_lowercase());
+            }
+            Some(_) => {}
+        }
+    }
+    readiness.missing_servers.sort();
+    readiness.missing_servers.dedup();
+    readiness.disconnected_servers.sort();
+    readiness.disconnected_servers.dedup();
+    readiness.runnable = readiness.blocking_issues.is_empty();
+    Ok(readiness)
+}
+
 fn compose_issue_triage_objective(input: &CoderRunCreateInput) -> String {
     if let Some(objective) = input
         .objective
@@ -4419,6 +4496,135 @@ fn build_issue_fix_pr_draft_body(
     )
 }
 
+fn split_owner_repo(repo: &str) -> Result<(&str, &str), StatusCode> {
+    let mut parts = repo.split('/');
+    let owner = parts
+        .next()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let repo_name = parts
+        .next()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    if parts.next().is_some() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok((owner, repo_name))
+}
+
+fn map_namespaced_to_raw_tool(
+    tools: &[McpRemoteTool],
+    namespaced_name: &str,
+) -> Result<String, StatusCode> {
+    tools
+        .iter()
+        .find(|row| row.namespaced_name == namespaced_name)
+        .map(|row| row.tool_name.clone())
+        .ok_or(StatusCode::BAD_GATEWAY)
+}
+
+async fn resolve_github_create_pr_tool(
+    state: &AppState,
+    preferred_server: Option<&str>,
+) -> Result<(String, String), StatusCode> {
+    let mut server_candidates = if let Some(server_name) = preferred_server
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        vec![server_name.to_string()]
+    } else {
+        let mut servers = state
+            .mcp
+            .list()
+            .await
+            .into_values()
+            .filter(|server| server.enabled && server.connected)
+            .map(|server| server.name)
+            .collect::<Vec<_>>();
+        servers.sort();
+        servers
+    };
+    if server_candidates.is_empty() {
+        return Err(StatusCode::CONFLICT);
+    }
+    for server_name in server_candidates.drain(..) {
+        let server_tools = state.mcp.server_tools(&server_name).await;
+        if server_tools.is_empty() {
+            continue;
+        }
+        let discovered = state
+            .capability_resolver
+            .discover_from_runtime(server_tools.clone(), Vec::new())
+            .await;
+        let resolved = state
+            .capability_resolver
+            .resolve(
+                crate::capability_resolver::CapabilityResolveInput {
+                    workflow_id: Some("coder_issue_fix_pr_submit".to_string()),
+                    required_capabilities: vec!["github.create_pull_request".to_string()],
+                    optional_capabilities: Vec::new(),
+                    provider_preference: vec!["mcp".to_string()],
+                    available_tools: discovered,
+                },
+                Vec::new(),
+            )
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let Some(namespaced) = resolved
+            .resolved
+            .iter()
+            .find(|row| row.capability_id == "github.create_pull_request")
+            .map(|row| row.tool_name.clone())
+        else {
+            continue;
+        };
+        let raw_tool = map_namespaced_to_raw_tool(&server_tools, &namespaced)?;
+        return Ok((server_name, raw_tool));
+    }
+    Err(StatusCode::CONFLICT)
+}
+
+async fn call_create_pull_request(
+    state: &AppState,
+    server_name: &str,
+    tool_name: &str,
+    owner: &str,
+    repo: &str,
+    title: &str,
+    body: &str,
+    base_branch: &str,
+    head_branch: &str,
+) -> Result<tandem_types::ToolResult, StatusCode> {
+    let preferred = json!({
+        "method": "create",
+        "owner": owner,
+        "repo": repo,
+        "title": title,
+        "body": body,
+        "base": base_branch,
+        "head": head_branch,
+        "draft": true,
+    });
+    let fallback = json!({
+        "owner": owner,
+        "repo": repo,
+        "title": title,
+        "body": body,
+        "base": base_branch,
+        "head": head_branch,
+        "draft": true,
+    });
+    let first = state.mcp.call_tool(server_name, tool_name, preferred).await;
+    match first {
+        Ok(result) => Ok(result),
+        Err(_) => state
+            .mcp
+            .call_tool(server_name, tool_name, fallback)
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY),
+    }
+}
+
 pub(super) async fn coder_issue_fix_pr_draft_create(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -4556,6 +4762,153 @@ pub(super) async fn coder_issue_fix_pr_draft_create(
             &load_context_run_state(&state, &record.linked_context_run_id).await?,
         ),
         "run": load_context_run_state(&state, &record.linked_context_run_id).await?,
+    })))
+}
+
+pub(super) async fn coder_issue_fix_pr_submit(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<CoderIssueFixPrSubmitInput>,
+) -> Result<Json<Value>, StatusCode> {
+    let record = load_coder_run_record(&state, &id).await?;
+    if !matches!(record.workflow_mode, CoderWorkflowMode::IssueFix) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let approved_by = input
+        .approved_by
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let readiness = coder_pr_submit_readiness(&state, input.mcp_server.as_deref()).await?;
+    if !readiness.runnable {
+        return Ok(Json(json!({
+            "ok": false,
+            "code": "CODER_PR_SUBMIT_BLOCKED",
+            "readiness": readiness,
+        })));
+    }
+    let draft_payload = load_latest_coder_artifact_payload(&state, &record, "coder_pr_draft")
+        .await
+        .ok_or(StatusCode::CONFLICT)?;
+    let title = draft_payload
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(StatusCode::CONFLICT)?;
+    let body = draft_payload
+        .get("body")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(StatusCode::CONFLICT)?;
+    let base_branch = draft_payload
+        .get("base_branch")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("main");
+    let head_branch = draft_payload
+        .get("head_branch")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("coder/issue-fix");
+    let dry_run = input.dry_run.unwrap_or(true);
+    let (owner, repo_name) = split_owner_repo(&record.repo_binding.repo_slug)?;
+    let mut submission_payload = json!({
+        "coder_run_id": record.coder_run_id,
+        "linked_context_run_id": record.linked_context_run_id,
+        "workflow_mode": record.workflow_mode,
+        "repo_binding": record.repo_binding,
+        "github_ref": record.github_ref,
+        "approved_by": approved_by,
+        "approval_reason": input.reason,
+        "title": title,
+        "body": body,
+        "base_branch": base_branch,
+        "head_branch": head_branch,
+        "dry_run": dry_run,
+        "created_at_ms": crate::now_ms(),
+        "readiness": readiness,
+    });
+    if !dry_run {
+        let (server_name, tool_name) =
+            resolve_github_create_pr_tool(&state, input.mcp_server.as_deref()).await?;
+        let result = call_create_pull_request(
+            &state,
+            &server_name,
+            &tool_name,
+            owner,
+            repo_name,
+            title,
+            body,
+            base_branch,
+            head_branch,
+        )
+        .await?;
+        if let Some(obj) = submission_payload.as_object_mut() {
+            obj.insert("server_name".to_string(), json!(server_name));
+            obj.insert("tool_name".to_string(), json!(tool_name));
+            obj.insert("submitted".to_string(), json!(true));
+            obj.insert(
+                "tool_result".to_string(),
+                json!({
+                    "output": result.output,
+                    "metadata": result.metadata,
+                }),
+            );
+        }
+    } else if let Some(obj) = submission_payload.as_object_mut() {
+        obj.insert("submitted".to_string(), json!(false));
+        obj.insert(
+            "dry_run_preview".to_string(),
+            json!({
+                "owner": owner,
+                "repo": repo_name,
+                "base": base_branch,
+                "head": head_branch,
+            }),
+        );
+    }
+    let artifact = write_coder_artifact(
+        &state,
+        &record.linked_context_run_id,
+        &format!("issue-fix-pr-submit-{}", Uuid::new_v4().simple()),
+        "coder_pr_submission",
+        "artifacts/issue_fix.pr_submission.json",
+        &submission_payload,
+    )
+    .await?;
+    publish_coder_artifact_added(&state, &record, &artifact, Some("approval"), {
+        let mut extra = serde_json::Map::new();
+        extra.insert("kind".to_string(), json!("pr_submission"));
+        extra.insert("dry_run".to_string(), json!(dry_run));
+        extra.insert(
+            "submitted".to_string(),
+            json!(submission_payload
+                .get("submitted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)),
+        );
+        extra
+    });
+    if !dry_run {
+        publish_coder_run_event(&state, "coder.pr.submitted", &record, Some("approval"), {
+            let mut extra = serde_json::Map::new();
+            extra.insert("artifact_id".to_string(), json!(artifact.id));
+            extra.insert("title".to_string(), json!(title));
+            extra
+        });
+    }
+    let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "artifact": artifact,
+        "submitted": submission_payload
+            .get("submitted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "dry_run": dry_run,
+        "coder_run": coder_run_payload(&record, &run),
+        "run": run,
     })))
 }
 
