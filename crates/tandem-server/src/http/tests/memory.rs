@@ -2132,6 +2132,63 @@ async fn memory_demote_hides_item_from_search_results() {
 }
 
 #[tokio::test]
+async fn memory_demote_missing_memory_writes_not_found_audit() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let demote_req = Request::builder()
+        .method("POST")
+        .uri("/memory/demote")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "id": "missing-demote-memory",
+                "run_id": "run-5-missing"
+            })
+            .to_string(),
+        ))
+        .expect("demote request");
+    let demote_resp = app
+        .clone()
+        .oneshot(demote_req)
+        .await
+        .expect("demote response");
+    assert_eq!(demote_resp.status(), StatusCode::NOT_FOUND);
+
+    let audit_req = Request::builder()
+        .method("GET")
+        .uri("/memory/audit?run_id=run-5-missing")
+        .body(Body::empty())
+        .expect("audit request");
+    let audit_resp = app
+        .clone()
+        .oneshot(audit_req)
+        .await
+        .expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    let demote_audit_exists = audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                row.get("action").and_then(Value::as_str) == Some("memory_demote")
+                    && row.get("memory_id").and_then(Value::as_str) == Some("missing-demote-memory")
+                    && row.get("status").and_then(Value::as_str) == Some("not_found")
+                    && row
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .is_some_and(|detail| detail.contains("memory not found"))
+            })
+        })
+        .unwrap_or(false);
+    assert!(demote_audit_exists);
+}
+
+#[tokio::test]
 async fn memory_search_returns_empty_when_all_requested_scopes_are_blocked() {
     let state = test_state().await;
     let app = app_router(state.clone());

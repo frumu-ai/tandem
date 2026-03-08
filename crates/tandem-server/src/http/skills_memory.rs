@@ -1228,6 +1228,31 @@ async fn emit_blocked_memory_search_guardrail(
     Err(status_code)
 }
 
+async fn emit_missing_memory_demote_audit(
+    state: &AppState,
+    run_id: &str,
+    memory_id: &str,
+    detail: &str,
+) -> Result<(), StatusCode> {
+    append_memory_audit(
+        state,
+        crate::MemoryAuditEvent {
+            audit_id: Uuid::new_v4().to_string(),
+            action: "memory_demote".to_string(),
+            run_id: run_id.to_string(),
+            memory_id: Some(memory_id.to_string()),
+            source_memory_id: None,
+            to_tier: None,
+            partition_key: "demoted".to_string(),
+            actor: "system".to_string(),
+            status: "not_found".to_string(),
+            detail: Some(detail.to_string()),
+            created_at_ms: crate::now_ms(),
+        },
+    )
+    .await
+}
+
 fn memory_promote_metadata(
     metadata: Option<&Value>,
     request: &MemoryPromoteRequest,
@@ -2522,6 +2547,8 @@ pub(super) async fn memory_demote(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(record) = record else {
+        emit_missing_memory_demote_audit(&state, &input.run_id, &input.id, "memory not found")
+            .await?;
         return Err(StatusCode::NOT_FOUND);
     };
     let changed = db
@@ -2529,6 +2556,8 @@ pub(super) async fn memory_demote(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !changed {
+        emit_missing_memory_demote_audit(&state, &input.run_id, &input.id, "memory not found")
+            .await?;
         return Err(StatusCode::NOT_FOUND);
     }
     let partition_key = memory_linkage(&record)
