@@ -1222,6 +1222,22 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
             .and_then(Value::as_str),
         Some("private")
     );
+    assert_eq!(
+        put_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-ok")
+    );
+    assert_eq!(
+        put_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("project_id"))
+            .and_then(Value::as_str),
+        Some("proj-1")
+    );
     let put_updated_event = next_event_of_type(&mut rx, "memory.updated").await;
     assert_eq!(
         put_updated_event
@@ -1271,6 +1287,22 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
             .get("visibility")
             .and_then(Value::as_str),
         Some("private")
+    );
+    assert_eq!(
+        put_updated_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-ok")
+    );
+    assert_eq!(
+        put_updated_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("project_id"))
+            .and_then(Value::as_str),
+        Some("proj-1")
     );
     assert_eq!(
         put_updated_event
@@ -1431,6 +1463,22 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
             .and_then(Value::as_str),
         Some("appr-1")
     );
+    assert_eq!(
+        promote_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-ok")
+    );
+    assert_eq!(
+        promote_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("promote_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-ok")
+    );
     let promote_updated_event = next_event_of_type(&mut rx, "memory.updated").await;
     assert_eq!(
         promote_updated_event
@@ -1501,6 +1549,22 @@ async fn memory_promote_preserves_artifact_refs_and_shared_visibility() {
             .get("approvalID")
             .and_then(Value::as_str),
         Some("appr-1")
+    );
+    assert_eq!(
+        promote_updated_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-ok")
+    );
+    assert_eq!(
+        promote_updated_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("promote_run_id"))
+            .and_then(Value::as_str),
+        Some("run-3-ok")
     );
     assert_eq!(
         promote_updated_event
@@ -1836,6 +1900,22 @@ async fn memory_list_and_delete_admin_routes_work() {
             .and_then(Value::as_str),
         Some("org-1/ws-1/proj-1/session")
     );
+    assert_eq!(
+        delete_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-4")
+    );
+    assert_eq!(
+        delete_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("project_id"))
+            .and_then(Value::as_str),
+        Some("proj-1")
+    );
 
     let audit_req = Request::builder()
         .method("GET")
@@ -2129,6 +2209,22 @@ async fn memory_demote_hides_item_from_search_results() {
             .get("partitionKey")
             .and_then(Value::as_str),
         Some("org-1/ws-1/proj-1/session")
+    );
+    assert_eq!(
+        demote_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("origin_run_id"))
+            .and_then(Value::as_str),
+        Some("run-5")
+    );
+    assert_eq!(
+        demote_event
+            .properties
+            .get("linkage")
+            .and_then(|v| v.get("project_id"))
+            .and_then(Value::as_str),
+        Some("proj-1")
     );
     assert_eq!(
         demote_event

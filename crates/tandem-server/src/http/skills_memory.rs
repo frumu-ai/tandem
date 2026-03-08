@@ -1364,18 +1364,31 @@ fn memory_promote_provenance(
 }
 
 fn memory_linkage(record: &GlobalMemoryRecord) -> Value {
-    let artifact_refs = memory_artifact_refs(record.metadata.as_ref());
-    let provenance = record.provenance.as_ref();
+    memory_linkage_from_parts(
+        &record.run_id,
+        record.project_tag.as_deref(),
+        record.metadata.as_ref(),
+        record.provenance.as_ref(),
+    )
+}
+
+fn memory_linkage_from_parts(
+    run_id: &str,
+    project_id: Option<&str>,
+    metadata: Option<&Value>,
+    provenance: Option<&Value>,
+) -> Value {
+    let artifact_refs = memory_artifact_refs(metadata);
     json!({
-        "run_id": record.run_id,
-        "project_id": record.project_tag,
+        "run_id": run_id,
+        "project_id": project_id,
         "origin_event_type": provenance
             .and_then(|row| row.get("origin_event_type"))
             .and_then(Value::as_str),
         "origin_run_id": provenance
             .and_then(|row| row.get("origin_run_id"))
             .and_then(Value::as_str)
-            .or(Some(record.run_id.as_str())),
+            .or(Some(run_id)),
         "origin_session_id": provenance
             .and_then(|row| row.get("origin_session_id"))
             .and_then(Value::as_str),
@@ -2138,6 +2151,12 @@ pub(super) async fn memory_put_impl(
         request.partition.tier,
         partition_key
     );
+    let linkage = memory_linkage_from_parts(
+        &request.run_id,
+        Some(&request.partition.project_id),
+        record.metadata.as_ref(),
+        record.provenance.as_ref(),
+    );
     persist_global_memory_record(&state, &db, record).await;
     append_memory_audit(
         &state,
@@ -2167,6 +2186,7 @@ pub(super) async fn memory_put_impl(
             "visibility": "private",
             "tier": request.partition.tier,
             "partitionKey": partition_key,
+            "linkage": linkage.clone(),
             "auditID": audit_id,
         }),
     ));
@@ -2182,6 +2202,7 @@ pub(super) async fn memory_put_impl(
             "visibility": "private",
             "tier": request.partition.tier,
             "partitionKey": partition_key,
+            "linkage": linkage,
             "auditID": audit_id,
         }),
     ));
@@ -2414,6 +2435,12 @@ pub(super) async fn memory_promote_impl(
             "visibility": "shared",
             "toTier": request.to_tier,
             "partitionKey": partition_key,
+            "linkage": memory_linkage_from_parts(
+                &source.run_id,
+                source.project_tag.as_deref(),
+                next_metadata.as_ref(),
+                Some(&next_provenance),
+            ),
             "approvalID": request.review.approval_id,
             "auditID": audit_id,
             "scrubStatus": scrub_report.status,
@@ -2431,6 +2458,12 @@ pub(super) async fn memory_promote_impl(
             "visibility": "shared",
             "tier": request.to_tier,
             "partitionKey": partition_key,
+            "linkage": memory_linkage_from_parts(
+                &source.run_id,
+                source.project_tag.as_deref(),
+                next_metadata.as_ref(),
+                Some(&next_provenance),
+            ),
             "sourceMemoryID": source_memory_id,
             "approvalID": request.review.approval_id,
             "auditID": audit_id,
@@ -2665,6 +2698,7 @@ pub(super) async fn memory_demote(
             "tier": tandem_memory::GovernedMemoryTier::Session,
             "partitionKey": partition_key,
             "demoted": true,
+            "linkage": memory_linkage(&record),
             "auditID": audit_id,
         }),
     ));
@@ -2814,6 +2848,7 @@ pub(super) async fn memory_delete(
                 .get("partition_key")
                 .and_then(Value::as_str),
             "demoted": record.demoted,
+            "linkage": memory_linkage(&record),
             "auditID": audit_id,
         }),
     ));
