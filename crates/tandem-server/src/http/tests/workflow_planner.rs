@@ -2258,6 +2258,250 @@ async fn workflow_plan_chat_message_falls_back_to_deterministic_revision_when_ll
 }
 
 #[tokio::test]
+async fn workflow_plan_chat_message_uses_llm_for_mixed_graph_revision_beyond_deterministic_shapes()
+{
+    let state = test_state().await;
+    let mut providers = std::collections::HashMap::new();
+    providers.insert(
+        "openai".to_string(),
+        tandem_providers::ProviderConfig {
+            api_key: None,
+            url: Some("http://127.0.0.1:9/v1".to_string()),
+            default_model: Some("gpt-5.1".to_string()),
+        },
+    );
+    state
+        .providers
+        .reload(tandem_providers::AppConfig {
+            providers,
+            default_provider: Some("openai".to_string()),
+        })
+        .await;
+    let app = app_router(state);
+    let previous = std::env::var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE").ok();
+    std::env::set_var(
+        "TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE",
+        json!({
+            "action": "revise",
+            "assistant_text": "Updated the plan to collect inputs, research sources, compare the findings, and generate a citations report every Monday.",
+            "change_summary": [
+                "updated workflow graph",
+                "updated schedule",
+                "updated output contract"
+            ],
+            "plan": {
+                "plan_id": "ignored",
+                "planner_version": "ignored",
+                "plan_source": "ignored",
+                "original_prompt": "ignored",
+                "normalized_prompt": "ignored",
+                "confidence": "high",
+                "title": "Weekly competitor comparison report",
+                "description": "Collect inputs, research sources, compare findings, and publish a citations report.",
+                "schedule": {
+                    "type": "cron",
+                    "cron_expression": "0 9 * * 1",
+                    "timezone": "UTC",
+                    "misfire_policy": {
+                        "type": "run_once"
+                    }
+                },
+                "execution_target": "automation_v2",
+                "workspace_root": "/tmp/initial-workspace",
+                "steps": [
+                    {
+                        "step_id": "collect_inputs",
+                        "kind": "collect",
+                        "objective": "Gather the competitor URLs and inputs to compare.",
+                        "depends_on": [],
+                        "agent_role": "researcher",
+                        "input_refs": [],
+                        "output_contract": {
+                            "kind": "structured_json"
+                        }
+                    },
+                    {
+                        "step_id": "research_sources",
+                        "kind": "research",
+                        "objective": "Research the collected competitors and capture the latest evidence.",
+                        "depends_on": ["collect_inputs"],
+                        "agent_role": "researcher",
+                        "input_refs": [
+                            {
+                                "from_step_id": "collect_inputs",
+                                "alias": "source_list"
+                            }
+                        ],
+                        "output_contract": {
+                            "kind": "structured_json"
+                        }
+                    },
+                    {
+                        "step_id": "compare_results",
+                        "kind": "compare",
+                        "objective": "Compare the researched competitors and highlight meaningful differences.",
+                        "depends_on": ["research_sources"],
+                        "agent_role": "analyst",
+                        "input_refs": [
+                            {
+                                "from_step_id": "research_sources",
+                                "alias": "research_findings"
+                            }
+                        ],
+                        "output_contract": {
+                            "kind": "structured_json"
+                        }
+                    },
+                    {
+                        "step_id": "generate_report",
+                        "kind": "report",
+                        "objective": "Generate a citations report from the comparison findings.",
+                        "depends_on": ["compare_results"],
+                        "agent_role": "writer",
+                        "input_refs": [
+                            {
+                                "from_step_id": "compare_results",
+                                "alias": "comparison_findings"
+                            }
+                        ],
+                        "output_contract": {
+                            "kind": "citations"
+                        }
+                    }
+                ],
+                "requires_integrations": [],
+                "allowed_mcp_servers": [],
+                "operator_preferences": {
+                    "role_models": {
+                        "planner": {
+                            "provider_id": "openai",
+                            "model_id": "gpt-5.1"
+                        }
+                    }
+                },
+                "save_options": {
+                    "can_export_pack": true,
+                    "can_save_skill": true
+                }
+            }
+        })
+        .to_string(),
+    );
+
+    let start_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/start")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "prompt": "Monitor competitors and send me a report",
+                "plan_source": "automations_page",
+                "workspace_root": "/tmp/initial-workspace",
+                "operator_preferences": {
+                    "role_models": {
+                        "planner": {
+                            "provider_id": "openai",
+                            "model_id": "gpt-5.1"
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        ))
+        .expect("start request");
+    let start_resp = app
+        .clone()
+        .oneshot(start_req)
+        .await
+        .expect("start response");
+    assert_eq!(start_resp.status(), StatusCode::OK);
+    let start_body = to_bytes(start_resp.into_body(), usize::MAX)
+        .await
+        .expect("start body");
+    let start_payload: Value = serde_json::from_slice(&start_body).expect("start json");
+    let plan_id = start_payload
+        .get("plan")
+        .and_then(|row| row.get("plan_id"))
+        .and_then(Value::as_str)
+        .expect("plan id")
+        .to_string();
+
+    let message_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/chat/message")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "plan_id": plan_id,
+                "message": "Start by collecting competitor URLs, then research sources, compare the findings, and produce a citations report every Monday."
+            })
+            .to_string(),
+        ))
+        .expect("message request");
+    let message_resp = app
+        .clone()
+        .oneshot(message_req)
+        .await
+        .expect("message response");
+    assert_eq!(message_resp.status(), StatusCode::OK);
+    let message_body = to_bytes(message_resp.into_body(), usize::MAX)
+        .await
+        .expect("message body");
+    let message_payload: Value = serde_json::from_slice(&message_body).expect("message json");
+    assert_eq!(
+        message_payload
+            .get("plan")
+            .and_then(|row| row.get("title"))
+            .and_then(Value::as_str),
+        Some("Weekly competitor comparison report")
+    );
+    let step_ids = message_payload
+        .get("plan")
+        .and_then(|row| row.get("steps"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("step_id").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+        })
+        .expect("step ids");
+    assert_eq!(
+        step_ids,
+        vec![
+            "collect_inputs",
+            "research_sources",
+            "compare_results",
+            "generate_report"
+        ]
+    );
+    assert_eq!(
+        message_payload
+            .get("plan")
+            .and_then(|row| row.get("schedule"))
+            .and_then(|row| row.get("cron_expression"))
+            .and_then(Value::as_str),
+        Some("0 9 * * 1")
+    );
+    assert_eq!(
+        message_payload
+            .get("plan")
+            .and_then(|row| row.get("steps"))
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.last())
+            .and_then(|row| row.get("output_contract"))
+            .and_then(|row| row.get("kind"))
+            .and_then(Value::as_str),
+        Some("citations")
+    );
+
+    if let Some(value) = previous {
+        std::env::set_var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE", value);
+    } else {
+        std::env::remove_var("TANDEM_WORKFLOW_PLANNER_TEST_RESPONSE");
+    }
+}
+
+#[tokio::test]
 async fn workflow_plan_chat_message_updates_execution_mode_preferences() {
     let state = test_state().await;
     let app = app_router(state.clone());

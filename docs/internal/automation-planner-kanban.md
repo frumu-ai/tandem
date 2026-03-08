@@ -86,7 +86,8 @@ It is not a wishlist for future planner features.
 ## Deferred After This Slice
 - [~] Add optional export/persistence to Pack Builder after planning
 - Current state: `POST /workflow-plans/apply` accepts optional `pack_builder_export` and can persist a Pack Builder preview for pending/apply follow-ups.
-- [ ] Expand planner-chat semantics beyond the current safe deterministic field set
+- [~] Expand planner-chat semantics beyond the current safe deterministic field set
+- Current state: with a planner model configured, the LLM revision path can now rewrite mixed workflow graphs across the fixed allowed step ids, including step objectives, dependencies, input refs, schedules, and output contracts. Remaining follow-up is about going broader than the current fixed step-id catalog, not about staying inside the deterministic presets.
 - [ ] Optionally relocate or further polish the reusable-skill export UI if Step 1 remains confusing
 
 ## Explicitly Out Of Scope For This Slice
