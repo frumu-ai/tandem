@@ -806,6 +806,15 @@ async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
                 .and_then(|row| row.get("assistant_text"))
                 .and_then(Value::as_str)
                 .is_some_and(|text| text.contains("Echo:")));
+        } else if expected == "validate_fix" {
+            assert_eq!(
+                execute_payload
+                    .get("dispatch_result")
+                    .and_then(|row| row.get("artifact"))
+                    .and_then(|row| row.get("artifact_type"))
+                    .and_then(Value::as_str),
+                Some("coder_validation_report")
+            );
         }
     }
 
@@ -838,6 +847,10 @@ async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
         .artifacts
         .iter()
         .any(|artifact| { artifact.artifact_type == "coder_issue_fix_plan" }));
+    assert!(blackboard
+        .artifacts
+        .iter()
+        .any(|artifact| { artifact.artifact_type == "coder_issue_fix_validation_session" }));
 }
 
 #[tokio::test]
