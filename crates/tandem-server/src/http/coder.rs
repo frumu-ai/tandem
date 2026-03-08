@@ -1964,10 +1964,14 @@ fn default_coder_worker_agent_id(input: Option<&str>) -> String {
         .unwrap_or_else(|| "coder_engine_worker".to_string())
 }
 
-fn summarize_triage_memory_hits(record: &CoderRunRecord, run: &ContextRunState) -> Vec<String> {
+fn summarize_workflow_memory_hits(
+    record: &CoderRunRecord,
+    run: &ContextRunState,
+    workflow_node_id: &str,
+) -> Vec<String> {
     run.tasks
         .iter()
-        .find(|task| task.workflow_node_id.as_deref() == Some("retrieve_memory"))
+        .find(|task| task.workflow_node_id.as_deref() == Some(workflow_node_id))
         .and_then(|task| task.payload.get("memory_hits"))
         .and_then(Value::as_array)
         .map(|rows| {
@@ -1992,7 +1996,7 @@ fn summarize_triage_memory_hits(record: &CoderRunRecord, run: &ContextRunState) 
         .filter(|rows| !rows.is_empty())
         .unwrap_or_else(|| {
             vec![format!(
-                "No reusable triage memory was available for {}.",
+                "No reusable workflow memory was available for {}.",
                 record.repo_binding.repo_slug
             )]
         })
@@ -2048,7 +2052,7 @@ async fn dispatch_issue_triage_task(
         .unwrap_or_default();
     match task.workflow_node_id.as_deref() {
         Some("inspect_repo") => {
-            let memory_hits_used = summarize_triage_memory_hits(record, &run);
+            let memory_hits_used = summarize_workflow_memory_hits(record, &run, "retrieve_memory");
             let summary = format!(
                 "Engine worker inspected likely repo areas for {} issue #{}.",
                 record.repo_binding.repo_slug, issue_number
@@ -2071,7 +2075,7 @@ async fn dispatch_issue_triage_task(
             Ok(response.0)
         }
         Some("attempt_reproduction") => {
-            let memory_hits_used = summarize_triage_memory_hits(record, &run);
+            let memory_hits_used = summarize_workflow_memory_hits(record, &run, "retrieve_memory");
             let response = coder_triage_reproduction_report_create(
                 State(state),
                 Path(record.coder_run_id.clone()),
@@ -2095,7 +2099,7 @@ async fn dispatch_issue_triage_task(
             Ok(response.0)
         }
         Some("write_triage_artifact") => {
-            let memory_hits_used = summarize_triage_memory_hits(record, &run);
+            let memory_hits_used = summarize_workflow_memory_hits(record, &run, "retrieve_memory");
             let response = coder_triage_summary_create(
                 State(state),
                 Path(record.coder_run_id.clone()),
@@ -2135,6 +2139,124 @@ async fn dispatch_issue_triage_task(
                 "dispatched": false,
                 "reason": "bootstrap task completed through generic task transition"
             }))
+        }
+        _ => Err(StatusCode::CONFLICT),
+    }
+}
+
+async fn dispatch_issue_fix_task(
+    state: AppState,
+    record: &CoderRunRecord,
+    task: &super::context_types::ContextBlackboardTask,
+) -> Result<Value, StatusCode> {
+    let run = load_context_run_state(&state, &record.linked_context_run_id).await?;
+    let issue_number = record
+        .github_ref
+        .as_ref()
+        .map(|row| row.number)
+        .unwrap_or_default();
+    match task.workflow_node_id.as_deref() {
+        Some("inspect_issue_context") => {
+            let final_run = advance_coder_workflow_run(
+                &state,
+                record,
+                &["inspect_issue_context"],
+                &["prepare_fix"],
+                "Issue context inspected; prepare a constrained fix.",
+            )
+            .await?;
+            Ok(json!({
+                "ok": true,
+                "run": final_run,
+                "coder_run": coder_run_payload(record, &final_run),
+                "dispatched": false,
+                "reason": "inspection task advanced through coder workflow progression"
+            }))
+        }
+        Some("prepare_fix") => {
+            let final_run = advance_coder_workflow_run(
+                &state,
+                record,
+                &["prepare_fix"],
+                &["validate_fix"],
+                "Fix plan prepared; validate the constrained patch.",
+            )
+            .await?;
+            Ok(json!({
+                "ok": true,
+                "run": final_run,
+                "coder_run": coder_run_payload(record, &final_run),
+                "dispatched": false,
+                "reason": "prepare_fix advanced through coder workflow progression"
+            }))
+        }
+        Some("validate_fix") => {
+            let memory_hits_used = summarize_workflow_memory_hits(record, &run, "retrieve_memory");
+            let response = coder_issue_fix_validation_report_create(
+                State(state),
+                Path(record.coder_run_id.clone()),
+                Json(CoderIssueFixValidationReportCreateInput {
+                    summary: Some(format!(
+                        "Engine worker validated a constrained fix proposal for {} issue #{}.",
+                        record.repo_binding.repo_slug, issue_number
+                    )),
+                    root_cause: Some(
+                        "Issue-fix worker used prior context and reusable memory.".to_string(),
+                    ),
+                    fix_strategy: Some(
+                        "Apply a constrained patch after issue-context inspection.".to_string(),
+                    ),
+                    changed_files: Vec::new(),
+                    validation_steps: vec![
+                        "Review constrained fix plan".to_string(),
+                        "Record validation outcome for follow-up artifact writing".to_string(),
+                    ],
+                    validation_results: vec![json!({
+                        "kind": "engine_worker_validation",
+                        "status": "needs_follow_up",
+                        "summary": "Validation completed through the coder engine worker bridge."
+                    })],
+                    memory_hits_used,
+                    notes: Some("Auto-generated by coder engine worker dispatch.".to_string()),
+                }),
+            )
+            .await?;
+            Ok(response.0)
+        }
+        Some("write_fix_artifact") => {
+            let memory_hits_used = summarize_workflow_memory_hits(record, &run, "retrieve_memory");
+            let response = coder_issue_fix_summary_create(
+                State(state),
+                Path(record.coder_run_id.clone()),
+                Json(CoderIssueFixSummaryCreateInput {
+                    summary: Some(format!(
+                        "Engine worker completed an initial issue-fix pass for {} issue #{}.",
+                        record.repo_binding.repo_slug, issue_number
+                    )),
+                    root_cause: Some(
+                        "Issue context and prior reusable memory were inspected before fix generation."
+                            .to_string(),
+                    ),
+                    fix_strategy: Some(
+                        "Use a constrained patch flow with recorded validation evidence."
+                            .to_string(),
+                    ),
+                    changed_files: Vec::new(),
+                    validation_steps: vec![
+                        "Review constrained fix plan".to_string(),
+                        "Record validation outcome for follow-up artifact writing".to_string(),
+                    ],
+                    validation_results: vec![json!({
+                        "kind": "engine_worker_validation",
+                        "status": "needs_follow_up",
+                        "summary": "Validation completed through the coder engine worker bridge."
+                    })],
+                    memory_hits_used,
+                    notes: Some("Auto-generated by coder engine worker dispatch.".to_string()),
+                }),
+            )
+            .await?;
+            Ok(response.0)
         }
         _ => Err(StatusCode::CONFLICT),
     }
@@ -3609,10 +3731,13 @@ pub(super) async fn coder_run_execute_next(
     Json(input): Json<CoderRunExecuteNextInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let mut record = load_coder_run_record(&state, &id).await?;
-    if !matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) {
+    if !matches!(
+        record.workflow_mode,
+        CoderWorkflowMode::IssueTriage | CoderWorkflowMode::IssueFix
+    ) {
         return Ok(Json(json!({
             "ok": false,
-            "error": "execute_next is only wired for issue_triage right now",
+            "error": "execute_next is only wired for issue_triage and issue_fix right now",
             "code": "CODER_EXECUTION_UNSUPPORTED",
         })));
     }
@@ -3663,7 +3788,15 @@ pub(super) async fn coder_run_execute_next(
         },
     );
 
-    let dispatched = dispatch_issue_triage_task(state.clone(), &record, &task, &agent_id).await?;
+    let dispatched = match record.workflow_mode {
+        CoderWorkflowMode::IssueTriage => {
+            dispatch_issue_triage_task(state.clone(), &record, &task, &agent_id).await?
+        }
+        CoderWorkflowMode::IssueFix => {
+            dispatch_issue_fix_task(state.clone(), &record, &task).await?
+        }
+        _ => return Err(StatusCode::CONFLICT),
+    };
     let final_run = load_context_run_state(&state, &record.linked_context_run_id).await?;
     record.updated_at_ms = final_run.updated_at_ms;
     save_coder_run_record(&state, &record).await?;

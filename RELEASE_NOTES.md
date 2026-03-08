@@ -81,6 +81,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - `issue_triage` coder run creation now seeds a deterministic context-run task template for issue normalization, memory retrieval, repo inspection, reproduction, and triage artifact writing.
   - Added initial `coder.run.created` engine event emission and backend regression coverage for coder create/get/list/artifact behavior.
   - `issue_triage` now has a first real worker bridge: `execute-next` claims the next runnable context task through the shared lease/claim runtime and dispatches deterministic inspection, reproduction, and final summary actions so the run can complete end to end without frontend-owned orchestration.
+  - `issue_fix` now uses that same `execute-next` worker bridge: the engine claims fix tasks through the shared task runtime, advances inspection and preparation nodes through workflow progression, and dispatches validation plus final summary handlers to complete the run end to end.
   - Added an initial fail-closed readiness gate for `issue_triage`: required GitHub issue capability bindings must exist, and any explicitly requested MCP servers must be configured and connected.
   - Added `POST /coder/runs/{id}/memory-candidates` so `issue_triage` runs can persist engine-owned memory candidate payloads and attach them to the linked context run as `coder_memory_candidate` artifacts.
   - New `issue_triage` runs now seed their retrieval task with prior repo/issue memory candidate hints from earlier coder runs.
