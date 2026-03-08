@@ -1438,6 +1438,7 @@ fn coder_memory_retrieval_policy(record: &CoderRunRecord, query: &str, limit: us
         CoderWorkflowMode::IssueTriage => {
             vec![
                 "failure_pattern",
+                "regression_signal",
                 "duplicate_linkage",
                 "triage_memory",
                 "fix_pattern",
@@ -1550,6 +1551,11 @@ fn compare_coder_memory_hits(record: &CoderRunRecord, a: &Value, b: &Value) -> s
         Some("failure_pattern")
             if matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) =>
         {
+            5_u8
+        }
+        Some("regression_signal")
+            if matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) =>
+        {
             4_u8
         }
         Some("triage_memory") if matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage) => {
@@ -1650,6 +1656,9 @@ fn compare_coder_memory_hits(record: &CoderRunRecord, a: &Value, b: &Value) -> s
                 .unwrap_or(0_u8)
         };
         match record.workflow_mode {
+            CoderWorkflowMode::IssueTriage => {
+                list_weight("regression_signals") + list_weight("observed_logs")
+            }
             CoderWorkflowMode::IssueFix => {
                 list_weight("validation_results") + list_weight("regression_signals")
             }
@@ -1663,7 +1672,6 @@ fn compare_coder_memory_hits(record: &CoderRunRecord, a: &Value, b: &Value) -> s
                     + list_weight("requested_changes")
                     + list_weight("regression_signals")
             }
-            _ => 0_u8,
         }
     };
     let governed_issue_fix_weight = |hit: &Value| {
@@ -1676,7 +1684,10 @@ fn compare_coder_memory_hits(record: &CoderRunRecord, a: &Value, b: &Value) -> s
     };
     let governed_issue_triage_weight = |hit: &Value| {
         (matches!(record.workflow_mode, CoderWorkflowMode::IssueTriage)
-            && memory_hit_kind(hit).as_deref() == Some("failure_pattern")
+            && matches!(
+                memory_hit_kind(hit).as_deref(),
+                Some("failure_pattern") | Some("regression_signal")
+            )
             && hit.get("source").and_then(Value::as_str) == Some("governed_memory")) as u8
     };
     let governed_issue_triage_outcome_weight = |hit: &Value| {
@@ -1887,14 +1898,19 @@ fn regression_signal_promotion_allowed(candidate_payload: &Value) -> bool {
         .and_then(|row| row.get("regression_signals"))
         .and_then(Value::as_array)
         .is_some_and(|rows| !rows.is_empty())
-        && (payload
-            .and_then(|row| row.get("summary_artifact_path"))
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty())
-            || payload
-                .and_then(|row| row.get("review_evidence_artifact_path"))
+        && [
+            "summary_artifact_path",
+            "review_evidence_artifact_path",
+            "reproduction_artifact_path",
+            "validation_artifact_path",
+        ]
+        .iter()
+        .any(|key| {
+            payload
+                .and_then(|row| row.get(*key))
                 .and_then(Value::as_str)
-                .is_some_and(|value| !value.trim().is_empty()))
+                .is_some_and(|value| !value.trim().is_empty())
+        })
 }
 
 fn run_outcome_promotion_allowed(candidate_payload: &Value) -> bool {

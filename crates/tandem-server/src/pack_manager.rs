@@ -885,6 +885,7 @@ pub fn map_missing_capability_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn write_zip(path: &Path, entries: &[(&str, &str)]) {
         let file = File::create(path).expect("create zip");

@@ -13684,6 +13684,198 @@ async fn coder_promoted_triage_outcome_reuses_across_issues() {
 }
 
 #[tokio::test]
+async fn coder_promoted_triage_regression_signal_reuses_across_issues() {
+    let state = test_state().await;
+    state
+        .capability_resolver
+        .refresh_builtin_bindings()
+        .await
+        .expect("refresh builtin bindings");
+    let app = app_router(state.clone());
+
+    let create_first_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-triage-regression-promote-a",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 451
+                },
+                "source_client": "desktop_developer_mode"
+            })
+            .to_string(),
+        ))
+        .expect("first create request");
+    let create_first_resp = app
+        .clone()
+        .oneshot(create_first_req)
+        .await
+        .expect("first create response");
+    assert_eq!(create_first_resp.status(), StatusCode::OK);
+
+    let repro_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-triage-regression-promote-a/triage-reproduction-report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "outcome": "failed_to_reproduce",
+                "steps": [
+                    "Start the triage workflow against a misconfigured GitHub runtime",
+                    "Observe the same readiness failure before reproduction can complete"
+                ],
+                "observed_logs": [
+                    "GitHub capability bindings drifted from the expected project setup"
+                ],
+                "memory_hits_used": ["memory-hit-triage-regression-1"],
+                "notes": "Keep this regression signal for future issue triage."
+            })
+            .to_string(),
+        ))
+        .expect("repro request");
+    let repro_resp = app
+        .clone()
+        .oneshot(repro_req)
+        .await
+        .expect("repro response");
+    assert_eq!(repro_resp.status(), StatusCode::OK);
+    let repro_payload: Value = serde_json::from_slice(
+        &to_bytes(repro_resp.into_body(), usize::MAX)
+            .await
+            .expect("repro body"),
+    )
+    .expect("repro json");
+    let regression_signal_candidate_id = repro_payload
+        .get("generated_candidates")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter().find_map(|row| {
+                (row.get("kind").and_then(Value::as_str) == Some("regression_signal")).then(
+                    || {
+                        row.get("candidate_id")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    },
+                )?
+            })
+        })
+        .expect("regression signal candidate id");
+
+    let promote_req = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/coder/runs/coder-triage-regression-promote-a/memory-candidates/{regression_signal_candidate_id}/promote"
+        ))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "to_tier": "project",
+                "reviewer_id": "reviewer-1",
+                "approval_id": "approval-1",
+                "reason": "approved reusable triage regression signal"
+            })
+            .to_string(),
+        ))
+        .expect("promote request");
+    let promote_resp = app
+        .clone()
+        .oneshot(promote_req)
+        .await
+        .expect("promote response");
+    assert_eq!(promote_resp.status(), StatusCode::OK);
+    let promote_payload: Value = serde_json::from_slice(
+        &to_bytes(promote_resp.into_body(), usize::MAX)
+            .await
+            .expect("promote body"),
+    )
+    .expect("promote json");
+
+    let create_second_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "coder_run_id": "coder-triage-regression-promote-b",
+                "workflow_mode": "issue_triage",
+                "repo_binding": {
+                    "project_id": "proj-engine",
+                    "workspace_id": "ws-tandem",
+                    "workspace_root": "/tmp/tandem-repo",
+                    "repo_slug": "evan/tandem"
+                },
+                "github_ref": {
+                    "kind": "issue",
+                    "number": 452
+                },
+                "source_client": "desktop_developer_mode"
+            })
+            .to_string(),
+        ))
+        .expect("second create request");
+    let create_second_resp = app
+        .clone()
+        .oneshot(create_second_req)
+        .await
+        .expect("second create response");
+    assert_eq!(create_second_resp.status(), StatusCode::OK);
+
+    let hits_req = Request::builder()
+        .method("GET")
+        .uri("/coder/runs/coder-triage-regression-promote-b/memory-hits?q=Issue%20triage%20regression%20signal%20failed_to_reproduce%20Keep%20this%20regression%20signal")
+        .body(Body::empty())
+        .expect("hits request");
+    let hits_resp = app.clone().oneshot(hits_req).await.expect("hits response");
+    assert_eq!(hits_resp.status(), StatusCode::OK);
+    let hits_payload: Value = serde_json::from_slice(
+        &to_bytes(hits_resp.into_body(), usize::MAX)
+            .await
+            .expect("hits body"),
+    )
+    .expect("hits json");
+    let hits = hits_payload
+        .get("hits")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("hits");
+    let first_hit = hits.first().cloned().expect("first hit");
+    assert_eq!(
+        first_hit
+            .get("kind")
+            .or_else(|| first_hit.get("metadata").and_then(|row| row.get("kind")))
+            .and_then(Value::as_str),
+        Some("regression_signal")
+    );
+    let governed_hit = hits
+        .iter()
+        .find(|row| {
+            row.get("memory_id").and_then(Value::as_str)
+                == promote_payload.get("memory_id").and_then(Value::as_str)
+        })
+        .cloned()
+        .expect("governed regression signal hit");
+    assert_eq!(
+        governed_hit.get("source").and_then(Value::as_str),
+        Some("governed_memory")
+    );
+    assert_eq!(governed_hit.get("same_ref").and_then(Value::as_bool), None);
+    assert!(governed_hit
+        .get("content")
+        .and_then(Value::as_str)
+        .is_some_and(|content| content.contains("Keep this regression signal")));
+}
+
+#[tokio::test]
 async fn coder_memory_events_include_normalized_artifact_fields() {
     let state = test_state().await;
     state
