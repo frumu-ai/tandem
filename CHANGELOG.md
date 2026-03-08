@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Initial Tandem Coder engine API foundation**:
   - added engine-owned coder workflow runtime control through:
     - `POST /coder/runs/{id}/execute-next`
+  - merge-ready `merge_recommendation` runs now stop in `awaiting_approval`, emit `coder.approval.required`, and complete cleanly on `/coder/runs/{id}/approve` instead of bouncing back into `running`
     - `POST /coder/runs/{id}/execute-all`
   - added structured intermediate and final artifacts for triage inspection/reproduction, issue-fix validation and patch evidence, PR review evidence, and merge readiness
   - added governed-memory-aware retrieval and reusable coder memory outputs across `issue_triage`, `issue_fix`, `pr_review`, and `merge_recommendation`

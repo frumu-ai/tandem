@@ -7378,15 +7378,14 @@ pub(super) async fn coder_run_approve(
     let why = input
         .reason
         .unwrap_or_else(|| "plan approved by operator".to_string());
+    let (event_type, next_status) =
+        if record.workflow_mode == CoderWorkflowMode::MergeRecommendation {
+            ("merge_recommendation_approved", ContextRunStatus::Completed)
+        } else {
+            ("plan_approved", ContextRunStatus::Running)
+        };
     Ok(Json(
-        coder_run_transition(
-            &state,
-            &record,
-            "plan_approved",
-            ContextRunStatus::Running,
-            Some(why),
-        )
-        .await?,
+        coder_run_transition(&state, &record, event_type, next_status, Some(why)).await?,
     ))
 }
 

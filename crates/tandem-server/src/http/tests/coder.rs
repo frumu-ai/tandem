@@ -2528,7 +2528,7 @@ async fn coder_merge_follow_on_execution_waits_for_completed_review() {
             .properties
             .get("phase")
             .and_then(Value::as_str),
-        Some("awaiting_follow_on")
+        Some("policy_blocked")
     );
     let merge_run_req = Request::builder()
         .method("GET")
@@ -4509,6 +4509,51 @@ async fn coder_merge_recommendation_summary_ready_to_merge_awaits_approval() {
             .and_then(Value::as_str),
         Some("merge")
     );
+
+    let approve_req = Request::builder()
+        .method("POST")
+        .uri("/coder/runs/coder-merge-ready-for-approval/approve")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "reason": "Operator approved the merge recommendation."
+            })
+            .to_string(),
+        ))
+        .expect("approve request");
+    let approve_resp = app
+        .clone()
+        .oneshot(approve_req)
+        .await
+        .expect("approve response");
+    assert_eq!(approve_resp.status(), StatusCode::OK);
+    let approve_payload: Value = serde_json::from_slice(
+        &to_bytes(approve_resp.into_body(), usize::MAX)
+            .await
+            .expect("approve body"),
+    )
+    .expect("approve json");
+    assert_eq!(
+        approve_payload
+            .get("run")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(
+        approve_payload
+            .get("coder_run")
+            .and_then(|row| row.get("phase"))
+            .and_then(Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(
+        approve_payload
+            .get("event")
+            .and_then(|row| row.get("type"))
+            .and_then(Value::as_str),
+        Some("merge_recommendation_approved")
+    );
 }
 
 #[tokio::test]
@@ -4807,7 +4852,7 @@ async fn coder_run_approve_and_cancel_project_context_run_controls() {
             .get("coder_run")
             .and_then(|row| row.get("phase"))
             .and_then(Value::as_str),
-        Some("bootstrapping")
+        Some("repo_inspection")
     );
     assert_eq!(
         approve_payload

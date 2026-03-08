@@ -107,6 +107,7 @@ Canonical release notes live in `docs/RELEASE_NOTES.md`.
   - Blocked `execute-next` / `execute-all` responses now also return `coder_run`, `run`, and `execution_policy`, so clients can stay in sync after a policy block without issuing a second fetch.
   - Blocked `execute-next` / `execute-all` now also emit `coder.run.phase_changed` with `event_type = execution_policy_blocked`, so streaming clients can react to follow-on policy blocks without polling.
   - Merge-recommendation summaries that come back `merge` with no remaining blockers/checks/approvals now stop in `awaiting_approval` and emit `coder.approval.required`, instead of looking fully completed before an operator approves the recommendation.
+  - Approving a merge-ready recommendation through `POST /coder/runs/{id}/approve` now completes the run cleanly with `merge_recommendation_approved` instead of sending it back to `running`.
   - Auto-follow-on merge chaining now normalizes through review first, so requesting `merge_recommendation` auto-spawn implicitly schedules `pr_review` ahead of merge instead of trusting the client to order those runs correctly.
   - `issue_triage` coder run creation now seeds a deterministic context-run task template for issue normalization, memory retrieval, repo inspection, reproduction, and triage artifact writing.
   - Added initial `coder.run.created` engine event emission and backend regression coverage for coder create/get/list/artifact behavior.
