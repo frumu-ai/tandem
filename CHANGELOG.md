@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.2] - Unreleased
+## [0.4.3] - Unreleased
+
+### Fixed
+
+- **Automation V2 restart persistence and state-path hardening**:
+  - fixed an engine startup race where the Automation V2 scheduler could persist an empty in-memory map before saved automations were loaded, wiping `automations_v2.json` on restart
+  - moved Automation V2 canonical persistence into the Tandem global `data/` directory and kept legacy root-level files as migration fallback during load
+  - added persistence verification, startup/load diagnostics, and recovery from run snapshots when automation definitions are missing but run history still exists
 
 ### Added
 

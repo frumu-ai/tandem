@@ -2,7 +2,12 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.4.2 (Unreleased)
+## v0.4.3 (Unreleased)
+
+- Automation V2 restart persistence is fixed.
+  - Fixed an engine startup race that could overwrite saved automations with `{}` before persisted definitions were loaded.
+  - Moved Automation V2 canonical storage into the Tandem global `data/` directory, with legacy root-level files kept as migration fallback on load.
+  - Added persistence verification, startup diagnostics, and recovery from run snapshots when definition files are missing.
 
 - Tandem TUI coding-agent workflow upgrades
   - Added coding-first keyboard shortcuts:

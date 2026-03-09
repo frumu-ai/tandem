@@ -792,6 +792,8 @@ pub struct AutomationV2RunRecord {
     pub active_instance_ids: Vec<String>,
     pub checkpoint: AutomationRunCheckpoint,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation_snapshot: Option<AutomationV2Spec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_reason: Option<String>,
@@ -2192,85 +2194,214 @@ impl AppState {
     }
 
     pub async fn load_automations_v2(&self) -> anyhow::Result<()> {
-        let mut path = self.automations_v2_path.clone();
-        let mut raw = if path.exists() {
-            fs::read_to_string(&path).await?
-        } else {
-            String::new()
-        };
-        let active_is_empty = raw.trim().is_empty() || raw.trim() == "{}";
-        if active_is_empty {
-            if let Some(legacy_path) = legacy_automations_v2_path() {
-                if legacy_path.exists() {
-                    let legacy_raw = fs::read_to_string(&legacy_path).await?;
-                    if !(legacy_raw.trim().is_empty() || legacy_raw.trim() == "{}") {
-                        path = legacy_path;
-                        raw = legacy_raw;
+        let mut merged = std::collections::HashMap::<String, AutomationV2Spec>::new();
+        let mut loaded_from_alternate = false;
+        let mut path_counts = Vec::new();
+        for path in candidate_automations_v2_paths(&self.automations_v2_path) {
+            if !path.exists() {
+                path_counts.push((path, 0usize));
+                continue;
+            }
+            let raw = fs::read_to_string(&path).await?;
+            if raw.trim().is_empty() || raw.trim() == "{}" {
+                path_counts.push((path, 0usize));
+                continue;
+            }
+            let parsed = parse_automation_v2_file(&raw);
+            path_counts.push((path.clone(), parsed.len()));
+            if path != self.automations_v2_path {
+                loaded_from_alternate = loaded_from_alternate || !parsed.is_empty();
+            }
+            for (automation_id, automation) in parsed {
+                match merged.get(&automation_id) {
+                    Some(existing) if existing.updated_at_ms > automation.updated_at_ms => {}
+                    _ => {
+                        merged.insert(automation_id, automation);
                     }
                 }
             }
         }
-        let parsed =
-            serde_json::from_str::<std::collections::HashMap<String, AutomationV2Spec>>(&raw)
-                .unwrap_or_default();
-        *self.automations_v2.write().await = parsed;
-        if path != self.automations_v2_path {
+        let active_path = self.automations_v2_path.display().to_string();
+        let path_count_summary = path_counts
+            .iter()
+            .map(|(path, count)| format!("{}={count}", path.display()))
+            .collect::<Vec<_>>();
+        tracing::info!(
+            active_path,
+            path_counts = ?path_count_summary,
+            merged_count = merged.len(),
+            "loaded automation v2 definitions"
+        );
+        *self.automations_v2.write().await = merged;
+        if loaded_from_alternate {
             let _ = self.persist_automations_v2().await;
         }
         Ok(())
     }
 
     pub async fn persist_automations_v2(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.automations_v2_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
         let payload = {
             let guard = self.automations_v2.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.automations_v2_path, payload).await?;
+        if let Some(parent) = self.automations_v2_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&self.automations_v2_path, &payload).await?;
         Ok(())
     }
 
     pub async fn load_automation_v2_runs(&self) -> anyhow::Result<()> {
-        let mut path = self.automation_v2_runs_path.clone();
-        let mut raw = if path.exists() {
-            fs::read_to_string(&path).await?
-        } else {
-            String::new()
-        };
-        let active_is_empty = raw.trim().is_empty() || raw.trim() == "{}";
-        if active_is_empty {
-            if let Some(legacy_path) = legacy_automation_v2_runs_path() {
-                if legacy_path.exists() {
-                    let legacy_raw = fs::read_to_string(&legacy_path).await?;
-                    if !(legacy_raw.trim().is_empty() || legacy_raw.trim() == "{}") {
-                        path = legacy_path;
-                        raw = legacy_raw;
+        let mut merged = std::collections::HashMap::<String, AutomationV2RunRecord>::new();
+        let mut loaded_from_alternate = false;
+        let mut path_counts = Vec::new();
+        for path in candidate_automation_v2_runs_paths(&self.automation_v2_runs_path) {
+            if !path.exists() {
+                path_counts.push((path, 0usize));
+                continue;
+            }
+            let raw = fs::read_to_string(&path).await?;
+            if raw.trim().is_empty() || raw.trim() == "{}" {
+                path_counts.push((path, 0usize));
+                continue;
+            }
+            let parsed = parse_automation_v2_runs_file(&raw);
+            path_counts.push((path.clone(), parsed.len()));
+            if path != self.automation_v2_runs_path {
+                loaded_from_alternate = loaded_from_alternate || !parsed.is_empty();
+            }
+            for (run_id, run) in parsed {
+                match merged.get(&run_id) {
+                    Some(existing) if existing.updated_at_ms > run.updated_at_ms => {}
+                    _ => {
+                        merged.insert(run_id, run);
                     }
                 }
             }
         }
-        let parsed =
-            serde_json::from_str::<std::collections::HashMap<String, AutomationV2RunRecord>>(&raw)
-                .unwrap_or_default();
-        *self.automation_v2_runs.write().await = parsed;
-        if path != self.automation_v2_runs_path {
+        let active_runs_path = self.automation_v2_runs_path.display().to_string();
+        let run_path_count_summary = path_counts
+            .iter()
+            .map(|(path, count)| format!("{}={count}", path.display()))
+            .collect::<Vec<_>>();
+        tracing::info!(
+            active_path = active_runs_path,
+            path_counts = ?run_path_count_summary,
+            merged_count = merged.len(),
+            "loaded automation v2 runs"
+        );
+        *self.automation_v2_runs.write().await = merged;
+        let recovered = self
+            .recover_automation_definitions_from_run_snapshots()
+            .await?;
+        let automation_count = self.automations_v2.read().await.len();
+        let run_count = self.automation_v2_runs.read().await.len();
+        if automation_count == 0 && run_count > 0 {
+            let active_automations_path = self.automations_v2_path.display().to_string();
+            let active_runs_path = self.automation_v2_runs_path.display().to_string();
+            tracing::warn!(
+                active_automations_path,
+                active_runs_path,
+                run_count,
+                "automation v2 definitions are empty while run history exists"
+            );
+        }
+        if loaded_from_alternate || recovered > 0 {
             let _ = self.persist_automation_v2_runs().await;
         }
         Ok(())
     }
 
     pub async fn persist_automation_v2_runs(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.automation_v2_runs_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
         let payload = {
             let guard = self.automation_v2_runs.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.automation_v2_runs_path, payload).await?;
+        if let Some(parent) = self.automation_v2_runs_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&self.automation_v2_runs_path, &payload).await?;
         Ok(())
+    }
+
+    async fn verify_automation_v2_persisted(
+        &self,
+        automation_id: &str,
+        expected_present: bool,
+    ) -> anyhow::Result<()> {
+        let candidate_paths = candidate_automations_v2_paths(&self.automations_v2_path);
+        let mut mismatches = Vec::new();
+        for path in candidate_paths {
+            let raw = if path.exists() {
+                fs::read_to_string(&path).await?
+            } else {
+                String::new()
+            };
+            let parsed = parse_automation_v2_file(&raw);
+            let present = parsed.contains_key(automation_id);
+            if present != expected_present {
+                mismatches.push(format!(
+                    "{} expected_present={} actual_present={} count={}",
+                    path.display(),
+                    expected_present,
+                    present,
+                    parsed.len()
+                ));
+            }
+        }
+        if !mismatches.is_empty() {
+            let active_path = self.automations_v2_path.display().to_string();
+            tracing::error!(
+                automation_id,
+                expected_present,
+                mismatches = ?mismatches,
+                active_path,
+                "automation v2 persistence verification failed"
+            );
+            anyhow::bail!(
+                "automation v2 persistence verification failed for `{}`",
+                automation_id
+            );
+        }
+        Ok(())
+    }
+
+    async fn recover_automation_definitions_from_run_snapshots(&self) -> anyhow::Result<usize> {
+        let runs = self
+            .automation_v2_runs
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut guard = self.automations_v2.write().await;
+        let mut recovered = 0usize;
+        for run in runs {
+            let Some(snapshot) = run.automation_snapshot.clone() else {
+                continue;
+            };
+            let should_replace = match guard.get(&run.automation_id) {
+                Some(existing) => existing.updated_at_ms < snapshot.updated_at_ms,
+                None => true,
+            };
+            if should_replace {
+                if !guard.contains_key(&run.automation_id) {
+                    recovered += 1;
+                }
+                guard.insert(run.automation_id.clone(), snapshot);
+            }
+        }
+        drop(guard);
+        if recovered > 0 {
+            let active_path = self.automations_v2_path.display().to_string();
+            tracing::warn!(
+                recovered,
+                active_path,
+                "recovered automation v2 definitions from run snapshots"
+            );
+            self.persist_automations_v2().await?;
+        }
+        Ok(recovered)
     }
 
     pub async fn load_bug_monitor_config(&self) -> anyhow::Result<()> {
@@ -3264,6 +3395,8 @@ impl AppState {
             .await
             .insert(automation.automation_id.clone(), automation.clone());
         self.persist_automations_v2().await?;
+        self.verify_automation_v2_persisted(&automation.automation_id, true)
+            .await?;
         Ok(automation)
     }
 
@@ -3312,6 +3445,8 @@ impl AppState {
     ) -> anyhow::Result<Option<AutomationV2Spec>> {
         let removed = self.automations_v2.write().await.remove(automation_id);
         self.persist_automations_v2().await?;
+        self.verify_automation_v2_persisted(automation_id, false)
+            .await?;
         Ok(removed)
     }
 
@@ -3344,6 +3479,7 @@ impl AppState {
                 node_outputs: std::collections::HashMap::new(),
                 node_attempts: std::collections::HashMap::new(),
             },
+            automation_snapshot: Some(automation.clone()),
             pause_reason: None,
             resume_reason: None,
             detail: None,
@@ -3799,37 +3935,98 @@ fn resolve_routine_runs_path() -> PathBuf {
 }
 
 fn resolve_automations_v2_path() -> PathBuf {
-    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
-        let trimmed = root.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("automations_v2.json");
-        }
-    }
-    default_state_dir().join("automations_v2.json")
+    resolve_canonical_data_file_path("automations_v2.json")
 }
 
 fn legacy_automations_v2_path() -> Option<PathBuf> {
-    resolve_shared_paths()
-        .ok()
-        .map(|paths| paths.canonical_root.join("automations_v2.json"))
+    resolve_legacy_root_file_path("automations_v2.json")
         .filter(|path| path != &resolve_automations_v2_path())
 }
 
-fn resolve_automation_v2_runs_path() -> PathBuf {
-    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
-        let trimmed = root.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("automation_v2_runs.json");
+fn candidate_automations_v2_paths(active_path: &PathBuf) -> Vec<PathBuf> {
+    let mut candidates = vec![active_path.clone()];
+    if let Some(legacy_path) = legacy_automations_v2_path() {
+        if !candidates.contains(&legacy_path) {
+            candidates.push(legacy_path);
         }
     }
-    default_state_dir().join("automation_v2_runs.json")
+    let default_path = default_state_dir().join("automations_v2.json");
+    if !candidates.contains(&default_path) {
+        candidates.push(default_path);
+    }
+    candidates
+}
+
+fn resolve_automation_v2_runs_path() -> PathBuf {
+    resolve_canonical_data_file_path("automation_v2_runs.json")
 }
 
 fn legacy_automation_v2_runs_path() -> Option<PathBuf> {
+    resolve_legacy_root_file_path("automation_v2_runs.json")
+        .filter(|path| path != &resolve_automation_v2_runs_path())
+}
+
+fn candidate_automation_v2_runs_paths(active_path: &PathBuf) -> Vec<PathBuf> {
+    let mut candidates = vec![active_path.clone()];
+    if let Some(legacy_path) = legacy_automation_v2_runs_path() {
+        if !candidates.contains(&legacy_path) {
+            candidates.push(legacy_path);
+        }
+    }
+    let default_path = default_state_dir().join("automation_v2_runs.json");
+    if !candidates.contains(&default_path) {
+        candidates.push(default_path);
+    }
+    candidates
+}
+
+fn parse_automation_v2_file(raw: &str) -> std::collections::HashMap<String, AutomationV2Spec> {
+    serde_json::from_str::<std::collections::HashMap<String, AutomationV2Spec>>(raw)
+        .unwrap_or_default()
+}
+
+fn parse_automation_v2_runs_file(
+    raw: &str,
+) -> std::collections::HashMap<String, AutomationV2RunRecord> {
+    serde_json::from_str::<std::collections::HashMap<String, AutomationV2RunRecord>>(raw)
+        .unwrap_or_default()
+}
+
+fn resolve_canonical_data_file_path(file_name: &str) -> PathBuf {
+    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            let base = PathBuf::from(trimmed);
+            return if path_is_data_dir(&base) {
+                base.join(file_name)
+            } else {
+                base.join("data").join(file_name)
+            };
+        }
+    }
+    default_state_dir().join(file_name)
+}
+
+fn resolve_legacy_root_file_path(file_name: &str) -> Option<PathBuf> {
+    if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            let base = PathBuf::from(trimmed);
+            if !path_is_data_dir(&base) {
+                return Some(base.join(file_name));
+            }
+        }
+    }
     resolve_shared_paths()
         .ok()
-        .map(|paths| paths.canonical_root.join("automation_v2_runs.json"))
-        .filter(|path| path != &resolve_automation_v2_runs_path())
+        .map(|paths| paths.canonical_root.join(file_name))
+}
+
+fn path_is_data_dir(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("data"))
+        .unwrap_or(false)
 }
 
 fn resolve_workflow_runs_path() -> PathBuf {
@@ -5591,6 +5788,10 @@ pub async fn run_routine_executor(state: AppState) {
 pub async fn run_automation_v2_scheduler(state: AppState) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let startup = state.startup_snapshot().await;
+        if !matches!(startup.status, StartupStatus::Ready) {
+            continue;
+        }
         let now = now_ms();
         let due = state.evaluate_automation_v2_misfires(now).await;
         for automation_id in due {

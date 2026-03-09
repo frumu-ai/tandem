@@ -1,4 +1,10 @@
-# Tandem v0.4.2 Release Notes (Unreleased)
+# Tandem v0.4.3 Release Notes (Unreleased)
+
+### Automation Persistence Fixes
+
+- Fixed an engine startup race that could overwrite saved Automation V2 definitions with an empty map before persisted state had finished loading.
+- Moved Automation V2 canonical persistence into Tandem's global `data/` directory while continuing to load legacy root-level files for migration safety.
+- Added persistence verification, startup logging, and recovery from run snapshots when definition files are missing but run history still exists.
 
 ### Highlights
 
