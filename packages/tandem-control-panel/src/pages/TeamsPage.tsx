@@ -275,7 +275,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
             </select>
             <input
               className="tcp-input"
-              placeholder="Avatar URL (optional)"
+              placeholder="Avatar URL or upload (optional)"
               value={form.avatarUrl}
               onInput={(event) =>
                 setForm((current) => ({
@@ -335,40 +335,43 @@ export function TeamsPage({ client, toast }: AppPageProps) {
               </div>
             </div>
             <div className="rounded-[28px] border border-slate-800/80 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),_transparent_45%),linear-gradient(180deg,rgba(15,23,42,0.9),rgba(2,6,23,0.96))] p-5">
-              <div className="flex items-start gap-4">
-                <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-cyan-400/30 bg-cyan-400/10 text-lg font-semibold text-cyan-100">
-                  {avatarUrl ? (
-                    <img
-                      src={avatarUrl}
-                      alt={personalityName}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    personalityInitial
-                  )}
-                </div>
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong className="text-white">{personalityName}</strong>
-                    <span className="tcp-badge-info">{form.role}</span>
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-4">
+                  <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-cyan-400/30 bg-cyan-400/10 text-lg font-semibold text-cyan-100">
+                    {avatarUrl ? (
+                      <img
+                        src={avatarUrl}
+                        alt={personalityName}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      personalityInitial
+                    )}
                   </div>
-                  <div className="mt-1 text-xs text-slate-400">
-                    {form.templateId.trim() || "template-id"}
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <strong className="text-white">{personalityName}</strong>
+                      <span className="tcp-badge-info">{form.role}</span>
+                    </div>
+                    <div className="mt-1 text-xs text-slate-400">
+                      {form.templateId.trim() || "template-id"}
+                    </div>
+                    <div className="mt-2 text-sm text-slate-300">{selectedRoleHint}</div>
                   </div>
-                  <div className="mt-2 text-sm text-slate-300">{selectedRoleHint}</div>
                 </div>
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  className="tcp-btn h-8 px-3 text-xs"
-                  onClick={() => avatarInputRef.current?.click()}
-                >
-                  <i data-lucide="image-up"></i>
-                  Upload avatar
-                </button>
-                {avatarUrl ? (
+                <div className="flex items-center gap-2">
                   <button
-                    className="tcp-btn h-8 px-3 text-xs"
+                    className="tcp-icon-btn"
+                    title="Upload avatar"
+                    aria-label="Upload avatar"
+                    onClick={() => avatarInputRef.current?.click()}
+                  >
+                    <i data-lucide="pencil"></i>
+                  </button>
+                  <button
+                    className="tcp-icon-btn"
+                    title="Clear avatar"
+                    aria-label="Clear avatar"
                     onClick={() =>
                       setForm((current) => ({
                         ...current,
@@ -376,21 +379,23 @@ export function TeamsPage({ client, toast }: AppPageProps) {
                       }))
                     }
                   >
-                    <i data-lucide="eraser"></i>
-                    Clear avatar
+                    <i data-lucide="trash-2"></i>
                   </button>
-                ) : null}
-                <input
-                  ref={avatarInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(event) => {
-                    handleAvatarUpload((event.target as HTMLInputElement).files?.[0] || null);
-                    (event.target as HTMLInputElement).value = "";
-                  }}
-                />
+                </div>
               </div>
+              <div className="mt-3 text-xs text-slate-400">
+                Upload an image like Settings Identity preview, or paste a direct avatar URL.
+              </div>
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  handleAvatarUpload((event.target as HTMLInputElement).files?.[0] || null);
+                  (event.target as HTMLInputElement).value = "";
+                }}
+              />
               <div className="mt-4 rounded-2xl border border-slate-800/70 bg-black/20 p-4">
                 <div className="text-xs font-medium uppercase tracking-[0.24em] text-slate-500">
                   Personality Preview
