@@ -2197,28 +2197,64 @@ impl AppState {
         let mut merged = std::collections::HashMap::<String, AutomationV2Spec>::new();
         let mut loaded_from_alternate = false;
         let mut path_counts = Vec::new();
-        for path in candidate_automations_v2_paths(&self.automations_v2_path) {
-            if !path.exists() {
-                path_counts.push((path, 0usize));
-                continue;
-            }
-            let raw = fs::read_to_string(&path).await?;
+        let mut canonical_loaded = false;
+        if self.automations_v2_path.exists() {
+            let raw = fs::read_to_string(&self.automations_v2_path).await?;
             if raw.trim().is_empty() || raw.trim() == "{}" {
-                path_counts.push((path, 0usize));
-                continue;
+                path_counts.push((self.automations_v2_path.clone(), 0usize));
+            } else {
+                let parsed = parse_automation_v2_file(&raw);
+                path_counts.push((self.automations_v2_path.clone(), parsed.len()));
+                canonical_loaded = !parsed.is_empty();
+                merged = parsed;
             }
-            let parsed = parse_automation_v2_file(&raw);
-            path_counts.push((path.clone(), parsed.len()));
-            if path != self.automations_v2_path {
-                loaded_from_alternate = loaded_from_alternate || !parsed.is_empty();
-            }
-            for (automation_id, automation) in parsed {
-                match merged.get(&automation_id) {
-                    Some(existing) if existing.updated_at_ms > automation.updated_at_ms => {}
-                    _ => {
-                        merged.insert(automation_id, automation);
+        } else {
+            path_counts.push((self.automations_v2_path.clone(), 0usize));
+        }
+        if !canonical_loaded {
+            for path in candidate_automations_v2_paths(&self.automations_v2_path) {
+                if path == self.automations_v2_path {
+                    continue;
+                }
+                if !path.exists() {
+                    path_counts.push((path, 0usize));
+                    continue;
+                }
+                let raw = fs::read_to_string(&path).await?;
+                if raw.trim().is_empty() || raw.trim() == "{}" {
+                    path_counts.push((path, 0usize));
+                    continue;
+                }
+                let parsed = parse_automation_v2_file(&raw);
+                path_counts.push((path.clone(), parsed.len()));
+                if !parsed.is_empty() {
+                    loaded_from_alternate = true;
+                }
+                for (automation_id, automation) in parsed {
+                    match merged.get(&automation_id) {
+                        Some(existing) if existing.updated_at_ms > automation.updated_at_ms => {}
+                        _ => {
+                            merged.insert(automation_id, automation);
+                        }
                     }
                 }
+            }
+        } else {
+            for path in candidate_automations_v2_paths(&self.automations_v2_path) {
+                if path == self.automations_v2_path {
+                    continue;
+                }
+                if !path.exists() {
+                    path_counts.push((path, 0usize));
+                    continue;
+                }
+                let raw = fs::read_to_string(&path).await?;
+                let count = if raw.trim().is_empty() || raw.trim() == "{}" {
+                    0usize
+                } else {
+                    parse_automation_v2_file(&raw).len()
+                };
+                path_counts.push((path, count));
             }
         }
         let active_path = self.automations_v2_path.display().to_string();
@@ -2228,6 +2264,7 @@ impl AppState {
             .collect::<Vec<_>>();
         tracing::info!(
             active_path,
+            canonical_loaded,
             path_counts = ?path_count_summary,
             merged_count = merged.len(),
             "loaded automation v2 definitions"

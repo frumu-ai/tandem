@@ -829,6 +829,72 @@ async fn workflow_plan_apply_succeeds_when_legacy_automations_file_is_stale() {
 }
 
 #[tokio::test]
+async fn load_automations_v2_prefers_canonical_file_over_stale_legacy_entries() {
+    let _guard = PlannerEnvGuard::new(&["TANDEM_STATE_DIR"]);
+    let state_root =
+        std::env::temp_dir().join(format!("tandem-automation-v2-load-{}", Uuid::new_v4()));
+    let canonical_dir = state_root.join("data");
+    std::fs::create_dir_all(&canonical_dir).expect("canonical dir");
+    std::fs::write(
+        canonical_dir.join("automations_v2.json"),
+        r#"{
+  "automation-v2-current": {
+    "automation_id": "automation-v2-current",
+    "name": "Current Automation",
+    "description": "canonical definition",
+    "status": "active",
+    "schedule": {
+      "type": "manual",
+      "timezone": "UTC",
+      "misfire_policy": { "type": "run_once" }
+    },
+    "agents": [],
+    "flow": { "nodes": [] },
+    "execution": { "max_parallel_agents": 1 },
+    "output_targets": [],
+    "created_at_ms": 20,
+    "updated_at_ms": 20,
+    "creator_id": "test"
+  }
+}"#,
+    )
+    .expect("write canonical automations file");
+    std::fs::write(
+        state_root.join("automations_v2.json"),
+        r#"{
+  "automation-v2-stale": {
+    "automation_id": "automation-v2-stale",
+    "name": "Stale Legacy Automation",
+    "description": "legacy definition",
+    "status": "paused",
+    "schedule": {
+      "type": "manual",
+      "timezone": "UTC",
+      "misfire_policy": { "type": "run_once" }
+    },
+    "agents": [],
+    "flow": { "nodes": [] },
+    "execution": { "max_parallel_agents": 1 },
+    "output_targets": [],
+    "created_at_ms": 1,
+    "updated_at_ms": 1,
+    "creator_id": "legacy"
+  }
+}"#,
+    )
+    .expect("write legacy automations file");
+    _guard.set("TANDEM_STATE_DIR", state_root.display().to_string());
+
+    let state = test_state().await;
+    let automations = state.list_automations_v2().await;
+    let ids = automations
+        .iter()
+        .map(|row| row.automation_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["automation-v2-current"]);
+}
+
+#[tokio::test]
 async fn workflow_plan_chat_message_returns_planner_model_hint_without_model() {
     let state = test_state().await;
     let app = app_router(state);
