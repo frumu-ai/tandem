@@ -1,6 +1,6 @@
 [package]
 name = "tandem-workflows"
-version = "0.4.4"
+version = "0.4.5"
 description = "Workflow definitions and loading for Tandem"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -14,5 +14,6 @@ serde_yaml = "0.9"
 
 [dev-dependencies]
 tempfile = "3"
+
 
 

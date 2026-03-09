@@ -5,7 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.4] - Unreleased
+## [0.4.5] - Unreleased
+
+### Added
+
+- **Explicit workflow tool access controls in the control panel**:
+  - added `All tools` vs `Custom allowlist` controls to the workflow creation wizard
+  - added matching tool-access controls to the workflow automation edit modal
+  - surfaced the selected tool policy in the wizard review step before deploy
+  - wired workflow-plan apply to honor `tool_access_mode` and `tool_allowlist` through operator preferences
+
+### Changed
+
+- **Workflow automation editing and run-debug UX refinements**:
+  - expanded the workflow edit modal into a large editor layout with a dedicated prompt-editing area for step objectives
+  - made workflow provider/model selectors preserve saved values and use the panel’s styled selector treatment
+  - improved the run debugger modal and workflow board sizing so the board can grow and the modal body scrolls instead of clipping content
+  - tightened workflow prompt-editor cards by removing duplicated step text and redundant node-id badges
+
+### Fixed
+
+- **Workflow automation schedule/tooling and publish reliability**:
+  - fixed workflow automation save payloads to use the server-required tagged `misfire_policy` shape
+  - fixed workflow agents defaulting to an overly narrow tool subset by making tool access explicit and configurable
+  - fixed `@frumu/tandem-client` publish builds by restoring missing `AgentStandupCompose*` type imports in the TypeScript client
+
+## [0.4.4] - 2026-03-09
 
 ### Added
 

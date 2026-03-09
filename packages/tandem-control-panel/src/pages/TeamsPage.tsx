@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { renderIcons } from "../app/icons.js";
 import { AgentStandupBuilder } from "./AgentStandupBuilder";
 import { PageCard, EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
@@ -92,6 +93,7 @@ function buildTemplatePayload(form: TemplateFormState) {
 export function TeamsPage({ client, toast }: AppPageProps) {
   const queryClient = useQueryClient();
   const agentTeams = (client as any)?.agentTeams;
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const [form, setForm] = useState<TemplateFormState>(EMPTY_FORM);
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
@@ -195,6 +197,27 @@ export function TeamsPage({ client, toast }: AppPageProps) {
   const selectedRoleHint = ROLE_HINTS[form.role];
   const avatarUrl = form.avatarUrl.trim();
 
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    renderIcons(root);
+  }, [
+    templates.length,
+    instances.length,
+    approvals.length,
+    form.role,
+    form.templateId,
+    form.displayName,
+    form.avatarUrl,
+    form.modelProvider,
+    form.modelId,
+    form.systemPrompt,
+    editingTemplateId,
+    templateMutation.isPending,
+    deleteMutation.isPending,
+    replyMutation.isPending,
+  ]);
+
   const handleAvatarUpload = (file: File | null) => {
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) {
@@ -218,7 +241,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
   };
 
   return (
-    <div className="grid gap-4">
+    <div ref={rootRef} className="grid gap-4">
       <PageCard
         title="Agent Standup"
         subtitle="Compose scheduled standups from the same saved agents you manage here"
@@ -329,6 +352,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
                 <div className="mt-3 flex flex-wrap gap-2">
                   {PROMPT_EXAMPLES.map((example) => (
                     <button
+                      type="button"
                       key={example}
                       className="tcp-btn h-auto min-h-8 px-3 py-2 text-left text-xs"
                       onClick={() =>
@@ -370,6 +394,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
                   </div>
                   <div className="flex items-center gap-2">
                     <button
+                      type="button"
                       className="tcp-icon-btn"
                       title="Upload avatar"
                       aria-label="Upload avatar"
@@ -378,6 +403,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
                       <i data-lucide="pencil"></i>
                     </button>
                     <button
+                      type="button"
                       className="tcp-icon-btn"
                       title="Clear avatar"
                       aria-label="Clear avatar"
@@ -435,6 +461,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
             />
             <div className="flex flex-wrap gap-2">
               <button
+                type="button"
                 className="tcp-btn"
                 disabled={templateMutation.isPending}
                 onClick={() => templateMutation.mutate()}
@@ -444,6 +471,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
               </button>
               {hasDraft && (
                 <button
+                  type="button"
                   className="tcp-btn"
                   onClick={() => {
                     setEditingTemplateId(null);
@@ -489,6 +517,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
                       </div>
                       <div className="flex gap-2">
                         <button
+                          type="button"
                           className="tcp-btn h-7 px-2 text-xs"
                           onClick={() => {
                             setEditingTemplateId(template.templateId);
@@ -509,6 +538,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
                           Edit
                         </button>
                         <button
+                          type="button"
                           className="tcp-btn-danger h-7 px-2 text-xs"
                           onClick={() => deleteMutation.mutate(template.templateId)}
                         >
@@ -577,6 +607,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
                     <div className="tcp-subtle text-xs">{requestId}</div>
                     <div className="mt-2 flex gap-2">
                       <button
+                        type="button"
                         className="tcp-btn h-7 px-2 text-xs"
                         onClick={() => replyMutation.mutate({ requestId, decision: "approve" })}
                       >
@@ -584,6 +615,7 @@ export function TeamsPage({ client, toast }: AppPageProps) {
                         Approve
                       </button>
                       <button
+                        type="button"
                         className="tcp-btn-danger h-7 px-2 text-xs"
                         onClick={() => replyMutation.mutate({ requestId, decision: "deny" })}
                       >

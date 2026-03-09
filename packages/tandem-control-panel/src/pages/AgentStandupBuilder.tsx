@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { renderIcons } from "../app/icons.js";
 import { EmptyState } from "./ui";
 
 type StandupTemplateOption = {
@@ -87,6 +88,7 @@ export function AgentStandupBuilder({
   toast: (kind: "ok" | "info" | "warn" | "err", text: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const [name, setName] = useState("Daily Engineering Standup");
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [schedulePreset, setSchedulePreset] = useState("Every morning");
@@ -163,8 +165,28 @@ export function AgentStandupBuilder({
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
 
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    renderIcons(root);
+  }, [
+    name,
+    workspaceRoot,
+    schedulePreset,
+    customCron,
+    reportPathTemplate,
+    participantTemplateIds.join(","),
+    templates.length,
+    composeMutation.isPending,
+    createMutation.isPending,
+    !!preview,
+  ]);
+
   return (
-    <div className="grid gap-4 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+    <div
+      ref={rootRef}
+      className="grid gap-4 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4"
+    >
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-xs font-medium uppercase tracking-[0.24em] text-emerald-300">
@@ -235,6 +257,7 @@ export function AgentStandupBuilder({
               const selected = participantTemplateIds.includes(template.templateId);
               return (
                 <button
+                  type="button"
                   key={template.templateId}
                   className={`tcp-list-item text-left transition-all ${
                     selected ? "border-emerald-400/60 bg-emerald-400/10" : ""
@@ -266,6 +289,7 @@ export function AgentStandupBuilder({
 
       <div className="flex flex-wrap gap-2">
         <button
+          type="button"
           className="tcp-btn"
           disabled={composeMutation.isPending || !templates.length}
           onClick={() => composeMutation.mutate()}
@@ -274,6 +298,7 @@ export function AgentStandupBuilder({
           {composeMutation.isPending ? "Composing…" : "Preview Standup Workflow"}
         </button>
         <button
+          type="button"
           className="tcp-btn-primary"
           disabled={createMutation.isPending || !templates.length}
           onClick={() => createMutation.mutate()}

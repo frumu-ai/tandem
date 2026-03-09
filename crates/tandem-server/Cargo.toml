@@ -1,6 +1,6 @@
 [package]
 name = "tandem-server"
-version = "0.4.4"
+version = "0.4.5"
 description = "HTTP server for Tandem engine APIs"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -33,22 +33,23 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
 zip = "2.4.2"
-tandem-core = { path = "../tandem-core", version = "0.4.4" }
-tandem-providers = { path = "../tandem-providers", version = "0.4.4" }
-tandem-runtime = { path = "../tandem-runtime", version = "0.4.4" }
-tandem-tools = { path = "../tandem-tools", version = "0.4.4" }
-tandem-skills = { path = "../tandem-skills", version = "0.4.4" }
-tandem-memory = { path = "../tandem-memory", version = "0.4.4", features = ["local-embeddings"] }
-tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.4.4" }
-tandem-types = { path = "../tandem-types", version = "0.4.4" }
-tandem-workflows = { path = "../tandem-workflows", version = "0.4.4" }
-tandem-wire = { path = "../tandem-wire", version = "0.4.4" }
-tandem-channels = { path = "../tandem-channels", version = "0.4.4" }
-tandem-browser = { path = "../tandem-browser", version = "0.4.4" }
-tandem-observability = { path = "../tandem-observability", version = "0.4.4" }
+tandem-core = { path = "../tandem-core", version = "0.4.5" }
+tandem-providers = { path = "../tandem-providers", version = "0.4.5" }
+tandem-runtime = { path = "../tandem-runtime", version = "0.4.5" }
+tandem-tools = { path = "../tandem-tools", version = "0.4.5" }
+tandem-skills = { path = "../tandem-skills", version = "0.4.5" }
+tandem-memory = { path = "../tandem-memory", version = "0.4.5", features = ["local-embeddings"] }
+tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.4.5" }
+tandem-types = { path = "../tandem-types", version = "0.4.5" }
+tandem-workflows = { path = "../tandem-workflows", version = "0.4.5" }
+tandem-wire = { path = "../tandem-wire", version = "0.4.5" }
+tandem-channels = { path = "../tandem-channels", version = "0.4.5" }
+tandem-browser = { path = "../tandem-browser", version = "0.4.5" }
+tandem-observability = { path = "../tandem-observability", version = "0.4.5" }
 
 [dev-dependencies]
 tower = "0.5"
+
 
 
 

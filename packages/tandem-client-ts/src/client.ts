@@ -113,6 +113,8 @@ import type {
   AgentTeamInstancesResponse,
   AgentTeamMissionsResponse,
   AgentTeamApprovalsResponse,
+  AgentStandupComposeInput,
+  AgentStandupComposeResponse,
   AutomationV2Spec,
   AutomationV2RunRecord,
   WorkflowPlan,

@@ -2,7 +2,24 @@
 
 Canonical release notes live in `docs/RELEASE_NOTES.md`.
 
-## v0.4.4 (Unreleased)
+## v0.4.5 (Unreleased)
+
+- Workflow automation editor and run debugger improvements
+  - Expanded the workflow edit modal into a large editor with dedicated prompt editing for workflow step objectives.
+  - Added explicit workflow tool access controls in both the creation wizard and edit modal: `All tools` or `Custom allowlist`.
+  - Surfaced selected tool access in the wizard review step before deploy.
+  - Improved run debugger sizing and scrolling so the workflow board can grow instead of being cut off in the modal.
+  - Tightened workflow prompt-editor cards by removing duplicated step text and redundant labels.
+
+- Workflow automation engine/planner integration fixes
+  - Fixed workflow automation save payloads to use the server-required tagged `misfire_policy` shape.
+  - Updated workflow-plan apply so new workflow automations honor `tool_access_mode` and `tool_allowlist` from operator preferences.
+  - Made workflow tool access explicit instead of relying on the old hidden narrow allowlist behavior.
+
+- Registry publish fix for the TypeScript client
+  - Fixed `@frumu/tandem-client` publish builds by restoring missing `AgentStandupComposeInput` and `AgentStandupComposeResponse` imports.
+
+## v0.4.4 (Released 2026-03-09)
 
 - Official control-panel bootstrap path for headless installs
   - Added a real `tandem-setup` CLI with `init`, `doctor`, `service`, `pair mobile`, and `run`.

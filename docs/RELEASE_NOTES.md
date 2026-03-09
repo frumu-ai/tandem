@@ -1,4 +1,26 @@
-# Tandem v0.4.4 Release Notes (Unreleased)
+# Tandem v0.4.5 Release Notes (Unreleased)
+
+### Workflow Automation Editor and Debugger
+
+- Expanded the workflow automation edit modal into a large editor with dedicated prompt editing for workflow step objectives.
+- Added explicit workflow tool access controls to both the creation wizard and workflow edit modal:
+  - `All tools`
+  - `Custom allowlist`
+- Added review-step visibility for the selected workflow tool policy before deploy.
+- Improved run debugger sizing and scrolling so workflow boards can grow without being cut off inside the modal.
+- Tightened workflow prompt-editor cards by removing duplicated step text and redundant labels.
+
+### Workflow Engine / Planner Compatibility
+
+- Fixed workflow automation save payloads to use the server-required tagged `misfire_policy` shape.
+- Updated workflow-plan apply so new workflow automations honor `tool_access_mode` and `tool_allowlist` from operator preferences.
+- Replaced the old hidden narrow workflow tool default with explicit configurable access.
+
+### TypeScript Client Publish Fix
+
+- Fixed `@frumu/tandem-client` publish builds by restoring missing `AgentStandupComposeInput` and `AgentStandupComposeResponse` imports.
+
+## Tandem v0.4.4 Release Notes (Released 2026-03-09)
 
 ### Control Panel Bootstrap
 

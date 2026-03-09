@@ -2218,7 +2218,10 @@ fn compile_plan_to_automation_v2(
         })
         .or(Some(1));
     let model_policy = compile_operator_model_policy(plan.operator_preferences.as_ref());
-    let tool_allowlist = compile_workflow_agent_tool_allowlist(&plan.allowed_mcp_servers);
+    let tool_allowlist = compile_workflow_agent_tool_allowlist(
+        &plan.allowed_mcp_servers,
+        plan.operator_preferences.as_ref(),
+    );
     let agent_roles = plan
         .steps
         .iter()
@@ -2296,13 +2299,33 @@ fn compile_plan_to_automation_v2(
     }
 }
 
-fn compile_workflow_agent_tool_allowlist(allowed_mcp_servers: &[String]) -> Vec<String> {
-    let mut allowlist = vec![
-        "read".to_string(),
-        "websearch".to_string(),
-        "webfetch".to_string(),
-        "webfetch_html".to_string(),
-    ];
+fn compile_workflow_agent_tool_allowlist(
+    allowed_mcp_servers: &[String],
+    operator_preferences: Option<&Value>,
+) -> Vec<String> {
+    let custom_allowlist = operator_preferences
+        .and_then(|prefs| prefs.get("tool_allowlist"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let tool_access_mode = operator_preferences
+        .and_then(|prefs| prefs.get("tool_access_mode"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("all");
+    let mut allowlist = if tool_access_mode == "custom" {
+        custom_allowlist
+    } else {
+        vec!["*".to_string()]
+    };
     for server in allowed_mcp_servers {
         let namespace = normalize_mcp_server_namespace(server);
         allowlist.push(format!("mcp.{namespace}.*"));

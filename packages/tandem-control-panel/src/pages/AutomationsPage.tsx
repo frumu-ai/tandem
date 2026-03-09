@@ -13,6 +13,7 @@ import type { AppPageProps } from "./pageTypes";
 type ExecutionMode = "single" | "team" | "swarm";
 type WizardStep = 1 | 2 | 3 | 4;
 type ActiveTab = "create" | "list" | "running" | "approvals";
+type WorkflowToolAccessMode = "all" | "custom";
 
 interface SchedulePreset {
   label: string;
@@ -36,6 +37,8 @@ interface WizardState {
   plannerModelProvider: string;
   plannerModelId: string;
   roleModelsJson: string;
+  toolAccessMode: WorkflowToolAccessMode;
+  customToolsText: string;
   selectedMcpServers: string[];
   exportPackDraft: boolean;
   advancedMode: boolean;
@@ -69,7 +72,17 @@ interface WorkflowEditDraft {
   modelId: string;
   plannerModelProvider: string;
   plannerModelId: string;
+  toolAccessMode: WorkflowToolAccessMode;
+  customToolsText: string;
   selectedMcpServers: string[];
+  nodes: WorkflowNodeEditDraft[];
+}
+
+interface WorkflowNodeEditDraft {
+  nodeId: string;
+  title: string;
+  objective: string;
+  agentId: string;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -346,12 +359,39 @@ function normalizeAllowedTools(raw: string[]) {
   return values;
 }
 
-function compileWorkflowToolAllowlist(selectedMcpServers: string[]) {
+function mergeOptionValues(values: string[], currentValue: string) {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const raw of [currentValue, ...values]) {
+    const value = String(raw || "").trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    merged.push(value);
+  }
+  return merged;
+}
+
+function parseCustomToolText(raw: string) {
+  return normalizeAllowedTools(
+    String(raw || "")
+      .split(/[\n,]/g)
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  );
+}
+
+function formatCustomToolText(raw: string[]) {
+  return normalizeAllowedTools(raw).join("\n");
+}
+
+function compileWorkflowToolAllowlist(
+  selectedMcpServers: string[],
+  toolAccessMode: WorkflowToolAccessMode,
+  customToolsText: string
+) {
+  if (toolAccessMode === "all") return ["*"];
   return normalizeAllowedTools([
-    "read",
-    "websearch",
-    "webfetch",
-    "webfetch_html",
+    ...parseCustomToolText(customToolsText),
     ...selectedMcpServers.map((server) => `mcp.${normalizeMcpServerNamespace(server)}.*`),
   ]);
 }
@@ -384,6 +424,27 @@ function extractAutomationOperatorPreferences(automation: any) {
   return fallback;
 }
 
+function workflowToolAccessFromAutomation(automation: any) {
+  const allowlist = normalizeAllowedTools(
+    (Array.isArray(automation?.agents)
+      ? automation.agents.flatMap((agent: any) =>
+          Array.isArray(agent?.tool_policy?.allowlist) ? agent.tool_policy.allowlist : []
+        )
+      : []
+    )
+      .map((value: any) => String(value || "").trim())
+      .filter(Boolean)
+  );
+  if (!allowlist.length || allowlist.includes("*")) {
+    return { toolAccessMode: "all" as const, customToolsText: "" };
+  }
+  const customTools = allowlist.filter((tool) => !tool.startsWith("mcp."));
+  return {
+    toolAccessMode: "custom" as const,
+    customToolsText: formatCustomToolText(customTools),
+  };
+}
+
 function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | null {
   const automationId = String(
     automation?.automation_id || automation?.automationId || automation?.id || ""
@@ -405,6 +466,22 @@ function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | nul
     : Array.isArray(automation?.agents?.[0]?.mcp_policy?.allowed_servers)
       ? automation.agents[0].mcp_policy.allowed_servers
       : [];
+  const toolAccess = workflowToolAccessFromAutomation(automation);
+  const nodes = Array.isArray(automation?.flow?.nodes)
+    ? automation.flow.nodes.map((node: any, index: number) => ({
+        nodeId: String(node?.node_id || node?.nodeId || node?.id || `node-${index}`).trim(),
+        title: String(
+          node?.title ||
+            node?.name ||
+            node?.objective ||
+            node?.node_id ||
+            node?.id ||
+            "Workflow step"
+        ).trim(),
+        objective: String(node?.objective || "").trim(),
+        agentId: String(node?.agent_id || node?.agentId || "").trim(),
+      }))
+    : [];
   return {
     automationId,
     name: String(automation?.name || automationId).trim(),
@@ -433,18 +510,22 @@ function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | nul
       plannerRoleModel?.provider_id || plannerRoleModel?.providerId || ""
     ).trim(),
     plannerModelId: String(plannerRoleModel?.model_id || plannerRoleModel?.modelId || "").trim(),
+    toolAccessMode: toolAccess.toolAccessMode,
+    customToolsText: toolAccess.customToolsText,
     selectedMcpServers: selectedMcpServers
       .map((row: any) => String(row || "").trim())
       .filter(Boolean),
+    nodes,
   };
 }
 
 function workflowEditToSchedule(draft: WorkflowEditDraft) {
+  const misfirePolicy = { type: "run_once" as const };
   if (draft.scheduleKind === "manual") {
     return {
       type: "manual",
       timezone: "UTC",
-      misfire_policy: "run_once",
+      misfire_policy: misfirePolicy,
     };
   }
   if (draft.scheduleKind === "cron") {
@@ -452,7 +533,7 @@ function workflowEditToSchedule(draft: WorkflowEditDraft) {
       type: "cron",
       cron_expression: String(draft.cronExpression || "").trim(),
       timezone: "UTC",
-      misfire_policy: "run_once",
+      misfire_policy: misfirePolicy,
     };
   }
   return {
@@ -462,12 +543,30 @@ function workflowEditToSchedule(draft: WorkflowEditDraft) {
       Number.parseInt(String(draft.intervalSeconds || "3600"), 10) || 3600
     ),
     timezone: "UTC",
-    misfire_policy: "run_once",
+    misfire_policy: misfirePolicy,
   };
 }
 
 function isStandupAutomation(automation: any) {
   return String(automation?.metadata?.feature || "").trim() === "agent_standup";
+}
+
+function looksLikeEmailNode(node: WorkflowNodeEditDraft) {
+  const haystack = `${node.title} ${node.objective} ${node.agentId}`.toLowerCase();
+  return (
+    haystack.includes("email") ||
+    haystack.includes("gmail") ||
+    haystack.includes("draft") ||
+    haystack.includes("send")
+  );
+}
+
+function appendNoAttachmentGuardrail(objective: string) {
+  const rule =
+    "Do not send or preserve attachments. If an attachment field is empty, null, or missing a valid upload or s3key, omit the attachment parameter entirely and send the email body inline instead.";
+  const trimmed = String(objective || "").trim();
+  if (trimmed.toLowerCase().includes("omit the attachment parameter entirely")) return trimmed;
+  return trimmed ? `${trimmed}\n\n${rule}` : rule;
 }
 
 function workflowEditToOperatorPreferences(draft: WorkflowEditDraft) {
@@ -494,6 +593,10 @@ function workflowEditToOperatorPreferences(draft: WorkflowEditDraft) {
         model_id: plannerModel,
       },
     };
+  }
+  prefs.tool_access_mode = draft.toolAccessMode;
+  if (draft.toolAccessMode === "custom") {
+    prefs.tool_allowlist = parseCustomToolText(draft.customToolsText);
   }
   return prefs;
 }
@@ -1340,6 +1443,10 @@ function Step3Mode({
   roleModelsJson,
   onRoleModelsChange,
   roleModelsError,
+  toolAccessMode,
+  customToolsText,
+  onToolAccessModeChange,
+  onCustomToolsTextChange,
   mcpServers,
   selectedMcpServers,
   onToggleMcpServer,
@@ -1377,6 +1484,10 @@ function Step3Mode({
   roleModelsJson: string;
   onRoleModelsChange: (v: string) => void;
   roleModelsError: string;
+  toolAccessMode: WorkflowToolAccessMode;
+  customToolsText: string;
+  onToolAccessModeChange: (mode: WorkflowToolAccessMode) => void;
+  onCustomToolsTextChange: (value: string) => void;
   mcpServers: McpServerOption[];
   selectedMcpServers: string[];
   onToggleMcpServer: (name: string) => void;
@@ -1651,6 +1762,52 @@ function Step3Mode({
           {roleModelsError ? <div className="text-xs text-red-300">{roleModelsError}</div> : null}
         </div>
       </div>
+      <div className="grid gap-3 rounded-xl border border-slate-700/50 bg-slate-900/30 p-3">
+        <div className="text-xs uppercase tracking-wide text-slate-500">Tool Access</div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            className={`tcp-list-item text-left ${toolAccessMode === "all" ? "border-amber-400/60 bg-amber-400/10" : ""}`}
+            onClick={() => onToolAccessModeChange("all")}
+          >
+            <div className="font-medium">All tools</div>
+            <div className="tcp-subtle text-xs">
+              Grant full built-in tool access. Use this for autonomous coding and file operations.
+            </div>
+          </button>
+          <button
+            type="button"
+            className={`tcp-list-item text-left ${toolAccessMode === "custom" ? "border-amber-400/60 bg-amber-400/10" : ""}`}
+            onClick={() => onToolAccessModeChange("custom")}
+          >
+            <div className="font-medium">Custom allowlist</div>
+            <div className="tcp-subtle text-xs">
+              Restrict built-in tools manually. MCP tools still come from the selected servers
+              below.
+            </div>
+          </button>
+        </div>
+        {toolAccessMode === "custom" ? (
+          <div className="grid gap-1">
+            <label className="text-xs text-slate-400">Allowed built-in tools</label>
+            <textarea
+              className="tcp-input min-h-[96px] font-mono text-xs"
+              value={customToolsText}
+              onInput={(e) => onCustomToolsTextChange((e.target as HTMLTextAreaElement).value)}
+              placeholder={`read\nwrite\nedit\nbash\nls\nglob\nwebsearch`}
+            />
+            <div className="text-xs text-slate-500">
+              Enter one tool per line or comma-separated. Example: `read`, `write`, `edit`, `bash`,
+              `ls`, `glob`, `websearch`.
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-slate-500">
+            All built-in tools are allowed. MCP tools are additionally controlled by the server
+            selection below.
+          </div>
+        )}
+      </div>
       <div className="grid gap-2 rounded-xl border border-slate-700/50 bg-slate-900/30 p-3">
         <div className="flex items-center justify-between gap-2">
           <div className="text-xs uppercase tracking-wide text-slate-500">MCP Servers</div>
@@ -1779,6 +1936,22 @@ function Step4Review({
   )
     ? ((planPreview?.allowed_mcp_servers || planPreview?.allowedMcpServers || []) as string[])
     : wizard.selectedMcpServers;
+  const effectiveToolAccessMode = String(
+    hasPlanPreview
+      ? (planOperatorPreferences as any)?.tool_access_mode ||
+          (planOperatorPreferences as any)?.toolAccessMode ||
+          "all"
+      : wizard.toolAccessMode || "all"
+  ).trim();
+  const effectiveCustomTools = hasPlanPreview
+    ? normalizeAllowedTools(
+        (
+          (planOperatorPreferences as any)?.tool_allowlist ||
+          (planOperatorPreferences as any)?.toolAllowlist ||
+          []
+        ).map((value: any) => String(value || "").trim())
+      )
+    : parseCustomToolText(wizard.customToolsText);
   const effectiveSchedule = planPreview?.schedule
     ? formatAutomationV2ScheduleLabel(planPreview.schedule)
     : wizardSchedule;
@@ -1873,6 +2046,24 @@ function Step4Review({
             )}
           </div>
         ) : null}
+        <div className="grid gap-1">
+          <span className="text-xs text-slate-500 uppercase tracking-wide">Tool Access</span>
+          {effectiveToolAccessMode === "custom" ? (
+            effectiveCustomTools.length ? (
+              <div className="flex flex-wrap gap-1">
+                {effectiveCustomTools.map((tool) => (
+                  <span key={tool} className="tcp-badge-info">
+                    {tool}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <span className="text-sm font-medium text-slate-400">Custom allowlist</span>
+            )
+          ) : (
+            <span className="text-sm font-medium text-slate-200">All tools</span>
+          )}
+        </div>
         {wizard.routedSkill ? (
           <div className="grid gap-1">
             <span className="text-xs text-slate-500 uppercase tracking-wide">
@@ -2156,6 +2347,8 @@ function CreateWizard({
     plannerModelProvider: "",
     plannerModelId: "",
     roleModelsJson: "",
+    toolAccessMode: "all",
+    customToolsText: "",
     selectedMcpServers: [],
     exportPackDraft: false,
     advancedMode: false,
@@ -2509,6 +2702,8 @@ function CreateWizard({
         plannerModelProvider: "",
         plannerModelId: "",
         roleModelsJson: "",
+        toolAccessMode: "all",
+        customToolsText: "",
         selectedMcpServers: [],
         exportPackDraft: false,
         advancedMode: false,
@@ -2747,6 +2942,14 @@ function CreateWizard({
               roleModelsJson={wizard.roleModelsJson}
               onRoleModelsChange={(v) => setWizard((s) => ({ ...s, roleModelsJson: v }))}
               roleModelsError={roleModelsError}
+              toolAccessMode={wizard.toolAccessMode}
+              customToolsText={wizard.customToolsText}
+              onToolAccessModeChange={(toolAccessMode) =>
+                setWizard((s) => ({ ...s, toolAccessMode }))
+              }
+              onCustomToolsTextChange={(customToolsText) =>
+                setWizard((s) => ({ ...s, customToolsText }))
+              }
               mcpServers={mcpServers}
               selectedMcpServers={wizard.selectedMcpServers}
               onToggleMcpServer={(name) =>
@@ -3199,7 +3402,11 @@ function MyAutomations({
       const selectedMcpServers = draft.selectedMcpServers
         .map((row) => String(row || "").trim())
         .filter(Boolean);
-      const toolAllowlist = compileWorkflowToolAllowlist(selectedMcpServers);
+      const toolAllowlist = compileWorkflowToolAllowlist(
+        selectedMcpServers,
+        draft.toolAccessMode,
+        draft.customToolsText
+      );
       const existing = automationsV2.find(
         (row: any) =>
           String(row?.automation_id || row?.automationId || row?.id || "").trim() ===
@@ -3224,6 +3431,20 @@ function MyAutomations({
             },
           }))
         : [];
+      const flowNodes = Array.isArray(existing?.flow?.nodes)
+        ? existing.flow.nodes.map((node: any, index: number) => {
+            const nodeId = String(
+              node?.node_id || node?.nodeId || node?.id || `node-${index}`
+            ).trim();
+            const draftNode = draft.nodes.find((row) => row.nodeId === nodeId);
+            return draftNode
+              ? {
+                  ...node,
+                  objective: String(draftNode.objective || "").trim(),
+                }
+              : node;
+          })
+        : [];
       const existingMetadata =
         existing?.metadata && typeof existing.metadata === "object" ? existing.metadata : {};
       return client.automationsV2.update(draft.automationId, {
@@ -3241,6 +3462,12 @@ function MyAutomations({
                 )
               : 1,
         },
+        flow: existing?.flow
+          ? {
+              ...existing.flow,
+              nodes: flowNodes,
+            }
+          : existing?.flow,
         agents,
         metadata: {
           ...existingMetadata,
@@ -4269,6 +4496,41 @@ function MyAutomations({
                   <span className={statusColor(selectedRun?.status)}>
                     {String(selectedRun?.status || "unknown")}
                   </span>
+                  {selectedRunId ? (
+                    <button
+                      type="button"
+                      className="tcp-btn h-8 w-full px-2 text-xs sm:w-auto"
+                      onClick={() =>
+                        runActionMutation.mutate({
+                          action:
+                            String(selectedRun?.status || "").toLowerCase() === "paused"
+                              ? "resume"
+                              : "pause",
+                          runId: selectedRunId,
+                          family: isWorkflowRun ? "v2" : "legacy",
+                        })
+                      }
+                      disabled={
+                        !selectedRunId ||
+                        runActionMutation.isPending ||
+                        !(
+                          String(selectedRun?.status || "").toLowerCase() === "paused" ||
+                          isActiveRunStatus(selectedRun?.status)
+                        )
+                      }
+                    >
+                      <i
+                        data-lucide={
+                          String(selectedRun?.status || "").toLowerCase() === "paused"
+                            ? "play"
+                            : "pause"
+                        }
+                      ></i>
+                      {String(selectedRun?.status || "").toLowerCase() === "paused"
+                        ? "Resume"
+                        : "Pause"}
+                    </button>
+                  ) : null}
                   <button
                     className="tcp-btn h-8 w-full px-2 text-xs sm:w-auto"
                     onClick={() => {
@@ -4337,10 +4599,10 @@ function MyAutomations({
                   </button>
                 </div>
               </div>
-              <div className="grid max-h-[calc(100dvh-8rem)] gap-3 overflow-y-auto pr-1 xl:max-h-[calc(92vh-8rem)] xl:grid-cols-[1.62fr_1fr]">
+              <div className="grid flex-1 gap-3 overflow-y-auto pr-1 xl:grid-cols-[1.62fr_1fr]">
                 <div className="grid min-h-0 gap-3">
                   {isWorkflowRun ? (
-                    <div className="tcp-list-item min-h-0 xl:min-h-[18rem]">
+                    <div className="tcp-list-item">
                       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                         <div>
                           <div className="font-medium">Workflow Board</div>
@@ -5043,336 +5305,512 @@ function MyAutomations({
             onClick={() => setWorkflowEditDraft(null)}
           >
             <motion.div
-              className="tcp-confirm-dialog w-[min(56rem,96vw)]"
+              className="tcp-confirm-dialog tcp-workflow-editor-modal"
               initial={{ opacity: 0, y: 8, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 6, scale: 0.98 }}
               onClick={(event) => event.stopPropagation()}
             >
-              <h3 className="tcp-confirm-title">Edit workflow automation</h3>
-              <div className="grid gap-3">
-                <div className="grid gap-1">
-                  <label className="text-xs text-slate-400">Name</label>
-                  <input
-                    className="tcp-input"
-                    value={workflowEditDraft.name}
-                    onInput={(e) =>
-                      setWorkflowEditDraft((current) =>
-                        current
-                          ? { ...current, name: (e.target as HTMLInputElement).value }
-                          : current
-                      )
-                    }
-                  />
+              <div className="flex items-start justify-between gap-3 border-b border-slate-800/70 px-4 py-4">
+                <div>
+                  <h3 className="tcp-confirm-title">Edit workflow automation</h3>
+                  <div className="mt-1 text-sm text-slate-400">
+                    Update scheduling, model routing, MCP access, and the actual step prompts.
+                  </div>
                 </div>
-                <div className="grid gap-1">
-                  <label className="text-xs text-slate-400">Notes / description</label>
-                  <textarea
-                    className="tcp-input min-h-[96px]"
-                    value={workflowEditDraft.description}
-                    onInput={(e) =>
-                      setWorkflowEditDraft((current) =>
-                        current
-                          ? { ...current, description: (e.target as HTMLTextAreaElement).value }
-                          : current
-                      )
-                    }
-                    placeholder="Add notes, delivery expectations, or operator guidance."
-                  />
-                </div>
-                <div className="grid gap-1">
-                  <label className="text-xs text-slate-400">Workspace root</label>
-                  <input
-                    className={`tcp-input ${
-                      validateWorkspaceRootInput(workflowEditDraft.workspaceRoot)
-                        ? "border-red-500/70 text-red-100"
-                        : ""
-                    }`}
-                    value={workflowEditDraft.workspaceRoot}
-                    onInput={(e) =>
-                      setWorkflowEditDraft((current) =>
-                        current
-                          ? { ...current, workspaceRoot: (e.target as HTMLInputElement).value }
-                          : current
-                      )
-                    }
-                  />
-                  {validateWorkspaceRootInput(workflowEditDraft.workspaceRoot) ? (
-                    <div className="text-xs text-red-300">
-                      {validateWorkspaceRootInput(workflowEditDraft.workspaceRoot)}
+                <button className="tcp-btn h-9 w-9 px-0" onClick={() => setWorkflowEditDraft(null)}>
+                  <i data-lucide="x"></i>
+                </button>
+              </div>
+              <div className="grid flex-1 gap-4 overflow-y-auto px-4 py-4 xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.35fr)]">
+                <div className="grid content-start gap-4">
+                  <div className="grid gap-3 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
+                    <div className="grid gap-1">
+                      <label className="text-xs text-slate-400">Automation name</label>
+                      <input
+                        className="tcp-input"
+                        value={workflowEditDraft.name}
+                        onInput={(e) =>
+                          setWorkflowEditDraft((current) =>
+                            current
+                              ? { ...current, name: (e.target as HTMLInputElement).value }
+                              : current
+                          )
+                        }
+                      />
                     </div>
-                  ) : null}
-                </div>
-                <div className="grid gap-1 sm:grid-cols-3 sm:gap-2">
-                  <div className="grid gap-1">
-                    <label className="text-xs text-slate-400">Schedule type</label>
-                    <select
-                      className="tcp-input"
-                      value={workflowEditDraft.scheduleKind}
-                      onInput={(e) =>
-                        setWorkflowEditDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                scheduleKind: (e.target as HTMLSelectElement).value as
-                                  | "manual"
-                                  | "cron"
-                                  | "interval",
-                              }
-                            : current
-                        )
-                      }
-                    >
-                      <option value="manual">manual</option>
-                      <option value="cron">cron</option>
-                      <option value="interval">interval</option>
-                    </select>
+                    <div className="grid gap-1">
+                      <label className="text-xs text-slate-400">Notes / description</label>
+                      <textarea
+                        className="tcp-input min-h-[120px]"
+                        value={workflowEditDraft.description}
+                        onInput={(e) =>
+                          setWorkflowEditDraft((current) =>
+                            current
+                              ? { ...current, description: (e.target as HTMLTextAreaElement).value }
+                              : current
+                          )
+                        }
+                        placeholder="Add notes, delivery expectations, or operator guidance."
+                      />
+                    </div>
+                    <div className="grid gap-1">
+                      <label className="text-xs text-slate-400">Workspace root</label>
+                      <input
+                        className={`tcp-input ${
+                          validateWorkspaceRootInput(workflowEditDraft.workspaceRoot)
+                            ? "border-red-500/70 text-red-100"
+                            : ""
+                        }`}
+                        value={workflowEditDraft.workspaceRoot}
+                        onInput={(e) =>
+                          setWorkflowEditDraft((current) =>
+                            current
+                              ? { ...current, workspaceRoot: (e.target as HTMLInputElement).value }
+                              : current
+                          )
+                        }
+                      />
+                      {validateWorkspaceRootInput(workflowEditDraft.workspaceRoot) ? (
+                        <div className="text-xs text-red-300">
+                          {validateWorkspaceRootInput(workflowEditDraft.workspaceRoot)}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
-                  <div className="grid gap-1">
-                    <label className="text-xs text-slate-400">Execution mode</label>
-                    <select
-                      className="tcp-input"
-                      value={workflowEditDraft.executionMode}
-                      onInput={(e) =>
-                        setWorkflowEditDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                executionMode: (e.target as HTMLSelectElement)
-                                  .value as ExecutionMode,
-                              }
-                            : current
-                        )
-                      }
-                    >
-                      {EXECUTION_MODES.map((mode) => (
-                        <option key={mode.id} value={mode.id}>
-                          {mode.label}
-                        </option>
-                      ))}
-                    </select>
+
+                  <div className="grid gap-3 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">Execution</div>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <div className="grid gap-1">
+                        <label className="text-xs text-slate-400">Schedule type</label>
+                        <select
+                          className="tcp-select"
+                          value={workflowEditDraft.scheduleKind}
+                          onInput={(e) =>
+                            setWorkflowEditDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    scheduleKind: (e.target as HTMLSelectElement).value as
+                                      | "manual"
+                                      | "cron"
+                                      | "interval",
+                                  }
+                                : current
+                            )
+                          }
+                        >
+                          <option value="manual">manual</option>
+                          <option value="cron">cron</option>
+                          <option value="interval">interval</option>
+                        </select>
+                      </div>
+                      <div className="grid gap-1">
+                        <label className="text-xs text-slate-400">Execution mode</label>
+                        <select
+                          className="tcp-select"
+                          value={workflowEditDraft.executionMode}
+                          onInput={(e) =>
+                            setWorkflowEditDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    executionMode: (e.target as HTMLSelectElement)
+                                      .value as ExecutionMode,
+                                  }
+                                : current
+                            )
+                          }
+                        >
+                          {EXECUTION_MODES.map((mode) => (
+                            <option key={mode.id} value={mode.id}>
+                              {mode.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="grid gap-1">
+                        <label className="text-xs text-slate-400">Max parallel agents</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="16"
+                          className="tcp-input"
+                          value={workflowEditDraft.maxParallelAgents}
+                          onInput={(e) =>
+                            setWorkflowEditDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    maxParallelAgents: (e.target as HTMLInputElement).value,
+                                  }
+                                : current
+                            )
+                          }
+                          disabled={workflowEditDraft.executionMode !== "swarm"}
+                        />
+                      </div>
+                    </div>
+                    {workflowEditDraft.scheduleKind === "cron" ? (
+                      <div className="grid gap-1">
+                        <label className="text-xs text-slate-400">Cron expression</label>
+                        <input
+                          className="tcp-input font-mono"
+                          value={workflowEditDraft.cronExpression}
+                          onInput={(e) =>
+                            setWorkflowEditDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    cronExpression: (e.target as HTMLInputElement).value,
+                                  }
+                                : current
+                            )
+                          }
+                        />
+                      </div>
+                    ) : workflowEditDraft.scheduleKind === "interval" ? (
+                      <div className="grid gap-1">
+                        <label className="text-xs text-slate-400">Interval seconds</label>
+                        <input
+                          type="number"
+                          min="1"
+                          className="tcp-input"
+                          value={workflowEditDraft.intervalSeconds}
+                          onInput={(e) =>
+                            setWorkflowEditDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    intervalSeconds: (e.target as HTMLInputElement).value,
+                                  }
+                                : current
+                            )
+                          }
+                        />
+                      </div>
+                    ) : null}
                   </div>
-                  <div className="grid gap-1">
-                    <label className="text-xs text-slate-400">Max parallel agents</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="16"
-                      className="tcp-input"
-                      value={workflowEditDraft.maxParallelAgents}
-                      onInput={(e) =>
-                        setWorkflowEditDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                maxParallelAgents: (e.target as HTMLInputElement).value,
-                              }
-                            : current
-                        )
-                      }
-                      disabled={workflowEditDraft.executionMode !== "swarm"}
-                    />
-                  </div>
-                </div>
-                {workflowEditDraft.scheduleKind === "cron" ? (
-                  <div className="grid gap-1">
-                    <label className="text-xs text-slate-400">Cron expression</label>
-                    <input
-                      className="tcp-input font-mono"
-                      value={workflowEditDraft.cronExpression}
-                      onInput={(e) =>
-                        setWorkflowEditDraft((current) =>
-                          current
-                            ? { ...current, cronExpression: (e.target as HTMLInputElement).value }
-                            : current
-                        )
-                      }
-                    />
-                  </div>
-                ) : workflowEditDraft.scheduleKind === "interval" ? (
-                  <div className="grid gap-1">
-                    <label className="text-xs text-slate-400">Interval seconds</label>
-                    <input
-                      type="number"
-                      min="1"
-                      className="tcp-input"
-                      value={workflowEditDraft.intervalSeconds}
-                      onInput={(e) =>
-                        setWorkflowEditDraft((current) =>
-                          current
-                            ? { ...current, intervalSeconds: (e.target as HTMLInputElement).value }
-                            : current
-                        )
-                      }
-                    />
-                  </div>
-                ) : null}
-                <div className="grid gap-1 sm:grid-cols-2 sm:gap-2">
-                  <div className="grid gap-1">
-                    <label className="text-xs text-slate-400">Model provider</label>
-                    <select
-                      className="tcp-input"
-                      value={workflowEditDraft.modelProvider}
-                      onInput={(e) =>
-                        setWorkflowEditDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                modelProvider: (e.target as HTMLSelectElement).value,
-                                modelId: "",
-                              }
-                            : current
-                        )
-                      }
-                    >
-                      <option value="">Workspace default</option>
-                      {providerOptions.map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.id}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="grid gap-1">
-                    <label className="text-xs text-slate-400">Model</label>
-                    <select
-                      className="tcp-input"
-                      value={workflowEditDraft.modelId}
-                      onInput={(e) =>
-                        setWorkflowEditDraft((current) =>
-                          current
-                            ? { ...current, modelId: (e.target as HTMLSelectElement).value }
-                            : current
-                        )
-                      }
-                    >
-                      <option value="">Workspace default</option>
-                      {(
-                        providerOptions.find(
-                          (provider) => provider.id === workflowEditDraft.modelProvider
-                        )?.models || []
-                      ).map((model) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
-                    </select>
-                    {validateModelInput(
-                      workflowEditDraft.modelProvider,
-                      workflowEditDraft.modelId
-                    ) ? (
-                      <div className="text-xs text-red-300">
+
+                  <div className="grid gap-3 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">
+                      Model Selection
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="grid gap-1">
+                        <label className="text-xs text-slate-400">Model provider</label>
+                        <select
+                          className="tcp-select"
+                          value={workflowEditDraft.modelProvider}
+                          onInput={(e) =>
+                            setWorkflowEditDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    modelProvider: (e.target as HTMLSelectElement).value,
+                                    modelId: "",
+                                  }
+                                : current
+                            )
+                          }
+                        >
+                          <option value="">Workspace default</option>
+                          {mergeOptionValues(
+                            providerOptions.map((provider) => provider.id),
+                            workflowEditDraft.modelProvider
+                          ).map((providerId) => (
+                            <option key={providerId} value={providerId}>
+                              {providerId}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="grid gap-1">
+                        <label className="text-xs text-slate-400">Model</label>
+                        <select
+                          className="tcp-select"
+                          value={workflowEditDraft.modelId}
+                          onInput={(e) =>
+                            setWorkflowEditDraft((current) =>
+                              current
+                                ? { ...current, modelId: (e.target as HTMLSelectElement).value }
+                                : current
+                            )
+                          }
+                        >
+                          <option value="">Workspace default</option>
+                          {mergeOptionValues(
+                            providerOptions.find(
+                              (provider) => provider.id === workflowEditDraft.modelProvider
+                            )?.models || [],
+                            workflowEditDraft.modelId
+                          ).map((modelId) => (
+                            <option key={modelId} value={modelId}>
+                              {modelId}
+                            </option>
+                          ))}
+                        </select>
                         {validateModelInput(
                           workflowEditDraft.modelProvider,
                           workflowEditDraft.modelId
-                        )}
+                        ) ? (
+                          <div className="text-xs text-red-300">
+                            {validateModelInput(
+                              workflowEditDraft.modelProvider,
+                              workflowEditDraft.modelId
+                            )}
+                          </div>
+                        ) : null}
                       </div>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="grid gap-1 sm:grid-cols-2 sm:gap-2">
-                  <div className="grid gap-1">
-                    <label className="text-xs text-slate-400">Planner provider</label>
-                    <select
-                      className="tcp-input"
-                      value={workflowEditDraft.plannerModelProvider}
-                      onInput={(e) =>
-                        setWorkflowEditDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                plannerModelProvider: (e.target as HTMLSelectElement).value,
-                                plannerModelId: "",
-                              }
-                            : current
-                        )
-                      }
-                    >
-                      <option value="">Use workflow model</option>
-                      {providerOptions.map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.id}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="grid gap-1">
-                    <label className="text-xs text-slate-400">Planner model</label>
-                    <select
-                      className="tcp-input"
-                      value={workflowEditDraft.plannerModelId}
-                      onInput={(e) =>
-                        setWorkflowEditDraft((current) =>
-                          current
-                            ? { ...current, plannerModelId: (e.target as HTMLSelectElement).value }
-                            : current
-                        )
-                      }
-                    >
-                      <option value="">Use workflow model</option>
-                      {(
-                        providerOptions.find(
-                          (provider) => provider.id === workflowEditDraft.plannerModelProvider
-                        )?.models || []
-                      ).map((model) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
-                    </select>
-                    {validatePlannerModelInput(
-                      workflowEditDraft.plannerModelProvider,
-                      workflowEditDraft.plannerModelId
-                    ) ? (
-                      <div className="text-xs text-red-300">
-                        {validatePlannerModelInput(
-                          workflowEditDraft.plannerModelProvider,
-                          workflowEditDraft.plannerModelId
-                        )}
+                    </div>
+                    <div className="grid gap-2 rounded-lg border border-slate-800/70 bg-slate-950/30 p-3">
+                      <div className="text-xs uppercase tracking-wide text-slate-500">
+                        Planner fallback model
                       </div>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="grid gap-2 rounded-xl border border-slate-700/50 bg-slate-900/30 p-3">
-                  <div className="text-xs uppercase tracking-wide text-slate-500">MCP Servers</div>
-                  {mcpServers.length ? (
-                    <div className="flex flex-wrap gap-2">
-                      {mcpServers.map((server) => {
-                        const isSelected = workflowEditDraft.selectedMcpServers.includes(
-                          server.name
-                        );
-                        return (
-                          <button
-                            key={server.name}
-                            className={`tcp-btn h-7 px-2 text-xs ${
-                              isSelected ? "border-amber-400/60 bg-amber-400/10 text-amber-300" : ""
-                            }`}
-                            onClick={() =>
+                      <div className="text-xs text-slate-400">
+                        Optional. Override the workflow model only for planning and revisions.
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="grid gap-1">
+                          <label className="text-xs text-slate-400">Planner provider</label>
+                          <select
+                            className="tcp-select"
+                            value={workflowEditDraft.plannerModelProvider}
+                            onInput={(e) =>
                               setWorkflowEditDraft((current) =>
                                 current
                                   ? {
                                       ...current,
-                                      selectedMcpServers: isSelected
-                                        ? current.selectedMcpServers.filter(
-                                            (name) => name !== server.name
-                                          )
-                                        : [...current.selectedMcpServers, server.name].sort(),
+                                      plannerModelProvider: (e.target as HTMLSelectElement).value,
+                                      plannerModelId: "",
                                     }
                                   : current
                               )
                             }
                           >
-                            {server.name} {server.connected ? "• connected" : "• disconnected"}
-                          </button>
-                        );
-                      })}
+                            <option value="">Use workflow model</option>
+                            {mergeOptionValues(
+                              providerOptions.map((provider) => provider.id),
+                              workflowEditDraft.plannerModelProvider
+                            ).map((providerId) => (
+                              <option key={`planner-${providerId}`} value={providerId}>
+                                {providerId}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="grid gap-1">
+                          <label className="text-xs text-slate-400">Planner model</label>
+                          <select
+                            className="tcp-select"
+                            value={workflowEditDraft.plannerModelId}
+                            onInput={(e) =>
+                              setWorkflowEditDraft((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      plannerModelId: (e.target as HTMLSelectElement).value,
+                                    }
+                                  : current
+                              )
+                            }
+                          >
+                            <option value="">Use workflow model</option>
+                            {mergeOptionValues(
+                              providerOptions.find(
+                                (provider) => provider.id === workflowEditDraft.plannerModelProvider
+                              )?.models || [],
+                              workflowEditDraft.plannerModelId
+                            ).map((modelId) => (
+                              <option key={`planner-model-${modelId}`} value={modelId}>
+                                {modelId}
+                              </option>
+                            ))}
+                          </select>
+                          {validatePlannerModelInput(
+                            workflowEditDraft.plannerModelProvider,
+                            workflowEditDraft.plannerModelId
+                          ) ? (
+                            <div className="text-xs text-red-300">
+                              {validatePlannerModelInput(
+                                workflowEditDraft.plannerModelProvider,
+                                workflowEditDraft.plannerModelId
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
                     </div>
-                  ) : (
-                    <div className="text-xs text-slate-400">No MCP servers configured yet.</div>
-                  )}
+                  </div>
+
+                  <div className="grid gap-3 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">
+                      Tool Access
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        className={`tcp-list-item text-left ${workflowEditDraft.toolAccessMode === "all" ? "border-amber-400/60 bg-amber-400/10" : ""}`}
+                        onClick={() =>
+                          setWorkflowEditDraft((current) =>
+                            current ? { ...current, toolAccessMode: "all" } : current
+                          )
+                        }
+                      >
+                        <div className="font-medium">All tools</div>
+                        <div className="tcp-subtle text-xs">
+                          Grant full built-in tool access to workflow agents.
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        className={`tcp-list-item text-left ${workflowEditDraft.toolAccessMode === "custom" ? "border-amber-400/60 bg-amber-400/10" : ""}`}
+                        onClick={() =>
+                          setWorkflowEditDraft((current) =>
+                            current ? { ...current, toolAccessMode: "custom" } : current
+                          )
+                        }
+                      >
+                        <div className="font-medium">Custom allowlist</div>
+                        <div className="tcp-subtle text-xs">
+                          Restrict built-in tools manually. MCP tools still follow the selected
+                          servers.
+                        </div>
+                      </button>
+                    </div>
+                    {workflowEditDraft.toolAccessMode === "custom" ? (
+                      <div className="grid gap-1">
+                        <label className="text-xs text-slate-400">Allowed built-in tools</label>
+                        <textarea
+                          className="tcp-input min-h-[96px] font-mono text-xs"
+                          value={workflowEditDraft.customToolsText}
+                          onInput={(e) =>
+                            setWorkflowEditDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    customToolsText: (e.target as HTMLTextAreaElement).value,
+                                  }
+                                : current
+                            )
+                          }
+                          placeholder={`read\nwrite\nedit\nbash\nls\nglob\nwebsearch`}
+                        />
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-500">
+                        All built-in tools are allowed for this automation.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid gap-2 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">
+                      MCP Servers
+                    </div>
+                    {mcpServers.length ? (
+                      <div className="flex flex-wrap gap-2">
+                        {mcpServers.map((server) => {
+                          const isSelected = workflowEditDraft.selectedMcpServers.includes(
+                            server.name
+                          );
+                          return (
+                            <button
+                              key={server.name}
+                              className={`tcp-btn h-7 px-2 text-xs ${
+                                isSelected
+                                  ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
+                                  : ""
+                              }`}
+                              onClick={() =>
+                                setWorkflowEditDraft((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        selectedMcpServers: isSelected
+                                          ? current.selectedMcpServers.filter(
+                                              (name) => name !== server.name
+                                            )
+                                          : [...current.selectedMcpServers, server.name].sort(),
+                                      }
+                                    : current
+                                )
+                              }
+                            >
+                              {server.name} {server.connected ? "• connected" : "• disconnected"}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-400">No MCP servers configured yet.</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid content-start gap-4">
+                  <div className="grid gap-2 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
+                    <div>
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-slate-500">
+                          Prompt Editor
+                        </div>
+                        <div className="mt-1 text-xs text-slate-400">
+                          Edit the actual prompts Tandem sends for each workflow step. These
+                          objectives control what every node does at runtime.
+                        </div>
+                      </div>
+                    </div>
+                    {workflowEditDraft.nodes.length ? (
+                      <div className="grid gap-3">
+                        {workflowEditDraft.nodes.map((node, index) => (
+                          <div
+                            key={node.nodeId || index}
+                            className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3"
+                          >
+                            <div className="mb-2 flex flex-wrap items-center gap-2">
+                              <strong className="text-sm text-slate-100">
+                                {node.nodeId || node.title || `Step ${index + 1}`}
+                              </strong>
+                              {node.agentId ? (
+                                <span className="tcp-badge-info">agent: {node.agentId}</span>
+                              ) : null}
+                            </div>
+                            <textarea
+                              className="tcp-input min-h-[180px] text-sm leading-6"
+                              value={node.objective}
+                              onInput={(e) =>
+                                setWorkflowEditDraft((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        nodes: current.nodes.map((row) =>
+                                          row.nodeId === node.nodeId
+                                            ? {
+                                                ...row,
+                                                objective: (e.target as HTMLTextAreaElement).value,
+                                              }
+                                            : row
+                                        ),
+                                      }
+                                    : current
+                                )
+                              }
+                              placeholder="Describe exactly what this step should do."
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-400">
+                        This workflow does not currently expose editable node objectives.
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
-              <div className="tcp-confirm-actions mt-3">
+              <div className="tcp-confirm-actions border-t border-slate-800/70 px-4 py-3">
                 <button className="tcp-btn" onClick={() => setWorkflowEditDraft(null)}>
                   <i data-lucide="x-circle"></i>
                   Cancel

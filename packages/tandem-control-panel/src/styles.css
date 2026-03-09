@@ -1231,10 +1231,30 @@
   );
 }
 
+.tcp-workflow-editor-modal {
+  width: min(75vw, 88rem);
+  max-width: min(75vw, 88rem);
+  max-height: calc(100vh - 2rem);
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 1.1rem;
+}
+
+@media (max-width: 1024px) {
+  .tcp-workflow-editor-modal {
+    width: min(96vw, 96vw);
+    max-width: min(96vw, 96vw);
+    max-height: calc(100vh - 1rem);
+  }
+}
+
 .tcp-run-debugger-modal {
   width: min(110rem, 96vw);
   max-width: min(110rem, 96vw);
-  max-height: 94vh;
+  height: min(96vh, 72rem);
+  max-height: 96vh;
   display: flex;
   flex-direction: column;
   border-radius: 1.1rem;
@@ -1244,7 +1264,8 @@
   .tcp-run-debugger-modal {
     width: min(100%, 100vw - 0.5rem);
     max-width: min(100%, 100vw - 0.5rem);
-    max-height: none;
+    height: calc(100dvh - 0.5rem);
+    max-height: calc(100dvh - 0.5rem);
     min-height: calc(100dvh - 0.5rem);
     padding: 0.75rem;
     border-radius: 0.85rem;
