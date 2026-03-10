@@ -145,7 +145,9 @@ Ship an advanced power-user mission compiler that lets operators define one coor
   - [x] cover branch-local step repair preserving completed sibling branches
   - [x] cover operator stop semantics, stop-kind recording, and active session/instance cleanup
   - [x] move remaining halt-path uncertainty under the P0 kill-switch hardening item instead of leaving it as vague regression work
-- [ ] Add integration coverage that exercises mission-builder preview/apply through the Tauri boundary.
+- [x] Add integration coverage that exercises mission-builder preview/apply through the Tauri boundary.
+  - [x] cover `mission_builder_preview` posting `/mission-builder/compile-preview`
+  - [x] cover `mission_builder_apply` posting `/mission-builder/apply`
 - [ ] Decide whether mission-builder compile logic should remain server-owned or move further into `tandem-workflows`.
 - [ ] Improve advanced editing for multiple review/test stages and per-workstream tool/MCP scope controls.
 - [ ] Improve the per-step scope editor UX beyond CSV entry:
@@ -177,6 +179,8 @@ Ship an advanced power-user mission compiler that lets operators define one coor
 - [x] `cargo test -p tandem-server automations_v2_run_recover_from_pause_preserves_branched_state -- --test-threads=1`
 - [x] `cargo test -p tandem-server automations_v2_gate_rework_on_failed_branch_preserves_completed_sibling_branch -- --test-threads=1`
 - [x] `cargo test -p tandem-server automations_v2_run_repair_preserves_completed_sibling_branch -- --test-threads=1`
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml mission_builder_preview_posts_compile_preview_endpoint -- --test-threads=1`
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml mission_builder_apply_posts_apply_endpoint -- --test-threads=1`
 - [x] `cargo check --manifest-path src-tauri/Cargo.toml`
 - [x] `npm run build`
 

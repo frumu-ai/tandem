@@ -8721,4 +8721,71 @@ mod tests {
             .expect("pending");
         assert_eq!(payload.get("status").and_then(|v| v.as_str()), Some("ok"));
     }
+
+    #[tokio::test]
+    async fn mission_builder_preview_posts_compile_preview_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission-builder/compile-preview",
+            "200 OK",
+            r#"{"validation":[],"automation":{"automation_id":"auto_test"}}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let payload = manager
+            .mission_builder_preview(serde_json::json!({
+                "blueprint": { "title": "Mission Test", "goal": "Test preview routing" }
+            }))
+            .await
+            .expect("preview");
+        assert_eq!(
+            payload
+                .get("automation")
+                .and_then(|value| value.get("automation_id"))
+                .and_then(|value| value.as_str()),
+            Some("auto_test")
+        );
+    }
+
+    #[tokio::test]
+    async fn mission_builder_apply_posts_apply_endpoint() {
+        let base = spawn_single_response_server(
+            "/mission-builder/apply",
+            "200 OK",
+            r#"{"automation":{"automation_id":"auto_test"},"run":{"run_id":"run_test"}}"#,
+        )
+        .await;
+        let manager = SidecarManager::new(SidecarConfig::default());
+        let port = base
+            .split(':')
+            .next_back()
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("port");
+        {
+            let mut guard = manager.port.write().await;
+            *guard = Some(port);
+        }
+        let payload = manager
+            .mission_builder_apply(serde_json::json!({
+                "blueprint": { "title": "Mission Test", "goal": "Test apply routing" },
+                "run_now": true
+            }))
+            .await
+            .expect("apply");
+        assert_eq!(
+            payload
+                .get("run")
+                .and_then(|value| value.get("run_id"))
+                .and_then(|value| value.as_str()),
+            Some("run_test")
+        );
+    }
 }
