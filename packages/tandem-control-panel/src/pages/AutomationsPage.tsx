@@ -6,6 +6,7 @@ import { projectOrchestrationRun } from "../features/orchestrator/blackboardProj
 import { TaskBoard } from "../features/orchestration/TaskBoard";
 import { useEngineStream } from "../features/stream/useEngineStream";
 import { renderMarkdownSafe } from "../lib/markdown";
+import { AdvancedMissionBuilderPanel } from "./AdvancedMissionBuilderPanel";
 import { PageCard, EmptyState, formatJson } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 
@@ -14,6 +15,7 @@ import type { AppPageProps } from "./pageTypes";
 type ExecutionMode = "single" | "team" | "swarm";
 type WizardStep = 1 | 2 | 3 | 4;
 type ActiveTab = "create" | "list" | "running" | "approvals";
+type CreateMode = "simple" | "advanced";
 type WorkflowToolAccessMode = "all" | "custom";
 
 interface SchedulePreset {
@@ -518,6 +520,23 @@ function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | nul
       .filter(Boolean),
     nodes,
   };
+}
+
+function isMissionBlueprintAutomation(automation: any) {
+  const metadata =
+    automation?.metadata && typeof automation.metadata === "object" ? automation.metadata : {};
+  const builderKind = String(
+    metadata.builder_kind || metadata.builderKind || automation?.builder_kind || ""
+  )
+    .trim()
+    .toLowerCase();
+  if (builderKind === "mission_blueprint") return true;
+  return !!(
+    metadata.mission_blueprint ||
+    metadata.missionBlueprint ||
+    metadata.mission_blueprint_v1 ||
+    metadata.mission
+  );
 }
 
 function workflowEditToSchedule(draft: WorkflowEditDraft) {
@@ -3155,6 +3174,7 @@ function MyAutomations({
   selectedRunId,
   onSelectRunId,
   onOpenRunningView,
+  onOpenAdvancedEdit,
 }: {
   client: any;
   toast: any;
@@ -3163,6 +3183,7 @@ function MyAutomations({
   selectedRunId: string;
   onSelectRunId: (runId: string) => void;
   onOpenRunningView: () => void;
+  onOpenAdvancedEdit: (automation: any) => void;
 }) {
   const queryClient = useQueryClient();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -4276,9 +4297,13 @@ function MyAutomations({
                     <div className="flex items-center gap-2">
                       <button
                         className="tcp-btn h-7 px-2 text-xs"
-                        onClick={() =>
-                          setWorkflowEditDraft(workflowAutomationToEditDraft(automation))
-                        }
+                        onClick={() => {
+                          if (isMissionBlueprintAutomation(automation)) {
+                            onOpenAdvancedEdit(automation);
+                            return;
+                          }
+                          setWorkflowEditDraft(workflowAutomationToEditDraft(automation));
+                        }}
                         disabled={!id}
                         title="Edit workflow automation"
                         aria-label="Edit workflow automation"
@@ -6095,7 +6120,9 @@ function SpawnApprovals({ client, toast }: { client: any; toast: any }) {
 
 export function AutomationsPage({ client, api, toast, navigate, providerStatus }: AppPageProps) {
   const [tab, setTab] = useState<ActiveTab>("create");
+  const [createMode, setCreateMode] = useState<CreateMode>("simple");
   const [selectedRunId, setSelectedRunId] = useState<string>("");
+  const [advancedEditAutomation, setAdvancedEditAutomation] = useState<any | null>(null);
 
   const tabs: { id: ActiveTab; label: string; icon: string }[] = [
     { id: "create", label: "Create", icon: "sparkles" },
@@ -6138,14 +6165,73 @@ export function AutomationsPage({ client, api, toast, navigate, providerStatus }
               title="Create an Automation"
               subtitle="Describe what you want, pick a schedule, and Tandem handles the rest"
             >
-              <CreateWizard
-                client={client}
-                api={api}
-                toast={toast}
-                navigate={navigate}
-                defaultProvider={providerStatus.defaultProvider}
-                defaultModel={providerStatus.defaultModel}
-              />
+              <div className="grid gap-4">
+                <div className="rounded-xl border border-slate-700/50 bg-slate-950/50 p-4">
+                  <div className="mb-2 text-xs font-medium uppercase tracking-[0.24em] text-slate-500">
+                    Builder Mode
+                  </div>
+                  <div className="tcp-subtle text-xs">
+                    Keep the simple wizard for quick automations, or switch to the advanced swarm
+                    builder for orchestrated mission planning.
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className={`tcp-btn h-9 px-3 text-sm ${
+                        createMode === "simple"
+                          ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
+                          : ""
+                      }`}
+                      onClick={() => {
+                        setCreateMode("simple");
+                        setAdvancedEditAutomation(null);
+                      }}
+                    >
+                      Simple Wizard
+                    </button>
+                    <button
+                      type="button"
+                      className={`tcp-btn h-9 px-3 text-sm ${
+                        createMode === "advanced"
+                          ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
+                          : ""
+                      }`}
+                      onClick={() => setCreateMode("advanced")}
+                    >
+                      Advanced Swarm Builder
+                    </button>
+                  </div>
+                </div>
+
+                {createMode === "advanced" ? (
+                  <AdvancedMissionBuilderPanel
+                    client={client}
+                    api={api}
+                    toast={toast}
+                    defaultProvider={providerStatus.defaultProvider}
+                    defaultModel={providerStatus.defaultModel}
+                    editingAutomation={advancedEditAutomation}
+                    onShowAutomations={() => {
+                      setAdvancedEditAutomation(null);
+                      setTab("list");
+                    }}
+                    onShowRuns={() => {
+                      setAdvancedEditAutomation(null);
+                      setTab("running");
+                    }}
+                    onClearEditing={() => setAdvancedEditAutomation(null)}
+                  />
+                ) : (
+                  <CreateWizard
+                    client={client}
+                    api={api}
+                    toast={toast}
+                    navigate={navigate}
+                    defaultProvider={providerStatus.defaultProvider}
+                    defaultModel={providerStatus.defaultModel}
+                  />
+                )}
+              </div>
             </PageCard>
           ) : tab === "list" ? (
             <PageCard title="My Automations" subtitle="Installed packs, routines and run history">
@@ -6157,6 +6243,11 @@ export function AutomationsPage({ client, api, toast, navigate, providerStatus }
                 selectedRunId={selectedRunId}
                 onSelectRunId={setSelectedRunId}
                 onOpenRunningView={() => setTab("running")}
+                onOpenAdvancedEdit={(automation) => {
+                  setAdvancedEditAutomation(automation);
+                  setCreateMode("advanced");
+                  setTab("create");
+                }}
               />
             </PageCard>
           ) : tab === "running" ? (
@@ -6172,6 +6263,11 @@ export function AutomationsPage({ client, api, toast, navigate, providerStatus }
                 selectedRunId={selectedRunId}
                 onSelectRunId={setSelectedRunId}
                 onOpenRunningView={() => setTab("running")}
+                onOpenAdvancedEdit={(automation) => {
+                  setAdvancedEditAutomation(automation);
+                  setCreateMode("advanced");
+                  setTab("create");
+                }}
               />
             </PageCard>
           ) : (
