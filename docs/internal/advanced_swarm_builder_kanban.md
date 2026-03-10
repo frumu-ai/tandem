@@ -151,12 +151,17 @@ Ship an advanced power-user mission compiler that lets operators define one coor
 - [x] Decide compiler ownership for mission-builder logic.
   - [x] keep authored mission normalization, validation, PM-semantics expansion, and `AutomationV2Spec` compilation in `tandem-workflows`
   - [x] keep apply-time persistence, run-now behavior, and transport shaping in server / Tauri layers
-- [ ] Improve advanced editing for multiple review/test stages and per-workstream tool/MCP scope controls.
-- [ ] Improve the per-step scope editor UX beyond CSV entry:
-  - searchable tool selection
-  - MCP multi-select from discovered servers
-  - clearer inheritance vs override display
-- [ ] Add edit/migration support for advanced automations from the automations list, not only new creation flow.
+- [x] Improve advanced editing for multiple review/test stages and per-workstream tool/MCP scope controls.
+  - [x] support multiple review / test / approval stages in the advanced builder editor
+  - [x] support per-workstream tool and MCP scope overrides in the editor
+  - [x] support per-stage tool and MCP scope overrides in the editor
+- [x] Improve the per-step scope editor UX beyond CSV entry:
+  - [x] searchable tool selection
+  - [x] MCP multi-select from discovered servers
+  - [x] clearer inheritance vs override display
+- [x] Add edit/migration support for advanced automations from the automations list, not only new creation flow.
+  - [x] route mission-blueprint automations from the list into the advanced editor
+  - [x] hydrate older advanced metadata variants when editing from the list
 
 ## Explicitly Out Of Scope
 - [ ] Replacing `AutomationV2` with a separate parallel runtime for the advanced builder
