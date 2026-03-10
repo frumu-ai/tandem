@@ -167,12 +167,13 @@ function fromModelPolicy(policy: any): ModelDraft {
 }
 
 function scheduleToPayload(kind: ScheduleKind, intervalSeconds: string, cron: string) {
+  const misfirePolicy = { type: "run_once" as const };
   if (kind === "cron") {
     return {
       type: "cron",
       cron_expression: String(cron || "").trim(),
       timezone: "UTC",
-      misfire_policy: "run_once",
+      misfire_policy: misfirePolicy,
     };
   }
   if (kind === "interval") {
@@ -180,10 +181,10 @@ function scheduleToPayload(kind: ScheduleKind, intervalSeconds: string, cron: st
       type: "interval",
       interval_seconds: Math.max(1, Number.parseInt(String(intervalSeconds || "3600"), 10) || 3600),
       timezone: "UTC",
-      misfire_policy: "run_once",
+      misfire_policy: misfirePolicy,
     };
   }
-  return { type: "manual", timezone: "UTC", misfire_policy: "run_once" };
+  return { type: "manual", timezone: "UTC", misfire_policy: misfirePolicy };
 }
 
 function defaultBlueprint(workspaceRoot: string): MissionBlueprint {
