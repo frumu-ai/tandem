@@ -8,6 +8,7 @@ pub(super) mod coder;
 pub(super) mod context_runs;
 pub(super) mod global;
 pub(super) mod memory;
+pub(super) mod mission_builder;
 pub(super) mod missions;
 pub(super) mod pack_builder;
 pub(super) mod packs;

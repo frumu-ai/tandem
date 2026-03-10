@@ -90,4 +90,16 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             "/automations/v2/runs/{run_id}/cancel",
             post(automations_v2_run_cancel),
         )
+        .route(
+            "/automations/v2/runs/{run_id}/recover",
+            post(automations_v2_run_recover),
+        )
+        .route(
+            "/automations/v2/runs/{run_id}/repair",
+            post(automations_v2_run_repair),
+        )
+        .route(
+            "/automations/v2/runs/{run_id}/gate",
+            post(automations_v2_run_gate_decide),
+        )
 }

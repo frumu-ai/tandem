@@ -1,0 +1,137 @@
+use super::*;
+
+fn sample_blueprint() -> Value {
+    json!({
+        "mission_id": "mission-preview",
+        "title": "Competitive analysis mission",
+        "goal": "Produce a cross-functional brief",
+        "success_criteria": ["Useful brief", "Actionable recommendations"],
+        "shared_context": "Targeting a Q2 planning review.",
+        "workspace_root": "/tmp/mission-workspace",
+        "orchestrator_template_id": "orchestrator-default",
+        "team": {
+            "allowed_mcp_servers": ["github"],
+            "max_parallel_agents": 3,
+            "orchestrator_only_tool_calls": false
+        },
+        "workstreams": [
+            {
+                "workstream_id": "research",
+                "title": "Research",
+                "objective": "Collect competitor signals",
+                "role": "researcher",
+                "prompt": "Research the market and summarize competitors.",
+                "depends_on": [],
+                "input_refs": [],
+                "output_contract": { "kind": "report_markdown" }
+            },
+            {
+                "workstream_id": "synthesis",
+                "title": "Synthesis",
+                "objective": "Turn findings into recommendations",
+                "role": "analyst",
+                "prompt": "Synthesize the findings into a brief.",
+                "depends_on": ["research"],
+                "input_refs": [{ "from_step_id": "research", "alias": "research_report" }],
+                "output_contract": { "kind": "report_markdown" }
+            }
+        ],
+        "review_stages": [
+            {
+                "stage_id": "approval",
+                "stage_kind": "approval",
+                "title": "Human approval",
+                "target_ids": ["synthesis"],
+                "prompt": "",
+                "checklist": [],
+                "gate": {
+                    "required": true,
+                    "decisions": ["approve", "rework", "cancel"],
+                    "rework_targets": ["synthesis"]
+                }
+            }
+        ]
+    })
+}
+
+#[tokio::test]
+async fn mission_builder_preview_returns_compiled_automation() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mission-builder/compile-preview")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "blueprint": sample_blueprint() }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload
+            .get("automation")
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("draft")
+    );
+    assert_eq!(
+        payload
+            .get("automation")
+            .and_then(|row| row.get("flow"))
+            .and_then(|row| row.get("nodes"))
+            .and_then(Value::as_array)
+            .map(|rows| rows.len()),
+        Some(3)
+    );
+}
+
+#[tokio::test]
+async fn mission_builder_apply_persists_draft_automation() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mission-builder/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "blueprint": sample_blueprint(),
+                        "creator_id": "desktop"
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let automation_id = payload
+        .get("automation")
+        .and_then(|row| row.get("automation_id"))
+        .and_then(Value::as_str)
+        .expect("automation id");
+    let stored = state
+        .get_automation_v2(automation_id)
+        .await
+        .expect("stored");
+    assert_eq!(stored.status, crate::AutomationV2Status::Draft);
+    assert_eq!(
+        stored
+            .metadata
+            .as_ref()
+            .and_then(|row| row.get("builder_kind"))
+            .and_then(Value::as_str),
+        Some("mission_blueprint")
+    );
+}

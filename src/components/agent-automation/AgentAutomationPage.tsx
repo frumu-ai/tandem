@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Input } from "@/components/ui";
 import { ProjectSwitcher } from "@/components/sidebar";
+import { AdvancedMissionBuilder } from "@/components/agent-automation/AdvancedMissionBuilder";
 import {
   automationsV2Delete,
   automationsV2Get,
@@ -8,9 +9,12 @@ import {
   automationsV2Pause,
   automationsV2Resume,
   automationsV2RunCancel,
+  automationsV2RunGateDecide,
   automationsV2RunGet,
   automationsV2RunNow,
   automationsV2RunPause,
+  automationsV2RunRepair,
+  automationsV2RunRecover,
   automationsV2RunResume,
   automationsV2Runs,
   automationsV2Update,
@@ -35,6 +39,7 @@ import {
 } from "@/lib/tauri";
 
 type PageTab = "create" | "automations" | "runs";
+type CreateMode = "simple" | "advanced";
 type WizardStep = 1 | 2 | 3 | 4;
 type ScheduleKind = "manual" | "interval" | "cron";
 type ExecutionMode = "team" | "swarm";
@@ -340,6 +345,16 @@ function workflowAutomationToEditDraft(automation: AutomationV2Spec): WorkflowEd
   };
 }
 
+function isMissionBlueprintAutomation(automation: AutomationV2Spec | null | undefined) {
+  const metadata = (automation?.metadata as Record<string, unknown> | undefined) || {};
+  const builderKind = String(metadata.builder_kind || metadata.builderKind || "").trim();
+  return (
+    builderKind === "mission_blueprint" &&
+    !!metadata.mission_blueprint &&
+    typeof metadata.mission_blueprint === "object"
+  );
+}
+
 function eventLooksRelevant(event: {
   source: string;
   payload: { type?: string; event_type?: string };
@@ -363,12 +378,26 @@ function modelLabel(provider: string, model: string) {
 
 function runSummary(run: AutomationV2RunRecord) {
   return String(
-    run?.checkpoint?.summary ||
+    run?.stop_reason ||
+      run?.checkpoint?.summary ||
       run?.checkpoint?.error ||
       run?.checkpoint?.status_detail ||
       run?.checkpoint?.statusDetail ||
       ""
   ).trim();
+}
+
+function runStatusLabel(run: AutomationV2RunRecord | null) {
+  const status = String(run?.status || "")
+    .trim()
+    .toLowerCase();
+  const stopKind = String((run as Record<string, unknown> | null)?.stop_kind || "")
+    .trim()
+    .toLowerCase();
+  if (status === "cancelled" && stopKind === "operator_stopped") return "operator stopped";
+  if (status === "cancelled" && stopKind === "guardrail_stopped") return "guardrail stopped";
+  if (status === "cancelled" && stopKind === "cancelled") return "cancelled";
+  return status || "unknown";
 }
 
 function shortText(raw: unknown, max = 160) {
@@ -511,6 +540,334 @@ function buildRunBlockers(run: AutomationV2RunRecord | null) {
   return blockers;
 }
 
+function buildBlockedNodeDiagnostics(
+  run: AutomationV2RunRecord | null,
+  automation: AutomationV2Spec | null
+) {
+  if (!run || !automation) return [];
+  const checkpoint = selectedRunCheckpoint(run);
+  const completedNodes = Array.isArray(checkpoint.completed_nodes)
+    ? checkpoint.completed_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  const blockedNodes = Array.isArray(checkpoint.blocked_nodes)
+    ? checkpoint.blocked_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  return blockedNodes.map((nodeId) => {
+    const node = automation.flow?.nodes?.find((entry) => entry.node_id === nodeId);
+    const missingDeps = (node?.depends_on || []).filter((dep) => !completedNodes.includes(dep));
+    return {
+      nodeId,
+      missingDeps,
+      reason: missingDeps.length
+        ? `Waiting on: ${missingDeps.join(", ")}`
+        : "Blocked without an explicit upstream dependency explanation in the current checkpoint.",
+    };
+  });
+}
+
+function buildStepStatusDiagnostics(
+  run: AutomationV2RunRecord | null,
+  automation: AutomationV2Spec | null,
+  sessionMessagesBySession: Record<string, SessionMessage[]>
+) {
+  if (!run || !automation) return [];
+  const checkpoint = selectedRunCheckpoint(run);
+  const completedNodes = Array.isArray(checkpoint.completed_nodes)
+    ? checkpoint.completed_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  const pendingNodes = Array.isArray(checkpoint.pending_nodes)
+    ? checkpoint.pending_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  const blockedNodes = Array.isArray(checkpoint.blocked_nodes)
+    ? checkpoint.blocked_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  const attempts = (checkpoint.node_attempts as Record<string, number> | undefined) || {};
+  const outputs =
+    (checkpoint.node_outputs as Record<string, Record<string, unknown>> | undefined) || {};
+
+  return (automation.flow?.nodes || []).map((node) => {
+    const output = outputs[node.node_id];
+    const content = (output?.content as Record<string, unknown> | undefined) || {};
+    const sessionId = String(content.session_id || content.sessionId || "").trim();
+    const missingDeps = (node.depends_on || []).filter((dep) => !completedNodes.includes(dep));
+    let status = "pending";
+    if (completedNodes.includes(node.node_id)) status = "done";
+    else if (blockedNodes.includes(node.node_id)) status = "blocked";
+    else if (missingDeps.length > 0) status = "waiting";
+    else if (pendingNodes.includes(node.node_id)) status = "runnable";
+    return {
+      nodeId: node.node_id,
+      objective: String(node.objective || "").trim(),
+      agentId: String(node.agent_id || "").trim(),
+      status,
+      attempts: Number(attempts[node.node_id] || 0),
+      missingDeps,
+      sessionId,
+      messageCount: sessionId ? (sessionMessagesBySession[sessionId] || []).length : 0,
+      summary: String(output?.summary || "").trim(),
+    };
+  });
+}
+
+function buildStepLogDiagnostics(
+  stepStatusRows: Array<{
+    nodeId: string;
+    objective: string;
+    status: string;
+    sessionId: string;
+    messageCount: number;
+  }>,
+  sessionMessagesBySession: Record<string, SessionMessage[]>
+) {
+  return stepStatusRows
+    .filter((step) => step.sessionId)
+    .map((step) => ({
+      nodeId: step.nodeId,
+      objective: step.objective,
+      status: step.status,
+      sessionId: step.sessionId,
+      messageCount: step.messageCount,
+      messages: (sessionMessagesBySession[step.sessionId] || []).map((message) => ({
+        id: String(message.info?.id || "").trim(),
+        role: String(message.info?.role || "session").trim(),
+        createdAt: Number(message.info?.time?.created || 0),
+        variant: sessionMessageVariant(message),
+        text: sessionMessageText(message),
+      })),
+    }))
+    .sort((a, b) => b.messageCount - a.messageCount || a.nodeId.localeCompare(b.nodeId));
+}
+
+function automationMissionMetadata(automation: AutomationV2Spec | null) {
+  const metadata = (automation?.metadata as Record<string, unknown> | undefined) || {};
+  const mission = (metadata.mission as Record<string, unknown> | undefined) || {};
+  const phases = Array.isArray(mission.phases)
+    ? mission.phases.map(
+        (phase) => ((phase as Record<string, unknown>) || {}) as Record<string, unknown>
+      )
+    : [];
+  const milestones = Array.isArray(mission.milestones)
+    ? mission.milestones.map(
+        (row) => ((row as Record<string, unknown>) || {}) as Record<string, unknown>
+      )
+    : [];
+  return { mission, phases, milestones };
+}
+
+function nodeBuilderField(node: AutomationV2Spec["flow"]["nodes"][number] | null, key: string) {
+  const metadata = (node?.metadata as Record<string, unknown> | undefined) || {};
+  const builder = (metadata.builder as Record<string, unknown> | undefined) || {};
+  return String(builder[key] || "").trim();
+}
+
+function nodeBuilderObject(node: AutomationV2Spec["flow"]["nodes"][number] | null) {
+  const metadata = (node?.metadata as Record<string, unknown> | undefined) || {};
+  return (metadata.builder as Record<string, unknown> | undefined) || {};
+}
+
+function buildPhaseDiagnostics(
+  run: AutomationV2RunRecord | null,
+  automation: AutomationV2Spec | null
+) {
+  if (!run || !automation) return [];
+  const checkpoint = selectedRunCheckpoint(run);
+  const completed = new Set(
+    Array.isArray(checkpoint.completed_nodes)
+      ? checkpoint.completed_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+      : []
+  );
+  const blocked = new Set(
+    Array.isArray(checkpoint.blocked_nodes)
+      ? checkpoint.blocked_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+      : []
+  );
+  const pending = new Set(
+    Array.isArray(checkpoint.pending_nodes)
+      ? checkpoint.pending_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+      : []
+  );
+  const { phases } = automationMissionMetadata(automation);
+  const phaseRows = phases.map((phase, index) => {
+    const phaseId = String(phase.phase_id || "").trim();
+    const title = String(phase.title || phaseId || `Phase ${index + 1}`).trim();
+    const executionMode = String(phase.execution_mode || "soft").trim();
+    const nodes = (automation.flow?.nodes || []).filter(
+      (node) => nodeBuilderField(node, "phase_id") === phaseId
+    );
+    const nodeIds = nodes.map((node) => node.node_id);
+    const completedCount = nodeIds.filter((nodeId) => completed.has(nodeId)).length;
+    const blockedCount = nodeIds.filter((nodeId) => blocked.has(nodeId)).length;
+    const runnableCount = nodes.filter((node) => {
+      if (!pending.has(node.node_id) || blocked.has(node.node_id)) return false;
+      return (node.depends_on || []).every((dep) => completed.has(dep));
+    }).length;
+    const totalCount = nodeIds.length;
+    const status =
+      totalCount > 0 && completedCount === totalCount
+        ? "complete"
+        : blockedCount > 0
+          ? "blocked"
+          : runnableCount > 0
+            ? "open"
+            : "waiting";
+    return {
+      phaseId,
+      title,
+      executionMode,
+      totalCount,
+      completedCount,
+      blockedCount,
+      runnableCount,
+      status,
+    };
+  });
+  const assignedPhaseIds = new Set(phaseRows.map((row) => row.phaseId).filter(Boolean));
+  const unassignedNodes = (automation.flow?.nodes || []).filter(
+    (node) => !assignedPhaseIds.has(nodeBuilderField(node, "phase_id"))
+  );
+  if (unassignedNodes.length > 0) {
+    const nodeIds = unassignedNodes.map((node) => node.node_id);
+    phaseRows.push({
+      phaseId: "unassigned",
+      title: "Unassigned",
+      executionMode: "n/a",
+      totalCount: nodeIds.length,
+      completedCount: nodeIds.filter((nodeId) => completed.has(nodeId)).length,
+      blockedCount: nodeIds.filter((nodeId) => blocked.has(nodeId)).length,
+      runnableCount: unassignedNodes.filter((node) => {
+        if (!pending.has(node.node_id) || blocked.has(node.node_id)) return false;
+        return (node.depends_on || []).every((dep) => completed.has(dep));
+      }).length,
+      status: "open",
+    });
+  }
+  return phaseRows;
+}
+
+function buildMilestoneDiagnostics(
+  run: AutomationV2RunRecord | null,
+  automation: AutomationV2Spec | null
+) {
+  if (!run || !automation) return [];
+  const checkpoint = selectedRunCheckpoint(run);
+  const completed = new Set(
+    Array.isArray(checkpoint.completed_nodes)
+      ? checkpoint.completed_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+      : []
+  );
+  const blocked = new Set(
+    Array.isArray(checkpoint.blocked_nodes)
+      ? checkpoint.blocked_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+      : []
+  );
+  const { milestones } = automationMissionMetadata(automation);
+  return milestones.map((milestone) => {
+    const milestoneId = String(milestone.milestone_id || "").trim();
+    const title = String(milestone.title || milestoneId).trim();
+    const phaseId = String(milestone.phase_id || "").trim();
+    const requiredStageIds = Array.isArray(milestone.required_stage_ids)
+      ? milestone.required_stage_ids.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    const completedCount = requiredStageIds.filter((stageId) => completed.has(stageId)).length;
+    const blockedCount = requiredStageIds.filter((stageId) => blocked.has(stageId)).length;
+    const status =
+      requiredStageIds.length > 0 && completedCount === requiredStageIds.length
+        ? "complete"
+        : blockedCount > 0
+          ? "blocked"
+          : completedCount > 0
+            ? "in_progress"
+            : "waiting";
+    return {
+      milestoneId,
+      title,
+      phaseId,
+      requiredStageIds,
+      completedCount,
+      blockedCount,
+      status,
+    };
+  });
+}
+
+function buildMilestonePromotionDiagnostics(
+  milestoneRows: Array<{
+    milestoneId: string;
+    title: string;
+    phaseId: string;
+    requiredStageIds: string[];
+    completedCount: number;
+    blockedCount: number;
+    status: string;
+  }>,
+  stepRows: Array<{
+    nodeId: string;
+    status: string;
+    missingDeps: string[];
+  }>,
+  gateHistory: Array<Record<string, unknown>>,
+  recoveryHistory: Array<Record<string, unknown>>
+) {
+  const stepMap = new Map(stepRows.map((row) => [row.nodeId, row]));
+  return milestoneRows.map((milestone) => {
+    const unmetStages = milestone.requiredStageIds
+      .map((stageId) => ({
+        stageId,
+        step: stepMap.get(stageId) || null,
+      }))
+      .filter(({ step }) => step?.status !== "done");
+    const blockedStages = unmetStages
+      .filter(({ step }) => step?.status === "blocked")
+      .map(({ stageId, step }) => ({
+        stageId,
+        reason: step?.missingDeps?.length
+          ? `waiting on ${step.missingDeps.join(", ")}`
+          : "blocked without a dependency explanation in the current checkpoint",
+      }));
+    const waitingStages = unmetStages
+      .filter(
+        ({ step }) =>
+          step?.status === "waiting" || step?.status === "runnable" || step?.status === "pending"
+      )
+      .map(({ stageId, step }) => ({
+        stageId,
+        reason: step?.missingDeps?.length
+          ? `waiting on ${step.missingDeps.join(", ")}`
+          : `current status: ${step?.status || "unknown"}`,
+      }));
+    const latestGate =
+      gateHistory.find((entry) => {
+        const nodeId = String(entry.node_id || "").trim();
+        return milestone.requiredStageIds.includes(nodeId);
+      }) || null;
+    const latestRecovery =
+      recoveryHistory.find((entry) => {
+        const reason = String(entry.reason || "").toLowerCase();
+        return milestone.requiredStageIds.some((stageId) => reason.includes(stageId.toLowerCase()));
+      }) || null;
+    return {
+      ...milestone,
+      unmetStages,
+      blockedStages,
+      waitingStages,
+      latestGateDecision: latestGate
+        ? {
+            nodeId: String(latestGate.node_id || "").trim(),
+            decision: String(latestGate.decision || "").trim(),
+            decidedAtMs: Number(latestGate.decided_at_ms || 0),
+          }
+        : null,
+      latestRecovery: latestRecovery
+        ? {
+            event: String(latestRecovery.event || "").trim(),
+            reason: String(latestRecovery.reason || "").trim(),
+            recordedAtMs: Number(latestRecovery.recorded_at_ms || 0),
+          }
+        : null,
+    };
+  });
+}
+
 function canPauseRun(run: AutomationV2RunRecord) {
   const status = String(run.status || "")
     .trim()
@@ -530,6 +887,25 @@ function canCancelRun(run: AutomationV2RunRecord) {
     .trim()
     .toLowerCase();
   return ["queued", "running", "pausing", "paused"].includes(status);
+}
+
+function canRecoverRun(run: AutomationV2RunRecord) {
+  const status = String(run.status || "")
+    .trim()
+    .toLowerCase();
+  const checkpoint = (run?.checkpoint as Record<string, unknown> | undefined) || {};
+  return (status === "failed" && !!checkpoint.last_failure) || status === "paused";
+}
+
+function selectedRunCheckpoint(run: AutomationV2RunRecord | null) {
+  return ((run?.checkpoint as Record<string, unknown> | undefined) || {}) as Record<
+    string,
+    unknown
+  >;
+}
+
+function readNumber(raw: unknown) {
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
 }
 
 function SectionCard({
@@ -567,6 +943,7 @@ export function AgentAutomationPage({
   onOpenMcpExtensions,
 }: AgentAutomationPageProps) {
   const [tab, setTab] = useState<PageTab>("create");
+  const [createMode, setCreateMode] = useState<CreateMode>("simple");
   const [wizardStep, setWizardStep] = useState<WizardStep>(1);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
@@ -584,9 +961,29 @@ export function AgentAutomationPage({
   );
   const [planningMessage, setPlanningMessage] = useState("");
   const [editDraft, setEditDraft] = useState<WorkflowEditDraft | null>(null);
+  const [advancedEditAutomation, setAdvancedEditAutomation] = useState<AutomationV2Spec | null>(
+    null
+  );
   const [selectedRunId, setSelectedRunId] = useState("");
   const [selectedRunDetail, setSelectedRunDetail] = useState<AutomationV2RunRecord | null>(null);
-  const [selectedRunMessages, setSelectedRunMessages] = useState<SessionMessage[]>([]);
+  const [selectedRunMessagesBySession, setSelectedRunMessagesBySession] = useState<
+    Record<string, SessionMessage[]>
+  >({});
+  const [repairDraft, setRepairDraft] = useState<{
+    nodeId: string;
+    prompt: string;
+    templateId: string;
+    modelProvider: string;
+    modelId: string;
+    reason: string;
+  }>({
+    nodeId: "",
+    prompt: "",
+    templateId: "",
+    modelProvider: "",
+    modelId: "",
+    reason: "",
+  });
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [loadingState, setLoadingState] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -655,7 +1052,7 @@ export function AgentAutomationPage({
     const trimmed = String(runId || "").trim();
     if (!trimmed) {
       setSelectedRunDetail(null);
-      setSelectedRunMessages([]);
+      setSelectedRunMessagesBySession({});
       return;
     }
     setBusyKey(`inspect:${trimmed}`);
@@ -665,10 +1062,17 @@ export function AgentAutomationPage({
       setSelectedRunDetail(run);
       const sessionIds = extractSessionIdsFromRun(run);
       if (sessionIds.length > 0) {
-        const messages = await getSessionMessages(sessionIds[0]).catch(() => []);
-        setSelectedRunMessages(messages);
+        const sessionRows = await Promise.all(
+          sessionIds.map(async (sessionId) => ({
+            sessionId,
+            messages: await getSessionMessages(sessionId).catch(() => []),
+          }))
+        );
+        setSelectedRunMessagesBySession(
+          Object.fromEntries(sessionRows.map((row) => [row.sessionId, row.messages]))
+        );
       } else {
-        setSelectedRunMessages([]);
+        setSelectedRunMessagesBySession({});
       }
     } catch (inspectError) {
       setError(inspectError instanceof Error ? inspectError.message : String(inspectError));
@@ -723,7 +1127,7 @@ export function AgentAutomationPage({
   useEffect(() => {
     if (!selectedRunId) {
       setSelectedRunDetail(null);
-      setSelectedRunMessages([]);
+      setSelectedRunMessagesBySession({});
       return;
     }
     void loadSelectedRunDetail(selectedRunId);
@@ -863,6 +1267,13 @@ export function AgentAutomationPage({
     try {
       const response = await automationsV2Get(automationId);
       if (!response.automation) throw new Error("Automation record not found.");
+      if (isMissionBlueprintAutomation(response.automation)) {
+        setAdvancedEditAutomation(response.automation);
+        setEditDraft(null);
+        setCreateMode("advanced");
+        setTab("create");
+        return;
+      }
       setEditDraft(workflowAutomationToEditDraft(response.automation));
     } catch (editError) {
       setError(editError instanceof Error ? editError.message : String(editError));
@@ -1014,6 +1425,84 @@ export function AgentAutomationPage({
     }
   };
 
+  const handleGateDecision = async (runId: string, decision: "approve" | "rework" | "cancel") => {
+    setBusyKey(`gate:${decision}:${runId}`);
+    setError(null);
+    try {
+      await automationsV2RunGateDecide(runId, { decision });
+      await loadAutomationState();
+      await loadSelectedRunDetail(runId);
+    } catch (gateError) {
+      setError(gateError instanceof Error ? gateError.message : String(gateError));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleRunRecover = async (runId: string) => {
+    setBusyKey(`recover:${runId}`);
+    setError(null);
+    try {
+      const currentRun =
+        workflowRuns.find((run) => run.run_id === runId) ||
+        (selectedRunDetail?.run_id === runId ? selectedRunDetail : null);
+      const status = String(currentRun?.status || "")
+        .trim()
+        .toLowerCase();
+      await automationsV2RunRecover(
+        runId,
+        status === "paused"
+          ? "Recovered from paused state via desktop automation page"
+          : "Recovered from desktop automation page"
+      );
+      await loadAutomationState();
+      await loadSelectedRunDetail(runId);
+    } catch (recoverError) {
+      setError(recoverError instanceof Error ? recoverError.message : String(recoverError));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleRunRepair = async (runId: string) => {
+    if (!repairDraft.nodeId.trim()) {
+      setError("Select a step to repair.");
+      return;
+    }
+    const hasPrompt = repairDraft.prompt.trim().length > 0;
+    const hasTemplate = repairDraft.templateId.trim().length > 0;
+    const hasModel =
+      repairDraft.modelProvider.trim().length > 0 && repairDraft.modelId.trim().length > 0;
+    if (!hasPrompt && !hasTemplate && !hasModel) {
+      setError("Repair requires a prompt, template, or model change.");
+      return;
+    }
+    setBusyKey(`repair:${runId}`);
+    setError(null);
+    try {
+      await automationsV2RunRepair(runId, {
+        node_id: repairDraft.nodeId.trim(),
+        prompt: hasPrompt ? repairDraft.prompt.trim() : undefined,
+        template_id: hasTemplate ? repairDraft.templateId.trim() : undefined,
+        model_policy: hasModel
+          ? {
+              default_model: {
+                provider_id: repairDraft.modelProvider.trim(),
+                model_id: repairDraft.modelId.trim(),
+              },
+            }
+          : undefined,
+        reason: repairDraft.reason.trim() || undefined,
+      });
+      await loadAutomationState();
+      await loadSelectedRunDetail(runId);
+    } catch (repairError) {
+      setError(repairError instanceof Error ? repairError.message : String(repairError));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
   const stepCanContinue =
     wizardStep === 1
       ? wizard.prompt.trim().length >= 8
@@ -1049,6 +1538,206 @@ export function AgentAutomationPage({
     () => extractSessionIdsFromRun(selectedRunDetail),
     [selectedRunDetail]
   );
+  const selectedRunAutomation = useMemo(
+    () =>
+      workflowAutomations.find(
+        (automation) => automation.automation_id === selectedRunDetail?.automation_id
+      ) ||
+      selectedRunDetail?.automation_snapshot ||
+      null,
+    [workflowAutomations, selectedRunDetail?.automation_id, selectedRunDetail?.automation_snapshot]
+  );
+  const selectedAwaitingGate = useMemo(() => {
+    const checkpoint = selectedRunCheckpoint(selectedRunDetail);
+    return (checkpoint.awaiting_gate as Record<string, unknown> | undefined) || null;
+  }, [selectedRunDetail]);
+  const selectedLastFailure = useMemo(() => {
+    const checkpoint = selectedRunCheckpoint(selectedRunDetail);
+    return (checkpoint.last_failure as Record<string, unknown> | undefined) || null;
+  }, [selectedRunDetail]);
+  const selectedBlockedNodes = useMemo(() => {
+    const checkpoint = selectedRunCheckpoint(selectedRunDetail);
+    return Array.isArray(checkpoint.blocked_nodes)
+      ? checkpoint.blocked_nodes.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+  }, [selectedRunDetail]);
+  const selectedRunUsage = useMemo(() => {
+    const checkpoint = selectedRunCheckpoint(selectedRunDetail);
+    return {
+      totalTokens:
+        readNumber((selectedRunDetail as Record<string, unknown> | null)?.total_tokens) ??
+        readNumber(checkpoint.total_tokens) ??
+        readNumber(checkpoint.totalTokens),
+      estimatedCostUsd:
+        readNumber((selectedRunDetail as Record<string, unknown> | null)?.estimated_cost_usd) ??
+        readNumber((selectedRunDetail as Record<string, unknown> | null)?.estimatedCostUsd) ??
+        readNumber(checkpoint.estimated_cost_usd) ??
+        readNumber(checkpoint.estimatedCostUsd),
+      totalToolCalls:
+        readNumber((selectedRunDetail as Record<string, unknown> | null)?.total_tool_calls) ??
+        readNumber((selectedRunDetail as Record<string, unknown> | null)?.totalToolCalls) ??
+        readNumber(checkpoint.total_tool_calls) ??
+        readNumber(checkpoint.totalToolCalls),
+    };
+  }, [selectedRunDetail]);
+  const selectedLifecycleHistory = useMemo(() => {
+    const checkpoint = selectedRunCheckpoint(selectedRunDetail);
+    return Array.isArray(checkpoint.lifecycle_history)
+      ? checkpoint.lifecycle_history
+          .map((entry) => ((entry as Record<string, unknown>) || {}) as Record<string, unknown>)
+          .sort((a, b) => Number(b.recorded_at_ms || 0) - Number(a.recorded_at_ms || 0))
+      : [];
+  }, [selectedRunDetail]);
+  const selectedGateHistory = useMemo(() => {
+    const checkpoint = selectedRunCheckpoint(selectedRunDetail);
+    return Array.isArray(checkpoint.gate_history)
+      ? checkpoint.gate_history
+          .map((entry) => ((entry as Record<string, unknown>) || {}) as Record<string, unknown>)
+          .sort((a, b) => Number(b.decided_at_ms || 0) - Number(a.decided_at_ms || 0))
+      : [];
+  }, [selectedRunDetail]);
+  const selectedRecoveryHistory = useMemo(
+    () =>
+      selectedLifecycleHistory.filter((entry) =>
+        String(entry.event || "")
+          .trim()
+          .toLowerCase()
+          .includes("recover")
+      ),
+    [selectedLifecycleHistory]
+  );
+  const selectedBlockedNodeDiagnostics = useMemo(
+    () => buildBlockedNodeDiagnostics(selectedRunDetail, selectedRunAutomation),
+    [selectedRunDetail, selectedRunAutomation]
+  );
+  const selectedFailureChain = useMemo(() => {
+    const entries = selectedLifecycleHistory.filter((entry) => {
+      const event = String(entry.event || "")
+        .trim()
+        .toLowerCase();
+      return (
+        event.includes("fail") ||
+        event.includes("recover") ||
+        event.includes("stop") ||
+        event.includes("cancel")
+      );
+    });
+    if (selectedLastFailure) {
+      entries.unshift({
+        event: "last_failure",
+        recorded_at_ms: selectedLastFailure.recorded_at_ms,
+        reason: selectedLastFailure.reason,
+      } as Record<string, unknown>);
+    }
+    return entries.slice(0, 8);
+  }, [selectedLifecycleHistory, selectedLastFailure]);
+  const selectedPromotionHistory = useMemo(
+    () =>
+      selectedLifecycleHistory.filter(
+        (entry) =>
+          String(entry.event || "")
+            .trim()
+            .toLowerCase() === "milestone_promoted"
+      ),
+    [selectedLifecycleHistory]
+  );
+  const selectedTranscriptSessions = useMemo(
+    () =>
+      selectedRunSessionIds.map((sessionId) => ({
+        sessionId,
+        messages: selectedRunMessagesBySession[sessionId] || [],
+      })),
+    [selectedRunSessionIds, selectedRunMessagesBySession]
+  );
+  const selectedStepDiagnostics = useMemo(
+    () =>
+      selectedRunNodeOutputs.map((output) => {
+        const content = (output.value?.content as Record<string, unknown> | undefined) || {};
+        const sessionId = String(content.session_id || content.sessionId || "").trim();
+        const node =
+          selectedRunAutomation?.flow?.nodes?.find((entry) => entry.node_id === output.nodeId) ||
+          null;
+        const sessionMessages = sessionId ? selectedRunMessagesBySession[sessionId] || [] : [];
+        return {
+          nodeId: output.nodeId,
+          objective: String(node?.objective || "").trim(),
+          contractKind: String(output.value?.contract_kind || "").trim(),
+          summary: String(output.value?.summary || "").trim(),
+          sessionId,
+          messageCount: sessionMessages.length,
+        };
+      }),
+    [selectedRunNodeOutputs, selectedRunAutomation, selectedRunMessagesBySession]
+  );
+  const selectedStepStatusRows = useMemo(
+    () =>
+      buildStepStatusDiagnostics(
+        selectedRunDetail,
+        selectedRunAutomation,
+        selectedRunMessagesBySession
+      ),
+    [selectedRunDetail, selectedRunAutomation, selectedRunMessagesBySession]
+  );
+  const selectedStepLogs = useMemo(
+    () => buildStepLogDiagnostics(selectedStepStatusRows, selectedRunMessagesBySession),
+    [selectedStepStatusRows, selectedRunMessagesBySession]
+  );
+  const selectedPhaseDiagnostics = useMemo(
+    () => buildPhaseDiagnostics(selectedRunDetail, selectedRunAutomation),
+    [selectedRunDetail, selectedRunAutomation]
+  );
+  const selectedMilestoneDiagnostics = useMemo(
+    () => buildMilestoneDiagnostics(selectedRunDetail, selectedRunAutomation),
+    [selectedRunDetail, selectedRunAutomation]
+  );
+  const selectedMilestonePromotionDiagnostics = useMemo(
+    () =>
+      buildMilestonePromotionDiagnostics(
+        selectedMilestoneDiagnostics,
+        selectedStepStatusRows,
+        selectedGateHistory,
+        selectedRecoveryHistory
+      ),
+    [
+      selectedMilestoneDiagnostics,
+      selectedStepStatusRows,
+      selectedGateHistory,
+      selectedRecoveryHistory,
+    ]
+  );
+
+  useEffect(() => {
+    const preferredNodeId = String(
+      selectedLastFailure?.node_id || selectedAwaitingGate?.node_id || ""
+    ).trim();
+    if (!preferredNodeId || !selectedRunAutomation) {
+      setRepairDraft({
+        nodeId: "",
+        prompt: "",
+        templateId: "",
+        modelProvider: "",
+        modelId: "",
+        reason: "",
+      });
+      return;
+    }
+    const node =
+      selectedRunAutomation.flow?.nodes?.find((entry) => entry.node_id === preferredNodeId) || null;
+    const agent =
+      selectedRunAutomation.agents?.find((entry) => entry.agent_id === node?.agent_id) || null;
+    const agentPolicy = (agent?.model_policy as Record<string, unknown> | undefined) || {};
+    const model = ((agentPolicy.default_model as Record<string, unknown> | undefined) ||
+      (agentPolicy.defaultModel as Record<string, unknown> | undefined) ||
+      {}) as Record<string, unknown>;
+    setRepairDraft({
+      nodeId: preferredNodeId,
+      prompt: String(nodeBuilderObject(node).prompt || "").trim(),
+      templateId: String(agent?.template_id || "").trim(),
+      modelProvider: String(model.provider_id || model.providerId || "").trim(),
+      modelId: String(model.model_id || model.modelId || "").trim(),
+      reason: "",
+    });
+  }, [selectedRunAutomation, selectedLastFailure?.node_id, selectedAwaitingGate?.node_id]);
 
   return (
     <div className="h-full overflow-y-auto p-4">
@@ -1136,476 +1825,521 @@ export function AgentAutomationPage({
         {!loadingState && tab === "create" ? (
           <>
             <SectionCard
-              title="Create Workflow Automation"
-              subtitle="Desktop-native flow backed by workflow-plans and automations v2."
-              actions={
-                <div className="flex items-center gap-2 text-xs text-text-muted">
-                  <span>Step {wizardStep} of 4</span>
-                </div>
-              }
+              title="Builder Mode"
+              subtitle="Keep the simple wizard for fast automations or switch to the advanced mission compiler."
             >
-              <div className="grid gap-2 sm:grid-cols-4">
-                {[
-                  { step: 1 as WizardStep, label: "What" },
-                  { step: 2 as WizardStep, label: "When" },
-                  { step: 3 as WizardStep, label: "How" },
-                  { step: 4 as WizardStep, label: "Review" },
-                ].map((entry) => (
-                  <button
-                    key={entry.step}
-                    type="button"
-                    className={`rounded-lg border px-3 py-2 text-left text-sm ${
-                      wizardStep === entry.step
-                        ? "border-primary bg-primary/10 text-text"
-                        : wizardStep > entry.step
-                          ? "border-border bg-surface-elevated/40 text-text"
-                          : "border-border bg-surface text-text-muted"
-                    }`}
-                    onClick={() => {
-                      if (entry.step <= wizardStep) setWizardStep(entry.step);
-                    }}
-                  >
-                    <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                      Step {entry.step}
-                    </div>
-                    <div className="mt-1 font-medium">{entry.label}</div>
-                  </button>
-                ))}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant={createMode === "simple" ? "primary" : "secondary"}
+                  onClick={() => {
+                    setAdvancedEditAutomation(null);
+                    setCreateMode("simple");
+                  }}
+                >
+                  Simple Wizard
+                </Button>
+                <Button
+                  size="sm"
+                  variant={createMode === "advanced" ? "primary" : "secondary"}
+                  onClick={() => setCreateMode("advanced")}
+                >
+                  Advanced Swarm Builder
+                </Button>
               </div>
+            </SectionCard>
 
-              {wizardStep === 1 ? (
-                <div className="mt-4 space-y-3">
-                  <label className="block text-sm font-medium text-text">Objective</label>
-                  <textarea
-                    value={wizard.prompt}
-                    onChange={(event) => updateWizard({ prompt: event.target.value })}
-                    className="min-h-[160px] w-full rounded-lg border border-border bg-surface px-3 py-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                    placeholder="Describe what the automation should accomplish, what signals it should use, and what output you want."
-                  />
-                </div>
-              ) : null}
-
-              {wizardStep === 2 ? (
-                <div className="mt-4 space-y-4">
-                  <div className="grid gap-2 sm:grid-cols-3">
-                    {[
-                      { kind: "manual" as ScheduleKind, label: "Manual" },
-                      { kind: "interval" as ScheduleKind, label: "Interval" },
-                      { kind: "cron" as ScheduleKind, label: "Cron" },
-                    ].map((entry) => (
-                      <button
-                        key={entry.kind}
-                        type="button"
-                        className={`rounded-lg border px-3 py-3 text-left ${
-                          wizard.scheduleKind === entry.kind
-                            ? "border-primary bg-primary/10"
-                            : "border-border bg-surface-elevated/40"
-                        }`}
-                        onClick={() => updateWizard({ scheduleKind: entry.kind })}
-                      >
-                        <div className="text-sm font-medium text-text">{entry.label}</div>
-                        <div className="mt-1 text-xs text-text-muted">
-                          {entry.kind === "manual"
-                            ? "Run only when triggered."
-                            : entry.kind === "interval"
-                              ? "Repeat on a fixed cadence."
-                              : "Use an explicit cron expression."}
-                        </div>
-                      </button>
-                    ))}
+            {createMode === "simple" ? (
+              <SectionCard
+                title="Create Workflow Automation"
+                subtitle="Desktop-native flow backed by workflow-plans and automations v2."
+                actions={
+                  <div className="flex items-center gap-2 text-xs text-text-muted">
+                    <span>Step {wizardStep} of 4</span>
                   </div>
-                  {wizard.scheduleKind === "interval" ? (
-                    <Input
-                      label="Interval Seconds"
-                      type="number"
-                      min={1}
-                      value={wizard.intervalSeconds}
-                      onChange={(event) => updateWizard({ intervalSeconds: event.target.value })}
-                    />
-                  ) : null}
-                  {wizard.scheduleKind === "cron" ? (
-                    <Input
-                      label="Cron Expression"
-                      value={wizard.cronExpression}
-                      onChange={(event) => updateWizard({ cronExpression: event.target.value })}
-                    />
-                  ) : null}
-                  <div className="rounded-lg border border-border bg-surface-elevated/40 px-3 py-2 text-sm text-text-muted">
-                    Schedule preview:{" "}
-                    <span className="font-medium text-text">
-                      {formatSchedule(
-                        wizard.scheduleKind,
-                        wizard.intervalSeconds,
-                        wizard.cronExpression
-                      )}
-                    </span>
-                  </div>
+                }
+              >
+                <div className="grid gap-2 sm:grid-cols-4">
+                  {[
+                    { step: 1 as WizardStep, label: "What" },
+                    { step: 2 as WizardStep, label: "When" },
+                    { step: 3 as WizardStep, label: "How" },
+                    { step: 4 as WizardStep, label: "Review" },
+                  ].map((entry) => (
+                    <button
+                      key={entry.step}
+                      type="button"
+                      className={`rounded-lg border px-3 py-2 text-left text-sm ${
+                        wizardStep === entry.step
+                          ? "border-primary bg-primary/10 text-text"
+                          : wizardStep > entry.step
+                            ? "border-border bg-surface-elevated/40 text-text"
+                            : "border-border bg-surface text-text-muted"
+                      }`}
+                      onClick={() => {
+                        if (entry.step <= wizardStep) setWizardStep(entry.step);
+                      }}
+                    >
+                      <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                        Step {entry.step}
+                      </div>
+                      <div className="mt-1 font-medium">{entry.label}</div>
+                    </button>
+                  ))}
                 </div>
-              ) : null}
 
-              {wizardStep === 3 ? (
-                <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                  <div className="space-y-3">
-                    <Input
-                      label="Workspace Root"
-                      value={wizard.workspaceRoot}
-                      error={wizardWorkspaceError || undefined}
-                      onChange={(event) => updateWizard({ workspaceRoot: event.target.value })}
+                {wizardStep === 1 ? (
+                  <div className="mt-4 space-y-3">
+                    <label className="block text-sm font-medium text-text">Objective</label>
+                    <textarea
+                      value={wizard.prompt}
+                      onChange={(event) => updateWizard({ prompt: event.target.value })}
+                      className="min-h-[160px] w-full rounded-lg border border-border bg-surface px-3 py-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                      placeholder="Describe what the automation should accomplish, what signals it should use, and what output you want."
                     />
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="block text-sm font-medium text-text">
-                        Execution Mode
-                        <select
-                          value={wizard.executionMode}
-                          onChange={(event) =>
-                            updateWizard({
-                              executionMode: event.target.value === "swarm" ? "swarm" : "team",
-                            })
-                          }
-                          className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                  </div>
+                ) : null}
+
+                {wizardStep === 2 ? (
+                  <div className="mt-4 space-y-4">
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      {[
+                        { kind: "manual" as ScheduleKind, label: "Manual" },
+                        { kind: "interval" as ScheduleKind, label: "Interval" },
+                        { kind: "cron" as ScheduleKind, label: "Cron" },
+                      ].map((entry) => (
+                        <button
+                          key={entry.kind}
+                          type="button"
+                          className={`rounded-lg border px-3 py-3 text-left ${
+                            wizard.scheduleKind === entry.kind
+                              ? "border-primary bg-primary/10"
+                              : "border-border bg-surface-elevated/40"
+                          }`}
+                          onClick={() => updateWizard({ scheduleKind: entry.kind })}
                         >
-                          <option value="team">Team</option>
-                          <option value="swarm">Swarm</option>
-                        </select>
-                      </label>
+                          <div className="text-sm font-medium text-text">{entry.label}</div>
+                          <div className="mt-1 text-xs text-text-muted">
+                            {entry.kind === "manual"
+                              ? "Run only when triggered."
+                              : entry.kind === "interval"
+                                ? "Repeat on a fixed cadence."
+                                : "Use an explicit cron expression."}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                    {wizard.scheduleKind === "interval" ? (
                       <Input
-                        label="Max Parallel Agents"
+                        label="Interval Seconds"
                         type="number"
                         min={1}
-                        max={16}
-                        value={wizard.maxParallelAgents}
-                        onChange={(event) =>
-                          updateWizard({ maxParallelAgents: event.target.value })
-                        }
+                        value={wizard.intervalSeconds}
+                        onChange={(event) => updateWizard({ intervalSeconds: event.target.value })}
                       />
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="block text-sm font-medium text-text">
-                        Workflow Provider
-                        <select
-                          value={wizard.modelProvider}
-                          onChange={(event) => {
-                            const nextProvider = event.target.value;
-                            updateWizard({
-                              modelProvider: nextProvider,
-                              modelId: providerModelMap.get(nextProvider)?.[0] ?? "",
-                            });
-                          }}
-                          className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                        >
-                          <option value="">Engine default</option>
-                          {providers.map((provider) => (
-                            <option key={provider.id} value={provider.id}>
-                              {provider.id}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block text-sm font-medium text-text">
-                        Workflow Model
-                        <select
-                          value={wizard.modelId}
-                          onChange={(event) => updateWizard({ modelId: event.target.value })}
-                          className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                        >
-                          <option value="">Engine default</option>
-                          {(providerModelMap.get(wizard.modelProvider) ?? []).map((modelId) => (
-                            <option key={modelId} value={modelId}>
-                              {modelId}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                    {wizardModelError ? (
-                      <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                        {wizardModelError}
-                      </div>
                     ) : null}
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="block text-sm font-medium text-text">
-                        Planner Provider
-                        <select
-                          value={wizard.plannerModelProvider}
-                          onChange={(event) => {
-                            const nextProvider = event.target.value;
-                            updateWizard({
-                              plannerModelProvider: nextProvider,
-                              plannerModelId: providerModelMap.get(nextProvider)?.[0] ?? "",
-                            });
-                          }}
-                          className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                        >
-                          <option value="">Fallback to workflow model</option>
-                          {providers.map((provider) => (
-                            <option key={provider.id} value={provider.id}>
-                              {provider.id}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block text-sm font-medium text-text">
-                        Planner Model
-                        <select
-                          value={wizard.plannerModelId}
-                          onChange={(event) => updateWizard({ plannerModelId: event.target.value })}
-                          className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                        >
-                          <option value="">Fallback to workflow model</option>
-                          {(providerModelMap.get(wizard.plannerModelProvider) ?? []).map(
-                            (modelId) => (
+                    {wizard.scheduleKind === "cron" ? (
+                      <Input
+                        label="Cron Expression"
+                        value={wizard.cronExpression}
+                        onChange={(event) => updateWizard({ cronExpression: event.target.value })}
+                      />
+                    ) : null}
+                    <div className="rounded-lg border border-border bg-surface-elevated/40 px-3 py-2 text-sm text-text-muted">
+                      Schedule preview:{" "}
+                      <span className="font-medium text-text">
+                        {formatSchedule(
+                          wizard.scheduleKind,
+                          wizard.intervalSeconds,
+                          wizard.cronExpression
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+
+                {wizardStep === 3 ? (
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <div className="space-y-3">
+                      <Input
+                        label="Workspace Root"
+                        value={wizard.workspaceRoot}
+                        error={wizardWorkspaceError || undefined}
+                        onChange={(event) => updateWizard({ workspaceRoot: event.target.value })}
+                      />
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="block text-sm font-medium text-text">
+                          Execution Mode
+                          <select
+                            value={wizard.executionMode}
+                            onChange={(event) =>
+                              updateWizard({
+                                executionMode: event.target.value === "swarm" ? "swarm" : "team",
+                              })
+                            }
+                            className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            <option value="team">Team</option>
+                            <option value="swarm">Swarm</option>
+                          </select>
+                        </label>
+                        <Input
+                          label="Max Parallel Agents"
+                          type="number"
+                          min={1}
+                          max={16}
+                          value={wizard.maxParallelAgents}
+                          onChange={(event) =>
+                            updateWizard({ maxParallelAgents: event.target.value })
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="block text-sm font-medium text-text">
+                          Workflow Provider
+                          <select
+                            value={wizard.modelProvider}
+                            onChange={(event) => {
+                              const nextProvider = event.target.value;
+                              updateWizard({
+                                modelProvider: nextProvider,
+                                modelId: providerModelMap.get(nextProvider)?.[0] ?? "",
+                              });
+                            }}
+                            className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            <option value="">Engine default</option>
+                            {providers.map((provider) => (
+                              <option key={provider.id} value={provider.id}>
+                                {provider.id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block text-sm font-medium text-text">
+                          Workflow Model
+                          <select
+                            value={wizard.modelId}
+                            onChange={(event) => updateWizard({ modelId: event.target.value })}
+                            className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            <option value="">Engine default</option>
+                            {(providerModelMap.get(wizard.modelProvider) ?? []).map((modelId) => (
                               <option key={modelId} value={modelId}>
                                 {modelId}
                               </option>
-                            )
-                          )}
-                        </select>
-                      </label>
-                    </div>
-                    {wizardPlannerModelError ? (
-                      <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                        {wizardPlannerModelError}
+                            ))}
+                          </select>
+                        </label>
                       </div>
-                    ) : null}
-                  </div>
-                  <div className="space-y-3">
-                    <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <div className="text-sm font-medium text-text">Allowed MCP Servers</div>
-                          <div className="text-xs text-text-muted">
-                            Selected servers are written into operator preferences and agent MCP
-                            policy.
-                          </div>
+                      {wizardModelError ? (
+                        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                          {wizardModelError}
                         </div>
-                        {onOpenMcpExtensions ? (
-                          <Button size="sm" variant="secondary" onClick={onOpenMcpExtensions}>
-                            Manage MCP
-                          </Button>
-                        ) : null}
+                      ) : null}
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="block text-sm font-medium text-text">
+                          Planner Provider
+                          <select
+                            value={wizard.plannerModelProvider}
+                            onChange={(event) => {
+                              const nextProvider = event.target.value;
+                              updateWizard({
+                                plannerModelProvider: nextProvider,
+                                plannerModelId: providerModelMap.get(nextProvider)?.[0] ?? "",
+                              });
+                            }}
+                            className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            <option value="">Fallback to workflow model</option>
+                            {providers.map((provider) => (
+                              <option key={provider.id} value={provider.id}>
+                                {provider.id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block text-sm font-medium text-text">
+                          Planner Model
+                          <select
+                            value={wizard.plannerModelId}
+                            onChange={(event) =>
+                              updateWizard({ plannerModelId: event.target.value })
+                            }
+                            className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            <option value="">Fallback to workflow model</option>
+                            {(providerModelMap.get(wizard.plannerModelProvider) ?? []).map(
+                              (modelId) => (
+                                <option key={modelId} value={modelId}>
+                                  {modelId}
+                                </option>
+                              )
+                            )}
+                          </select>
+                        </label>
                       </div>
-                      <div className="mt-3 space-y-2">
-                        {mcpServers.map((server) => {
-                          const checked = wizard.selectedMcpServers.includes(server.name);
-                          return (
-                            <label
-                              key={server.name}
-                              className="flex items-start gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() =>
-                                  updateWizard({
-                                    selectedMcpServers: checked
-                                      ? wizard.selectedMcpServers.filter(
-                                          (row) => row !== server.name
-                                        )
-                                      : [...wizard.selectedMcpServers, server.name],
-                                  })
-                                }
-                              />
-                              <span className="min-w-0">
-                                <span className="block font-medium">{server.name}</span>
-                                <span className="block text-xs text-text-muted">
-                                  {server.connected ? "connected" : "disconnected"} |{" "}
-                                  {server.enabled ? "enabled" : "disabled"}
-                                </span>
-                              </span>
-                            </label>
-                          );
-                        })}
-                        {mcpServers.length === 0 ? (
-                          <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
-                            No MCP servers configured.
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {wizardStep === 4 ? (
-                <div className="mt-4 space-y-4">
-                  <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
-                    <div className="space-y-3 rounded-lg border border-border bg-surface-elevated/40 p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <div className="text-sm font-medium text-text">Plan Preview</div>
-                          <div className="text-xs text-text-muted">
-                            Review and revise before creating the automation.
-                          </div>
+                      {wizardPlannerModelError ? (
+                        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                          {wizardPlannerModelError}
                         </div>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          loading={busyKey === "generate-plan"}
-                          onClick={() => void generatePlan()}
-                        >
-                          Regenerate
-                        </Button>
-                      </div>
-                      {planPreview ? (
-                        <div className="space-y-3">
+                      ) : null}
+                    </div>
+                    <div className="space-y-3">
+                      <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                        <div className="flex items-center justify-between gap-2">
                           <div>
-                            <div className="text-xs uppercase tracking-wide text-text-subtle">
-                              Title
-                            </div>
-                            <div className="mt-1 text-sm font-medium text-text">
-                              {planPreview.title || "Untitled plan"}
+                            <div className="text-sm font-medium text-text">Allowed MCP Servers</div>
+                            <div className="text-xs text-text-muted">
+                              Selected servers are written into operator preferences and agent MCP
+                              policy.
                             </div>
                           </div>
-                          {planPreview.description ? (
-                            <div className="text-sm text-text-muted">{planPreview.description}</div>
+                          {onOpenMcpExtensions ? (
+                            <Button size="sm" variant="secondary" onClick={onOpenMcpExtensions}>
+                              Manage MCP
+                            </Button>
                           ) : null}
-                          <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
-                            Workspace:{" "}
-                            <span className="font-medium text-text">
-                              {planPreview.workspace_root || wizard.workspaceRoot}
-                            </span>
-                          </div>
-                          <div className="space-y-2">
-                            {planPreview.steps.map((step, index) => (
-                              <div
-                                key={step.step_id || `${step.kind}-${index}`}
-                                className="rounded-lg border border-border bg-surface px-3 py-2"
+                        </div>
+                        <div className="mt-3 space-y-2">
+                          {mcpServers.map((server) => {
+                            const checked = wizard.selectedMcpServers.includes(server.name);
+                            return (
+                              <label
+                                key={server.name}
+                                className="flex items-start gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
                               >
-                                <div className="text-xs uppercase tracking-wide text-text-subtle">
-                                  {step.kind}
-                                </div>
-                                <div className="mt-1 text-sm font-medium text-text">
-                                  {step.objective}
-                                </div>
-                                {step.depends_on?.length ? (
-                                  <div className="mt-1 text-xs text-text-muted">
-                                    Depends on: {step.depends_on.join(", ")}
-                                  </div>
-                                ) : null}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="rounded-lg border border-border bg-surface px-3 py-6 text-center text-sm text-text-muted">
-                          {busyKey === "generate-plan"
-                            ? "Generating workflow plan..."
-                            : "No plan yet."}
-                        </div>
-                      )}
-                    </div>
-                    <div className="space-y-3 rounded-lg border border-border bg-surface-elevated/40 p-3">
-                      <div className="text-sm font-medium text-text">Planning Chat</div>
-                      <div className="max-h-[320px] space-y-2 overflow-y-auto rounded-lg border border-border bg-surface px-3 py-3">
-                        {(planningConversation?.messages || []).map((message, index) => (
-                          <div key={`${message.created_at_ms || index}-${index}`}>
-                            <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                              {message.role}
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() =>
+                                    updateWizard({
+                                      selectedMcpServers: checked
+                                        ? wizard.selectedMcpServers.filter(
+                                            (row) => row !== server.name
+                                          )
+                                        : [...wizard.selectedMcpServers, server.name],
+                                    })
+                                  }
+                                />
+                                <span className="min-w-0">
+                                  <span className="block font-medium">{server.name}</span>
+                                  <span className="block text-xs text-text-muted">
+                                    {server.connected ? "connected" : "disconnected"} |{" "}
+                                    {server.enabled ? "enabled" : "disabled"}
+                                  </span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                          {mcpServers.length === 0 ? (
+                            <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
+                              No MCP servers configured.
                             </div>
-                            <div className="mt-1 whitespace-pre-wrap text-sm text-text">
-                              {message.text}
-                            </div>
-                          </div>
-                        ))}
-                        {!planningConversation?.messages?.length ? (
-                          <div className="text-sm text-text-muted">
-                            The workflow planning conversation will appear here.
-                          </div>
-                        ) : null}
-                      </div>
-                      <textarea
-                        value={planningMessage}
-                        onChange={(event) => setPlanningMessage(event.target.value)}
-                        className="min-h-[88px] w-full rounded-lg border border-border bg-surface px-3 py-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                        placeholder="Ask for revisions, clarify the plan, or tighten the workflow."
-                      />
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          loading={busyKey === "planning-message"}
-                          onClick={() => void sendPlanningMessage()}
-                        >
-                          Send revision
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          loading={busyKey === "planning-reset"}
-                          onClick={() => void resetPlanningChat()}
-                        >
-                          Reset chat
-                        </Button>
-                      </div>
-                      {planningChangeSummary.length ? (
-                        <div className="rounded-lg border border-border bg-surface px-3 py-2">
-                          <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                            Change Summary
-                          </div>
-                          <ul className="mt-2 space-y-1 text-sm text-text">
-                            {planningChangeSummary.map((item) => (
-                              <li key={item}>- {item}</li>
-                            ))}
-                          </ul>
+                          ) : null}
                         </div>
-                      ) : null}
-                      {plannerDiagnostics ? (
-                        <div className="rounded-lg border border-border bg-surface px-3 py-2">
-                          <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                            Planner Diagnostics
-                          </div>
-                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-text-muted">
-                            {JSON.stringify(plannerDiagnostics, null, 2)}
-                          </pre>
-                        </div>
-                      ) : null}
-                      <label className="inline-flex items-center gap-2 text-sm text-text-muted">
-                        <input
-                          type="checkbox"
-                          checked={wizard.exportPackDraft}
-                          onChange={(event) =>
-                            updateWizard({ exportPackDraft: event.target.checked })
-                          }
-                        />
-                        Also export Pack Builder draft
-                      </label>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ) : null}
+                ) : null}
 
-              <div className="mt-4 flex items-center justify-between gap-2">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={wizardStep === 1}
-                  onClick={() => setWizardStep((current) => Math.max(1, current - 1) as WizardStep)}
-                >
-                  Back
-                </Button>
-                {wizardStep < 4 ? (
+                {wizardStep === 4 ? (
+                  <div className="mt-4 space-y-4">
+                    <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+                      <div className="space-y-3 rounded-lg border border-border bg-surface-elevated/40 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="text-sm font-medium text-text">Plan Preview</div>
+                            <div className="text-xs text-text-muted">
+                              Review and revise before creating the automation.
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            loading={busyKey === "generate-plan"}
+                            onClick={() => void generatePlan()}
+                          >
+                            Regenerate
+                          </Button>
+                        </div>
+                        {planPreview ? (
+                          <div className="space-y-3">
+                            <div>
+                              <div className="text-xs uppercase tracking-wide text-text-subtle">
+                                Title
+                              </div>
+                              <div className="mt-1 text-sm font-medium text-text">
+                                {planPreview.title || "Untitled plan"}
+                              </div>
+                            </div>
+                            {planPreview.description ? (
+                              <div className="text-sm text-text-muted">
+                                {planPreview.description}
+                              </div>
+                            ) : null}
+                            <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
+                              Workspace:{" "}
+                              <span className="font-medium text-text">
+                                {planPreview.workspace_root || wizard.workspaceRoot}
+                              </span>
+                            </div>
+                            <div className="space-y-2">
+                              {planPreview.steps.map((step, index) => (
+                                <div
+                                  key={step.step_id || `${step.kind}-${index}`}
+                                  className="rounded-lg border border-border bg-surface px-3 py-2"
+                                >
+                                  <div className="text-xs uppercase tracking-wide text-text-subtle">
+                                    {step.kind}
+                                  </div>
+                                  <div className="mt-1 text-sm font-medium text-text">
+                                    {step.objective}
+                                  </div>
+                                  {step.depends_on?.length ? (
+                                    <div className="mt-1 text-xs text-text-muted">
+                                      Depends on: {step.depends_on.join(", ")}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="rounded-lg border border-border bg-surface px-3 py-6 text-center text-sm text-text-muted">
+                            {busyKey === "generate-plan"
+                              ? "Generating workflow plan..."
+                              : "No plan yet."}
+                          </div>
+                        )}
+                      </div>
+                      <div className="space-y-3 rounded-lg border border-border bg-surface-elevated/40 p-3">
+                        <div className="text-sm font-medium text-text">Planning Chat</div>
+                        <div className="max-h-[320px] space-y-2 overflow-y-auto rounded-lg border border-border bg-surface px-3 py-3">
+                          {(planningConversation?.messages || []).map((message, index) => (
+                            <div key={`${message.created_at_ms || index}-${index}`}>
+                              <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                                {message.role}
+                              </div>
+                              <div className="mt-1 whitespace-pre-wrap text-sm text-text">
+                                {message.text}
+                              </div>
+                            </div>
+                          ))}
+                          {!planningConversation?.messages?.length ? (
+                            <div className="text-sm text-text-muted">
+                              The workflow planning conversation will appear here.
+                            </div>
+                          ) : null}
+                        </div>
+                        <textarea
+                          value={planningMessage}
+                          onChange={(event) => setPlanningMessage(event.target.value)}
+                          className="min-h-[88px] w-full rounded-lg border border-border bg-surface px-3 py-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                          placeholder="Ask for revisions, clarify the plan, or tighten the workflow."
+                        />
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            loading={busyKey === "planning-message"}
+                            onClick={() => void sendPlanningMessage()}
+                          >
+                            Send revision
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            loading={busyKey === "planning-reset"}
+                            onClick={() => void resetPlanningChat()}
+                          >
+                            Reset chat
+                          </Button>
+                        </div>
+                        {planningChangeSummary.length ? (
+                          <div className="rounded-lg border border-border bg-surface px-3 py-2">
+                            <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                              Change Summary
+                            </div>
+                            <ul className="mt-2 space-y-1 text-sm text-text">
+                              {planningChangeSummary.map((item) => (
+                                <li key={item}>- {item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {plannerDiagnostics ? (
+                          <div className="rounded-lg border border-border bg-surface px-3 py-2">
+                            <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                              Planner Diagnostics
+                            </div>
+                            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-text-muted">
+                              {JSON.stringify(plannerDiagnostics, null, 2)}
+                            </pre>
+                          </div>
+                        ) : null}
+                        <label className="inline-flex items-center gap-2 text-sm text-text-muted">
+                          <input
+                            type="checkbox"
+                            checked={wizard.exportPackDraft}
+                            onChange={(event) =>
+                              updateWizard({ exportPackDraft: event.target.checked })
+                            }
+                          />
+                          Also export Pack Builder draft
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="mt-4 flex items-center justify-between gap-2">
                   <Button
                     size="sm"
-                    variant="primary"
-                    disabled={!stepCanContinue}
+                    variant="secondary"
+                    disabled={wizardStep === 1}
                     onClick={() =>
-                      setWizardStep((current) => Math.min(4, current + 1) as WizardStep)
+                      setWizardStep((current) => Math.max(1, current - 1) as WizardStep)
                     }
                   >
-                    Next
+                    Back
                   </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    loading={busyKey === "apply-plan"}
-                    onClick={() => void createAutomation()}
-                  >
-                    Create Automation
-                  </Button>
-                )}
-              </div>
-            </SectionCard>
+                  {wizardStep < 4 ? (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={!stepCanContinue}
+                      onClick={() =>
+                        setWizardStep((current) => Math.min(4, current + 1) as WizardStep)
+                      }
+                    >
+                      Next
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      loading={busyKey === "apply-plan"}
+                      onClick={() => void createAutomation()}
+                    >
+                      Create Automation
+                    </Button>
+                  )}
+                </div>
+              </SectionCard>
+            ) : (
+              <AdvancedMissionBuilder
+                activeProject={activeProject}
+                providers={providers}
+                mcpServers={mcpServers}
+                editingAutomation={advancedEditAutomation}
+                onOpenMcpExtensions={onOpenMcpExtensions}
+                onRefreshAutomations={loadAutomationState}
+                onShowAutomations={() => setTab("automations")}
+                onShowRuns={() => setTab("runs")}
+                onClearEditing={() => setAdvancedEditAutomation(null)}
+              />
+            )}
           </>
         ) : null}
 
@@ -1697,7 +2431,7 @@ export function AgentAutomationPage({
                             loading={busyKey === `edit:${automationId}`}
                             onClick={() => void openEditDraft(automationId)}
                           >
-                            Edit
+                            {isMissionBlueprintAutomation(automation) ? "Edit Mission" : "Edit"}
                           </Button>
                           <Button
                             size="sm"
@@ -1800,7 +2534,7 @@ export function AgentAutomationPage({
                           {runDisplayTitle(run)}
                         </div>
                         <span className="rounded border border-border bg-surface px-2 py-0.5 text-[10px] uppercase tracking-wide text-text-subtle">
-                          {run.status}
+                          {runStatusLabel(run)}
                         </span>
                       </div>
                       <div className="mt-1 text-xs text-text-muted">
@@ -1901,7 +2635,19 @@ export function AgentAutomationPage({
                     </div>
                     <div>
                       <span className="font-medium text-text">Status:</span>{" "}
-                      {selectedRunDetail.status}
+                      {runStatusLabel(selectedRunDetail)}
+                    </div>
+                    <div>
+                      <span className="font-medium text-text">Stop Reason:</span>{" "}
+                      {selectedRunDetail.stop_reason || "n/a"}
+                    </div>
+                    <div>
+                      <span className="font-medium text-text">Pause Reason:</span>{" "}
+                      {selectedRunDetail.pause_reason || "n/a"}
+                    </div>
+                    <div>
+                      <span className="font-medium text-text">Continue / Recover:</span>{" "}
+                      {selectedRunDetail.resume_reason || "n/a"}
                     </div>
                     <div>
                       <span className="font-medium text-text">Created:</span>{" "}
@@ -1942,7 +2688,20 @@ export function AgentAutomationPage({
                       loading={busyKey === `cancel:${selectedRunDetail.run_id}`}
                       onClick={() => void handleRunAction(selectedRunDetail.run_id, "cancel")}
                     >
-                      Cancel
+                      Emergency Stop
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={!canRecoverRun(selectedRunDetail)}
+                      loading={busyKey === `recover:${selectedRunDetail.run_id}`}
+                      onClick={() => void handleRunRecover(selectedRunDetail.run_id)}
+                    >
+                      {String(selectedRunDetail.status || "")
+                        .trim()
+                        .toLowerCase() === "paused"
+                        ? "Recover From Pause"
+                        : "Recover Run"}
                     </Button>
                   </div>
                   {runSummary(selectedRunDetail) ? (
@@ -1951,6 +2710,318 @@ export function AgentAutomationPage({
                     </div>
                   ) : null}
                 </div>
+
+                <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                  <div className="text-sm font-medium text-text">Operator Diagnostics</div>
+                  <div className="mt-3 grid gap-3 lg:grid-cols-3">
+                    <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm">
+                      <div className="text-[11px] uppercase tracking-wide text-text-subtle">
+                        Tokens
+                      </div>
+                      <div className="mt-1 text-text">
+                        {selectedRunUsage.totalTokens !== null
+                          ? selectedRunUsage.totalTokens.toLocaleString()
+                          : "unknown"}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm">
+                      <div className="text-[11px] uppercase tracking-wide text-text-subtle">
+                        Estimated Cost
+                      </div>
+                      <div className="mt-1 text-text">
+                        {selectedRunUsage.estimatedCostUsd !== null
+                          ? `$${selectedRunUsage.estimatedCostUsd.toFixed(4)}`
+                          : "unknown"}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm">
+                      <div className="text-[11px] uppercase tracking-wide text-text-subtle">
+                        Tool Calls
+                      </div>
+                      <div className="mt-1 text-text">
+                        {selectedRunUsage.totalToolCalls !== null
+                          ? selectedRunUsage.totalToolCalls.toLocaleString()
+                          : "unknown"}
+                      </div>
+                    </div>
+                  </div>
+                  {selectedBlockedNodes.length ? (
+                    <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
+                      <span className="font-medium text-text">Blocked Nodes:</span>{" "}
+                      {selectedBlockedNodes.join(", ")}
+                    </div>
+                  ) : null}
+                  {selectedBlockedNodeDiagnostics.length ? (
+                    <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-2">
+                      <div className="text-sm font-medium text-text">Blocked Node Reasons</div>
+                      <div className="mt-2 space-y-2">
+                        {selectedBlockedNodeDiagnostics.map((entry) => (
+                          <div key={entry.nodeId} className="text-sm text-text-muted">
+                            <span className="font-medium text-text">{entry.nodeId}</span>
+                            {" · "}
+                            {entry.reason}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {selectedLastFailure ? (
+                    <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2">
+                      <div className="text-sm font-medium text-red-100">
+                        Last Failure: {String(selectedLastFailure.node_id || "unknown node")}
+                      </div>
+                      <div className="mt-1 text-sm text-red-200">
+                        {String(selectedLastFailure.reason || "No failure reason available.")}
+                      </div>
+                      {selectedLastFailure.recorded_at_ms ? (
+                        <div className="mt-1 text-xs text-red-200/80">
+                          Recorded: {formatDateTime(selectedLastFailure.recorded_at_ms)}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {selectedFailureChain.length ? (
+                    <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-2">
+                      <div className="text-sm font-medium text-text">Failure Chain</div>
+                      <div className="mt-2 space-y-2">
+                        {selectedFailureChain.map((entry, index) => (
+                          <div
+                            key={`${entry.event || "chain"}-${index}`}
+                            className="text-sm text-text-muted"
+                          >
+                            <span className="font-medium text-text">
+                              {String(entry.event || "event").replace(/_/g, " ")}
+                            </span>
+                            {" · "}
+                            {formatDateTime(entry.recorded_at_ms)}
+                            {entry.reason ? ` · ${String(entry.reason)}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {selectedLifecycleHistory.length ? (
+                    <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-2">
+                      <div className="text-sm font-medium text-text">Lifecycle History</div>
+                      <div className="mt-2 space-y-2">
+                        {selectedLifecycleHistory.slice(0, 6).map((entry, index) => (
+                          <div
+                            key={`${entry.event || "event"}-${index}`}
+                            className="text-sm text-text-muted"
+                          >
+                            <span className="font-medium text-text">
+                              {String(entry.stop_kind || entry.event || "event").replace(/_/g, " ")}
+                            </span>
+                            {" · "}
+                            {formatDateTime(entry.recorded_at_ms)}
+                            {entry.reason ? ` · ${String(entry.reason)}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {selectedRecoveryHistory.length ? (
+                    <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-2">
+                      <div className="text-sm font-medium text-text">Recovery History</div>
+                      <div className="mt-2 space-y-2">
+                        {selectedRecoveryHistory.map((entry, index) => (
+                          <div
+                            key={`${entry.event || "recovery"}-${index}`}
+                            className="text-sm text-text-muted"
+                          >
+                            <span className="font-medium text-text">
+                              {String(entry.event || "recovery").replace(/_/g, " ")}
+                            </span>
+                            {" · "}
+                            {formatDateTime(entry.recorded_at_ms)}
+                            {entry.reason ? ` · ${String(entry.reason)}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {selectedLastFailure ||
+                  selectedAwaitingGate ||
+                  String(selectedRunDetail.status || "")
+                    .trim()
+                    .toLowerCase() === "paused" ? (
+                    <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-3">
+                      <div className="text-sm font-medium text-text">Step Repair</div>
+                      <div className="mt-1 text-xs text-text-muted">
+                        Patch one step, reset only its affected subtree, and requeue the run.
+                      </div>
+                      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                        <label className="block text-sm font-medium text-text">
+                          Step
+                          <select
+                            value={repairDraft.nodeId}
+                            onChange={(event) =>
+                              setRepairDraft((current) => ({
+                                ...current,
+                                nodeId: event.target.value,
+                              }))
+                            }
+                            className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            <option value="">Select step</option>
+                            {selectedStepStatusRows.map((step) => (
+                              <option key={step.nodeId} value={step.nodeId}>
+                                {step.nodeId} ({step.status})
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <Input
+                          label="Template Override"
+                          value={repairDraft.templateId}
+                          onChange={(event) =>
+                            setRepairDraft((current) => ({
+                              ...current,
+                              templateId: event.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                        <label className="block text-sm font-medium text-text">
+                          Model Provider
+                          <select
+                            value={repairDraft.modelProvider}
+                            onChange={(event) =>
+                              setRepairDraft((current) => ({
+                                ...current,
+                                modelProvider: event.target.value,
+                                modelId: providerModelMap.get(event.target.value)?.[0] || "",
+                              }))
+                            }
+                            className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            <option value="">Keep current</option>
+                            {providers.map((provider) => (
+                              <option key={provider.id} value={provider.id}>
+                                {provider.id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block text-sm font-medium text-text">
+                          Model
+                          <select
+                            value={repairDraft.modelId}
+                            onChange={(event) =>
+                              setRepairDraft((current) => ({
+                                ...current,
+                                modelId: event.target.value,
+                              }))
+                            }
+                            className="mt-2 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            <option value="">Keep current</option>
+                            {(providerModelMap.get(repairDraft.modelProvider) || []).map(
+                              (modelId) => (
+                                <option key={modelId} value={modelId}>
+                                  {modelId}
+                                </option>
+                              )
+                            )}
+                          </select>
+                        </label>
+                      </div>
+                      <label className="mt-3 block text-sm font-medium text-text">
+                        Prompt Patch
+                        <textarea
+                          value={repairDraft.prompt}
+                          onChange={(event) =>
+                            setRepairDraft((current) => ({
+                              ...current,
+                              prompt: event.target.value,
+                            }))
+                          }
+                          className="mt-2 min-h-[120px] w-full rounded-lg border border-border bg-surface px-3 py-3 text-sm text-text outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                        />
+                      </label>
+                      <Input
+                        label="Repair Reason"
+                        value={repairDraft.reason}
+                        onChange={(event) =>
+                          setRepairDraft((current) => ({ ...current, reason: event.target.value }))
+                        }
+                      />
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          loading={busyKey === `repair:${selectedRunDetail.run_id}`}
+                          onClick={() => void handleRunRepair(selectedRunDetail.run_id)}
+                        >
+                          Repair Step And Rerun Subtree
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {selectedGateHistory.length ? (
+                    <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-2">
+                      <div className="text-sm font-medium text-text">Gate History</div>
+                      <div className="mt-2 space-y-2">
+                        {selectedGateHistory.slice(0, 6).map((entry, index) => (
+                          <div
+                            key={`${entry.node_id || "gate"}-${index}`}
+                            className="text-sm text-text-muted"
+                          >
+                            <span className="font-medium text-text">
+                              {String(entry.node_id || "gate")}
+                            </span>
+                            {" · "}
+                            {String(entry.decision || "decision")}
+                            {" · "}
+                            {formatDateTime(entry.decided_at_ms)}
+                            {entry.reason ? ` · ${String(entry.reason)}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
+                {selectedAwaitingGate ? (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                    <div className="text-sm font-medium text-amber-100">
+                      Awaiting Approval:{" "}
+                      {String(selectedAwaitingGate.title || selectedAwaitingGate.node_id || "Gate")}
+                    </div>
+                    {selectedAwaitingGate.instructions ? (
+                      <div className="mt-2 text-sm text-amber-200">
+                        {String(selectedAwaitingGate.instructions)}
+                      </div>
+                    ) : null}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        loading={busyKey === `gate:approve:${selectedRunDetail.run_id}`}
+                        onClick={() => void handleGateDecision(selectedRunDetail.run_id, "approve")}
+                      >
+                        Approve
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        loading={busyKey === `gate:rework:${selectedRunDetail.run_id}`}
+                        onClick={() => void handleGateDecision(selectedRunDetail.run_id, "rework")}
+                      >
+                        Rework
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        loading={busyKey === `gate:cancel:${selectedRunDetail.run_id}`}
+                        onClick={() => void handleGateDecision(selectedRunDetail.run_id, "cancel")}
+                      >
+                        Emergency Stop
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
                   <div className="text-sm font-medium text-text">Blockers / Errors</div>
@@ -1967,6 +3038,206 @@ export function AgentAutomationPage({
                     {selectedRunBlockers.length === 0 ? (
                       <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
                         No explicit blockers extracted from the current run payload.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                    <div className="text-sm font-medium text-text">Phase Progress</div>
+                    <div className="mt-3 space-y-2">
+                      {selectedPhaseDiagnostics.map((phase) => (
+                        <div
+                          key={phase.phaseId}
+                          className="rounded-lg border border-border bg-surface px-3 py-2"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-sm font-medium text-text">{phase.title}</div>
+                            <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                              {phase.status}
+                            </div>
+                          </div>
+                          <div className="mt-1 text-xs text-text-subtle">
+                            {phase.phaseId} | {phase.executionMode}
+                          </div>
+                          <div className="mt-1 text-xs text-text-muted">
+                            Completed: {phase.completedCount}/{phase.totalCount} | Runnable:{" "}
+                            {phase.runnableCount} | Blocked: {phase.blockedCount}
+                          </div>
+                        </div>
+                      ))}
+                      {selectedPhaseDiagnostics.length === 0 ? (
+                        <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
+                          No mission phases were found on this run.
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                    <div className="text-sm font-medium text-text">Milestone Progress</div>
+                    <div className="mt-3 space-y-2">
+                      {selectedMilestoneDiagnostics.map((milestone) => (
+                        <div
+                          key={milestone.milestoneId}
+                          className="rounded-lg border border-border bg-surface px-3 py-2"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-sm font-medium text-text">{milestone.title}</div>
+                            <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                              {milestone.status}
+                            </div>
+                          </div>
+                          <div className="mt-1 text-xs text-text-subtle">
+                            {milestone.milestoneId}
+                            {milestone.phaseId ? ` | phase ${milestone.phaseId}` : ""}
+                          </div>
+                          <div className="mt-1 text-xs text-text-muted">
+                            Completed: {milestone.completedCount}/
+                            {milestone.requiredStageIds.length} | Blocked: {milestone.blockedCount}
+                          </div>
+                          {milestone.requiredStageIds.length ? (
+                            <div className="mt-1 text-xs text-text-muted">
+                              Required stages: {milestone.requiredStageIds.join(", ")}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                      {selectedMilestoneDiagnostics.length === 0 ? (
+                        <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
+                          No mission milestones were found on this run.
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                  <div className="text-sm font-medium text-text">
+                    Milestone Promotion Diagnostics
+                  </div>
+                  <div className="mt-3 space-y-3">
+                    {selectedMilestonePromotionDiagnostics.map((milestone) => (
+                      <div
+                        key={milestone.milestoneId}
+                        className="rounded-lg border border-border bg-surface px-3 py-3"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-sm font-medium text-text">{milestone.title}</div>
+                          <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                            {milestone.status}
+                          </div>
+                        </div>
+                        <div className="mt-1 text-xs text-text-subtle">
+                          {milestone.milestoneId}
+                          {milestone.phaseId ? ` | phase ${milestone.phaseId}` : ""}
+                        </div>
+                        {milestone.unmetStages.length ? (
+                          <div className="mt-2 text-xs text-text-muted">
+                            Unmet stages:{" "}
+                            {milestone.unmetStages.map((row) => row.stageId).join(", ")}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-xs text-emerald-300">
+                            All required stages are complete. This milestone is promotable.
+                          </div>
+                        )}
+                        {milestone.blockedStages.length ? (
+                          <div className="mt-2 space-y-1">
+                            {milestone.blockedStages.map((stage) => (
+                              <div
+                                key={`${milestone.milestoneId}-${stage.stageId}`}
+                                className="text-xs text-red-200"
+                              >
+                                Blocked: {stage.stageId} ({stage.reason})
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {milestone.waitingStages.length ? (
+                          <div className="mt-2 space-y-1">
+                            {milestone.waitingStages.map((stage) => (
+                              <div
+                                key={`${milestone.milestoneId}-waiting-${stage.stageId}`}
+                                className="text-xs text-text-muted"
+                              >
+                                Waiting: {stage.stageId} ({stage.reason})
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {milestone.latestGateDecision ? (
+                          <div className="mt-2 text-xs text-text-muted">
+                            Latest gate: {milestone.latestGateDecision.nodeId} →{" "}
+                            {milestone.latestGateDecision.decision} at{" "}
+                            {formatDateTime(milestone.latestGateDecision.decidedAtMs)}
+                          </div>
+                        ) : null}
+                        {milestone.latestRecovery ? (
+                          <div className="mt-1 text-xs text-text-muted">
+                            Latest recovery: {milestone.latestRecovery.event} at{" "}
+                            {formatDateTime(milestone.latestRecovery.recordedAtMs)}
+                            {milestone.latestRecovery.reason
+                              ? ` | ${shortText(milestone.latestRecovery.reason, 140)}`
+                              : ""}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                    {selectedMilestonePromotionDiagnostics.length === 0 ? (
+                      <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
+                        No milestone promotion diagnostics are available for this run.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                  <div className="text-sm font-medium text-text">Promotion History</div>
+                  <div className="mt-3 space-y-2">
+                    {selectedPromotionHistory.map((entry, index) => {
+                      const metadata =
+                        (entry.metadata as Record<string, unknown> | undefined) || {};
+                      const milestoneId = String(metadata.milestone_id || "").trim();
+                      const title = String(metadata.title || milestoneId || "milestone").trim();
+                      const phaseId = String(metadata.phase_id || "").trim();
+                      const promotedByNodeId = String(metadata.promoted_by_node_id || "").trim();
+                      const requiredStageIds = Array.isArray(metadata.required_stage_ids)
+                        ? metadata.required_stage_ids
+                            .map((value) => String(value || "").trim())
+                            .filter(Boolean)
+                        : [];
+                      return (
+                        <div
+                          key={`${milestoneId || title}-${index}`}
+                          className="rounded-lg border border-border bg-surface px-3 py-2"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-sm font-medium text-text">{title}</div>
+                            <div className="text-[10px] uppercase tracking-wide text-emerald-300">
+                              promoted
+                            </div>
+                          </div>
+                          <div className="mt-1 text-xs text-text-subtle">
+                            {milestoneId}
+                            {phaseId ? ` | phase ${phaseId}` : ""}
+                            {promotedByNodeId ? ` | by ${promotedByNodeId}` : ""}
+                          </div>
+                          <div className="mt-1 text-xs text-text-muted">
+                            {formatDateTime(entry.recorded_at_ms)}
+                          </div>
+                          {requiredStageIds.length ? (
+                            <div className="mt-1 text-xs text-text-muted">
+                              Required stages: {requiredStageIds.join(", ")}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                    {selectedPromotionHistory.length === 0 ? (
+                      <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
+                        No milestone promotions have been recorded for this run yet.
                       </div>
                     ) : null}
                   </div>
@@ -1995,42 +3266,206 @@ export function AgentAutomationPage({
                     ) : null}
                   </div>
                 </div>
+
+                <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                  <div className="text-sm font-medium text-text">Per-Step Activity</div>
+                  <div className="mt-3 space-y-2">
+                    {selectedStepDiagnostics.map((step) => (
+                      <div
+                        key={step.nodeId}
+                        className="rounded-lg border border-border bg-surface px-3 py-2"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-sm font-medium text-text">{step.nodeId}</div>
+                          <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                            {step.contractKind || "node"}
+                          </div>
+                        </div>
+                        {step.objective ? (
+                          <div className="mt-1 text-sm text-text-muted">
+                            {shortText(step.objective, 200)}
+                          </div>
+                        ) : null}
+                        {step.summary ? (
+                          <div className="mt-1 text-sm text-text-muted">
+                            {shortText(step.summary, 240)}
+                          </div>
+                        ) : null}
+                        <div className="mt-2 text-xs text-text-subtle">
+                          Session: {step.sessionId || "none"} | Messages: {step.messageCount}
+                        </div>
+                      </div>
+                    ))}
+                    {selectedStepDiagnostics.length === 0 ? (
+                      <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
+                        No per-step activity has been captured for this run yet.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                  <div className="text-sm font-medium text-text">Per-Step Status</div>
+                  <div className="mt-3 space-y-2">
+                    {selectedStepStatusRows.map((step) => (
+                      <div
+                        key={step.nodeId}
+                        className="rounded-lg border border-border bg-surface px-3 py-2"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-sm font-medium text-text">{step.nodeId}</div>
+                          <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                            {step.status}
+                          </div>
+                        </div>
+                        <div className="mt-1 text-xs text-text-subtle">
+                          Agent: {step.agentId || "n/a"} | Attempts: {step.attempts} | Session:{" "}
+                          {step.sessionId || "none"} | Messages: {step.messageCount}
+                        </div>
+                        {step.objective ? (
+                          <div className="mt-1 text-sm text-text-muted">
+                            {shortText(step.objective, 220)}
+                          </div>
+                        ) : null}
+                        {step.missingDeps.length ? (
+                          <div className="mt-1 text-xs text-text-muted">
+                            Waiting on: {step.missingDeps.join(", ")}
+                          </div>
+                        ) : null}
+                        {step.summary ? (
+                          <div className="mt-1 text-xs text-text-muted">
+                            Output: {shortText(step.summary, 220)}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                    {selectedStepStatusRows.length === 0 ? (
+                      <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
+                        No step status data is available for this run.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-medium text-text">Per-Step Logs</div>
+                    <div className="text-xs text-text-muted">
+                      {selectedStepLogs.length} step session(s)
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-3">
+                    {selectedStepLogs.map((step) => (
+                      <div
+                        key={step.nodeId}
+                        className="rounded-lg border border-border bg-surface px-3 py-3"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <div className="text-sm font-medium text-text">{step.nodeId}</div>
+                            {step.objective ? (
+                              <div className="mt-1 text-sm text-text-muted">
+                                {shortText(step.objective, 220)}
+                              </div>
+                            ) : null}
+                          </div>
+                          <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                            {step.status}
+                          </div>
+                        </div>
+                        <div className="mt-2 text-xs text-text-subtle">
+                          Session: {step.sessionId} | Messages: {step.messageCount}
+                        </div>
+                        <div className="mt-3 max-h-72 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface-elevated/40 p-2">
+                          {step.messages.map((message, index) => (
+                            <div
+                              key={`${step.nodeId}-${message.id || index}-${index}`}
+                              className={`rounded-lg border px-3 py-2 ${
+                                message.variant === "user"
+                                  ? "border-primary/30 bg-primary/10"
+                                  : message.variant === "assistant"
+                                    ? "border-border bg-surface-elevated/60"
+                                    : message.variant === "error"
+                                      ? "border-red-500/30 bg-red-500/10"
+                                      : "border-border bg-surface"
+                              }`}
+                            >
+                              <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                                {message.role || "session"} | {formatDateTime(message.createdAt)}
+                              </div>
+                              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-text">
+                                {message.text || "(empty message)"}
+                              </pre>
+                            </div>
+                          ))}
+                          {step.messages.length === 0 ? (
+                            <div className="rounded-lg border border-border bg-surface px-3 py-3 text-sm text-text-muted">
+                              No transcript messages were returned for this step session.
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                    {selectedStepLogs.length === 0 ? (
+                      <div className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">
+                        No step-linked session logs are available for this run yet.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
               </div>
 
               <div className="rounded-lg border border-border bg-surface-elevated/40 p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm font-medium text-text">Linked Session Transcript</div>
+                  <div className="text-sm font-medium text-text">Linked Session Transcripts</div>
                   <div className="text-xs text-text-muted">
-                    {selectedRunMessages.length} message(s)
+                    {selectedTranscriptSessions.length} session(s)
                   </div>
                 </div>
                 <div className="mt-3 max-h-[720px] space-y-3 overflow-y-auto rounded-lg border border-border bg-surface px-3 py-3">
-                  {selectedRunMessages.map((message, index) => {
-                    const variant = sessionMessageVariant(message);
-                    return (
-                      <div
-                        key={`${message.info?.id || index}-${index}`}
-                        className={`rounded-lg border px-3 py-2 ${
-                          variant === "user"
-                            ? "border-primary/30 bg-primary/10"
-                            : variant === "assistant"
-                              ? "border-border bg-surface-elevated/60"
-                              : variant === "error"
-                                ? "border-red-500/30 bg-red-500/10"
-                                : "border-border bg-surface"
-                        }`}
-                      >
-                        <div className="text-[10px] uppercase tracking-wide text-text-subtle">
-                          {message.info?.role || "session"} |{" "}
-                          {formatDateTime(message.info?.time?.created)}
-                        </div>
-                        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-text">
-                          {sessionMessageText(message) || "(empty message)"}
-                        </pre>
+                  {selectedTranscriptSessions.map(({ sessionId, messages }) => (
+                    <div
+                      key={sessionId}
+                      className="rounded-lg border border-border bg-surface-elevated/40 p-3"
+                    >
+                      <div className="text-xs uppercase tracking-wide text-text-subtle">
+                        Session {sessionId} · {messages.length} message(s)
                       </div>
-                    );
-                  })}
-                  {selectedRunMessages.length === 0 ? (
+                      <div className="mt-3 space-y-3">
+                        {messages.map((message, index) => {
+                          const variant = sessionMessageVariant(message);
+                          return (
+                            <div
+                              key={`${message.info?.id || index}-${index}`}
+                              className={`rounded-lg border px-3 py-2 ${
+                                variant === "user"
+                                  ? "border-primary/30 bg-primary/10"
+                                  : variant === "assistant"
+                                    ? "border-border bg-surface-elevated/60"
+                                    : variant === "error"
+                                      ? "border-red-500/30 bg-red-500/10"
+                                      : "border-border bg-surface"
+                              }`}
+                            >
+                              <div className="text-[10px] uppercase tracking-wide text-text-subtle">
+                                {message.info?.role || "session"} |{" "}
+                                {formatDateTime(message.info?.time?.created)}
+                              </div>
+                              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-text">
+                                {sessionMessageText(message) || "(empty message)"}
+                              </pre>
+                            </div>
+                          );
+                        })}
+                        {messages.length === 0 ? (
+                          <div className="rounded-lg border border-border bg-surface px-3 py-4 text-sm text-text-muted">
+                            No messages were returned for this session.
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                  {selectedTranscriptSessions.length === 0 ? (
                     <div className="rounded-lg border border-border bg-surface px-3 py-4 text-sm text-text-muted">
                       No linked session messages were found for this run.
                     </div>

@@ -605,6 +605,28 @@ pub struct AutomationAgentProfile {
     pub approval_policy: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationNodeStageKind {
+    Orchestrator,
+    Workstream,
+    Review,
+    Test,
+    Approval,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationApprovalGate {
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub decisions: Vec<String>,
+    #[serde(default)]
+    pub rework_targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationFlowNode {
     pub node_id: String,
@@ -620,6 +642,12 @@ pub struct AutomationFlowNode {
     pub retry_policy: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_kind: Option<AutomationNodeStageKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<AutomationApprovalGate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -631,6 +659,10 @@ pub struct AutomationFlowInputRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationFlowOutputContract {
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_guidance: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -647,6 +679,10 @@ pub struct AutomationExecutionPolicy {
     pub max_total_runtime_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_total_tool_calls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -757,9 +793,61 @@ pub enum AutomationRunStatus {
     Running,
     Pausing,
     Paused,
+    AwaitingApproval,
     Completed,
     Failed,
     Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationPendingGate {
+    pub node_id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default)]
+    pub decisions: Vec<String>,
+    #[serde(default)]
+    pub rework_targets: Vec<String>,
+    pub requested_at_ms: u64,
+    #[serde(default)]
+    pub upstream_node_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationGateDecisionRecord {
+    pub node_id: String,
+    pub decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub decided_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationStopKind {
+    Cancelled,
+    OperatorStopped,
+    GuardrailStopped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationLifecycleRecord {
+    pub event: String,
+    pub recorded_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_kind: Option<AutomationStopKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationFailureRecord {
+    pub node_id: String,
+    pub reason: String,
+    pub failed_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -772,6 +860,16 @@ pub struct AutomationRunCheckpoint {
     pub node_outputs: std::collections::HashMap<String, Value>,
     #[serde(default)]
     pub node_attempts: std::collections::HashMap<String, u32>,
+    #[serde(default)]
+    pub blocked_nodes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting_gate: Option<AutomationPendingGate>,
+    #[serde(default)]
+    pub gate_history: Vec<AutomationGateDecisionRecord>,
+    #[serde(default)]
+    pub lifecycle_history: Vec<AutomationLifecycleRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<AutomationFailureRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -799,6 +897,10 @@ pub struct AutomationV2RunRecord {
     pub resume_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_kind: Option<AutomationStopKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
     #[serde(default)]
     pub prompt_tokens: u64,
     #[serde(default)]
@@ -3535,11 +3637,18 @@ impl AppState {
                 pending_nodes,
                 node_outputs: std::collections::HashMap::new(),
                 node_attempts: std::collections::HashMap::new(),
+                blocked_nodes: Vec::new(),
+                awaiting_gate: None,
+                gate_history: Vec::new(),
+                lifecycle_history: Vec::new(),
+                last_failure: None,
             },
             automation_snapshot: Some(automation.clone()),
             pause_reason: None,
             resume_reason: None,
             detail: None,
+            stop_kind: None,
+            stop_reason: None,
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
@@ -3652,6 +3761,30 @@ impl AppState {
             .remove(session_id);
         self.update_automation_v2_run(run_id, |row| {
             row.active_session_ids.retain(|id| id != session_id);
+        })
+        .await
+    }
+
+    pub async fn add_automation_v2_instance(
+        &self,
+        run_id: &str,
+        instance_id: &str,
+    ) -> Option<AutomationV2RunRecord> {
+        self.update_automation_v2_run(run_id, |row| {
+            if !row.active_instance_ids.iter().any(|id| id == instance_id) {
+                row.active_instance_ids.push(instance_id.to_string());
+            }
+        })
+        .await
+    }
+
+    pub async fn clear_automation_v2_instance(
+        &self,
+        run_id: &str,
+        instance_id: &str,
+    ) -> Option<AutomationV2RunRecord> {
+        self.update_automation_v2_run(run_id, |row| {
+            row.active_instance_ids.retain(|id| id != instance_id);
         })
         .await
     }
@@ -5939,6 +6072,289 @@ fn build_automation_v2_upstream_inputs(
     Ok(inputs)
 }
 
+fn is_automation_approval_node(node: &AutomationFlowNode) -> bool {
+    matches!(node.stage_kind, Some(AutomationNodeStageKind::Approval))
+        || node
+            .gate
+            .as_ref()
+            .map(|gate| gate.required)
+            .unwrap_or(false)
+}
+
+fn automation_guardrail_failure(
+    automation: &AutomationV2Spec,
+    run: &AutomationV2RunRecord,
+) -> Option<String> {
+    if let Some(max_runtime_ms) = automation.execution.max_total_runtime_ms {
+        if let Some(started_at_ms) = run.started_at_ms {
+            let elapsed = now_ms().saturating_sub(started_at_ms);
+            if elapsed >= max_runtime_ms {
+                return Some(format!(
+                    "run exceeded max_total_runtime_ms ({elapsed}/{max_runtime_ms})"
+                ));
+            }
+        }
+    }
+    if let Some(max_total_tokens) = automation.execution.max_total_tokens {
+        if run.total_tokens >= max_total_tokens {
+            return Some(format!(
+                "run exceeded max_total_tokens ({}/{})",
+                run.total_tokens, max_total_tokens
+            ));
+        }
+    }
+    if let Some(max_total_cost_usd) = automation.execution.max_total_cost_usd {
+        if run.estimated_cost_usd >= max_total_cost_usd {
+            return Some(format!(
+                "run exceeded max_total_cost_usd ({:.4}/{:.4})",
+                run.estimated_cost_usd, max_total_cost_usd
+            ));
+        }
+    }
+    None
+}
+
+pub(crate) fn record_automation_lifecycle_event(
+    run: &mut AutomationV2RunRecord,
+    event: impl Into<String>,
+    reason: Option<String>,
+    stop_kind: Option<AutomationStopKind>,
+) {
+    record_automation_lifecycle_event_with_metadata(run, event, reason, stop_kind, None);
+}
+
+pub(crate) fn record_automation_lifecycle_event_with_metadata(
+    run: &mut AutomationV2RunRecord,
+    event: impl Into<String>,
+    reason: Option<String>,
+    stop_kind: Option<AutomationStopKind>,
+    metadata: Option<Value>,
+) {
+    run.checkpoint
+        .lifecycle_history
+        .push(AutomationLifecycleRecord {
+            event: event.into(),
+            recorded_at_ms: now_ms(),
+            reason,
+            stop_kind,
+            metadata,
+        });
+}
+
+fn build_automation_pending_gate(node: &AutomationFlowNode) -> Option<AutomationPendingGate> {
+    let gate = node.gate.as_ref()?;
+    Some(AutomationPendingGate {
+        node_id: node.node_id.clone(),
+        title: node
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("builder"))
+            .and_then(|builder| builder.get("title"))
+            .and_then(Value::as_str)
+            .unwrap_or(node.objective.as_str())
+            .to_string(),
+        instructions: gate.instructions.clone(),
+        decisions: gate.decisions.clone(),
+        rework_targets: gate.rework_targets.clone(),
+        requested_at_ms: now_ms(),
+        upstream_node_ids: node.depends_on.clone(),
+    })
+}
+
+fn automation_node_builder_metadata(node: &AutomationFlowNode, key: &str) -> Option<String> {
+    node.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("builder"))
+        .and_then(|builder| builder.get(key))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn automation_node_builder_priority(node: &AutomationFlowNode) -> i32 {
+    node.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("builder"))
+        .and_then(|builder| builder.get("priority"))
+        .and_then(Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok())
+        .unwrap_or(0)
+}
+
+fn automation_phase_rank_map(
+    automation: &AutomationV2Spec,
+) -> std::collections::HashMap<String, usize> {
+    automation
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("mission"))
+        .and_then(|mission| mission.get("phases"))
+        .and_then(Value::as_array)
+        .map(|phases| {
+            phases
+                .iter()
+                .enumerate()
+                .filter_map(|(index, phase)| {
+                    phase
+                        .get("phase_id")
+                        .and_then(Value::as_str)
+                        .map(|phase_id| (phase_id.to_string(), index))
+                })
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .unwrap_or_default()
+}
+
+fn automation_node_sort_key(
+    node: &AutomationFlowNode,
+    phase_rank: &std::collections::HashMap<String, usize>,
+) -> (usize, i32, String) {
+    let phase_order = automation_node_builder_metadata(node, "phase_id")
+        .as_ref()
+        .and_then(|phase_id| phase_rank.get(phase_id))
+        .copied()
+        .unwrap_or(usize::MAX / 2);
+    (
+        phase_order,
+        -automation_node_builder_priority(node),
+        node.node_id.clone(),
+    )
+}
+
+fn automation_mission_milestones(automation: &AutomationV2Spec) -> Vec<Value> {
+    automation
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("mission"))
+        .and_then(|mission| mission.get("milestones"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn completed_mission_milestones(
+    automation: &AutomationV2Spec,
+    run: &AutomationV2RunRecord,
+) -> std::collections::HashSet<String> {
+    let completed = run
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    automation_mission_milestones(automation)
+        .iter()
+        .filter_map(|milestone| {
+            let milestone_id = milestone
+                .get("milestone_id")
+                .and_then(Value::as_str)?
+                .trim();
+            if milestone_id.is_empty() {
+                return None;
+            }
+            let required = milestone
+                .get("required_stage_ids")
+                .and_then(Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            (!required.is_empty()
+                && required
+                    .iter()
+                    .all(|stage_id| completed.contains(*stage_id)))
+            .then_some(milestone_id.to_string())
+        })
+        .collect()
+}
+
+fn record_milestone_promotions(
+    automation: &AutomationV2Spec,
+    row: &mut AutomationV2RunRecord,
+    promoted_by_node_id: &str,
+) {
+    let already_recorded = row
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .filter(|entry| entry.event == "milestone_promoted")
+        .filter_map(|entry| {
+            entry.metadata.as_ref().and_then(|metadata| {
+                metadata
+                    .get("milestone_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let completed = completed_mission_milestones(automation, row);
+    for milestone in automation_mission_milestones(automation) {
+        let milestone_id = milestone
+            .get("milestone_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if milestone_id.is_empty()
+            || !completed.contains(milestone_id)
+            || already_recorded.contains(milestone_id)
+        {
+            continue;
+        }
+        let title = milestone
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or(milestone_id);
+        let phase_id = milestone
+            .get("phase_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let required_stage_ids = milestone
+            .get("required_stage_ids")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        record_automation_lifecycle_event_with_metadata(
+            row,
+            "milestone_promoted",
+            Some(format!("milestone `{title}` promoted")),
+            None,
+            Some(json!({
+                "milestone_id": milestone_id,
+                "title": title,
+                "phase_id": phase_id,
+                "required_stage_ids": required_stage_ids,
+                "promoted_by_node_id": promoted_by_node_id,
+            })),
+        );
+    }
+}
+
+pub(crate) fn collect_automation_descendants(
+    automation: &AutomationV2Spec,
+    root_ids: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut descendants = root_ids.clone();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for node in &automation.flow.nodes {
+            if descendants.contains(&node.node_id) {
+                continue;
+            }
+            if node.depends_on.iter().any(|dep| descendants.contains(dep)) {
+                descendants.insert(node.node_id.clone());
+                changed = true;
+            }
+        }
+    }
+    descendants
+}
+
 fn render_automation_v2_prompt(
     automation: &AutomationV2Spec,
     run_id: &str,
@@ -5961,10 +6377,81 @@ fn render_automation_v2_prompt(
     {
         sections.push(format!("Template system prompt:\n{}", system_prompt));
     }
+    if let Some(mission) = automation
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("mission"))
+    {
+        let mission_title = mission
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or(automation.name.as_str());
+        let mission_goal = mission
+            .get("goal")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let success_criteria = mission
+            .get("success_criteria")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(|row| format!("- {}", row.trim()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let shared_context = mission
+            .get("shared_context")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        sections.push(format!(
+            "Mission Brief:\nTitle: {mission_title}\nGoal: {mission_goal}\nShared context: {shared_context}\nSuccess criteria:\n{}",
+            if success_criteria.is_empty() {
+                "- none provided".to_string()
+            } else {
+                success_criteria
+            }
+        ));
+    }
     sections.push(format!(
         "Automation ID: {}\nRun ID: {}\nNode ID: {}\nAgent: {}\nObjective: {}\nOutput contract kind: {}",
         automation.automation_id, run_id, node.node_id, agent.display_name, node.objective, contract_kind
     ));
+    if let Some(contract) = node.output_contract.as_ref() {
+        let schema = contract
+            .schema
+            .as_ref()
+            .map(|value| serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
+            .unwrap_or_else(|| "none".to_string());
+        let guidance = contract.summary_guidance.as_deref().unwrap_or("none");
+        sections.push(format!(
+            "Output Contract:\nKind: {}\nSummary guidance: {}\nSchema:\n{}",
+            contract.kind, guidance, schema
+        ));
+    }
+    if let Some(builder) = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("builder"))
+        .and_then(Value::as_object)
+    {
+        let local_title = builder
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or(node.node_id.as_str());
+        let local_prompt = builder
+            .get("prompt")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let local_role = builder
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        sections.push(format!(
+            "Local Assignment:\nTitle: {local_title}\nRole: {local_role}\nInstructions: {local_prompt}"
+        ));
+    }
     let mut prompt = sections.join("\n\n");
     if !upstream_inputs.is_empty() {
         prompt.push_str("\n\nUpstream Inputs:");
@@ -6348,10 +6835,41 @@ pub async fn run_automation_v2_executor(state: AppState) {
             let Some(latest) = state.get_automation_v2_run(&run.run_id).await else {
                 break;
             };
+            if let Some(detail) = automation_guardrail_failure(&automation, &latest) {
+                let session_ids = latest.active_session_ids.clone();
+                for session_id in session_ids {
+                    let _ = state.cancellations.cancel(&session_id).await;
+                }
+                let instance_ids = latest.active_instance_ids.clone();
+                for instance_id in instance_ids {
+                    let _ = state
+                        .agent_teams
+                        .cancel_instance(&state, &instance_id, "stopped by guardrail")
+                        .await;
+                }
+                let _ = state
+                    .update_automation_v2_run(&run.run_id, |row| {
+                        row.status = AutomationRunStatus::Cancelled;
+                        row.detail = Some(detail.clone());
+                        row.stop_kind = Some(AutomationStopKind::GuardrailStopped);
+                        row.stop_reason = Some(detail.clone());
+                        row.active_session_ids.clear();
+                        row.active_instance_ids.clear();
+                        record_automation_lifecycle_event(
+                            row,
+                            "run_guardrail_stopped",
+                            Some(detail.clone()),
+                            Some(AutomationStopKind::GuardrailStopped),
+                        );
+                    })
+                    .await;
+                break;
+            }
             if matches!(
                 latest.status,
                 AutomationRunStatus::Paused
                     | AutomationRunStatus::Pausing
+                    | AutomationRunStatus::AwaitingApproval
                     | AutomationRunStatus::Cancelled
                     | AutomationRunStatus::Failed
                     | AutomationRunStatus::Completed
@@ -6375,7 +6893,7 @@ pub async fn run_automation_v2_executor(state: AppState) {
                 .cloned()
                 .collect::<std::collections::HashSet<_>>();
             let pending = latest.checkpoint.pending_nodes.clone();
-            let runnable = pending
+            let mut runnable = pending
                 .iter()
                 .filter_map(|node_id| {
                     let node = automation
@@ -6389,8 +6907,13 @@ pub async fn run_automation_v2_executor(state: AppState) {
                         None
                     }
                 })
-                .take(max_parallel)
                 .collect::<Vec<_>>();
+            let phase_rank = automation_phase_rank_map(&automation);
+            runnable.sort_by(|a, b| {
+                automation_node_sort_key(a, &phase_rank)
+                    .cmp(&automation_node_sort_key(b, &phase_rank))
+            });
+            let runnable = runnable.into_iter().take(max_parallel).collect::<Vec<_>>();
 
             if runnable.is_empty() {
                 let _ = state
@@ -6402,7 +6925,46 @@ pub async fn run_automation_v2_executor(state: AppState) {
                 break;
             }
 
-            let runnable_node_ids = runnable
+            let executable = runnable
+                .iter()
+                .filter(|node| !is_automation_approval_node(node))
+                .cloned()
+                .collect::<Vec<_>>();
+            if executable.is_empty() {
+                if let Some(gate_node) = runnable
+                    .iter()
+                    .find(|node| is_automation_approval_node(node))
+                {
+                    let blocked_nodes = collect_automation_descendants(
+                        &automation,
+                        &std::iter::once(gate_node.node_id.clone()).collect(),
+                    )
+                    .into_iter()
+                    .filter(|node_id| node_id != &gate_node.node_id)
+                    .collect::<Vec<_>>();
+                    let Some(gate) = build_automation_pending_gate(gate_node) else {
+                        let _ = state
+                            .update_automation_v2_run(&run.run_id, |row| {
+                                row.status = AutomationRunStatus::Failed;
+                                row.detail = Some("approval node missing gate config".to_string());
+                            })
+                            .await;
+                        break;
+                    };
+                    let _ = state
+                        .update_automation_v2_run(&run.run_id, |row| {
+                            row.status = AutomationRunStatus::AwaitingApproval;
+                            row.detail =
+                                Some(format!("awaiting approval for gate `{}`", gate.node_id));
+                            row.checkpoint.awaiting_gate = Some(gate.clone());
+                            row.checkpoint.blocked_nodes = blocked_nodes.clone();
+                        })
+                        .await;
+                }
+                break;
+            }
+
+            let runnable_node_ids = executable
                 .iter()
                 .map(|node| node.node_id.clone())
                 .collect::<Vec<_>>();
@@ -6419,7 +6981,7 @@ pub async fn run_automation_v2_executor(state: AppState) {
                 })
                 .await;
 
-            let tasks = runnable
+            let tasks = executable
                 .iter()
                 .map(|node| {
                     let Some(agent) = automation
@@ -6470,6 +7032,15 @@ pub async fn run_automation_v2_executor(state: AppState) {
                                     row.checkpoint.completed_nodes.push(node_id.clone());
                                 }
                                 row.checkpoint.node_outputs.insert(node_id.clone(), output);
+                                if row
+                                    .checkpoint
+                                    .last_failure
+                                    .as_ref()
+                                    .is_some_and(|failure| failure.node_id == node_id)
+                                {
+                                    row.checkpoint.last_failure = None;
+                                }
+                                record_milestone_promotions(&automation, row, &node_id);
                             })
                             .await;
                     }
@@ -6496,6 +7067,15 @@ pub async fn run_automation_v2_executor(state: AppState) {
                                 "node `{}` failed after {}/{} attempts: {}",
                                 node_id, attempts, max_attempts, detail
                             ));
+                            let _ = state
+                                .update_automation_v2_run(&run.run_id, |row| {
+                                    row.checkpoint.last_failure = Some(AutomationFailureRecord {
+                                        node_id: node_id.clone(),
+                                        reason: detail.clone(),
+                                        failed_at_ms: now_ms(),
+                                    });
+                                })
+                                .await;
                             break;
                         }
                         let _ = state

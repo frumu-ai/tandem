@@ -5,6 +5,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod mission_builder;
+
+pub use mission_builder::{
+    validate_mission_blueprint, ApprovalDecision, HumanApprovalGate, InputRefBlueprint,
+    MissionBlueprint, MissionMilestoneBlueprint, MissionPhaseBlueprint, MissionPhaseExecutionMode,
+    MissionTeamBlueprint, OutputContractBlueprint, ReviewStage, ReviewStageKind, ValidationMessage,
+    ValidationSeverity, WorkstreamBlueprint,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowSourceKind {

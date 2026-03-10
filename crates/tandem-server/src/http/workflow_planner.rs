@@ -2170,6 +2170,8 @@ fn plan_step_with_dep(
         input_refs,
         output_contract: output_contract.map(|kind| crate::AutomationFlowOutputContract {
             kind: kind.to_string(),
+            schema: None,
+            summary_guidance: None,
         }),
     }
 }
@@ -2262,6 +2264,9 @@ fn compile_plan_to_automation_v2(
                     "max_attempts": 3
                 })),
                 timeout_ms: None,
+                stage_kind: None,
+                gate: None,
+                metadata: None,
             })
             .collect(),
     };
@@ -2278,6 +2283,8 @@ fn compile_plan_to_automation_v2(
             max_parallel_agents,
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
         },
         output_targets: Vec::new(),
         created_at_ms: now,

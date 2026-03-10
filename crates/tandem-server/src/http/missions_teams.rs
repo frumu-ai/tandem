@@ -739,9 +739,14 @@ pub(super) async fn agent_standup_compose(
             input_refs: Vec::new(),
             output_contract: Some(crate::AutomationFlowOutputContract {
                 kind: "structured_json".to_string(),
+                schema: None,
+                summary_guidance: None,
             }),
             retry_policy: Some(json!({ "max_attempts": 2 })),
             timeout_ms: None,
+            stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
+            gate: None,
+            metadata: None,
         });
         participant_node_ids.push(node_id);
     }
@@ -782,9 +787,14 @@ pub(super) async fn agent_standup_compose(
             .collect(),
         output_contract: Some(crate::AutomationFlowOutputContract {
             kind: "report_markdown".to_string(),
+            schema: None,
+            summary_guidance: None,
         }),
         retry_policy: Some(json!({ "max_attempts": 2 })),
         timeout_ms: None,
+        stage_kind: Some(crate::AutomationNodeStageKind::Orchestrator),
+        gate: None,
+        metadata: None,
     });
 
     let automation = crate::AutomationV2Spec {
@@ -799,6 +809,8 @@ pub(super) async fn agent_standup_compose(
             max_parallel_agents: Some(participant_node_ids.len().clamp(1, 16) as u32),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
         },
         output_targets: vec![report_path_template.clone()],
         created_at_ms: now,

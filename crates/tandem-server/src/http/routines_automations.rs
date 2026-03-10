@@ -214,6 +214,26 @@ pub(super) struct RoutineRunDecisionInput {
 }
 
 #[derive(Debug, Deserialize)]
+pub(super) struct AutomationV2GateDecisionInput {
+    pub decision: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct AutomationV2RunRepairInput {
+    pub node_id: String,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub template_id: Option<String>,
+    #[serde(default)]
+    pub model_policy: Option<Value>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub(super) struct RoutineRunArtifactInput {
     pub uri: String,
     pub kind: String,
@@ -1784,6 +1804,8 @@ pub(super) async fn automations_v2_create(
             max_parallel_agents: Some(1),
             max_total_runtime_ms: None,
             max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
         }),
         output_targets: input.output_targets.unwrap_or_default(),
         created_at_ms: now,
@@ -2084,6 +2106,12 @@ pub(super) async fn automations_v2_run_pause(
         .update_automation_v2_run(&run_id, |run| {
             run.status = AutomationRunStatus::Pausing;
             run.pause_reason = Some(reason.clone());
+            crate::record_automation_lifecycle_event(
+                run,
+                "run_pause_requested",
+                Some(reason.clone()),
+                None,
+            );
         })
         .await;
     let latest = state.get_automation_v2_run(&run_id).await;
@@ -2095,6 +2123,12 @@ pub(super) async fn automations_v2_run_pause(
     let updated = state
         .update_automation_v2_run(&run_id, |run| {
             run.status = AutomationRunStatus::Paused;
+            crate::record_automation_lifecycle_event(
+                run,
+                "run_paused",
+                run.pause_reason.clone(),
+                None,
+            );
         })
         .await
         .ok_or_else(|| {
@@ -2134,6 +2168,14 @@ pub(super) async fn automations_v2_run_resume(
         .update_automation_v2_run(&run_id, |run| {
             run.status = AutomationRunStatus::Queued;
             run.resume_reason = Some(reason.clone());
+            run.stop_kind = None;
+            run.stop_reason = None;
+            crate::record_automation_lifecycle_event(
+                run,
+                "run_resumed",
+                Some(reason.clone()),
+                None,
+            );
         })
         .await
         .ok_or_else(|| {
@@ -2173,14 +2215,30 @@ pub(super) async fn automations_v2_run_cancel(
             ),
         ));
     }
-    for session_id in current.active_session_ids {
+    for session_id in current.active_session_ids.clone() {
         let _ = state.cancellations.cancel(&session_id).await;
+    }
+    for instance_id in current.active_instance_ids.clone() {
+        let _ = state
+            .agent_teams
+            .cancel_instance(&state, &instance_id, "cancelled by operator")
+            .await;
     }
     let reason = reason_or_default(input.reason, "cancelled by operator");
     let updated = state
         .update_automation_v2_run(&run_id, |run| {
             run.status = AutomationRunStatus::Cancelled;
             run.detail = Some(reason.clone());
+            run.stop_kind = Some(crate::AutomationStopKind::OperatorStopped);
+            run.stop_reason = Some(reason.clone());
+            run.active_session_ids.clear();
+            run.active_instance_ids.clear();
+            crate::record_automation_lifecycle_event(
+                run,
+                "run_stopped",
+                Some(reason.clone()),
+                Some(crate::AutomationStopKind::OperatorStopped),
+            );
         })
         .await
         .ok_or_else(|| {
@@ -2192,6 +2250,475 @@ pub(super) async fn automations_v2_run_cancel(
             )
         })?;
     Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
+pub(super) async fn automations_v2_run_gate_decide(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<AutomationV2GateDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(current) = state.get_automation_v2_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Run not found", "code":"AUTOMATION_V2_RUN_NOT_FOUND", "runID": run_id}),
+            ),
+        ));
+    };
+    if current.status != AutomationRunStatus::AwaitingApproval {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(
+                json!({"error":"Run is not awaiting approval", "code":"AUTOMATION_V2_RUN_NOT_AWAITING_APPROVAL", "runID": run_id}),
+            ),
+        ));
+    }
+    let Some(gate) = current.checkpoint.awaiting_gate.clone() else {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(
+                json!({"error":"Run has no pending gate", "code":"AUTOMATION_V2_RUN_GATE_MISSING", "runID": run_id}),
+            ),
+        ));
+    };
+    let decision = input.decision.trim().to_ascii_lowercase();
+    if !["approve", "rework", "cancel"].contains(&decision.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({"error":"decision must be approve, rework, or cancel", "code":"AUTOMATION_V2_GATE_INVALID_DECISION"}),
+            ),
+        ));
+    }
+    let Some(automation) = state.get_automation_v2(&current.automation_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": current.automation_id}),
+            ),
+        ));
+    };
+    let Some(node) = automation
+        .flow
+        .nodes
+        .iter()
+        .find(|node| node.node_id == gate.node_id)
+        .cloned()
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Gate node not found", "code":"AUTOMATION_V2_GATE_NODE_NOT_FOUND", "nodeID": gate.node_id}),
+            ),
+        ));
+    };
+    let reason = input
+        .reason
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let updated = state
+        .update_automation_v2_run(&run_id, |run| {
+            run.checkpoint
+                .gate_history
+                .push(crate::AutomationGateDecisionRecord {
+                    node_id: gate.node_id.clone(),
+                    decision: decision.clone(),
+                    reason: reason.clone(),
+                    decided_at_ms: crate::now_ms(),
+                });
+            run.checkpoint.awaiting_gate = None;
+            run.checkpoint.blocked_nodes.clear();
+            match decision.as_str() {
+                "approve" => {
+                    run.status = AutomationRunStatus::Queued;
+                    run.detail = Some(format!("gate `{}` approved", gate.node_id));
+                    run.stop_kind = None;
+                    run.stop_reason = None;
+                    run.checkpoint
+                        .pending_nodes
+                        .retain(|node_id| node_id != &gate.node_id);
+                    if !run
+                        .checkpoint
+                        .completed_nodes
+                        .iter()
+                        .any(|node_id| node_id == &gate.node_id)
+                    {
+                        run.checkpoint.completed_nodes.push(gate.node_id.clone());
+                    }
+                    run.checkpoint.node_outputs.insert(
+                        gate.node_id.clone(),
+                        json!({
+                            "contract_kind": "approval_gate",
+                            "summary": format!("Gate `{}` approved.", gate.node_id),
+                            "content": {
+                                "decision": "approve",
+                                "reason": reason,
+                            },
+                            "created_at_ms": crate::now_ms(),
+                            "node_id": gate.node_id.clone(),
+                        }),
+                    );
+                }
+                "rework" => {
+                    run.status = AutomationRunStatus::Queued;
+                    run.detail = Some(format!("gate `{}` sent work back for rework", gate.node_id));
+                    run.stop_kind = None;
+                    run.stop_reason = None;
+                    let mut roots = gate
+                        .rework_targets
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::HashSet<_>>();
+                    if roots.is_empty() {
+                        roots.extend(gate.upstream_node_ids.iter().cloned());
+                    }
+                    roots.insert(gate.node_id.clone());
+                    let reset_nodes = crate::collect_automation_descendants(&automation, &roots);
+                    for node_id in &reset_nodes {
+                        run.checkpoint.node_outputs.remove(node_id);
+                        run.checkpoint.node_attempts.remove(node_id);
+                    }
+                    run.checkpoint
+                        .completed_nodes
+                        .retain(|node_id| !reset_nodes.contains(node_id));
+                    let mut pending = run.checkpoint.pending_nodes.clone();
+                    for node_id in reset_nodes {
+                        if !pending.iter().any(|existing| existing == &node_id) {
+                            pending.push(node_id);
+                        }
+                    }
+                    pending.sort();
+                    pending.dedup();
+                    run.checkpoint.pending_nodes = pending;
+                }
+                "cancel" => {
+                    run.status = AutomationRunStatus::Cancelled;
+                    let stop_reason = reason
+                        .clone()
+                        .unwrap_or_else(|| format!("gate `{}` cancelled the run", gate.node_id));
+                    run.detail = Some(stop_reason.clone());
+                    run.stop_kind = Some(crate::AutomationStopKind::Cancelled);
+                    run.stop_reason = Some(stop_reason.clone());
+                    crate::record_automation_lifecycle_event(
+                        run,
+                        "run_cancelled",
+                        Some(stop_reason),
+                        Some(crate::AutomationStopKind::Cancelled),
+                    );
+                }
+                _ => {}
+            }
+            if decision != "cancel" {
+                run.resume_reason = Some(format!("gate `{}` decision: {}", gate.node_id, decision));
+            }
+        })
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({"error":"Run update failed", "code":"AUTOMATION_V2_RUN_UPDATE_FAILED"}),
+                ),
+            )
+        })?;
+    let _ =
+        super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
+    let _ = node;
+    Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
+pub(super) async fn automations_v2_run_recover(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<RoutineRunDecisionInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(current) = state.get_automation_v2_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Run not found", "code":"AUTOMATION_V2_RUN_NOT_FOUND", "runID": run_id}),
+            ),
+        ));
+    };
+    if !matches!(
+        current.status,
+        AutomationRunStatus::Failed | AutomationRunStatus::Paused
+    ) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(
+                json!({"error":"Run is not recoverable", "code":"AUTOMATION_V2_RUN_NOT_RECOVERABLE", "runID": run_id}),
+            ),
+        ));
+    }
+    let Some(automation) = state.get_automation_v2(&current.automation_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": current.automation_id}),
+            ),
+        ));
+    };
+    let reset_nodes = if current.status == AutomationRunStatus::Failed {
+        let Some(failure) = current.checkpoint.last_failure.clone() else {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(
+                    json!({"error":"Run has no recoverable failed node", "code":"AUTOMATION_V2_RUN_FAILURE_CONTEXT_MISSING", "runID": run_id}),
+                ),
+            ));
+        };
+        let roots =
+            std::iter::once(failure.node_id.clone()).collect::<std::collections::HashSet<_>>();
+        crate::collect_automation_descendants(&automation, &roots)
+    } else {
+        std::collections::HashSet::new()
+    };
+    let reason = if current.status == AutomationRunStatus::Paused {
+        reason_or_default(input.reason, "recovered from paused state by operator")
+    } else {
+        reason_or_default(input.reason, "recovered by operator")
+    };
+    let updated = state
+        .update_automation_v2_run(&run_id, |run| {
+            run.status = AutomationRunStatus::Queued;
+            run.finished_at_ms = None;
+            run.detail = Some(reason.clone());
+            run.resume_reason = Some(reason.clone());
+            run.stop_kind = None;
+            run.stop_reason = None;
+            run.checkpoint.awaiting_gate = None;
+            run.checkpoint.blocked_nodes.clear();
+            if !reset_nodes.is_empty() {
+                for node_id in &reset_nodes {
+                    run.checkpoint.node_outputs.remove(node_id);
+                    run.checkpoint.node_attempts.remove(node_id);
+                }
+                run.checkpoint
+                    .completed_nodes
+                    .retain(|node_id| !reset_nodes.contains(node_id));
+                let mut pending = run.checkpoint.pending_nodes.clone();
+                for node_id in &reset_nodes {
+                    if !pending.iter().any(|existing| existing == node_id) {
+                        pending.push(node_id.clone());
+                    }
+                }
+                pending.sort();
+                pending.dedup();
+                run.checkpoint.pending_nodes = pending;
+                run.checkpoint.last_failure = None;
+            }
+            crate::record_automation_lifecycle_event(
+                run,
+                if reset_nodes.is_empty() {
+                    "run_recovered_from_pause"
+                } else {
+                    "run_recovered"
+                },
+                Some(reason.clone()),
+                None,
+            );
+        })
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({"error":"Run update failed", "code":"AUTOMATION_V2_RUN_UPDATE_FAILED"}),
+                ),
+            )
+        })?;
+    let _ =
+        super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
+    Ok(Json(json!({ "ok": true, "run": updated })))
+}
+
+pub(super) async fn automations_v2_run_repair(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(input): Json<AutomationV2RunRepairInput>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let node_id = input.node_id.trim().to_string();
+    if node_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({"error":"node_id is required", "code":"AUTOMATION_V2_REPAIR_NODE_REQUIRED"}),
+            ),
+        ));
+    }
+    let Some(current) = state.get_automation_v2_run(&run_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Run not found", "code":"AUTOMATION_V2_RUN_NOT_FOUND", "runID": run_id}),
+            ),
+        ));
+    };
+    if matches!(
+        current.status,
+        AutomationRunStatus::Running | AutomationRunStatus::Queued | AutomationRunStatus::Pausing
+    ) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(
+                json!({"error":"Run must be paused, failed, awaiting approval, or cancelled before repair", "code":"AUTOMATION_V2_RUN_NOT_REPAIRABLE", "runID": run_id}),
+            ),
+        ));
+    }
+    let Some(mut automation) = state
+        .get_automation_v2(&current.automation_id)
+        .await
+        .or_else(|| current.automation_snapshot.clone())
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": current.automation_id}),
+            ),
+        ));
+    };
+    let Some(node) = automation
+        .flow
+        .nodes
+        .iter_mut()
+        .find(|node| node.node_id == node_id)
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Node not found", "code":"AUTOMATION_V2_REPAIR_NODE_NOT_FOUND", "nodeID": node_id}),
+            ),
+        ));
+    };
+    let prompt = input
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let template_id = input
+        .template_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let model_policy = input.model_policy.clone();
+    if prompt.is_none() && template_id.is_none() && model_policy.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({"error":"Repair requires at least one of prompt, template_id, or model_policy", "code":"AUTOMATION_V2_REPAIR_EMPTY"}),
+            ),
+        ));
+    }
+    if let Some(prompt_value) = prompt.as_ref() {
+        let metadata = node.metadata.get_or_insert_with(|| json!({}));
+        let builder = metadata
+            .as_object_mut()
+            .and_then(|root| root.entry("builder").or_insert_with(|| json!({})).as_object_mut())
+            .ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error":"Node metadata is not repairable", "code":"AUTOMATION_V2_REPAIR_METADATA_INVALID"})),
+                )
+            })?;
+        builder.insert("prompt".to_string(), Value::String(prompt_value.clone()));
+    }
+    if template_id.is_some() || model_policy.is_some() {
+        let Some(agent) = automation
+            .agents
+            .iter_mut()
+            .find(|agent| agent.agent_id == node.agent_id)
+        else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(
+                    json!({"error":"Node agent not found", "code":"AUTOMATION_V2_REPAIR_AGENT_NOT_FOUND", "agentID": node.agent_id}),
+                ),
+            ));
+        };
+        if let Some(template_value) = template_id.clone() {
+            agent.template_id = Some(template_value);
+        }
+        if let Some(model_policy_value) = model_policy.clone() {
+            agent.model_policy = Some(model_policy_value);
+        }
+    }
+    automation.updated_at_ms = crate::now_ms();
+    let stored_automation = state.put_automation_v2(automation.clone()).await.map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error.to_string(), "code":"AUTOMATION_V2_REPAIR_PERSIST_FAILED"})),
+        )
+    })?;
+    let roots = std::iter::once(node_id.clone()).collect::<std::collections::HashSet<_>>();
+    let reset_nodes = crate::collect_automation_descendants(&stored_automation, &roots);
+    let reason = reason_or_default(
+        input.reason,
+        &format!("repaired node `{}` and reset affected subtree", node_id),
+    );
+    let updated = state
+        .update_automation_v2_run(&run_id, |run| {
+            run.status = AutomationRunStatus::Queued;
+            run.finished_at_ms = None;
+            run.detail = Some(reason.clone());
+            run.resume_reason = Some(reason.clone());
+            run.stop_kind = None;
+            run.stop_reason = None;
+            run.pause_reason = None;
+            run.checkpoint.awaiting_gate = None;
+            run.checkpoint.blocked_nodes.clear();
+            for reset_node_id in &reset_nodes {
+                run.checkpoint.node_outputs.remove(reset_node_id);
+                run.checkpoint.node_attempts.remove(reset_node_id);
+            }
+            run.checkpoint
+                .completed_nodes
+                .retain(|completed_id| !reset_nodes.contains(completed_id));
+            let mut pending = run.checkpoint.pending_nodes.clone();
+            for reset_node_id in &reset_nodes {
+                if !pending.iter().any(|existing| existing == reset_node_id) {
+                    pending.push(reset_node_id.clone());
+                }
+            }
+            pending.sort();
+            pending.dedup();
+            run.checkpoint.pending_nodes = pending;
+            run.checkpoint.last_failure = None;
+            run.automation_snapshot = Some(stored_automation.clone());
+            crate::record_automation_lifecycle_event_with_metadata(
+                run,
+                "run_step_repaired",
+                Some(reason.clone()),
+                None,
+                Some(json!({
+                    "node_id": node_id,
+                    "reset_nodes": reset_nodes.iter().cloned().collect::<Vec<_>>(),
+                    "prompt_updated": prompt.is_some(),
+                    "template_updated": template_id.is_some(),
+                    "model_policy_updated": model_policy.is_some(),
+                })),
+            );
+        })
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({"error":"Run update failed", "code":"AUTOMATION_V2_RUN_UPDATE_FAILED"}),
+                ),
+            )
+        })?;
+    let _ = super::context_runs::sync_automation_v2_run_blackboard(
+        &state,
+        &stored_automation,
+        &updated,
+    )
+    .await;
+    Ok(Json(
+        json!({ "ok": true, "run": updated, "automation": stored_automation }),
+    ))
 }
 
 pub(super) async fn automations_v2_events(

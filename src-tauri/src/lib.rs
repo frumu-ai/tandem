@@ -708,6 +708,8 @@ pub fn run() {
             // Workflow-plans + Automations V2 parity
             commands::workflow_plans_preview,
             commands::workflow_plans_apply,
+            commands::mission_builder_preview,
+            commands::mission_builder_apply,
             commands::workflow_plans_chat_start,
             commands::workflow_plans_chat_message,
             commands::workflow_plans_chat_reset,
@@ -724,6 +726,9 @@ pub fn run() {
             commands::automations_v2_run_pause,
             commands::automations_v2_run_resume,
             commands::automations_v2_run_cancel,
+            commands::automations_v2_run_gate_decide,
+            commands::automations_v2_run_recover,
+            commands::automations_v2_run_repair,
             // Routine controls
             commands::routines_list,
             commands::routines_create,

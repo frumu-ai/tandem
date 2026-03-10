@@ -5960,6 +5960,22 @@ pub async fn workflow_plans_apply(
 }
 
 #[tauri::command]
+pub async fn mission_builder_preview(
+    state: State<'_, AppState>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
+    state.sidecar.mission_builder_preview(request).await
+}
+
+#[tauri::command]
+pub async fn mission_builder_apply(
+    state: State<'_, AppState>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
+    state.sidecar.mission_builder_apply(request).await
+}
+
+#[tauri::command]
 pub async fn workflow_plans_chat_start(
     state: State<'_, AppState>,
     request: serde_json::Value,
@@ -6117,6 +6133,45 @@ pub async fn automations_v2_run_cancel(
             &run_id,
             request.unwrap_or_else(|| serde_json::json!({ "reason": "" })),
         )
+        .await
+}
+
+#[tauri::command]
+pub async fn automations_v2_run_gate_decide(
+    state: State<'_, AppState>,
+    run_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .automations_v2_run_gate_decide(&run_id, request)
+        .await
+}
+
+#[tauri::command]
+pub async fn automations_v2_run_recover(
+    state: State<'_, AppState>,
+    run_id: String,
+    request: Option<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .automations_v2_run_recover(
+            &run_id,
+            request.unwrap_or_else(|| serde_json::json!({ "reason": "" })),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn automations_v2_run_repair(
+    state: State<'_, AppState>,
+    run_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .automations_v2_run_repair(&run_id, request)
         .await
 }
 

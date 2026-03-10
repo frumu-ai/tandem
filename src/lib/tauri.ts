@@ -1562,6 +1562,7 @@ export type AutomationV2RunStatus =
   | "running"
   | "pausing"
   | "paused"
+  | "awaiting_approval"
   | "completed"
   | "failed"
   | "cancelled";
@@ -1592,9 +1593,17 @@ export interface AutomationV2FlowNode {
   objective: string;
   depends_on?: string[];
   input_refs?: Array<{ from_step_id?: string; alias: string }>;
-  output_contract?: { kind: string };
+  output_contract?: { kind: string; schema?: JsonObject | null; summary_guidance?: string };
   retry_policy?: JsonObject;
   timeout_ms?: number;
+  stage_kind?: "orchestrator" | "workstream" | "review" | "test" | "approval";
+  gate?: {
+    required?: boolean;
+    decisions?: string[];
+    rework_targets?: string[];
+    instructions?: string;
+  } | null;
+  metadata?: JsonObject | null;
 }
 
 export interface AutomationV2Spec {
@@ -1609,6 +1618,8 @@ export interface AutomationV2Spec {
     max_parallel_agents?: number;
     max_total_runtime_ms?: number;
     max_total_tool_calls?: number;
+    max_total_tokens?: number;
+    max_total_cost_usd?: number;
   };
   output_targets?: string[];
   creator_id?: string;
@@ -1684,10 +1695,58 @@ export interface AutomationV2RunRecord {
   run_id: string;
   automation_id: string;
   status: AutomationV2RunStatus;
-  checkpoint?: JsonObject;
+  pause_reason?: string | null;
+  resume_reason?: string | null;
+  stop_kind?: "cancelled" | "operator_stopped" | "guardrail_stopped" | null;
+  stop_reason?: string | null;
+  checkpoint?: JsonObject & {
+    awaiting_gate?: {
+      node_id: string;
+      title: string;
+      instructions?: string;
+      decisions?: string[];
+      rework_targets?: string[];
+      requested_at_ms?: number;
+      upstream_node_ids?: string[];
+    } | null;
+    blocked_nodes?: string[];
+    gate_history?: Array<{
+      node_id: string;
+      decision: string;
+      reason?: string | null;
+      decided_at_ms: number;
+    }>;
+    lifecycle_history?: Array<{
+      event: string;
+      recorded_at_ms: number;
+      reason?: string | null;
+      stop_kind?: "cancelled" | "operator_stopped" | "guardrail_stopped" | null;
+      metadata?: JsonObject | null;
+    }>;
+    last_failure?: {
+      node_id: string;
+      reason: string;
+      attempt?: number;
+      recorded_at_ms?: number;
+    } | null;
+  };
   active_session_ids?: string[];
   active_instance_ids?: string[];
+  automation_snapshot?: AutomationV2Spec | null;
   [key: string]: unknown;
+}
+
+export interface AutomationV2GateDecisionRequest {
+  decision: "approve" | "rework" | "cancel";
+  reason?: string;
+}
+
+export interface AutomationV2RunRepairRequest {
+  node_id: string;
+  prompt?: string;
+  template_id?: string;
+  model_policy?: JsonObject | null;
+  reason?: string;
 }
 
 export interface WorkflowPlansPreviewRequest {
@@ -1761,6 +1820,166 @@ export interface WorkflowPlansGetResponse {
   planner_diagnostics?: JsonObject | null;
 }
 
+export interface MissionBuilderTeamBlueprint {
+  allowed_template_ids?: string[];
+  default_model_policy?: JsonObject;
+  allowed_mcp_servers?: string[];
+  max_parallel_agents?: number;
+  mission_budget?: AgentTeamBudgetLimit | null;
+  orchestrator_only_tool_calls?: boolean;
+}
+
+export interface MissionBuilderOutputContract {
+  kind: string;
+  schema?: JsonObject | null;
+  summary_guidance?: string;
+}
+
+export interface MissionBuilderInputRef {
+  from_step_id: string;
+  alias: string;
+}
+
+export interface MissionBuilderPhase {
+  phase_id: string;
+  title: string;
+  description?: string;
+  execution_mode?: "soft" | "barrier";
+}
+
+export interface MissionBuilderMilestone {
+  milestone_id: string;
+  title: string;
+  description?: string;
+  phase_id?: string;
+  required_stage_ids?: string[];
+}
+
+export interface MissionBuilderWorkstream {
+  workstream_id: string;
+  title: string;
+  objective: string;
+  role: string;
+  priority?: number | null;
+  phase_id?: string;
+  lane?: string;
+  milestone?: string;
+  template_id?: string;
+  prompt: string;
+  model_override?: JsonObject | null;
+  tool_allowlist_override?: string[];
+  mcp_servers_override?: string[];
+  depends_on?: string[];
+  input_refs?: MissionBuilderInputRef[];
+  output_contract: MissionBuilderOutputContract;
+  retry_policy?: JsonObject | null;
+  timeout_ms?: number | null;
+  metadata?: JsonObject | null;
+}
+
+export interface MissionBuilderApprovalGate {
+  required?: boolean;
+  decisions?: Array<"approve" | "rework" | "cancel">;
+  rework_targets?: string[];
+  instructions?: string;
+}
+
+export interface MissionBuilderReviewStage {
+  stage_id: string;
+  stage_kind: "review" | "test" | "approval";
+  title: string;
+  priority?: number | null;
+  phase_id?: string;
+  lane?: string;
+  milestone?: string;
+  target_ids: string[];
+  role?: string;
+  template_id?: string;
+  prompt: string;
+  checklist?: string[];
+  model_override?: JsonObject | null;
+  tool_allowlist_override?: string[];
+  mcp_servers_override?: string[];
+  gate?: MissionBuilderApprovalGate | null;
+}
+
+export interface MissionBlueprint {
+  mission_id: string;
+  title: string;
+  goal: string;
+  success_criteria: string[];
+  shared_context?: string;
+  workspace_root: string;
+  orchestrator_template_id?: string;
+  phases?: MissionBuilderPhase[];
+  milestones?: MissionBuilderMilestone[];
+  team: MissionBuilderTeamBlueprint;
+  workstreams: MissionBuilderWorkstream[];
+  review_stages: MissionBuilderReviewStage[];
+  metadata?: JsonObject | null;
+}
+
+export interface MissionBuilderValidationMessage {
+  severity: "info" | "warning" | "error";
+  code: string;
+  message: string;
+  subject_id?: string | null;
+}
+
+export interface MissionBuilderWorkItemPreview {
+  work_item_id: string;
+  title: string;
+  detail?: string | null;
+  status: string;
+  depends_on?: string[];
+  assigned_agent?: string | null;
+  metadata?: JsonObject | null;
+}
+
+export interface MissionBuilderMissionSpecPreview {
+  mission_id: string;
+  title: string;
+  goal: string;
+  success_criteria: string[];
+  entrypoint?: string | null;
+  metadata?: JsonObject | null;
+}
+
+export interface MissionBuilderNodePreview {
+  node_id: string;
+  title: string;
+  agent_id: string;
+  stage_kind: string;
+  phase_id?: string | null;
+  lane?: string | null;
+  milestone?: string | null;
+  priority?: number | null;
+  depends_on: string[];
+  tool_allowlist: string[];
+  mcp_servers: string[];
+  inherited_brief: string;
+}
+
+export interface MissionBuilderCompilePreview {
+  blueprint: MissionBlueprint;
+  automation: AutomationV2Spec;
+  mission_spec: MissionBuilderMissionSpecPreview;
+  work_items: MissionBuilderWorkItemPreview[];
+  node_previews: MissionBuilderNodePreview[];
+  validation: MissionBuilderValidationMessage[];
+}
+
+export interface MissionBuilderPreviewRequest {
+  blueprint: MissionBlueprint;
+  schedule?: AutomationV2Schedule;
+}
+
+export interface MissionBuilderApplyRequest {
+  blueprint: MissionBlueprint;
+  creator_id?: string;
+  schedule?: AutomationV2Schedule;
+}
+
 export interface AutomationV2ListResponse {
   automations: AutomationV2Spec[];
   count: number;
@@ -1822,6 +2041,23 @@ export async function workflowPlansChatReset(
 
 export async function workflowPlansGet(planId: string): Promise<WorkflowPlansGetResponse> {
   return invoke("workflow_plans_get", { planId });
+}
+
+export async function missionBuilderPreview(
+  request: MissionBuilderPreviewRequest
+): Promise<MissionBuilderCompilePreview> {
+  return invoke("mission_builder_preview", { request });
+}
+
+export async function missionBuilderApply(request: MissionBuilderApplyRequest): Promise<{
+  ok?: boolean;
+  automation?: AutomationV2Spec;
+  mission_spec?: MissionBuilderMissionSpecPreview;
+  work_items?: MissionBuilderWorkItemPreview[];
+  node_previews?: MissionBuilderNodePreview[];
+  validation?: MissionBuilderValidationMessage[];
+}> {
+  return invoke("mission_builder_apply", { request });
 }
 
 export async function automationsV2List(): Promise<AutomationV2ListResponse> {
@@ -1906,6 +2142,33 @@ export async function automationsV2RunCancel(
     runId,
     request: { reason: reason ?? "" },
   });
+}
+
+export async function automationsV2RunGateDecide(
+  runId: string,
+  request: AutomationV2GateDecisionRequest
+): Promise<AutomationV2RunResponse> {
+  return invoke("automations_v2_run_gate_decide", {
+    runId,
+    request,
+  });
+}
+
+export async function automationsV2RunRecover(
+  runId: string,
+  reason?: string
+): Promise<AutomationV2RunResponse> {
+  return invoke("automations_v2_run_recover", {
+    runId,
+    request: { reason: reason ?? "" },
+  });
+}
+
+export async function automationsV2RunRepair(
+  runId: string,
+  request: AutomationV2RunRepairRequest
+): Promise<AutomationV2RunResponse> {
+  return invoke("automations_v2_run_repair", { runId, request });
 }
 
 // ============================================================================

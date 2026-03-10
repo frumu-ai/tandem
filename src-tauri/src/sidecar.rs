@@ -4875,6 +4875,40 @@ impl SidecarManager {
         self.handle_response(response).await
     }
 
+    pub async fn mission_builder_preview(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mission-builder/compile-preview", self.base_url().await?);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to preview mission builder: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn mission_builder_apply(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!("{}/mission-builder/apply", self.base_url().await?);
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TandemError::Sidecar(format!("Failed to apply mission builder: {}", e)))?;
+        self.handle_response(response).await
+    }
+
     pub async fn workflow_plans_chat_start(
         &self,
         request: serde_json::Value,
@@ -5147,6 +5181,72 @@ impl SidecarManager {
     ) -> Result<serde_json::Value> {
         self.automations_v2_run_action(run_id, "cancel", request)
             .await
+    }
+
+    pub async fn automations_v2_run_gate_decide(
+        &self,
+        run_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/automations/v2/runs/{run_id}/gate",
+            self.base_url().await?
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to submit automation gate decision: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn automations_v2_run_recover(
+        &self,
+        run_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/automations/v2/runs/{run_id}/recover",
+            self.base_url().await?
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to recover automation run: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn automations_v2_run_repair(
+        &self,
+        run_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/automations/v2/runs/{run_id}/repair",
+            self.base_url().await?
+        );
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                TandemError::Sidecar(format!("Failed to repair automation run step: {}", e))
+            })?;
+        self.handle_response(response).await
     }
 
     // ========================================================================
