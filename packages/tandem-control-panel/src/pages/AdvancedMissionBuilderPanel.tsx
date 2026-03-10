@@ -19,7 +19,11 @@ type McpServerOption = {
 type CreateModeTab = "mission" | "team" | "workstreams" | "review" | "compile";
 type ScheduleKind = "manual" | "interval" | "cron";
 type ModelDraft = { provider: string; model: string };
-type StarterPresetId = "research" | "marketing" | "incident" | "event";
+type StarterPresetId =
+  | "ai-opportunity"
+  | "workflow-audit"
+  | "agentic-design"
+  | "automation-rollout";
 
 type MissionBlueprint = {
   mission_id: string;
@@ -216,42 +220,43 @@ function defaultBlueprint(workspaceRoot: string): MissionBlueprint {
 function starterBlueprint(preset: StarterPresetId, workspaceRoot: string): MissionBlueprint {
   const root = defaultBlueprint(workspaceRoot);
   switch (preset) {
-    case "research":
+    case "ai-opportunity":
       return {
         ...root,
-        title: "Competitive research mission",
-        goal: "Produce a concise evidence-based competitive brief with clear implications and next actions.",
+        title: "AI opportunity assessment",
+        goal: "Identify the highest-value AI opportunities in the target business process and produce a prioritized implementation brief.",
         success_criteria: [
-          "At least 5 competitors analyzed",
-          "Claims are supported by evidence",
-          "Final synthesis identifies gaps and recommendations",
+          "Workflow bottlenecks and repetitive work are identified",
+          "AI opportunities are ranked by value, feasibility, and risk",
+          "Final brief recommends concrete next pilots",
         ],
         shared_context:
-          "Audience is executive leadership. Prefer factual, source-backed claims. Avoid speculation and clearly label unknowns.",
+          "Audience is operators and product leadership. Focus on realistic AI leverage, not hype. Separate automation, copilots, and fully agentic opportunities. Flag data, tooling, and approval constraints explicitly.",
         phases: [
-          { phase_id: "research", title: "Research", execution_mode: "soft" },
-          { phase_id: "synthesis", title: "Synthesis", execution_mode: "barrier" },
+          { phase_id: "discovery", title: "Discovery", execution_mode: "soft" },
+          { phase_id: "recommendation", title: "Recommendation", execution_mode: "barrier" },
         ],
         milestones: [
           {
-            milestone_id: "evidence_collected",
-            title: "Evidence collected",
-            phase_id: "research",
-            required_stage_ids: ["competitors", "market-signals"],
+            milestone_id: "opportunity-map-ready",
+            title: "Opportunity map ready",
+            phase_id: "discovery",
+            required_stage_ids: ["workflow-analysis", "capability-map"],
           },
         ],
         workstreams: [
           {
-            workstream_id: "competitors",
-            title: "Competitor scan",
-            objective: "Identify key competitors, claims, positioning, and pricing cues.",
-            role: "researcher",
+            workstream_id: "workflow-analysis",
+            title: "Workflow analysis",
+            objective:
+              "Break down the current workflow, identify friction, handoffs, delays, and repeated manual work.",
+            role: "analyst",
             prompt:
-              "Act as a competitive intelligence researcher. Review available sources, extract concrete claims, and produce a structured competitor memo with evidence.",
+              "Act as an AI workflow analyst. Map the current workflow step by step, identify where humans are spending time, where handoffs fail, where decisions bottleneck, and where information must be gathered, transformed, or checked. Produce a workflow analysis memo that distinguishes repetitive work, judgment-heavy work, and coordination-heavy work.",
             priority: 1,
-            phase_id: "research",
-            lane: "research",
-            milestone: "evidence_collected",
+            phase_id: "discovery",
+            lane: "workflow",
+            milestone: "opportunity-map-ready",
             depends_on: [],
             input_refs: [],
             tool_allowlist_override: [],
@@ -259,326 +264,338 @@ function starterBlueprint(preset: StarterPresetId, workspaceRoot: string): Missi
             output_contract: {
               kind: "report_markdown",
               summary_guidance:
-                "Competitors reviewed, claims, evidence, pricing signals, and key takeaways.",
+                "Workflow steps, bottlenecks, repeated work, approval points, and observed failure modes.",
             },
           },
           {
-            workstream_id: "market-signals",
-            title: "Market signals",
+            workstream_id: "capability-map",
+            title: "AI capability map",
             objective:
-              "Gather recent market signals, launches, and shifts relevant to the mission.",
-            role: "researcher",
+              "Match workflow problems to realistic AI patterns such as extraction, triage, drafting, routing, review, and autonomous follow-through.",
+            role: "strategist",
             prompt:
-              "Collect recent market movements, launches, and notable changes that affect the competitive landscape. Summarize only useful signals.",
+              "Act as an agentic systems strategist. Review the workflow analysis context and map each major problem to practical AI patterns. Distinguish simple automation, LLM copilots, tool-using agents, and multi-agent orchestration. Be explicit about prerequisites, risks, and where human approval is still required.",
             priority: 2,
-            phase_id: "research",
-            lane: "signals",
-            milestone: "evidence_collected",
+            phase_id: "discovery",
+            lane: "capability",
+            milestone: "opportunity-map-ready",
             depends_on: [],
             input_refs: [],
             tool_allowlist_override: [],
             mcp_servers_override: [],
             output_contract: {
               kind: "report_markdown",
-              summary_guidance: "Recent market signals, why they matter, and confidence level.",
+              summary_guidance:
+                "Problem-to-capability map with candidate AI patterns, prerequisites, and operational risks.",
             },
           },
           {
-            workstream_id: "synthesis",
-            title: "Synthesis brief",
-            objective: "Merge findings into an executive-ready competitive brief.",
+            workstream_id: "opportunity-brief",
+            title: "Opportunity brief",
+            objective:
+              "Synthesize the findings into a prioritized AI opportunity brief with clear next pilots.",
             role: "analyst",
             prompt:
-              "Synthesize upstream findings into one brief for executives. Highlight evidence, important implications, risks, and recommended actions.",
+              "Synthesize the workflow analysis and capability map into an executive-ready AI opportunity brief. Rank candidates by expected value, implementation complexity, operator trust requirements, and data/tool prerequisites. Recommend the best near-term pilots and explain why weaker options were not prioritized.",
             priority: 1,
-            phase_id: "synthesis",
+            phase_id: "recommendation",
             lane: "synthesis",
-            depends_on: ["competitors", "market-signals"],
+            depends_on: ["workflow-analysis", "capability-map"],
             input_refs: [],
             tool_allowlist_override: [],
             mcp_servers_override: [],
             output_contract: {
               kind: "brief_markdown",
-              summary_guidance: "Executive summary, implications, risks, and recommended actions.",
+              summary_guidance:
+                "Ranked AI opportunities, reasoning, operational implications, and recommended pilots.",
             },
           },
         ],
         review_stages: [
           {
-            stage_id: "research-review",
+            stage_id: "opportunity-review",
             stage_kind: "review",
-            title: "Evidence review",
-            target_ids: ["synthesis"],
+            title: "Feasibility and trust review",
+            target_ids: ["opportunity-brief"],
             role: "reviewer",
             prompt:
-              "Review the synthesis for unsupported claims, missing evidence, and vague recommendations. Approve only if evidence is clear.",
+              "Review the opportunity brief for realism. Reject vague AI claims, hidden implementation assumptions, and missing trust or approval considerations. The brief should make clear what can be automated, what needs a copilot, and what still requires strong human judgment.",
             checklist: [
-              "Claims are evidence-backed",
-              "Unknowns are labeled",
-              "Recommendations are actionable",
+              "Opportunities are realistically scoped",
+              "Human approval needs are explicit",
+              "Recommended pilots are specific and actionable",
             ],
             priority: 1,
-            phase_id: "synthesis",
+            phase_id: "recommendation",
             lane: "review",
             tool_allowlist_override: [],
             mcp_servers_override: [],
           },
         ],
       };
-    case "marketing":
+    case "workflow-audit":
       return {
         ...root,
-        title: "Campaign planning mission",
-        goal: "Build a coherent campaign plan with audience insight, messaging, and channel execution.",
+        title: "Workflow automation audit",
+        goal: "Audit an existing workflow and produce a concrete automation design with failure points, control points, and implementation recommendations.",
         success_criteria: [
-          "Audience segments are defined",
-          "Messaging is aligned to the audience",
-          "Channel plan and content ideas are ready for approval",
+          "Current-state workflow is documented",
+          "Automation candidates include controls and failure handling",
+          "A practical implementation plan is produced",
         ],
         shared_context:
-          "Tone should be clear and practical. Keep the plan realistic for a small team and limited budget.",
+          "Focus on operational reliability. Make human approvals, logging needs, repair loops, and recovery paths explicit. Favor concrete workflow shapes over abstract transformation language.",
         phases: [
-          { phase_id: "strategy", title: "Strategy", execution_mode: "soft" },
-          { phase_id: "planning", title: "Planning", execution_mode: "barrier" },
+          { phase_id: "audit", title: "Audit", execution_mode: "soft" },
+          { phase_id: "design", title: "Design", execution_mode: "barrier" },
         ],
         milestones: [
           {
-            milestone_id: "strategy_locked",
-            title: "Strategy locked",
-            phase_id: "strategy",
-            required_stage_ids: ["audience", "messaging"],
+            milestone_id: "audit-complete",
+            title: "Audit complete",
+            phase_id: "audit",
+            required_stage_ids: ["current-state", "failure-analysis"],
           },
         ],
         workstreams: [
           {
-            workstream_id: "audience",
-            title: "Audience analysis",
-            objective: "Define target segments, needs, and objections.",
-            role: "strategist",
+            workstream_id: "current-state",
+            title: "Current-state workflow",
+            objective: "Document the current workflow, actors, triggers, tools, and handoffs.",
+            role: "operator",
             prompt:
-              "Act as a market strategist. Define priority audience segments, what they need, and what blocks adoption.",
+              "Act as an operations architect. Document the workflow as it exists today: triggers, inputs, outputs, handoffs, approvals, tools, data dependencies, and places where work stalls or gets retried.",
             priority: 1,
-            phase_id: "strategy",
-            lane: "strategy",
-            milestone: "strategy_locked",
+            phase_id: "audit",
+            lane: "mapping",
+            milestone: "audit-complete",
             depends_on: [],
             input_refs: [],
             tool_allowlist_override: [],
             mcp_servers_override: [],
             output_contract: {
               kind: "report_markdown",
-              summary_guidance: "Segments, needs, objections, and buying cues.",
+              summary_guidance:
+                "Current-state workflow map, actors, tools, handoffs, and bottlenecks.",
             },
           },
           {
-            workstream_id: "messaging",
-            title: "Messaging framework",
-            objective: "Develop campaign messaging pillars and proof points.",
-            role: "copywriter",
+            workstream_id: "failure-analysis",
+            title: "Failure and control analysis",
+            objective:
+              "Identify where workflow automation can fail, what needs approval, and what must be observable.",
+            role: "reviewer",
             prompt:
-              "Create a messaging framework with pillars, proof points, and sample lines that match the audience needs.",
+              "Act as a workflow reliability reviewer. Inspect the current-state map and identify failure modes, ambiguous steps, risky autonomous actions, missing approvals, recovery gaps, and required logging or metrics.",
             priority: 1,
-            phase_id: "strategy",
-            lane: "messaging",
-            milestone: "strategy_locked",
+            phase_id: "audit",
+            lane: "controls",
+            milestone: "audit-complete",
             depends_on: [],
             input_refs: [],
             tool_allowlist_override: [],
             mcp_servers_override: [],
             output_contract: {
               kind: "brief_markdown",
-              summary_guidance: "Messaging pillars, supporting proof points, and sample copy.",
+              summary_guidance:
+                "Failure modes, control points, approval needs, logging, and recovery requirements.",
             },
           },
           {
-            workstream_id: "channels",
-            title: "Channel and content plan",
-            objective: "Create a practical channel mix and content plan.",
+            workstream_id: "automation-design",
+            title: "Automation design",
+            objective: "Turn the audit into a practical automation architecture and rollout plan.",
             role: "planner",
             prompt:
-              "Using upstream audience and messaging work, create a channel plan, recommended cadence, and example content pipeline.",
+              "Design the target workflow automation. Specify which steps remain human, which become deterministic automation, which should use agents, and where review gates, kill switches, repair loops, and observability are required. Produce a rollout plan that can be implemented incrementally.",
             priority: 2,
-            phase_id: "planning",
-            lane: "planning",
-            depends_on: ["audience", "messaging"],
+            phase_id: "design",
+            lane: "design",
+            depends_on: ["current-state", "failure-analysis"],
             input_refs: [],
             tool_allowlist_override: [],
             mcp_servers_override: [],
             output_contract: {
               kind: "plan_markdown",
-              summary_guidance: "Channel mix, cadence, content ideas, and execution notes.",
+              summary_guidance:
+                "Target workflow design, control model, observability plan, and incremental rollout steps.",
             },
           },
         ],
         review_stages: [
           {
-            stage_id: "campaign-approval",
+            stage_id: "automation-review",
             stage_kind: "approval",
-            title: "Campaign approval",
-            target_ids: ["channels"],
+            title: "Automation readiness review",
+            target_ids: ["automation-design"],
             role: "approver",
             prompt:
-              "Review the campaign plan for clarity, realism, audience fit, and consistency before approval.",
+              "Review the automation design for realism, controllability, operator trust, and failure recovery. Reject designs that automate too aggressively without approvals or observability.",
             checklist: [
-              "Audience fit is clear",
-              "Messaging is consistent",
-              "Execution plan is realistic",
+              "Control points are explicit",
+              "Failure recovery is defined",
+              "Rollout is incremental and realistic",
             ],
             priority: 1,
-            phase_id: "planning",
+            phase_id: "design",
             lane: "approval",
             tool_allowlist_override: [],
             mcp_servers_override: [],
             gate: {
               required: true,
               decisions: ["approve", "rework", "cancel"],
-              rework_targets: ["channels"],
-              instructions: "Approve only when the channel plan is executable and aligned.",
+              rework_targets: ["automation-design"],
+              instructions:
+                "Approve only when the automation design is safe, observable, and realistically deployable.",
             },
           },
         ],
       };
-    case "incident":
+    case "agentic-design":
       return {
         ...root,
-        title: "Incident response mission",
-        goal: "Investigate the incident, identify likely causes, and produce a coordinated response plan.",
+        title: "Agentic system design mission",
+        goal: "Design a multi-agent workflow for a target operation, including orchestration, handoffs, models, tools, and safeguards.",
         success_criteria: [
-          "Incident timeline is documented",
-          "Likely causes are identified or narrowed",
-          "Response plan includes containment and follow-up",
+          "Agent roles and responsibilities are clearly defined",
+          "Handoffs, gates, and dependencies are explicit",
+          "The design includes observability, stop controls, and repair flow",
         ],
         shared_context:
-          "Prioritize clarity, risk reduction, and actionability. Flag uncertainty explicitly and avoid overclaiming root cause.",
+          "This is a design mission, not code generation. Optimize for robust orchestration, role clarity, bounded autonomy, and human trust. Make model/tool choices explicit where they matter.",
         phases: [
-          { phase_id: "triage", title: "Triage", execution_mode: "soft" },
-          { phase_id: "response", title: "Response", execution_mode: "barrier" },
+          { phase_id: "architecture", title: "Architecture", execution_mode: "soft" },
+          { phase_id: "governance", title: "Governance", execution_mode: "barrier" },
         ],
         milestones: [
           {
-            milestone_id: "triage-complete",
-            title: "Triage complete",
-            phase_id: "triage",
-            required_stage_ids: ["timeline", "impact"],
+            milestone_id: "design-basis-ready",
+            title: "Design basis ready",
+            phase_id: "architecture",
+            required_stage_ids: ["role-design", "flow-design"],
           },
         ],
         workstreams: [
           {
-            workstream_id: "timeline",
-            title: "Timeline reconstruction",
-            objective: "Build a factual timeline of the incident.",
-            role: "investigator",
+            workstream_id: "role-design",
+            title: "Role and agent design",
+            objective:
+              "Define the orchestrator and worker roles with clear responsibilities and escalation boundaries.",
+            role: "architect",
             prompt:
-              "Reconstruct the incident timeline from available evidence. Note confidence and missing information.",
+              "Design the agent roles for this system. Define the orchestrator, specialized workers, reviewers, testers, and approval actors. Be explicit about what each role owns, when it should escalate, and what outputs it produces.",
             priority: 1,
-            phase_id: "triage",
-            lane: "triage",
-            milestone: "triage-complete",
+            phase_id: "architecture",
+            lane: "roles",
+            milestone: "design-basis-ready",
             depends_on: [],
             input_refs: [],
             tool_allowlist_override: [],
             mcp_servers_override: [],
             output_contract: {
               kind: "report_markdown",
-              summary_guidance: "Chronological timeline with evidence and confidence notes.",
+              summary_guidance:
+                "Agent roster, role boundaries, escalation points, and expected outputs.",
             },
           },
           {
-            workstream_id: "impact",
-            title: "Impact assessment",
-            objective: "Assess scope, affected systems, and business impact.",
+            workstream_id: "flow-design",
+            title: "Flow and handoff design",
+            objective: "Design the mission graph, dependencies, handoffs, and artifact contracts.",
             role: "analyst",
             prompt:
-              "Assess scope, affected systems, business/user impact, and immediate risk level. Be specific and avoid guesses.",
+              "Design the multi-agent workflow graph. Specify phases, dependencies, artifact contracts, fan-out and fan-in points, and where review or approval gates should exist. Make the handoffs explicit and operationally understandable.",
             priority: 1,
-            phase_id: "triage",
-            lane: "impact",
-            milestone: "triage-complete",
+            phase_id: "architecture",
+            lane: "flow",
+            milestone: "design-basis-ready",
             depends_on: [],
             input_refs: [],
             tool_allowlist_override: [],
             mcp_servers_override: [],
             output_contract: {
               kind: "report_markdown",
-              summary_guidance: "Affected scope, severity, and open questions.",
+              summary_guidance: "Mission graph, dependencies, handoffs, and output contracts.",
             },
           },
           {
-            workstream_id: "response-plan",
-            title: "Response plan",
-            objective: "Create a containment, communication, and follow-up plan.",
+            workstream_id: "governance-design",
+            title: "Governance and safety design",
+            objective:
+              "Define runtime controls, observability, kill switches, and repair mechanisms.",
             role: "coordinator",
             prompt:
-              "Create a response plan covering containment, communications, decisions needed, and follow-up investigation steps.",
+              "Design the governance layer for the system. Specify approval gates, model and tool boundaries, logging, token or budget guardrails, kill switch semantics, pause and resume behavior, and step-level repair expectations.",
             priority: 1,
-            phase_id: "response",
-            lane: "response",
-            depends_on: ["timeline", "impact"],
+            phase_id: "governance",
+            lane: "governance",
+            depends_on: ["role-design", "flow-design"],
             input_refs: [],
             tool_allowlist_override: [],
             mcp_servers_override: [],
             output_contract: {
               kind: "plan_markdown",
-              summary_guidance: "Immediate actions, owners, risks, and next decisions.",
+              summary_guidance:
+                "Safety model, review points, observability, recovery, and operator controls.",
             },
           },
         ],
         review_stages: [
           {
-            stage_id: "incident-approval",
+            stage_id: "design-approval",
             stage_kind: "approval",
-            title: "Incident checkpoint",
-            target_ids: ["response-plan"],
+            title: "Agentic design review",
+            target_ids: ["governance-design"],
             role: "approver",
             prompt:
-              "Check whether the response plan is safe, complete enough to act on, and clear about unknowns.",
+              "Review the complete agentic design for coherence. Reject designs with unclear role boundaries, missing observability, or unbounded autonomy.",
             checklist: [
-              "Safety and containment are addressed",
-              "Unknowns are explicit",
-              "Next actions are clear",
+              "Role boundaries are clear",
+              "Handoffs and gates are explicit",
+              "Safety and repair paths are credible",
             ],
             priority: 1,
-            phase_id: "response",
+            phase_id: "governance",
             lane: "approval",
             tool_allowlist_override: [],
             mcp_servers_override: [],
             gate: {
               required: true,
               decisions: ["approve", "rework", "cancel"],
-              rework_targets: ["response-plan"],
+              rework_targets: ["governance-design"],
               instructions:
-                "Use rework if the response plan is missing critical containment or ownership detail.",
+                "Use rework if the design lacks control boundaries, clear outputs, or repairability.",
             },
           },
         ],
       };
-    case "event":
+    case "automation-rollout":
       return {
         ...root,
-        title: "Event planning mission",
-        goal: "Produce a coordinated event plan covering logistics, communications, and program readiness.",
+        title: "Automation rollout mission",
+        goal: "Plan the rollout of an AI or agentic automation initiative across process, tooling, operating model, and measurement.",
         success_criteria: [
-          "Logistics, comms, and program plans are complete",
-          "Dependencies are clear",
-          "Approval gate confirms readiness",
+          "Rollout plan includes sequencing, owners, risks, and readiness needs",
+          "Metrics and operator controls are explicit",
+          "Human change-management needs are addressed",
         ],
         shared_context:
-          "Optimize for practical execution. Surface blockers, missing owners, and sequencing risks early.",
+          "Optimize for actual operational rollout. Include enablement, communications, governance, training, and success measurement. Avoid purely technical plans.",
         phases: [
-          { phase_id: "planning", title: "Planning", execution_mode: "soft" },
-          { phase_id: "readiness", title: "Readiness", execution_mode: "barrier" },
+          { phase_id: "readiness", title: "Readiness", execution_mode: "soft" },
+          { phase_id: "launch", title: "Launch", execution_mode: "barrier" },
         ],
         milestones: [],
         workstreams: [
           {
-            workstream_id: "logistics",
-            title: "Logistics plan",
-            objective: "Define venue, timing, staffing, and operational needs.",
+            workstream_id: "process-readiness",
+            title: "Process readiness",
+            objective: "Define the target operating process, roles, and readiness gaps.",
             role: "operator",
             prompt:
-              "Create a logistics plan with venue needs, timeline, staffing, dependencies, and open risks.",
+              "Plan the operating-process changes required to adopt the automation. Identify role changes, review points, ownership, runbooks, and readiness blockers.",
             priority: 1,
-            phase_id: "planning",
+            phase_id: "readiness",
             lane: "operations",
             depends_on: [],
             input_refs: [],
@@ -586,72 +603,77 @@ function starterBlueprint(preset: StarterPresetId, workspaceRoot: string): Missi
             mcp_servers_override: [],
             output_contract: {
               kind: "plan_markdown",
-              summary_guidance: "Venue, timing, staffing, dependencies, and risks.",
+              summary_guidance:
+                "Operating model changes, ownership, readiness blockers, and process notes.",
             },
           },
           {
-            workstream_id: "program",
-            title: "Program plan",
-            objective: "Define agenda, speakers, and content sequencing.",
+            workstream_id: "platform-readiness",
+            title: "Platform and tooling readiness",
+            objective:
+              "Define the tooling, integration, data, and observability requirements for launch.",
             role: "planner",
             prompt:
-              "Build the event program structure, content flow, and speaker/session requirements.",
+              "Plan the platform requirements for rollout: integrations, tools, permissions, logs, metrics, data dependencies, guardrails, and monitoring expectations.",
             priority: 1,
-            phase_id: "planning",
-            lane: "program",
+            phase_id: "readiness",
+            lane: "platform",
             depends_on: [],
             input_refs: [],
             tool_allowlist_override: [],
             mcp_servers_override: [],
             output_contract: {
               kind: "plan_markdown",
-              summary_guidance: "Agenda, session plan, dependencies, and owner notes.",
+              summary_guidance: "Tooling, integrations, observability, and launch prerequisites.",
             },
           },
           {
-            workstream_id: "comms",
-            title: "Communications plan",
-            objective: "Create audience-facing communications and timeline.",
+            workstream_id: "launch-plan",
+            title: "Rollout and adoption plan",
+            objective:
+              "Create the rollout sequence, communications, operator enablement, and measurement plan.",
             role: "coordinator",
             prompt:
-              "Create the communications timeline, key messages, and reminders needed before and during the event.",
+              "Using the readiness work, create a rollout plan with phases, launch criteria, internal communications, operator training, fallback plans, and success metrics. Make the rollout sequence explicit.",
             priority: 2,
-            phase_id: "planning",
-            lane: "communications",
-            depends_on: ["program"],
+            phase_id: "launch",
+            lane: "rollout",
+            depends_on: ["process-readiness", "platform-readiness"],
             input_refs: [],
             tool_allowlist_override: [],
             mcp_servers_override: [],
             output_contract: {
               kind: "plan_markdown",
-              summary_guidance: "Audience communications schedule, messages, and trigger points.",
+              summary_guidance:
+                "Rollout sequencing, enablement, communications, fallback, and success metrics.",
             },
           },
         ],
         review_stages: [
           {
-            stage_id: "event-readiness",
+            stage_id: "launch-gate",
             stage_kind: "approval",
-            title: "Readiness gate",
-            target_ids: ["logistics", "program", "comms"],
+            title: "Launch readiness gate",
+            target_ids: ["launch-plan"],
             role: "approver",
             prompt:
-              "Check whether the event is operationally ready and whether sequencing risks are covered.",
+              "Review the rollout plan for operational readiness. Confirm that controls, training, communications, fallback, and measurement are credible before launch.",
             checklist: [
-              "Operational readiness is clear",
-              "Program dependencies are covered",
-              "Comms timeline is complete",
+              "Launch prerequisites are explicit",
+              "Operator enablement is covered",
+              "Fallback and measurement are defined",
             ],
             priority: 1,
-            phase_id: "readiness",
+            phase_id: "launch",
             lane: "approval",
             tool_allowlist_override: [],
             mcp_servers_override: [],
             gate: {
               required: true,
               decisions: ["approve", "rework", "cancel"],
-              rework_targets: ["logistics", "program", "comms"],
-              instructions: "Use rework if any lane is still missing key readiness details.",
+              rework_targets: ["launch-plan"],
+              instructions:
+                "Use rework if the rollout plan lacks readiness criteria, operator enablement, or fallback handling.",
             },
           },
         ],
@@ -1178,24 +1200,27 @@ export function AdvancedMissionBuilderPanel({
           <span className="tcp-subtle text-xs">Start from example:</span>
           <button
             className="tcp-btn h-8 px-3 text-xs"
-            onClick={() => applyStarterPreset("research")}
+            onClick={() => applyStarterPreset("ai-opportunity")}
           >
-            Research
+            AI Opportunities
           </button>
           <button
             className="tcp-btn h-8 px-3 text-xs"
-            onClick={() => applyStarterPreset("marketing")}
+            onClick={() => applyStarterPreset("workflow-audit")}
           >
-            Marketing
+            Workflow Audit
           </button>
           <button
             className="tcp-btn h-8 px-3 text-xs"
-            onClick={() => applyStarterPreset("incident")}
+            onClick={() => applyStarterPreset("agentic-design")}
           >
-            Incident
+            Agentic Design
           </button>
-          <button className="tcp-btn h-8 px-3 text-xs" onClick={() => applyStarterPreset("event")}>
-            Event
+          <button
+            className="tcp-btn h-8 px-3 text-xs"
+            onClick={() => applyStarterPreset("automation-rollout")}
+          >
+            Rollout
           </button>
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -1322,22 +1347,23 @@ export function AdvancedMissionBuilderPanel({
                     <strong className="text-slate-100">Workstream objective</strong>
                   </div>
                   <div className="mt-1">
-                    Research competitor messaging and identify 5 positioning gaps.
+                    Analyze the target workflow and identify the 3 highest-value AI opportunities
+                    for a near-term pilot.
                   </div>
                   <div className="mt-3">
                     <strong className="text-slate-100">Workstream prompt</strong>
                   </div>
                   <div className="mt-1">
-                    Act as a competitive analyst. Review available sources, extract concrete claims,
-                    compare positioning, and produce a concise findings memo with evidence and
-                    recommended angles.
+                    Act as an AI workflow strategist. Map the current process, identify repeated
+                    manual work, decision bottlenecks, and coordination pain, then recommend
+                    realistic AI patterns with evidence and operational caveats.
                   </div>
                   <div className="mt-3">
                     <strong className="text-slate-100">Output contract</strong>
                   </div>
                   <div className="mt-1">
-                    A markdown memo with sections: competitors reviewed, evidence, messaging gaps,
-                    and recommended actions.
+                    A markdown memo with sections: workflow summary, AI opportunities, feasibility
+                    constraints, risks, and recommended pilots.
                   </div>
                 </div>
               </Section>
@@ -1348,20 +1374,20 @@ export function AdvancedMissionBuilderPanel({
               >
                 <div className="grid gap-2 text-sm text-slate-300">
                   <div>
-                    <strong className="text-slate-100">Research:</strong> parallel evidence
-                    gathering, then synthesis and review.
+                    <strong className="text-slate-100">AI Opportunities:</strong> workflow analysis
+                    and capability mapping feeding a ranked pilot brief.
                   </div>
                   <div>
-                    <strong className="text-slate-100">Marketing:</strong> audience and messaging
-                    lanes feeding a channel plan and approval gate.
+                    <strong className="text-slate-100">Workflow Audit:</strong> current-state
+                    mapping and failure analysis feeding an automation design review.
                   </div>
                   <div>
-                    <strong className="text-slate-100">Incident:</strong> timeline and impact in
-                    parallel, then a response plan and checkpoint.
+                    <strong className="text-slate-100">Agentic Design:</strong> role design and flow
+                    design feeding governance and safety review.
                   </div>
                   <div>
-                    <strong className="text-slate-100">Event:</strong> logistics, program, and
-                    communications coordinated into readiness approval.
+                    <strong className="text-slate-100">Rollout:</strong> process readiness and
+                    platform readiness feeding a launch plan and approval gate.
                   </div>
                 </div>
               </Section>
