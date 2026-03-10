@@ -774,6 +774,10 @@ function ToggleChip({
   );
 }
 
+function InlineHint({ children }: { children: any }) {
+  return <div className="tcp-subtle -mt-1 text-xs">{children}</div>;
+}
+
 export function AdvancedMissionBuilderPanel({
   client,
   api,
@@ -1380,29 +1384,46 @@ export function AdvancedMissionBuilderPanel({
               onInput={(value) => updateBlueprint({ mission_id: value })}
             />
           </div>
+          <InlineHint>
+            Use a short title a human operator would recognize later in the automation list.
+          </InlineHint>
           <LabeledInput
             label="Workspace root"
             value={blueprint.workspace_root}
             onInput={(value) => updateBlueprint({ workspace_root: value })}
           />
+          <InlineHint>
+            This is the shared working directory the mission can use for files and artifacts.
+          </InlineHint>
           <LabeledTextArea
             label="Mission goal"
             value={blueprint.goal}
             onInput={(value) => updateBlueprint({ goal: value })}
             placeholder="Describe the shared objective all participants are working toward."
           />
+          <InlineHint>
+            Write the one shared outcome for the whole swarm, not a list of steps.
+          </InlineHint>
           <LabeledTextArea
             label="Shared context"
             value={blueprint.shared_context || ""}
             onInput={(value) => updateBlueprint({ shared_context: value })}
             placeholder="Shared constraints, references, context, and operator guidance."
           />
+          <InlineHint>
+            Put the facts every lane should inherit here: audience, constraints, tone, deadlines,
+            approved sources, and things to avoid.
+          </InlineHint>
           <LabeledInput
             label="Success criteria"
             value={blueprint.success_criteria.join(", ")}
             onInput={(value) => updateBlueprint({ success_criteria: splitCsv(value) })}
             placeholder="comma-separated"
           />
+          <InlineHint>
+            These should be measurable checks like “brief includes 5 competitors” or “plan contains
+            owner, timeline, and risks”.
+          </InlineHint>
           <div className="grid gap-3 md:grid-cols-3">
             <label className="block text-sm">
               <div className="mb-1 font-medium text-slate-200">Schedule</div>
@@ -1469,6 +1490,10 @@ export function AdvancedMissionBuilderPanel({
               placeholder="comma-separated"
             />
           </div>
+          <InlineHint>
+            The orchestrator keeps the mission coherent. Allowed templates restrict which reusable
+            agent profiles lanes are permitted to use.
+          </InlineHint>
           <div className="grid gap-3 md:grid-cols-2">
             <label className="block text-sm">
               <div className="mb-1 font-medium text-slate-200">Default model provider</div>
@@ -1595,6 +1620,10 @@ export function AdvancedMissionBuilderPanel({
             }
             placeholder={mcpServers.map((server) => server.name).join(", ")}
           />
+          <InlineHint>
+            Team defaults apply everywhere unless a workstream or review stage overrides its own
+            tool or MCP scope.
+          </InlineHint>
         </Section>
       ) : null}
 
@@ -1603,6 +1632,10 @@ export function AdvancedMissionBuilderPanel({
           title="Workstreams"
           subtitle="Scoped sub-objectives, dependencies, tools, MCP, and output contracts."
         >
+          <InlineHint>
+            A workstream is one scoped lane of work. Give it one responsibility, one artifact to
+            produce, and only the dependencies it truly needs.
+          </InlineHint>
           <div className="flex justify-end">
             <button className="tcp-btn h-8 px-3 text-xs" onClick={addWorkstream}>
               Add workstream
@@ -1705,6 +1738,10 @@ export function AdvancedMissionBuilderPanel({
                     type="number"
                   />
                 </div>
+                <InlineHint>
+                  `Phase` says when this lane belongs in the mission. `Lane` groups related work.
+                  `Priority` decides ordering among runnable work in the same open phase.
+                </InlineHint>
                 <LabeledTextArea
                   label="Objective"
                   value={workstream.objective}
@@ -1719,6 +1756,9 @@ export function AdvancedMissionBuilderPanel({
                   }
                   rows={3}
                 />
+                <InlineHint>
+                  Objective is the local assignment. Keep it crisp: what this lane must accomplish.
+                </InlineHint>
                 <LabeledTextArea
                   label="Prompt"
                   value={workstream.prompt}
@@ -1733,6 +1773,10 @@ export function AdvancedMissionBuilderPanel({
                   }
                   rows={5}
                 />
+                <InlineHint>
+                  Prompt is how the lane should operate: role, evidence standard, audience, format,
+                  and what good work looks like.
+                </InlineHint>
                 <div className="grid gap-3 md:grid-cols-2">
                   <LabeledInput
                     label="Depends on"
@@ -1765,6 +1809,10 @@ export function AdvancedMissionBuilderPanel({
                     }
                   />
                 </div>
+                <InlineHint>
+                  `Depends on` should list upstream stage IDs that must finish first. `Output
+                  contract kind` names the artifact downstream lanes expect.
+                </InlineHint>
                 <div className="grid gap-3 md:grid-cols-2">
                   <LabeledInput
                     label="Tool allowlist override"
@@ -1795,6 +1843,10 @@ export function AdvancedMissionBuilderPanel({
                     placeholder={mcpServers.map((server) => server.name).join(", ")}
                   />
                 </div>
+                <InlineHint>
+                  Leave tool and MCP overrides empty to inherit team defaults. Override only when
+                  this lane needs a narrower or different scope.
+                </InlineHint>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="block text-sm">
                     <div className="mb-1 font-medium text-slate-200">Model provider</div>
@@ -1858,6 +1910,10 @@ export function AdvancedMissionBuilderPanel({
 
       {activeTab === "review" ? (
         <Section title="Review & Gates" subtitle="Reviewer, tester, and approval stages.">
+          <InlineHint>
+            Use review stages to check quality or readiness before later work is promoted. Approval
+            stages are the right place for human checkpoints.
+          </InlineHint>
           <div className="flex justify-between gap-2">
             <button className="tcp-btn h-8 px-3 text-xs" onClick={addReviewStage}>
               Add review stage
@@ -1949,6 +2005,10 @@ export function AdvancedMissionBuilderPanel({
               </div>
             ))}
           </div>
+          <InlineHint>
+            `soft` phases prefer the current open phase first. `barrier` phases hold later phases
+            closed until earlier required work is complete.
+          </InlineHint>
           {effectiveBlueprint.review_stages.map((stage, index) => {
             const modelDraft = reviewModels[stage.stage_id] || { provider: "", model: "" };
             return (
@@ -2050,6 +2110,10 @@ export function AdvancedMissionBuilderPanel({
                     }
                   />
                 </div>
+                <InlineHint>
+                  Targets are the stages this review or gate is checking. Put the review in the
+                  phase where that checkpoint should happen.
+                </InlineHint>
                 <LabeledTextArea
                   label="Prompt"
                   value={stage.prompt}
@@ -2062,6 +2126,10 @@ export function AdvancedMissionBuilderPanel({
                   }
                   rows={4}
                 />
+                <InlineHint>
+                  Use the prompt to define what must be checked and what should trigger approve,
+                  rework, or fail.
+                </InlineHint>
                 <div className="grid gap-3 md:grid-cols-2">
                   <LabeledInput
                     label="Checklist"
@@ -2092,6 +2160,9 @@ export function AdvancedMissionBuilderPanel({
                     placeholder={mcpServers.map((server) => server.name).join(", ")}
                   />
                 </div>
+                <InlineHint>
+                  Checklist items should be concrete pass/fail checks, not broad wishes.
+                </InlineHint>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="block text-sm">
                     <div className="mb-1 font-medium text-slate-200">Model provider</div>
