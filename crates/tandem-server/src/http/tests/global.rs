@@ -1395,6 +1395,81 @@ async fn automations_v2_run_recover_on_failed_branch_preserves_completed_sibling
 }
 
 #[tokio::test]
+async fn automations_v2_run_recover_from_pause_preserves_branched_state() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation =
+        create_branched_test_automation_v2(&state, "auto-v2-branch-pause-recover").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Paused;
+            row.pause_reason = Some("operator paused branched mission".to_string());
+            row.checkpoint.completed_nodes = vec!["research".to_string(), "analysis".to_string()];
+            row.checkpoint.pending_nodes = vec!["draft".to_string(), "publish".to_string()];
+            row.checkpoint
+                .node_outputs
+                .insert("research".to_string(), json!({"summary":"research"}));
+            row.checkpoint
+                .node_outputs
+                .insert("analysis".to_string(), json!({"summary":"analysis"}));
+            row.checkpoint.blocked_nodes = vec!["publish".to_string()];
+        })
+        .await
+        .expect("updated run");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/automations/v2/runs/{}/recover", run.run_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "reason": "continue branched mission after pause" }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let recovered = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after recover");
+    assert_eq!(recovered.status, crate::AutomationRunStatus::Queued);
+    assert_eq!(
+        recovered.checkpoint.completed_nodes,
+        vec!["research".to_string(), "analysis".to_string()]
+    );
+    assert_eq!(
+        recovered.checkpoint.pending_nodes,
+        vec!["draft".to_string(), "publish".to_string()]
+    );
+    assert!(recovered.checkpoint.node_outputs.contains_key("research"));
+    assert!(recovered.checkpoint.node_outputs.contains_key("analysis"));
+    assert!(!recovered.checkpoint.node_outputs.contains_key("draft"));
+    assert!(recovered.checkpoint.blocked_nodes.is_empty());
+    assert_eq!(
+        recovered.resume_reason.as_deref(),
+        Some("continue branched mission after pause")
+    );
+    let recover_event = recovered
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .find(|entry| entry.event == "run_recovered_from_pause")
+        .expect("recover from pause event");
+    assert_eq!(
+        recover_event.reason.as_deref(),
+        Some("continue branched mission after pause")
+    );
+}
+
+#[tokio::test]
 async fn automations_v2_run_repair_resets_descendants_and_records_diff_metadata() {
     let state = test_state().await;
     let app = app_router(state.clone());
